@@ -178,7 +178,7 @@ def test_registry_catalog_and_get() -> None:
     cat = reg.render_catalog()
     # Skills render as the exact `use_skill(...)` call, NOT a bare "name: desc" line
     # (which small models mistake for a tool). See the render_catalog anti-confusion fix.
-    assert 'use_skill(name="a")' in cat
+    assert 'Skill(skill="a")' in cat
     assert "alpha" in cat
     assert "a: alpha" not in cat
     assert reg.get("a") is not None
@@ -330,3 +330,18 @@ def test_save_skill_refuses_out_of_tree_link(tmp_path: Path) -> None:
     with pytest.raises(SkillError):
         save_skill("evil", "d", "body text", skills_dir=skills_dir, overwrite=True)
     assert not (outside / "SKILL.md").exists()  # nothing written through the link
+
+
+def test_render_catalog_maps_claude_codes_tool_names() -> None:
+    # ADR-0187: a framework written for Claude Code says "Skill('aspirations') with
+    # args='loop'" and "ScheduleWakeup(...)" in its hook reasons and script output; a small
+    # model could not map those onto use_skill / schedule_wakeup on its own (measured
+    # 2026-09-17: hours of text against exactly that reason). One static line says how.
+    reg = SkillRegistry()
+    fm, _ = parse_frontmatter("---\nname: a\ndescription: alpha\n---\nbody a\n")
+    reg.add(Skill(fm, Path("a/SKILL.md")))
+    cat = reg.render_catalog()
+    # ADR-0190: the tool IS named Skill, so the catalog states the imperative's meaning in the
+    # tool's own name and carries no translation table.
+    assert "`Skill(<name>) with args='<args>'` means exactly this call" in cat
+    assert "use_skill" not in cat and "schedule_wakeup" not in cat

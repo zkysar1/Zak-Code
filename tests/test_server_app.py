@@ -207,12 +207,12 @@ def test_tools_lists_builtins(client: TestClient) -> None:
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
     assert {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "bash",
-        "glob",
-        "grep",
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
         "read_docx",
         "read_xlsx",
         "create_docx",
@@ -221,7 +221,7 @@ def test_tools_lists_builtins(client: TestClient) -> None:
         "save_image",
         "create_chart_image",
     } <= names
-    bash = next(t for t in resp.json() if t["name"] == "bash")
+    bash = next(t for t in resp.json() if t["name"] == "Bash")
     assert bash["required_permission"] == "DANGER_FULL_ACCESS"
 
 
@@ -306,8 +306,8 @@ def test_session_upload_saves_file_and_records_downloadable_artifact(tmp_path: P
     assert body["bytes"] == len(b"hello upload")
     assert body["artifact"]["kind"] == "text"
     assert body["artifact"]["created_by_tool"] == "upload"
-    assert body["suggested_tool"] == "read_file"
-    assert "read_file" in body["prompt"]
+    assert body["suggested_tool"] == "Read"
+    assert "Read" in body["prompt"]
     assert (tmp_path / body["path"]).read_bytes() == b"hello upload"
 
     listed = local_client.get(f"/sessions/{session_id}/artifacts")

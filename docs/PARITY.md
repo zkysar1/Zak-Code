@@ -76,13 +76,13 @@ One row per Claude Code model-facing tool (sub-tool families such as the Task* a
 groups are listed individually; pure helpers are noted at the end).
 
 > **M0 delivered (2026-05-30, commit `0d4b9fd`).** The P0 read/edit/search/run core is live
-> as Zak Code tools: **`read_file`** (≈ FileReadTool), **`write_file`** (≈ FileWriteTool),
+> as Zak Code tools: **`Read`** (≈ FileReadTool), **`Write`** (≈ FileWriteTool),
 > **`glob`** (≈ GlobTool), **`grep`** (≈ GrepTool), **`bash`** (≈ BashTool), plus a
-> **`list_dir`** convenience tool. All are workspace-scoped (path-escape-rejecting), never
+> **`LS`** convenience tool. All are workspace-scoped (path-escape-rejecting), never
 > raise (errors → structured `ToolResult`), and run through the live `AgentLoop`.
 >
 > **M1 delivered (2026-05-30, commits `948eada`…`4c6f9a4`).** Added the deferred
-> **`edit_file`** (≈ FileEditTool — exact-string replace, unique-match-or-error, `replace_all`,
+> **`Edit`** (≈ FileEditTool — exact-string replace, unique-match-or-error, `replace_all`,
 > atomic), plus live **streaming** end to end: `LiteLLMProvider.astream` → typed `AgentEvent`
 > loop stream → fence-safe rich TUI; `zakcode chat` streams by default with cooperative Ctrl-C
 > cancel. `PowerShellTool` is now built (Windows-first, `pwsh`/`powershell.exe`, shares the
@@ -95,28 +95,28 @@ groups are listed individually; pure helpers are noted at the end).
 | FileEditTool (Edit) | Exact-string replace edit in a file (`old_string`, `new_string`, `replace_all`) | yes | Planned | P0 | M1 | FS. Keep tool input structured (dict), not raw string. |
 | GlobTool | Fast filename pattern matching (`pattern`, `path`) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
 | GrepTool | Ripgrep-based content search (`pattern`, `glob/type`, `output_mode`, context flags) | yes | Planned | P0 | M1 | FS. Read-only; parallel-safe. |
-| BashTool | Run a shell command with sandbox/permission/security/destructive-command/read-only/path validation (`command`, `timeout`, `description`, `run_in_background`) | yes | Planned | P0 | M1 | FS/NET/PROC. DangerFullAccess tier; DANGEROUS_PATTERNS blocklist + background promotion. |
+| BashTool | Run a shell command with sandbox/permission/security/destructive-command/read-only/path validation (`command`, `timeout`, `description`, `run_in_background`) | yes | Implemented | P0 | M1 | FS/NET/PROC. DangerFullAccess tier; DANGEROUS_PATTERNS blocklist. `run_in_background` (ADR-0191) returns a task id + output file at once; the exit is reported as a `<task-notification>` harness line at the session's next idle prompt. |
 | PowerShellTool | Windows PowerShell equivalent of Bash (CLM types, git-safety, common-parameters, security/permission validation) | yes | Done | M10 | M1 | Shipped: `pwsh`/`powershell.exe` (prefers pwsh), workspace cwd, 60s cap, combined streams, graceful missing-PS error; shares the deny-first gate + PowerShell-aware blocklist (Remove-Item -Recurse, Format-Volume, iwr\|iex). |
 | TodoWriteTool | Maintain the in-session todo list (`todos[]`: content, status, activeForm) | yes | Planned | P0 | M1 | State (FS). Re-inject live TODO at end of context to fight instruction fade-out. |
 | AgentTool (Task) | Spawn a sub-agent to autonomously run a sub-task; built-in types (general-purpose, explore, plan, verification, claude-code-guide, statusline-setup), fork/resume/run, agent memory/color (`description`, `prompt`, `subagent_type`) | yes | Planned | P1 | M2 | Indirect FS/NET/PROC. Start with general-purpose/explore/plan; sub-agents return condensed summaries. |
 | EnterPlanModeTool | Enter plan mode (model plans before acting) | yes | Planned | P1 | M2 | Read-only Planner; write tools absent from planner schema. |
 | ExitPlanModeV2Tool | Exit plan mode and present the plan for approval (`plan`) | yes | Planned | P1 | M2 | Surface plan as editable artifact; explicit approval to execute. |
-| WebFetchTool | Fetch a URL and process its content, with preapproved-host list (`url`, `prompt`) | yes | Done | P1 | M2 | NET. Shipped: `web_fetch` GETs a public URL → readable text (stdlib HTML→text), **SSRF-guarded** (only http(s); loopback/private/link-local incl. metadata IP refused for literals + resolved hostnames; re-validated after each redirect), byte/char-capped, content defanged as untrusted. |
-| WebSearchTool | Web search returning results (`query`, allow/block domains) | yes | Done | P1 | M2 | NET. Shipped: `web_search` over a swappable, vendor-agnostic `SearchBackend` (DuckDuckGo default/no-key, Tavily, SearXNG) via `ZAKCODE_SEARCH_BACKEND`; results defanged. |
+| WebFetchTool | Fetch a URL and process its content, with preapproved-host list (`url`, `prompt`) | yes | Done | P1 | M2 | NET. Shipped: `WebFetch` GETs a public URL → readable text (stdlib HTML→text), **SSRF-guarded** (only http(s); loopback/private/link-local incl. metadata IP refused for literals + resolved hostnames; re-validated after each redirect), byte/char-capped, content defanged as untrusted. |
+| WebSearchTool | Web search returning results (`query`, allow/block domains) | yes | Done | P1 | M2 | NET. Shipped: `WebSearch` over a swappable, vendor-agnostic `SearchBackend` (DuckDuckGo default/no-key, Tavily, SearXNG) via `ZAKCODE_SEARCH_BACKEND`; results defanged. |
 | MCPTool | Invoke a tool exposed by a connected MCP server (collapse classification) | yes | Done | P1 | M5 | Routed by qualified `mcp__<server>__<tool>` name in the flat registry; permission-gated; stdio shipped (HTTP deferred). |
 | ListMcpResourcesTool | List resources available from MCP servers (optional `server`) | yes | Planned | P1 | M2 | NET. |
 | ReadMcpResourceTool | Read a specific MCP resource (`server`, `uri`) | yes | Planned | P1 | M2 | NET. |
 | McpAuthTool | Authenticate to an MCP server (OAuth) | yes | Planned | P1 | M2 | NET. Tri-state auth + token cache. |
 | ConfigTool | Read/write supported CLI settings programmatically (`setting`, `value`) | yes | Planned | P1 | M2 | FS (settings). Restrict to supportedSettings allowlist. |
-| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Partial | P1 | M2 | FS, indirect NET/PROC. Skills are discovered (L0 catalog) + invoked via `/<name>` (M7) and authored via the `save_skill` tool (M11); a dedicated model-facing `skill` *execute* tool is not separately shipped. |
+| SkillTool | Discover and execute a registered skill (`skill`, `args`) | yes | Partial | P1 | M2 | FS, indirect NET/PROC. Skills are discovered (L0 catalog) + invoked via `/<name>` (M7) and authored via the `save_skill` tool (M11); a dedicated model-facing `skill` *execute* tool is not separately shipped. ADR-0192: a body that fits the window is delivered whole with no harness-seeded plan, as Claude Code's Skill tool does; only a body that cannot fit is paged and seeded. |
 | NotebookEditTool | Edit Jupyter notebook cells (`notebook_path`, `cell_id`, `source`, `cell_type`, `edit_mode`) | yes | Planned | P1 | M2 | FS. |
 | ToolSearchTool | Search for / lazily load deferred tool schemas (`query`, `max_results`) | yes | Planned | P1 | M2 | Keeps base prompt small; load schemas on demand. |
 | AskUserQuestionTool | Pause and ask the user a structured multiple-choice question (`question`, `options/header`) | yes | Planned | P1 | M2 | Interactive — force sequential (never parallel). |
 | TaskCreateTool | Create a background/tracked task (task spec/description) | yes | Planned | P2 | M4 | State (FS), indirect NET/PROC. |
 | TaskGetTool | Fetch a task's status/details (`task_id`) | yes | Planned | P2 | M4 | State (FS). |
 | TaskListTool | List tracked tasks (filters) | yes | Planned | P2 | M4 | State (FS). |
-| TaskOutputTool | Retrieve a task's output (`task_id`) | yes | Planned | P2 | M4 | State (FS). |
-| TaskStopTool | Stop/cancel a running task (`task_id`) | yes | Planned | P2 | M4 | State (FS), PROC. |
+| TaskOutputTool | Retrieve a task's output (`task_id`) | yes | Implemented | P2 | M4 | State (FS). ADR-0191: status, exit code and the last 64KB of a background command's output; `block` waits (default 30 s, max 600 s). Background commands only — sub-agents stay synchronous. |
+| TaskStopTool | Stop/cancel a running task (`task_id`) | yes | Implemented | P2 | M4 | State (FS), PROC. ADR-0191: kills the background command's whole process group (by handle, or by pid after a restart). |
 | TaskUpdateTool | Update a task's fields/status (`task_id`, fields) | yes | Planned | P2 | M4 | State (FS). |
 | TeamCreateTool | Create a multi-agent team (team spec) | yes | Planned | P2 | M4 | State (FS), NET. Multi-agent orchestration. |
 | TeamDeleteTool | Delete a multi-agent team (`team_id`) | yes | Planned | P2 | M4 | State (FS), NET. |

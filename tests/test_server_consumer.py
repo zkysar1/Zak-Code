@@ -29,6 +29,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -41,6 +42,7 @@ from zakcode.server.app import IDLE_NUDGE_LINE, NUDGE_FRAME, create_app
 from zakcode.session.say_inbox import interrupt_path, say_path, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
+from zakcode.wakeup import LOOP_SENTINEL, LOOP_WAKE_NOTE, Wakeup, fired_line
 
 
 class _FakeAgent:
@@ -374,6 +376,7 @@ def _build_bounded(
     reserve: float = 0.0,
     message: str | None = None,
     run_end_command: str | None = None,
+    idle_timeout: float | None = None,
 ) -> tuple[Any, list[tuple[str, float]], list[str], float]:
     """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
     t0 = time.monotonic()
@@ -387,6 +390,7 @@ def _build_bounded(
         run_consolidation_reserve=reserve,
         run_consolidation_message=message,
         run_end_command=run_end_command,
+        run_idle_timeout=idle_timeout,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -399,6 +403,79 @@ def _build_bounded(
         on_run_end=_on_run_end,
     )
     return app, seen, endings, t0
+
+
+# ── the idle bound: the ABANDONED run, which the cap cannot reach ────────────
+# `run_max_duration` is a patience cap anchored once at run start; `run_idle_timeout`
+# is a liveness clock re-stamped on every consumed say. A member who walks away
+# mid-conversation trips the second and never the first, and on an UNCAPPED run the
+# second is the only bound there is.
+
+
+def test_idle_timeout_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
+    """Nobody says anything; the run stops itself and the ending is named `idle`."""
+    app, seen, endings, _t0 = _build_bounded(tmp_path, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())  # returns only because the window closed
+
+    assert endings == ["idle"]
+    assert seen == []  # it really did idle — no turn ran
+
+
+def test_idle_bound_holds_on_an_uncapped_run(tmp_path: Path) -> None:
+    """The run that most needs an idle bound is the one with no cap behind it.
+
+    `_arm_run_deadlines` returns EARLY when `run_max_duration` is None, so a stamp
+    written after that branch would never be written for exactly this run — and the
+    unbounded case is the one where nothing else would ever end it.
+    """
+    app, _seen, endings, _t0 = _build_bounded(tmp_path, max_duration=None, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["idle"]
+
+
+def test_a_consumed_say_refreshes_the_idle_window(tmp_path: Path) -> None:
+    """The stamp MOVES. Without the re-stamp this run ends while it is being used.
+
+    A feeder writes a say every 0.25s for ~1.2s against a 0.6s window. If the stamp
+    stayed at run start the loop would stop at ~0.6s, mid-conversation, with at most
+    one turn behind it. Surviving past that is only possible if each consumed say
+    pushed the window out.
+    """
+    app, seen, endings, _t0 = _build_bounded(tmp_path, max_duration=None, idle_timeout=0.6)
+    say_file = say_path(tmp_path)
+
+    async def _drive() -> None:
+        async def _feed() -> None:
+            deadline = time.monotonic() + 1.2
+            while time.monotonic() < deadline:
+                write_say(say_file, "still here")
+                await asyncio.sleep(0.25)
+
+        feeder = asyncio.create_task(_feed())
+        try:
+            await app.state.consume_say_loop()
+        finally:
+            feeder.cancel()
+
+    started = time.monotonic()
+    asyncio.run(_drive())
+    elapsed = time.monotonic() - started
+
+    assert endings == ["idle"]  # it did stop — once the saying actually stopped
+    assert elapsed > 1.2, f"run ended after {elapsed:.2f}s — the window never moved"
+    assert len(seen) >= 2, f"only {len(seen)} turn(s) ran — the says were not consumed"
+
+
+def test_duration_cap_outranks_the_idle_window(tmp_path: Path) -> None:
+    """Both trip on the same beat; the ending is the ceiling the customer was quoted."""
+    app, _seen, endings, _t0 = _build_bounded(tmp_path, max_duration=0.3, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["duration_cap"]
 
 
 def test_duration_cap_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
@@ -843,3 +920,117 @@ def test_the_deadline_watcher_cannot_interrupt_the_digest_turn(tmp_path: Path) -
     )
     assert finished == ["wrap up"], finished  # liveness: the digest really did run
     assert json.loads(out.read_text(encoding="utf-8"))["digest"] == "ok"
+
+
+# ── wake-ups reach a served session (ADR-0189) ───────────────────────────
+
+
+def _current(store: SessionStore, root: Path) -> Session:
+    marker = (root / ".current-session").read_text(encoding="utf-8").strip()
+    return store.load(marker)
+
+
+def _arm(store: SessionStore, root: Path, prompt: str, *, due_in: float) -> None:
+    """Hold ``prompt`` on the current session, due ``due_in`` seconds from now (negative:
+    already due) — exactly what a turn's ``schedule_wakeup`` leaves on disk."""
+    session = _current(store, root)
+    now = time.time()
+    session.pending_wakeup = Wakeup(
+        prompt=prompt, due_at=now + due_in, armed_at=now, delay_seconds=600
+    )
+    store.save(session)
+
+
+def test_a_due_wakeup_starts_a_turn_on_an_idle_inbox(tmp_path: Path) -> None:
+    """ADR-0189: the wake-up a turn armed fires HERE, on the consumer beat, with no say.
+
+    Pre-fix only the REPL's idle prompt serviced the slot; a served session has no prompt,
+    so the loop's own deadman's net (armed on every ``veto_stall``) could never fire —
+    measured on a prod vessel 2026-09-18, due 02:21:45Z and still armed at 02:35Z.
+    """
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, "check the build", due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True  # no say, no nudge
+
+    session = _current(store, tmp_path)
+    assert session.pending_wakeup is None  # consumed exactly once
+    assert [m.role for m in session.messages] == ["user", "assistant", "user", "assistant"]
+    assert session.messages[2].text == fired_line("check the build")
+
+
+def test_a_wakeup_not_yet_due_is_a_noop_beat(tmp_path: Path) -> None:
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, "check the build", due_in=600.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is False
+
+    session = _current(store, tmp_path)
+    assert session.pending_wakeup is not None  # still held
+    assert len(session.messages) == 2
+
+
+class _ComposingAgent(_FakeAgent):
+    """A fake that can compose a skill turn the way the real Agent does (ADR-0187)."""
+
+    def __init__(self, session: Session, composed: list[tuple[str, str, str]]) -> None:
+        super().__init__(session)
+        self._composed = composed
+
+    async def compose_skill_turn(
+        self, name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"
+    ) -> Any:
+        self._composed.append((name, args, source))
+        return SimpleNamespace(
+            invoked=True,
+            turn_text=(
+                "<command-message>aspirations is running</command-message>\n"
+                "<command-name>/aspirations</command-name>\n"
+                "<command-args>loop</command-args>\n"
+                "page 1 of the loop skill"
+            ),
+            denied_reason=None,
+            error=None,
+        )
+
+
+def test_the_loop_sentinel_runs_the_hook_named_reentry(tmp_path: Path) -> None:
+    """The sentinel resolves to the skill the session's last hook re-entry ran, composed by
+    the harness with the wake note in its frame — the REPL door's ADR-0187 turn, served."""
+    composed: list[tuple[str, str, str]] = []
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings,
+        store=store,
+        agent_factory=lambda session, model, prompter: _ComposingAgent(session, composed),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    session = _current(store, tmp_path)
+    session.loop_skill = "aspirations loop"
+    store.save(session)
+    _arm(store, tmp_path, LOOP_SENTINEL, due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    assert composed == [("aspirations", "loop", "harness")]
+    text = _current(store, tmp_path).messages[2].text
+    assert text.startswith("<command-message>aspirations is running — [harness] ")
+    assert LOOP_WAKE_NOTE.split(":")[0] in text
+    assert "\n<command-name>/aspirations</command-name>" in text
+
+
+def test_the_loop_sentinel_without_a_known_loop_skill_fires_as_its_line(tmp_path: Path) -> None:
+    app, store = _build(tmp_path)
+    assert write_say(say_path(tmp_path), "hello")
+    assert asyncio.run(app.state.consume_one_say()) is True
+    _arm(store, tmp_path, LOOP_SENTINEL, due_in=-1.0)
+
+    assert asyncio.run(app.state.consume_one_say()) is True
+
+    assert _current(store, tmp_path).messages[2].text == fired_line(LOOP_SENTINEL)

@@ -29,7 +29,7 @@ class WriteFileTool(Tool):
     """Create or overwrite a file inside the workspace, writing atomically."""
 
     spec = ToolSpec(
-        name="write_file",
+        name="Write",
         description=(
             "Create or overwrite a text file within the workspace. Parent directories "
             "are created as needed. The write is atomic (temp file + os.replace)."

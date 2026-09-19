@@ -13,13 +13,22 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
+from zakcode.session import framework_stop
 from zakcode.session.framework_stop import (
+    AGENT_MODE_FILENAME,
     DEFAULT_STOP_TARGET_MODE,
+    SIDECAR_RAISE_MARKER,
     SIGNAL_SET_SCRIPT,
     STOP_CHECKPOINT_FILENAME,
+    STOP_TARGET_MODE_FILENAME,
     abandon_framework_stop,
     framework_session_dir,
+    framework_stop_complete,
     request_framework_stop,
+    retire_expired_sidecar_stop,
+    sidecar_raise_time,
 )
 
 AGENT = "alpha"
@@ -231,9 +240,14 @@ def test_both_overrun_branches_actually_call_the_retire(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert "abandon_framework_stop," in src, "imported"
-    assert src.count("_retire_unconsumed_framework_stop()") == 3, (
-        "one definition + both overrun branches"
+    assert src.count("_retire_unconsumed_framework_stop()") == 4, (
+        "one definition + both overrun branches + the window closing on a loop at rest"
     )
+    # The third orphan path (ADR-0189): no turn to interrupt, the window just closes.
+    idle_close = src.index(
+        "if framework_stop_until is not None and time.monotonic() >= framework_stop_until:"
+    )
+    assert "_retire_unconsumed_framework_stop()" in src[idle_close : idle_close + 200]
     mid = src.index("overran its %.0fs window")
     cap = src.index("run cap: framework stop overran its window")
     for start in (mid, cap):
@@ -242,3 +256,102 @@ def test_both_overrun_branches_actually_call_the_retire(tmp_path: Path) -> None:
         assert window.index("_retire_unconsumed_framework_stop()") < window.index(
             "request_interrupt("
         ), "retire the pair BEFORE the interrupt -- the interrupt can end this process"
+
+
+# ── the sidecar's signature (ADR-0188) ───────────────────────────────────────────
+#
+# Measured 2026-09-17 (prod vessel debc47de, run B): the raise landed at 20:29:29,
+# the framework's /start wrote its binding — the stop-clear guard's "session start" —
+# at 20:31:43, and the guard read mtime < started_at as "stale" and deleted the run's
+# only ending. The framework now keeps a SIGNED signal without consulting time, so
+# the signature has to be there, and its lifetime has to be owned here.
+
+
+def test_signal_is_signed_after_the_setter_creates_it(tmp_path: Path) -> None:
+    _plant_signal_setter(tmp_path, _real_setter_body())
+    assert request_framework_stop(tmp_path, AGENT) is True
+    text = (framework_session_dir(tmp_path, AGENT) / "stop-requested").read_text(encoding="utf-8")
+    first, second = text.splitlines()[:2]
+    assert first == SIDECAR_RAISE_MARKER
+    assert second.startswith("raised_at: ") and second.endswith("Z")
+    assert sidecar_raise_time(tmp_path, AGENT) is not None
+
+
+def test_signing_never_recreates_an_ask_the_mind_already_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ask is live from the setter's touch, so a quick mind can consume it before the
+    signature is written. The signature must not put it back.
+
+    Measured 2026-09-18 on windows-latest: the R4 end-to-end test timed out at 10 s against
+    a 30 s grace. ``Path.write_text`` had re-created the ``stop-requested`` the mind had just
+    removed, so ``framework_stop_complete`` read "not yet" until the grace ran out. The
+    window is opened here by hand, with no timing: the mind's whole stop lands between the
+    setter's verification and the signing.
+    """
+    _plant_signal_setter(tmp_path, _real_setter_body())
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / AGENT_MODE_FILENAME).write_text("autonomous\n", encoding="utf-8")
+    real_setter = framework_stop.invoke_signal_setter
+
+    def setter_then_the_mind_stops(*args: object) -> bool:
+        raised = real_setter(*args)  # type: ignore[arg-type]
+        assert raised and (session_dir / "stop-requested").exists()
+        (session_dir / "stop-requested").unlink()  # D3: the mind consumes the ask
+        (session_dir / AGENT_MODE_FILENAME).write_text("assistant\n", encoding="utf-8")  # D7
+        (session_dir / STOP_TARGET_MODE_FILENAME).unlink()  # D7: the target mode is consumed
+        return raised
+
+    monkeypatch.setattr(framework_stop, "invoke_signal_setter", setter_then_the_mind_stops)
+
+    assert request_framework_stop(tmp_path, AGENT) is True, "the ask WAS raised, and read"
+    assert not (session_dir / "stop-requested").exists(), "the signature re-created the ask"
+    assert framework_stop_complete(tmp_path, AGENT) is True, "a finished stop reads finished"
+
+
+def test_an_unsigned_or_absent_signal_has_no_raise_time(tmp_path: Path) -> None:
+    assert sidecar_raise_time(tmp_path, AGENT) is None
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / "stop-requested").touch()  # the framework's own writers: empty
+    assert sidecar_raise_time(tmp_path, AGENT) is None
+    (session_dir / "stop-requested").write_text("note\n" + SIDECAR_RAISE_MARKER + "\n")
+    assert sidecar_raise_time(tmp_path, AGENT) is None, "first line only"
+    assert sidecar_raise_time(tmp_path, "") is None
+
+
+def _signed_pair(root: Path, raised_at: str) -> Path:
+    session_dir = framework_session_dir(root, AGENT)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "stop-target-mode").write_text("assistant", encoding="utf-8")
+    (session_dir / "stop-requested").write_text(
+        f"{SIDECAR_RAISE_MARKER}\nraised_at: {raised_at}\n", encoding="utf-8"
+    )
+    return session_dir
+
+
+def test_startup_retires_a_signed_stop_only_past_the_grace(tmp_path: Path) -> None:
+    session_dir = _signed_pair(tmp_path, "2026-09-17T20:29:29Z")
+    raised = sidecar_raise_time(tmp_path, AGENT)
+    assert raised is not None
+    # inside the window: a restart mid-grace leaves the ask for the mind
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=350, now=raised + 100) is False
+    assert (session_dir / "stop-requested").exists()
+    assert (session_dir / "stop-target-mode").exists()
+    # past it: the pair is an orphan of a previous process
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=350, now=raised + 351) is True
+    assert not (session_dir / "stop-requested").exists()
+    assert not (session_dir / "stop-target-mode").exists()
+
+
+def test_startup_leaves_an_unsigned_stop_and_a_started_stop_alone(tmp_path: Path) -> None:
+    session_dir = framework_session_dir(tmp_path, AGENT)
+    session_dir.mkdir(parents=True)
+    (session_dir / "stop-requested").touch()  # unsigned: the framework's mtime rule owns it
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=0, now=10**12) is False
+    assert (session_dir / "stop-requested").exists()
+    _signed_pair(tmp_path, "2026-09-17T20:29:29Z")
+    (session_dir / STOP_CHECKPOINT_FILENAME).write_text("{}", encoding="utf-8")  # a stop began
+    assert retire_expired_sidecar_stop(tmp_path, AGENT, grace_s=0, now=10**12) is False
+    assert (session_dir / "stop-requested").exists()

@@ -115,4 +115,4 @@ def test_permission_denial_is_logged(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="zakcode.permissions"):
         allowed, _ = asyncio.run(policy.authorize(shell, {"command": "sudo rm -rf /"}))
     assert not allowed
-    assert any("denied" in r.message and "bash" in str(r.args) for r in caplog.records)
+    assert any("denied" in r.message and "Bash" in str(r.args) for r in caplog.records)

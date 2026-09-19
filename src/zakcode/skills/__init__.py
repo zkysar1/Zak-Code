@@ -6,7 +6,7 @@ a markdown body:
     ---
     name: commit-helper
     description: Write a conventional-commit message from a diff.
-    allowed-tools: [read_file, bash]
+    allowed-tools: [Read, Bash]
     ---
     <the body — instructions the model follows when the skill is invoked>
 
@@ -261,12 +261,14 @@ class SkillRegistry:
             return ""
         lines = [
             "Available skills (these are NOT tools — never emit a skill name as a tool "
-            "call). To run a skill, call the `use_skill` tool with the skill's name; that "
+            "call). To run a skill, call the `Skill` tool with the skill's name; that "
             "loads its full instructions, which you then follow. A skill's steps may tell "
-            "you to use another skill (they chain). Each entry shows the exact call to make:",
+            "you to use another skill (they chain). An instruction that says "
+            "`Skill(<name>) with args='<args>'` means exactly this call — make it; never "
+            "answer it with text. Each entry shows the exact call to make:",
         ]
         for name, desc in self.model_catalog():
-            call = f'use_skill(name="{name}")'
+            call = f'Skill(skill="{name}")'
             lines.append(f"- {call} — {desc}" if desc else f"- {call}")
         user_only = self.user_only_names()
         if user_only:
@@ -276,7 +278,7 @@ class SkillRegistry:
             lines.append(
                 "User-only commands ("
                 + ", ".join(f"/{n}" for n in user_only)
-                + "): the operator types these in their terminal. use_skill refuses them, so "
+                + "): the operator types these in their terminal. Skill refuses them, so "
                 "never call, plan, or seed one — if a request seems to need it, say so and let "
                 "the operator type it."
             )

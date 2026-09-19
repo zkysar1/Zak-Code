@@ -8,10 +8,12 @@ key/value tables, headings, the input prompt, and the standard notice lines
 (info / warn / error). Pure presentation over a rich Console — no agent logic
 lives here.
 
-Column grid: cols 0–1 are the document margin; block markers sit at col 2 with
-their body at col 4; receipts (``└``) and rail rows (``│``) sit at col 4 with their
-body at col 6. Wrapped text always lands under the body column, never under the
-marker — the ragged left edge is structurally impossible.
+Column grid: the operator's own line is the root of the turn — its ``›`` sits at col 0
+with the message at col 2 (ADR-0186); everything the agent does nests under it: block
+markers at col 2 with their body at col 4; receipts (``└``) and rail rows (``│``) at
+col 4 with their body at col 6. Wrapped text always lands under the body column, never
+under the marker — the ragged left edge is structurally impossible. Body cells wrap at
+the reading width (:data:`READ_WIDTH`) however wide the terminal is (ADR-0185).
 """
 
 from __future__ import annotations
@@ -27,6 +29,19 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode.cli._glyphs import resolve_glyphs
+
+#: Body text wraps at this many columns however wide the terminal is (ADR-0185). The
+#: measured comfort band for body text is 50–75 characters and WCAG 1.4.8 caps it at 80;
+#: a monospace transcript with a hanging indent reads well to about 100, and a 200-column
+#: cockpit pane read at full width lost every line's return sweep. Code blocks are not
+#: body text and keep the console width.
+READ_WIDTH = 100
+
+
+def body_width(console: Console, indent: int) -> int:
+    """Widest a body cell may be: the reading width, or what the console leaves after the
+    margin and the 2-wide gutter, whichever is smaller (never below 8)."""
+    return max(8, min(READ_WIDTH, console.width - indent - 2))
 
 
 def margin(renderable: RenderableType, *, left: int = 2) -> Padding:
@@ -51,7 +66,7 @@ def block(
     """
     grid = Table.grid(padding=0)
     grid.add_column(width=2)
-    grid.add_column(overflow="fold")
+    grid.add_column(overflow="fold", max_width=body_width(console, indent))
     grid.add_row(Text(marker, style=marker_style) if marker else Text(""), body)
     return margin(grid, left=indent)
 
@@ -71,11 +86,37 @@ def rail(
     g = resolve_glyphs(console)
     grid = Table.grid(padding=0)
     grid.add_column(width=2)
-    grid.add_column(overflow="fold")
+    grid.add_column(overflow="fold", max_width=body_width(console, 4))
     for line in lines:
         body = line if isinstance(line, Text) else Text(line)
         grid.add_row(Text(g["bar"], style=bar_style), body)
     return margin(grid, left=4)
+
+
+def user_line(
+    console: Console, text: str, *, via: str = "", stamp: str = "", blanks: int = 2
+) -> None:
+    """The operator's message as the root of the turn (ADR-0185/0186).
+
+    ``blanks`` blank lines (the turn seam — two, or one when the input wait already
+    printed one), then ``› text`` at column 0 — chevron and text in the orange
+    ``user.*`` styles, the one warm colour in the transcript — the door it came through
+    and the wall-clock stamp grey at the end of the first line (``(say · 14:22)``), and
+    any further lines of the message under the text column (col 2). Every agent block
+    then nests under it at col 2. Built from ``Text``, never markup — the message is the
+    operator's, verbatim.
+    """
+    g = resolve_glyphs(console)
+    for _ in range(blanks):
+        console.print()
+    lines = text.splitlines() or [""]
+    first = Text(lines[0], style="user.text")
+    meta = f" {g['dot']} ".join(part for part in (via, stamp) if part)
+    if meta:
+        first.append(f"  ({meta})", style="user.meta")
+    console.print(block(console, first, marker=g["prompt"], marker_style="user.marker", indent=0))
+    for line in lines[1:]:
+        console.print(block(console, Text(line, style="user.text"), indent=0))
 
 
 def panel(

@@ -38,6 +38,20 @@ async def test_run_capturing_normal_command() -> None:
     assert code == 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell's `&` child")
+async def test_a_command_that_leaves_a_redirected_child_running_returns_when_it_exits() -> None:
+    # A mind world's playbooks do this all the time: start a daemon, `nohup ... &`. With all
+    # three of the child's streams redirected nothing holds the command's pipe, so the call is
+    # over when the command is. True on the stdlib loop, which is why the served process is
+    # pinned to it (ADR-0197): under uvloop this exact command waits out its whole timeout.
+    start = time.monotonic()
+    output, code = await run_capturing(
+        shell_command="sleep 8 </dev/null >/dev/null 2>&1 & echo started", cwd=".", timeout=6
+    )
+    assert "started" in output and code == 0
+    assert time.monotonic() - start < 4  # did NOT wait for the sleeping child
+
+
 async def test_run_capturing_times_out_promptly() -> None:
     # A 30s command with a 0.5s timeout must raise CommandTimeout almost immediately —
     # proving wait_for fired and the child tree was killed rather than waited out.

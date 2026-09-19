@@ -43,6 +43,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from zakcode.artifacts import ArtifactRef
+from zakcode.background import BackgroundTask
 from zakcode.config import zakcode_home
 from zakcode.messages import Message
 from zakcode.tasks import TaskNetwork
@@ -55,7 +56,7 @@ CURRENT_SCHEMA_VERSION = 1
 #: Stop reasons after which a transcript must not be continued verbatim on resume
 #: (ADR-0033): the loop ended the last turn by giving up, degenerating, or doom-looping,
 #: and the messages that produced that end are exactly what would be re-fed to the model.
-RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop"})
+RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop", "veto_stall"})
 
 #: Suffix marking an in-progress temp file written during an atomic save.
 _TMP_SUFFIX = ".tmp"
@@ -167,6 +168,14 @@ class Session(BaseModel):
     #: the pre-#32 behavior).
     plan_signature: str = ""
     plan_idle_turns: int = 0
+    #: ADR-0193: the models whose prompt cache this session MEASURED reusing a whole tail-less
+    #: prompt and nothing sent with the per-call tail — while the session runs on one of them
+    #: the tail rides every other call — and, per model, the probes that showed no such reuse
+    #: (at the limit the model is left alone for good). Persisted because a served mind builds
+    #: a loop per turn and must not pay the measurement again each turn. Schema v1 stays
+    #: append-only: an older build drops both fields and simply keeps the every-call tail.
+    tail_sparse_models: list[str] = Field(default_factory=list)
+    tail_probe_misses: dict[str, int] = Field(default_factory=dict)
     #: Skill paging (ADR-0067 / ADR-0086): per lower-cased skill name, the pages of that skill
     #: the model has HELD — page 1 at the load, later pages as the plan reached them. A section
     #: is finished only once its page was held, so the record must outlive a restart (ADR-0034
@@ -211,6 +220,21 @@ class Session(BaseModel):
     #: that resumes it. Schema v1 stays append-only: an OLDER build drops the field and the
     #: wake-up is simply lost (fails SAFE — the pre-ADR-0094 behavior, no wake-up at all).
     pending_wakeup: Wakeup | None = None
+    #: The skill a turn-end hook last asked the loop to re-enter with, as ``"<name> <args>"``
+    #: (ADR-0187; ``"aspirations loop"`` on a Mind). The autonomous-loop sentinel wake-up
+    #: resolves to it when it fires, composed by the harness, instead of a prose line asking
+    #: the model to remember which skill runs the loop. Persisted: the net is for the process
+    #: that resumes this session as much as for this one. Schema v1 stays append-only: an
+    #: OLDER build drops it and the sentinel fires as prose (fails SAFE — ADR-0094's line).
+    loop_skill: str = ""
+    #: The background commands this session started (ADR-0191): id, command, output and exit
+    #: files, pid, and whether the exit was reported. Status is never stored — it is derived
+    #: from the files and the pid when read — so a record cannot call a dead task alive.
+    #: Persisted so the process that resumes this session (the ADR-0034 restart) still
+    #: reports a task the previous one started. Schema v1 stays append-only: an OLDER build
+    #: drops the field and only forgets the table — the processes run on and their output
+    #: files remain (fails SAFE — nothing is killed, nothing is invented).
+    background_tasks: list[BackgroundTask] = Field(default_factory=list)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""

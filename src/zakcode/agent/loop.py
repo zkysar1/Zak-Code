@@ -55,7 +55,8 @@ Stop conditions
   turn honestly instead of streaming garbage toward the output cap. Non-vetoable, like
   ``recipe_stalled``: re-prompting a model that has twice collapsed produces more of the
   same.
-* ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4).
+* ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4) and,
+  when a TURN_END hook is registered, its bounded veto allowance too (ADR-0181).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
   ``retry_after``-aware jittered backoff inside a fixed ~15-minute horizon — also when
   the limit lands MID-STREAM, after text already reached the client: the partial is
@@ -112,7 +113,7 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.degeneration import burst_repetition, repeated_tail
+from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import (
@@ -124,6 +125,7 @@ from zakcode.agent.recipe import (
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate, derive_verify_command
+from zakcode.background import BackgroundTasks, tasks_dir_for
 from zakcode.build_info import install_changed, running_build
 from zakcode.config import PermissionTier, Settings, load_settings, zakcode_home
 from zakcode.events import (
@@ -138,6 +140,7 @@ from zakcode.events import (
     AgentUsage,
 )
 from zakcode.hooks import (
+    CLAUDE_CODE_ARG_KEYS,
     HookEvent,
     HookManager,
     HookPayload,
@@ -150,6 +153,7 @@ from zakcode.hooks import (
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
+    Capabilities,
     ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
@@ -178,6 +182,7 @@ from zakcode.session.observation_inbox import (
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
+    COLLAPSED_ROW_RE,
     MAX_LINE_CHARS,
     MAX_REQUEST_CHARS,
     NULL_MARK,
@@ -193,6 +198,7 @@ from zakcode.tasks import (
     skill_skeleton,
     step_skill,
 )
+from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
     ConcurrencyClass,
     Sampler,
@@ -204,7 +210,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.usage import Usage
-from zakcode.wakeup import WakeupSlot
+from zakcode.wakeup import DEFAULT_DELAY_SECONDS, LOOP_SENTINEL, WakeupSlot
 
 if TYPE_CHECKING:
     from zakcode.sandbox import EgressProxy
@@ -305,6 +311,19 @@ _SUMMARY_CHUNK_FRACTION = 0.5
 #: Conservative chars-per-token floor for slicing rendered text without a tokenizer pass
 #: (id-dense code/markdown measures ~2.5 bytes/token; prose ~4 — 2 never overshoots).
 _SUMMARY_CHARS_PER_TOKEN = 2
+#: Cap on the slices one compaction summarize is cut into (ADR-0183). The rendered transcript
+#: is held to this many slice budgets BEFORE slicing — the first 2/3 and the last 1/3 kept
+#: around a note naming the elided middle (the ``_clamp_tool_output`` shape) — so a session
+#: built on a 200k-window model resumed on an 8k local one, or a multi-megabyte paste, costs a
+#: bounded number of summarize calls instead of ceil(len / slice) of them.
+_MAX_SUMMARY_SLICES = 12
+#: Bounded fold passes over the part-summaries (ADR-0183): a pass packs whole parts into
+#: groups whose join fits one slice budget and folds each group, so no fold call carries more
+#: than a slice. A join still over budget after the passes is clamped (same head/tail shape)
+#: for one last fold — a summarizer whose summaries never shrink cannot loop this.
+_MAX_FOLD_PASSES = 2
+#: The fold instruction: part-summaries in, one summary out.
+_FOLD_PROMPT = "Fold these part-summaries of one conversation into a single coherent summary:\n\n"
 #: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
 #: plain text, so the model summarizes a document instead of continuing a dialogue.
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
@@ -315,6 +334,48 @@ _MODEL_MARKUP_RE = re.compile(
     re.S,
 )
 _MODEL_MARKUP_LINE_RE = re.compile(r"^\s*</?(?:tool_call|function|parameter)[^>\n]*>\s*$", re.M)
+
+
+def _clamp_middle(text: str, budget: int, what: str) -> str:
+    """Hold ``text`` to ``budget`` characters: 2/3 head, then a note naming the loss, then tail.
+
+    The ``_clamp_tool_output`` shape — openings carry structure, endings carry the unfinished
+    work, the middle is the safest cut — reused by the compaction summarizer for a transcript
+    over its slice cap and for a part-summary join over one slice budget (ADR-0183). Text
+    within the budget comes back unchanged.
+    """
+    if len(text) <= budget:
+        return text
+    head = budget * 2 // 3
+    note = (
+        f"\n\n[{what} elided: {len(text):,} characters exceed the summarizer's budget of "
+        f"{budget:,}; the first {head:,} characters and the tail are kept, the middle is "
+        "missing — say so in the summary]\n\n"
+    )
+    tail = max(budget - head - len(note), 0)
+    return text[:head] + note + (text[-tail:] if tail else "")
+
+
+def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
+    """Greedy groups of whole part-summaries whose ``"\\n\\n"`` join fits ``budget``.
+
+    A part over the budget on its own is clamped first, so every group — and so every fold
+    call built from one — fits one slice (ADR-0183).
+    """
+    groups: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for part in parts:
+        part = _clamp_middle(part, budget, "part-summary")
+        extra = len(part) + (2 if current else 0)
+        if current and size + extra > budget:
+            groups.append(current)
+            current, size, extra = [], 0, len(part)
+        current.append(part)
+        size += extra
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _strip_model_markup(text: str) -> str:
@@ -342,6 +403,46 @@ _CLAMP_CHARS_PER_TOKEN = 3
 #: verbatim body that cannot sit beside the system prompt and still leave this much is too
 #: large for the model, full stop — no compaction changes that.
 _MIN_ANSWER_ROOM = 4_096
+#: The most the fit check reserves for the answer (ADR-0192). ``max_output`` is the model's
+#: generation CAP, not the room a skill turn needs: litellm registers 128,000 for the
+#: gpt-5.6 tier, so a recipe that pins its window to 131,072 (Vinheim, 2026-09-18) would
+#: have left 3,072 tokens for the system prompt and the body together — every page
+#: ``skill_too_large`` before the first tool call.
+_MAX_ANSWER_ROOM = 16_384
+
+
+#: ADR-0193 — when the per-call tail defeats the provider's prompt cache. Some hosted tiers
+#: reuse only a previously sent FULL prompt that is a prefix of the new one (measured
+#: 2026-09-18, gpt-5.6-luna/terra: a changing last message left only the system prompt
+#: cached; an explicit cache breakpoint was ignored). The plan reminder rides the END of
+#: every call and is never persisted, so no call's prompt is ever a prefix of the next: a
+#: served turn's cache reads sat at 28,079 tokens for 241 calls while its prompt grew to
+#: 360k — the same 243 calls price at $139 against under $18 with the cache working.
+#:
+#: Nothing is changed on a guess. A SUSPICION is read from the provider's own usage: this
+#: many main-conversation calls in a row, each carrying a tail, whose cache read stayed
+#: above zero and did not grow while the prompt grew by this many tokens. The growth bar is
+#: sized from where the money is and from what a healthy cache looks like: a prefix cache
+#: advances in lumps (gpt-5-mini held one read for six calls across 969 tokens of growth,
+#: same day), and under 4k uncached tokens a call the waste is a fraction of a cent. A flat
+#: read alone proves nothing about the tail — a provider that caches only the system block
+#: reads flat forever — so the suspicion buys exactly ONE tail-less call, the probe, and the
+#: call after it is the measurement: a cache read within this slack of the probe's WHOLE
+#: prompt is the mechanism observed, and only then does the tail start resting every other
+#: call. A probe that shows no such reuse is a miss; at the limit the model is left alone
+#: for the rest of the session. A backend that reports no cache reads (most local pods)
+#: reads zero, is never suspected, and keeps its every-call reminder untouched.
+_CACHE_FLAT_MIN_CALLS = 3
+_CACHE_FLAT_MIN_GROWTH = 4_096
+_CACHE_PROBE_SLACK = 128
+_CACHE_PROBE_LIMIT = 2
+
+
+def _answer_room(caps: Capabilities) -> int:
+    """The tokens the fit check keeps free for the answer: the model's output cap, bounded
+    below by :data:`_MIN_ANSWER_ROOM` and above by :data:`_MAX_ANSWER_ROOM`."""
+    return min(caps.max_output or _MIN_ANSWER_ROOM, _MAX_ANSWER_ROOM)
+
 
 #: How many times per turn a paged skill's dropped sections are put back into the plan
 #: (ADR-0075). Each restore tells the model how to close a section it means to skip; a
@@ -550,6 +651,15 @@ _BARE_STATUS_MAX_CHARS = 600
 #: needed") sent five times through five veto cycles, each cycle billing a full context.
 #: Below this floor repeats are conversation ("Done." twice), not parroting.
 _BROKEN_RECORD_MIN_CHARS = 80
+#: ...and the guard's own bound (ADR-0194). It is checked first and `continue`s, so nothing
+#: after it — not the ADR-0058 cascade cap, not the ADR-0187 veto fence — can end a turn whose
+#: model keeps re-sending one text: measured 2026-09-18 (gpt-5.6-luna, main and branch alike), a
+#: CORRECT answer the fresh-eyes review had flagged was re-sent and vetoed twenty times, to
+#: the iteration cap, each veto billing a 37k-token context. A rail that did not move the
+#: model twice will not move it a third time: after this many rails for one text the guard
+#: stands down for that text, the answer goes on to the gates every other completion meets
+#: (each bounded), and the turn is marked degraded.
+_MAX_BROKEN_RECORD_RAILS = 2
 
 
 def _broken_record_nudge(count: int) -> str:
@@ -783,7 +893,11 @@ _MISSING_CLAIM_RE = re.compile(
     r"|\bno\s+such\s+(?:file|directory|script|path)\b",
     re.IGNORECASE,
 )
-_SEARCH_TOOLS = frozenset({"grep", "glob"})
+#: Role sets carry BOTH spellings (ADR-0190): the loop canonicalizes a live call through the
+#: registry, but a transcript resumed from before the rename — and any registry that names a
+#: tool the old way — still says ``grep`` / ``bash`` / ``read_file``, and a rail that reads
+#: history must see those too.
+_SEARCH_TOOLS = frozenset({"Grep", "Glob", "grep", "glob"})
 _MISSING_NUDGE = (
     "You concluded that something could not be found, but no content search ran this turn. "
     "A not-found answer is about the ONE path you tried, not the workspace. Run "
@@ -793,7 +907,7 @@ _MISSING_NUDGE = (
 )
 
 #: Shell tools whose ``command`` argument this module inspects for evidence (ADR-0138).
-_SHELL_TOOLS = frozenset({"bash", "powershell"})
+_SHELL_TOOLS = frozenset({"Bash", "powershell", "bash"})
 
 #: Silenced-evidence gate (ADR-0144). A zero is only a measurement when the instrument that
 #: produced it could have reported non-zero. Two ways a turn loses that guarantee, both
@@ -1065,7 +1179,22 @@ _APOLOGY_NUDGE = (
 #: directly reported by the tree stats command" in a one-iteration, no-tool-call turn (the
 #: number appears in no tool output of the session; the real count was 1,510). Each fires at
 #: most once per turn and only on a completion that makes no tool call.
-_LOOKUP_TOOLS = frozenset({"read_file", "list_dir", "glob", "grep", "use_skill"})
+_LOOKUP_TOOLS = frozenset(
+    {"Read", "LS", "Glob", "Grep", "Skill", "read_file", "list_dir", "glob", "grep", "use_skill"}
+)
+_SKILL_TOOLS = frozenset({"Skill", "use_skill"})
+#: The wake-up tool under both spellings (ADR-0190). Re-arming the net is not work on a
+#: skill's instructions (ADR-0196) — a resurrected loop is told to do it FIRST.
+_WAKEUP_TOOLS = frozenset({"ScheduleWakeup", "schedule_wakeup"})
+#: Tools whose result is the harness's own delivery or acknowledgement -- a skill's body, its
+#: "[already loaded]" pointer, a wake-up's "armed" line. Identical by construction, so the stuck
+#: ladder's repeated-outcome signal never counts them (ADR-0038, amended 2026-09-18). The plan
+#: tools are NOT here: their result echoes what the model sent, and the same plan sent again
+#: and again is the churn that signal exists to catch.
+_UNOBSERVING_TOOLS = _SKILL_TOOLS | _WAKEUP_TOOLS
+_READ_TOOLS = frozenset({"Read", "read_file"})
+_WRITE_TOOLS = frozenset({"Write", "write_file"})
+_EDIT_TOOLS = frozenset({"Edit", "edit_file"})
 _IDENTITY_CLAIM_RE = re.compile(
     r"(?<![\w/.-])((?:[\w.-]*[-_.][\w.-]*)|(?:[\w./-]*/[\w./-]*))"
     r"\s+(?:is|was|isn['’]t|is\s+not|was\s+not)\s+(?:actually\s+|just\s+|only\s+)?(?:a|an)\s+"
@@ -1234,6 +1363,89 @@ def _composed_skill_body(text: str) -> str:
     return "" if body.startswith("<command-body ") else body
 
 
+#: A turn-end hook's continuation that names the skill the loop must re-enter with, in
+#: any spelling (ADR-0187, ADR-0190): ``Skill('aspirations') with args='loop'`` /
+#: ``Skill(worker-loop)`` / ``Skill(skill='aspirations', args='loop')``, and the pre-0190
+#: ``use_skill(name='aspirations', args='loop')``. The name may be bare or quoted; the args
+#: ride ``with args=`` or the keyword.
+_SKILL_REENTRY_RE = re.compile(
+    r"\b(?:Skill|use_skill)\(\s*(?:(?:name|skill)\s*=\s*)?['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)['\"]?"
+    r"\s*(?:,\s*args\s*=\s*['\"](?P<kw>[^'\"]*)['\"])?\s*\)"
+    r"(?:\s+with\s+args\s*=\s*['\"](?P<with>[^'\"]*)['\"])?"
+)
+#: A mention right after one of these is a skill the hook says NOT to run ("ended without a
+#: Skill(aspirations) re-entry", "NOT Skill('aspirations'), which is the reducer-only …").
+_SKILL_REENTRY_NEGATED_RE = re.compile(
+    r"(?:\bnot|\bnever|\bno|\bwithout|instead\s+of)\s+(?:an?\s+)?$", re.IGNORECASE
+)
+
+#: How many turn-end vetoes that NAME a skill re-entry the loop honours in a row while the
+#: model runs no skill at all, before the next such veto ends the turn as ``veto_stall``
+#: (ADR-0187). Three: one delivery is the fix for a model that could not map the tool name,
+#: a second covers a body that landed mid-thought, a third is the spiral — measured
+#: 2026-09-17 (serene, gemini-3.5-flash): productivity-check → ``echo`` → "Verdict: …" →
+#: BLOCK → the same, for hours, with the hook naming ``Skill('aspirations')`` every time.
+#: Vetoes whose reason names no skill are not counted and never trip it: a generic Stop
+#: hook keeps Claude Code's unbounded contract.
+_VETO_STALL_THRESHOLD = 3
+
+
+def skill_reentry_in(reason: str) -> tuple[str, str] | None:
+    """The ``(skill, args)`` a turn-end hook's continuation asks the loop to re-enter with, or
+    ``None`` when it names no skill (ADR-0187).
+
+    Among the mentions that are not negated, the first that carries arguments wins, else the
+    first: a Mind's reducer reason reads "ended without a Skill(aspirations) re-entry …
+    Your FIRST action MUST be: Skill('aspirations') with args='loop'" and its worker reason
+    "MUST be: Skill('worker-loop') — NOT Skill('aspirations')"; both resolve to the skill
+    the hook means. Pure text; never raises.
+    """
+    first: tuple[str, str] | None = None
+    for match in _SKILL_REENTRY_RE.finditer(reason):
+        lead = reason[max(0, match.start() - 16) : match.start()]
+        if _SKILL_REENTRY_NEGATED_RE.search(lead):
+            continue
+        args = (match.group("with") or match.group("kw") or "").strip()
+        if args:
+            return match.group("name"), args
+        if first is None:
+            first = (match.group("name"), "")
+    return first
+
+
+_COMMAND_MESSAGE_RE = re.compile(r"\A<command-message>(?P<message>[^\n]*)</command-message>")
+
+#: What the harness says at the head of a skill a turn-end hook asked for (ADR-0196), ahead
+#: of the hook's own words. Those words were written for a harness that delivers nothing
+#: until the model calls the skill tool ("Your FIRST action MUST be: Skill('aspirations')
+#: … Do NOT run Bash commands first") — and here the harness has just made that call.
+#: Relayed bare, a literal model obeys them: measured 2026-09-18 (gpt-5.6-luna, served
+#: loop), it called the skill tool, was told the body was already loaded, summarised and
+#: ended — four vetoes in a row, twice, each ending in a ten-minute rest. The wake-up
+#: door's note says "carry out these instructions" and the same model ran the skill's
+#: entry steps in order, so this note says what that one says.
+_VETO_SKILL_NOTE = (
+    "a turn-end hook refused the stop and asked for this skill. The harness has made that "
+    "skill call for you: the instructions below are its result. Carry them out now, from "
+    "their first step. Do not call the skill tool for it again and do not stop to "
+    "summarize. The hook's words: {reason}"
+)
+
+
+def harness_skill_turn_text(turn_text: str, note: str) -> str:
+    """``turn_text`` (a composed ``/<skill>`` turn) with ``note`` folded into its
+    ``<command-message>`` line — one line, ``[harness]``-tagged (ADR-0021 provenance), so the
+    frame stays FIRST for every reader keyed on it (:func:`_composed_skill_name`, the
+    transcript, the elision at turn end) while the hook's own words still reach the model.
+    Text that is not a composed turn, or an empty note, comes back unchanged."""
+    flat = " ".join(note.split())
+    match = _COMMAND_MESSAGE_RE.match(turn_text)
+    if match is None or not flat:
+        return turn_text
+    message = f"{match.group('message')} — [harness] {flat}"
+    return f"<command-message>{message}</command-message>{turn_text[match.end() :]}"
+
+
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
 #: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
 #: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
@@ -1248,6 +1460,19 @@ _TEXT_ONLY_STALL = 2
 #: evidence gates stand down and the answer stands (degraded, traced); a tool batch resets
 #: the count, so a model that does real work between completions keeps every gate.
 _MAX_GATE_CASCADE = 2
+
+
+def _last_trace_turn(trace_dir: Path, prefix: str) -> int:
+    """The highest ``N`` among ``<prefix><N>.jsonl`` in ``trace_dir``; 0 when there is none.
+    ``prefix`` is matched as text, never as a pattern — a sub-agent's label is part of it."""
+    last = 0
+    for entry in trace_dir.iterdir():
+        name = entry.name
+        if name.startswith(prefix) and name.endswith(".jsonl"):
+            number = name[len(prefix) : -len(".jsonl")]
+            if number.isdigit():
+                last = max(last, int(number))
+    return last
 
 
 def _provider_label(provider: object) -> str:
@@ -1574,15 +1799,48 @@ _DEGRADED_STOP_REASONS = {
     "verification_failed",
     "provider_error",
     "skill_too_large",
+    "veto_stall",
 }
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
-#: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` / ``provider_error``
-#: are hard bounds (iteration / spend / infrastructure — a hook must not override them),
-#: ``recipe_stalled`` is the recipe gate's own bounded give-up (re-entering would stall the
-#: same way again), and ``degenerated`` is the same shape — re-prompting a model that has
-#: twice collapsed into repetition produces more of the same (ADR-0018).
-_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up"})
+#: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` are hard bounds
+#: (iteration / spend — a hook must not override them), ``recipe_stalled`` is the recipe
+#: gate's own bounded give-up (re-entering would stall the same way again), and
+#: ``degenerated`` is the same shape — re-prompting a model that has twice collapsed into
+#: repetition produces more of the same (ADR-0018).
+#:
+#: ``provider_error`` was in that list until ADR-0181, as "infrastructure — a hard bound".
+#: It is not one: a provider failure is a fact about the MOMENT, and the framework whose
+#: Stop hook keeps a perpetual loop alive is exactly the party that should decide whether
+#: a turn the provider failed goes on. Measured 2026-09-17 on a served Mind: one 400 on the
+#: fifth iteration of a plan with seven steps open ended the turn, the Mind's stop hook —
+#: whose whole job is to re-enter — was never consulted, and the loop sat at its prompt
+#: until a human typed "continue". The veto is BOUNDED and PACED, unlike the others (see
+#: :data:`_MAX_PROVIDER_ERROR_VETOES`), because the retry it licenses is against a
+#: provider that just failed.
+_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up", "provider_error"})
+
+#: How many CONSECUTIVE provider-error turn ends a TURN_END hook may veto before the next
+#: one ends the turn for real (ADR-0181). Consecutive: any completed model call resets the
+#: count, so a loop that limps through an outage keeps its full allowance for the next one.
+#: The re-entry is paced by :func:`_provider_error_veto_delay` — 15 s doubling to a 300 s
+#: ceiling, ~13 minutes across the six — because each cycle re-issues a call the provider
+#: just refused; an error the in-turn retry already spent its 15-minute rate-limit horizon
+#: on (a 429 storm, a 5xx run) waits that horizon again inside every cycle, so six cycles
+#: outlast an outage of well over an hour, while an INSTANT refusal (a dead key, a request
+#: the server will never take) is given up on in a quarter of an hour instead of forever.
+#: Past the cap the turn ends ``provider_error`` exactly as before, hooks unconsulted.
+_MAX_PROVIDER_ERROR_VETOES = 6
+_PROVIDER_ERROR_VETO_BASE_DELAY = 15.0
+_PROVIDER_ERROR_VETO_MAX_DELAY = 300.0
+
+
+def _provider_error_veto_delay(veto: int) -> float:
+    """Seconds to wait before the ``veto``-th (1-based) hook-vetoed provider-error re-entry."""
+    return min(
+        _PROVIDER_ERROR_VETO_BASE_DELAY * 2 ** max(0, veto - 1), _PROVIDER_ERROR_VETO_MAX_DELAY
+    )
+
 
 #: Tool calls that may share a batch with a ``use_skill`` call without the batch ceasing to
 #: be a skill boundary for a build restart (ADR-0101). Plan bookkeeping mutates only the
@@ -1770,7 +2028,7 @@ class AgentLoop:
         turn_end_veto_reset: Callable[[], None] | None = None,
         consume_say_inbox: bool = False,
         consume_observation_inbox: bool = False,
-        compose_skill: Callable[[str, str], Any] | None = None,
+        compose_skill: Callable[..., Any] | None = None,
     ) -> None:
         self.provider = provider
         # A loop cannot run on a model whose window nobody knows (ADR-0066): every
@@ -1788,6 +2046,9 @@ class AgentLoop:
         # skill registry and fires ON_SKILL_SELECTED (source="tool") on each load.
         self._skill_resolver = skill_resolver
         self._trace_label = trace_label
+        #: The highest turn number this session's trace directory already held for this
+        #: loop's file stem when the loop first dumped (``None`` until then).
+        self._trace_turn_base: int | None = None
         # The session whose trace directory this loop writes into: its own, or — for a child
         # loop — the parent's, so a delegation tree's traces sit together.
         self._trace_session = trace_session
@@ -1948,7 +2209,22 @@ class AgentLoop:
         # Skill paging (ADR-0067): a sectioned skill's pages by lower-cased name, the highest
         # page delivered so far (session-lifetime — a page belongs to the plan, not the turn),
         # and this turn's delivery record for the summary note.
-        self._skill_pages: dict[str, SkillPages] = {}
+        self._skill_pages: dict[str, SkillPages | None] = {}
+        # Whether a skill's whole body fits this model's window beside the system prompt
+        # (ADR-0192), by lower-cased name: a body that fits is delivered whole and seeds no
+        # plan; only one that cannot is paged. Decided once per skill per loop, so the
+        # use_skill door, the typed door and the page-turning never disagree.
+        self._skill_whole: dict[str, bool] = {}
+        #: ADR-0193: whether the call being assembled / the last completed main call carried
+        #: an ephemeral tail; the current run of tailed calls whose cache read did not grow —
+        #: ``(model, calls, first_prompt_tokens, last_prompt_tokens, cache_read_tokens)``; and
+        #: the probe that run buys: the next call rests its tail, then
+        #: ``(model, rested_prompt_tokens, flat_cache_read_tokens)`` waits for the call after.
+        self._call_has_tail = False
+        self._prev_call_had_tail = False
+        self._cache_flat_run: tuple[str, int, int, int, int] | None = None
+        self._cache_probe_rests_next = False
+        self._cache_probe_rested: tuple[str, int, int] | None = None
         self._skill_pages_delivered: dict[str, set[int]] = {
             key: set(pages) for key, pages in session.skill_pages_delivered.items()
         }
@@ -1961,6 +2237,27 @@ class AgentLoop:
         # through the tool context; the REPL's idle wait takes it once due. Persisted on
         # every change so the held wake-up outlives the turn — and the process.
         self.wakeup_slot = WakeupSlot(session, on_change=self._persist)
+        # The session's background commands (ADR-0191): Bash(run_in_background=true) starts
+        # one through the tool context; the idle doors report the ones that exited. Output
+        # lives beside the session store; the table is persisted on every change.
+        self.background_tasks = BackgroundTasks(
+            session,
+            on_change=self._persist,
+            tasks_dir=tasks_dir_for(
+                getattr(self.store, "base_dir", None) if self.store is not None else None,
+                session.id,
+            ),
+        )
+        # Turn-end re-entry state (ADR-0187): vetoes that named a skill, honoured in a row
+        # with no skill call between them (the fence's count); whether the fence tripped;
+        # and the skill the last veto delivered (the streaming status line). Per turn.
+        self._vetoes_without_skill = 0
+        self._veto_stall = False
+        self._veto_delivered: str | None = None
+        # Work calls this loop has run (ADR-0196): successful calls to anything but the
+        # plan, the skill tool and the wake-up. Never reset — the skill door compares two
+        # readings of it, and only ever within one skill turn.
+        self._work_calls = 0
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -2087,7 +2384,8 @@ class AgentLoop:
         ``turn_<n>.jsonl`` was overwritten by the next session's turn ``n`` — every coach
         restart erased the previous session's turn 1, the very turn a boot's paging and
         silence telemetry lands in (measured 2026-08-28). A child loop writes under its
-        PARENT's session (``trace_session``), beside the turns that spawned it.
+        PARENT's session (``trace_session``), beside the turns that spawned it. ``<n>``
+        runs on across every loop the session has had, not from 1 in each.
 
         Best-effort observability: a missing directory is created, and any filesystem error is
         swallowed so tracing can never raise into (or abort) the turn it is recording.
@@ -2101,9 +2399,15 @@ class AgentLoop:
             # so unlabeled children would silently OVERWRITE the parent's turn_N.jsonl
             # (measured 2026-08-22: a 4-child fan-out clobbered the session's turn_1). The
             # spawner labels each child; the root loop keeps the bare turn_N name.
-            stem = f"turn_{self._turn_count}"
-            if self._trace_label:
-                stem = f"{self._trace_label}_{stem}"
+            prefix = f"{self._trace_label}_turn_" if self._trace_label else "turn_"
+            # Turn numbers also restart with every LOOP, and a session outlives its loops:
+            # `zakcode serve` builds a fresh Agent for every served turn and a `--resume`
+            # is a new process, so each of those wrote turn_1 over the last one — measured
+            # 2026-09-18, a five-turn served run left one trace file. This loop numbers on
+            # from what the session already has on disk, read once, at its first dump.
+            if self._trace_turn_base is None:
+                self._trace_turn_base = _last_trace_turn(trace_dir, prefix)
+            stem = f"{prefix}{self._trace_turn_base + self._turn_count}"
             (trace_dir / f"{stem}.jsonl").write_text(self._trace.to_jsonl(), encoding="utf-8")
         except OSError:
             pass
@@ -2230,7 +2534,10 @@ class AgentLoop:
         what let the recovery's own summarize call overflow the window it was summarizing
         FOR (coach, 2026-08-29, twice: "request (131297 tokens) exceeds 131072", no
         compaction line, "stopping: provider error"). Under one slice budget it goes in
-        one call; above it, in bounded slices whose part-summaries are folded.
+        one call; above it, in at most :data:`_MAX_SUMMARY_SLICES` slices (the transcript's
+        middle elided past the cap, with a note) whose part-summaries are folded under the same
+        budget — packed groups, at most :data:`_MAX_FOLD_PASSES` passes, then a clamp — so
+        every call fits one slice and the call count is bounded (ADR-0183).
         """
         instruction = (
             "You are compacting a long conversation to fit a context window. Summarize "
@@ -2263,17 +2570,42 @@ class AgentLoop:
 
         if len(rendered) <= chunk_chars:
             return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered))
-        slices = [rendered[i : i + chunk_chars] for i in range(0, len(rendered), chunk_chars)]
+        # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
+        # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
+        # which every fold call fits one slice, then one clamped fold if the join is still over.
+        capped = _clamp_middle(rendered, _MAX_SUMMARY_SLICES * chunk_chars, "transcript")
+        if len(capped) < len(rendered):
+            logger.info(
+                "compaction summarize: %d chars of transcript held to %d slices of %d "
+                "(%d chars of the middle elided)",
+                len(rendered),
+                _MAX_SUMMARY_SLICES,
+                chunk_chars,
+                len(rendered) - len(capped),
+            )
+        slices = [capped[i : i + chunk_chars] for i in range(0, len(capped), chunk_chars)]
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}")
             parts.append(text.strip())
+        for _ in range(_MAX_FOLD_PASSES):
+            if len(parts) == 1 or len("\n\n".join(parts)) <= chunk_chars:
+                break
+            folded: list[str] = []
+            for group in _pack_parts(parts, chunk_chars):
+                text = await ask(_FOLD_PROMPT + "\n\n".join(group))
+                folded.append(text.strip())
+            parts = folded
         combined = "\n\n".join(parts)
         if len(parts) > 1 and len(combined) > chunk_chars:
-            text = await ask(
-                "Fold these part-summaries of one conversation into a single coherent "
-                "summary:\n\n" + combined
+            logger.info(
+                "compaction summarize: part-summaries still %d chars after %d fold passes; "
+                "clamped to %d for a last fold",
+                len(combined),
+                _MAX_FOLD_PASSES,
+                chunk_chars,
             )
+            text = await ask(_FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"))
             combined = text.strip()
         return self._finish_summary(combined)
 
@@ -2666,6 +2998,12 @@ class AgentLoop:
         (prompt-cache safe) and the conversation on disk stays clean. With no
         context hooks this is exactly ``self.session.messages``.
         """
+        self._call_has_tail = False
+        if self._tail_rests_this_call():
+            # ADR-0193: this call goes out as the persisted history alone, so the provider
+            # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
+            # is not sent.
+            return self.session.messages
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
             texts = await self.hook_manager.gather_context(
@@ -2693,7 +3031,111 @@ class AgentLoop:
             tail.append(plan_msg)
         if not tail:
             return self.session.messages
+        self._call_has_tail = True
         return [*self.session.messages, *tail]
+
+    def _tail_rests_this_call(self) -> bool:
+        """Whether this call goes out WITHOUT its ephemeral tail (ADR-0193).
+
+        On a model this session measured (``tail_sparse_models``): whenever the previous main
+        call carried a tail — never two tail-less calls in a row, so the reminder still rides
+        every other call, and a turn's first call always carries it. Otherwise only for the
+        single probe call a flat cache read has bought. The finished plan's "answer now" line
+        (ADR-0108) always rides: it is one line, it is what makes the closing call produce
+        the answer, and a turn that is ending has no later call to save. A pure read of
+        state — a retried call decides the same way; :meth:`_observe_prompt_cache` moves it.
+        """
+        network = self.session.task_network
+        if network.tasks and network.is_complete():
+            return False
+        if self.provider.model_id() in self.session.tail_sparse_models:
+            return self._prev_call_had_tail
+        return self._cache_probe_rests_next
+
+    def _observe_prompt_cache(self, usage: Usage) -> None:
+        """Read one main-conversation call's cache usage (ADR-0193); called beside
+        :meth:`_anchor_prompt`, the one point both twins pass and no side call reaches.
+
+        Three steps, each driven by what the provider reported (:data:`_CACHE_FLAT_MIN_GROWTH`
+        carries the reasoning): a run of tailed calls whose cache read held still while the
+        prompt grew makes the next call the probe; the probe's prompt size is held; the call
+        after it either read that whole prompt back from the cache — the model joins the
+        session's ``tail_sparse_models`` — or did not, which is a miss counted on the session.
+        """
+        had_tail = self._call_has_tail
+        self._prev_call_had_tail = had_tail
+        model = self.provider.model_id()
+        session = self.session
+        if (
+            not model
+            or model in session.tail_sparse_models
+            or session.tail_probe_misses.get(model, 0) >= _CACHE_PROBE_LIMIT
+        ):
+            return
+        prompt, read = int(usage.prompt_tokens), int(usage.cache_read_tokens)
+        run = self._cache_flat_run
+        if self._cache_probe_rests_next:
+            # This was the probe — unless the "answer now" line rode it, or another model
+            # answered (a route change lands after the messages are assembled).
+            self._cache_probe_rests_next = False
+            self._cache_flat_run = None
+            if not had_tail and run is not None and run[0] == model and prompt > 0:
+                self._cache_probe_rested = (model, prompt, run[4])
+            return
+        rested, self._cache_probe_rested = self._cache_probe_rested, None
+        if rested is not None:
+            self._cache_flat_run = None
+            rested_model, rested_prompt, flat_read = rested
+            if rested_model != model or prompt < rested_prompt:
+                return  # another model, or a compaction rewrote the history: says nothing
+            if read >= rested_prompt - _CACHE_PROBE_SLACK:
+                session.tail_sparse_models.append(model)
+                self._note(
+                    "intervention",
+                    f"prompt cache: {model} read a flat {flat_read:,} cached tokens while the "
+                    f"prompt grew, then {read:,} right after the one call sent without the plan "
+                    f"reminder ({rested_prompt:,} tokens) — it reuses only a whole earlier "
+                    "prompt, so the reminder now rides every other call",
+                    kind="cache_friendly_tail",
+                    model=model,
+                    flat_cache_read_tokens=flat_read,
+                    probe_prompt_tokens=rested_prompt,
+                    cache_read_tokens=read,
+                )
+                logger.info(
+                    "prompt cache defeated by the per-call tail on %s (flat at %d, then %d after "
+                    "a %d-token tail-less call); the tail now rests every other call (ADR-0193)",
+                    model,
+                    flat_read,
+                    read,
+                    rested_prompt,
+                )
+                return
+            misses = session.tail_probe_misses.get(model, 0) + 1
+            session.tail_probe_misses[model] = misses
+            logger.info(
+                "prompt cache probe on %s: cache read %d after a %d-token tail-less call — the "
+                "tail is not what holds it at %d (miss %d of %d; ADR-0193)",
+                model,
+                read,
+                rested_prompt,
+                flat_read,
+                misses,
+                _CACHE_PROBE_LIMIT,
+            )
+            return
+        if not had_tail or read <= 0 or prompt <= 0:
+            self._cache_flat_run = None  # a tail-less call, or nothing to read
+            return
+        if run is None or run[0] != model or read > run[4] or prompt < run[3]:
+            # Another model, the cache advanced (it works), or the prompt shrank (a
+            # compaction): start over.
+            self._cache_flat_run = (model, 1, prompt, prompt, read)
+            return
+        calls, first = run[1] + 1, run[2]
+        self._cache_flat_run = (model, calls, first, prompt, read)
+        if calls >= _CACHE_FLAT_MIN_CALLS and prompt - first >= _CACHE_FLAT_MIN_GROWTH:
+            self._cache_probe_rests_next = True
 
     def _reset_stale_or_completed_plan(self) -> None:
         """Drop a finished plan (always) or an abandoned one (static for N turns) at turn start.
@@ -2759,7 +3201,7 @@ class AgentLoop:
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
         network = self.session.task_network
-        rendered = network.render()
+        rendered = network.render(elide_done=True)  # the working-memory form (ADR-0184)
         if not rendered:
             return None
         request = network.context.request
@@ -2786,6 +3228,14 @@ class AgentLoop:
         if request:
             body += f"Goal: {request}\n\n"
         body += rendered
+        if any(COLLAPSED_ROW_RE.match(line.strip()) for line in rendered.splitlines()):
+            # ADR-0184: the fold is round-trip-safe, and the model is told so — an echoed row
+            # expands back and a left-out one is restored, so it need not retype done work.
+            body += (
+                "\n\nClosed steps are folded into rows like `[x] 1–5 (5 steps done)`: send "
+                "them back as shown (or leave them out) — the harness keeps the steps they "
+                "stand for."
+            )
         memory = self._plan_memory_lines()
         if memory:
             body += "\n\n" + "\n".join(memory)
@@ -2982,11 +3432,17 @@ class AgentLoop:
         a discovered skill — a request the model made of itself, not an answer — else
         ``None``. Strict on purpose: one line, nothing but the invocation (a trailing period
         or wrapping backticks tolerated); prose that mentions a skill is not an invocation.
+
+        A backtick left INSIDE the line after the wrapping ones are gone closes a code span
+        mid-sentence, so what follows it is prose about the command (ADR-0198). Measured
+        2026-09-18 (gpt-5.6-luna, served): a one-line refusal that opened with the command in
+        backticks and went on to say why it would not be run was routed as that command, with
+        the rest of the sentence as its arguments — fourteen times in one turn.
         """
         if self._skill_resolver is None:
             return None
         line = re.sub(r"^[\s`]+|[\s`.]+$", "", text)
-        if not line or "\n" in line:
+        if not line or "\n" in line or "`" in line:
             return None
         match = re.match(r"^/([a-z0-9][a-z0-9_-]*)(?:\s+(.*))?$", line, re.I)
         if match is None:
@@ -3009,19 +3465,17 @@ class AgentLoop:
         if routed is None:
             return None
         name, args = routed
-        arguments: dict[str, Any] = {"name": name}
+        arguments: dict[str, Any] = {"skill": name}
         if args:
             arguments["args"] = args
         self._note(
             "intervention",
-            f"'/{name}' typed as text — routed to use_skill",
+            f"'/{name}' typed as text — routed to Skill",
             kind="slash_text_routed",
             skill=name,
             args=args,
         )
-        return ToolCall(
-            id=f"slash-{len(self.session.messages)}", name="use_skill", arguments=arguments
-        )
+        return ToolCall(id=f"slash-{len(self.session.messages)}", name="Skill", arguments=arguments)
 
     def _plan_mentions_skill(self, name: str) -> bool:
         """True when any plan step's title or note names ``/<skill>`` (any status).
@@ -3103,6 +3557,10 @@ class AgentLoop:
         # delivered text is right for an unpaged load; for a paged one it is a defect that
         # would otherwise hide (a one-step plan, no page ever turned) — so it is named.
         whole = self._skill_body(skill)
+        if whole is not None and self._ensure_skill_pages(skill) is None:
+            # ADR-0192: a body that fits the window arrived whole and seeds nothing — its
+            # steps are the model's to plan, as for any long request.
+            return []
         if whole is None and PAGE_HEADER_RE.search(body):
             self._note(
                 "intervention",
@@ -3150,15 +3608,34 @@ class AgentLoop:
         by_id = {r.tool_use_id: r for r in results}
         out: list[tuple[str, list[Task]]] = []
         for call in calls:
-            if call.name != "use_skill":
+            if call.name not in _SKILL_TOOLS:
                 continue
             block = by_id.get(call.id)
-            if block is None or block.is_error or "[already loaded]" in block.output[:300]:
+            if block is None or block.is_error:
                 continue
-            name = str((block.data or {}).get("skill") or call.arguments.get("name", "")).strip()
+            data = block.data or {}
+            name = str(data.get("skill") or call.arguments.get("name", "")).strip()
+            if "[already loaded]" in block.output[:300]:
+                # Which door answered is the first thing a stalled loop's trace is asked
+                # (ADR-0196): the pointer is not a load, and the fence keeps counting.
+                self._note(
+                    "intervention",
+                    f"/{name} asked for again — already loaded, answered with the pointer",
+                    kind="skill_pointer",
+                    skill=name,
+                )
+                continue
             if not name:
                 continue
+            if data.get("reentry"):
+                self._note(
+                    "intervention",
+                    f"/{name} asked for again after work — a re-entry, the body delivered",
+                    kind="skill_reentry",
+                    skill=name,
+                )
             self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
+            self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
             steps = self._seed_skill_skeleton(name, block.output, seeded)
             if steps:
                 out.append((name, steps))
@@ -3178,18 +3655,43 @@ class AgentLoop:
             return None
         return body if isinstance(body, str) and body.strip() else None
 
+    def _skill_fits_whole(self, name: str, body: str) -> bool:
+        """Whether ``/<name>``'s whole body sits in this model's window beside the system
+        prompt with room to answer (ADR-0192) — the ADR-0066 arithmetic, decided once per
+        skill per loop. A body that cannot be counted is taken to fit (never paged on a
+        guess, the same fail-open the fit check itself has)."""
+        key = name.lower()
+        verdict = self._skill_whole.get(key)
+        if verdict is None:
+            verdict = self._verbatim_overflow(body, what=f"skill {name!r}") is None
+            self._skill_whole[key] = verdict
+        return verdict
+
+    def _skill_pages_for_delivery(self, name: str, body: str) -> SkillPages | None:
+        """How ``/<name>`` is delivered (ADR-0192): its pages when the body cannot sit in
+        this model's window whole, else ``None`` — the whole body, as Claude Code's Skill
+        tool hands it over. Every door (``use_skill``, a typed ``/<name>``, the loop's own
+        re-entry) asks here, so a skill is never paged at one door and whole at another."""
+        pages = skill_pages(body, skill=name)
+        if pages is None or self._skill_fits_whole(name, body):
+            return None
+        return pages
+
     def _ensure_skill_pages(self, name: str) -> SkillPages | None:
-        """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill.
+        """The pages of ``/<name>`` (cached), or ``None`` when it is not a sectioned skill —
+        or its body fits the window and is delivered whole (ADR-0192).
         How far it was paged comes with the session (ADR-0086); a document saved before the
         session carried that record is read from the transcript and the plan, once."""
         key = name.lower()
         if key in self._skill_pages:
             return self._skill_pages[key]
         body = self._skill_body(name)
-        pages = skill_pages(body, skill=name) if body else None
+        if not body:
+            return None
+        pages = self._skill_pages_for_delivery(name, body)
+        self._skill_pages[key] = pages
         if pages is None:
             return None
-        self._skill_pages[key] = pages
         if key not in self._skill_pages_delivered:
             # The page headers still in the transcript, plus the sections the plan has taken
             # up — closed under the old contract, so never reopened after the fact.
@@ -3544,14 +4046,22 @@ class AgentLoop:
 
         return walk(self.session.task_network.tasks)
 
+    def work_calls(self) -> int:
+        """How many work calls this loop has run (ADR-0196): successful calls to any tool
+        but the plan's, the skill tool and the wake-up. The skill door reads it when a skill
+        is delivered and again when the same skill is asked for: a difference means the
+        model acted on the instructions in between, so the second call is a re-entry and
+        gets the body, not the pointer."""
+        return self._work_calls
+
     def current_skill_page(self, name: str) -> str | None:
         """The rendered page ``/<name>`` is on, for a mid-skill re-load (the ADR-0063 pointer
         hands a paged skill its current section again instead of pointing at lost text)."""
         index = self._current_page(name)
         if index is None:
             return None
-        pages = self._skill_pages[name.lower()]
-        return pages.render(index)
+        pages = self._skill_pages.get(name.lower())
+        return pages.render(index) if pages is not None else None
 
     def _paged_skills_in_plan(self) -> list[str]:
         """Every skill whose sections may be in the plan: those seeded (the ``from /<skill>``
@@ -3836,7 +4346,7 @@ class AgentLoop:
         """
         by_id = {r.tool_use_id: r for r in results}
         for call in calls:
-            if call.name != "use_skill":
+            if call.name not in _SKILL_TOOLS:
                 continue
             result = by_id.get(call.id)
             if result is not None and not result.is_error:
@@ -3985,7 +4495,8 @@ class AgentLoop:
         (auth, context window, generic) propagates immediately; the caller ends the
         TURN gracefully (``stop_reason="provider_error"``) instead of letting the
         exception unwind an unattended session — with the session persisted at a
-        message boundary, so the run is RESUMABLE, never lost.
+        message boundary, so the run is RESUMABLE, never lost — unless a TURN_END hook
+        vetoes that end, which it may a bounded, paced number of times (ADR-0181).
         """
 
         async def complete(call_kw: dict[str, Any]) -> LLMResult:
@@ -4018,9 +4529,31 @@ class AgentLoop:
             # The measured size of what was just sent floors the next pre-call
             # compaction check (ADR-0077).
             self._anchor_prompt(result.usage.prompt_tokens)
+            self._observe_prompt_cache(result.usage)  # ADR-0193
+            self._canonicalize_calls(result.tool_calls)
             return result
 
         return await self._complete_with_retry(complete)
+
+    def _canonicalize_calls(self, calls: list[ToolCall]) -> None:
+        """Rewrite each call's tool name — and Claude Code's argument spellings — to the
+        registry's canonical form IN PLACE, so everything downstream (the loop's own rails,
+        hooks, the permission policy, the transcript) sees ONE name whichever alias the model
+        used. Aliases route silently (ADR-0190); nothing after this point matches an alias.
+        An unknown name is left as it is, so it stays visibly unknown."""
+        for call in calls:
+            canonical = self.registry.canonical(call.name)
+            if canonical == call.name and self.registry.get(canonical) is None:
+                # Not an alias this registry knows: a registry built by hand without the
+                # aliases (a host's, a test's) still resolves the pre-0190 spelling.
+                canonical = canonical_tool_name(call.name)
+            if canonical != call.name:
+                call.name = canonical
+            renames = CLAUDE_CODE_ARG_KEYS.get(canonical)
+            if renames and isinstance(call.arguments, dict):
+                for cc_key, key in renames.items():
+                    if cc_key in call.arguments and key not in call.arguments:
+                        call.arguments[key] = call.arguments.pop(cc_key)
 
     async def _complete_with_retry(
         self, complete: Callable[[dict[str, Any]], Awaitable[LLMResult]]
@@ -4190,12 +4723,21 @@ class AgentLoop:
                 )
             else:
                 self._turn_awaiting = question or "the model is waiting for your answer"
-        if call.name == "read_file" and not block.is_error:
+        if (
+            not block.is_error
+            and call.name not in _PLAN_TOOLS
+            and call.name not in _SKILL_TOOLS
+            and call.name not in _WAKEUP_TOOLS
+        ):
+            # The model ACTED (ADR-0196). Keeping the plan, loading a skill and re-arming the
+            # wake-up are not acts on a skill's instructions; anything else that ran is.
+            self._work_calls += 1
+        if call.name in _READ_TOOLS and not block.is_error:
             raw_path = call.arguments.get("path") or call.arguments.get("file_path") or ""
             if isinstance(raw_path, str) and raw_path:
                 # ADR-0144: the instrument was opened, so a claim drawn from it is informed.
                 self._turn_files_read.add(os.path.basename(raw_path.replace("\\", "/")).lower())
-        if call.name in _SEARCH_TOOLS or (call.name == "read_file" and not block.is_error):
+        if call.name in _SEARCH_TOOLS or (call.name in _READ_TOOLS and not block.is_error):
             # A search ran (ADR-0040), whatever it found — or a file was actually read
             # (ADR-0058); a failed read stays the one-path-tried miss the gate is for.
             self._turn_search_calls += 1
@@ -4249,6 +4791,12 @@ class AgentLoop:
             critique = await self._judged_plan_critique()
             if critique:
                 block.output = f"{block.output}\n\n{critique}"
+        # One compact note per call (name + ok), HERE, so every path that runs a tool — a buffered
+        # batch, the streamed path, a harness-made call — leaves the same tool sequence on the
+        # decision trace, interleaved with the routing and gate events; the full args and output
+        # live in the session transcript. It used to be written by the buffered batch alone, so a
+        # served (streamed) run's trace carried no tool ledger at all.
+        self._note("tool", call.name, ok=not block.is_error)
         return block
 
     async def _execute_tool_call_gated(
@@ -4324,9 +4872,9 @@ class AgentLoop:
                 if cut_off
                 else "a quote, backslash or newline inside a string value is not escaped"
             )
-            if call.name in ("write_file", "edit_file"):
+            if call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS:
                 remedy = (
-                    "Write the file in pieces: write_file the first part (keep each call "
+                    "Write the file in pieces: call Write with the first part (keep each call "
                     "well under the output limit), then edit_file to append the rest."
                 )
             else:
@@ -4354,11 +4902,18 @@ class AgentLoop:
             self._turn_struggle = True
             return ToolResultBlock(
                 tool_use_id=call.id,
+                # The veto is tuned for degenerate blobs, but legitimate content can trip it
+                # (a fixture of identical rows, repeated list items, duplicated inserts); a
+                # model retrying the same correct call then loops to the stuck ladder. So the
+                # rail names the way out: split the write under the ceiling and append.
                 output=(
                     f"Fix: these arguments have degenerated into repetition (the fragment "
                     f"{unit!r} repeats {repeats}× in a row); the call was not executed. "
                     "Stop. State in ONE sentence what you are trying to do, then issue a "
-                    "minimal, clean call."
+                    "minimal, clean call. If the repetition is INTENDED content (a fixture "
+                    "of identical rows, repeated list items), write it in smaller parts — "
+                    f"fewer than {BURST_MIN_REPEATS} identical units per call — and append "
+                    "the rest in a further call."
                 ),
                 is_error=True,
                 data={"degenerate_arguments": True, "unit": unit, "repeats": repeats},
@@ -4385,6 +4940,7 @@ class AgentLoop:
             HookPayload(
                 event=HookEvent.PRE_TOOL_USE,
                 tool_name=call.name,
+                tool_aliases=self.registry.aliases_of(call.name),
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it (agent/env injection)
@@ -4484,6 +5040,7 @@ class AgentLoop:
             HookPayload(
                 event=HookEvent.POST_TOOL_USE,
                 tool_name=call.name,
+                tool_aliases=self.registry.aliases_of(call.name),
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it
@@ -4534,10 +5091,10 @@ class AgentLoop:
         # See _WRITE_AFTER_FAILED_READ_NOTE for why this is a note on success, not a veto.
         if spec is not None and isinstance(arguments.get("path"), str):
             key = self._anomaly_path_key(arguments["path"])
-            if spec.name == "read_file" and tool_res.is_error:
+            if spec.name in _READ_TOOLS and tool_res.is_error:
                 self._turn_read_failed.add(key)
             elif (
-                spec.name == "write_file"
+                spec.name in _WRITE_TOOLS
                 and not tool_res.is_error
                 and key in self._turn_read_failed
             ):
@@ -4584,11 +5141,11 @@ class AgentLoop:
     @staticmethod
     def _verbatim_label(spec: ToolSpec | None, arguments: dict[str, Any]) -> str:
         """What a verbatim body IS, for the skill-fit message: ``skill 'x'`` / ``rule 'y'``."""
-        name = arguments.get("name")
+        name = arguments.get("skill") or arguments.get("name")
         if spec is not None and isinstance(name, str) and name.strip():
             kind = (
                 "skill"
-                if spec.name == "use_skill"
+                if spec.name in _SKILL_TOOLS
                 else "rule"
                 if spec.name == "read_rule"
                 else spec.name
@@ -4615,7 +5172,7 @@ class AgentLoop:
             raise
         except Exception:  # noqa: BLE001 — counting is best-effort; never block on a guess
             return None
-        reserve = caps.max_output or _MIN_ANSWER_ROOM
+        reserve = _answer_room(caps)
         if body + system + reserve <= window:
             return None
         return (
@@ -4683,16 +5240,18 @@ class AgentLoop:
         caller nudges the model. With no permission policy the gate is unsuppressed, so the
         first registered shell (``bash``) wins.
         """
-        for name in ("bash", "powershell"):
+        seen: set[str] = set()
+        for name in ("Bash", "bash", "powershell"):  # "bash": a registry from before ADR-0190
             tool = self.registry.get(name)
-            if tool is None:
+            if tool is None or tool.spec.name in seen:
                 continue
-            run = command if name == "bash" else f"& {command}"
+            seen.add(tool.spec.name)
+            run = command if name != "powershell" else f"& {command}"
             arguments = {"command": run}
             if self.permission_policy is None or self.permission_policy.auto_allows(
                 tool.spec, arguments
             ):
-                return ToolCall(id=call_id, name=name, arguments=arguments)
+                return ToolCall(id=call_id, name=tool.spec.name, arguments=arguments)
         return None
 
     async def _try_harness_verify(
@@ -4959,10 +5518,6 @@ class AgentLoop:
             blocks = []
             for call in calls:
                 blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
-        # Trace each call compactly (name + ok) so the decision trace shows the tool sequence
-        # interleaved with routing/gate events; the full args+output live in the session transcript.
-        for call, block in zip(calls, blocks, strict=True):
-            self._note("tool", call.name, ok=not block.is_error)
         return blocks
 
     @staticmethod
@@ -5049,19 +5604,22 @@ class AgentLoop:
         new build. Any other batch returns None and executes as usual: work in flight is
         never abandoned for a restart.
         """
-        skill_calls = [c for c in tool_calls if c.name == "use_skill"]
+        skill_calls = [c for c in tool_calls if c.name in _SKILL_TOOLS]
         if len(skill_calls) != 1 or any(
-            c.name != "use_skill" and c.name not in _SKILL_BOUNDARY_COMPANIONS for c in tool_calls
+            c.name not in _SKILL_TOOLS and c.name not in _SKILL_BOUNDARY_COMPANIONS
+            for c in tool_calls
         ):
             return None
         if install_changed() is None:
             return None
         call = skill_calls[0]
-        name = str(call.arguments.get("name") or "").strip().lstrip("/")
+        name = (
+            str(call.arguments.get("skill") or call.arguments.get("name") or "").strip().lstrip("/")
+        )
         if not name:
             return None  # an invalid call: the tool refuses it as usual
         skill_args = str(call.arguments.get("args") or "").strip()
-        shown = f'use_skill(name="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
+        shown = f'Skill(skill="{name}"' + (f', args="{skill_args}")' if skill_args else ")")
         blocks: list[ToolResultBlock] = []
         for c in tool_calls:
             if c is not call:
@@ -5347,12 +5905,19 @@ class AgentLoop:
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
-        Returns the continuation prompt when a hook vetoes the stop; ``None`` (the
-        overwhelmingly common case) lets the turn end. Vetoes are UNBOUNDED on a
-        vetoable loop — a registered Stop hook is in charge of standing down (and the
-        cost budget is the hard bound), matching Claude Code. Observe-only hooks
-        (``register_turn_end_observer``) fire on EVERY turn end, vetoable or not.
-        Fail-open: a crashing hook run never blocks the stop.
+        Returns the message it re-entered with when a hook vetoes the stop — ALREADY added to
+        the session: the ``[harness]`` rail around the hook's reason, or (ADR-0187) the
+        composed body of the skill that reason names, ``/aspirations loop`` delivered the
+        way the say inbox delivers a typed slash — and ``None`` (the overwhelmingly common
+        case) to let the turn end. Vetoes are UNBOUNDED on a vetoable loop — a registered
+        Stop hook is in charge of standing down (and the cost budget is the hard bound),
+        matching Claude Code — with two exceptions: a ``provider_error`` veto is bounded and
+        paced by its call sites (ADR-0181), since it re-issues a call against a provider
+        that just failed; and a veto that names a skill re-entry after
+        :data:`_VETO_STALL_THRESHOLD` such vetoes were honoured with no skill call between
+        them is refused, ending the turn as ``veto_stall`` with a wake-up left behind (the
+        fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
+        turn end, vetoable or not. Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
@@ -5408,6 +5973,27 @@ class AgentLoop:
             stop_reason,
             veto_count + 1,
         )
+        reason = result.continuation_prompt or "Continue."
+        reentry = skill_reentry_in(reason)
+        if reentry is not None and self._vetoes_without_skill >= _VETO_STALL_THRESHOLD:
+            # The fence (ADR-0187): the hook asks for a skill re-entry AGAIN after that many
+            # were honoured and the model ran no skill at all. Re-prompting is the spin
+            # (measured 2026-09-17: hours of it); end the turn with a NAMED reason and a net
+            # behind it, so the loop re-enters later with fresh context instead of never.
+            name, args = reentry
+            self._veto_stall = True
+            self._note(
+                "intervention",
+                f"turn-end hook vetoed {self._vetoes_without_skill} times running, asking for "
+                f"/{name} {args} each time, and no skill ran between them — ending the "
+                "turn (veto_stall) instead of re-prompting",
+                kind="veto_stall",
+                skill=name,
+                args=args,
+                vetoes=self._vetoes_without_skill,
+            )
+            self._arm_stall_net()
+            return None
         # A veto opens a NEW turn for per-turn skill state (ADR-0048): the hook that vetoed
         # is telling the model to do more work, and that work may be a skill it already
         # loaded — a perpetual-loop framework's mandated re-entry is exactly that. Reset
@@ -5415,7 +6001,111 @@ class AgentLoop:
         # an "[already loaded]" pointer (four of which killed a live loop, 2026-08-26).
         if self._turn_end_veto_reset is not None:
             self._turn_end_veto_reset()
-        return result.continuation_prompt or "Continue."
+        self._veto_delivered = None
+        if reentry is not None:
+            self._vetoes_without_skill += 1
+            delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
+            if delivered is not None:
+                return delivered
+        rail = _control_rail(reason)
+        self.session.add_message(Message.user(rail))
+        self._persist()
+        return rail
+
+    async def _deliver_veto_skill(self, name: str, args: str, reason: str) -> str | None:
+        """Compose the skill a turn-end hook's continuation names as the re-entry message
+        itself (ADR-0187) and add it to the session: the command frame with the hook's
+        reason folded in, plus page 1, then the skeleton seeded — the say inbox's delivery
+        of a typed ``/<skill>`` (ADR-0073), in that order, so the skeleton's own rail
+        follows the body it points into. Returns the message; ``None`` when it cannot be
+        composed (no composer, an unknown or refused skill, an unreadable body), and the
+        caller then sends the plain rail, as before.
+
+        A hook's "your FIRST action MUST be Skill('aspirations') with args='loop'" is the
+        framework asking for the loop skill; handing the model that instruction left the
+        re-entry to the model's ability to map another harness's tool name — measured
+        2026-09-17 (serene, gemini-3.5-flash): hours of ``echo`` + "Verdict: …" text
+        against that exact reason. Delivering the skill makes the re-entry the harness's act.
+        """
+        compose = self._compose_skill
+        if compose is None:
+            return None
+        try:
+            result = await compose(name, args, source="harness")
+        except TypeError:
+            return None  # a composer without the ``source`` seam (a stand-in): the rail
+        except Exception:  # noqa: BLE001 — a broken composer must never break the veto
+            logger.warning("turn-end skill delivery failed for /%s", name, exc_info=True)
+            return None
+        if not getattr(result, "invoked", False):
+            self._note(
+                "intervention",
+                f"turn-end hook asked for /{name}, which is not a skill here — sent its "
+                "reason as a rail",
+                kind="turn_end_skill",
+                skill=name,
+                refused=True,
+            )
+            return None
+        refused = getattr(result, "denied_reason", None) or getattr(result, "error", None)
+        turn_text = getattr(result, "turn_text", None)
+        if refused or not turn_text:
+            why = str(refused or "the skill produced no turn text")
+            self._note(
+                "intervention",
+                f"turn-end hook asked for /{name} — not delivered: {why}; sent its "
+                "reason as a rail",
+                kind="turn_end_skill",
+                skill=name,
+                refused=True,
+            )
+            logger.info("turn-end hook asked for /%s — not delivered: %s", name, why)
+            return None
+        skill = str(getattr(result, "name", name) or name)
+        text = harness_skill_turn_text(str(turn_text), _VETO_SKILL_NOTE.format(reason=reason))
+        self.session.add_message(Message.user(text))
+        self._persist()
+        # The skill's sections become plan steps (ADR-0062) and page 1 counts as delivered
+        # (ADR-0067) — exactly the turn-opening and say-inbox paths.
+        self._seed_skill_skeleton(skill, _composed_skill_body(text), set())
+        self._register_skill_load(skill)
+        self._veto_delivered = f"/{skill} {args}".strip()
+        # The sentinel wake-up resolves to this skill from now on (the REPL door, ADR-0187):
+        # the hook has said what "re-enter the loop" means here, so the harness need not
+        # ask the model to remember it.
+        self.session.loop_skill = f"{skill} {args}".strip()
+        self._note(
+            "intervention",
+            f"turn-end hook asked for {self._veto_delivered} — delivered by the harness",
+            kind="turn_end_skill",
+            skill=skill,
+            args=args,
+        )
+        logger.info("turn-end hook asked for %s — delivered", self._veto_delivered)
+        return text
+
+    def _veto_status(self) -> str:
+        """The streaming twin's status line for a honoured veto: names the skill delivered."""
+        if self._veto_delivered:
+            return f"turn_end hook vetoed stop; {self._veto_delivered} delivered"
+        return "turn_end hook vetoed stop; continuing"
+
+    def _arm_stall_net(self) -> None:
+        """Leave a wake-up behind a ``veto_stall`` when none is held (ADR-0187). The turn is
+        ending against the hook's wish, and a loop that ends at its prompt with no net is
+        the dead loop every Mind incident is about; the sentinel resolves, when it fires,
+        to the very skill the hook asked for (``Session.loop_skill``) — a deadman's switch
+        the harness arms because the model that should have did not. A held wake-up is
+        kept: the framework's own net outranks this one."""
+        if self.wakeup_slot.pending() is not None:
+            return
+        self.wakeup_slot.arm(LOOP_SENTINEL, DEFAULT_DELAY_SECONDS)
+        self._note(
+            "intervention",
+            f"no wake-up was held — armed the autonomous-loop sentinel for "
+            f"{DEFAULT_DELAY_SECONDS}s so the loop re-enters later with fresh context",
+            kind="veto_stall_net",
+        )
 
     def _apply_hook_wakeup(self, result: TurnEndResult) -> None:
         """Arm or cancel the session's wake-up on a TURN_END hook's say-so (ADR-0102).
@@ -5636,6 +6326,12 @@ class AgentLoop:
         ``gather_user_prompt_context`` isolates every hook failure.
         """
         self._turn_prompt_context = []
+        # ADR-0193: a turn's first call always carries its tail, and no measurement spans
+        # turns (both turn paths pass here).
+        self._prev_call_had_tail = False
+        self._cache_flat_run = None
+        self._cache_probe_rests_next = False
+        self._cache_probe_rested = None
         if not self.hook_manager.has_user_prompt_hooks():
             return
         self._turn_prompt_context = await self.hook_manager.gather_user_prompt_context(
@@ -5699,6 +6395,10 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._veto_stall = False
+        self._veto_delivered = None
+        provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
@@ -5719,7 +6419,7 @@ class AgentLoop:
         repeat_count = 0
         # ADR-0168 lever N: did the previous iteration's batch draw a harness plan advance? Such an
         # identical resend is deterministic PROGRESS, not a stall, so the guard below does not count
-        # it. Only ever True with the opt-in ``plan_autoadvance`` on — byte-identical by default.
+        # it. Set only by an advance that actually fired, which needs a worked-on step (ADR-0202).
         last_autoadvanced = False
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
@@ -5732,13 +6432,14 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
-            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
+            background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
@@ -5801,7 +6502,7 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker()
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
         restrict_readonly_next = False
 
         while True:
@@ -5968,7 +6669,53 @@ class AgentLoop:
                     self._refund_iteration()  # no model work happened this iteration
                     break
             if result is None:
+                if stop_reason == "provider_error":
+                    prompt = None
+                    if provider_error_vetoes < _MAX_PROVIDER_ERROR_VETOES:
+                        prompt = await self._fire_turn_end(
+                            "provider_error",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                    if prompt is not None:
+                        # A TURN_END hook re-entered a turn the provider failed (ADR-0181):
+                        # bounded by _MAX_PROVIDER_ERROR_VETOES, paced by the backoff, and
+                        # said out loud. The failed call was refunded above; the rail is the
+                        # hook's own continuation, as at every other veto site.
+                        provider_error_vetoes += 1
+                        turn_end_vetoes += 1
+                        turn_degraded = True
+                        delay = _provider_error_veto_delay(provider_error_vetoes)
+                        progress = f"{provider_error_vetoes}/{_MAX_PROVIDER_ERROR_VETOES}"
+                        self._note(
+                            "intervention",
+                            "provider error — a turn-end hook re-entered the loop; "
+                            f"retrying in {delay:.0f}s ({progress})",
+                            kind="provider_error_veto",
+                        )
+                        self._persist()
+                        sink = self._status_sink
+                        if sink is not None:
+                            sink(
+                                "provider error; the turn-end hook asked to continue — "
+                                f"retrying in {delay:.0f}s ({progress})"
+                            )
+                        await asyncio.sleep(delay)
+                        stop_reason = "max_iterations"  # the terminal is open again
+                        turn_error = ""
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    if provider_error_vetoes:
+                        turn_error = (
+                            f"{turn_error} (persisted through {provider_error_vetoes} "
+                            "hook-vetoed re-entries)"
+                        )
                 break
+            provider_error_vetoes = 0  # a completed call resets the consecutive count
 
             logger.debug(
                 "iteration %d: model returned %d tool call(s)",
@@ -6340,7 +7087,6 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -6357,11 +7103,23 @@ class AgentLoop:
                 # Broken-record guard (ADR-0026): the same completion re-sent within one
                 # turn is the parroting attractor (a veto or gate nudge re-prompts and a
                 # small model re-emits its previous message verbatim, forever). Checked
-                # FIRST so a parrot never re-buys the critic or the quality gate.
+                # FIRST so a parrot never re-buys the critic or the quality gate — and
+                # bounded per text (ADR-0194), because checked-first means nothing later
+                # can end a turn the guard keeps vetoing.
                 if result.text and len(result.text) >= _BROKEN_RECORD_MIN_CHARS:
                     record_key = " ".join(result.text.split()).lower()
                     completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
-                    if completion_counts[record_key] >= 2:
+                    repeats = completion_counts[record_key] - 1
+                    if repeats == _MAX_BROKEN_RECORD_RAILS + 1:
+                        turn_degraded = True  # ADR-0194: the rail had its say; the answer stands
+                        self._note(
+                            "intervention",
+                            f"the same completion {repeats + 1} times — "
+                            f"{_MAX_BROKEN_RECORD_RAILS} rails did not move it; the guard "
+                            "stands down and the answer stands",
+                            kind="broken_record_stand_down",
+                        )
+                    if 1 <= repeats <= _MAX_BROKEN_RECORD_RAILS:
                         self._turn_struggle = True
                         self._note(
                             "intervention",
@@ -6756,7 +7514,6 @@ class AgentLoop:
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     # Sent back to work: pre-veto repetition must not instantly re-trip
                     # the stall guards on the very next iteration.
@@ -6780,8 +7537,8 @@ class AgentLoop:
                     # The previous identical batch was answered with a harness plan advance —
                     # deterministic progress, not a stall. Reset the counter (consume the signal;
                     # the next execution re-sets it) so the frontier walk to completion is not
-                    # killed by the exact-repeat guard. (ADR-0168 lever N; inert unless the opt-in
-                    # plan_autoadvance is on, which is the only path that sets last_autoadvanced.)
+                    # killed by the exact-repeat guard. (ADR-0168 lever N; an advance is the only
+                    # path that sets last_autoadvanced, so an ordinary repeat still counts.)
                     repeat_count = 1
                     last_autoadvanced = False
                 else:
@@ -6844,7 +7601,6 @@ class AgentLoop:
                             ]
                         )
                     )
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -6987,15 +7743,26 @@ class AgentLoop:
                     stuck_took_action=stuck.took_action,
                 )
                 if prompt is not None:
+                    self._note(
+                        "intervention",
+                        "stuck — the turn-end hook refused the stop; continuing",
+                        kind="stuck",
+                        vetoed=True,
+                        **stuck.evidence(),
+                    )
                     turn_end_vetoes += 1
-                    self.session.add_message(Message.user(_control_rail(prompt)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
                     stuck.reset()
                     continue
                 stop_reason = "stuck"
-                self._note("intervention", "stuck — repeated steps made no progress", kind="stuck")
+                self._note(
+                    "intervention",
+                    "stuck — repeated steps made no progress",
+                    kind="stuck",
+                    **stuck.evidence(),
+                )
                 break
             if action is StuckAction.NUDGE:
                 # Decompose-on-stuck (ADR-0057): rung 1 adds investigative steps to the plan
@@ -7010,12 +7777,15 @@ class AgentLoop:
                     f"no progress — {'added' if fresh else 're-pointed at'} "
                     f"{len(open_steps)} investigative steps in the plan",
                     kind="stuck",
+                    **stuck.evidence(),
                 )
                 rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
                 self.session.add_message(Message.user(_control_rail(rail)))
                 self._persist()
             elif action is StuckAction.NARROW:
-                self._note("intervention", "limiting to read-only tools", kind="stuck")
+                self._note(
+                    "intervention", "limiting to read-only tools", kind="stuck", **stuck.evidence()
+                )
                 self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                 restrict_readonly_next = True
                 self._persist()
@@ -7027,10 +7797,13 @@ class AgentLoop:
                     "intervention",
                     "still stuck — stepping back to re-check assumptions",
                     kind="stuck",
+                    **stuck.evidence(),
                 )
                 self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                 self._persist()
 
+        if self._veto_stall:
+            stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d",
             stop_reason,
@@ -7169,6 +7942,10 @@ class AgentLoop:
         turn_error = ""
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+        self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._veto_stall = False
+        self._veto_delivered = None
+        provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
@@ -7200,13 +7977,14 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
-            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
+            skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
+            background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
@@ -7268,7 +8046,7 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker()
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
         restrict_readonly_next = False
 
         try:
@@ -7515,6 +8293,7 @@ class AgentLoop:
                             )
                             # Streaming twin of _call_provider's anchor (ADR-0077).
                             self._anchor_prompt(attempt_usage.prompt_tokens)
+                            self._observe_prompt_cache(attempt_usage)  # ADR-0193
                     except RateLimited as exc:
                         # Retried whether or not deltas already streamed (ADR-0070 — see
                         # the attempt-loop comment above). Same budgets as _call_provider:
@@ -7668,21 +8447,69 @@ class AgentLoop:
                         )
                         self._persist()
                     logger.error("turn aborted by provider error: %s", provider_failure)
-                    yield AgentStatus(
-                        message=(
-                            f"stopping: provider error — {provider_failure} — the session "
-                            "is saved; your next message (or resuming it) continues from "
-                            "here"
-                        )
-                    )
                     # Refund the iteration: the failed call produced no committed work
                     # (any partial text above is bookkeeping for the resume, not a
                     # completed model step), so nothing this iteration consumed survives.
                     # (stack review minor #7 — the buffered twin refunds identically.)
                     self._refund_iteration()
+                    prompt = None
+                    if provider_error_vetoes < _MAX_PROVIDER_ERROR_VETOES:
+                        prompt = await self._fire_turn_end(
+                            "provider_error",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                    if prompt is not None:
+                        # Hook-vetoed provider-error re-entry (ADR-0181) — see _run_turn.
+                        provider_error_vetoes += 1
+                        turn_end_vetoes += 1
+                        turn_degraded = True
+                        delay = _provider_error_veto_delay(provider_error_vetoes)
+                        progress = f"{provider_error_vetoes}/{_MAX_PROVIDER_ERROR_VETOES}"
+                        self._note(
+                            "intervention",
+                            "provider error — a turn-end hook re-entered the loop; "
+                            f"retrying in {delay:.0f}s ({progress})",
+                            kind="provider_error_veto",
+                        )
+                        self._persist()
+                        yield AgentStatus(
+                            message=(
+                                "provider error; the turn-end hook asked to continue — "
+                                f"retrying in {delay:.0f}s ({progress})"
+                            )
+                        )
+                        await asyncio.sleep(delay)
+                        stop_reason = "max_iterations"  # the terminal is open again
+                        turn_error = ""
+                        last_signature = None
+                        repeat_count = 0
+                        stuck.reset()
+                        continue
+                    if provider_error_vetoes:
+                        turn_error = (
+                            f"{turn_error} (persisted through {provider_error_vetoes} "
+                            "hook-vetoed re-entries)"
+                        )
+                    yield AgentStatus(
+                        message=(
+                            f"stopping: provider error — {turn_error} — the session "
+                            "is saved; your next message (or resuming it) continues from "
+                            "here"
+                        )
+                    )
                     break
+                provider_error_vetoes = 0  # a completed call resets the consecutive count
 
                 tool_calls = accumulator.finalize()
+                # Where a streamed call enters (ADR-0190): the buffered path rewrites names and
+                # Claude Code's argument spellings in _call_provider; a stream never passes
+                # there, so a served `Read(file_path=…)` reached the tool unrenamed and was
+                # refused, and an alias reached the transcript, the hooks and the trace as it
+                # was written.
+                self._canonicalize_calls(tool_calls)
                 assistant_text = "".join(text_parts)
 
                 # Degeneration guard (ADR-0018), streaming twin — see _run_turn. A
@@ -7757,7 +8584,7 @@ class AgentLoop:
                     tool_calls = [routed_call]
                     yield AgentStatus(
                         message=(
-                            f"'/{routed_call.arguments['name']}' typed as text — "
+                            f"'/{routed_call.arguments['skill']}' typed as text — "
                             "running it as a skill"
                         )
                     )
@@ -8078,12 +8905,11 @@ class AgentLoop:
                         )
                         if prompt is not None:
                             turn_end_vetoes += 1
-                            self.session.add_message(Message.user(_control_rail(prompt)))
                             self._persist()
                             last_signature = None
                             repeat_count = 0
                             stuck.reset()
-                            yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                            yield AgentStatus(message=self._veto_status())
                             continue
                         stop_reason = "gave_up"
                         self._note(
@@ -8098,7 +8924,20 @@ class AgentLoop:
                     if assistant_text and len(assistant_text) >= _BROKEN_RECORD_MIN_CHARS:
                         record_key = " ".join(assistant_text.split()).lower()
                         completion_counts[record_key] = completion_counts.get(record_key, 0) + 1
-                        if completion_counts[record_key] >= 2:
+                        repeats = completion_counts[record_key] - 1
+                        if repeats == _MAX_BROKEN_RECORD_RAILS + 1:
+                            turn_degraded = True  # ADR-0194 — see the buffered twin
+                            self._note(
+                                "intervention",
+                                f"the same completion {repeats + 1} times — "
+                                f"{_MAX_BROKEN_RECORD_RAILS} rails did not move it; the guard "
+                                "stands down and the answer stands",
+                                kind="broken_record_stand_down",
+                            )
+                            yield AgentStatus(
+                                message="repeated the same message again — the answer stands"
+                            )
+                        if 1 <= repeats <= _MAX_BROKEN_RECORD_RAILS:
                             self._turn_struggle = True
                             self._note(
                                 "intervention",
@@ -8513,12 +9352,11 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "completed"
                     break
@@ -8529,7 +9367,7 @@ class AgentLoop:
                 if signature == last_signature:
                     if last_autoadvanced:
                         # Previous identical batch drew a harness plan advance — progress, not a
-                        # stall; don't count it (ADR-0168 lever N; inert unless plan_autoadvance).
+                        # stall; don't count it (ADR-0168 lever N; same rule as the buffered path).
                         repeat_count = 1
                         last_autoadvanced = False
                     else:
@@ -8592,12 +9430,11 @@ class AgentLoop:
                                 ]
                             )
                         )
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "doom_loop"
                     self._note("intervention", "repeated identical tool calls", kind="doom_loop")
@@ -8757,17 +9594,26 @@ class AgentLoop:
                         stuck_took_action=stuck.took_action,
                     )
                     if prompt is not None:
+                        self._note(
+                            "intervention",
+                            "stuck — the turn-end hook refused the stop; continuing",
+                            kind="stuck",
+                            vetoed=True,
+                            **stuck.evidence(),
+                        )
                         turn_end_vetoes += 1
-                        self.session.add_message(Message.user(_control_rail(prompt)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(message="turn_end hook vetoed stop; continuing")
+                        yield AgentStatus(message=self._veto_status())
                         continue
                     stop_reason = "stuck"
                     self._note(
-                        "intervention", "stuck — repeated steps made no progress", kind="stuck"
+                        "intervention",
+                        "stuck — repeated steps made no progress",
+                        kind="stuck",
+                        **stuck.evidence(),
                     )
                     yield AgentStatus(message="stopping: stuck — repeated steps made no progress")
                     break
@@ -8783,6 +9629,7 @@ class AgentLoop:
                         "intervention",
                         f"no progress — {verb} {len(open_steps)} investigative steps in the plan",
                         kind="stuck",
+                        **stuck.evidence(),
                     )
                     rail = _investigation_rail(stuck.nudge_message(), open_steps, fresh=fresh)
                     self.session.add_message(Message.user(_control_rail(rail)))
@@ -8796,7 +9643,12 @@ class AgentLoop:
                         "investigative steps in the plan"
                     )
                 elif action is StuckAction.NARROW:
-                    self._note("intervention", "limiting to read-only tools", kind="stuck")
+                    self._note(
+                        "intervention",
+                        "limiting to read-only tools",
+                        kind="stuck",
+                        **stuck.evidence(),
+                    )
                     self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
                     restrict_readonly_next = True
                     self._persist()
@@ -8810,6 +9662,7 @@ class AgentLoop:
                         "intervention",
                         "still stuck — stepping back to re-check assumptions",
                         kind="stuck",
+                        **stuck.evidence(),
                     )
                     self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                     self._persist()
@@ -8826,6 +9679,8 @@ class AgentLoop:
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
+        if self._veto_stall:
+            stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d",
             stop_reason,

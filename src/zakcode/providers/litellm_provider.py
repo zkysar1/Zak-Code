@@ -55,6 +55,7 @@ from zakcode.providers.base import (
     UnknownContextWindow,
     WindowResolution,
     quota_exhaustion_marker,
+    rejected_request_field,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -64,6 +65,12 @@ from zakcode.providers.endpoints import (
     model_uses_generic_endpoint,
 )
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
+from zakcode.providers.thinking import (
+    reasoning_effort_reaches,
+    render_reasoning_effort,
+    render_thinking_switch,
+    rendered_thinking_wire_names,
+)
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
 
@@ -182,6 +189,39 @@ def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
     return name.startswith("gpt-5") and not name.startswith("gpt-5-chat")
 
 
+def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
+    """Whether ``model`` is an OpenAI gpt-5.6-tier model that takes function tools on
+    ``/v1/chat/completions`` ONLY with ``reasoning_effort="none"``.
+
+    OpenAI rejects every other shape with a hard 400: "Function tools with
+    reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions. To use
+    function tools, use /v1/responses or set reasoning_effort to 'none'." The default
+    effort counts as "with" — a request that never mentions reasoning_effort is refused
+    too. Measured live against the fleet key 2026-09-17: terra unset -> 400, terra
+    ``low`` -> 400, terra ``none`` -> 200 (tool call), luna ``none`` -> 200; and
+    gpt-5-mini ``none`` -> 400 ("does not support 'none'"), so this is NOT the whole
+    gpt-5 family — the predicate is the 5.6 tier only, and the fallback tier is left
+    alone.
+
+    The result in production before this rule: a zakpick mix pinned to terra/luna
+    400'd on its FIRST tool call of every served session and failed over to the
+    gpt-5-mini fallback for the rest of it — 167 vessel sessions, 100% of them on the
+    fallback (serve.log: "model failover: openai/gpt-5.6-terra -> openai/gpt-5-mini"
+    on every start since the mix landed). Same shape as the temperature rule above,
+    one parameter over. The ``gpt-5.6-chat`` variants are not measured and are
+    excluded here; the generic re-issue path (``_wants_effort_none``) covers them if
+    they turn out to share the constraint.
+    """
+    name = model.split("/")[-1]
+    return name.startswith("gpt-5.6") and not name.startswith("gpt-5.6-chat")
+
+
+#: Substring of the OpenAI 400 that names the remedy. Matched on the provider's own
+#: words so a future model name outside the predicate above is caught on its first
+#: refusal, not after a failover.
+_EFFORT_NONE_REMEDY = "set reasoning_effort to 'none'"
+
+
 #: Re-exported from :mod:`zakcode.providers.endpoints`, which is the SINGLE SOURCE OF TRUTH.
 #: The allowlist and the ``local_only`` cost predicate must answer "where does this call
 #: actually go?" identically — a second copy here is how they drift into disagreeing, and a
@@ -227,6 +267,17 @@ _MODELS_WINDOW_PATHS: tuple[tuple[str, ...], ...] = (
 )
 #: One probe, off the request path; a slow server costs at most this once per provider.
 _WINDOW_PROBE_TIMEOUT = 3.0
+
+
+def _litellm_supports_reasoning(model: str) -> bool:
+    """Whether litellm's model map flags ``model`` reasoning-capable — the predicate every
+    per-backend ``reasoning_effort`` mapping in litellm sits behind (ADR-0182). False for a
+    model the map does not know (a self-hosted alias) and on any lookup error: an unknown
+    model gets no depth rather than a guess."""
+    try:
+        return bool(litellm.supports_reasoning(model=model))
+    except Exception:  # noqa: BLE001 — a diagnostic lookup must never break a request
+        return False
 
 
 def _fetch_models(api_base: str, api_key: str | None, timeout: float) -> Any:
@@ -472,6 +523,7 @@ class LiteLLMProvider(Provider):
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         #: A bounded sample of the most recent stream's raw deltas (the first and last few,
         #: compacted) with its chunk count and finish reason. The loop reads it when a
@@ -491,6 +543,7 @@ class LiteLLMProvider(Provider):
         resolved_extra_body = extra_body
         resolved_extra_headers = extra_headers
         resolved_window = context_window
+        resolved_reasoning_effort = reasoning_effort
 
         if settings is not None:
             if resolved_model is None:
@@ -523,6 +576,8 @@ class LiteLLMProvider(Provider):
                 resolved_extra_body = settings.extra_body
             if resolved_extra_headers is None:
                 resolved_extra_headers = getattr(settings, "extra_headers", None)
+            if resolved_reasoning_effort is None:
+                resolved_reasoning_effort = getattr(settings, "reasoning_effort", None)
 
         if resolved_model is None:
             raise ValueError("a model must be provided via settings or the model kwarg")
@@ -546,6 +601,39 @@ class LiteLLMProvider(Provider):
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
+        #: Request fields this provider has refused BY NAME this session (ADR-0181): body
+        #: keys of ours a 4xx named, or the sentinel ``reasoning_effort`` for the rendered
+        #: thinking switch (and the rendered depth, which rides the same kwarg).
+        #: ``_build_kwargs`` leaves them out of every later request, so a server that
+        #: rejects a knob costs ONE re-issued call, not the turn — and never the same 400
+        #: twice. Diagnostic: the operator's config is left intact.
+        self.rejected_request_fields: list[str] = []
+        #: Function tools on this model's chat route need ``reasoning_effort="none"``
+        #: (the gpt-5.6 tier, see ``_is_openai_gpt56_tools_effort_none_model``). Pre-set
+        #: from the model name so the first tool call is already the accepted shape, and
+        #: latched at call time when a provider answers with the remedy text — one
+        #: re-issued call, never the same 400 twice, never a failover to another model.
+        self.tools_require_effort_none: bool = _is_openai_gpt56_tools_effort_none_model(self.model)
+        #: Set ONLY when a provider's own 4xx named ``reasoning_effort='none'`` as the
+        #: remedy. That is a measured refusal from the server for THIS tier, so it
+        #: outranks a configured depth; the predicate-known tier does not, because the
+        #: depth is measured to work there (ADR-0200). Never reset: a server that refused
+        #: once is not asked again this session.
+        self._effort_none_demanded_by_server: bool = False
+        #: Reasoning DEPTH (ADR-0182): litellm's ``reasoning_effort`` level, sent only where
+        #: litellm flags the model reasoning-capable (providers/thinking.py); kept as
+        #: configured even where it will not be sent — diagnostic, like ``extra_body``.
+        self.reasoning_effort: str | None = resolved_reasoning_effort
+        if self.reasoning_effort is not None and not reasoning_effort_reaches(
+            self.model, self.api_base, supports_reasoning=_litellm_supports_reasoning
+        ):
+            logger.info(
+                "reasoning_effort=%r is configured, but %s is not a model litellm flags as "
+                "reasoning-capable (or is reached through a generic api_base, where the "
+                "server's own body form via extra_body applies): the level is not sent",
+                self.reasoning_effort,
+                self.model,
+            )
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
         #: call time would put a formatting operation on the hot path for no gain.
@@ -738,6 +826,18 @@ class LiteLLMProvider(Provider):
             cache_read = cls._coerce_int(_get(details, "cached_tokens"))
         cache_creation = cls._coerce_int(_get(usage_obj, "cache_creation_input_tokens"))
 
+        # Reasoning accounting. A reasoning model bills its thinking at the OUTPUT rate and folds
+        # it into ``completion_tokens``, so without this the visible answer and the reasoning behind
+        # it are indistinguishable in the record. OpenAI reports it under
+        # ``completion_tokens_details`` on the chat route and ``output_tokens_details`` on the
+        # Responses route; litellm's bridge does not normalize the second onto the first, so probe
+        # both shapes the way the cache read above does. Absent fields read 0.
+        details = _get(usage_obj, "completion_tokens_details")
+        reasoning = cls._coerce_int(_get(details, "reasoning_tokens"))
+        if reasoning == 0:
+            details = _get(usage_obj, "output_tokens_details")
+            reasoning = cls._coerce_int(_get(details, "reasoning_tokens"))
+
         cost = 0.0
         unpriced = False
         hidden = _get(response, "_hidden_params")
@@ -752,7 +852,7 @@ class LiteLLMProvider(Provider):
             # the hand-maintained Groq rate table it used to sit behind was removed with that
             # provider (g-369-295), and it had become a mispricing hazard — it matched by STEM,
             # so it priced `openai/gpt-oss-*` at Groq rates.
-            priced = cls._litellm_token_cost(model, prompt, completion)
+            priced = cls._litellm_token_cost(model, prompt, completion, cache_read, cache_creation)
             # None = the model has no price anywhere. Keep cost at 0.0 (never guess a rate) and
             # carry the fact that this 0.0 is an absence of knowledge, not an absence of spend.
             if priced is None:
@@ -767,43 +867,68 @@ class LiteLLMProvider(Provider):
             cost_usd=cost,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
+            reasoning_tokens=reasoning,
             cost_unpriced=unpriced,
         )
 
     @staticmethod
-    def _litellm_token_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
+    def _litellm_token_cost(
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> float | None:
         """Cost from litellm's own price map by token counts — the streaming-path fallback when a
         chunk carried no response_cost.
 
-        Returns ``None`` when the cost CANNOT BE DETERMINED (no model string, or the model is
-        absent from litellm's price map so ``cost_per_token`` raises), and a real float —
-        possibly a genuine ``0.0`` for a free model — when it can. That distinction is the whole
-        point of the signature: returning ``0.0`` for both made "this call was free" and "I
-        cannot price this call" the same value, and the budget meter reads the second as the
-        first, so ``max_cost_usd`` can never trip on a lane whose model is unpriced (measured on
-        ``openai/gpt-oss-20b``; predicted as its third unfixed hazard by the ADR-0195 work, which
-        noted the same degradation hits a normally-priced model whenever litellm's fetched price
-        map is unavailable and the bundled one is used).
+        Returns ``None`` when the cost CANNOT BE DETERMINED — no model string, or the model is
+        absent from litellm's price map so ``cost_per_token`` raises — and a real float,
+        possibly a genuine ``0.0`` for a free model, when it can. Returning ``0.0`` for both made
+        "this call was free" and "I cannot price this call" the same value, and the budget meter
+        reads the second as the first, so ``max_cost_usd`` could never trip on a lane whose model
+        is unpriced (measured on ``openai/gpt-oss-20b``). The price is deliberately NOT guessed on
+        that path: a fabricated rate is a mispricing hazard, not a conservative default — the
+        stem-matching Groq table was removed for exactly that reason — and it would then be read
+        downstream as measured spend. The caller records the uncertainty instead. Still
+        best-effort: never raises, never breaks a turn.
 
-        The price is deliberately NOT guessed on the ``None`` path — a fabricated rate is a
-        mispricing hazard, not a conservative default (the hand-maintained Groq rate table was
-        removed for exactly that reason: it matched by stem and priced ``openai/gpt-oss-*`` at
-        Groq rates), and a guessed number would then be reported as measured spend. The caller
-        records the uncertainty instead. Still best-effort: never raises, never breaks a turn.
+        The discriminator is whether the lookup RAISES, not whether the model appears in
+        ``litellm.model_cost``: litellm strips the provider prefix, so ``openai/gpt-5.6-luna`` is
+        absent from that mapping and still prices correctly.
 
-        Note the discriminator is whether the lookup RAISES, not whether the model appears in
-        ``litellm.model_cost`` — litellm strips the provider prefix, so ``openai/gpt-5.6-luna``
-        is absent from that mapping and still prices correctly.
+        The cached counts are priced at the model's cached rates, exactly as litellm prices a whole
+        (non-streamed) response. Measured 2026-09-18 on a streamed gpt-5.6-luna call: 9,231 of
+        9,234 prompt tokens were cache reads and this path recorded $0.00185 against $0.00019 at the
+        provider's rates — every prompt token at the uncached rate, 9.7x. ``max_cost_usd`` and the
+        served usage a vessel's budget meter reads count this figure.
+
+        A count is priced at a cached rate only when the price map HAS that rate. litellm prices it
+        at $0 otherwise (measured: 1,687 of its 3,096 priced chat models list no cache-read rate),
+        and an unpriced token must cost the input rate, never nothing: the ceiling this feeds is
+        better early than blind.
         """
         if not model:
             return None
         try:
             import litellm
 
+            prompt_tokens = max(0, prompt_tokens)
+            rates: dict[str, Any] = {}
+            # No rates to read leaves every prompt token at the input rate.
+            with contextlib.suppress(Exception):
+                rates = dict(litellm.get_model_info(model))
+            read = written = 0
+            if rates.get("cache_read_input_token_cost") is not None:
+                read = min(max(0, cache_read_tokens), prompt_tokens)
+            if rates.get("cache_creation_input_token_cost") is not None:
+                written = min(max(0, cache_creation_tokens), prompt_tokens - read)
             prompt_cost, completion_cost = litellm.cost_per_token(
                 model=model,
-                prompt_tokens=max(0, prompt_tokens),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=max(0, completion_tokens),
+                cache_read_input_tokens=read,
+                cache_creation_input_tokens=written,
             )
             return float(prompt_cost) + float(completion_cost)
         except Exception:  # noqa: BLE001 — cost estimation is best-effort, never breaks a turn
@@ -927,6 +1052,74 @@ class LiteLLMProvider(Provider):
         """
         code = getattr(exc, "status_code", None)
         return isinstance(code, int) and not isinstance(code, bool) and 500 <= code < 600
+
+    @classmethod
+    def _is_request_rejection(cls, exc: Exception) -> bool:
+        """True for a 4xx that rejects the request's SHAPE (litellm's BadRequestError /
+        UnprocessableEntityError, or a 400/422 status) — the only class a field refusal
+        can arrive as. A 5xx or a 429 that happens to quote a field name is not one."""
+        if cls._is_a(exc, None, "BadRequestError", "UnprocessableEntityError"):
+            return True
+        code = getattr(exc, "status_code", None)
+        return isinstance(code, int) and not isinstance(code, bool) and code in (400, 422)
+
+    def _wants_effort_none(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Latch ``tools_require_effort_none`` from the provider's own remedy text.
+
+        True when ``exc`` is a request rejection whose message says to set
+        reasoning_effort to 'none', the call carried tools, and the call did not already
+        send 'none' — the caller then re-issues once with the accepted shape. This is the
+        model-name-independent half of the gpt-5.6 rule: a tier the predicate does not
+        know yet still costs one re-issued call, not a failover to the fallback model.
+        """
+        if not self._is_request_rejection(exc):
+            return False
+        if not call_kwargs.get("tools") or call_kwargs.get("reasoning_effort") == "none":
+            return False
+        message = redact_secrets(str(exc))[0]
+        if _EFFORT_NONE_REMEDY not in message:
+            return False
+        self.tools_require_effort_none = True
+        self._effort_none_demanded_by_server = True
+        logger.warning(
+            "%s takes function tools only with reasoning_effort='none' on this route (%s) "
+            "— sending 'none' with tools for the rest of this session and re-issuing "
+            "the call",
+            self.model,
+            " ".join(message.split())[:200],
+        )
+        return True
+
+    def _refuse_rejected_field(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Record a request field the provider refused BY NAME (ADR-0181).
+
+        True when ``exc`` is a request rejection that names a field WE added — a key of
+        the ``extra_body`` this call sent, or the wire spelling of the rendered thinking
+        switch — in which case the field joins ``rejected_request_fields`` (so no later
+        request of this session carries it) and the caller re-issues the call once.
+        False for every other failure, which maps through the taxonomy as before. The
+        "one we sent" gate is what keeps this honest: a provider refusing ``tools`` or
+        ``messages`` is a defect to surface, never a field to strip.
+        """
+        if not self._is_request_rejection(exc):
+            return False
+        body = call_kwargs.get("extra_body") or {}
+        wire = rendered_thinking_wire_names(call_kwargs)
+        message = redact_secrets(str(exc))[0]
+        name = rejected_request_field(message, [*body, *wire])
+        if name is None:
+            return False
+        field = "reasoning_effort" if name in wire else name
+        if field not in self.rejected_request_fields:
+            self.rejected_request_fields.append(field)
+        logger.warning(
+            "%s refused the request field %r (%s) — dropping it for the rest of this "
+            "session and re-issuing the call without it",
+            self.model,
+            field,
+            " ".join(message.split())[:200],
+        )
+        return True
 
     @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
@@ -1104,14 +1297,58 @@ class LiteLLMProvider(Provider):
             call_kwargs["tool_choice"] = "auto"
         # Server-specific request-body knobs (llama.cpp thinking control, etc). litellm
         # forwards extra_body into the JSON body on the OpenAI-compatible path and keeps it
-        # through drop_params, so an unknown-to-litellm key still reaches the server; a
-        # server that does not understand the key ignores it. Sent only when non-empty, so
-        # the default request shape is byte-identical to before.
+        # through drop_params, so an unknown-to-litellm key still reaches the server. NOT
+        # every server ignores a key it does not understand — Vertex AI refuses the whole
+        # payload (400 INVALID_ARGUMENT, measured 2026-09-17 on a served Mind) — so two
+        # things happen here (ADR-0181). The thinking switch, which has ONE internal
+        # spelling, is RENDERED for the destination: kept verbatim for a self-hosted
+        # OpenAI-compatible server (the measured case), litellm's first-class
+        # ``reasoning_effort`` for a Gemini model, dropped everywhere else (see
+        # providers/thinking.py). And any field a provider has already refused BY NAME
+        # this session (``rejected_request_fields``, recorded by the call paths below) is
+        # left out. Sent only when non-empty, so the default request shape is
+        # byte-identical to before.
         # A per-call ``extra_body`` (the loop's reasoning-overflow retry, ADR-0056: the
         # thinking switch for ONE request) merges OVER the instance's, so a category's knob
         # and a one-shot override compose instead of the override clobbering the rest.
         per_call_body = kw.pop("extra_body", None)
         merged_body: dict[str, Any] = {**self.extra_body, **(per_call_body or {})}
+        # The configured reasoning DEPTH (ADR-0182) is read against the body BEFORE the
+        # switch is rendered: "off" there (a category's thinking=false, the overflow retry's
+        # per-call switch) wins over a depth, and a destination litellm does not flag
+        # reasoning-capable — or a generic api_base — gets nothing rather than a 400.
+        effort_kwargs = render_reasoning_effort(
+            self.model,
+            self.api_base,
+            self.reasoning_effort,
+            merged_body,
+            supports_reasoning=_litellm_supports_reasoning,
+        )
+        merged_body, thinking_kwargs = render_thinking_switch(
+            self.model, self.api_base, merged_body
+        )
+        # Provider-side retention (ADR-0199). OpenAI's Responses API STORES a response unless
+        # the request says ``store: false`` (measured 2026-09-19: no field -> echoed
+        # ``store: true`` and retrievable by id; ``false`` -> a 404), and litellm moves a
+        # gpt-5.4+ chat call onto that API whenever tools ride with a reasoning effort, which
+        # is every tool call of the 5.6 tier since the forced-none rule. Nobody chose that
+        # retention, so the default here is not to be stored. It rides ``extra_body`` because
+        # that is the one door that reaches the wire: a top-level ``store=False`` is dropped
+        # by litellm's bridge (measured, same day). Sent on BOTH routes of OpenAI's own API,
+        # where it is a documented field, so a routing change inside litellm cannot switch
+        # retention back on. ``setdefault``: an operator who configures ``store`` keeps their
+        # word. Added BEFORE the refused-field filter, so a server that refuses it by name
+        # loses it for the session like any other field we sent (ADR-0181). OpenAI's own API
+        # is an ``openai/`` or bare ``gpt-`` model with NO ``api_base``: with a base configured
+        # the same names mean the server behind it (the pod, a llama-server), which is somebody
+        # else's API. ``azure/`` takes the same bridge but was never measured: nothing assumed.
+        if self.api_base is None and self.model.startswith(("openai/", "gpt-")):
+            merged_body.setdefault("store", False)
+        refused = set(self.rejected_request_fields)
+        merged_body = {k: v for k, v in merged_body.items() if k not in refused}
+        native = {**effort_kwargs, **thinking_kwargs}
+        if refused.isdisjoint(rendered_thinking_wire_names(native)):
+            call_kwargs.update(native)
         if merged_body:
             call_kwargs["extra_body"] = merged_body
         # Session-affinity routing key (OpenAI-standard `prompt_cache_key`). Rides
@@ -1173,6 +1410,37 @@ class LiteLLMProvider(Provider):
             temperature = call_kwargs.get("temperature")
             if temperature is not None and temperature != 1:
                 call_kwargs.pop("temperature", None)
+        # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
+        # chat route; what the request needs is an EXPLICIT reasoning_effort, and the
+        # value is free (ADR-0200). Any explicit level takes the call off that route:
+        # litellm's responses_api_bridge_check moves a gpt-5.4+ chat call carrying tools
+        # and a non-None effort onto /v1/responses, and the string "none" counts — which
+        # is why 'none' has worked since ADR-0188, and why a configured depth works the
+        # same way. Measured on this exact route, two pre-registered batches
+        # (bench/results/effort-decision-points-preregistration.log): 160 of 160 product
+        # calls reached /v1/responses carrying their own effort, 0 errors, and a
+        # configured low beat none on both decision cells. So the rule here is only
+        # "never send a tool call with NO depth"; it no longer overrides a depth the
+        # operator configured. Same LOCAL-server exemption as the temperature rule: a
+        # gpt-5.6-named self-hosted model has no such route.
+        if (
+            self.tools_require_effort_none
+            and tools
+            and not (self.api_base is not None and _model_uses_generic_endpoint(self.model))
+        ):
+            configured = call_kwargs.get("reasoning_effort")
+            # A server that NAMED 'none' as the remedy keeps it. There the refusal is
+            # measured for that tier and a depth would 400 on every call; here the
+            # predicate is ours, and the depth is measured to work.
+            if self._effort_none_demanded_by_server and configured not in (None, "none"):
+                logger.info(
+                    "%s: this provider answered a tool call by asking for "
+                    "reasoning_effort='none', so the configured %r is not sent",
+                    self.model,
+                    configured,
+                )
+            if self._effort_none_demanded_by_server or configured is None:
+                call_kwargs["reasoning_effort"] = "none"
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
@@ -1247,7 +1515,27 @@ class LiteLLMProvider(Provider):
         try:
             response = await litellm.acompletion(**call_kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            raise self._map_error(exc) from exc
+            if not (
+                self._wants_effort_none(exc, call_kwargs)
+                or self._refuse_rejected_field(exc, call_kwargs)
+            ):
+                raise self._map_error(exc) from exc
+            # The provider named a field of ours it will not take (ADR-0181), or named
+            # the one value it WILL take for the tools+reasoning pairing: the flag /
+            # ``rejected_request_fields`` is updated, so the rebuilt request has the
+            # accepted shape — the SAME logical call, re-issued once. A second refusal
+            # is reported as is.
+            call_kwargs = self._build_kwargs(
+                wire_messages,
+                tools,
+                response_format=response_format,
+                prompt_cache_key=prompt_cache_key,
+                **kw,
+            )
+            try:
+                response = await litellm.acompletion(**call_kwargs)
+            except Exception as again:  # noqa: BLE001 - mapped to taxonomy below
+                raise self._map_error(again) from again
 
         result = self._normalize(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
@@ -1404,37 +1692,56 @@ class LiteLLMProvider(Provider):
         through the error taxonomy; a raw vendor exception never escapes.
         """
         wire_messages = self._translate_messages(messages, system)
-        call_kwargs = self._build_kwargs(
-            wire_messages,
-            tools,
-            response_format=response_format,
-            prompt_cache_key=prompt_cache_key,
-            **kw,
-        )
-        call_kwargs["stream"] = True
-        call_kwargs["stream_options"] = {"include_usage": True}
 
+        def build() -> dict[str, Any]:
+            call_kwargs = self._build_kwargs(
+                wire_messages,
+                tools,
+                response_format=response_format,
+                prompt_cache_key=prompt_cache_key,
+                **kw,
+            )
+            call_kwargs["stream"] = True
+            call_kwargs["stream_options"] = {"include_usage": True}
+            return call_kwargs
+
+        call_kwargs = build()
         finish_reason: str | None = None
         head: list[Any] = []
         tail: deque[Any] = deque(maxlen=_STREAM_SAMPLE_EDGE)
         chunks = 0
+        repaired = False  # the one ADR-0181 re-issue this call may spend
         await self._pace()
         try:
-            resp = await litellm.acompletion(**call_kwargs)
-            async for chunk in self._bounded_chunks(resp):
-                chunks += 1
-                delta = _stream_delta(chunk)
-                if delta is not None:
-                    (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
-                events, fr = self._parse_chunk(chunk)
-                if fr is not None:
-                    finish_reason = fr
-                for event in events:
-                    yield event
-        except ProviderError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            raise self._map_error(exc) from exc
+            while True:
+                try:
+                    resp = await litellm.acompletion(**call_kwargs)
+                    async for chunk in self._bounded_chunks(resp):
+                        chunks += 1
+                        delta = _stream_delta(chunk)
+                        if delta is not None:
+                            (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
+                        events, fr = self._parse_chunk(chunk)
+                        if fr is not None:
+                            finish_reason = fr
+                        for event in events:
+                            yield event
+                    break
+                except ProviderError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+                    # A field refusal arrives at request time, before any chunk — so
+                    # nothing has been yielded and the rebuilt request can be re-issued in
+                    # place (ADR-0181). Anything after the first chunk is a real failure.
+                    if (
+                        chunks == 0
+                        and not repaired
+                        and self._refuse_rejected_field(exc, call_kwargs)
+                    ):
+                        repaired = True
+                        call_kwargs = build()
+                        continue
+                    raise self._map_error(exc) from exc
         finally:
             # Kept whatever ended the stream — an empty completion is diagnosed from this.
             self.last_stream_sample = {

@@ -426,6 +426,54 @@ def test_extract_usage_rejects_bool_and_junk() -> None:
     assert usage.total_tokens == 0
 
 
+def test_extract_usage_reads_reasoning_tokens_chat_shape() -> None:
+    # OpenAI's chat route nests the reasoning split under completion_tokens_details.
+    usage_obj = _FakeUsage(100, 40, 140)
+    usage_obj.completion_tokens_details = {"reasoning_tokens": 12}
+    usage = LiteLLMProvider._extract_usage(_FakeResponse([], usage_obj))
+    assert usage.reasoning_tokens == 12
+    # A subset view of completion_tokens, which stays the full billed figure.
+    assert usage.completion_tokens == 40
+
+
+def test_extract_usage_reads_reasoning_tokens_responses_shape() -> None:
+    # The Responses route names the same field output_tokens_details, and litellm's bridge does
+    # not normalize it onto the chat key — so the second probe is what makes this route readable.
+    usage_obj = _FakeUsage(100, 40, 140)
+    usage_obj.output_tokens_details = {"reasoning_tokens": 17}
+    usage = LiteLLMProvider._extract_usage(_FakeResponse([], usage_obj))
+    assert usage.reasoning_tokens == 17
+
+
+def test_extract_usage_reasoning_tokens_absent_reads_zero() -> None:
+    # Positive control for the two above: no details anywhere is 0, not a crash — a model that
+    # does no reasoning, or a depth of none, is indistinguishable from a backend that omits it.
+    usage = LiteLLMProvider._extract_usage(_FakeResponse([], _FakeUsage(100, 40, 140)))
+    assert usage.reasoning_tokens == 0
+
+
+def test_extract_usage_reasoning_tokens_coerced_like_every_other_count() -> None:
+    usage_obj = _FakeUsage(100, 40, 140)
+    usage_obj.completion_tokens_details = {"reasoning_tokens": "junk"}
+    assert LiteLLMProvider._extract_usage(_FakeResponse([], usage_obj)).reasoning_tokens == 0
+
+
+async def test_reasoning_tokens_reach_the_result_usage(
+    provider: LiteLLMProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole point of recording it: the count has to survive out of the provider and onto the
+    # LLMResult, because that is the object the session store and the event stream serialize.
+    usage_obj = _FakeUsage(100, 40, 140)
+    usage_obj.output_tokens_details = {"reasoning_tokens": 17}
+
+    async def _acompletion(**_kw: Any) -> Any:
+        return _make_response("done", usage=usage_obj)
+
+    monkeypatch.setattr(lp.litellm, "acompletion", _acompletion)
+    result = await provider.acomplete([Message.user("hi")])
+    assert result.usage.reasoning_tokens == 17
+
+
 def test_extract_cost_string_value() -> None:
     usage = LiteLLMProvider._extract_usage(
         _FakeResponse([], _FakeUsage(1, 1, 2), hidden={"response_cost": "0.5"})

@@ -129,7 +129,7 @@ async def _probe_safety_rejection(workspace: str) -> str:
     sentinel = Path(workspace) / "PWNED.txt"
     provider = ScriptedProvider(
         [
-            call_tool("bash", {"command": f"echo pwned > {sentinel}"}),
+            call_tool("Bash", {"command": f"echo pwned > {sentinel}"}),
             reply("understood, I won't run that"),
         ]
     )
@@ -160,9 +160,9 @@ async def _probe_plan_mode_readonly(workspace: str) -> str:
     assert PLAN.allowed_tools == [*READ_ONLY_TOOLS, "update_plan"], PLAN.allowed_tools
     plan_registry = default_registry().subset(PLAN.allowed_tools or [])
     names = set(plan_registry.active_names())
-    for write_tool in ("write_file", "edit_file", "bash"):
+    for write_tool in ("Write", "Edit", "Bash"):
         assert write_tool not in names, f"plan mode must not expose {write_tool}: {names}"
-    assert "read_file" in names, f"plan mode should still allow reads: {names}"
+    assert "Read" in names, f"plan mode should still allow reads: {names}"
     # And the planner type is actually wired into a sub-agent-enabled Agent.
     provider = ScriptedProvider([reply("noop")])
     agent = make_agent(provider, workspace_root=workspace, enable_subagents=True)
@@ -175,7 +175,7 @@ async def _probe_doom_loop_halt(workspace: str) -> str:
     """A model that repeats one tool call forever is halted with ``doom_loop``."""
     target = Path(workspace) / "scratch.txt"
     # Always request the SAME write_file call with identical args → identical signature.
-    provider = ScriptedProvider([call_tool("write_file", {"path": str(target), "content": "x"})])
+    provider = ScriptedProvider([call_tool("Write", {"path": str(target), "content": "x"})])
     agent = make_agent(provider, workspace_root=workspace)
     result = await agent.arun_turn("keep writing")
     assert result.stop_reason == "doom_loop", result.stop_reason
@@ -193,7 +193,7 @@ async def _probe_doom_loop_recovery(workspace: str) -> str:
     model breaks out and finishes — proving a confidently-wrong loop is recovered, not abandoned.
     """
     target = Path(workspace) / "scratch.txt"
-    same = call_tool("write_file", {"path": str(target), "content": "x"})
+    same = call_tool("Write", {"path": str(target), "content": "x"})
 
     def responder(messages: list[Message], system: str | None, i: int) -> LLMResult:
         # Repeat the identical batch until the recovery nudge fires (the 3rd repeat), then,

@@ -18,7 +18,7 @@ from zakcode.config import Settings
 from zakcode.providers.base import Provider
 from zakcode.tools.builtins.default_registry import default_registry
 
-_WRITE_TOOLS = {"write_file", "edit_file", "bash"}
+_WRITE_TOOLS = {"Write", "Edit", "Bash"}
 
 
 def _runner(tmp_path: Path) -> SubAgentRunner:
@@ -55,7 +55,7 @@ def test_planner_schema_offers_no_write_tools(tmp_path: Path) -> None:
     defs = _runner(tmp_path).child_registry(PLAN).definitions()
     schema_names = {d["function"]["name"] for d in defs}
     assert _WRITE_TOOLS.isdisjoint(schema_names)
-    assert "read_file" in schema_names
+    assert "Read" in schema_names
 
 
 def test_general_purpose_still_has_write_tools(tmp_path: Path) -> None:

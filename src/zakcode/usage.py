@@ -20,6 +20,12 @@ class Usage(BaseModel):
     ``cost_usd`` already reflect the (discounted) cached billing — so a cache hit shows as
     a high ``cache_read_tokens`` against a low effective cost. Both default 0, so a
     persisted message from before this field existed loads forward-compatibly.
+
+    ``reasoning_tokens`` is the same kind of subset view on the other side of the ledger: the
+    portion of ``completion_tokens`` a reasoning model spent thinking rather than answering.
+    It is the only per-call record of how much reasoning a call actually did — the requested
+    ``reasoning_effort`` is a knob on the way out and is not echoed back by any provider — so
+    this is what makes a depth setting observable after the fact. Defaults 0 like the others.
     """
 
     prompt_tokens: int = 0
@@ -31,6 +37,12 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     #: Prompt tokens written to the cache this call (Anthropic ``cache_creation_input_tokens``).
     cache_creation_tokens: int = 0
+    #: Completion tokens spent on reasoning rather than the visible answer — OpenAI
+    #: ``completion_tokens_details.reasoning_tokens`` (chat) /
+    #: ``output_tokens_details.reasoning_tokens`` (Responses). A subset of ``completion_tokens``,
+    #: billed at the output rate. 0 when the model does no reasoning, when the depth was
+    #: ``none``, or when the backend does not report it.
+    reasoning_tokens: int = 0
     #: The litellm model string this call ran on, for per-model cost attribution (e.g. the
     #: ``/cost`` breakdown under zakpick, where a session spans several models). Empty for older
     #: persisted records and for aggregate totals (a sum across models has no single model).
@@ -62,6 +74,7 @@ class Usage(BaseModel):
             cost_usd=self.cost_usd + other.cost_usd,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             model=self.model if self.model == other.model else "",
             cost_unpriced=self.cost_unpriced or other.cost_unpriced,
         )

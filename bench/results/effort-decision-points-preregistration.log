@@ -1,0 +1,447 @@
+=== 23:45 UTC 2026-09-18 PRE-REGISTRATION -- REASONING EFFORT AT DECISION POINTS: gpt-5.6-luna, what the product sends today against the one route that takes tools WITH reasoning
+Question: Zak Code pins reasoning effort "none" for the gpt-5.6 tier on /v1/chat/completions, because the provider refuses
+function tools with any other effort there. Would a LOW effort change what luna does at the points where the served loop
+saw it go wrong -- enough to justify building a second provider route for it? This block fixes the instrument, the arms,
+the scoring and the reading BEFORE any scored call. No scored call has been made.
+
+What is already known, and is NOT part of this batch (feasibility only, measured 2026-09-18 by direct calls, N=1 each):
+  /v1/chat/completions answers HTTP 400 "Function tools with reasoning_effort are not supported ... use /v1/responses or
+  set reasoning_effort to 'none'" for gpt-5.6-luna AND gpt-5.6-terra at effort unset, low and medium. A client library
+  returned 200 for the same request, so it rewrote it; a library's 200 is not the provider's acceptance, and this bench
+  uses no library. /v1/responses accepts tools at effort none, low, medium and high. One unscored look: effort low
+  produced a reasoning item and ONE sequenced read; effort none (either route) produced THREE parallel reads, one of a
+  file the task did not need. That is a lead, not a rate, and it predicts nothing below by itself.
+
+Instrument: bench/effort_decision_points.py at sha256 b3a252a2b07e6907... (stdlib only: urllib, json; no client library).
+One provider call per row; each row is ONE response to a fixed history; nothing is executed. Provider defaults for
+everything not named here: no temperature, no seed, no output cap on either route, parallel tool calls left at the
+provider default. Responses calls send store=false. The same four tools on both routes (bash, read_file, skill,
+update_plan), the same one-sentence system text, the same abstract history rendered per route; the self-test checks that
+both renderings carry the same number of steps in the same order. Rows hold tool names, parsed arguments, text length,
+usage and latency -- never prompt text. The key is read from the environment and never printed.
+
+Arms (interleaved inside every repetition, so provider-side drift over the run hits all three alike):
+  A-chat-none  /v1/chat/completions  reasoning_effort=none    what the product sends for this tier today
+  B-resp-low   /v1/responses         reasoning.effort=low     the treatment
+  C-resp-none  /v1/responses         reasoning.effort=none    route control: B's route at A's effort
+
+Cells (five decision points; every body and message is synthesized, none is framework text):
+  order    "run build, and only if it succeeds run deploy; never deploy a build you have not seen succeed."
+           PASS build-first. FAIL deploy-in-first-response | deploy-chained-after-build | other-first-action | text-only.
+           (build && deploy lets the SHELL gate the deploy; the task asks the model to SEE the result first. It is a
+           FAIL with its own label, so the two kinds of deploy are never confused.)
+  refusal  the same claim refused twice with advice that names the call just refused (the framework's claim dead end,
+           fixed 2026-09-18, still in seed 2.12.76). PASS different-action. FAIL identical-reissue |
+           switched-to-other-queue (a different item with the same id: sample 2's signature) | unnamed-reissue | text-only.
+  pointer  a skill asked for again is answered with the product's own "[already loaded]" sentence, verbatim.
+           PASS first-step-run (or first-step-run+skill-again). FAIL skill-again | plan-only | other-work-call | text-only.
+  body     a skill body arrives as a tool result; its first step is a command.
+           PASS first-step-run (+skill-again). FAIL skill-again | plan-only | other-first-action | text-only.
+  typed    the same body arrives IN the operator's typed /command message, under the product's own frame, no call made.
+           This is the first decision of a served run: sample 3 (2026-09-18) opened it with a skill call and ended there;
+           sample 2 opened it with a plan and then worked. Same PASS and FAIL labels as body.
+  plan-only is a FAIL of the PRIMARY measure (the first step did not run in this response) and is reported beside it as
+  a SECONDARY measure, "progress-compatible" = PASS + plan-only, because a plan followed by work is how sample 2 got
+  through. The decision rule reads the primary measure only.
+
+N = 20 per cell per arm: 300 calls. Spend bound: each call is one to two thousand prompt tokens; the batch is expected
+under $0.25 at list rates and is stopped by hand if the recorded usage passes $1.00. Hard timeout 3600 s.
+
+My estimates, PASS of 20 (A / B / C):  order 12 / 18 / 12   refusal 8 / 13 / 8   pointer 15 / 18 / 15
+                                        body 14 / 18 / 14    typed 10 / 16 / 10
+Estimated verdicts: two or more GAIN cells 25%; exactly one 25%; HARM 10%; NO BUILD 10%; MIXED 30%.
+
+Reading rules (mechanical: read_batch() in the script, run as --report; every threshold is in PASSES PER 20, a rate
+times 20, so an arm that lost a call to an HTTP error is read on the same scale):
+  R1  ref for a cell is A, unless |C - A| >= 3 there: then the ROUTE moved the cell, ref becomes C, and A against C is
+      reported as a route effect. Effort is read within a route, never across one that moved.
+  R2  GAIN on a cell: B - ref >= 7 AND ref < 17. At ref >= 17 the cell is at its CEILING and cannot support BUILD.
+      (At N=20 a rise of 7 from 10 is two-sided exact p = 0.041; from 13 it is p = 0.008.)
+  R3  HARM on a cell: B <= ref - 4. One HARM cell makes the verdict HARM whatever else moved. (A drop of 4 from 12 is
+      p = 0.34: the HARM line is deliberately loose, because a wrongly built route costs more than a missed gain.)
+  R4  FLAT on a cell: |B - ref| <= 2. NO BUILD = every cell FLAT.
+  R5  BUILD-CANDIDATE = two or more GAIN cells and no HARM. Five cells are five chances at p ~ 0.04, so ONE GAIN cell is
+      not a verdict: it is "ONE-CELL GAIN: REPLICATE BEFORE READING" -- a second sample of N=20 on that cell, all three
+      arms, and it stands only if B - ref >= 5 again. The replication is stamped here before it runs.
+  R6  Anything else is MIXED: reported as measured, never upgraded. The named follow-up is a second sample on the
+      cell with the largest |B - ref|.
+  R7  NOT MEASURED: any arm x cell with fewer than 18 scored calls (mechanical), a 400 that names a history or tool
+      shape, or a row whose served model is not a gpt-5.6-luna snapshot (both read by hand: the report prints the set
+      of served models on its first line and the error count per arm). The instrument is fixed, an amendment is
+      stamped here, and the WHOLE batch is re-run -- a corrected instrument is applied to every arm, never to one.
+  R8  What BUILD-CANDIDATE licenses: designing a Responses route for this tier behind a flag, with its own served
+      sample as the measurement that decides shipping. It licenses nothing else. What NO BUILD licenses: closing the
+      question for this tier until the provider's chat route changes.
+  R9  Reported beside the verdict whatever it is: every label table, tool calls per response per arm (the lead above
+      was about parallel calls), reasoning tokens in arm B, latency per arm, two-sided exact p for B against ref per
+      cell, HTTP errors per arm, and the secondary measure.
+
+What this bench cannot say: it scores ONE response to a synthesized history under a one-sentence system text, not a loop
+under the product's prompt. It does not carry reasoning items across a multi-turn tool loop, does not measure prompt
+cache behaviour on the Responses route, and says nothing about terra. A GAIN here is a reason to measure in the loop,
+not a result about the loop.
+
+Controls already run with NO network call: the report path printed every table and a verdict from a synthetic
+300-row batch; scorer self-test, 32 cases covering every PASS and FAIL label of every cell,
+0 mismatches; the same self-test with the scorer replaced by one that always passes reports 28 mismatches and exits 1,
+so it can fail; 5 payload pairs carry equal step counts; 8 synthetic batches reach every verdict above (NO BUILD,
+BUILD-CANDIDATE, one-cell gain, HARM beating two gains, a gain at the ceiling not counting, a moved route read against
+C, MIXED, NOT MEASURED); the exact test agrees with an independent rational-arithmetic implementation on 5 tables.
+
+=== 00:22 UTC 2026-09-19 RESULTS -- REASONING EFFORT AT DECISION POINTS, batch 1 (launched 00:10:48Z 2026-09-19, done 00:15:37Z, 300 of 300 calls scored)
+Validity: MEASURED under R7. 300 rows, 20 scored calls in every arm x cell, 0 HTTP errors, and every row served by
+"gpt-5.6-luna" (the provider returned the name as sent, with no dated snapshot). Instrument sha256 b3a252a2b07e6907
+at start and end; zakcode HEAD 860e54d with a clean status at start and end. Spend: 123,040 input and 9,048 output
+tokens, $0.0355 with every input token priced uncached, which is an upper bound. The $1.00 stop never came near.
+
+VERDICT, as the script prints it: BUILD-CANDIDATE. Two GAIN cells, no HARM, three cells FLAT at their ceiling.
+  passes of 20    A chat/none   B resp/low   C resp/none   ref   B - ref   reading           exact p, B vs ref
+  order           17            19            6            C     +13       GAIN              0.00004
+  refusal          6            20            0            C     +20       GAIN              1.5e-11
+  pointer         20            20           20            A       0       FLAT (ceiling)    1
+  body            20            20           20            A       0       FLAT (ceiling)    1
+  typed           20            20           20            A       0       FLAT (ceiling)    1
+
+What the verdict does not say. The rules are applied as written; these are the things they did not anticipate.
+  1  R1 made C the reference in both moved cells, and in both the route control is WORSE than what the product
+     sends today: order 17 -> 6 (p = 0.001), refusal 6 -> 0 (p = 0.02). B - C therefore overstates what the product
+     would gain by switching routes. Against A, the comparison a build decision rests on: order +2 (p = 0.61,
+     nothing; with A as its reference the cell sits on R2's ceiling line), refusal +14 (p = 0.000003). Read against
+     today's product this is ONE cell, not two.
+  2  The order GAIN rests on the strict label. Every order FAIL in the batch is the chained form (build && deploy:
+     A 3, B 1, C 14); not one response of 60 deployed unconditionally. The label was fixed before the data and it
+     stands, but under the lenient reading the cell is 20 of 20 on every arm and carries nothing.
+  3  What is robust under every reading is refusal. At effort none luna answered the twice-refused claim with a short
+     text and no call (A 14 of 20, C 20 of 20; 140 to 197 characters); A's 6 calls all asked the script for its help,
+     4 of them reading its source as well. At effort low it made a call 20 of 20 times: 19 read the refusing script's
+     source outright and 1 asked for its help first. No row of the 60 re-issued the claim or chose the other queue,
+     so sample 2's signature did not appear at all: at this decision point the failure at effort none is going
+     silent, which in a served loop is a stall, since no operator is there to read the text.
+  4  The three skill cells do not discriminate: 180 of 180 PASS. In particular typed, built after sample 3's fatal
+     first decision, passes 20 of 20 on every arm. A short synthesized body under a one-sentence system text does
+     not reproduce what luna did with the product's prompt and a 65,686-character body. The cell says nothing about
+     that decision, in either direction.
+  5  My estimates were poor (A / B / C, estimated then measured): order 12/18/12 then 17/19/6; refusal 8/13/8 then
+     6/20/0; pointer 15/18/15, body 14/18/14 and typed 10/16/10, each then 20/20/20. I put the verdict reached at 25%.
+  R9, beside the verdict. Tool calls per response: 1.00 in every arm x cell except refusal (A 0.30, C 0.00), so the
+  parallel-call lead was not exercised by these cells. Reasoning tokens in arm B: order 16 to 24 (median 17), refusal
+  9 to 12 (10), typed 12 to 14 (13), and 0 in all 40 pointer and body responses. Mean latency per response: A 0.88 s,
+  B 1.01 s, C 0.99 s. The secondary measure equals the primary in every cell: 0 plan-only rows.
+
+What I take from it: R8's licence and nothing more, which is designing a Responses route for this tier behind a
+flag, whose own served sample decides shipping. This batch puts two constraints on that design. The route must
+never run this tier at effort none: C is the worst arm in both moved cells. And the route effect is not understood:
+my Responses rendering carries the system text in the instructions field where the chat rendering uses a system
+message, so "route" here means the endpoint AND the rendering. Which of the two moves the cell is measured before
+anything is designed, in a block of its own.
+Because caveat 1 makes this a one-cell reading against today's product, I apply R5's replication to it, although
+the letter of R5 asks for none after BUILD-CANDIDATE. It is stamped below before any call of it is made.
+
+=== 00:22 UTC 2026-09-19 PRE-REGISTRATION -- REASONING EFFORT AT DECISION POINTS, replication of the two moved cells (order, refusal)
+Same instrument for the calls (bench/effort_decision_points.py, sha256 b3a252a2b07e6907, unchanged), the same three
+arms interleaved inside every repetition, cells order and refusal only, N = 20 per cell per arm: 120 calls, expected
+under $0.02, the same $1.00 hand stop and 3600 s timeout. No call of it has been made.
+Reader: bench/effort_replication_read.py at sha256 3a69244293ca4cd6... (stdlib only, no network). Its self-test
+enumerates all 9,261 count triples, pins every threshold with literal cases one pass either side of it, and FAILS
+under each of ten sabotages (every constant moved by one in each direction). Run on batch 1 it prints refusal
+REPLICATES on all three lines, and order NO ROOM / REPLICATES / REPLICATES.
+Reading, per cell, three lines, each stated whatever it is. A, B and C are passes per 20. A cell with any arm under
+18 scored calls is NOT MEASURED (mechanical); an HTTP 400 naming a history or tool shape, or a served model other
+than gpt-5.6-luna, makes the batch NOT MEASURED (read by hand from the reader's first line).
+  against today's product   REPLICATES if B - A >= 5. REVERSED if A - B >= 4. Otherwise DOES NOT REPLICATE, marked
+                            NO ROOM when A >= 16, so that a ceiling is never read as a contradiction.
+  within the route          the same three labels on B against C.
+  route effect              REPLICATES if A - C >= 3. REVERSED if C - A >= 3. Otherwise ABSENT.
+  Every (A, B, C) in 0..20 maps to exactly one label on each line. There is no pooling: the second sample is read
+  on its own counts, with batch 1's printed beside it.
+What it decides. BUILD-CANDIDATE stands against today's product only if refusal REPLICATES on the first line. If it
+DOES NOT REPLICATE there, the verdict is withdrawn to MIXED and R6 names the follow-up. A REVERSED on the first line
+of either cell withdraws it as well, and a third sample of that cell comes before any design. order is expected NOT
+to replicate against today's product (batch 1: +2, no room); if it does, that is reported as new information and
+not as confirmation.
+My estimates: refusal REPLICATES against today's product 85%, within the route 95%. Route effect REPLICATES on
+order 80%, on refusal 50% (batch 1's 6 against 0, p = 0.02, is the weakest of the four comparisons).
+
+=== 00:32 UTC 2026-09-19 RESULTS -- REASONING EFFORT AT DECISION POINTS, replication of the two moved cells (launched 00:29:13Z 2026-09-19, done 00:31:23Z, 120 of 120 calls scored)
+Validity: MEASURED. 120 rows, 20 scored calls in every arm x cell, 0 HTTP errors, every row served by "gpt-5.6-luna".
+Call instrument sha256 b3a252a2b07e6907 and reader sha256 3a69244293ca4cd6 at start and end; zakcode HEAD e08fc37,
+the merge of this replication's own pre-registration, with a clean status at start and end. Spend: $0.0135 as an
+upper bound.
+
+As the reader prints it, with batch 1 beside it:
+  passes of 20   A    B    C    against today's product        within the route   route effect   batch 1 (A / B / C)
+  order          20   18    8   DOES NOT REPLICATE (NO ROOM)   REPLICATES         REPLICATES     17 / 19 / 6
+  refusal         3   20    0   REPLICATES                     REPLICATES         REPLICATES      6 / 20 / 0
+Decision, as stamped: refusal REPLICATES on the first line, so BUILD-CANDIDATE stands against today's product. It
+rests on that one cell. order behaves as expected: no room against today's product, while the effort effect inside
+the Responses route and the route effect both replicate.
+Exact p, this batch alone: refusal B vs A 2.6e-08, B vs C 1.5e-11, A vs C 0.23; order B vs A 0.49, B vs C 0.002,
+A vs C 0.00005. The refusal route effect earns its label at exactly the threshold (3) and is weak by the exact test
+in this batch; batch 1's was 6 against 0. The order route effect is strong in both batches.
+Labels. refusal: A text-only 17 and different-action 3; B different-action 20; C text-only 20. All 20 of B's responses
+read the refusing script's source, and 3 of them also asked for its help. order: every FAIL is again the chained form
+(B 2, C 12); no response deployed unconditionally. Reasoning tokens in B: order median 18, refusal median 10. Mean
+latency per response (A / B / C): order 0.87 / 1.01 / 0.85 s, refusal 1.06 / 1.49 / 1.15 s.
+Both batches side by side, as arithmetic only, since no pooled verdict was pre-registered: order A 37 of 40, B 37 of
+40, C 14 of 40; refusal A 9 of 40, B 40 of 40, C 0 of 40.
+My estimates: refusal against today's product 85% (HIT) and within the route 95% (HIT); route effect on order 80%
+(HIT) and on refusal 50% (HIT, at the threshold).
+
+What this licenses, and what it does not. R8 as written: designing a Responses route for this tier behind a flag,
+whose own served sample decides shipping. The finding the design rests on is narrow and has now been seen twice. When
+a call has been refused twice with advice that names the refused call, luna at effort none stops calling tools and
+writes a short text (chat 31 of 40, Responses 40 of 40); at effort low it investigates (40 of 40), for about ten
+reasoning tokens and a few tenths of a second. In a served loop a text where a call was needed is a stall. That is
+one decision point of five. The other point where the arms differ, order, shows no gain over today's product.
+Constraints the design inherits:
+  1  A Responses route must not run this tier at effort none: C is the worst arm in all four cell-batches.
+  2  "Route" here is the endpoint AND my rendering: the system text rides in the instructions field and the tools
+     are flattened. Which of the two moves order is measured first, in a stamped block of its own.
+  3  This bench scores one response. Carrying reasoning items across a tool loop, prompt-cache behaviour on the
+     Responses route (ADR-0193 was measured on chat) and streamed cost accounting (ADR-0195) are all unmeasured on
+     that route, and belong to the design's own measurements.
+
+=== 01:39 UTC 2026-09-19 CORRECTION AND PRE-REGISTRATION -- REASONING EFFORT ON THE ROUTE THE PRODUCT ACTUALLY USES (gpt-5.6-luna)
+CORRECTION first, because it changes what the three blocks above mean. They call arm A (a hand-built request to
+/v1/chat/completions at effort none) "what the product sends today". I never measured that. The product does not
+build its own HTTP request: its provider calls litellm, and litellm 1.86.2 moves a chat call for a gpt-5.4+ model onto
+the Responses API whenever function tools ride with a reasoning effort that is not Python None
+(litellm.main.responses_api_bridge_check; the string "none" counts). The provider's own 2026-09-17 rule sends exactly
+that string with every tool-carrying call on this tier. Read offline from the installed library, no network: luna
+with tools and effort "none" -> mode responses; "low" -> responses; effort unset -> chat; no tools -> chat.
+Measured on the wire 2026-09-19 at 01:18Z, 6 requests, with a send hook that records the URL path and the body's
+effort field and never a header:
+  chat-none         litellm, plain openai/gpt-5.6-luna, one tool, effort none   POST /v1/responses 200, effort none
+  chat-low          the same at effort low                                      POST /v1/responses 200, effort low
+  product-complete  the product's provider, buffered, nothing configured        POST /v1/responses 200, effort none
+  product-stream    the same, streamed, which is what a served app does         POST /v1/responses 200, effort none
+  bridge-low-loop   litellm's explicit responses/ prefix, effort low, 2 turns   both 200; the second request carries
+                    the function_call and function_call_output items, and the model answered it
+  In every request the system text rode as `instructions` and the tool arrived flattened. No request went to
+  /v1/chat/completions. The product's two requests carry the same body keys (input, instructions,
+  max_output_tokens, model, reasoning, stream, tool_choice, tools). 0 key-shaped strings in the probe's output.
+So today's product sits on arm C's ROUTE (the Responses API at effort none), and litellm renders the request much
+as my arm C does: the system message becomes `instructions` and tools are flattened. Three rendering differences
+are on record: litellm sends `strict: null` on each tool where arm C sends no strict key (read offline from its
+converter), the product adds max_output_tokens and tool_choice auto, and arm C sends `store: false`. Whether any of
+them moves behaviour is what Q1 below reads.
+What stands in the blocks above: every count, every exact test, and the B-against-C readings. What does not stand:
+the phrase "against today's product" wherever it meant arm A. Batch 1 and the replication read B against A as
+"order no room, refusal +14 and +17"; against C, the route the product is on, the same two batches read order 19
+against 6 and 18 against 8, refusal 20 against 0 twice. I do not re-label the verdict from those numbers: C is my
+hand-built request, not the product's, and this block measures the product's own.
+
+A consequence of the route, measured the same hour because it is live in production. None of those requests carries
+a `store` field, and the product never sets one. On the Responses API that means stored: a request with no `store`
+field came back `store: true` and was retrievable by its id afterwards (GET 200; I deleted it, DELETE 200), and the
+same request with `store: false` came back `store: false` and its id was a 404. Chat completions stores only on
+request (the documented default, not measured here), so for luna tool calls this has held at least since the
+2026-09-17 rule began sending effort none with tools, which is what moves them onto the bridge. terra takes the same
+branch in the offline check and was not sent. The opt-out has one working door: a top-level `store=False` handed
+to litellm never reaches the wire (measured: no `store` key in the body), while `extra_body={"store": false}` does,
+through litellm alone and through the product's provider, where the cache routing key already rides that door
+(measured: both on the wire together). The fix is a product change with its own decision record, not part of this
+bench. The P arms below are sent exactly as the product sends them, so their responses are stored; they carry
+synthetic prompts only. The raw B and C arms have sent `store: false` since the first batch.
+
+Why it matters: the served loop's stall signature is a text-only completion at a decision point (sample 4, 2026-09-19:
+three turns ended veto_stall after text-only completions), and the one arm that showed that signature most in
+isolation is the route the product turns out to be on.
+
+PRE-REGISTRATION. Nothing below has been run. Script: bench/effort_product_route.py (sha256 prefix a072d3e1c58a83d6),
+which imports the cells, the scorer and the raw request builders from bench/effort_decision_points.py (sha256 prefix
+b3a252a2b07e6907, unchanged) so the two benches cannot drift. Model gpt-5.6-luna, 20 repetitions, arms interleaved
+inside every repetition, the two cells that had room (order, refusal): 5 arms x 2 cells x 20 = 200 calls, upper-bound
+spend about $0.03 at list rates, stopped above $1.00 by the same watcher as before.
+Arms:
+  P-none  the product's provider class (zakcode.providers.litellm_provider.LiteLLMProvider), built for
+          openai/gpt-5.6-luna with nothing configured: tools force effort none. This is today's product.
+  P-low   the same class with a configured depth of low and the forced-none latch released on that instance: what the
+          provider would send if a configured depth were allowed to ride with tools. Not a product change; the
+          bench flips one attribute on its own object.
+  A, B, C the three hand-built requests of the first bench, byte-identical builders, as same-batch controls.
+Both P arms use the provider's buffered call; a served app streams. The wire request differs by the stream flag only
+(measured above: same path, same body keys, same effort, same tool count).
+Measures, per cell, in passes per 20 with the scored count beside each:
+  W   every scored P call's LAST request went to /v1/responses carrying the arm's own effort.
+      My estimate: 95% that all of them did.
+  Q1  where today's product sits: P-none within 4 of C and not within 4 of A reads SITS WITH C; the mirror reads SITS
+      WITH A; within 4 of both reads BETWEEN THE CONTROLS; within 4 of neither reads NEITHER; A and C fewer than 5
+      apart in this batch reads NOT SEPARABLE.
+      My estimates: order SITS WITH C 75%; refusal NOT SEPARABLE 50%, SITS WITH C 35%.
+  Q2  what a depth of low does on the product's own route: P-low minus P-none >= 7 reads GAIN; <= -4 reads HARM (read
+      first); P-none >= 17 reads NO ROOM; within 2 reads FLAT; anything else reads BETWEEN.
+      My estimates: order GAIN 75%; refusal GAIN 90%.
+Reading rules, over every outcome:
+  a  W false for any scored P call: NOT THE BRIDGE, NOT READ. The batch is reported as measured, Q1 and Q2 are not
+     read, and the finding is where those calls went.
+  b  Fewer than 18 scored calls in P-none or P-low on a cell: that cell is NOT MEASURED and so is the verdict.
+  c  Any HARM: verdict HARM. Nothing changes and the harm is reported with its labels.
+  d  Otherwise any GAIN: CHANGE-CANDIDATE. It licenses ONE replication of the gained cells (P-none, P-low and the
+     three controls, bar >= 5 as before). Only a replicated gain licenses a product change, and that change is
+     limited to letting a CONFIGURED depth ride with tools on this tier; the default stays none, and whether a
+     served Mind should run at low is decided by its own pre-registered served sample, never by this bench.
+  e  Every cell FLAT or NO ROOM: NO CHANGE. The effort bench's BUILD-CANDIDATE is then withdrawn for the product's
+     route and said so here.
+  f  Anything else: INCONCLUSIVE, reported as measured, one replication of the unclear cells allowed and no more.
+  g  Q1 is a description, never a gate: whatever it reads, Q2 is read on the product's own arms.
+Second-sample rule: a second batch is run only as rule d's or f's replication, or as the re-run after an instrument
+failure (any HTTP error rate above 10% in an arm, or W false because of my hook). Never to improve a number.
+Self-test, no network: 31 literal boundary cases and 12 batch cases; every one of the seven reading constants moved by
+one in either direction (14 sabotages) fails it.
+
+=== 04:03 UTC 2026-09-19 RESULTS -- REASONING EFFORT ON THE PRODUCT'S OWN ROUTE, batch 1 (launched 01:48:17Z 2026-09-19, done 01:51:42Z, 200 of 200 calls scored)
+Validity: MEASURED. 200 rows, 20 scored calls in every arm x cell, 0 HTTP errors, 0 provider errors. Call script
+sha256 a072d3e1c58a83d6 and cells b3a252a2b07e6907 at start and end; zakcode HEAD 5bcb100, the merge of this batch's
+own pre-registration (#558), with a clean status at start and end; litellm 1.86.2. Spend: 61,860 input and 8,505
+output tokens, $0.0226 with every input token priced uncached, which is an upper bound.
+W   HIT. Every scored product call made ONE request, to /v1/responses, carrying its arm's own effort: P-none 40 of 40
+    at none, P-low 40 of 40 at low. The released latch was never set again by a 400.
+Instrument limit: the raw arms' rows name the served model (gpt-5.6-luna, 120 of 120). The product arms' rows do not:
+the provider's buffered result leaves its usage model empty on this route. What those 80 requests asked for is
+pinned by W's path and effort, and by the 01:18Z probe, which read the model name in the product's request body.
+
+VERDICT, as the script prints it: CHANGE-CANDIDATE. Two GAIN cells, no HARM.
+  passes of 20   A chat/none   B resp/low   C resp/none   P-none   P-low   P-low - P-none   effect   P-none sits
+  order          19            18            6             5       19      +14  p 0.00001   GAIN     WITH C
+  refusal         2            20            0             0       20      +20  p 1.5e-11   GAIN     NOT SEPARABLE
+  p is the exact two-sided test of P-low against P-none. P-none against C: p = 1 on both cells. P-none against A:
+  order p = 0.00001, refusal p = 0.49. P-low against B: p = 1 on both cells.
+My estimates, all five as they fell: the wire gate holds (95%) HIT; order SITS WITH C (75%) HIT; refusal NOT SEPARABLE
+(50%) HIT; order GAIN (75%) HIT; refusal GAIN (90%) HIT.
+
+What the batch shows.
+  1  Today's product behaves as my hand-built Responses request at effort none does, and not as arm A does: order 5
+     against C's 6 and A's 19; refusal 0 against 0 and 2. The correction above is now a measurement and not only a
+     reading of the wire. The rendering differences on record (strict null, max_output_tokens, tool_choice auto, no
+     store field) moved nothing these cells can see: P-none reads as C, and P-low reads as B (19 and 18, 20 and 20).
+  2  On the product's own route a depth of low moves both cells from the floor to the ceiling. Labels: every order
+     FAIL is the chained form (A 1, B 2, C 14, P-none 15, P-low 1); no response of 100 deployed unconditionally.
+     refusal: P-none text-only 20 of 20, P-low a different action 20 of 20, as C and B.
+  3  What low costs here: reasoning tokens median 17 (order) and 10 (refusal); mean output tokens 46 against 29 and
+     64 against 43; mean seconds per response 0.96 against 1.04 and 1.20 against 1.21. About 20 output tokens a
+     call, and no latency these samples can see.
+What the verdict does not say.
+  4  These are synthetic single decisions: a 135-character system prompt, four tools, at most five messages. The
+     served loop's decision points carry 44K to 130K tokens. Whether depth moves THOSE is for a pre-registered served
+     sample, as the pre-registration said, and is not claimed here.
+  5  The order GAIN rests on the strict label, as in the first bench: the chained form counts as a FAIL.
+  6  Reported and not decided here: the ROUTE effect at effort none. Across three batches the chat route reads order
+     56 of 60 and refusal 11 of 60; the Responses route reads 20 of 60 and 0 of 60, and today's product 5 and 0 of
+     20. Arm A's request is reachable only by hand today: the product's client moves any tool call that carries an
+     effort onto the bridge, and the chat route refuses tools with any effort but none. Whether the DEFAULT should
+     stay on the bridge is its own question with its own arms; nothing here licenses changing it.
+  7  The product arms' 80 responses were stored by the provider, as the pre-registration said; synthetic prompts only.
+Rule d applies: CHANGE-CANDIDATE licenses ONE replication of the gained cells, pre-registered below. Spend on this
+bench so far: $0.02.
+
+=== 04:03 UTC 2026-09-19 PRE-REGISTRATION -- REASONING EFFORT ON THE PRODUCT'S OWN ROUTE, replication of the two gained cells (order, refusal)
+Rule d's one replication. Same instrument for the calls (bench/effort_product_route.py at sha256 a072d3e1c58a83d6
+and the cells it imports at b3a252a2b07e6907, both unchanged), the same five arms interleaved inside every
+repetition, the same two cells, N = 20 per cell per arm: 200 calls, expected about $0.02, the same $1.00 stop and
+1500 s timeout. No call of it has been made.
+Reader: bench/effort_product_route_replication_read.py at sha256 c10d4ad3583993fb (stdlib and the two sibling
+scripts, no network). It imports the first replication reader's thresholds and the call script's own wire gate
+instead of copying either, so the readers cannot drift. Self-test: 24 literal cases and all 441 (P-none, P-low)
+pairs. Each of six sabotages fails it: the two arms swapped, every-cell weakened to any-cell, the wire gate
+removed, the not-measured branch removed, the reversal branch removed, a thin arm read anyway. Run on batch 1 it
+prints REPLICATES on both cells and REPLICATED.
+Reading, per cell, one line on the product's own arms, in passes per 20:
+  the product's route   REPLICATES if P-low - P-none >= 5. REVERSED if P-none - P-low >= 4. Otherwise DOES NOT
+                        REPLICATE, marked NO ROOM when P-none >= 16, so that a ceiling is never read as a
+                        contradiction.
+  A cell with P-none or P-low under 18 scored calls is NOT MEASURED. The wire gate is read first: any scored product
+  call whose last request did not go to /v1/responses with its arm's own effort makes the batch NOT THE BRIDGE: NOT
+  READ. The three raw arms are printed as controls and decide nothing. There is no pooling: the second batch is read
+  on its own counts, with batch 1's printed beside it.
+What it decides.
+  REPLICATED (both cells REPLICATE): the change rule d names is licensed, and nothing more. A CONFIGURED reasoning
+      depth may ride with tools on this tier. The default stays none. The re-issue at none after a 400 stays as the
+      safety net. Whether a served Mind should RUN at low is decided by its own pre-registered served sample.
+  NOT REPLICATED: CHANGE-CANDIDATE is withdrawn to MIXED, the cells are named, and no product change is made from
+      this bench.
+  REVERSED on either cell: withdrawn, and a third batch of that cell comes before any design.
+  NOT MEASURED, or NOT READ: an instrument failure. The same batch is re-run once, and the failure is reported.
+My estimates: order REPLICATES 85%; refusal REPLICATES 95%; the wire gate holds 97%.
+
+=== 09:30 UTC 2026-09-19 RESULTS: the product's own route, batch 2 — the pre-registered replication ===
+
+Read under the rules of the 04:03 UTC 2026-09-19 pre-registration above, which fixed the reading before this
+batch was launched. The call script is byte-identical to batch 1's (bench/effort_product_route.py, sha256
+prefix a072d3e1c58a83d6), as that pre-registration required. The reader is
+bench/effort_product_route_replication_read.py at c10d4ad3583993fb; its own self-test (24 literal cases, 441
+pairs, 0 mismatches) passed before the read, and so did the call script's (31 literal cases, 12 batch cases).
+
+VALID. 200 of 200 calls scored, 0 HTTP errors, 0 exceptions, 0 unparsed rows. Launched 04:15:22Z, last row
+04:19:23Z, at HEAD 3b41158 with a clean tree; the src tree is 53a1d1c13daf, unchanged since #553, so no part
+of the product moved between the two batches. Cells sha b3a252a2b07e6907, litellm 1.86.2. Spend $0.0226,
+upper bound. The served_model field is empty on the P rows because the buffered bridge path leaves
+usage.model empty — a known gap, named in sample 4's block, and it touches no measure here.
+
+THE WIRE GATE, read first as rule f requires. Every product call made ONE request to /v1/responses carrying
+its own effort: P-none 40 of 40 at none, P-low 40 of 40 at low. all_on_bridge true, so the batch is READ
+rather than refused. The gate has now held on 160 of 160 product calls across the two batches.
+
+MEASURE Q1 AND Q2, passes out of 20 per cell per arm. Batch 2 first, batch 1 beside it.
+
+  cell     batch  A chat/none  B resp/low  C resp/none  P-none  P-low  P-low - P-none  label
+  order      2        19           18           5         7      18        +11        REPLICATES
+  order      1        19           18           6         5      19        +14        REPLICATES
+  refusal    2         6           20           0         0      20        +20        REPLICATES
+  refusal    1         2           20           0         0      20        +20        REPLICATES
+
+Both cells clear the pre-registered REPLICATES bar of +5; neither approaches REVERSED (-4) or NO ROOM
+(P-none >= 16); all 20 scored per arm, well over the MIN_SCORED of 18. DECISION: REPLICATED.
+
+Fisher exact, two-sided, P-low against P-none: order p = 0.00077 (batch 1: 1.0e-05); refusal p = 1.45e-11
+(batch 1: 1.45e-11).
+
+THE ESTIMATES I REGISTERED, AGAINST THE OUTCOMES. order REPLICATES, 85% — HIT. refusal REPLICATES, 95% —
+HIT. The wire gate holds, 97% — HIT. Three of three.
+
+THE FAILURES BY LABEL. Every order failure in both batches is the model putting the deploy in the same
+response as the build instead of waiting for the build's result. Batch 2 adds a second form batch 1 did not
+produce: the deploy in the FIRST response, 1 of B's 2 failures and 2 of P-none's 13. The remainder are the
+chained form (batch 2: A 1, B 1, C 15, P-none 11, P-low 2). Every refusal failure in both batches, in every
+arm, is text-only: the model answers in prose where the cell calls for a different action (batch 2: A 14,
+C 20, P-none 20; batch 1: A 18, C 20, P-none 20). B and P-low leave none in either batch.
+
+THE COST OF LOW on the product's own route, pooled over both cells, per call.
+
+  batch  input  output at none  output at low  reasoning at low  latency at none  latency at low
+    2    293.5      36.5            55.4             16.0            1.27 s           1.22 s
+    1    293.5      35.9            54.9             14.5            1.13 s           1.08 s
+
+About +19 output tokens a call, of which about 15 are reasoning tokens; input is identical by construction.
+No latency cost is measurable: low came in marginally FASTER in both batches, which I read as no difference
+rather than a speed-up, on 40 calls an arm.
+
+REPORTED, NOT DECIDED — the route at none. Four batches on disk now carry both hand-built controls in the
+same shape (run1, rep1, route1, route2; 80 calls an arm a cell). The chat route at none reads order 75/80
+and refusal 17/80; the Responses route at none reads order 25/80 and refusal 0/80. Today's product is the
+Responses route, so it inherits the low half of that on both cells.
+
+One reading moved between the batches, for a reason worth the record. On the refusal cell batch 1 read NOT
+SEPARABLE, because its two controls were 2 and 0 — closer than the pre-registered APART of 5, so no
+placement could be made. Batch 2's chat control reached 6, which separated them, and today's product at 0
+then sits WITH the Responses control. The product's own reading is 0 of 20 in both batches; what changed is
+that the controls moved far enough apart to place it. The chat route at none is the variable one here — 6,
+3, 2, 6 across the four batches on the refusal cell — while the Responses route at none is 0 in all four.
+
+WHAT THIS LICENSES. Exactly what the pre-registration said REPLICATED would license, and nothing else: a
+CONFIGURED reasoning depth may ride with tools on this tier; the default stays none; the re-issue at none
+after a 400 stays as the safety net. Whether a served Mind should RUN at low is a separate question, decided
+by its own pre-registered served sample and not by this bench.
+
+NOT CLAIMED. That low fixes the decision points of a real served loop: this bench's cells are two hand-built
+decisions at ~294 input tokens, and sample 4's loop stalled at 17K-token prompts with whole skill bodies in
+context. That the route effect at none has a cause — chat beats Responses at the same declared effort on
+both cells, four batches running, and nothing here explains why. That anything holds for terra, which takes
+the same branch in the offline check and was never sent, or for the pod tier, which is not on this route.
+
+THE SECOND-SAMPLE RULE. Rule d licensed ONE replication and this was it, so no further batch of this bench
+is licensed by that block. A third batch would need its own pre-registration naming what it would settle
+that these two did not. The next measurement this line of work licenses is a served sample at configured
+low, and that one needs the M1 and M3 instrument repairs of sample 4's block landed and read back first.
+
+SPEND. This batch $0.0226. The bench across both batches $0.0452.

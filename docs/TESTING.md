@@ -41,7 +41,7 @@ reply can depend on which iteration the loop is on:
 
 ```python
 async def _probe_doom_loop_recovery(workspace: str) -> str:
-    same = call_tool("write_file", {"path": ".../scratch.txt", "content": "x"})
+    same = call_tool("Write", {"path": ".../scratch.txt", "content": "x"})
 
     def responder(messages, system, i):     # i = 0-based loop iteration
         return same if i < 3 else reply("changing approach; done")  # repeat, then break out

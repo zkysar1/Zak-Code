@@ -26,7 +26,7 @@ class ScheduleWakeupTool(Tool):
     """Arm (or cancel) the session's one scheduled wake-up."""
 
     spec = ToolSpec(
-        name="schedule_wakeup",
+        name="ScheduleWakeup",
         description=(
             "Schedule a wake-up: after delaySeconds, if the session is at its prompt, it "
             "receives 'prompt' as a harness line and continues. One wake-up is held per "

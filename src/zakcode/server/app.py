@@ -56,7 +56,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from zakcode import __version__
 from zakcode._subprocess import new_group_kwargs, terminate_process_tree
-from zakcode.agent.loop import TurnResult
+from zakcode.agent.loop import TurnResult, harness_skill_turn_text
 from zakcode.artifacts import (
     ArtifactChangedError,
     ArtifactError,
@@ -64,6 +64,7 @@ from zakcode.artifacts import (
     artifact_from_path,
     resolve_artifact_path,
 )
+from zakcode.background import BackgroundTasks
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
@@ -102,6 +103,7 @@ from zakcode.session.framework_stop import (
     abandon_framework_stop,
     framework_stop_complete,
     request_framework_stop,
+    retire_expired_sidecar_stop,
 )
 from zakcode.session.observation_inbox import (
     CHANGES_SLICE,
@@ -129,6 +131,7 @@ from zakcode.session.store import (
 )
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
+from zakcode.wakeup import LOOP_SENTINEL, LOOP_WAKE_NOTE, WakeupSlot, fired_line
 
 logger = logging.getLogger("zakcode.server")
 
@@ -282,7 +285,7 @@ def _reader_tool_for_artifact(artifact: ArtifactRef) -> str:
     if artifact.kind == "image":
         return "inspect_image"
     if artifact.kind == "text":
-        return "read_file"
+        return "Read"
     return ""
 
 
@@ -1990,7 +1993,7 @@ def create_app(
         except OSError:  # includes FileNotFoundError — nothing pending
             return False
 
-    async def _run_turn_for_say(text: str) -> None:
+    async def _run_turn_for_say(text: str, *, wakeup: bool = False, verbatim: bool = False) -> None:
         sid = _current_session_id()
         session: Session | None = None
         if sid is not None:
@@ -2010,27 +2013,40 @@ def create_app(
         # The transcript's user row comes from the bus — the one source of truth,
         # so a remote `zakcode say` renders on the web page exactly like a typed one.
         with contextlib.suppress(Exception):
-            bus.publish(WatchMarkerRequest(event="user_message", text=text))
+            bus.publish(
+                WatchMarkerRequest(event="user_message", text=fired_line(text) if wakeup else text)
+            )
         inflight.add(session.id)
         agent: AgentLike | None = None
         interrupt_fp = interrupt_path(resolved_settings.workspace_root)
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
             agent = resolved_factory(session, None, _inbox_prompter(session.id))
-            slash = await dispatch_slash(agent, text)
-            if slash.refusal:
-                # No turn. The user_message marker is already on the bus; publish the
-                # refusal's terminal frames so watchers learn WHY instead of sticking on
-                # "thinking…", then fall through to the finally (save + release) as any turn.
-                for refused in refusal_events(slash):
-                    with contextlib.suppress(Exception):
-                        bus.publish(refused)
-                return
-            # A dispatched skill turn keeps its provenance frame at the very START of the
-            # message — that position IS the signal (see Agent.compose_skill_turn) — so a
-            # queued nudge is NOT folded in front of it; it stays queued for the next prose
-            # turn. Prose turns fold the nudge exactly as before.
-            message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
+            message: str
+            if wakeup:
+                # A fired wake-up is the harness's own turn (ADR-0189): never a slash
+                # line, and a composed re-entry keeps its frame FIRST, so no nudge is
+                # folded in front of it.
+                message = await _wakeup_turn_text(agent, session, text)
+            elif verbatim:
+                # A harness notification (ADR-0191): delivered as it is — never a slash
+                # line, and no nudge folded in front of it.
+                message = text
+            else:
+                slash = await dispatch_slash(agent, text)
+                if slash.refusal:
+                    # No turn. The user_message marker is already on the bus; publish the
+                    # refusal's terminal frames so watchers learn WHY instead of sticking on
+                    # "thinking…", then fall through to the finally (save + release) as any turn.
+                    for refused in refusal_events(slash):
+                        with contextlib.suppress(Exception):
+                            bus.publish(refused)
+                    return
+                # A dispatched skill turn keeps its provenance frame at the very START of the
+                # message — that position IS the signal (see Agent.compose_skill_turn) — so a
+                # queued nudge is NOT folded in front of it; it stays queued for the next prose
+                # turn. Prose turns fold the nudge exactly as before.
+                message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
 
             async def _run() -> None:
                 assert agent is not None
@@ -2092,6 +2108,106 @@ def create_app(
                     await _release_agent(agent)
                 inflight.discard(session.id)
 
+    #: A framework stop was raised and no turn has yet been started to read it
+    #: (ADR-0189). Consumed by the first idle beat after the raise.
+    stop_reentry_pending = False
+
+    def _load_current_session() -> Session | None:
+        sid = _current_session_id()
+        if sid is None:
+            return None
+        try:
+            return resolved_store.load(sid)
+        except (SessionNotFound, SessionCorruptError, SessionVersionError):
+            return None
+
+    def _take_due_wakeup() -> str | None:
+        """The current session's held wake-up prompt once it is due — the slot is consumed
+        — else ``None`` (ADR-0189).
+
+        The REPL services this slot at its idle prompt (ADR-0094, ADR-0187). A served
+        session has no prompt, so until this the wake-up the loop arms as its own deadman's
+        net could never fire here — measured on a prod vessel 2026-09-18: the loop's turn
+        ended ``veto_stall`` at 02:11:45Z, ``pending_wakeup`` came due at 02:21:45Z and was
+        still armed at 02:35Z; nothing started a turn until the say inbox did, and nothing
+        ever did.
+        """
+        session = _load_current_session()
+        if session is None:
+            return None
+
+        def _persist() -> None:
+            resolved_store.save(session)
+
+        slot = WakeupSlot(session, on_change=_persist)
+        return slot.take_due_prompt()
+
+    def _take_task_notification() -> str | None:
+        """Every background command of the current session that exited and was not yet
+        reported, as ONE harness line — the ``<task-notification>`` Claude Code delivers —
+        else ``None`` (ADR-0191). The REPL reports these at its idle prompt; a served
+        session has no prompt, so this beat is where its background commands are reported.
+        """
+        session = _load_current_session()
+        if session is None:
+            return None
+
+        def _persist() -> None:
+            resolved_store.save(session)
+
+        return BackgroundTasks(session, on_change=_persist).take_notifications()
+
+    def _take_stop_reentry() -> str | None:
+        """The loop sentinel, ONCE, after a framework stop was raised with no turn to read
+        it — else ``None`` (ADR-0189).
+
+        The signal is read at the top of the mind's next loop beat (Phase -1.4); between
+        turns there is no beat, so a stop raised then sat unread until the window closed
+        (same prod run: signed at 02:33:29Z, nothing in flight, retired unconsumed). Only
+        while the window is open, and only when the session knows its hook-named loop
+        re-entry: the turn this starts is the harness's own composed re-entry, never a
+        prompt of ours — the sidecar still decides WHEN, the mind WHAT (guard-1807).
+        """
+        nonlocal stop_reentry_pending
+        if not stop_reentry_pending:
+            return None
+        stop_reentry_pending = False
+        if framework_stop_until is None:
+            return None
+        session = _load_current_session()
+        if session is None or not str(getattr(session, "loop_skill", "") or "").strip():
+            return None
+        return LOOP_SENTINEL
+
+    async def _wakeup_turn_text(agent: AgentLike, session: Session, prompt: str) -> str:
+        """The turn a fired wake-up runs, composed as the REPL door composes it (ADR-0187):
+        the loop sentinel resolves to the skill the session's last hook-named re-entry ran,
+        the wake note folded into its frame, after a stalled turn's context is compacted;
+        anything else — or a sentinel this agent cannot compose — is the fired line the
+        wake-up always carried (ADR-0094)."""
+        if prompt.strip() != LOOP_SENTINEL:
+            return fired_line(prompt)
+        spec = str(getattr(session, "loop_skill", "") or "").strip()
+        compose = getattr(agent, "compose_skill_turn", None)
+        if not spec or compose is None:
+            return fired_line(prompt)
+        if getattr(session, "last_stop_reason", "") == "veto_stall":
+            compact = getattr(getattr(agent, "loop", None), "compact_now", None)
+            if compact is not None:
+                with contextlib.suppress(Exception):
+                    await compact(trigger="resume")
+        name, _, args = spec.partition(" ")
+        try:
+            result = await compose(name, args.strip(), source="harness")
+        except Exception:  # noqa: BLE001 — a broken composer must never break the beat
+            return fired_line(prompt)
+        turn_text = getattr(result, "turn_text", None)
+        if not getattr(result, "invoked", False) or not turn_text:
+            return fired_line(prompt)
+        if getattr(result, "denied_reason", None) or getattr(result, "error", None):
+            return fired_line(prompt)
+        return harness_skill_turn_text(str(turn_text), LOOP_WAKE_NOTE)
+
     async def _consume_one_say() -> bool:
         """One consumer beat: run a turn if a say OR a nudge is waiting and nothing is
         in flight.
@@ -2111,9 +2227,22 @@ def create_app(
             return False
         text = read_say(say_path(resolved_settings.workspace_root))
         if text is None:
-            if not _nudge_pending():
-                return False
-            text = IDLE_NUDGE_LINE
+            if _nudge_pending():
+                text = IDLE_NUDGE_LINE
+            else:
+                # ADR-0191: a background command that exited is reported first, as the
+                # harness's own line (Claude Code's <task-notification>), at this door.
+                note = _take_task_notification()
+                if note is not None:
+                    await _run_turn_for_say(note, verbatim=True)
+                    return True
+                # ADR-0189: the third trigger. A stop raised with nothing in flight, or
+                # the session's own wake-up coming due, starts the turn that reads it.
+                fired = _take_stop_reentry() or _take_due_wakeup()
+                if fired is None:
+                    return False
+                await _run_turn_for_say(fired, wakeup=True)
+                return True
         await _run_turn_for_say(text)
         return True
 
@@ -2133,6 +2262,12 @@ def create_app(
     run_stop_reason: str | None = None
     run_deadline: float | None = None
     turn_deadline: float | None = None
+    #: THE LIVENESS CLOCK, and the one stamp in this block that IS re-stamped per beat.
+    #: The comment above says a stamp rewritten each cycle measures time since the last
+    #: event while a preserved one measures total duration; both questions are worth
+    #: asking, so both stamps exist and neither is derived from the other. This one
+    #: answers "has anyone said anything lately" — see `run_idle_timeout` in config.py.
+    last_say_at: float = 0.0
     #: The reserve actually in force, CLAMPED to the cap. Resolved once at arm time and
     #: used everywhere after, because the reserve is also the FLOOR on the digest budget
     #: below: leaving the raw value there would let a reserve larger than the cap push
@@ -2146,7 +2281,11 @@ def create_app(
     run_ended = asyncio.Event()
 
     def _arm_run_deadlines() -> None:
-        nonlocal run_deadline, turn_deadline, effective_reserve
+        nonlocal run_deadline, turn_deadline, effective_reserve, last_say_at
+        # BEFORE the cap branch, deliberately: an UNBOUNDED run returns early below, and
+        # it is the run that most needs an idle bound — there is no cap behind it to
+        # catch an abandoned vessel at all.
+        last_say_at = time.monotonic()
         cap = resolved_settings.run_max_duration
         if cap is None:
             run_deadline = turn_deadline = None
@@ -2357,11 +2496,15 @@ def create_app(
         ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
         share ONE window rather than each restarting the grace.
         """
-        nonlocal framework_stop_until
+        nonlocal framework_stop_until, stop_reentry_pending
         if framework_stop_until is not None:
             return
         if await _raise_framework_stop():
             framework_stop_until = time.monotonic() + _framework_stop_grace()
+            # ADR-0189: a raised stop needs a READER. A turn in flight reads it at its
+            # own next beat; with none in flight the next consumer beat starts the
+            # loop's re-entry. Idempotent with the window: set once per raise.
+            stop_reentry_pending = True
 
     def _keep_beating() -> bool:
         """Whether the say consumer gets another beat.
@@ -2466,7 +2609,7 @@ def create_app(
         request_interrupt(interrupt_path(resolved_settings.workspace_root))
 
     async def _consume_say_loop() -> None:
-        nonlocal run_stop_reason
+        nonlocal run_stop_reason, last_say_at
         _arm_run_deadlines()
         deadline_watcher = asyncio.create_task(_watch_turn_deadline())
         # Exposed so a test can assert the cancellation ORDERING directly — that the
@@ -2501,6 +2644,28 @@ def create_app(
                     # ending is exactly what it was before this change: break now.
                     if framework_stop_until is None or not _keep_beating():
                         break
+                # The ABANDONED case, which the cap above cannot bound: a member who
+                # walks away mid-conversation pays the full price they agreed to for a
+                # run that ended twenty minutes in. Checked AFTER the cap so a run that
+                # trips both still ends as `duration_cap` — the ceiling is the stronger
+                # statement and the one the customer was quoted.
+                #
+                # `not inflight` is load-bearing. A long turn is activity, and the stamp
+                # only moves when a say is CONSUMED, so a turn that outlives the window
+                # would otherwise be stopped for idling while it is the opposite of idle.
+                if (
+                    resolved_settings.run_idle_timeout is not None
+                    and not inflight
+                    and time.monotonic() - last_say_at >= resolved_settings.run_idle_timeout
+                ):
+                    logger.info(
+                        "no say in %.0fs — stopping the run",
+                        resolved_settings.run_idle_timeout,
+                    )
+                    run_stop_reason = "idle"
+                    await _begin_framework_stop()
+                    if framework_stop_until is None or not _keep_beating():
+                        break
                 try:
                     ran = await _consume_one_say()
                 except asyncio.CancelledError:
@@ -2508,6 +2673,11 @@ def create_app(
                 except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
                     logger.exception("say consumer: beat failed")
                     ran = False
+                if ran:
+                    # A CONSUMED say, never an arriving one: this is the same signal the
+                    # beat interval already keys on, so the idle window and the beat
+                    # cadence can never disagree about what counts as activity.
+                    last_say_at = time.monotonic()
                 await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
         finally:
             # BEFORE `_end_run()`, always, on every exit path — the consolidation turn
@@ -2518,6 +2688,13 @@ def create_app(
             # depend on it. `cancel()` alone suffices — the watcher is suspended in its
             # sleep, so it can never reach the fire branch again.
             deadline_watcher.cancel()
+            # The window closed with the pair still on disk and NO turn to interrupt —
+            # the third orphan path (g-373-92): the watcher's two overrun branches retire
+            # the pair only when a turn was running as the grace ran out. Measured on
+            # prod 2026-09-18: loop at rest, stop signed 02:33:29Z, window closed
+            # 02:39:20Z, the signed pair still on EFS after the vessel was torn down.
+            if framework_stop_until is not None and time.monotonic() >= framework_stop_until:
+                _retire_unconsumed_framework_stop()
         if run_stop_reason is None:
             # Fell out of the `while` guard rather than the `break`: an explicit stop.
             # A human ending the run is a DIFFERENT story from the clock running out,
@@ -2534,6 +2711,16 @@ def create_app(
         # server accepts requests, so this always precedes the first /sidecar/health
         # poll — the clear cannot race the reader that the incident turned on.
         _clear_run_stop_reason()
+        # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
+        # retired must not open this run's /start on a stop nobody asked for — the
+        # framework keeps a signed signal without consulting time, so its lifetime is
+        # ours to end. Only a raise whose grace has already run out qualifies.
+        if resolved_settings.run_stop_agent:
+            retire_expired_sidecar_stop(
+                resolved_settings.workspace_root,
+                resolved_settings.run_stop_agent,
+                grace_s=resolved_settings.run_consolidation_reserve,
+            )
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:

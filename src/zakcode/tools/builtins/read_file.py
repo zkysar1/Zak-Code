@@ -21,7 +21,7 @@ class ReadFileTool(Tool):
     """Read a UTF-8 text file inside the workspace, with an optional line slice."""
 
     spec = ToolSpec(
-        name="read_file",
+        name="Read",
         description=(
             "Read a text file within the workspace. Optionally provide a 1-based "
             "line 'offset' and a 'limit' to read only a slice of lines. Output is "

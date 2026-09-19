@@ -31,13 +31,22 @@ MAX_DELAY_SECONDS = 3600
 DEFAULT_DELAY_SECONDS = 600
 
 #: Claude Code resolves this sentinel back to its autonomous-loop instructions at fire time;
-#: a Mind's deadman net arms exactly this. Zak Code hands over the line below instead.
+#: a Mind's deadman net arms exactly this. Zak Code resolves it to the skill a turn-end hook
+#: last asked the loop to re-enter with (``Session.loop_skill``, ADR-0187), composed by the
+#: harness with :data:`LOOP_WAKE_NOTE` in the frame; when no such skill is known yet it hands
+#: over :data:`LOOP_LINE` instead.
 LOOP_SENTINEL = "<<autonomous-loop-dynamic>>"
+LOOP_WAKE_NOTE = (
+    "the wake-up armed as the autonomous-loop sentinel fired: the loop that armed it did not "
+    "re-enter on its own and nobody is at the prompt. Re-arm a wake-up with ScheduleWakeup "
+    "first, then carry out these instructions from where the plan stands. Do not stop to "
+    "wait for instructions."
+)
 LOOP_LINE = (
     "[harness] the wake-up armed as the autonomous-loop sentinel fired: the loop that armed it "
     "did not re-enter on its own and nobody is at the prompt. Re-arm a wake-up first, then "
-    "re-enter the loop — invoke the skill that runs it (the aspirations loop, args 'loop') "
-    "and carry on from where the plan stands. Do not stop to wait for instructions."
+    "re-enter the loop — invoke the skill that runs it, with the arguments it was started "
+    "with — and carry on from where the plan stands. Do not stop to wait for instructions."
 )
 
 
@@ -109,12 +118,19 @@ class WakeupSlot:
     def take_due(self, now: float | None = None) -> str | None:
         """The line to deliver when the held wake-up is due — the slot is consumed — else
         ``None``. Called from the REPL's idle wait; never mid-turn."""
+        prompt = self.take_due_prompt(now)
+        return None if prompt is None else fired_line(prompt)
+
+    def take_due_prompt(self, now: float | None = None) -> str | None:
+        """The held wake-up's own prompt when it is due — the slot is consumed — else
+        ``None``. The REPL door resolves the sentinel itself (ADR-0187); :meth:`take_due`
+        renders the plain line."""
         wakeup = self.pending()
         if wakeup is None or not wakeup.is_due(self._clock() if now is None else now):
             return None
         self._session.pending_wakeup = None
         self._changed()
-        return fired_line(wakeup.prompt)
+        return wakeup.prompt
 
     def _changed(self) -> None:
         if self._on_change is not None:

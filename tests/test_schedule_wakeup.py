@@ -108,7 +108,9 @@ def test_a_new_arm_replaces_the_held_wakeup_and_stop_cancels_it() -> None:
 def test_the_loop_sentinel_fires_as_the_re_entry_line() -> None:
     assert fired_line(LOOP_SENTINEL) == LOOP_LINE
     assert fired_line(f"  {LOOP_SENTINEL} ") == LOOP_LINE
-    assert "aspirations loop" in LOOP_LINE and "Re-arm" in LOOP_LINE
+    # Generic since ADR-0190: no framework's skill is named — the loop's own is.
+    assert "invoke the skill that runs it" in LOOP_LINE and "Re-arm" in LOOP_LINE
+    assert "aspirations" not in LOOP_LINE
     assert fired_line("  poll CI  ") == "[harness] scheduled wake-up: poll CI"
 
 
@@ -359,3 +361,20 @@ def test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace(
     stale = time.time() - BUSY_STALE_SECONDS - 5
     os.utime(marker, (stale, stale))
     assert mux.try_input() == ("say", "for the runner")
+
+
+# ── ADR-0187: the REPL door resolves the sentinel itself ─────────────────────
+
+
+def test_take_due_prompt_hands_over_the_raw_prompt_and_consumes_the_slot() -> None:
+    clock = _Clock(1_000.0)
+    session, slot = _slot(clock)
+    slot.arm(LOOP_SENTINEL, 60)
+    assert slot.take_due_prompt() is None  # not due
+    clock.now = 1_060.0
+    assert slot.take_due_prompt() == LOOP_SENTINEL
+    assert session.pending_wakeup is None  # consumed, like take_due
+    assert slot.take_due_prompt() is None
+    slot.arm("poll the reducer", 60)
+    clock.now = 1_200.0
+    assert slot.take_due() == "[harness] scheduled wake-up: poll the reducer"  # still renders

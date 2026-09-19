@@ -24,7 +24,7 @@ class GlobTool(Tool):
     """Match files by glob pattern within the workspace."""
 
     spec = ToolSpec(
-        name="glob",
+        name="Glob",
         description=(
             "Find files matching a glob pattern within the workspace. Patterns "
             "containing '**' search recursively. Results are sorted and capped. Skips "

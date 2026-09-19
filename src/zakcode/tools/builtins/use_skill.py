@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import skill_pages, skill_skeleton
+from zakcode.tasks import skill_pages
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
 from zakcode.tools.builtins._suggest import _display
 
@@ -77,18 +77,18 @@ class UseSkillTool(Tool):
     """Load a discovered skill's instructions by name and return them for the model to follow."""
 
     spec = ToolSpec(
-        name="use_skill",
+        name="Skill",
         description=(
             "Load a skill's full step-by-step instructions by name and follow them. Call this "
             "when one of the skills listed in your context fits the task. The skill's body is "
             "returned as this tool's result — act on it. For a LONG skill, first decompose its "
             "steps into your plan with update_plan, then execute the plan. Skills can chain: if "
-            "a skill's steps tell you to use another skill, call use_skill again with that name."
+            "a skill's steps tell you to use another skill, call Skill again with that name."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "name": {
+                "skill": {
                     "type": "string",
                     "description": "The skill name to load, exactly as it appears in the catalog.",
                 },
@@ -100,7 +100,7 @@ class UseSkillTool(Tool):
                     ),
                 },
             },
-            "required": ["name"],
+            "required": ["skill"],
         },
         required_permission=PermissionTier.READ_ONLY,
         # Loading instructions changes the turn's control flow; it is not a fan-out-friendly
@@ -112,11 +112,15 @@ class UseSkillTool(Tool):
         resolver = ctx.skill_resolver
         if resolver is None:
             return ToolResult.error(
-                "skills are not enabled in this session, so use_skill is unavailable."
+                "skills are not enabled in this session, so Skill is unavailable."
             )
-        name = args.get("name")
+        name = args.get("skill")
+        if name is None:
+            # The pre-ADR-0190 spelling (``use_skill(name=...)``): an older prompt or skill body
+            # may still send it, so it is accepted — never advertised.
+            name = args.get("name")
         if not isinstance(name, str) or not name.strip():
-            return ToolResult.error("'name' is required and must be a non-empty string.")
+            return ToolResult.error("'skill' is required and must be a non-empty string.")
         name = name.strip()
         skill_args = args.get("args", "")
         if not isinstance(skill_args, str):
@@ -142,13 +146,20 @@ class UseSkillTool(Tool):
                 f"skill {name!r} could not be loaded: {load.error or 'unreadable'}."
             )
         footer = skill_directory_line(load.path, ctx.workspace_root)
+        # A re-entry (ADR-0196) is handed over exactly as a first load is — the way Claude
+        # Code's Skill tool answers every call; only the trace is told which it was.
+        extra: dict[str, Any] = {"reentry": True} if load.reentry else {}
         if load.body.startswith("[already loaded]"):
             # The per-turn reload pointer (ADR-0063) — or, for a paged skill, the current
             # section again (ADR-0067). Nothing new to seed or decompose; hand it over as is.
             return ToolResult.ok(
                 load.body, data={"skill": load.name, "pointer": True}, verbatim=True
             )
-        pages = skill_pages(load.body, skill=load.name)
+        pages = (
+            ctx.skill_pages_for(load.name, load.body)
+            if ctx.skill_pages_for is not None
+            else skill_pages(load.body, skill=load.name)
+        )
         if pages is not None:
             # Page the skill through the plan (ADR-0067): the model gets the front matter and
             # section 1 now; the loop hands over each next section when update_plan marks
@@ -164,6 +175,7 @@ class UseSkillTool(Tool):
                     "sections": pages.count,
                     "paged": True,
                     "page": 1,
+                    **extra,
                 },
                 hint=(
                     f"Its {pages.count} numbered sections are now steps in your plan, and this "
@@ -171,27 +183,14 @@ class UseSkillTool(Tool):
                     "at a time. Carry out section 1 now; when it is done, mark its step done "
                     "with update_plan (send the whole plan) and section 2 arrives in the next "
                     "message. Split any step that is several actions. If a step says to use "
-                    "another skill, call use_skill with that name."
+                    "another skill, call Skill with that name."
                 ),
                 verbatim=True,
             )
         output = f"{load.body}\n\n{footer}" if footer else load.body
-        sections = len(skill_skeleton(load.body, skill=load.name))
-        if sections:
-            # The body's numbered sections are the plan (ADR-0062): the loop seeds them as
-            # steps the moment this result lands, so the hint describes a checklist that
-            # already exists — not one the model is asked to write.
-            return ToolResult.ok(
-                output,
-                data={"skill": load.name, "decompose": True, "sections": sections},
-                hint=(
-                    f"Its {sections} numbered sections are now steps in your plan. Work "
-                    "through them in order, marking each done with update_plan (send the "
-                    "whole plan) as you finish it; split any step that is several actions. "
-                    "If a step says to use another skill, call use_skill with that name."
-                ),
-                verbatim=True,
-            )
+        # A body that fits arrives whole and seeds nothing (ADR-0192): its steps are the
+        # model's to plan, as for any long request. A harness-seeded checklist over a whole
+        # body was measured as a tax, not a rail (Vinheim prod, 2026-09-18).
         if len(load.body) >= _DECOMPOSE_HINT_MIN_CHARS:
             # The decompose rail (ADR-0027): a long body is a plan waiting to happen, not
             # working state to hold in the model's head. Fired at the exact moment the
@@ -200,22 +199,22 @@ class UseSkillTool(Tool):
             # the plan — the concrete steps are the model's to write.)
             return ToolResult.ok(
                 output,
-                data={"skill": load.name, "decompose": True},
+                data={"skill": load.name, "decompose": True, **extra},
                 hint=(
                     "These instructions are long. FIRST call update_plan and decompose "
                     "them into the concrete steps THIS request needs, so the plan holds "
                     "the steps instead of your memory. Then execute them in order, "
                     "marking each done as you finish. If a step says to use another "
-                    "skill, call use_skill with that name."
+                    "skill, call Skill with that name."
                 ),
                 verbatim=True,
             )
         return ToolResult.ok(
             output,
-            data={"skill": load.name},
+            data={"skill": load.name, **extra},
             hint=(
                 "Follow these skill instructions now. If a step says to use another skill, "
-                "call use_skill with that name."
+                "call Skill with that name."
             ),
             verbatim=True,
         )

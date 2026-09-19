@@ -59,6 +59,26 @@ _GLYPH: dict[str, str] = {
     "cancelled": "-",
 }
 
+#: ADR-0184 — a closed run's count as the working-memory render shows it: ``17 steps done``,
+#: ``3 steps cancelled``, or ``15 done, 2 cancelled``.
+_CLOSED_COUNT = r"\d+ steps? done|\d+ steps? cancelled|\d+ done, \d+ cancelled"
+#: The row a run of closed siblings folds into — ``[x] 1–17 (17 steps done)`` — carrying its
+#: ids, so a full-replace that echoes it back expands to the steps it stands for. Tolerant of
+#: the glyph, a hyphen for the dash and spacing, since the model retypes it.
+COLLAPSED_ROW_RE = re.compile(
+    rf"^(?:\[[x\-]\]\s*)?(?P<first>\d+(?:\.\d+)*)\s*[–-]\s*(?P<last>\d+(?:\.\d+)*)\s*"
+    rf"\((?:{_CLOSED_COUNT})\)$"
+)
+#: The count suffix a folded closed compound carries — ``build (3 steps done)``.
+_CLOSED_SUFFIX_RE = re.compile(rf"\s*\((?:{_CLOSED_COUNT})\)$")
+#: The folded row with its count dropped — ``75.1–75.6`` — the shape a model retypes from
+#: memory. Measured 2026-09-18 (Vinheim prod, gpt-5.6-terra): nine such echoes stood as
+#: LITERAL steps in a plan that ended the run at 109 top-level steps. It expands only when
+#: the ids name a run of CLOSED siblings (ADR-0192).
+_BARE_RANGE_RE = re.compile(
+    r"^(?:\[[x\-]\]\s*)?(?P<first>\d+(?:\.\d+)*)\s*[–-]\s*(?P<last>\d+(?:\.\d+)*)$"
+)
+
 #: ADR-0116 — the evidence mark for a tool call that SUCCEEDED and found NOTHING (``✓`` is a
 #: hit, ``✗`` an error). A search, listing, or lookup that returns empty is a claim about the
 #: instrument before it is a claim about the world: the same line reads "not there" and "I
@@ -275,6 +295,27 @@ class Task(BaseModel):
         return self.kind == "compound" and bool(self.children)
 
 
+def _leaves_under(node: Task) -> list[Task]:
+    """The primitive leaves of ``node``'s subtree — ``node`` itself when it has none."""
+    if not node.children:
+        return [node]
+    return [leaf for child in node.children for leaf in _leaves_under(child)]
+
+
+def _closed_count(nodes: list[Task]) -> str:
+    """How a run of closed nodes counts in its folded row (ADR-0184), over primitive leaves —
+    the header fraction's unit: ``17 steps done`` / ``3 steps cancelled`` / ``15 done, 2
+    cancelled``."""
+    leaves = [leaf for node in nodes for leaf in _leaves_under(node)]
+    cancelled = sum(1 for leaf in leaves if leaf.status == "cancelled")
+    done = len(leaves) - cancelled
+    if not cancelled:
+        return f"{done} step{'s' if done != 1 else ''} done"
+    if not done:
+        return f"{cancelled} step{'s' if cancelled != 1 else ''} cancelled"
+    return f"{done} done, {cancelled} cancelled"
+
+
 class TaskNetwork(BaseModel):
     """A small forest of :class:`Task` trees — the live plan for the current goal.
 
@@ -416,8 +457,27 @@ class TaskNetwork(BaseModel):
         prior_titles = [self._title_key(t.title) for t in self._iter()]
         prior_leaves = self.leaves()
         prior_anchors = [t for t in prior_leaves if t.anchor]
-        self.tasks = tasks
+        # ADR-0184: the working-memory render folds closed runs into rows carrying their ids
+        # and a closed compound into one row. A resend that echoes those rows back gets the
+        # steps they stand for, and done work a fold HID that the resend left out comes back
+        # from the record — what the model could not see, it cannot have meant to drop.
+        prior_tasks = self.tasks
+        self.tasks = self._expand_collapsed_rows(tasks)
+        restored = self._restore_dropped_done(prior_tasks)
         advisories = self.normalize()
+        if restored:
+            named = "; ".join(f"'{clip(t.title, 40)}'" for t in restored[:4])
+            more = f" (+{len(restored) - 4} more)" if len(restored) > 4 else ""
+            self.record(
+                "restored",
+                detail=f"{len(restored)} folded done step(s) left out of a full replace put "
+                f"back: {named}{more}",
+            )
+            advisories.append(
+                f"restored {len(restored)} done step(s) this plan left out ({named}{more}) — "
+                "done work is history: send the plan as shown, folded rows included, and it "
+                "stays intact."
+            )
         new_titles = {self._title_key(t.title) for t in self._iter()}
         # ADR-0113: a full-replace that silently DROPS open work is the small-model failure
         # the contract invites (resend the plan, forget a step). Record each dropped open leaf
@@ -471,8 +531,8 @@ class TaskNetwork(BaseModel):
                 # ADR-0168 lever N: a harness-advanced leaf is STICKY. The model that drives the
                 # doom loop will not emit ``status: done`` and resends its plan with the step still
                 # ``pending``; without this, the full-replace would undo the advance every call and
-                # the frontier could never move. Only ever fires when ``harness_advance`` set the
-                # flag (opt-in ``plan_autoadvance``), so it is dormant otherwise. A genuine reopen
+                # the frontier could never move. Only ever fires on a leaf ``harness_advance``
+                # itself marked, so an ordinary plan edit is untouched. A genuine reopen
                 # would carry NEW work (evidence), which the next advance decision sees.
                 task.status = "done"
             if task.children or task.status == prior.status:
@@ -624,6 +684,140 @@ class TaskNetwork(BaseModel):
             return None
 
         return visit(self.tasks)
+
+    def _expand_collapsed_rows(self, tasks: list[Task]) -> list[Task]:
+        """A submitted tree with every echoed working-memory fold expanded back (ADR-0184).
+
+        Runs against the tree still installed (the prior plan): a childless node titled like a
+        folded run (``1–17 (17 steps done)``) becomes the prior siblings with those ids; a
+        childless node titled like a folded closed compound (``build (3 steps done)``, or its
+        bare title) becomes that prior compound, subtree and all. A fold whose ids no longer
+        resolve is dropped — it is a rendering artefact, never a step.
+        """
+        by_id = {t.id: t for t in self._iter()}
+        # Closed compounds by (title, parent title): a fold echo lands where the compound was,
+        # so a same-titled node elsewhere — the measured parent-over-same-named-child shape —
+        # never expands into it.
+        closed_parents: dict[tuple[str, str | None], Task] = {}
+
+        def index_parents(nodes: list[Task], parent_key: str | None) -> None:
+            for task in nodes:
+                if task.children:
+                    if task.status in _TERMINAL:
+                        closed_parents[(self._title_key(task.title), parent_key)] = task
+                    index_parents(task.children, self._title_key(task.title))
+
+        index_parents(self.tasks, None)
+
+        def expand(nodes: list[Task], parent_key: str | None) -> list[Task]:
+            out: list[Task] = []
+            for node in nodes:
+                if node.children:
+                    node.children = expand(node.children, self._title_key(node.title))
+                    out.append(node)
+                    continue
+                title = node.title.strip()
+                match = COLLAPSED_ROW_RE.match(title)
+                bare_range = None if match is not None else _BARE_RANGE_RE.match(title)
+                ids = match if match is not None else bare_range
+                if ids is not None:
+                    first = by_id.get(ids["first"])
+                    last = by_id.get(ids["last"])
+                    siblings = self._siblings_of(first) if first is not None else None
+                    run: list[Task] | None = None
+                    if siblings is not None and last is not None:
+                        start = next((i for i, s in enumerate(siblings) if s is first), None)
+                        stop = next((i for i, s in enumerate(siblings) if s is last), None)
+                        if start is not None and stop is not None and start <= stop:
+                            run = siblings[start : stop + 1]
+                    if run is not None and (
+                        match is not None or all(s.status in _TERMINAL for s in run)
+                    ):
+                        out.extend(run)
+                        continue
+                    if match is not None:
+                        continue  # a suffixed fold whose ids no longer resolve: an artefact
+                    # A bare range naming no closed run is the model's own title (ADR-0192):
+                    # kept as sent, never dropped.
+                bare = self._title_key(_CLOSED_SUFFIX_RE.sub("", node.title))
+                prior = closed_parents.get((bare, parent_key))
+                suffixed = bare != self._title_key(node.title)
+                if prior is not None and (suffixed or node.status in _TERMINAL):
+                    out.append(prior)
+                    continue
+                out.append(node)
+            return out
+
+        return expand(tasks, None)
+
+    @staticmethod
+    def _folded_done(nodes: list[Task]) -> list[Task]:
+        """The done nodes the working-memory render hides inside folded runs (ADR-0184): every
+        done member of a run of two or more closed siblings, at any depth of the open part of
+        the tree. A lone closed row is visible — its title is there to resend — so neither it
+        nor its subtree counts."""
+        out: list[Task] = []
+        i = 0
+        while i < len(nodes):
+            node = nodes[i]
+            if node.status in _TERMINAL:
+                j = i
+                while j + 1 < len(nodes) and nodes[j + 1].status in _TERMINAL:
+                    j += 1
+                if j > i:
+                    out.extend(n for n in nodes[i : j + 1] if n.status == "done")
+                i = j + 1
+                continue
+            out.extend(TaskNetwork._folded_done(node.children))
+            i += 1
+        return out
+
+    def _restore_dropped_done(self, prior_tasks: list[Task]) -> list[Task]:
+        """Put back the done steps the prior plan's working-memory render HID (inside a folded
+        run) that the installed tree left out (ADR-0184) — what the model could not see, it
+        cannot have meant to drop. Each goes after its nearest earlier sibling still present,
+        else first under its parent (the top level when the parent is gone). A done step shown
+        in full and left out stays out — the model's call, as before (ADR-0113); so does a
+        cancelled one, and the request anchor (ADR-0111). Returns the steps restored, in
+        document order.
+        """
+        hidden = {id(t) for t in self._folded_done(prior_tasks)}
+        present = {(self._title_key(t.title), bool(t.children)) for t in self._iter()}
+        restored: list[Task] = []
+
+        def key(task: Task) -> tuple[str, bool]:
+            return (self._title_key(task.title), bool(task.children))
+
+        def find(nodes: list[Task], task: Task) -> Task | None:
+            wanted = key(task)
+            return next((n for n in nodes if key(n) == wanted), None)
+
+        def visit(prior_nodes: list[Task], target: list[Task]) -> None:
+            for index, node in enumerate(prior_nodes):
+                match = find(target, node)
+                if match is not None:
+                    if node.children and match.children:
+                        visit(node.children, match.children)
+                    continue
+                if id(node) not in hidden or key(node) in present or node.anchor:
+                    # Visible (the model's call — ADR-0113), moved elsewhere, or the request
+                    # anchor. An open compound that vanished may still hide done children in
+                    # a folded run; they come back under this parent.
+                    if node.status not in _TERMINAL and node.children and key(node) not in present:
+                        visit(node.children, target)
+                    continue
+                position = 0
+                for earlier in reversed(prior_nodes[:index]):
+                    hit = find(target, earlier)
+                    if hit is not None:
+                        position = next(i for i, n in enumerate(target) if n is hit) + 1
+                        break
+                target.insert(position, node)
+                present.add(key(node))
+                restored.append(node)
+
+        visit(prior_tasks, self.tasks)
+        return restored
 
     def _flag_duplicate_siblings(self, advisories: list[str]) -> None:
         """Advise on same-titled sibling steps (ADR-0050 — the duplicate-subtask check).
@@ -901,12 +1095,20 @@ class TaskNetwork(BaseModel):
 
     # ── rendering (the live plan folded back into context) ────────────────────────
 
-    def render(self) -> str:
+    def render(self, *, elide_done: bool = False) -> str:
         """A compact, indented checklist of the live plan, marking the current task.
 
         This is the text re-injected near the end of context each iteration to counter
         instruction fade-out — the model's standing view of "the plan, and where I am in it".
         Empty plan renders as ``""`` so the caller injects nothing on un-planned turns.
+
+        ``elide_done`` is the working-memory form (ADR-0184): a run of two or more closed
+        siblings folds into one row carrying its ids (``[x] 1–17 (17 steps done)``) and a
+        closed compound into one row with its subtree counted, so a long turn stops paying
+        for every finished step on every iteration. A lone closed step still shows what it
+        produced; open, blocked and in-progress steps, the header fraction and the
+        ``<- current`` marker are never touched. The default is the whole record — the UI
+        event, ``/todo``, the plan judge and the completion critic all read that.
         """
         if self.is_empty():
             return ""
@@ -915,10 +1117,35 @@ class TaskNetwork(BaseModel):
         finished, total = self.progress()
         lines = [f"Current plan ({finished}/{total} steps done):"]
 
+        def closed(node: Task) -> bool:
+            return node.status in _TERMINAL
+
         def render_nodes(nodes: list[Task], depth: int) -> None:
-            for node in nodes:
+            indent = "  " * (depth + 1)
+            i = 0
+            while i < len(nodes):
+                node = nodes[i]
+                if elide_done and closed(node):
+                    j = i
+                    while j + 1 < len(nodes) and closed(nodes[j + 1]):
+                        j += 1
+                    run = nodes[i : j + 1]
+                    if len(run) > 1:
+                        glyph = "-" if all(n.status == "cancelled" for n in run) else "x"
+                        lines.append(
+                            f"{indent}[{glyph}] {run[0].id}–{run[-1].id} ({_closed_count(run)})"
+                        )
+                        i = j + 1
+                        continue
+                    if node.children:
+                        detail = f" — {node.outcome}" if node.outcome else ""
+                        lines.append(
+                            f"{indent}[{_GLYPH.get(node.status, ' ')}] {node.id} {node.title}"
+                            f"{detail} ({_closed_count([node])})"
+                        )
+                        i += 1
+                        continue
                 glyph = _GLYPH.get(node.status, " ")
-                indent = "  " * (depth + 1)
                 marker = "  <- current" if node.id == current_id else ""
                 # A closed step shows what it PRODUCED (ADR-0110); an open one its done-condition.
                 shown = node.outcome if node.status in _TERMINAL and node.outcome else node.note
@@ -926,6 +1153,7 @@ class TaskNetwork(BaseModel):
                 deps = f" (after {', '.join(node.blocked_by)})" if node.blocked_by else ""
                 lines.append(f"{indent}[{glyph}] {node.id} {node.title}{detail}{deps}{marker}")
                 render_nodes(node.children, depth + 1)
+                i += 1
 
         render_nodes(self.tasks, 0)
         return "\n".join(lines)
@@ -1031,8 +1259,13 @@ PAGE_BUDGET_CHARS = 12_000
 #: An ordered-work marker written as a pseudocode comment at column 0 inside a fenced
 #: block — the shape a Mind's loop skills use ("# Phase -0.5 — LIGHT PRIME …", "# Phase 1 —
 #: SELECT …"): /worker-loop is one fence carrying 23 of these and no heading at all.
+#: A separator (or the line's end) must follow the id — a prime may sit between them
+#: ("# Phase -0.5e': …" is a marker) (ADR-0192): "# Phase 6 for
+#: non-recurring deep closes rode on LLM memory …" is the second line of a comment, and it
+#: seeded a step titled with that sentence (Vinheim, 2026-09-18).
 _STEP_FENCED_RE = re.compile(
-    r"^#\s*(?:phase|step|lane|stage|part|task)\s+-?\d[\w.]*(?![\w-])", re.I
+    r"^#\s*(?:phase|step|lane|stage|part|task)\s+-?\d[\w.]*(?![\w-])['′]*\s*(?:[:)(\-—–]|\.(?=\s|$)|$)",
+    re.I,
 )
 #: Any heading outside a fence — the cut of last resort before paragraph breaks.
 _ANY_HEADING_RE = re.compile(r"^#{2,4}\s+\S")

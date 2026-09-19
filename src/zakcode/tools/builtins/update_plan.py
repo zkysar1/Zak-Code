@@ -68,12 +68,6 @@ _UNCHANGED_HINT = (
     "now with a tool call."
 )
 
-#: Prefix for the unchanged rail when the step in hand already carries an outcome: the model
-#: recorded the result and forgot the status (two of the three measured doom loops).
-_OUTCOME_WITHOUT_STATUS = (
-    "Step {id} already carries an outcome but its status is still '{status}'. "
-)
-
 #: Advance rail (ADR-0168 lever N): the harness just marked a worked-on step done because the model
 #: resent the plan unchanged and would not close it. Point at the step now current — do it, do not
 #: resend the plan unchanged again.
@@ -169,6 +163,32 @@ def _build_task(raw: dict[str, Any], depth: int) -> Task:
     )
 
 
+#: Claude Code's ``TodoWrite`` statuses → this plan's (``completed`` is ``done`` here).
+_TODO_STATUS = {
+    "pending": "pending",
+    "in_progress": "in_progress",
+    "completed": "done",
+    "done": "done",
+    "cancelled": "cancelled",
+}
+
+
+def _from_todos(todos: list[Any]) -> list[dict[str, Any]]:
+    """Claude Code's ``TodoWrite`` shape (``todos: [{content, status, activeForm}]``) as this
+    plan's flat step list — the ``TodoWrite`` alias resolves here (ADR-0190). A todo with no
+    usable text is dropped rather than refused: the plan it describes is still the model's."""
+    steps: list[dict[str, Any]] = []
+    for todo in todos:
+        if not isinstance(todo, dict):
+            continue
+        title = todo.get("content") or todo.get("title") or todo.get("activeForm")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        status = _TODO_STATUS.get(str(todo.get("status", "pending")), "pending")
+        steps.append({"title": title.strip(), "status": status})
+    return steps
+
+
 class UpdatePlanTool(Tool):
     """Lay out or update the hierarchical task plan for the current goal."""
 
@@ -210,6 +230,8 @@ class UpdatePlanTool(Tool):
                 "planning is not available here (no task network on the context)"
             )
         tasks = args.get("tasks")
+        if tasks is None and isinstance(args.get("todos"), list):
+            tasks = _from_todos(args["todos"])  # the TodoWrite alias (ADR-0190)
         if not isinstance(tasks, list):
             return ToolResult.error(
                 "'tasks' must be an array of step objects ({title, status?, note?, subtasks?})",
@@ -257,8 +279,7 @@ class UpdatePlanTool(Tool):
             # resends the same tree but records the challenge / applies the delayed close: updated.
             current = network.current()
             if (
-                ctx.plan_autoadvance
-                and current is not None
+                current is not None
                 and current.status in ("pending", "in_progress")
                 and (
                     current.evidence
@@ -266,8 +287,11 @@ class UpdatePlanTool(Tool):
                     or any(leaf.evidence for leaf in network.leaves())
                 )
             ):
-                # Lever N (opt-in): the plan has been worked on and the model will not close the
-                # step — mark it done and move the frontier, instead of the rail it ignores (arm M).
+                # Lever N (ADR-0168, unconditional since ADR-0202): the plan has been worked on
+                # and the model will not close the step — mark it done and move the frontier,
+                # instead of the rail it ignores (arm M). The trigger is the EVIDENCE, not a
+                # setting: with nothing worked this falls through to the plain unchanged receipt,
+                # which is what keeps an always-on advance from inventing progress.
                 return self._autoadvance(network, current)
             return self._unchanged(network, finished, total)
         quality, deficiencies = network.quality()
@@ -354,10 +378,12 @@ class UpdatePlanTool(Tool):
             f"Plan unchanged: {finished}/{total} steps done · current: {current.id} "
             f"{clip(current.title, 80)}. Nothing was updated — this is the plan already in force."
         )
-        hint = _UNCHANGED_HINT.format(id=current.id)
-        if current.outcome:
-            hint = _OUTCOME_WITHOUT_STATUS.format(id=current.id, status=current.status) + hint
-        return ToolResult.ok(output, data=data, hint=hint)
+        # No "you recorded an outcome but left the status" prefix here any more: since ADR-0202
+        # made the advance unconditional, a current step carrying an outcome is ADVANCED rather
+        # than answered with this rail. ``current()`` only ever returns a pending or in_progress
+        # leaf, which is exactly the set the advance fires on, so that branch became unreachable.
+        # What reaches this rail is a plan nobody has worked on yet — hence one hint, not two.
+        return ToolResult.ok(output, data=data, hint=_UNCHANGED_HINT.format(id=current.id))
 
     @staticmethod
     def _hint(network: Any) -> str:

@@ -98,14 +98,15 @@ def test_a_slash_line_typed_as_text_runs_the_skill(tmp_path: Path) -> None:
     (note,) = [e for e in loop._trace.events if e.data.get("kind") == "slash_text_routed"]
     assert note.data["skill"] == "boot"
     # The transcript pairs the synthesized use_skill call with its result, so the provider
-    # sees a well-formed exchange, and the skill's sections became the plan.
+    # sees a well-formed exchange; a body that fits arrives whole and seeds no plan (ADR-0192).
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
-    assert uses and uses[0].name == "use_skill" and uses[0].input == {"name": "boot"}
+    assert uses and uses[0].name == "Skill" and uses[0].input == {"skill": "boot"}
     (res,) = _use_skill_results(loop)
-    # Two short sections pack into one page (ADR-0088): the whole body arrives at once.
+    # Two short sections pack into one page (ADR-0088): the whole body arrives at once —
+    # and a whole body seeds no plan (ADR-0192): its steps are the model's to write.
     assert res.tool_use_id == uses[0].id and "Print status." in res.output
     assert "Prime." in res.output and "— page 1 of" not in res.output
-    assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: Status", "Step 2: Prime"]
+    assert loop.session.task_network.tasks == []
 
 
 def test_args_after_the_slash_travel_with_it(tmp_path: Path) -> None:
@@ -115,7 +116,7 @@ def test_args_after_the_slash_travel_with_it(tmp_path: Path) -> None:
     loop = _loop(_Scripted(script), tmp_path)
     asyncio.run(loop.arun_turn("go"))
     uses = [b for m in loop.session.messages for b in m.blocks if isinstance(b, ToolUseBlock)]
-    assert uses and uses[0].input == {"name": "boot", "args": "--recover --force"}
+    assert uses and uses[0].input == {"skill": "boot", "args": "--recover --force"}
 
 
 def test_prose_that_mentions_a_skill_is_an_answer(tmp_path: Path) -> None:
@@ -126,6 +127,42 @@ def test_prose_that_mentions_a_skill_is_an_answer(tmp_path: Path) -> None:
     asyncio.run(loop.arun_turn("what next?"))
     assert not [e for e in loop._trace.events if e.data.get("kind") == "slash_text_routed"]
     assert _use_skill_results(loop) == []
+
+
+def test_a_sentence_that_opens_with_the_command_in_backticks_is_an_answer(tmp_path: Path) -> None:
+    """ADR-0198. Measured 2026-09-18 (gpt-5.6-luna, served): a one-line refusal that opened
+    with the command in backticks was routed as that command, the rest of the sentence its
+    arguments — fourteen times in one turn. A backtick left inside the line closes a code
+    span mid-sentence: what follows is prose ABOUT the command."""
+
+    def script(n: int) -> LLMResult:
+        return LLMResult(
+            text="`/boot now` has to be typed by the operator; this session cannot run `/boot`."
+        )
+
+    loop = _loop(_Scripted(script), tmp_path)
+    asyncio.run(loop.arun_turn("go"))
+    assert not [e for e in loop._trace.events if e.data.get("kind") == "slash_text_routed"]
+    assert _use_skill_results(loop) == []
+
+
+def test_the_clean_spellings_of_an_invocation_still_route(tmp_path: Path) -> None:
+    """The positive control for the rule above: every wrapping the door tolerated before is
+    still an invocation, arguments and all."""
+    loop = _loop(_Scripted(lambda n: LLMResult(text="unused")), tmp_path)
+    for text, expected in (
+        ("/boot", ("boot", "")),
+        ("`/boot`", ("boot", "")),
+        ("`/boot`.", ("boot", "")),
+        ("  /boot --recover --force  ", ("boot", "--recover --force")),
+        ("`/boot --recover --force`.", ("boot", "--recover --force")),
+    ):
+        assert loop._slash_invocation(text) == expected, text
+    for prose in (
+        "`/boot` must be run by the operator.",
+        "/boot `--recover` is what I would type, but the state is wrong.",
+    ):
+        assert loop._slash_invocation(prose) is None, prose
 
 
 def test_an_unknown_slash_stays_text(tmp_path: Path) -> None:

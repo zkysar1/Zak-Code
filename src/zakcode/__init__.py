@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version as _pkg_version
@@ -24,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.loop import _MIN_ANSWER_ROOM, AgentLoop, TurnResult, _composed_skill_name
+from zakcode.agent.loop import AgentLoop, TurnResult, _answer_room, _composed_skill_name
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
@@ -220,6 +221,56 @@ class SkillInvocation:
 #: the REPL's own commands are suggestion-only, because a typo must not run ``/clear``.
 _SKILL_SUGGEST_RATIO = 0.72
 _SKILL_AUTOCORRECT_RATIO = 0.8
+
+
+def _skill_digest(body: str) -> str:
+    """The reload dedup's fingerprint of a skill body (ADR-0063)."""
+    import hashlib
+
+    return hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _already_loaded_pointer(name: str, page: str | None, args: str, *, worked: bool) -> str:
+    """What a ``Skill`` call gets when the body it names is already in context this turn.
+
+    Three situations, three sentences — each says what to DO, because a bare "already loaded"
+    drew a summary and a stop from a model that had not started. ``worked`` is reached only
+    for a user-only skill the operator typed (ADR-0198): every other skill asked for again
+    after work is a re-entry and gets its body (ADR-0196).
+    """
+    from zakcode.providers.text_tools import defang_untrusted
+
+    if page is not None:
+        pointer = (
+            f"[already loaded] Skill {name!r} is running this turn, "
+            "delivered one section at a time; here is the CURRENT section "
+            f"again. Continue from where you are in it.\n\n{page}"
+        )
+    elif worked:
+        pointer = (
+            "[already loaded] Nothing new was loaded: the operator ran "
+            f"/{name} themselves this turn, so its full instructions are in the /command "
+            "message you were given and you have been working through them. Continue from "
+            "the step you are on: your next action is that step's tool call, not another "
+            "Skill call and not a summary."
+        )
+    else:
+        # Nothing has run since the body arrived, so there is no "where you
+        # are" to continue from: the pointer says what to DO. The bare one
+        # drew a summary and a stop from a model that had not started.
+        pointer = (
+            "[already loaded] Nothing new was loaded: the full instructions "
+            f"for skill {name!r} are already in your context THIS turn, "
+            "unchanged — in the /command message you were given, or an "
+            "earlier Skill result — and you have run no tool on them since "
+            "they arrived. Loading a skill does not run it. Carry those "
+            "instructions out now, starting from their first step: your next "
+            "action is that step's tool call, not another Skill call and not "
+            "a summary."
+        )
+    if args.strip():
+        pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+    return pointer
 
 
 class _SkillToolResolver:
@@ -441,6 +492,13 @@ class Agent:
             cwd=str(self.settings.workspace_root),
             model=self.settings.default_model,
         )
+        # The harness marker (ADR-0187). Claude Code exports ``CLAUDECODE=1`` to every hook
+        # and shell it spawns, and a framework's scripts branch on it to name the tools of
+        # the harness they are running under. Zak Code exports the session id under this
+        # name so those detectors see a Zak Code session — from hooks and from the model's
+        # own shell commands alike, both of which inherit the process environment — instead
+        # of "unknown", which they answer with Claude Code's vocabulary.
+        os.environ["ZAKCODE_SESSION"] = self.session.id
         # A RESUMED/injected session carries its OWN persisted cwd; realign it to THIS run's
         # workspace so every cwd-sensitive surface (tools, rules, TURN_END/Stop hooks) agrees on one
         # directory instead of splitting between the session's old dir and the active workspace.
@@ -489,11 +547,16 @@ class Agent:
         ingested_tool_modes: dict[str, str] = {}
         ingested_denied_tools: set[str] = set()
         if permission_policy is None:
-            from zakcode.permissions_settings import load_settings_permissions
+            from zakcode.permissions_settings import load_settings_permissions, summarize_skipped
 
             _ingested, _perm_errs = load_settings_permissions(workspace_root)
-            for _key, _err in _perm_errs.items():
-                logger.warning("settings.json permission %s: %s", _key, _err)
+            # One WARNING per construction, not one per gesture (g-357-17): a Mind workspace
+            # declares dozens of gestures with no tighten-only mapping here, and the per-gesture
+            # lines buried the warnings that matter. The detail stays available at DEBUG.
+            if _perm_errs:
+                logger.warning("settings.json permissions: %s", summarize_skipped(_perm_errs))
+                for _key, _err in _perm_errs.items():
+                    logger.debug("settings.json permission %s: %s", _key, _err)
             # Union, tighten-only: ingested deny patterns extend the operator's; ingested per-tool
             # modes go under the operator's (operator wins a conflict). Read-denies join the
             # operator's strict (read+write) pool; Edit/Write-denies compile write-only below
@@ -507,13 +570,21 @@ class Agent:
             ingested_denied_tools = set(_ingested.denied_tools)
         # Operator tool_trust_overrides overlay the ingested ones (operator is the trusted local
         # authority); the merged map feeds tool_mode_overrides below.
-        merged_tool_modes = {**ingested_tool_modes, **dict(self.settings.tool_trust_overrides)}
+        # Keys are canonicalized through the registry (ADR-0190): an override written as
+        # ``bash`` or ``web_fetch`` before the rename still lands on Bash / WebFetch.
+        merged_tool_modes = {
+            self.registry.canonical(name): mode
+            for name, mode in {
+                **ingested_tool_modes,
+                **dict(self.settings.tool_trust_overrides),
+            }.items()
+        }
         self.permission_policy = permission_policy or PermissionPolicy(
             self.settings.permission_mode,
             prompter=prompter,
             extra_dangerous_patterns=compile_deny_patterns(denied_command_regexes),
             # Opt-in egress gate: confirm every web_fetch before it reaches the network.
-            confirm_tools={"web_fetch"} if self.settings.web_fetch_confirm else None,
+            confirm_tools={"WebFetch"} if self.settings.web_fetch_confirm else None,
             # Per-tool trust overrides (audit P0-2b / D12) — validated at Settings load — merged
             # with any ingested CC bare-tool deny/allow gestures (operator wins a conflict).
             tool_mode_overrides=merged_tool_modes,
@@ -526,7 +597,7 @@ class Agent:
                 + compile_protected_paths(write_only_path_regexes, write_only=True)
             ),
             # Ingested whole-tool CC deny gestures — denied unconditionally, regardless of tier.
-            extra_denied_tools=ingested_denied_tools,
+            extra_denied_tools={self.registry.canonical(n) for n in ingested_denied_tools},
             # Relative path arguments resolve against the workspace before the protected-path
             # scan (ADR-0031) so a ``*/``-prefixed deny glob binds a relative spelling too.
             workspace_root=workspace_root,
@@ -604,6 +675,11 @@ class Agent:
         #: times). Compaction fires only at turn START, so the earlier body is still in
         #: context for the whole turn; the dict resets with the invocation counter.
         self._skills_loaded_this_turn: dict[str, str] = {}
+        #: The loop's work-call count when each of those bodies arrived (ADR-0196). A skill
+        #: asked for again after the model ACTED is a re-entry — a perpetual loop closes every
+        #: iteration on one — and gets the body; asked for again with nothing run since, it
+        #: gets the pointer. Written and cleared with the dedup map, never apart from it.
+        self._skill_loaded_at_work: dict[str, int] = {}
         skill_resolver: SkillResolver | None = None
         skills_catalog = ""
         if enable_skills:
@@ -623,10 +699,10 @@ class Agent:
             # name (and lets skills chain). It reads the resolver off the ToolContext, which the
             # loop is handed below; only registered when skills are on, so the default tool
             # surface is unchanged. (Gated identically to the catalog so the two stay consistent.)
-            # Claude Code's name too (the ADR-0094 pattern): a Mind's loop calls
-            # Skill(aspirations) by that name, and the bash tool's typed-as-command refusal
-            # (ADR-0098) resolves it through this alias.
-            self.registry.register(UseSkillTool(), aliases=["Skill"])
+            # Canonical name ``Skill`` (ADR-0190) — a Mind's loop calls Skill(aspirations) by
+            # that name; ``use_skill`` stays as the pre-0190 alias (the bash tool's
+            # typed-as-command refusal, ADR-0098, resolves either through the registry).
+            self.registry.register(UseSkillTool(), aliases=["use_skill"])
             skill_resolver = _SkillToolResolver(self)
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
@@ -825,7 +901,7 @@ class Agent:
             if self.skill_registry is not None:
                 from zakcode.tools.builtins.use_skill import UseSkillTool
 
-                child_registry.register(UseSkillTool(), aliases=["Skill"])
+                child_registry.register(UseSkillTool(), aliases=["use_skill"])
             runner = SubAgentRunner(
                 provider=self.provider,
                 registry=child_registry,
@@ -859,7 +935,9 @@ class Agent:
             )
             plan_def = PLAN.model_copy(update={"model": roles.get("planner"), "category": "plan"})
             spawner = SubAgentManager(runner, [general_def, plan_def], default=general_def.name)
-            self.registry.register(TaskTool())
+            # Claude Code's names for the delegator as aliases (ADR-0190); the tool accepts
+            # its single-delegation shape (description, prompt, subagent_type) too.
+            self.registry.register(TaskTool(), aliases=["Task", "Agent"])
 
         # MCP (M5), opt-in. Build (but do NOT start) a client per configured server;
         # __init__ stays side-effect-free. The servers are spawned and their tools
@@ -1089,6 +1167,7 @@ class Agent:
         """
         self._skill_invocations_this_turn = 0
         self._skills_loaded_this_turn.clear()
+        self._skill_loaded_at_work.clear()
 
     def _register_composed_skill(self, user_text: str) -> None:
         """Count a typed ``/<skill>`` turn's body as loaded for the reload dedup (ADR-0063).
@@ -1112,11 +1191,44 @@ class Agent:
             body = skill.body()
         except Exception:  # noqa: BLE001 — an unreadable skill is the load's problem, not ours
             return
-        import hashlib
+        self._note_skill_delivered(skill.name, _skill_digest(body))
 
-        self._skills_loaded_this_turn[skill.name] = hashlib.sha1(
-            body.encode("utf-8", errors="replace")
-        ).hexdigest()
+    def _typed_this_turn_pointer(self, skill: Any, args: str) -> str | None:
+        """The answer to the model's ``Skill(<name>)`` of a USER-ONLY skill the operator typed
+        THIS turn (ADR-0198), else ``None`` — and the refusal stands.
+
+        Only :meth:`_register_composed_skill` can have registered a user-only skill: the tool
+        and harness doors are refused before they register anything. So a matching digest
+        means the operator's own ``/<name>`` put this body in context this turn. Never the
+        body: after work the answer is "continue", not a second 65 KB through the door
+        ADR-0109 closed. A digest that no longer matches (the file changed mid-turn), an
+        unreadable skill, or a fresh skill turn (a veto, a compaction) all return ``None``.
+        """
+        registered = self._skills_loaded_this_turn.get(skill.name)
+        if registered is None:
+            return None
+        try:
+            if registered != _skill_digest(skill.body()):
+                return None
+        except Exception:  # noqa: BLE001 — an unreadable skill keeps the refusal
+            return None
+        loop = getattr(self, "loop", None)
+        page = loop.current_skill_page(skill.name) if loop is not None else None
+        arrived_at = self._skill_loaded_at_work.get(skill.name)
+        worked = arrived_at is not None and self._loop_work_calls() > arrived_at
+        return _already_loaded_pointer(skill.name, page, args, worked=worked)
+
+    def _loop_work_calls(self) -> int:
+        """The loop's work-call count (ADR-0196); 0 for an Agent with no loop to ask."""
+        reader = getattr(getattr(self, "loop", None), "work_calls", None)
+        return int(reader()) if callable(reader) else 0
+
+    def _note_skill_delivered(self, name: str, digest: str) -> None:
+        """Record that the body with ``digest`` is in context from here on (the reload dedup,
+        ADR-0063) and where the loop's work count stood when it arrived (ADR-0196). Every
+        door — the tool, a typed ``/<skill>``, the harness's own delivery — registers here."""
+        self._skills_loaded_this_turn[name] = digest
+        self._skill_loaded_at_work[name] = self._loop_work_calls()
 
     def _assert_local_only(self) -> None:
         """Refuse to start when ``local_only`` is set but a configured model is metered.
@@ -1249,7 +1361,7 @@ class Agent:
             system_tokens = self.provider.count_tokens([], system=self.loop._build_system())
         except Exception:  # noqa: BLE001 — a fit report is advisory; never block startup on it
             system_tokens = 0
-        reserve = self.provider.capabilities().max_output or _MIN_ANSWER_ROOM
+        reserve = _answer_room(self.provider.capabilities())
         from zakcode.tasks import skill_pages
 
         def count(text: str) -> int:
@@ -1267,6 +1379,15 @@ class Agent:
                 continue
             pages = skill_pages(body, skill=skill.name)
             if pages is None:
+                skills.append((skill.name, body))
+                continue
+            try:
+                # ADR-0192: a body that fits is delivered whole, so the whole body is what
+                # the model holds — the loop's own arithmetic, at the smallest window.
+                whole = count(body) + system_tokens + reserve <= min(windows)
+            except Exception:  # noqa: BLE001 — measured below by the same counter; skip here
+                whole = False
+            if whole:
                 skills.append((skill.name, body))
                 continue
             paged.add(skill.name)
@@ -1290,6 +1411,7 @@ class Agent:
         *,
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
@@ -1298,20 +1420,29 @@ class Agent:
         ``Settings.extra_body`` rather than replacing it, so a global knob and a per-category
         one compose instead of one silently erasing the other. ``context_window`` is the
         routed model's own declared window (ADR-0066) and REPLACES the settings' value,
-        which describes the default model only.
+        which describes the default model only. ``reasoning_effort`` (a category's reasoning
+        depth, ADR-0182) REPLACES the settings' fleet-wide level for that category; a category
+        that sets none inherits it.
         """
         from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
         from zakcode.providers.text_tools import TextToolCallingProvider
 
-        if model == self.settings.default_model and not extra_body and context_window is None:
+        if (
+            model == self.settings.default_model
+            and not extra_body
+            and context_window is None
+            and reasoning_effort is None
+        ):
             role_settings = self.settings
         else:
             if context_window is None and model == self.settings.default_model:
-                # A variant of the default model (a per-category thinking flag) is the same
-                # model, so the settings' window still describes it.
+                # A variant of the default model (a per-category thinking flag or depth) is
+                # the same model, so the settings' window still describes it.
                 context_window = self.settings.context_window
             update: dict[str, object] = {"default_model": model, "context_window": context_window}
+            if reasoning_effort is not None:
+                update["reasoning_effort"] = reasoning_effort
             # api_base/api_key are ENDPOINT-specific. Don't carry the configured custom
             # endpoint onto a routed model that litellm sends somewhere else — an
             # ollama_chat/* or groq/* role would otherwise be handed the OpenAI-compatible
@@ -1382,6 +1513,7 @@ class Agent:
         *,
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
@@ -1393,19 +1525,26 @@ class Agent:
         ``thinking`` flag). It participates in the CACHE KEY, which it must: two categories
         can name the SAME model and want different thinking, and a model-only key would hand
         the second one the first one's provider and silently apply the wrong setting.
-        ``context_window`` (the category entry's declared window, ADR-0066) is keyed the
-        same way for the same reason.
+        ``context_window`` (the category entry's declared window, ADR-0066) and
+        ``reasoning_effort`` (the category's reasoning depth, ADR-0182) are keyed the same
+        way for the same reason.
         """
         if not model or self._provider_injected:
             return self.provider
-        if model == self.settings.default_model and not extra_body:
+        if model == self.settings.default_model and not extra_body and reasoning_effort is None:
             return self.provider
         key = model
-        if extra_body or context_window is not None:
-            key = f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
+        if extra_body or context_window is not None or reasoning_effort is not None:
+            key = (
+                f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
+                f"\x00{reasoning_effort}"
+            )
         if key not in self._provider_cache:
             self._provider_cache[key] = self._build_provider(
-                model, extra_body=extra_body, context_window=context_window
+                model,
+                extra_body=extra_body,
+                context_window=context_window,
+                reasoning_effort=reasoning_effort,
             )
         return self._provider_cache[key]
 
@@ -1433,7 +1572,10 @@ class Agent:
         model = spec.litellm_string
         return (
             self._provider_for(
-                model, extra_body=spec.extra_body, context_window=spec.context_window
+                model,
+                extra_body=spec.extra_body,
+                context_window=spec.context_window,
+                reasoning_effort=spec.reasoning_effort,
             ),
             model,
         )
@@ -1577,6 +1719,14 @@ class Agent:
         budget (:attr:`Settings.skill_invocation_budget`); over the cap it returns a
         ``denied_reason`` (no body, no signal) to stop a runaway/cyclic chain. A human
         ``/<name>`` (``source="command"``) is operator-controlled and never throttled.
+
+        ``source="harness"`` (ADR-0187) is the loop delivering the skill a turn-end hook's
+        continuation names, or a fired autonomous-loop wake-up resolving to it: not a
+        human's keystroke, so a ``user-invocable: false`` skill (a framework's loop
+        orchestrator) is allowed; not the model's choice, so it is neither budgeted nor
+        deduped — but it counts as loaded for the dedup, so the model's own ``use_skill`` of
+        the same skill right after answers with the current section, not the body again.
+        ``disable-model-invocation`` still refuses it: operator-only stays operator-only.
         """
         registry = getattr(self, "skill_registry", None)
         # resolve() (not get()): match the skill's name OR its ``triggers:`` frontmatter, so a
@@ -1602,7 +1752,17 @@ class Agent:
         # The mirror image (ADR-0109): ``disable-model-invocation: true`` marks a skill the
         # OPERATOR alone may run — a framework's control commands (start/stop an agent). Refuse
         # the model's tool path; the human ``/<name>`` path is untouched.
-        if source == "tool" and not skill.model_invocable:
+        if source in ("tool", "harness") and not skill.model_invocable:
+            # …unless the operator typed it THIS turn (ADR-0198). Then its instructions are in
+            # context by the operator's own hand and "it cannot be run from here" is false: a
+            # small model obeys that sentence and abandons the command it was just given
+            # (measured 2026-09-18, gpt-5.6-luna: the served /start died at its first call).
+            # The tool door still LOADS nothing — the answer points at what the operator's
+            # command put there. The harness door stays shut either way.
+            typed = self._typed_this_turn_pointer(skill, args) if source == "tool" else None
+            if typed is not None:
+                logger.info("skill %r use_skill answered: the operator typed it", skill.name)
+                return SkillLoad(found=True, name=skill.name, body=typed)
             return SkillLoad(
                 found=True,
                 name=skill.name,
@@ -1631,38 +1791,40 @@ class Agent:
             return SkillLoad(found=True, name=skill.name, error=str(exc))
         from zakcode.providers.text_tools import defang_untrusted
 
+        reentry = False
         if source == "tool":
             # Per-turn reload dedup: the SAME unchanged body already injected this turn is
             # not re-injected — a short pointer back to it is returned instead (args still
             # surfaced below so a sub-command chain like `tree add` -> `tree read` works).
             # Costs no invocation budget and fires no selection signal: nothing new loaded.
-            import hashlib
-
-            digest = hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+            digest = _skill_digest(body)
             if self._skills_loaded_this_turn.get(skill.name) == digest:
                 # A paged skill (ADR-0067) is re-delivered at its CURRENT section — the one
                 # recovery a model that lost the page (compaction, a long detour) needs —
                 # instead of a bare pointer to text that may no longer be in context.
                 loop = getattr(self, "loop", None)
                 page = loop.current_skill_page(skill.name) if loop is not None else None
-                if page is not None:
-                    pointer = (
-                        f"[already loaded] Skill {skill.name!r} is running this turn, delivered "
-                        "one section at a time; here is the CURRENT section again. Continue "
-                        f"from where you are in it.\n\n{page}"
-                    )
-                else:
-                    pointer = (
-                        f"[already loaded] The full instructions for skill {skill.name!r} are "
-                        "already in your context THIS turn — the /command you were given, or "
-                        "an earlier use_skill call — unchanged. Continue those instructions "
-                        "from where you are; do not reload them."
-                    )
-                if args.strip():
-                    pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
-                logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
-                return SkillLoad(found=True, name=skill.name, body=pointer)
-            self._skills_loaded_this_turn[skill.name] = digest
+                arrived_at = self._skill_loaded_at_work.get(skill.name)
+                # No section is open — a body that arrived whole (ADR-0192), or a paged one
+                # with every section closed — and the model has ACTED since it arrived: this
+                # is a re-entry, the call a perpetual loop closes every iteration on, and it
+                # gets the body (ADR-0196). "Continue from where you are" sent a pass that had
+                # finished nowhere: measured 2026-09-18 (gpt-5.6-luna, served loop).
+                reentry = (
+                    page is None and arrived_at is not None and self._loop_work_calls() > arrived_at
+                )
+                if not reentry:
+                    pointer = _already_loaded_pointer(skill.name, page, args, worked=False)
+                    logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
+                    return SkillLoad(found=True, name=skill.name, body=pointer)
+                logger.info("skill %r asked for again after work — a re-entry", skill.name)
+            self._note_skill_delivered(skill.name, digest)
+        elif source == "harness":
+            # A harness-composed re-entry counts as loaded this turn (ADR-0187): the model's
+            # own use_skill of the same skill, prompted by the hook's words, then answers
+            # with a pointer instead of a second copy of the body — until it has acted on
+            # it (ADR-0196).
+            self._note_skill_delivered(skill.name, _skill_digest(body))
         if source == "tool":  # count only model-driven loads that actually inject a body
             self._skill_invocations_this_turn += 1
             self._skill_invocations_total += 1
@@ -1677,7 +1839,7 @@ class Agent:
         await self._emit_skill_selected(skill.name, query, source=source)
         rendered = defang_untrusted(body)
         if args.strip() and source == "tool":
-            # use_skill arguments (use_skill(name, args="loop")): surfaced to the model ahead of
+            # Skill arguments (Skill(skill, args="loop")): surfaced to the model ahead of
             # the body so a skill whose steps branch on an argument (a sub-command like `loop`)
             # can see it. A presentation frame the model reads — NOT a trust boundary: defang
             # only neutralizes tool-call sentinels, not brackets, and body + args share the same
@@ -1686,10 +1848,12 @@ class Agent:
             # command-expansion frame instead, and the two shapes staying DISTINCT is what lets
             # the model tell a user-typed slash from a model-chained load (provenance).
             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
-        return SkillLoad(found=True, name=skill.name, body=rendered, path=str(skill.path))
+        return SkillLoad(
+            found=True, name=skill.name, body=rendered, path=str(skill.path), reentry=reentry
+        )
 
     async def compose_skill_turn(
-        self, name: str, args: str = "", *, fuzzy: bool = True
+        self, name: str, args: str = "", *, fuzzy: bool = True, source: str = "command"
     ) -> SkillInvocation:
         """Resolve a skill for the human ``/<name>`` path and return the turn text to run.
 
@@ -1703,8 +1867,13 @@ class Agent:
         :meth:`_load_skill_body` with the model-facing ``use_skill`` tool and
         :meth:`invoke_skill`, so every path reads, defangs, and fires ``ON_SKILL_SELECTED``
         identically. Never raises: a missing/unreadable skill file is a UX result, not a crash.
+
+        ``source="harness"`` (ADR-0187) composes the same turn text for the loop's own
+        delivery — a turn-end hook's named re-entry, a fired autonomous-loop wake-up — under
+        :meth:`_load_skill_body`'s harness rules (a ``user-invocable: false`` loop skill is
+        allowed; the frame still leads, so every reader keyed on it recognises the turn).
         """
-        load = await self._load_skill_body(name, source="command", args=args)
+        load = await self._load_skill_body(name, source=source, args=args)
         corrected_from: str | None = None
         if not load.found:
             # Typo tolerance (ADR-0040): ``/enocde-session`` is not "unsupported" when the
@@ -1715,7 +1884,7 @@ class Agent:
             candidates = self.closest_skill_names(name) if fuzzy else []
             if len(candidates) == 1 and candidates[0][1] >= _SKILL_AUTOCORRECT_RATIO:
                 corrected_from = name.lstrip("/").strip()
-                load = await self._load_skill_body(candidates[0][0], source="command", args=args)
+                load = await self._load_skill_body(candidates[0][0], source=source, args=args)
             if not load.found:
                 return SkillInvocation(
                     invoked=False, name=name, suggestions=tuple(c for c, _ in candidates)
@@ -1755,13 +1924,19 @@ class Agent:
         ]
         if args.strip():
             frame.append(f"<command-args>{defang_untrusted(args.strip())}</command-args>")
-        # A sectioned skill is paged through the plan (ADR-0067): the turn text carries the
-        # front matter and section 1; the loop seeds every section from the whole body and
-        # hands over the next one as update_plan marks the previous done — the same delivery
-        # the use_skill door gets, so both doors run a long skill one section at a time.
+        # A sectioned skill whose body cannot fit the window is paged through the plan
+        # (ADR-0067): the turn text carries the front matter and section 1; the loop seeds
+        # every section from the whole body and hands over the next one as update_plan marks
+        # the previous done. One that fits arrives whole (ADR-0192). The loop decides, so
+        # both doors deliver a skill the same way.
         from zakcode.tasks import skill_pages
 
-        pages = skill_pages(load.body, skill=load.name)
+        loop = getattr(self, "loop", None)
+        pages = (
+            loop._skill_pages_for_delivery(load.name, load.body)
+            if loop is not None
+            else skill_pages(load.body, skill=load.name)
+        )
         body_text = pages.first() if pages is not None else load.body
         return SkillInvocation(
             invoked=True,
@@ -1965,6 +2140,11 @@ class Agent:
                         },
                     )
                 )
+        with contextlib.suppress(Exception):
+            # ADR-0191: the session ends, so do the background commands it started (Claude
+            # Code kills its background shells on exit, too). Not on the ADR-0034 restart —
+            # that path execs without closing, and the resumed session reports them.
+            await self.loop.background_tasks.kill_all()
         with contextlib.suppress(Exception):
             await self.loop.aclose()  # tear down the egress-proxy listener (no-op when off)
         await self.aclose_mcp()

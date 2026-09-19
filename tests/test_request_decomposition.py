@@ -158,7 +158,7 @@ def test_compound_request_seeds_one_step_per_skill(tmp_path: Path) -> None:
 def test_single_skill_request_does_not_seed(tmp_path: Path) -> None:
     # One-part asks stay ceremony-free: the model handles them directly (the coverage
     # backstop still guards the finish — see below).
-    use = ToolCall(id="u1", name="use_skill", arguments={"name": "encode-session"})
+    use = ToolCall(id="u1", name="Skill", arguments={"name": "encode-session"})
     provider = _ScriptByCallProvider(
         lambda n, m: LLMResult(tool_calls=[use]) if n == 1 else LLMResult(text="done")
     )
@@ -204,9 +204,7 @@ def test_coverage_satisfied_by_use_skill(tmp_path: Path) -> None:
     provider = _ScriptByCallProvider(
         lambda n, m: (
             LLMResult(
-                tool_calls=[
-                    ToolCall(id="u1", name="use_skill", arguments={"name": "fresh-eyes-code"})
-                ]
+                tool_calls=[ToolCall(id="u1", name="Skill", arguments={"name": "fresh-eyes-code"})]
             )
             if n == 1
             else LLMResult(text="review done")
@@ -220,7 +218,7 @@ def test_coverage_satisfied_by_use_skill(tmp_path: Path) -> None:
 
 def test_failed_use_skill_load_does_not_count_as_coverage(tmp_path: Path) -> None:
     # An errored load (unknown name) is not an invocation — the nudge still fires.
-    calls: list[ToolCall] = [ToolCall(id="u1", name="use_skill", arguments={"name": "nope"})]
+    calls: list[ToolCall] = [ToolCall(id="u1", name="Skill", arguments={"name": "nope"})]
     results = [ToolResultBlock(tool_use_id="u1", output="unknown skill", is_error=True)]
     seen: set[str] = set()
     AgentLoop._harvest_skill_invocations(calls, results, seen)

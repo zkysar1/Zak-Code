@@ -55,8 +55,15 @@ from zakcode.cli._layout import (
     open_input_frame,
     panel,
     read_prompt,
+    user_line,
 )
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.cli.logsink import (
+    LOG_LEVEL_ENV,
+    RedactingFilter,
+    install_transcript_logging,
+    log_level_from_env,
+)
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.cli.saybox import fold_lines
 from zakcode.config import PermissionTier, Settings, env_source, load_settings
@@ -808,6 +815,61 @@ def _announce_resume(console: Console, agent: Any) -> None:
     )
 
 
+def _harness_skill_turn(agent: Any, name: str, args: str, note: str) -> str | None:
+    """``/<name> <args>`` composed the way the loop delivers a hook-named skill (ADR-0187):
+    the command frame with ``note`` folded into its message line, plus page 1 — or ``None``
+    when this agent cannot compose it (a stand-in without the seam, an unknown, refused or
+    unreadable skill); the caller then falls back to its prose line."""
+    compose = getattr(agent, "compose_skill_turn", None)
+    if compose is None:
+        return None
+    import inspect
+
+    if "source" not in inspect.signature(compose).parameters:
+        return None
+    try:
+        result = _run_async(compose(name, args, source="harness"))
+    except Exception:  # noqa: BLE001 — a broken composer must never break the door
+        return None
+    turn_text = getattr(result, "turn_text", None)
+    if not getattr(result, "invoked", False) or not turn_text:
+        return None
+    if getattr(result, "denied_reason", None) or getattr(result, "error", None):
+        return None
+    from zakcode.agent.loop import harness_skill_turn_text
+
+    return harness_skill_turn_text(str(turn_text), note)
+
+
+def _hook_named_skill_turn(agent: Any, reason: str, note: str) -> str | None:
+    """The skill a Stop hook's continuation names, composed for delivery (ADR-0187), or
+    ``None`` when it names none or it cannot be composed."""
+    from zakcode.agent.loop import skill_reentry_in
+
+    reentry = skill_reentry_in(reason)
+    if reentry is None:
+        return None
+    return _harness_skill_turn(agent, reentry[0], reentry[1], note)
+
+
+def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
+    """The turn that resolves a fired autonomous-loop sentinel (ADR-0187): the skill the
+    session's last hook-named re-entry ran (``Session.loop_skill``), composed by the
+    harness — after a ``veto_stall``'s context is compacted, as a collapsed turn's is —
+    or ``None`` when no such skill is known, in which case the sentinel fires as the prose
+    line it always did (ADR-0094)."""
+    from zakcode.wakeup import LOOP_WAKE_NOTE
+
+    session = getattr(agent, "session", None)
+    spec = str(getattr(session, "loop_skill", "") or "").strip()
+    if not spec:
+        return None
+    name, _, args = spec.partition(" ")
+    if getattr(session, "last_stop_reason", "") == "veto_stall":
+        _announce_resume(console, agent)  # the stalled context is compacted, as on a resume
+    return _harness_skill_turn(agent, name, args.strip(), LOOP_WAKE_NOTE)
+
+
 #: Turn ends after which an unattended session is continued (ADR-0090): the turn collapsed
 #: with nobody at the prompt to notice.
 _KICK_STOP_REASONS = frozenset({"doom_loop", "gave_up", "degenerated", "stuck"})
@@ -871,6 +933,17 @@ def _restart_kick(
                 "update) at a skill boundary; the skill call it was about to make did not "
                 f"run. Nothing was lost; make that call now:\n{carried}"
             )
+        # ADR-0187: a continuation that names a skill re-entry is delivered as that skill
+        # in the new process too — the loop would have composed it had the veto been
+        # honoured in the old one; the restart must not hand the model the bare tool name.
+        composed = _hook_named_skill_turn(
+            agent,
+            carried,
+            f"this session was restarted into build {restarted} (a zakcode update) at a turn "
+            f"boundary where a Stop hook had asked it to continue; the hook said: {carried}",
+        )
+        if composed is not None:
+            return composed
         return (
             f"[harness] this session was restarted into build {restarted} (a zakcode update) "
             "at a turn boundary where a Stop hook had asked it to continue. Nothing was "
@@ -1634,7 +1707,7 @@ def _render_skills(console: Console, agent: Agent) -> None:
         _dim(console, f"run a skill with /<name> [args] {g['dash']} it executes as this turn.")
         invoked = getattr(agent, "skill_invocations_this_session", 0)
         if invoked:
-            _dim(console, f"the model has invoked skills {invoked}x this session (use_skill).")
+            _dim(console, f"the model has invoked skills {invoked}x this session (Skill).")
     for name, err in getattr(agent, "skill_errors", {}).items():
         line = Text.assemble(("  ", ""), (name, "err"))
         line.append(f" ({err})", style="notice.dim")
@@ -2489,6 +2562,9 @@ def chat(
     without an interactive permission prompter, so ``ask`` mode fails closed there;
     use the WebSocket channel for interactive approval.)
     """
+    # Log records become transcript lines (ADR-0186): the daemon-shaped stdout handler
+    # the entry point installed would print timestamped records into the grid.
+    install_transcript_logging(console)
     _prepare_interactive_terminal()
     if dangerously_skip_permissions:
         # One mechanism for every launch path — the inline REPL, a -p run, and the elevated
@@ -2696,8 +2772,31 @@ def chat(
         # ADR-0094: a wake-up the model armed with schedule_wakeup fires here, at the idle
         # prompt, as the session's own line. Late-bound through `agent` (rebuilt on /model
         # and /resume); an agent that holds no loop — a stand-in — holds no wake-up either.
-        slot = getattr(getattr(agent, "loop", None), "wakeup_slot", None)
-        return None if slot is None else slot.take_due()
+        # ADR-0187: the autonomous-loop sentinel resolves to the skill the session's last
+        # Stop-hook re-entry ran, composed by the harness — the model is not asked to
+        # remember which skill runs the loop, and a stalled turn's context is compacted
+        # first; with no such skill known it fires as the prose line it always did.
+        from zakcode.wakeup import LOOP_SENTINEL, fired_line
+
+        loop = getattr(agent, "loop", None)
+        # ADR-0191: a background command that exited is reported first, as the harness's
+        # own line — the <task-notification> Claude Code delivers, at this same door.
+        tasks = getattr(loop, "background_tasks", None)
+        if tasks is not None:
+            note = tasks.take_notifications()
+            if note is not None:
+                return note
+        slot = getattr(loop, "wakeup_slot", None)
+        if slot is None:
+            return None
+        prompt = slot.take_due_prompt()
+        if prompt is None:
+            return None
+        if prompt.strip() == LOOP_SENTINEL:
+            composed = _loop_sentinel_turn(console, agent)
+            if composed is not None:
+                return composed
+        return fired_line(prompt)
 
     mux = _InputMux(
         inbox_path,
@@ -2786,12 +2885,18 @@ def chat(
             # Echo input that never appeared in a frame — an injected say (with
             # provenance), the harness's own continuation (ADR-0090), or a line typed
             # ahead during the turn — where a typed line would have echoed: the
-            # transcript must show what the agent was just told.
-            tag = {"say": "(say) ", "harness": "(harness) "}.get(kind, "")
-            console.print()
+            # transcript must show what the agent was just told. It is the turn's bright
+            # anchor (ADR-0185): the operator's line, its door and the wall clock, behind
+            # the two-blank seam (the idle wait already printed one of the two).
             # A long message folds after a few lines (ADR-0119): the transcript shows
             # what the agent was told without a 200-line paste burying the turn.
-            console.print(f"  ▸ {tag}{escape(fold_lines(line))}", style="notice.dim")
+            user_line(
+                console,
+                fold_lines(line),
+                via=kind if kind in ("say", "harness") else "",
+                stamp=time.strftime("%H:%M"),
+                blanks=1 if framed else 2,
+            )
 
         stripped = line.strip()
         if not stripped:
@@ -3279,7 +3384,15 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on "
         f"http://{host}:{port}{where}{auth_note}{bound_note}"
     )
-    server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port))
+    # The stdlib event loop, never uvicorn's "auto" (ADR-0197). "auto" picks uvloop wherever it is
+    # installed, and `uvicorn[standard]` installs it on every non-Windows box. Under uvloop a
+    # child's own ends of its stdin/stdout/stderr stay open at high descriptor numbers in every
+    # descendant, whatever that descendant redirects, so a hook or a shell command that leaves
+    # anything running — the framework's daemon, a `nohup ... &` — is never seen to finish: the
+    # read waits out the whole timeout and the tree is then killed. Measured 2026-09-18: a
+    # SessionStart hook that spawned a daemon took 95.0 s here and 0.7 s on the stdlib loop. The
+    # CLI and the test suite already run on the stdlib loop; the served path now runs on it too.
+    server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port, loop="asyncio"))
     server_holder["server"] = server
     server.run()
 
@@ -3294,7 +3407,8 @@ register_throughput_command(app)
 
 
 #: Env var controlling the root log level configured by :func:`_configure_logging`.
-LOG_LEVEL_ENV = "ZAKCODE_LOG_LEVEL"
+# ``LOG_LEVEL_ENV`` lives in ``zakcode.cli.logsink`` and is re-exported here.
+__all_logging__ = (LOG_LEVEL_ENV,)
 
 
 def _configure_logging() -> None:
@@ -3321,16 +3435,16 @@ def _configure_logging() -> None:
     An unrecognised level falls back to INFO rather than raising: a typo in an env
     var must not stop the server from starting.
     """
-    level_name = os.environ.get(LOG_LEVEL_ENV, "INFO").strip().upper()
-    level = logging.getLevelName(level_name)
-    if not isinstance(level, int):
-        level = logging.INFO
     logging.basicConfig(
-        level=level,
+        level=log_level_from_env(),
         stream=sys.stdout,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         force=True,
     )
+    # Every record that reaches stdout passes the credential scrub (ADR-0186): httpx logs
+    # the full URL of each request, and some providers carry the API key in its query.
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(RedactingFilter())
 
 
 def main() -> None:

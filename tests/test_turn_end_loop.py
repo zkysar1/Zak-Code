@@ -2,9 +2,10 @@
 
 Covers the design acceptance matrix: budget-zero = byte-identical default (no hook
 fires), allow vs veto on "completed", per-turn budget exhaustion, the non-vetoable
-stop reasons (max_iterations / provider_error / recipe_stalled), doom-loop veto with
-the synthetic tool_result pairing fix + stall-state reset, payload contents, the
-streaming twin's AgentStatus announcement, and the Settings/Agent plumbing.
+stop reasons (max_iterations / recipe_stalled), the BOUNDED, PACED veto of a
+provider_error (ADR-0181), doom-loop veto with the synthetic tool_result pairing fix +
+stall-state reset, payload contents, the streaming twin's AgentStatus announcement, and
+the Settings/Agent plumbing.
 
 Everything is hermetic: scripted in-memory providers (no network, no model), a tiny
 in-memory tool registry, and a ``tmp_path`` workspace.
@@ -18,7 +19,13 @@ from typing import Any
 import pytest
 
 import zakcode
-from zakcode.agent.loop import DOOM_LOOP_THRESHOLD, AgentLoop
+import zakcode.agent.loop as loop_module
+from zakcode.agent.loop import (
+    _MAX_PROVIDER_ERROR_VETOES,
+    DOOM_LOOP_THRESHOLD,
+    AgentLoop,
+    _provider_error_veto_delay,
+)
 from zakcode.config import load_settings
 from zakcode.events import AgentDone, AgentStatus, AgentToolResult
 from zakcode.hooks import TurnEndPayload, TurnEndResult
@@ -73,6 +80,34 @@ class FailingProvider(ScriptedProvider):
         raise RequestFailed("scripted failure")
 
 
+class FlakyScriptedProvider(ScriptedProvider):
+    """Replays a script of results AND failures in order: an exception entry is raised
+    (``RequestFailed`` is never retried by the loop), a result entry is returned."""
+
+    def __init__(self, script: list[LLMResult | Exception]) -> None:
+        super().__init__([])
+        self._script = list(script)
+
+    async def acomplete(self, messages, *, system=None, tools=None, **kwargs):  # type: ignore[override]
+        self.calls += 1
+        step = self._script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+@pytest.fixture()
+def fast_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Patch the loop's backoff sleep to record delays instead of waiting."""
+    recorded: list[float] = []
+
+    async def _instant(delay: float) -> None:
+        recorded.append(delay)
+
+    monkeypatch.setattr(loop_module.asyncio, "sleep", _instant)
+    return recorded
+
+
 class EchoTool(Tool):
     spec = ToolSpec(name="echo", description="Echo back the provided text.")
 
@@ -83,7 +118,7 @@ class EchoTool(Tool):
 class UseSkillStub(Tool):
     """Stands in for the real ``use_skill`` (which needs a resolver): counts executions."""
 
-    spec = ToolSpec(name="use_skill", description="Load a skill by name.")
+    spec = ToolSpec(name="Skill", description="Load a skill by name.")
 
     def __init__(self) -> None:
         self.executed = 0
@@ -283,7 +318,7 @@ async def test_turn_end_veto_is_deferred_across_a_build_restart(
 
 def _re_entry(call_id: str, **arguments: str) -> LLMResult:
     """A perpetual loop's unit boundary: the lone use_skill call that loads the next body."""
-    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments=arguments)])
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments=arguments)])
 
 
 @pytest.mark.asyncio
@@ -321,9 +356,7 @@ async def test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary(
     assert hook.payloads == []  # not a vetoable break: the Stop hook never ran
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith(
-        'Call use_skill(name="worker-loop", args="loop") now.'
-    )
+    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop", args="loop") now.')
     # The un-executed call is answered, so the transcript replays on the new build.
     answered = [
         b
@@ -357,7 +390,7 @@ async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
     stub2 = UseSkillStub()
     mixed = LLMResult(
         tool_calls=[
-            ToolCall(id="c2", name="use_skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="c2", name="Skill", arguments={"name": "worker-loop"}),
             ToolCall(id="c3", name="echo", arguments={"text": "still working"}),
         ]
     )
@@ -396,7 +429,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     paired = LLMResult(
         tool_calls=[
             ToolCall(id="p1", name="update_plan", arguments={"tasks": []}),
-            ToolCall(id="s1", name="use_skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="s1", name="Skill", arguments={"name": "worker-loop"}),
         ]
     )
     provider = ScriptedProvider([paired, LLMResult(text="never reached")])
@@ -406,7 +439,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     assert plan.executed == 1 and skill.executed == 0
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith('Call use_skill(name="worker-loop") now.')
+    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop") now.')
     answered = {
         b.tool_use_id: b
         for m in loop.session.messages
@@ -452,29 +485,156 @@ async def test_turn_end_max_iterations_not_vetoable(tmp_path: Path) -> None:
     assert hook.payloads == []
 
 
+# ── provider_error: vetoable, bounded, paced (ADR-0181) ──────────────────────
+#
+# Measured 2026-09-17 on a served Mind (vertex_ai_beta): one 400 on the fifth iteration of
+# a plan with seven steps open ended the turn; the Mind's stop hook — whose whole job is to
+# re-enter the loop — was never consulted, and the loop sat at its prompt until a human
+# typed "continue". A provider failure is a fact about the MOMENT; the framework decides
+# whether the turn goes on, up to a cap, with a backoff between re-entries.
+
+
 @pytest.mark.asyncio
-async def test_turn_end_provider_error_not_vetoable(tmp_path: Path) -> None:
-    hook = RecordingHook([_veto()])
-    loop = _make_loop(FailingProvider(), tmp_path)  # RequestFailed is never retried
+async def test_turn_end_provider_error_is_vetoable_and_the_turn_recovers(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    provider = FlakyScriptedProvider([RequestFailed("blip"), _TEXT_DONE])
+    hook = RecordingHook([_veto("Keep going."), None])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert result.error == ""
+    assert result.degraded is True  # the turn struggled, and says so
+    assert provider.calls == 2
+    assert fast_sleep == [_provider_error_veto_delay(1)]  # paced before the re-entry
+    assert [p.stop_reason for p in hook.payloads] == ["provider_error", "completed"]
+    assert hook.payloads[0].degraded is True
+    rails = [m.text for m in loop.session.messages if m.role == "user"]
+    assert any("Keep going." in r for r in rails)  # the hook's own continuation
+
+
+@pytest.mark.asyncio
+async def test_turn_end_provider_error_veto_is_bounded_and_paced(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    # RequestFailed on every call (never retried in-turn); counts its calls.
+    provider = FlakyScriptedProvider([RequestFailed("scripted failure")] * 20)
+    hook = RecordingHook([_veto()] * 10)
+    loop = _make_loop(provider, tmp_path)
     loop.hook_manager.register_turn_end(hook)
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "provider_error"
-    assert hook.payloads == []
+    assert result.degraded
+    assert len(hook.payloads) == _MAX_PROVIDER_ERROR_VETOES  # consulted up to the cap, not past
+    assert provider.calls == _MAX_PROVIDER_ERROR_VETOES + 1
+    assert fast_sleep == [_provider_error_veto_delay(i) for i in range(1, 7)]
+    assert fast_sleep == [15.0, 30.0, 60.0, 120.0, 240.0, 300.0]
+    assert "scripted failure" in result.error
+    assert f"persisted through {_MAX_PROVIDER_ERROR_VETOES} hook-vetoed re-entries" in result.error
+
+
+@pytest.mark.asyncio
+async def test_a_completed_call_resets_the_provider_error_veto_count(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    """Consecutive, not cumulative: a loop that limps through one outage keeps its full
+    allowance — and its shortest backoff — for the next."""
+    provider = FlakyScriptedProvider(
+        [RequestFailed("one"), _same_call(1), RequestFailed("two"), _TEXT_DONE]
+    )
+    hook = RecordingHook([_veto(), _veto(), None])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "completed"
+    assert provider.calls == 4
+    assert fast_sleep == [_provider_error_veto_delay(1), _provider_error_veto_delay(1)]
+
+
+@pytest.mark.asyncio
+async def test_a_hook_that_lets_a_provider_error_stand_ends_the_turn_at_once(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    provider = FlakyScriptedProvider([RequestFailed("scripted failure")] * 20)
+    hook = RecordingHook([None])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "provider_error"
+    assert len(hook.payloads) == 1 and provider.calls == 1
+    assert fast_sleep == []
+    assert result.error == "scripted failure"  # no re-entry note when none happened
+
+
+@pytest.mark.asyncio
+async def test_turn_end_provider_error_subagent_loop_unchanged(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    hook = RecordingHook([_veto()])
+    loop = _make_loop(FailingProvider(), tmp_path, turn_end_vetoable=False)
+    loop.hook_manager.register_turn_end(hook)
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "provider_error"
+    assert hook.payloads == [] and fast_sleep == []
+
+
+@pytest.mark.asyncio
+async def test_turn_end_provider_error_streaming_twin(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    provider = FailingProvider()
+    hook = RecordingHook([_veto()] * 10)
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    events = [ev async for ev in loop.astream_turn("hi")]
+    statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
+    assert any(
+        "the turn-end hook asked to continue" in s and "retrying in 15s (1/6)" in s
+        for s in statuses
+    )
+    done = [ev for ev in events if isinstance(ev, AgentDone)][-1]
+    assert done.stop_reason == "provider_error"
+    assert "hook-vetoed re-entries" in done.error
+    assert len(hook.payloads) == _MAX_PROVIDER_ERROR_VETOES
+    assert fast_sleep == [15.0, 30.0, 60.0, 120.0, 240.0, 300.0]
+
+
+@pytest.mark.asyncio
+async def test_turn_end_provider_error_streaming_twin_recovers(
+    tmp_path: Path, fast_sleep: list[float]
+) -> None:
+    provider = FlakyScriptedProvider([RequestFailed("blip"), _TEXT_DONE])
+    hook = RecordingHook([_veto("Keep going."), None])
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    events = [ev async for ev in loop.astream_turn("hi")]
+    done = [ev for ev in events if isinstance(ev, AgentDone)][-1]
+    assert done.stop_reason == "completed" and done.degraded
+    assert fast_sleep == [15.0]
 
 
 @pytest.mark.asyncio
 async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> None:
     # Unit check on the gate itself: even with budget + hooks, the non-vetoable
-    # reasons (incl. recipe_stalled, whose full ladder is heavy to script) get None.
+    # reasons (incl. recipe_stalled, whose full ladder is heavy to script) get None —
+    # while provider_error, vetoable since ADR-0181, reaches the hook.
     hook = RecordingHook([_veto(), _veto(), _veto()])
     loop = _make_loop(ScriptedProvider([]), tmp_path)
     loop.hook_manager.register_turn_end(hook)
-    for reason in ("recipe_stalled", "max_iterations", "provider_error"):
+    for reason in ("recipe_stalled", "max_iterations", "budget_exhausted"):
         prompt = await loop._fire_turn_end(
             reason, iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
         )
         assert prompt is None
     assert hook.payloads == []
+    prompt = await loop._fire_turn_end(
+        "provider_error", iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
+    )
+    # The seam returns the message to re-enter with, already framed (ADR-0187): the plain
+    # rail here, since this reason names no skill.
+    assert prompt == "[harness] Hint: Not done: verify your work."
+    assert [p.stop_reason for p in hook.payloads] == ["provider_error"]
 
 
 # ── doom-loop veto: pairing fix + stall-state reset ───────────────────────────

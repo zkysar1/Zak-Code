@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import StrEnum
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -34,8 +35,9 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, model_validator
 
 from zakcode.artifacts import ArtifactRef
+from zakcode.background import BackgroundTasks
 from zakcode.config import PermissionTier
-from zakcode.tasks import TaskNetwork
+from zakcode.tasks import SkillPages, TaskNetwork
 from zakcode.wakeup import WakeupSlot
 
 logger = logging.getLogger("zakcode.tools")
@@ -193,6 +195,10 @@ class SkillLoad(BaseModel):
     #: describes the skill from memory of its own writing ("it is a python file, not a skill").
     #: ``use_skill`` lists the siblings from this path so the answer is in the tool result.
     path: str | None = None
+    #: True when this load delivered a body the turn ALREADY held, because the model had
+    #: acted on it since (ADR-0196): a loop's re-entry, not a redundant reload. The body is
+    #: handed over exactly as a first load is; the flag is for the trace.
+    reentry: bool = False
 
 
 @runtime_checkable
@@ -270,10 +276,6 @@ class ToolContext(BaseModel):
     #: re-injects. ``None`` for a bare/ungated loop that does not wire planning, so the
     #: tool degrades to a recoverable error rather than raising.
     task_network: TaskNetwork | None = None
-    #: ADR-0168 lever N (opt-in ``plan_autoadvance``): when the model resends the plan unchanged and
-    #: the current step is non-terminal but already worked on, ``update_plan`` marks it done and
-    #: advances. The loop wires this from ``settings.plan_autoadvance``; ``False`` for a bare loop.
-    plan_autoadvance: bool = False
     #: A :class:`Sampler` for tools that make their own model calls (``deep_think``). The
     #: ``Agent`` wires it to its strongest model and accounts the spend; ``None`` for a
     #: bare/test loop, so a model-using tool returns a clean error rather than crashing.
@@ -284,6 +286,12 @@ class ToolContext(BaseModel):
     #: error rather than crashing. (A sub-agent gets the PARENT's resolver — shared registry +
     #: budget — but its own ``caller_query`` below, so attribution stays correct.)
     skill_resolver: SkillResolver | None = None
+    #: The loop's delivery decision for a skill about to be handed over (ADR-0192): the pages
+    #: of ``(name, body)`` when the body cannot sit in the model's window whole, else ``None``
+    #: — the whole body. Asked by the ``use_skill`` door so it never pages a skill the loop's
+    #: page-turning treats as whole (or the reverse). ``None`` (a bare context) pages every
+    #: sectioned body, the pre-0192 shape.
+    skill_pages_for: Callable[[str, str], SkillPages | None] | None = None
     #: The session's :class:`~zakcode.rules.RuleRegistry`, which the ``read_rule`` tool reads to
     #: return ONE rule body by name (Vinheim Lever A chunk 2). It is the retrieval half of
     #: ``lean_rules``: ``render_index()`` puts every rule's name + summary in the prompt and the
@@ -305,6 +313,10 @@ class ToolContext(BaseModel):
     #: tool arms and cancels through; the REPL's idle wait fires it. ``None`` for a bare
     #: loop that holds no session, so the tool returns a clean error rather than crashing.
     wakeup_slot: WakeupSlot | None = None
+    #: The session's background commands (ADR-0191): ``Bash(run_in_background=true)`` starts
+    #: one here; ``TaskOutput`` / ``TaskStop`` read and kill them. ``None`` where no session
+    #: holds a table (the tool then refuses, like a wake-up with no slot).
+    background_tasks: BackgroundTasks | None = None
 
     @property
     def all_workspace_roots(self) -> list[Path]:
@@ -449,6 +461,17 @@ class ToolRegistry:
     def _canonical(self, name: str) -> str:
         return self._aliases.get(name, name)
 
+    def canonical(self, name: str) -> str:
+        """The canonical name behind ``name`` (an alias resolves; anything else is returned
+        unchanged, so an unknown name stays visibly unknown)."""
+        return self._canonical(name)
+
+    def aliases_of(self, name: str) -> tuple[str, ...]:
+        """Every alias that routes to the tool ``name`` (canonical or alias) names, in
+        registration order — the spellings a hook matcher or an operator config may use."""
+        canonical = self._canonical(name)
+        return tuple(a for a, target in self._aliases.items() if target == canonical)
+
     def get(self, name: str) -> Tool | None:
         """Look up a tool by name or alias (``None`` if unknown)."""
         return self._tools.get(self._canonical(name))
@@ -508,11 +531,14 @@ class ToolRegistry:
         (the default) → always True.
         """
         canonical = self._canonical(name)
-        if any(fnmatchcase(canonical, pat) for pat in self._exposure_deny):
+        # A pattern matches the canonical name OR any alias (ADR-0190: an operator's ``web_*``
+        # written before the rename still covers WebFetch / WebSearch through their aliases).
+        spellings = (canonical, *self.aliases_of(canonical))
+        if any(fnmatchcase(s, pat) for s in spellings for pat in self._exposure_deny):
             return False
         if not self._exposure_allow:
             return True
-        return any(fnmatchcase(canonical, pat) for pat in self._exposure_allow)
+        return any(fnmatchcase(s, pat) for s in spellings for pat in self._exposure_allow)
 
     def exposed_names(self) -> list[str]:
         """Canonical names actually offered to the model now: active AND passing the filter."""
@@ -564,7 +590,7 @@ class ToolRegistry:
                     if match is not None:
                         return ToolResult.error(
                             f"{name!r} is a skill, not a tool.",
-                            fix=f'Run it with use_skill(name="{match}").',
+                            fix=f'Run it with Skill(skill="{match}").',
                         )
             except Exception:  # noqa: BLE001 — the skill hint is best-effort; a broken
                 # resolver must never turn a clean unknown-tool error into a crash

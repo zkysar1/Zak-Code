@@ -32,7 +32,7 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Literal, NamedTuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 #: The task categories zakpick routes on. These ARE the strings passed as the routing ``task``.
 #: ``classify`` powers the cheap difficulty side-call that routes the main turn quick-vs-deep
@@ -50,11 +50,45 @@ ZAKPICK_CATEGORIES: frozenset[str] = frozenset(
 def thinking_extra_body(enabled: bool) -> dict[str, object]:
     """The request-body fragment that switches a reasoning model's thinking on or off.
 
-    The llama.cpp / vLLM ``chat_template_kwargs`` form; a server that does not understand
-    the key ignores it. ONE spelling, shared by the per-category knob below and the loop's
-    reasoning-overflow retry (ADR-0056), which sends it for a single request.
+    Zak Code's ONE internal spelling — the llama.cpp / vLLM ``chat_template_kwargs``
+    form — shared by the per-category knob below and the loop's reasoning-overflow retry
+    (ADR-0056), which sends it for a single request. It is NOT what every backend
+    receives: the provider renders it for the destination at request-build time
+    (``zakcode.providers.thinking``, ADR-0181) — kept verbatim for a self-hosted
+    OpenAI-compatible server, litellm's ``reasoning_effort`` for a Gemini model, dropped
+    elsewhere — because a strict-schema cloud (Vertex AI, measured 2026-09-17) refuses
+    the whole request over a body key it does not know rather than ignoring it.
     """
     return {"chat_template_kwargs": {"enable_thinking": enabled}}
+
+
+#: The reasoning DEPTHS a category or the whole deployment may ask for (ADR-0182) — exactly
+#: litellm's ``reasoning_effort`` literal (``litellm.types.llms.openai.REASONING_EFFORT``,
+#: pinned by a test against the installed version), which litellm maps per backend: a
+#: ``thinkingLevel`` on Gemini 3+, a ``thinkingBudget`` on Gemini 2.5, OpenAI's own
+#: ``reasoning_effort`` on the gpt-5 family, a thinking budget on Claude, ``think`` on Ollama.
+REASONING_EFFORT_LEVELS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh")
+
+
+def normalise_reasoning_effort(value: object) -> str | None:
+    """A configured reasoning depth as the level string litellm takes, or ``None`` for unset.
+
+    Case and surrounding whitespace are forgiven (``" High "`` → ``"high"``); an empty
+    string is unset. Anything else — a misspelling, a number, a boolean — is refused with
+    the accepted levels named, so a typo fails at load rather than silently running the
+    model at its default depth.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        level = value.strip().lower()
+        if not level:
+            return None
+        if level in REASONING_EFFORT_LEVELS:
+            return level
+    raise ValueError(
+        f"reasoning_effort must be one of {', '.join(REASONING_EFFORT_LEVELS)}; got {value!r}"
+    )
 
 
 class ZakpickModel(BaseModel):
@@ -80,8 +114,12 @@ class ZakpickModel(BaseModel):
     #: from 36 completion tokens to 4, answer unchanged.
     #:
     #: Emitted as ``extra_body={"chat_template_kwargs": {"enable_thinking": <bool>}}`` — the
-    #: form llama.cpp honours. A server that does not understand the key ignores it, so
-    #: setting this against a cloud model is inert rather than an error.
+    #: form llama.cpp honours — and RENDERED per destination by the provider (ADR-0181):
+    #: a Gemini category gets litellm's ``reasoning_effort`` instead; any other cloud
+    #: category gets no switch at all (its thinking is the model's own default). Setting
+    #: it against a cloud model is therefore inert, never a 400 — which it was on Vertex
+    #: AI until 2026-09-17, when the "unknown keys are ignored" assumption this comment
+    #: used to state met a server that validates the whole payload.
     #:
     #: A BOOLEAN, not a level, because per-request thinking *depth* does not work. Measured
     #: on llama.cpp 2026-08-17 with a prompt that provokes long reasoning: a per-request
@@ -92,6 +130,20 @@ class ZakpickModel(BaseModel):
     #: on reasoning and returned an EMPTY answer, which is the failure mode this knob exists
     #: to avoid: thinking tokens are billed against ``max_tokens``.)
     thinking: bool | None = None
+    #: Per-category reasoning DEPTH (ADR-0182) — one of :data:`REASONING_EFFORT_LEVELS`,
+    #: litellm's ``reasoning_effort``, mapped per backend (a ``thinkingLevel`` on Gemini 3+,
+    #: a ``thinkingBudget`` on Gemini 2.5, OpenAI's own on the gpt-5 family, a budget on
+    #: Claude, ``think`` on Ollama). ``None`` (the default) inherits ``Settings.reasoning_effort``,
+    #: and an unset deployment sends nothing, so the model runs at its own default depth.
+    #: Rendered by the provider ONLY where litellm flags the model reasoning-capable; against
+    #: any other model it is inert, never a 400. A self-hosted OpenAI-compatible server is not
+    #: reached this way at all — litellm's generic-OpenAI path drops the kwarg, and the servers
+    #: that take a level take it in their own body form, which is ``extra_body``'s job.
+    #:
+    #: A DEPTH, not the switch above: ``thinking: false`` beside a level is refused at load
+    #: ("off" is not a depth), and the loop's reasoning-overflow retry (ADR-0056), which
+    #: switches thinking off for one request, withholds the level for that request too.
+    reasoning_effort: str | None = None
     #: The model's context window in tokens — a fact about the MODEL, so it lives in the
     #: model's entry (ADR-0066). Required for a model the capability registry does not know
     #: (every self-hosted alias): with no window from here or the registry the provider
@@ -100,6 +152,20 @@ class ZakpickModel(BaseModel):
     #: a mismatch (config says 131,072, server says 43,690) is reported loudly, and the
     #: config wins, because a per-engine figure can overstate the per-request window (rb-8892).
     context_window: int | None = None
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalise_reasoning_effort(cls, value: object) -> str | None:
+        return normalise_reasoning_effort(value)
+
+    @model_validator(mode="after")
+    def _thinking_off_takes_no_depth(self) -> ZakpickModel:
+        if self.thinking is False and self.reasoning_effort is not None:
+            raise ValueError(
+                "thinking=false and reasoning_effort contradict each other for one category "
+                "('off' is not a depth); drop one of them"
+            )
+        return self
 
     @property
     def litellm_string(self) -> str:
@@ -658,6 +724,8 @@ __all__ = [
     "ZakpickCategory",
     "ZAKPICK_CATEGORIES",
     "ZakpickModel",
+    "REASONING_EFFORT_LEVELS",
+    "normalise_reasoning_effort",
     "DEFAULT_CATEGORY_MODELS",
     "ROUTED_CATEGORIES",
     "CATEGORY_LABEL",

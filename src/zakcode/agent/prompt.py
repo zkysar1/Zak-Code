@@ -148,7 +148,7 @@ _TOOL_GUIDANCE = (
     "same sentence.\n"
     "- A refused write or edit is about the content you sent, never about the environment: "
     "the refusal names the line and the file is unchanged. Fix the content and retry (a "
-    "smaller edit_file when a whole-file write keeps failing). Never hand the user an edit "
+    "smaller Edit when a whole-file write keeps failing). Never hand the user an edit "
     "you have the tools to make."
 )
 
@@ -200,14 +200,15 @@ _PLANNING = (
 
 _SKILLS = (
     "Skills (use_skill):\n"
-    "- A skill's numbered sections become steps in your plan the moment it loads; the "
-    "skeleton is seeded from the whole body, so the plan is complete even when the text is "
-    "not.\n"
-    "- A skill whose body cannot sit in this model's context window beside this prompt is "
-    "PAGED: the load returns the front matter and section 1 only, and each later section "
-    "arrives as its own message when you mark the previous step done with update_plan (the "
-    "status line reads `/<skill> page k/N: <title>`). Context is bounded by the largest "
-    "section, never by the whole body.\n"
+    "- A skill whose body fits this model's context window beside this prompt arrives "
+    "WHOLE: follow it as written, and plan with update_plan only where its steps need "
+    "tracking, as for any other long request.\n"
+    "- A skill whose body cannot sit in the window is PAGED: its numbered sections become "
+    "steps in your plan the moment it loads (seeded from the whole body, so the plan is "
+    "complete even when the text is not), the load returns the front matter and section 1 "
+    "only, and each later section arrives as its own message when you mark the previous "
+    "step done with update_plan (the status line reads `/<skill> page k/N: <title>`). "
+    "Context is bounded by the largest section, never by the whole body.\n"
     "- A single section — or an unpaged body — that still cannot fit ends the turn with the "
     "stop reason `skill_too_large`, after a [harness] message naming the skill and the sizes; "
     "the same fit check flags such skills at startup (`zakcode info`, the chat banner) before "

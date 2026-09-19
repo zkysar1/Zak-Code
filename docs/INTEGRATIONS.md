@@ -37,7 +37,7 @@ silently everywhere, and the SDK/server defaults are unchanged.
 
 | Surface | What's supported | Turn it on with |
 | --- | --- | --- |
-| **Skills** | `.claude/skills/<name>/SKILL.md` discovery; slash dispatch by skill **name** OR a `triggers:` token (case-insensitive); a CLI `/<skill> [args]` **runs immediately** — the turn's user message is Claude Code's command-expansion frame (`<command-message>`/`<command-name>`/`<command-args>`, echoing the typed token) plus the body, which is **invocation provenance**: the model can see a HUMAN typed the slash, so skills whose own rules say "user-invocable only / the model must not invoke this" execute instead of refusing (the system-prompt skills section states this contract; via `Agent.compose_skill_turn`, `Agent.invoke_skill` remains the deferred stage-context-then-run-later variant); **skill arguments** threaded either way (`<command-args>` on the human path, `[arguments: …]` on `use_skill(args=…)` — the two frames stay distinct on purpose); frontmatter lists parse in BOTH YAML spellings (inline `[a, b]` and block `- item` lines — the block form is what real skill trees use); a **headless one-shot** (`zakcode cli -p "/skill args"`) dispatches identically (denied/unreadable exits 1; an unknown `/token` falls through to the model); `user-invocable: false` enforced (gates a human-typed `/x` while still allowing model→skill chaining via `use_skill`); a composed turn's body is **elided from the persisted transcript once its turn ends** — the frame stays, so provenance and every reader keyed on it are unchanged (ADR-0045). | `Agent(enable_skills=True)` |
+| **Skills** | `.claude/skills/<name>/SKILL.md` discovery; slash dispatch by skill **name** OR a `triggers:` token (case-insensitive); a CLI `/<skill> [args]` **runs immediately** — the turn's user message is Claude Code's command-expansion frame (`<command-message>`/`<command-name>`/`<command-args>`, echoing the typed token) plus the body, which is **invocation provenance**: the model can see a HUMAN typed the slash, so skills whose own rules say "user-invocable only / the model must not invoke this" execute instead of refusing (the system-prompt skills section states this contract; via `Agent.compose_skill_turn`, `Agent.invoke_skill` remains the deferred stage-context-then-run-later variant); **skill arguments** threaded either way (`<command-args>` on the human path, `[arguments: …]` on `Skill(args=…)` — the two frames stay distinct on purpose); frontmatter lists parse in BOTH YAML spellings (inline `[a, b]` and block `- item` lines — the block form is what real skill trees use); a **headless one-shot** (`zakcode cli -p "/skill args"`) dispatches identically (denied/unreadable exits 1; an unknown `/token` falls through to the model); `user-invocable: false` enforced (gates a human-typed `/x` while still allowing model→skill chaining via `Skill`); a composed turn's body is **elided from the persisted transcript once its turn ends** — the frame stays, so provenance and every reader keyed on it are unchanged (ADR-0045). | `Agent(enable_skills=True)` |
 | **Hooks** | A Claude-Code `settings.json` (**and `settings.local.json`**, local-over-project) hook block, parsed verbatim: `Stop` → `TURN_END` continuation, `PreToolUse` / `PostToolUse` (incl. `additionalContext`), `SessionStart` (with `source`), `PreCompact` (`trigger` at the stdin top level); `$CLAUDE_PROJECT_DIR` expansion; every command security-scanned; and a Claude-Code-shaped `transcript_path` projection handed to hooks. | always on — no flag or prompt (ADR-0025) |
 | **Permissions** | `permissions.{allow,deny}` `Tool(pattern)` gestures translated into Zak Code's (stronger) deny-first policy — **deny-first, tighten-only**: the catastrophic floor is preserved (ingested allows can't loosen it), a bare whole-tool deny binds **even read-only tools**, and the path-glob verb is retained (ADR-0030): `Read` denies bind reads and writes, `Edit`/`Write` denies bind writes only — CC parity. The sole authority over `.claude/` — the engine hardcodes no agent-config protection (ADR-0029). | always on — no flag or prompt (ADR-0029) |
 | **statusLine** | The `statusLine` command from settings, fed session JSON per turn and rendered (cosmetic, fail-safe). | `ZAKCODE_STATUS_LINE` / `Agent(enable_status_line=True)` |
@@ -94,7 +94,13 @@ arguments) — the seam for runtime guardrails.
 loop** with `reason` as the next instruction — the mechanism a perpetual / autonomous
 framework uses to keep itself running. Always on for the main loop when a `Stop` hook is
 registered (sub-agent loops are never vetoable); vetoes are unbounded — the hook stands
-down, and the cost budget is the hard bound.
+down, and the cost budget is the hard bound. A `reason` that names a skill re-entry
+(`Skill('aspirations') with args='loop'`, `Skill(skill=…, args=…)`) is **delivered as
+that skill** (ADR-0187): the loop composes it — command frame with the reason folded in,
+page 1, plan steps — instead of relaying the instruction; after three such vetoes with no
+skill run between them the next ends the turn `veto_stall` and arms the autonomous-loop
+sentinel wake-up when none is held. Any other reason is relayed as a `[harness] Hint:`
+line, unbounded.
 
 ### 2. Per-turn context injection (`PreLLMCall`)
 
@@ -102,7 +108,13 @@ A **context hook** contributes background text before each model call. The loop
 folds it into an *ephemeral* tail message — appended after all real history, never
 persisted, and **fenced + defanged as untrusted** (`<injected_context>…`) — so the
 cached system+history prefix is untouched (prompt-cache safe) and recalled content
-is never treated as instructions.
+is never treated as instructions. One exception, measured and never guessed (ADR-0193):
+a provider that reuses only a WHOLE earlier prompt gets nothing from a shared prefix, so
+once a session has watched such a provider read back a tail-less prompt, the whole tail —
+hook context, the turn's prompt context and the plan reminder — rides every OTHER model
+call there (the turn's first call always carries it). Background text still reaches the
+model on the next call; a hook that must be seen on every call is the wrong seam — gate
+the action with a `PreToolUse` hook instead.
 
 ```python
 agent.hook_manager.register_context(lambda payload: retrieve_relevant(payload.user_text))
@@ -208,6 +220,8 @@ running an autonomous framework on Zak Code:
 
 - **Turn-end continuation ("never terminate").** A `Stop` hook can veto turn-end and inject a
   continuation (seam #1) — always armed on the main loop. This is the perpetual-loop engine.
+  A continuation naming a skill is delivered as that skill; a re-entry nobody runs is fenced
+  with a wake-up behind it (ADR-0187).
 - **`settings.json` hook ingestion.** A Claude-Code `settings.json` hook block is parsed verbatim
   (`zakcode.hooks.settings_loader`): event names mapped (`Stop` → `TURN_END`, `PreToolUse`, …),
   `$CLAUDE_PROJECT_DIR` substituted, every command security-scanned; always on (ADR-0025).

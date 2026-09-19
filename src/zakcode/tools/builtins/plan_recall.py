@@ -33,7 +33,9 @@ _GLYPH = {"pending": " ", "in_progress": "~", "done": "x", "blocked": "!", "canc
 #: — the overview's "Files changed" line is read off these (ADR-0112).
 _FILE_TOOLS = frozenset(
     {
-        "write_file",
+        "Write",
+        "Edit",
+        "write_file",  # pre-ADR-0190 spellings: a resumed older plan record
         "edit_file",
         "create_docx",
         "create_xlsx",

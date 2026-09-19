@@ -13,11 +13,13 @@ finish. Hermetic: scripted providers, fake resolvers, tmp workspaces.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from zakcode import tasks
 from zakcode.agent.loop import AgentLoop, _composed_skill_body
 from zakcode.events import AgentDone, AgentEvent, AgentStatus, AgentTaskUpdate
 from zakcode.messages import Message
@@ -233,6 +235,25 @@ class _ScriptByCall(Provider):
         return Capabilities(supports_tools=True, context_window=8192)
 
 
+@pytest.fixture(autouse=True)
+def _paged_shape(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A body that fits the window is delivered whole and seeds NO plan (ADR-0192): the
+    seeded skeleton is the shape of a PAGED skill. ENCODE fits any window and, under the
+    production budget, packs into one page — so by default here a body never fits and a
+    130-char budget keeps ENCODE the five-page skill these seeding tests are about.
+    ``whole_when_fits`` / ``real_page_budget`` opt a test out of either half."""
+    if request.node.get_closest_marker("whole_when_fits") is None:
+        monkeypatch.setattr(AgentLoop, "_skill_fits_whole", lambda self, name, body: False)
+    # The budget shapes the pages (ADR-0088), hence the loop-driven seeding tests only (the
+    # ones that ask for ``tmp_path`` themselves — every test has it among its fixtures via
+    # conftest); the pure skill_skeleton() tests measure against the real one.
+    if (
+        request.node.get_closest_marker("real_page_budget") is None
+        and "tmp_path" in inspect.signature(request.function).parameters
+    ):
+        monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 130)
+
+
 def _loop(provider: Provider, tmp_path: Path, bodies: dict[str, str]) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(UseSkillTool())
@@ -248,7 +269,7 @@ def _loop(provider: Provider, tmp_path: Path, bodies: dict[str, str]) -> AgentLo
 
 
 def _use(name: str, call_id: str = "t1") -> LLMResult:
-    return LLMResult(tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})])
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})])
 
 
 def _finish_plan(call_id: str = "p1") -> LLMResult:
@@ -274,10 +295,7 @@ def test_typed_skill_turn_starts_from_its_sections(
     def script(n: int, messages: list[Message]) -> LLMResult:
         return _finish_plan() if n == 1 else LLMResult(text="done")
 
-    # ENCODE's sections would pack into one page and arrive whole (ADR-0088); a 130-char
-    # budget keeps it the five-page skill this test is about.
-    monkeypatch.setattr("zakcode.tasks.PAGE_BUDGET_CHARS", 130)
-    provider = _ScriptByCall(script)
+    provider = _ScriptByCall(script)  # the autouse fixture keeps ENCODE a five-page skill
     loop = _loop(provider, tmp_path, {"encode-session": ENCODE})
     result = asyncio.run(loop.arun_turn(FRAME + ENCODE))
     assert result.stop_reason == "completed"
@@ -433,17 +451,20 @@ async def test_use_skill_names_the_seeded_sections_in_its_hint(
     # Five sections: paged (ADR-0067) — the result carries section 1 and says so.
     assert res.data == {"skill": "e", "decompose": True, "sections": 5, "paged": True, "page": 1}
     assert res.hint and "5 numbered sections are now steps in your plan" in res.hint
-    assert "use_skill" in res.hint  # the chaining nudge survives
+    assert "Skill" in res.hint  # the chaining nudge survives
 
 
-async def test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps(
+@pytest.mark.real_page_budget
+@pytest.mark.whole_when_fits
+async def test_a_skill_that_packs_into_one_page_arrives_whole_and_seeds_nothing(
     tmp_path: Path,
 ) -> None:
     """ADR-0088: under the production budget ENCODE's five sections share one page, so
-    the whole body arrives at once — and its sections are still the plan's steps."""
+    the whole body arrives at once — and (ADR-0192) a whole body seeds no plan: the hint
+    no longer claims its sections are steps, because nothing puts them there."""
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=_Resolver({"e": ENCODE}))  # type: ignore[arg-type]
     res = await UseSkillTool().execute({"name": "e"}, ctx)
     assert res.is_error is False
-    assert res.data == {"skill": "e", "decompose": True, "sections": 5}
+    assert res.data.get("skill") == "e" and "sections" not in res.data and "paged" not in res.data
     assert "## Phase Final: Summary" in res.output and "— page 1 of" not in res.output
-    assert res.hint and "5 numbered sections are now steps in your plan" in res.hint
+    assert "now steps in your plan" not in (res.hint or "")

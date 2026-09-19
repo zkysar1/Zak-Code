@@ -1497,6 +1497,43 @@ provider layer, not a vendor special case leaking into the loop.
   permission mode. Residual: outputs that differ only in a trailing verdict line (the
   HELD line appeared in ~45 of 135 outputs inside otherwise-different probes) are not
   caught; the identical-probe case that preceded the destruction is.
+- **Amended 2026-09-18 (the signal counts observations of the world, never the harness's
+  own deliveries).** Measured on a served Mind loop (gpt-5.6-luna, 316 calls; sample 2 in
+  `bench/results/served-luna-preregistration.log`). The framework's stop hook orders
+  `Skill('aspirations') with args='loop'`; the harness has already delivered that skill
+  (ADR-0187), so the loader answers the model's call with the same "[already loaded]"
+  pointer every time (ADR-0196). That pointer is a tool output of more than 24 characters,
+  identical by construction, so the 3rd, 4th and 5th pointer of one turn drew nudge,
+  narrow and step-back although distinct, successful work ran between them and the tracker
+  was reset at every veto (`reset()` clears the streak, not the outcome counts). The
+  step-back rail ("do not retry anything yet") landed on the completion right after a
+  veto, the model answered in text, and the turn ended `veto_stall`. One turn later the
+  graceful-stop BODY, asked for again after work six times because the framework's
+  stop-pending hook asks for it after every tool call, drew the whole ladder: read-only
+  narrowing and a STOP in the middle of the consolidation window. Both are reproduced
+  with no model: a probe against `StuckTracker`, and a replay of the turn's recorded calls
+  that matches the trace's notes one for one. A third case is proven from the tool's own
+  text and not yet seen in the field: a Mind re-arms its deadman wake-up before EVERY
+  re-entry by contract, the acknowledgement differs only in a clock time the signature
+  masks, so a healthy loop's fourth re-arm in one turn would read as a third identical
+  observation and its seventh would end the turn `stuck`.
+  The rule: a tool whose result is the harness's own delivery or acknowledgement measures
+  nothing, and `repeated-outcome` does not count it. The loop names them once
+  (`_UNOBSERVING_TOOLS` = the skill tool and the wake-up tool, under both spellings) and
+  hands the set to the tracker; every OTHER signal still sees those calls, so a skill call
+  that fails the same way three times still climbs. What bounds a model that only calls
+  `Skill` is unchanged: the doom guard (the same batch three times running), the
+  ADR-0187 fence (three vetoes with no skill body between them) and the per-turn skill
+  invocation budget (which meters body loads). NOT exempt: the plan tools. Their result echoes what the model sent,
+  and the same plan sent again and again is the churn this signal exists to catch.
+  Alongside, because nothing could say which signal had fired eight times in that turn:
+  every `stuck` trace note now carries `signals`, and `tool` and `repeats` when a repeated
+  outcome is among them (names and counts, never the output), and a `stuck` stop that the
+  turn-end hook refuses leaves a note where it left none.
+  Noted, not changed: `reset()` keeps the outcome counts across a veto, so a genuine
+  repeat that ended the turn `stuck` ends it again at the next identical observation if
+  the hook keeps the loop alive. That is the bound doing its job on a model that is
+  still repeating; no run has shown it to be wrong.
 
 ## ADR-0039: A run is bounded by wall-clock, and the reserve is carved out of the cap so it ends in a receipt
 
@@ -2144,8 +2181,11 @@ thinking DISABLED for that ONE request — `chat_template_kwargs.enable_thinking
 same fragment the zakpick per-category knob emits, now built by one shared
 `thinking_extra_body()` and passed per call (`_call_provider(extra_body=…)`; the streaming
 twin's `call_kw`). The provider merges a per-call `extra_body` OVER the instance's so a
-category knob and the one-shot override compose. A server without the key ignores it, so
-the retry degrades to the rail alone. (3) The default `Provider.astream` forwards
+category knob and the one-shot override compose. ~~A server without the key ignores it, so
+the retry degrades to the rail alone.~~ **Corrected by ADR-0181 (2026-09-17):** Vertex AI refuses
+the whole request over the unknown key (400 INVALID_ARGUMENT, measured), as do OpenAI and
+Anthropic; the provider now renders the switch per destination and drops a field a provider
+refuses by name. (3) The default `Provider.astream` forwards
 `result.thinking` as a `StreamThinkingDelta`, so the streaming twin sees from a
 non-streaming provider the same signal the real one emits. Overflows share the
 consecutive bound: a model that overflows even with thinking off is stuck, and `gave_up`
@@ -9981,3 +10021,1827 @@ under the line the model opens the project's precedent test in 4 of 48 runs agai
 it still copies it (15 of 15 across both arms); runs that never open it miss at the same rate with or without the line
 (7/44 vs 9/37). The sentence works by keeping the model away from the precedent, not by making it resist one it has
 read. The write-surface lever (fallback C, thrust 35) is measured on top of it.
+
+## ADR-0181: a provider error is a turn end the framework may veto — bounded and paced — and a request field the provider refuses by name is dropped and the call re-issued; the thinking switch is rendered per backend
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** A served Mind on `vertex_ai_beta` (the coach cockpit, 2026-09-17 12:23 UTC) ended
+its turn five iterations in — 2.15M tokens, 74% cached, $3.30, 4m29s, seven plan steps still
+open — with `stop_reason=provider_error` and this text:
+
+```
+litellm.BadRequestError: Vertex_ai_betaException BadRequestError - {"error": {"code": 400,
+"message": "Invalid JSON payload received. Unknown name \"chat_template_kwargs\": Cannot find
+field.", "status": "INVALID_ARGUMENT"}}
+```
+
+`chat_template_kwargs` is llama.cpp's / vLLM's thinking switch. Zak Code carries it as the ONE
+internal spelling for "thinking on/off" — the reasoning-overflow retry sends it for one call
+(ADR-0056) and a zakpick category's `thinking` knob sends it on every call — on the assumption,
+stated in three places, that "a server that does not understand the key ignores it, so setting
+this against a cloud model is inert rather than an error". Vertex AI validates the whole payload
+and refuses it; so do OpenAI ("Unrecognized request argument supplied") and Anthropic ("Extra
+inputs are not permitted"). The refusal mapped to a generic `RequestFailed`, which the loop never
+retries, so the turn ended `provider_error` — and `provider_error` was one of the stop reasons a
+TURN_END (Stop) hook was forbidden to veto, filed under "infrastructure — a hard bound". The
+Mind's stop hook, whose entire job is to re-enter the loop, was never consulted. The cockpit sat
+at its prompt until a human typed "continue", which worked only because the NEXT turn's first
+call carried no thinking override. Three defects, one incident: a spelling sent where it is
+refused; a provider that discards the one sentence naming exactly what it did wrong; and a turn
+end the framework could not overrule. The operator's ask was in two halves — "we need a self
+recovery mechanism when an LLM fails like this" and "how do we make sure they're told what they
+did wrong and correct it themselves" — and the fix has one part for each, plus the root cause.
+
+**Decision.** Three changes, at three seams.
+
+(1) *The thinking switch is rendered per destination* (`providers/thinking.py`, applied in
+`LiteLLMProvider._build_kwargs`, the one request chokepoint every path funnels through). The
+internal spelling is unchanged — the loop and the category knob still emit
+`thinking_extra_body()` — and the provider translates it: KEPT verbatim for an OpenAI-compatible
+server reached through a configured `api_base` (llama.cpp / vLLM / the zds pod — the measured,
+working case, byte-identical to before); litellm's first-class `reasoning_effort="minimal"` for a
+Gemini model (`vertex_ai` / `vertex_ai_beta` / `gemini` prefix AND "gemini" in the name — a
+Claude on Vertex takes Anthropic's mapping, not this one), which the installed litellm maps per
+model to the tightest thinking budget the model accepts (128 for 2.5-pro, which cannot switch
+thinking off at all; 1 for 2.5-flash; a `thinkingLevel` for Gemini 3) and drops under
+`drop_params` for a Gemini model it does not flag as reasoning-capable; DROPPED for every other
+destination (hosted OpenAI, Anthropic, Ollama, Bedrock, …), so the overflow retry there runs with
+its rail alone — the degraded path ADR-0056 already documents for a server without the key.
+`"disable"` was rejected for Gemini on purpose: it maps to a budget of 0, which 2.5-pro refuses.
+"On" is never rendered for a cloud model: thinking is the model's own default there. Nothing
+unmeasured is sent anywhere — a miss costs a retry that may overflow again; a wrong native
+parameter costs a 400 and the turn.
+
+(2) *A request field the provider refuses BY NAME is dropped for the session and the call
+re-issued once* (`rejected_request_field` in `providers/base.py`, `_refuse_rejected_field` +
+`rejected_request_fields` on the provider, both call paths). Seven vendor phrasings are
+recognised (Vertex's `Unknown name "x"`, OpenAI's `Unrecognized request argument supplied: x`,
+Anthropic's `x: Extra inputs are not permitted`, FastAPI/pydantic's `('body', 'x')`, and three
+generic forms), but a pattern alone never decides anything: the name must be one WE SENT — a
+top-level key of the `extra_body` this call carried, or a wire alias of the rendered thinking
+switch (`thinkingConfig`, `thinking_budget`, …, mapped back to the `reasoning_effort` kwarg).
+That gate is the whole safety of the mechanism: a provider refusing `tools` or `messages` is a
+defect to surface, never a field to strip. Only a 4xx request rejection qualifies (litellm's
+BadRequestError / UnprocessableEntityError, or a 400/422 status); a 5xx quoting a field name is
+the transient it always was. The refused name joins `rejected_request_fields`, `_build_kwargs`
+leaves it out of every later request, and the SAME logical call is re-issued once; a second
+refusal in the same call is reported as is. The streaming twin repairs only before the first
+chunk (nothing has been yielded, so the rebuilt request can be re-issued in place); a failure
+after a chunk reached the client stays terminal. A warning names the model, the field and the
+provider's sentence; the operator's configured `extra_body` is left intact so the config stays
+inspectable. This is the "told what it did wrong, corrects itself" half, at the harness level.
+
+(3) *`provider_error` joins the vetoable stop reasons — bounded and paced.* A provider failure is
+a fact about the MOMENT, not a hard bound like an iteration cap or a spend ceiling, and the
+framework whose Stop hook keeps a perpetual loop alive is exactly the party that should decide
+whether a turn the provider failed goes on. Unlike the other vetoes, which are unbounded (a
+registered Stop hook is in charge of standing down), this one re-issues a call against a provider
+that just failed, so it is capped and paced: up to `_MAX_PROVIDER_ERROR_VETOES` (6) CONSECUTIVE
+hook-vetoed re-entries per turn — any completed model call resets the count, so a loop that
+limps through one outage keeps its full allowance for the next — each preceded by a wait of
+15 s doubling to a 300 s ceiling (~13 minutes across the six). An error the in-turn retry already
+spent its 15-minute rate-limit horizon on (a 429 storm, a 5xx run) waits that horizon again
+inside every cycle, so six cycles outlast an outage of well over an hour; an INSTANT refusal (a
+dead key, a request the server will never take) is given up on in a quarter of an hour instead of
+forever. Past the cap the turn ends `provider_error` exactly as before — hooks unconsulted, the
+error text carrying "persisted through N hook-vetoed re-entries" — and a hook that lets the stop
+stand ends it at once with no wait. The veto's continuation prompt is the hook's own (a Mind's
+"re-enter the loop"), the wait is said out loud (status line, trace note, `_status_sink`), and
+the turn is marked `degraded`. A build that landed while the hook vetoed still restarts the REPL
+first (ADR-0099). Sub-agent loops (`turn_end_vetoable=False`) are unchanged.
+
+**Why not a wake-up instead of an in-turn veto.** Arming the session's ADR-0094 wake-up on a
+provider error (a self-typed "continue" after a backoff) would recover the REPL without any hook,
+but it delivers only at an idle REPL prompt — a served run's say consumer wakes on a say or a
+nudge and would never see it — and it replaces the single wake-up slot a Mind's deadman net or a
+parked Body's re-poll may be holding. The Stop seam already exists in every consumer, is the
+framework's declared authority over turn ends, and pairs with the in-turn retry the way Claude
+Code pairs them: the harness retries transient errors inside the turn; the framework decides
+whether a turn that still failed goes on. A plain session with no Stop hook keeps today's
+contract — the turn ends, the session is saved and resumable, the error is shown — because a
+blind auto-continue re-sends the request that just failed.
+
+**Consequences.** The incident's request no longer carries `chat_template_kwargs` to Vertex
+(rendering), any other refused body key costs one re-issued call rather than the turn (repair),
+and a Mind whose stop hook blocks the stop turns itself back on after a provider failure instead
+of waiting for a human (veto). ADR-0056's "a server without the key ignores it" is corrected in
+place. Pinned by tests/test_thinking_switch_rendering.py (the renderer's destination matrix; the
+incident's exact request against `vertex_ai_beta` carries no llama.cpp key; the pod request is
+byte-identical; a refused field stays out), tests/test_provider_field_rejection.py (every vendor
+phrasing; the "one we sent" gate; buffered and streaming repair; sticky for the session;
+per-call overrides; a 5xx is not a refusal; the repair is spent once; the rendered switch's wire
+alias), and tests/test_turn_end_loop.py (recovery after a veto, the cap and the 15/30/60/120/240/
+300 schedule, the consecutive reset, allow-ends-at-once, the sub-agent shape, both twins).
+
+## ADR-0182: a reasoning DEPTH is one config knob, fleet-wide or per category, rendered per backend where the backend takes one
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** On 2026-09-16 a served Mind on Vertex (the serene deployment, cutting over to
+`vertex_ai/gemini-3.8-flash`) asked how to make the model reason harder, and there was no answer:
+`ZakpickModel.thinking` is an on/off switch in llama.cpp's body form (rendered per backend since
+ADR-0181), and the real Gemini knob — litellm's `reasoning_effort`, mapped to a `thinkingLevel`
+(`minimal` / `low` / `medium` / `high`) on Gemini 3 and a `thinkingBudget` on Gemini 2.5 — appeared
+nowhere in Zak Code's config surface (one hit in the source tree, a comment about gpt-5 temperature).
+Read from the installed litellm, not assumed: `VertexGeminiConfig.get_supported_openai_params`
+lists `reasoning_effort` only when `supports_reasoning(model)`; `map_openai_params` turns it into
+`thinkingConfig` by model generation; the OpenAI gpt-5 family, Claude (a thinking budget) and
+Ollama (`think`) each carry their own mapping behind the same predicate; and litellm's
+generic-OpenAI config — the path every self-hosted server takes — does not list the kwarg at all,
+so `drop_params` discards it before the request. A llama.cpp server serving gpt-oss takes the
+level from `chat_template_kwargs` instead; Qwen3 on llama.cpp takes no per-request depth at all
+(measured 2026-08-17: a `reasoning_budget` in the body is ignored).
+
+**Decision.** One knob, a level, two places to set it, one rule for where it goes.
+`Settings.reasoning_effort` (`ZAKCODE_REASONING_EFFORT`) is the fleet-wide depth;
+`zakpick_models[<category>].reasoning_effort` overrides it for that category (an unset category
+inherits). The accepted values are exactly litellm's `REASONING_EFFORT` literal (`none`,
+`minimal`, `low`, `medium`, `high`, `xhigh`), normalised for case and whitespace and pinned by a
+test against the installed version; a misspelling fails at load naming the levels rather than
+silently running every model at its default depth. The provider renders the level at the request
+chokepoint (`_build_kwargs`, beside the ADR-0181 switch rendering) as the top-level litellm kwarg
+**only where litellm flags the model reasoning-capable** (`litellm.supports_reasoning`, the same
+predicate every per-backend mapping in litellm sits behind) **and the model is not reached through
+a generic `api_base`**. Anywhere else it is inert — never a 400 — and the provider logs once, at
+construction, that the level is not sent. A self-hosted server's spelling is the server's own body
+form via `extra_body` (the switch rule already keeps it verbatim there), because litellm would drop
+the kwarg and the servers that take a level disagree on where.
+
+A depth is not the switch, and "off" wins: a request whose thinking switch says off — a category's
+`thinking: false`, or the ADR-0056 reasoning-overflow retry's per-call switch — gets the off
+rendering (`minimal` on Gemini, the body key on a pod) and no level for that request; a category
+that sets `thinking: false` beside a level is refused at load ("off" is not a depth). The rendered
+level rides the same kwarg as the rendered switch, so the ADR-0181 repair covers it unchanged: a
+backend that refuses it by any of the wire names drops it for the session after one re-issued call.
+The category's level participates in the provider cache key beside its `thinking` flag and window,
+for the reason those do — two categories naming the same model may want different depths.
+
+**Why not extend the boolean.** A three-state or numeric `thinking` would have turned the one
+internal spelling into a per-backend vocabulary at the config layer; the level already exists as a
+first-class litellm parameter with a mapping per backend, so the harness's job is to place it
+where it is understood and withhold it where it is not — the same shape as ADR-0181, not a new one.
+
+**Consequences.** A Gemini 3 mind can be run at any depth from config, per category; a mixed fleet
+sets the depth on the categories that take it and leaves the rest inert; the pod request is
+byte-identical to before; the overflow retry still switches thinking off regardless of the depth
+configured. Pinned by tests/test_reasoning_effort.py (the levels are litellm's literal; parsing,
+normalisation and refusal at load; the renderer's destination matrix; the chokepoint with litellm's
+real predicate — Gemini 3 and 2.5 carry it, gpt-4.1 and the pod do not; off wins; a refused level
+stays out; litellm's own mapper turns the kwarg into `thinkingLevel` on 3.x and `thinkingBudget`
+on 2.5; the Agent wiring — a category's level reaches its provider and no other, an unset category
+inherits the fleet-wide one).
+
+## ADR-0183: one compaction summarize is bounded — a slice cap with the middle elided, fold passes that each fit one slice, then a clamp
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** The chunked summarize path (ADR-0022, sized by characters since ADR-0082) cut the
+rendered transcript into `ceil(len / slice)` slices — uncapped — and folded the part-summaries in
+ONE call carrying their whole join with no size check: the one request on the recovery path that
+could itself overflow the window it was recovering FOR. Realistic sessions never reached it (the
+proactive threshold keeps a compaction at four or five slices), so it surfaced only
+cross-window-size — a session built on a 200k-window model resumed on an 8k local one, or a
+multi-megabyte paste (user messages are never clamped; tool outputs are) — where one compaction
+could cost dozens of sequential calls and then raise `ContextWindowExceeded` from inside
+`compact_now`. Fresh-eyes finding on PR #224, filed 2026-08-26 (g-357-13).
+
+**Decision.** Bounded by construction, in three steps, every one sized by characters at the
+slice budget (`_SUMMARY_CHUNK_FRACTION` × window × `_SUMMARY_CHARS_PER_TOKEN`):
+
+1. **A slice cap.** The rendered transcript is held to `_MAX_SUMMARY_SLICES` (12) slice budgets
+   BEFORE slicing — the first 2/3 and the last 1/3 kept around a note naming how much of the
+   middle is missing (the `_clamp_tool_output` shape: openings carry structure, endings carry the
+   unfinished work, the middle is the safest cut). At most 12 slice calls per compaction.
+2. **Fold passes that fit.** A part-summary join over one slice budget is no longer folded in one
+   oversized call. A pass packs whole part-summaries into greedy groups whose join fits the budget
+   (a single part over the budget is clamped first) and folds each group; at most
+   `_MAX_FOLD_PASSES` (2) passes. A join that fits is the summary, as before — the fold stays a
+   shrink step, never a mandatory extra call.
+3. **A clamp when the passes are spent.** A join still over budget afterwards is clamped to one
+   slice for a final fold. A summarizer whose "summaries" never shrink cannot loop this: the
+   worst case is 12 + 2×12 + 1 calls.
+
+**Why not `count_tokens`.** The goal suggested guarding the fold with `summarizer.count_tokens`.
+ADR-0082 already ruled that out for this path: a local model's counter is a guess, and the guess
+is what let the recovery's own summarize call overflow (coach, 2026-08-29, twice). The character
+budget the slices already use is the one measure that cannot disagree with itself, so the fold is
+guarded by it too.
+
+**Consequences.** No summarize call on the compaction path can exceed one slice budget, and the
+number of calls per compaction is bounded whatever the history's size. A compaction past the cap
+loses the middle of the transcript — by design, named in the text the summarizer sees so the
+summary says so, and logged (`compaction summarize: … held to 12 slices`). ADR-0022's "folds the
+part-summaries once if the join is itself oversized" is superseded by the passes.
+
+**Tests.** `tests/test_compact_loop.py`: a strict-window summarizer (it refuses any request over
+one slice plus prompt overhead, as a real window would) drives every case — an enormous history
+costs exactly 12 calls with the elision note in the ninth slice and both ends of the conversation
+present; a fold whose join exceeds the budget runs in packed groups, pass by pass, each call under
+the budget; a never-shrinking summarizer ends in the clamped last fold after exactly `n + 2n + 1`
+calls; unit tests pin the packer and the clamp.
+## ADR-0184: closed plan steps fold out of the model's working memory — a row per run, carrying its ids — and the fold is round-trip-safe under the full-replace
+
+**Status.** Accepted (2026-09-17).
+
+**Context.** User directive 2026-09-01: "the todo list is great but completed items stay around too
+long — it should remove them from working memory more often." Measured at origin/main 771b504:
+`TaskNetwork.render()` emitted EVERY task — done ones included, with title, outcome and
+dependencies — and `_plan_reminder` re-injected that render as the highest-salience ephemeral
+tail message on EVERY iteration for the life of the turn. Cleanup existed only at turn start
+(the complete-plan reset and the issue-#32 staleness guard). So within one long agentic turn
+(dozens of iterations; a Mind session seeds paged-skill skeletons up to 60 steps) a 20-step plan
+at step 18 paid 17 done rows in tokens and clutter on every call, and a plan that completed
+mid-turn kept re-injecting its checklist until the turn ended. Hard constraint from the goal
+(g-357-58): the network itself must not change mid-turn — the completion gate
+(`actionable_remaining`), paged-skill delivery (page ↔ step by TITLE, never rendered text) and
+`update_plan`'s full-replace all depend on the live object — so this is a render-layer change.
+The one real design risk was the round trip: the model authors its next `update_plan` by copying
+the render (measured: the ADR-0092 marker fold-in), so an elided render invites a resend that
+drops the elided done steps, corrupting the progress fraction and the skeleton.
+
+**Decision.** One fixed behaviour, no knobs, in two halves.
+
+1. **The fold (render).** `render(elide_done=True)` is the working-memory form and
+   `_plan_reminder` is its only caller. In it, a run of two or more consecutive closed siblings
+   (done or cancelled, leaves or compounds) folds into ONE row carrying its ids and its count in
+   the header's unit — `[x] 1–17 (17 steps done)`, `[x] 4–5 (1 done, 1 cancelled)`, `[-] 2–3 (2
+   steps cancelled)` — and a lone closed compound into one row with its subtree counted
+   (`[x] 2 build (3 steps done)`). A lone closed leaf still shows what it produced (ADR-0110);
+   what the last closed step produced also rides in the memory lines beside the checklist, so
+   nothing the model needs is lost. Open, blocked and in-progress steps, the header fraction and
+   the `<- current` marker are never touched. `render()` — the default — stays the whole record:
+   the `AgentTaskUpdate` UI event (structured tree and checklist alike), `/todo`, the plan judge
+   and the completion critic all read that, deliberately: a human wants the full checklist and
+   the critic reviews the finished plan. The reminder adds one sentence when a fold is present:
+   send the folded rows back as shown or leave them out; the harness keeps the steps they stand
+   for.
+2. **The round trip (replace).** `replace_from_author` makes the fold safe against what a model
+   does with it. An echoed fold row expands back to the prior siblings its id range names; a
+   folded compound echoed as a leaf — with the count suffix or its bare title, and only at the
+   same parent, so the measured parent-over-same-named-child shape never expands into itself —
+   becomes the prior compound, subtree and all; a fold row whose ids no longer resolve is dropped
+   as the rendering artefact it is. And done steps a fold HID that the resend left out entirely
+   are restored from the record, each after its nearest earlier sibling still present, with one
+   advisory in the tool result naming them. The predicate is exactly "what the model could not
+   see, it cannot have meant to drop": a done step shown in full and left out stays out — the
+   model's call, as ADR-0113 already ruled — and so does a cancelled one (cancelling is a
+   decision about the title, and dropping it is consistent with that decision — the paging
+   contract), and the request anchor (ADR-0111).
+
+**Why not clear or shrink the network.** Everything downstream reads the live object; a
+render-layer fold cannot break paging, the completion gate or the full-replace, and it costs no
+turn-start behaviour (the complete-plan reset and the staleness guard are untouched).
+
+**Consequences.** Measured on representative plans (`render()` vs `render(elide_done=True)`, per
+iteration): a 20-step plan at step 18 goes from 1,797 to 347 characters (21 → 5 lines); a
+60-step Mind skeleton at step 55 from 5,366 to 623 (61 → 8 lines); a 20-step plan at step 2 is
+unchanged (one lone done row) and a 60-step skeleton at step 10 shrinks 14%. A plan that
+completes mid-turn was already one line (ADR-0108) and stays so. The model can no longer read
+the titles of folded steps from the reminder — by design; it does not need them to work, and
+the harness keeps them across its resends.
+
+**Tests.** `tests/test_plan_elision.py`: the fold on flat, nested, mixed and cancelled shapes
+(exact rows); the reminder carries the fold and the contract sentence while the UI event stays
+full; the complete plan is one line with the network intact; the round trip through
+`UpdatePlanTool` with a simulated echo — the fold row expands (ids, evidence and outcomes intact,
+with the glyph and a hyphen too), left-out hidden done steps are restored with the advisory, a
+folded compound echoed as a leaf expands to its subtree, a visible done step left out stays out
+with no event, a hidden cancelled step is not restored, the request anchor is not restored, a
+stale fold row is dropped, and the same-titled child under its parent never expands; a size
+ratchet on the 20-step plan. The paging and skeleton suites are unchanged and green.
+
+
+## ADR-0185: the transcript reads at a glance — the operator's line and the tool line stay bright, every receipt opens with its outcome and names its tool, body text wraps at a reading width, and inline markdown renders what models write
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Operator report, 2026-09-17, watching a cockpit session: "the text looks nothing
+like Claude Code — too compact, no line breaks, no bold or styling; it's hard to tell what tool
+is being called and when." Measured against the renderer as shipped (docs/UX.md):
+
+1. *The turn seam vanished in the cockpit.* The keyboard door draws a labeled frame and the
+   two-blank seam (UX rule 5); the say door — the ONLY door inside a cockpit (ADR-0119) — echoed
+   the operator's message as one dim `▸ (say) …` line behind a single blank. A day-long Mind
+   session read as one grey stream with no anchor to scan back to.
+2. *A tool block had no bright ink but its name.* `tool.marker`, the `└` receipt, its count
+   and every rail row were `dim`; only the display name was bold. tmux's default terminal
+   renders bold as brightness rather than weight, so on the very surface the cockpit runs in,
+   a tool line was one shade from the rail beneath it.
+3. *Success had no mark, and the receipt did not say what happened.* `└ 134 lines · 0.1s` is a
+   count; to learn what was read the eye climbed to the call line. A failure had its `✗`; a
+   success had nothing.
+4. *Prose wrapped at the pane's full width.* Body text at 200 columns. The readability
+   literature puts the comfort band for body text at 50–75 characters and WCAG 1.4.8 caps it
+   at 80; long lines lose the return sweep and read as intimidating (Baymard). The web client
+   already caps its column at 44rem for exactly this reason (UX "Type & metrics").
+5. *Inline markdown stopped at bold, code, bullets and headings.* Italics, links,
+   strike-through, block quotes and rules printed raw, so a model's `*emphasis*` and
+   `[docs](url)` showed their asterisks and brackets.
+
+Claude Code's transcript — the reference the operator named — is `⏺` blocks with a blank line
+between them; the tool line bright with a bold name; the `⎿` receipt a dim sentence that names
+the tool ("Read 134 lines", "Updated … with 1 addition and 1 removal"); the operator's `>`
+line bright with its own background; markdown rendered in full; Bash output shown for a few
+lines then `… +N lines`. Zak's grammar (`●` / `└` / `│`, one blank between blocks, head+tail
+previews) already mirrors that shape. What differed was ink and the seam — the two things the
+eye uses to find its place — and the line length.
+
+**Decision.**
+
+1. **The operator's line is the turn's anchor on every door.** One primitive,
+   `_layout.user_line`: the seam's blanks, then `› message` — chevron bold azure, text bold —
+   with the door and the wall clock dim at the end of the first line (`(say · 14:22)`), further
+   lines under the body column, long messages folded (ADR-0119). The say and harness doors
+   render through it (one blank when the idle wait already printed one, else two); the keyboard
+   frame already carries the seam.
+2. **The call line is the loudest line of its block.** `tool.marker` is `bold` (bright); the
+   name stays bold, the args default, only the parens recede. Prose keeps its azure `●`.
+3. **Every receipt opens with its outcome mark and reads as a sentence that names its tool.**
+   `✓ Read 134 lines`, `✓ Listed 3 entries`, `✓ Fetched 12 lines`, `✓ Ran · 5 lines` /
+   `✓ Ran · no output`, `✓ Found 3 matches`, `✓ Found 2 files`, `✓ Updated +6 -2` /
+   `✓ Edited · 2 lines`, `✓ Written`, `✓ Plan · 3 items` / `✓ Plan complete · 2 steps` /
+   `✓ Plan · 3/9 steps · current: …`, `✓ SomeTool · 1 line`. Failures keep `✗ first line`; a
+   detached failure is prefixed with its tool (`✗ Run · boom`) because its first line does not
+   name it. The `Tool · ` prefix a detached success used to carry is gone — the verb names the
+   tool. The web client's receipts carry the same words; its card dot is the outcome mark.
+4. **Body text wraps at the reading width.** `_layout.READ_WIDTH = 100`: the body cell of every
+   block and rail row is capped at 100 columns (or what the console leaves), so the hanging
+   indent and a return sweep of at most a hundred characters hold on any pane. Code blocks keep
+   the console width — they are not body text.
+5. **Inline markdown renders what models write.** `*italic*` / `_italic_` (word-bounded, so
+   `snake_case` and `2 * 3` stay literal), `__bold__`, `~~strike~~`, `[label](url)` (label
+   underlined, url dim in parens), `> quote` (dim italic), and a lone `---` / `***` / `___` is
+   a gap — the transcript draws no rules (UX rule 6).
+6. **The footer is stamped.** `… · 41.2s · 14:23`: with the operator's line stamped, every turn
+   shows its time bracket. The wall clock is injectable like the monotonic one.
+7. **Commands keep more of themselves.** A command middle-truncates at 160 characters (was 64)
+   and other arguments at 96 — the flags at a command's tail are what a reader checks.
+
+Not decided: recoloring the call line by outcome (Claude Code repaints; this renderer is
+append-only, and the mark on the receipt is the append-only equivalent); a timestamp on every
+tool line (noise — the turn bracket answers "when"); wrapping code blocks or diff bands at the
+reading width; any change to the wait line, the thinking marker or the status lines.
+
+**Consequences.** Against the operator's four complaints: the seam is back on the door the
+cockpit uses; the tool line is the brightest line of its block and its receipt says what the
+tool did behind a green mark; prose wraps at a hundred columns; emphasis, links and quotes
+render. A monochrome transcript still distinguishes prose from tools (ASCII `*` vs `o`) and
+now success from failure by the receipt's mark (`+` / `x`). The column grid is unchanged, so
+every pinned offset test holds. Hermetic tests pin the receipt vocabulary (twelve tools plus
+the detached failure), the bold marker and green mark under a forced terminal, the reading
+width on a 200-column and a 40-column console, the grammar cases, the stamped footer and the
+user line; the say-door tests assert the stamped line. docs/UX.md rules 5, 8 and 13, the
+theme table, the shared-grammar table and the discipline list change with this ADR; two new
+rules (18 reading width, 19 inline grammar); FEATURE_AUDIT CLI-38.
+
+**Amendment (fresh-eyes review, 2026-09-17).** An independent adversarial review of the
+merged change (`/fresh-eyes-code`, shape γ) found the emphasis parser too eager for a
+coding transcript: `__init__.py` rendered as bold `init.py`, `__str__` as bold `str`,
+`2*3*4` as `234`, `**/*.py` as `*/.py`, and `***x***` left stray asterisks. The grammar now
+requires a word boundary on both sides of a span, a letter or digit in its content, no
+file extension after the closer, and never a bare identifier inside `__`; `***` is a
+bold-italic span; a longer delimiter that fails to close no longer stops a shorter one
+from being tried at the same position. The web client's Fetch receipt says `no output`
+for an empty fetch, as the terminal does. Regression test:
+`test_code_shaped_text_survives_the_emphasis_parser`.
+
+
+## ADR-0186: the transcript's chrome is grey by colour index, log records are transcript lines, and the operator's line is orange at the root of the turn
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Operator report after ADR-0185 landed, watching the cockpit: (1) "for each
+call it repeats the model name and the LLM stuff and three other things — I like that it
+repeats it, for now, but it needs to be much smaller and greyed out, not so much contrast";
+(2) "the say is the same colour as all the LLM calls, and the indent is a little weird — it
+should be bright orange; the user should very easily see where they said something".
+Measured:
+
+1. *The repeated lines are stdlib logging, not the renderer.* The console-script entry
+   configures ``logging.basicConfig(level=INFO, stream=stdout)`` for every command, so the
+   interactive CLI inherits the daemon's shape — and litellm's ``LiteLLM`` logger propagates
+   to the root (``LITELLM_LOG=ERROR`` levels only litellm's OWN handler). Reproduced with a
+   mocked completion: every model call writes a two-line INFO record, ``INFO LiteLLM`` then
+   ``LiteLLM completion() model= gemini-3.8-flash; provider = vertex_ai``, and a real call
+   adds ``Wrapper: Completed Call, calling success_handler`` — the model name, "the LLM
+   stuff", and the timestamp, level and logger name around them. Full contrast, unindented,
+   outside the column grid. httpx's own per-request line is NOT among them (litellm pins
+   the ``httpx`` logger to WARNING at import, on both boxes measured), but whenever httpx
+   does log it logs the FULL URL, and a provider that carries its key in the query string
+   (Google AI Studio's ``?key=``) would put the API key into the pane and into
+   ``serve.log``.
+2. *``dim`` is not a colour.* Every piece of chrome was styled with the SGR ``dim``
+   attribute. Some terminals honour it, others drop it, and tmux forwards it only when the
+   outer terminal's terminfo advertises it — so in the cockpit (tmux) the receipts, rails,
+   status lines and the operator line's meta all rendered at full contrast, which is the
+   whole "too much contrast / same colour as everything" report. ADR-0185's bold marker
+   read as brightness for the same reason; it worked, the greys did not.
+3. *The operator's line sat at the agent's indent.* ``›`` at col 2 like every ``●`` block,
+   bold like every tool line: nothing marked it as the turn's root.
+
+**Decision.**
+
+1. **Log records become transcript lines.** ``cli/logsink.py``: ``install_transcript_logging``
+   (called at the top of ``chat``, so the in-process REPL, the cockpit pane and the
+   ``--server`` client all get it) replaces the stdout handler with a rotating file
+   (``~/.zakcode/logs/zakcode.log``, 2 MB × 3, full format) and a ``TranscriptLogHandler``
+   that prints each record as a ``·`` row at the receipt column (indent 4): INFO in ``log``
+   (grey), WARNING in ``warn``, ERROR in ``err``. The compact form drops the timestamp,
+   level and ``zakcode.`` prefix and collapses the record to one line; litellm's call record
+   reads ``call gemini-3.8-flash · vertex_ai`` — the model call the operator wanted to keep
+   seeing — and an httpx request, should that logger speak, ``POST
+   gemini-3.8-flash:streamGenerateContent · 200 OK``. Third-party INFO records that are not
+   the per-call line (``Wrapper: Completed Call, …``) go to the file only; zakcode's own
+   records and every WARNING and above print. ``RedactingFilter``
+   scrubs every record (``redact_url_credentials`` — ``?key=`` / ``&access_token=`` /
+   userinfo — then ``redact_secrets``) before ANY handler formats it, and the daemon's
+   stdout handler carries the same filter, so ``serve.log`` is scrubbed too.
+2. **Grey is a 256-colour index.** ``_theme.py`` replaces every ``dim`` with
+   ``color(245)`` (#8a8a8a, the say box toolbar's own grey) and gives status and log rows
+   ``color(242)`` (#6c6c6c) — one step quieter, "greyed out" on every terminal, whether or
+   not it honours ``dim``. The doctrine line changes from "chrome recedes to dim" to "chrome
+   recedes to grey".
+3. **The operator's line is orange at the root.** ``user.marker`` and ``user.text`` are
+   ``bold color(214)`` (#ffaf00 — an index, so it is orange everywhere) and ``prompt.marker``
+   matches, so orange means "the human" on every door; ``user_line`` prints at indent 0:
+   ``›`` at col 0, text at col 2, continuation lines at col 2. The turn now reads as a
+   three-level tree — the operator's line at the root, the agent's ``●`` blocks nested at
+   col 2, receipts and rails at col 4 — which is the indentation the operator was reaching
+   for.
+4. **The web client keeps parity.** ``--user`` token (#f2a53c dark / #b45f0a light) on the
+   user row's chevron and text at weight 600; the inline grammar ported verbatim
+   (``***``/``**``/``__``/``~~``/``*``/``_``/links/code with ADR-0185's boundary rules, ``> ``
+   quotes as a muted italic block, a lone rule as a paragraph break); the footer stamped
+   ``HH:MM`` like the terminal's. Status rows were already 12 px mono italic ``--muted`` —
+   the web had the "small and grey" the operator asked the terminal for. Log records never
+   reach the web (they are process output, not events).
+5. **Vinheim renders its own view.** The Vinheim web app consumes the SAFE watch projection
+   (``/watch/{id}`` without ``full``): tool names and outcome marks only, no arguments, no
+   output, no receipts — by design, for viewers who must not see tool traffic — and draws
+   it in its own React components (``WatchStream.tsx``: ``you:`` lines, coalesced text,
+   ``read_file ✓``, ``Plan: 2/5 done``). That is why an agent run "looks summarized" there.
+   Bringing it to this grammar is a two-part follow-up: the projection may carry the
+   display name and the receipt sentence (no arguments or output — ``SafeToolSummary``
+   gains ``display_name`` and ``receipt``), and Vinheim's renderer adopts the ``●``/``└``
+   shape. Not in this ADR.
+
+Not decided: hiding the per-call line (the operator wants it, for now;
+``ZAKCODE_LOG_LEVEL=WARNING`` hides it); a smaller font (a terminal has one size);
+colouring the say box's own toolbar orange; changing the keyboard-door frame.
+
+**Consequences.** The four complaints map to four measurable changes: no raw log line can
+reach a transcript (the handler set is pinned by test), the per-call line is one grey row
+in the grid, every grey renders on every terminal, and the operator's line is the one
+orange thing at column 0 on both clients. API keys in provider URLs no longer reach the
+pane or the log file. Column-offset tests move with the user line (col 0); every other
+pinned offset holds. ``docs/UX.md`` rules 1 (grid), 5 (say door), 19 (web grammar parity),
+new rule 20 (log records), the theme table, the web token table and the discipline list
+change with this ADR; FEATURE_AUDIT CLI-39.
+
+## ADR-0187: a turn-end veto that names a skill is delivered as that skill; a re-entry nobody runs is fenced, with a net behind it
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** A served Mind (serene: agent sera, gemini-3.5-flash, Zak Code vessel) was
+caught in a loop the operator described as "it would call this gate, and then repeat that
+it is fully started, then loop those two things repeatedly": `iteration-close.sh --phase
+productivity-check` → `echo "Return to orchestrator — continue to next phase"` →
+"Verdict: Autonomous Loop Successfully Started & Goal Completed" → the framework's Stop
+hook BLOCKs → the same again, for hours. Later, after a prompt typed into the say box had
+helped for a few iterations, the same shape came back around `liveness-check.sh`
+("Verdict: Autonomous Loop Successfully Resurrected & Running Autonomously").
+
+The mechanism, read from the transcript and the code. A Mind's whole autonomous session
+is ONE Zak Code turn: the orchestrator skill runs, the model ends an iteration in text, the
+framework's Stop hook returns `{"decision":"block","reason":…}`, and the loop re-prompts
+with `[harness] Hint: <reason>`. That reason — written for Claude Code, promoted verbatim
+down the Ayoai-Mind → Claude-Mind → ZDS-Mind chain — says *"Your FIRST action MUST be:
+Skill('aspirations') with args='loop'. … Call the Skill tool IMMEDIATELY."* Zak Code's
+tool is `use_skill(name, args)` (the registry aliases `Skill`, but the model's tool list
+shows `use_skill`), and the iteration-complete imperative the model had just read says
+`ScheduleWakeup(prompt='<<autonomous-loop-dynamic>>', delaySeconds=600)` where the tool
+here is `schedule_wakeup`. A small model cannot map one harness's tool names onto
+another's: it answered the instruction with prose. Nothing bounded that: vetoes are
+unbounded by design (the hook stands down; the cost budget is the hard bound), the
+doom-loop guard keys on identical tool batches (the batches alternated), the broken-record
+guard on identical text (the verdicts varied), and the framework's own exhaustion fence
+keys on a frozen execution diary, which the productivity check kept writing. The say-box
+prompt that helped was a memory in the model's context; compaction dropped it, and the
+loop returned. A fix that lives in the model's context is not a fix.
+
+Two principles decide the shape. First, a deterministic harness delivers what a hook asks
+for instead of asking the model to fetch it — the say inbox already runs a typed
+`/<skill>` this way (ADR-0073), composing the command frame plus page 1 and seeding the
+plan; a hook's "your first action must be Skill('aspirations') with args='loop'" is the
+same request from the framework. Second, a fence keys on a behavioural predicate the
+model supplies no input to — the framework's own `loop-exhaustion-fence` rule — so "the
+loop is spinning" is structurally distinguishable from "the model feels done", and a fence
+that ends a turn must leave a net, because a loop that ends at its prompt with no net is
+the dead loop every Mind incident is about ("worst case a slow loop, never a dead one").
+
+**Decision.**
+
+1. **A veto that names a skill re-entry delivers that skill.** `skill_reentry_in(reason)`
+   reads the skill and args a hook's continuation names in either harness's vocabulary
+   (`Skill('aspirations') with args='loop'`, `Skill(worker-loop)`, `use_skill(name=…,
+   args=…)`), skipping negated mentions ("ended without a Skill(aspirations) re-entry",
+   "NOT Skill('aspirations')") and preferring the first mention that carries arguments.
+   `_fire_turn_end` then composes the skill through the loop's `compose_skill` seam with
+   `source="harness"` — the command frame, the hook's reason folded into the frame's
+   `<command-message>` line (`harness_skill_turn_text`; one line, `[harness]`-tagged, the
+   frame still FIRST so provenance, the transcript and the turn-end elision all recognise
+   it), then page 1 — adds it to the session, seeds the skeleton (ADR-0062) and registers
+   page 1 (ADR-0067), in that order, and records `Session.loop_skill`. The seam now adds the
+   re-entry message itself and returns it; the ten veto sites no longer wrap a rail. A
+   reason that names no skill, or a skill that cannot be composed (unknown, refused,
+   unreadable, a composer without the seam), sends the plain `[harness] Hint:` rail as
+   before. `Agent._load_skill_body` gains the `harness` source: a `user-invocable: false`
+   skill (a framework's loop orchestrator) is allowed, `disable-model-invocation` still
+   refuses, no budget is drawn, and the load counts for the reload dedup so the model's own
+   `use_skill` of the same skill right after answers with the current section, not a
+   second body. `Agent.compose_skill_turn(source=)` passes it through.
+2. **The fence.** `_vetoes_without_skill` counts, per turn, vetoes that named a skill and
+   were honoured with no model `use_skill` load between them (a load that returned a body
+   resets it; a harness delivery does not). A skill-naming veto arriving when the count is
+   already `_VETO_STALL_THRESHOLD` (3) is refused: the turn ends with the new stop reason
+   `veto_stall` (degraded; label "stopped — re-entry stalled: the stop hook kept asking for
+   a skill that never ran"; in `RESUME_COMPACT_STOP_REASONS`, so a resume drops the
+   spiral), a trace note names the skill and the count. Vetoes whose reason names no skill
+   are neither counted nor ever refused: a generic Stop hook keeps Claude Code's unbounded
+   contract, and the fence bites only the shape measured.
+3. **The stall net.** Ending a turn against the hook's wish must not leave the session at
+   its prompt with nothing to bring it back: when no wake-up is held, the fence arms the
+   autonomous-loop sentinel (`<<autonomous-loop-dynamic>>`, 600 s). A held wake-up — the
+   framework's own net — is kept.
+4. **The sentinel resolves to the loop skill.** `Session.loop_skill` holds the skill the
+   last hook-named re-entry ran (`"aspirations loop"`), persisted. At the REPL door the
+   fired sentinel now composes that skill (`source="harness"`, the wake-up note in the
+   frame) instead of the ADR-0094 prose line asking the model to remember which skill runs
+   the loop — after compacting a `veto_stall`'s context, as a collapsed turn's is. With no
+   such skill known, the prose line stands. `WakeupSlot.take_due_prompt` hands the door the
+   raw prompt. The ADR-0099 restart at a Stop-hook boundary delivers the named skill in the
+   new process the same way.
+5. **The vocabulary line and the marker.** The skills catalog carries one static line:
+   `Skill(<name>)` / `Skill('<name>') with args='<args>'` means `use_skill(name=…, args=…)`
+   here and `ScheduleWakeup(…)` means `schedule_wakeup(…)`; `use_skill` also accepts Claude
+   Code's `skill` parameter name, so a `Skill(...)` call the registry already routes by
+   alias lands with its argument. And `Agent.__init__` exports `ZAKCODE_SESSION=<session
+   id>` into the process environment — Claude Code exports `CLAUDECODE=1` to every hook
+   and shell it spawns, and the Mind's harness detector (`harness-capabilities.sh`) keys on
+   exactly such a marker to name the vessel's tools; without it Zak Code read as "unknown"
+   and got Claude Code's names.
+
+The other half is the framework's (the dev origin): its hook reasons and the
+iteration-complete imperative are to name the vessel's tools through that harness
+capability, so promoted copies stop speaking Claude Code's names to a Zak Code model. This
+ADR makes the re-entry independent of that: a hook that still says `Skill('aspirations')`
+gets the skill delivered.
+
+Not decided: delivering a skill named by a `PreToolUse` deny reason (only the Stop seam
+carries a re-entry); counting a `Skill(...)` tool call the model makes under the alias as a
+skill call for the fence (it is — `use_skill` is what runs); a fence for plain-rail vetoes.
+
+**Consequences.** Against the measured spiral: the first BLOCK delivers `/aspirations
+loop` — frame, the hook's own words, page 1, plan steps — instead of an instruction in
+another harness's vocabulary; a model that then follows it runs sub-skills (each resets the
+fence); one that still ends in text gets two more deliveries, then the turn ends
+`veto_stall` with the sentinel armed, and ten minutes later the loop re-enters on the
+composed skill with the spiral compacted away. Ten trace notes and one status line name
+every step. Generic Stop hooks are byte-identical in behaviour. Tests:
+`tests/test_turn_end_reentry.py` (the parser table, delivery in both twins, the fallback
+rail, the fence, the net, the per-turn reset, the model skill call reset, generic vetoes
+unbounded), `tests/test_use_skill.py` (the harness source, the `skill` parameter, the
+marker), `tests/test_skills.py` (the vocabulary line), `tests/test_schedule_wakeup.py`
+(`take_due_prompt`), `tests/test_self_restart.py` (the restart and sentinel doors);
+FEATURE_AUDIT LOOP-92; CLAUDE-MIND-COMPAT rows for the veto seam and the sentinel.
+
+## ADR-0188: function tools on the gpt-5.6 chat route ride with `reasoning_effort="none"`, a remedy the provider names is applied in place, and the sidecar signs the stop it raises
+
+**Status:** Accepted (2026-09-17)
+
+**Context.** Two prod findings from one evening (Zachary's Alien 2 runs, vessel debc47de).
+
+*The model.* Every served Mind since the zakpick OpenAI mix landed (2026-09-01) has run on
+the `gpt-5-mini` FALLBACK, not on the `gpt-5.6-terra` / `-luna` it was pinned to. The first
+tool call of every session 400'd — *"Function tools with reasoning_effort are not supported
+for gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or set
+reasoning_effort to 'none'."* — and the runtime failover (PKG-AUTO, once per turn) moved the
+session to the fallback for good. A served session is one turn, so "once per turn" is "for
+the whole run". serve.log across the fleet: `model failover: openai/gpt-5.6-terra ->
+openai/gpt-5-mini` on 21 of 21 starts of one env, 2 of 2 on another; 167 vessel sessions
+with 0 completed loop iterations, all billed to `gpt-5-mini`; the one run measured end to
+end spent $8.20 on 243 fallback-model turns, 88 of them the parroting attractor ADR-0187
+fences. The pin was verified against the model catalog and by a real completion — WITHOUT
+tools. A request that never mentions `reasoning_effort` is refused too: the model's default
+depth counts as "with". Measured live against the fleet key (2026-09-17): terra unset →
+400, terra `low` → 400, terra `none` → 200 with a tool call, luna `none` → 200, `gpt-5-mini`
+`none` → 400 ("does not support 'none'"), `gpt-5-mini` unset → 200.
+
+*The stop.* The framework's `/start` Step 2.5 guard (`live_stop_decision`, g-373-16) keeps a
+`stop-requested` raised after the session started. "Started" is the binding's `started_at`,
+which `/start` writes pages into its ceremony; on run B the sidecar raised at 20:29:29, the
+binding said 20:31:43, the clear ran at 20:32:09, and the guard deleted the run's only
+ending as "stale". The race the guard was written against had 3m50s of headroom; a short cap
+or a `/run/stop` in the first minutes has none.
+
+**Decision.**
+
+1. `LiteLLMProvider` sends `reasoning_effort="none"` whenever tools ride on a gpt-5.6-tier
+   model's chat route (`_is_openai_gpt56_tools_effort_none_model`: `gpt-5.6*`, not
+   `gpt-5.6-chat*`, not the local-server case). Set LAST in `_build_kwargs`, so it wins over
+   a configured depth — with tools in the request a depth cannot be honoured on this route
+   at all, and the alternative is a 400 on every call. Without tools the configured/default
+   depth stands. The fallback tier (`gpt-5-mini`, which refuses `'none'`) is untouched.
+2. A request rejection whose message says *set reasoning_effort to 'none'*, on a call that
+   carried tools and did not already send `'none'`, latches `tools_require_effort_none` and
+   re-issues the SAME call once (`_wants_effort_none`, beside ADR-0181's rejected-field
+   seam) — a tier the predicate does not know costs one re-issued call, never a failover
+   to a model nobody chose. A second refusal maps through the taxonomy as before.
+3. `request_framework_stop` writes its signature INTO the signal it just raised
+   (`raised_by: vessel-sidecar` / `raised_at: <utc>`; `SIDECAR_RAISE_MARKER`). The framework
+   guard refuses a signed signal without consulting time (Ayoai-Mind `session.py`, same
+   day); the framework's own writers leave the marker empty, so nothing else changes, and
+   the two halves ship independently. Because a signed signal never reads as stale, its
+   lifetime is owned here: `abandon_framework_stop` at grace expiry (unchanged, g-373-92) and
+   `retire_expired_sidecar_stop` at server start for a signed raise older than the grace
+   that a previous process left behind. A fresher one — a restart inside the window — is
+   left for the mind.
+
+**Consequences.** The terra/luna mix actually drives the served Minds for the first time.
+Reasoning depth is OFF for tool calls on this tier by construction; keeping reasoning with
+tools means the Responses API, which is a separate decision. The temperature rule of
+`test_gpt5_temperature.py` and this one are the same defect one parameter apart: a pin is
+not verified until a real completion has been billed to it WITH the request shape the loop
+actually sends (tools). Tests: `tests/test_gpt56_tools_effort_none.py` (the predicate, the
+request shape, the re-issue, the fallback tier untouched), `tests/test_framework_stop.py`
+(the signature, the raise time, startup retirement only past the grace, unsigned and
+started stops left alone); FEATURE_AUDIT PROV-25.
+
+**Amended 2026-09-18 (the signature never creates the marker).** The signature was written
+with `Path.write_text`, which creates the file. The ask is live from the moment the setter
+touches it, so a mind that reads it at once can consume it (D3 removes `stop-requested`)
+before the signature lands, and the signature then put the consumed ask BACK:
+`request_framework_stop` reported success, `framework_stop_complete` read "not yet" for the
+whole grace, and a run whose mind had finished its stop beat on until the window closed.
+Measured as a bare `TimeoutError` on windows-latest in
+`test_a_stop_finished_inside_the_turn_ends_the_run_when_that_turn_ends` (main run
+35380778365: a 30 s grace against the test's 10 s wait, so the window decided the wait) and
+green on re-run, which a race also is. Reproduced with no timing by consuming the ask
+between the setter's verification and the signing: `stop-requested` back on disk at 58
+bytes, `framework_stop_complete` False. The test double polls every 20 ms and signs off in
+microseconds, so a slow runner finds the window; a vessel's consumer is model-paced and
+practically never does. `_sign_signal` now opens the existing marker without `O_CREAT`; a
+consumed ask stays consumed and is logged at INFO. With `O_CREAT` put back exactly the new
+test fails (`test_signing_never_recreates_an_ask_the_mind_already_consumed`) and the
+signature test passes. **Noted, not changed:** the setter's verification reads an absent
+marker as "the setter failed" and reverts the target mode; a mind that consumed the ask
+before that read would lose its target mode. No consumer is that fast outside a test double.
+
+## ADR-0189: a served session services its own wake-up, and a stop raised between turns starts the turn that reads it
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** The first prod run on the ADR-0188 build (Zachary's Alien 2, vessel debc47de,
+2026-09-18) ran on its configured model with zero failovers — and still ended with nothing
+consolidated. The mind's loop turn died `veto_stall` at 02:11:45Z (three vetoes naming the
+`/aspirations loop` re-entry, then a `gave_up`, ADR-0187's fence), 22 minutes before the
+run's turn deadline. The fence had armed the loop's deadman's net — `pending_wakeup`
+`<<autonomous-loop-dynamic>>`, due 02:21:45Z — and the net never fired: `WakeupSlot.take_due`
+is serviced by the REPL's idle prompt (ADR-0094, ADR-0187) and by nothing else. A served
+session has no prompt; its consumer beat (`_consume_one_say`) started a turn for a say or a
+nudge (g-373-18) only. The wake-up was still armed at 02:35Z. At 02:33:29Z the sidecar
+signed and raised the framework stop (ADR-0188) with no turn in flight — the loop keeps
+beating inside the window for exactly this (g-373-16), but a beat with nothing to beat
+FOR reads the signal never — so the stop sat on disk until the window closed and was
+retired unconsumed. Verdict on the pre-registered ending prediction: the stop was raised
+and never read.
+
+**Decision.**
+
+1. **The consumer beat services the session's wake-up slot** (`_take_due_wakeup`): with no
+   say and no nudge, a due `pending_wakeup` on the current session is consumed and starts a
+   turn, the same slot semantics the REPL door has. The turn's text is composed as the REPL
+   composes it (`_wakeup_turn_text`): the loop sentinel resolves to the skill the session's
+   last hook-named re-entry ran (`Session.loop_skill`), via `compose_skill_turn(...,
+   source="harness")` with `LOOP_WAKE_NOTE` folded into its frame, after a `veto_stall`
+   context is compacted (`compact_now(trigger="resume")`); any other prompt, or a sentinel
+   this agent cannot compose, is `fired_line(prompt)`. A fired wake-up is never a slash
+   line and never has a nudge folded in front of it (a composed re-entry keeps its frame
+   FIRST). The watch marker shows the fired line, not the sentinel.
+2. **A framework stop raised with no turn to read it starts the loop's re-entry**
+   (`_take_stop_reentry`): `_begin_framework_stop` sets `stop_reentry_pending` once per
+   raise; the first idle beat inside the window runs the sentinel turn from (1). Only when
+   the session knows its hook-named re-entry — a mind that never ran the loop has nothing
+   composable to run, and the raise then behaves exactly as before. A turn in flight is
+   left alone: it reads the signal at its own next beat, and if it ends without having done
+   so the pending kick fires on the beat after.
+3. **The line between WHEN and WHAT is kept** (guard-1807, Zachary's ruling): the sidecar
+   still only decides WHEN — it starts a turn — and the turn it starts is the harness's own
+   composed re-entry of the mind's loop skill, in which Phase -1.4 reads the signal and the
+   mind runs its own graceful stop. No prompt of ours reaches the model.
+
+**Consequences.** The deadman's net the framework arms on every stall now means something in
+a served session: a dead loop resurrects within one beat of its due time, not at the next
+member say. A capped run whose loop is at rest gets its reserve spent on the mind's own
+ending instead of an unread signal. The kick costs one composed turn; the compaction on a
+stalled context is the same call the REPL makes on resume. Not changed here: WHY the loop
+turn stalled (a 360k-token context on a model whose registered 922k window kept the
+threshold compactor asleep while the model's completions went empty from ~150k tokens —
+a sizing decision for the zakpick entries' `context_window`, filed separately), and the
+env-server's reading of the sidecar-signed stop as `mind_stopped` (fixed on its side).
+Tests: `tests/test_server_consumer.py` (four wake-up cases) and
+`tests/test_run_stop_awaits_framework_stop.py` (the kick, and the no-re-entry hold).
+
+## ADR-0190: the model-visible tool names are Claude Code's; the old names are aliases, and every reader resolves a spelling before it matches one
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** A served Mind on a small model (serene, gemini-3.5-flash, 2026-09-17) read the
+framework's stop-hook imperative — `Skill('aspirations') with args='loop'` — and answered it in
+prose for hours, because its tool list showed `use_skill` and `schedule_wakeup`, not `Skill` and
+`ScheduleWakeup`. ADR-0187 closed the spiral on the harness side (a veto that names a skill is
+delivered; a re-entry nobody runs is fenced), and `Skill` had been an *alias* of `use_skill`
+since ADR-0187's precursor — the call would have resolved. It was never made. Aliases change
+what RESOLVES; a small model calls what it can SEE. A framework-side fix that spelled the
+imperative per detected harness (Ayoai-Mind, 2026-09-17) was reverted the next day on the
+operator's ruling: Zak Code must run outside the Mind, and the Mind must run on both harnesses
+without knowing which — one harness contract, implemented by the vessel (this repo's ADR-0071
+already says it for the hook wire: "the Claude Code contract in full, not just its aliases").
+The 2026-09-18 review (Ayoai-Mind findings board, tag `fresh-eyes-code`) measured the gap:
+of the fourteen tools the hook map translates, only two accepted Claude Code's name from the
+model (`Skill`, `ScheduleWakeup`); `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `LS`,
+`WebFetch`, `WebSearch`, `Task`, `TodoWrite`, `TodoRead` resolved to nothing.
+
+**Decision.**
+
+1. **Canonical names are Claude Code's** for every tool that IS the Claude Code tool: `Read`,
+   `Write`, `Edit`, `LS`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`, `Skill`,
+   `ScheduleWakeup`. The pre-0190 snake_case names (`read_file`, …, `use_skill`,
+   `schedule_wakeup`) are registered aliases — silent, never advertised — beside the POSIX
+   muscle-memory ones (`cat`, `ls`, `rg`, …). `Skill`'s parameter is `skill` (`name` accepted).
+2. **A tool whose SHAPE is Zak Code's own keeps its name** and takes Claude Code's as aliases
+   with a shape adapter: `task` (`Task`, `Agent`: the single-delegation form `description` /
+   `prompt` / `subagent_type` becomes one subtask), `update_plan` (`TodoWrite`: `todos:
+   [{content, status, activeForm}]` becomes the flat step list, `completed` → `done`),
+   `plan_recall` (`TodoRead`). A name promises a schema; these schemas are not Claude Code's.
+3. **The loop canonicalizes every model call where it enters** (`_canonicalize_calls`, inside
+   `_call_provider`): the name through the registry — falling back to the pre-0190 table
+   (`zakcode.tool_names`) for a registry built without the aliases — and Claude Code's argument
+   keys (`file_path` → `path` on `Read`/`Write`/`Edit`; `CLAUDE_CODE_ARG_KEYS`, the inverse of
+   the hook wire's rename). After that point nothing downstream — the loop's rails, hooks, the
+   permission policy, the transcript, the renderer — ever matches an alias.
+4. **Readers of history carry both spellings.** The loop's role sets (`_READ_TOOLS`,
+   `_WRITE_TOOLS`, `_EDIT_TOOLS`, `_SKILL_TOOLS`, `_SEARCH_TOOLS`, `_SHELL_TOOLS`,
+   `_LOOKUP_TOOLS`), the recipe, the verifier, grounding and `plan_recall`'s file-tool set list
+   `Write` beside `write_file`: a session resumed from before this ADR still has its writes
+   seen, its runs verified, its plan record read.
+5. **Hooks** (ADR-0071 extended): the name map is canonical → Claude Code spellings (identity
+   rows for the renamed tools; `Edit` also `MultiEdit`; `task` → `Task`, `Agent`;
+   `update_plan` → `TodoWrite`; `plan_recall` → `TodoRead`); the first spelling is the wire
+   name, so `update_plan` still travels as `TodoWrite`. A matcher fires on the canonical name,
+   every Claude Code spelling, every registry alias (`HookPayload.tool_aliases`, in-process
+   only) and the pre-0190 spelling — `bash` and `MultiEdit` and `Bash` all gate `Bash`.
+6. **Permissions and operator configuration resolve either spelling**: `tool_trust_overrides`
+   keys, ingested `permissions.deny` tools, confirm-on-call tools, session grants and the
+   exposure filter's globs (`web_*` still covers `WebFetch`) — through `canonical_tool_name`
+   and the registry's `aliases_of`.
+7. **Prose follows the names.** The system prompt, the skill catalog (which no longer carries a
+   translation line: `Skill(<name>) with args='<args>'` IS the call), the text-protocol
+   examples, the restart continuation, the bash tool's typed-as-command refusal, the renderer.
+   The sentinel's fallback line is generic ("invoke the skill that runs it, with the arguments
+   it was started with") — it no longer names a Mind's skill, and `ZAKCODE_SESSION` stays a
+   provenance marker the framework never branches on.
+8. **Deliberately not done.** The file tools' schema key stays `path` (Claude Code's own
+   `Glob`/`Grep`/`LS` say `path`; the schema is what a model sees and `path` is unambiguous;
+   `file_path` is accepted by rule 3 — 362 test lines were not worth a key a small model never
+   needs). `MultiEdit` is not a registry alias (its `edits` array is not accepted; it remains a
+   hook-matcher twin). Bench recipes under `bench/` keep their historical names.
+
+**Consequences.** A Mind's imperatives now name tools the model can see — on every model,
+without a mapping line and without the framework knowing what runs it; any prompt, skill or hook
+written for Claude Code runs here verbatim. The tool list shows Claude Code's names, so a
+prompt author reads one vocabulary in both places. Cost: 25 source files, ~100 test files
+(mostly literals), the docs that describe current behaviour (`README`, `PARITY`, `CONFIG`,
+`ARCHITECTURE`, `GUARDRAILS`, `TESTING`, `INTEGRATIONS`, `CLAUDE-MIND-COMPAT`); dated records
+(earlier ADRs, `IMPROVEMENT-LOG`, `DETERMINISM-REVIEW`, `ROADMAP`) keep the names they were
+written with. The pre-0190 aliases stay for at least one release cycle; retiring them is a
+future ADR with a measured alias-call count. The small-model benefit is the review's
+hypothesis, not yet a measurement: the pre-registered bench (arms: snake canonical vs Claude
+Code canonical vs snake plus an "also callable as Read" description line; N=12; HARM lines per
+the bench rules) runs when zakpod1 is back. Companion: ADR-0191 (background `Bash` with an exit
+notification) retires the last harness-capability branch in the framework.
+
+**Amended 2026-09-18 (the streamed path).** The rewrite "where the call enters" was made in
+`_call_provider`, which only a buffered completion passes. A streamed completion enters
+where the stream is finalized, and nothing rewrote it there — and the served path streams.
+Measured with the same three calls on both paths. Buffered: `read_file` recorded as `Read`,
+`Read(file_path=…)` renamed and read, `write_file(file_path=…)` written. Streamed: the alias
+recorded as it was written, and both `file_path` calls refused with "'path' is required and
+must be a string." No field case: two production sessions (282 tool results) and the
+served-loop sample (31) show no such refusal, because those models sent `path`, as the
+schema says. `_canonicalize_calls` now also runs where a stream is finalized. The two loop
+tests in `tests/test_claude_code_tool_names.py` run on both paths; with the streamed rewrite
+removed exactly their streamed cases fail, and the buffered ones pass.
+
+## ADR-0191: `Bash(run_in_background=true)` — a background command with its exit reported at the session's idle door
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Claude Code's `Bash` takes `run_in_background: true`: the command runs
+detached, the tool returns at once with a task id and an output file, and the model is
+re-invoked with a `<task-notification>` when the command exits; `TaskOutput` reads the
+output, `TaskStop` kills it. A Mind's playbooks are written against exactly that
+("background the suite, END the turn; the harness notifies"), and its rules forbid polling
+a background job with `ScheduleWakeup` *because* the harness reports on it. Zak Code had no
+background command: a suite run held the turn for its whole duration, and the framework
+carried a per-harness capability table (`background_job_notify`) with a branch in its
+all-blocked skill (an idle sleep whose wake-up IS the re-entry) so a Mind could run on
+either harness. That table was the last place the framework had to ask which harness ran
+it — the 2026-09-18 review's finding F5, and the branch ADR-0190's one-contract principle
+(loop-terminal-protocol §4.1) leaves no room for.
+
+**Decision.**
+
+1. **`Bash` takes Claude Code's two remaining parameters**: `run_in_background` and
+   `description` (recorded only). With `run_in_background: true` the command is spawned in
+   its own process group with stdout+stderr in ONE output file, recorded on the session
+   (`Session.background_tasks`: id, command, files, pid, started_at, `notified`,
+   `stopped`), and the tool returns at once in Claude Code's words ("Command running in
+   background with ID: … Output is being written to: … You will be notified when it
+   completes"). `zakcode.background` holds the mechanics; the loop hands the table to tools
+   through `ToolContext.background_tasks`, beside the wake-up slot.
+2. **Status is derived, never stored.** `task_status` reads `<output>.exit` (the code) and
+   the pid: `completed` with its code; `running`; `killed` when `TaskStop` asked; `lost`
+   when the process is gone and nothing recorded a code. A stale record cannot call a dead
+   task alive.
+3. **The exit survives the process that spawned the task** (the ADR-0034 restart into a
+   new build execs without closing). Where a real bash exists — every platform we run,
+   Git Bash included — a wrapper shell runs the command, owns the redirect and writes the
+   exit file itself; an in-process watcher additionally reaps the child and writes the
+   file when the wrapper could not (the no-bash platform-shell fallback). A process that
+   never spawned the task reads the same files and pid, and kills by pid (`killpg`;
+   `taskkill /T`) when asked to stop it.
+4. **The notification rides the idle doors, once.** `BackgroundTasks.take_notifications`
+   reports every exited task not yet reported and marks it reported (persisted). The
+   REPL's idle wait asks it before the wake-up slot (`_due_wakeup`); the served consumer's
+   beat asks it before the ADR-0189 triggers (`_take_task_notification`, delivered
+   verbatim — no nudge folded in, no slash dispatch). The line is a `[harness]` provenance
+   head (not a person speaking; read the output file before trusting the exit code)
+   followed by one `<task-notification>` block per task in Claude Code's shape
+   (`task-id`, `output-file`, `status`, `summary` "Background command "…" completed (exit
+   code N)"), so a rule written for Claude Code ("read the log before accepting the
+   verdict") reads the same text here. Never mid-turn — Claude Code's timing.
+5. **`TaskOutput(task_id, block=true, timeout=30000)`** returns status, exit code and the
+   last 64KB of output, waiting up to `timeout` ms when blocking (max 600 s); a completed
+   non-zero exit is an error result. **`TaskStop(task_id)`** kills the whole process
+   group. Both are registered under Claude Code's names (snake aliases, silent), tier
+   read-only like `ScheduleWakeup`: they touch only what the session started.
+6. **A session's end kills what it started** (`Agent.aclose`), as Claude Code does — not
+   the restart, and not a served turn's release (`_release_agent` closes only the loop's
+   egress listener; the served mind's tasks run across turns).
+7. **The foreground path is unchanged**, and the two spawns share one environment builder
+   (`_proc.child_environment`: no-color, the egress overlay, the provider-key scrub, the
+   workspace venv on PATH, the `.zakcode/env` bash hook) so they never drift.
+
+**Consequences.** "Background the run, end the turn, the harness notifies" is true on Zak
+Code; `ScheduleWakeup`'s "never to poll work the harness already reports on" is now a
+rule the vessel honours rather than a Claude Code fact the framework had to fence. The
+framework's harness-capability table and its all-blocked idle-sleep branch can be deleted
+(the companion framework change, step D of the 2026-09-18 plan); a Mind served by a
+vessel older than this ADR gets `unknown tool` for `TaskOutput` and a foreground `Bash`
+that ignores `run_in_background` — the version floor is recorded in CLAUDE-MIND-COMPAT.
+Output files live beside the session store (`~/.zakcode/tasks/<sid>/`;
+`<workspace>/.zakcode/tasks/<sid>/` for a served mind, self-ignored for git); nothing
+prunes them yet — a later ADR when the count is measured. Sub-agents are still
+synchronous: `TaskOutput`/`TaskStop` here cover background commands only.
+
+**Amended 2026-09-18 (fresh-eyes review, F-01/F-02).** Status is derived from the files,
+the pid *and the pid's start time*. The record carries `start_token`, the OS's own start
+time for the pid read at spawn (`/proc/<pid>/stat` on Linux, `GetProcessTimes` on Windows,
+`ps -o lstart=` elsewhere), and `task_is_live` checks it beside `pid_alive` for a task this
+process did not spawn or has already reaped — so a pid the OS reused after the task exited
+(the no-bash path after a restart leaves no exit file) is never "running", and `TaskStop`
+never kills the process that now owns it. The token is only ever held against another
+process: a record without one, or a platform that cannot read one, keeps the pid's word.
+The `lost` notification says the exit went unobserved and the output file may still be
+complete, so a Mind does not re-run a suite that finished.
+
+## ADR-0192: a skill that fits is delivered whole — paging and the seeded skeleton are the shape of a body that cannot
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** ADR-0062 made a loaded skill's numbered sections the plan ("the harness
+decomposes, the model refines"; "no flag"), ADR-0067 paged a sectioned skill through that
+plan "one way, for every window size, no flag", and ADR-0088 packed small sections to a
+12,000-char page budget. The system prompt told the model paging happened only for "a skill
+whose body cannot sit in this model's context window" — the code never checked. Measured
+2026-09-18 on a served Mind (Vinheim prod vessel, env debc47de, gpt-5.6-terra behind a
+922,000-token window, the session read from its store): the one served turn loaded twelve
+skills (`/start`, `/boot`, `/prime`, `/aspirations` four times — three of them the ADR-0187
+re-deliveries — `/aspirations-precheck`, `/aspirations-strategic-scan`, `/aspirations-evolve`,
+`/curriculum-gates`, `/review-hypotheses`), every one paged and seeded: 45 page
+deliveries, twelve skeleton seedings, 101 `update_plan` calls out of 232 tool calls
+(each carrying the whole plan, which the round-trip restores forever), eight
+"you marked a section done before its instructions arrived" corrections, two
+"your plan dropped sections" restores. By bytes the stored session was 38% page
+deliveries, 20% `update_plan` payloads, 10% skill loads and 5% plan results against 17%
+command output; the prompt grew from 32k to 360k tokens, empty completions began past
+150k, and the turn died `veto_stall` after 243 calls and $155 with no loop iteration
+completed. The same Mind on Claude Code, whose Skill tool hands the body over whole and
+seeds nothing, runs the same iteration in a fraction of the calls. Three defects rode
+along. The fit check reserved the model's whole output cap as answer room — litellm
+registers 128,000 for the gpt-5.6 tier — so the recipe that pinned the window to 131,072
+that morning would have left 3,072 tokens for the prompt and the body together and ended
+every skill load `skill_too_large`. A fold row echoed without its count (`75.1–75.6`,
+the shape a model retypes from memory) was not a fold to `COLLAPSED_ROW_RE`, so nine such
+echoes stood as literal steps in a plan that ended at 109 top-level steps. And the fenced
+section marker matched any `# Phase N` at column 0, so the comment line
+`# Phase 6 for non-recurring deep closes rode on LLM memory alone and drifted,` — the
+second line of a comment — seeded a step titled with that sentence, in every Mind whose
+`/aspirations` carries it.
+
+**Decision.** One rule, keyed on the window and nothing else: a skill whose whole body
+fits this model's context window beside the system prompt with room to answer — the
+ADR-0066 arithmetic — is delivered WHOLE at every door and seeds NO plan, exactly as
+Claude Code's Skill tool hands a body over. A body that cannot fit is paged and seeded as
+ADR-0062/0067/0088 specify, unchanged. The loop decides once per skill
+(`AgentLoop._skill_fits_whole`, memoised in `_skill_whole`) and every door reads that
+decision — `use_skill` through `ToolContext.skill_pages_for`, a typed `/<name>` and the
+ADR-0187 re-entry through `Agent.compose_skill_turn`, the page-turning through
+`_ensure_skill_pages` — so a skill is never paged at one door and whole at another. A
+whole body gets the ADR-0027 decompose hint when it is long, nothing else: its steps are
+the model's to plan, as for any long request. The answer room is
+`min(max_output, 16,384)`, floored at 4,096 (`_answer_room`), for the in-turn check and
+the startup fit report alike. A bare id range (`_BARE_RANGE_RE`) expands like a counted
+fold when its ids name a run of closed siblings, and is otherwise the model's own title,
+never dropped. The fenced marker requires a separator — `:`, `.`, `)`, `(`, a dash — or the
+line's end after the id (`_STEP_FENCED_RE`).
+
+**Alternatives rejected.** A per-deployment knob ("page always" for small models): the
+Mind never branches on its harness (Ayoai-Mind loop-terminal-protocol.md §4.1) and the
+vessel should not either — the window IS the capability, and a body that fits a 32k
+window is small. Bounding the churn instead (a plan-only stall fence, a served budget):
+worth having as a net, but it would have capped the bill and left the iteration
+undone. Keeping the skeleton for a whole body without paging: ADR-0062's motivation
+(a small model that went straight to work with no plan) was a compliance concern
+argued by risk asymmetry — "the worst case of decomposing is a few extra plan steps" —
+and the measured worst case was $155 and a dead loop; a small model on a small window
+still gets the skeleton, because it gets paging.
+
+**Consequences.** Claude Code parity at the skill door for every model whose window
+holds the body: the Mind's loop skills run without a harness plan, `update_plan` is
+the model's tool again, and the `[plan]` reminder rides only a plan the model made. The
+seeding and paging tests keep their subject by opting into "never fits" (an autouse
+fixture in `test_skill_skeleton.py` and `test_skill_paging.py`; `whole_when_fits` opts
+out); `test_whole_when_fits.py` pins the decision at both doors with a positive control,
+the answer room under the pinned recipe, the bare-range echo, and the fenced marker. The
+Vinheim recipe's `context_window: 131072` pin now compacts a served run at ~105k tokens
+AND loads skills whole; both halves are needed. Not done here: a bound on consecutive
+plan-only completions and a served default cost budget (the nets), a delta form of
+`update_plan` so a full replace stops re-sending done work, and the reasoning-effort
+question for the 5.6 tier (ADR-0188) — each is its own measurement.
+
+## ADR-0193: the per-call reminder rests every other call — on a provider measured to reuse only a whole earlier prompt, and on no other
+
+**Status:** Accepted (2026-09-18) — measurement pre-registered 2026-09-18 13:52 UTC; both batches are below as measured
+
+**Context.** `_messages_for_call` appends an ephemeral tail to every main-conversation
+call — PRE_LLM_CALL hook context, the turn's UserPromptSubmit context, and the `[plan]`
+reminder last, whose memory lines change with every tool call — and never persists it.
+The design assumption was that this is free: history stays append-only, so two consecutive
+prompts share the whole persisted history as a prefix and a prefix cache keeps working.
+Measured 2026-09-18 against the API, four calls per series, each appending one short turn
+to a ~12.6k-token conversation: `gpt-5-mini` behaves that way (append-only reads 12,544 of
+12,741; a changing tail on every call still reads 11,776 of 12,957). The gpt-5.6 tier
+(`-luna`, `-terra`; chat completions with tools, `reasoning_effort: none`) does not. It
+reuses only a previously sent FULL prompt that is a prefix of the new one, plus the
+system/tools block: append-only reads 12,639 of 12,661 (the whole previous prompt less 3
+tokens); a tail on every call reads 2,450 of 12,874 on every call (the system block, and
+nothing sent since); a tail on every other call reads 12,639 of 12,875 on the tailed call
+and 12,677 of 12,913 two calls later — the tail-less prompt before it, whole. An explicit
+`cache_control` breakpoint ahead of the tail changed nothing on that tier. So with a tail on
+every call no call's prompt is ever a prefix of the next, and everything past the system
+block is billed uncached on every call, forever. On the Vinheim prod vessel's churn turn
+(ADR-0192) the cache read sat at 28,079 tokens for 241 calls while the prompt grew to 360k.
+In a live loop on main (`57f32e2`, luna, a five-step plan) the read froze at 13,707 for
+fourteen calls while the prompt grew 14,323 → 16,418. The same loop on `gpt-5-mini` read
+13,568 → 13,824 → 14,848: a working cache, but a lumpy one — one read held for six calls
+across 969 tokens of growth.
+
+**Decision.** Nothing changes on a guess, and nothing is keyed on a model name. Three
+steps, each read from the provider's own usage on main-conversation calls (the two
+`_anchor_prompt` sites, which no side call reaches):
+
+1. *Suspect.* At least 3 consecutive tailed calls on one model whose cache read stayed
+   above zero and did not grow while the prompt grew by at least 4,096 tokens
+   (`_CACHE_FLAT_MIN_CALLS`, `_CACHE_FLAT_MIN_GROWTH`). A read that advances, a prompt that
+   shrinks (a compaction), a tail-less call, a route change or a zero read starts the run
+   over. The bar is sized from where the money is and from what a healthy cache looks
+   like: under 4k uncached tokens a call the waste is a fraction of a cent even on terra,
+   and it is four times the longest flat stretch measured on a cache that works.
+2. *Probe.* The next call goes out as the persisted history alone — once. A flat read by
+   itself proves nothing about the tail: a provider that caches only a system breakpoint
+   (Anthropic, through this provider layer's single `cache_control` stamp) reads flat
+   forever and gains nothing from a resting tail.
+3. *Read.* The call after the probe is the measurement. A cache read within 128 tokens
+   (`_CACHE_PROBE_SLACK`) of the probe's WHOLE prompt is the mechanism observed: the model
+   joins `Session.tail_sparse_models`, one `intervention` note says so with the numbers, and
+   from then on the tail rests whenever the previous main call carried one. Never two
+   tail-less calls in a row; a turn's first call is always tailed; the finished plan's
+   ADR-0108 "answer now" line always rides. Anything else is a miss, counted per model in
+   `Session.tail_probe_misses`; at 2 (`_CACHE_PROBE_LIMIT`) the model is left alone for the
+   rest of the session. A probe that measured nothing — the "answer now" line rode it, a
+   compaction rewrote the history before the reading, another model answered — is not a
+   miss.
+
+Both verdicts live on the session because a served mind builds a loop per turn and must
+not pay the measurement again each turn; schema v1 stays append-only (an older build drops
+the two fields and keeps the every-call tail). A backend that reports no cache reads —
+most local pods — is never suspected, so the small-model every-call reminder is untouched
+by construction, and a cache whose read advances is never suspected either.
+
+**Alternatives rejected.** A provider-layer cache breakpoint: measured, ignored by the
+tier. Persisting the reminder into history: append-only would hold, and every call would
+add a plan copy to the history ADR-0192 just finished shrinking. A per-model flag or a name
+list: the next tier with this cache shape pays until someone notices, and the usage already
+says it. Resting the tail for every provider: it halves the reminder for small models on
+no evidence that they tolerate it, while the pod that could measure that is down. A
+cache-priming request (the tail-less prompt as its own call): doubles the request count.
+Switching on the flat read alone — this ADR's first draft, with a 1,024-token bar: the
+`gpt-5-mini` control came within 55 tokens of tripping it, and every Anthropic session
+would have been switched for nothing. Switching first and reverting when it does not help:
+the same information, but the sticky state would be written before the evidence.
+
+**Measurement (pre-registered 2026-09-18 13:52 UTC, before any run of this design).** Instrument:
+a real `Agent` for one turn in a throwaway workspace — eight ~2.5k-token files, the task is
+to plan eight steps, `cat` each file with Bash, mark each step done, and answer with the
+eight checksum words; per main call the tail flag, prompt tokens and cache read are
+recorded at `_anchor_prompt`. Three arms, same task, same batch:
+
+- **A — control:** main `57f32e2` (a detached worktree on `PYTHONPATH`), `gpt-5.6-luna`.
+  Predicted: one cache-read value (spread ≤ 64) on every tailed call while the prompt grows
+  by at least 8,000 tokens.
+- **B — treatment:** this branch, `gpt-5.6-luna`. PASS needs all of: the session ends with
+  `tail_sparse_models == ["openai/gpt-5.6-luna"]` and no miss; exactly one
+  `cache_friendly_tail` note; every tailed call that follows a tail-less call reads at least
+  that call's prompt less 128; the turn completes (`completed`, at least 8 Bash calls, all
+  8 checksum words in the answer); and B's cached share of main-call prompt tokens exceeds
+  A's by at least 10 points with a lower cost per main call. FAIL: no switch although A read
+  flat, a recorded miss, a tailed-after-tail-less call that did not reuse, or a turn that
+  did not do its job.
+- **C — negative control:** this branch, `gpt-5-mini`. PASS: `tail_sparse_models` stays
+  empty and the turn completes. A recorded probe miss is allowed by design and is reported
+  as measured. FAIL: the model ends in sparse mode.
+
+If A is not flat the premise failed today: stop and explain, it is not a pass. A passing B
+is run a second time and both must pass; a failing B is investigated, not re-rolled.
+
+**Results, first batch (2026-09-18, 13:53–14:02 UTC; logs kept out of the repo).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `57f32e2` · luna | 40 · `max_iterations` | 9,387 on calls 2–20 while the prompt grew 10,356 → 36,434; 9,271 on calls 21–40 | 30% | $0.1875 ($0.00469) |
+| B treatment | branch · luna | 40 · `max_iterations` | suspected on calls 2–5 (flat 9,384 across 5,913 tokens of growth); call 6 went out tail-less at 16,199; call 7 read 16,196 — confirmed; all 8 tailed calls that followed a tail-less one read it back whole | 87% | $0.0611 ($0.00153) |
+| B2 second sample | branch · luna | 23 · `completed` | the same (flat 9,382; probe 16,362; read 16,359); 8 of 8 | 87% | $0.0328 ($0.00143) |
+| C negative control | branch · gpt-5-mini | 19 · `completed` | never suspected: from call 3 the read advanced on 13 of 17 calls and never held for more than two (one zero read at call 6); tail on every call; nothing written to the session | 85% | $0.0445 ($0.00234) |
+
+Every arm did the job (8 Bash calls, all 8 checksum words in the answer). Read by the letter
+of the rule above, as measured:
+
+- **A** missed its prediction of one value within 64 tokens: the read stepped DOWN once, by
+  116 tokens at call 21, from call 1's whole prompt to the system block alone. It never grew
+  while the prompt grew by 28,000 tokens, so the premise held. Two explanations were tested
+  and ruled out against the API — age (an entry was still read back whole after 150 quiet
+  seconds, and after 180 seconds of hits) and a per-key entry limit (still read back after 26
+  newer whole prompts). The cause is provider-side and unmeasured.
+- **B** met every cache criterion, and at an equal call count cost a third of A. It missed
+  `completed`: it ended `max_iterations`, exactly as control A did on main. The transcript
+  tail kept by B2 shows why, and it is not the tail: the fresh-eyes plan review flagged the
+  correct answer, the model re-sent the same correct answer, and the ADR-0026 broken-record
+  guard — checked first, with no bound of its own — vetoed every identical re-send until the
+  iteration cap (twenty calls in A and in B). B2 ended only because the model reworded its
+  fifth answer. That outcome is neither this rule's PASS nor its FAIL, and an unnamed outcome
+  is not upgraded: the guard gets its bound first (ADR-0194), and these same arms are run
+  again on a build where a turn can end.
+- **C** passed.
+
+**Second batch — the rule, amended once before it runs (2026-09-18 14:24 UTC).** The same three arms,
+task, instrument and criteria, on a main that carries ADR-0194 (so a turn can end). One
+amendment, made because of what the first batch showed and before any run of the second:
+A's prediction reads "the cache read on tailed calls never GROWS while the prompt grows by at
+least 8,000 tokens; it may step down to the system block" — the provider stepped it down once
+on its own, and a read that cannot grow is the premise, not a read that cannot move. Nothing
+else changes: B must pass every criterion, twice; C must end with `tail_sparse_models` empty.
+
+**Results, second batch (2026-09-18, 14:24–14:32 UTC; main `b4e084b`, which carries ADR-0194).**
+
+| arm | build · model | main calls · stop | what the cache read did | cached share | cost (per main call) |
+|---|---|---|---|---|---|
+| A control | main `b4e084b` · luna | 23 · `completed` | 9,387 on 19 tailed calls, then 9,271 on 3; never grew while the prompt grew 10,360 → 37,033 | 35% | $0.0862 ($0.00375) |
+| B treatment | branch · luna | 24 · `completed` | flat 9,385 on calls 2–5; probe 16,326; next call read 16,323 — confirmed; 9 of 9 tailed calls after a tail-less one read it back whole | 87% | $0.0337 ($0.00140) |
+| B second sample | branch · luna | 22 · `completed` | flat 9,386; probe 16,357; read 16,354 — confirmed; 8 of 8 | 86% | $0.0299 ($0.00136) |
+| C negative control | branch · gpt-5-mini | 20 · `completed` | never suspected: the read advanced on 17 of 18 calls from call 3; tail on every call; nothing written to the session | 88% | $0.0565 ($0.00282) |
+
+By the rule: A held its (amended) prediction; B passed every criterion, twice — one note, no
+miss, every tail-less prompt read back whole, the job done, `completed`, a cached share at
+least 51 points above A's at 36–37% of A's cost per main call; C passed. Across both batches the
+mechanism was suspected, probed and confirmed four times out of four on luna, inside the
+first seven calls each time, and never touched on gpt-5-mini. One thing stays unexplained
+and changes nothing: in all three all-tailed luna runs the read fell back to the system
+block exactly 20 calls after the entry it had been reading was created, and an API probe
+that sent 26 same-size prompts after one entry did not reproduce it. A loop that sends a
+fresh tail-less prompt every other call never waits that long.
+
+
+**Consequences.** On the recorded production churn turn (243 terra calls, ADR-0192) a
+simulation over the per-call usage — validated by reproducing the billed $155.63 under that
+build's no-discount pricing before any other figure is read from it — prices today's build
+at $139.31 and this rule at $17.68, confirmed at call 8; an append-only ideal would be
+$17.19. `docs/INTEGRATIONS.md` now says what a context hook can rely on: background text
+reaches every call except, on a measured provider, every other one — a hook that must be
+seen on every call is the wrong seam. `tests/test_cache_friendly_tail.py` drives whole turns
+against four modelled caches (whole-prompt, prefix, system-block-only, silent), both verdicts
+across loops, the measured gpt-5-mini lump, and the probes that measured nothing. Not done
+here, each its own decision: carrying the turn's prompt context in history once, as Claude
+Code does, instead of in a tail that no cache of any kind ever covers; history breakpoints
+for Anthropic models, which today cache the system block alone; handing a parent's verdict
+to its sub-agents; and the fresh-eyes reviewer's blind spot (ADR-0194) — it flagged the
+correct answer in all four luna runs that kept a transcript here, and in neither gpt-5-mini
+run; it cannot see the tool results.
+
+## ADR-0194: the broken-record guard speaks twice for one text, then the answer stands
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** ADR-0026's broken-record guard vetoes a completion the model has already sent
+verbatim this turn. It is checked FIRST among the finish gates — so a parrot never re-buys
+the critic or the quality gate — and it `continue`s. Every other veto in the ending flow is
+bounded: the plan gate by `_MAX_PLAN_NUDGES`, each evidence gate by its one-shot flag, the
+fresh-eyes review by `_MAX_PLAN_REVIEWS`, consecutive text-only completions by the ADR-0058
+cascade cap, a skill-naming Stop-hook veto by the ADR-0187 fence. The guard had no bound,
+and being first, nothing after it could end a turn it kept vetoing; the iteration cap was
+the only stop. Measured 2026-09-18 while measuring something else (ADR-0193's control and
+treatment arms, `gpt-5.6-luna`, main `57f32e2` and a branch alike): the model finished an
+eight-step task and answered correctly; the fresh-eyes review flagged that answer ("only
+reports that the plan and steps were completed" — the reviewer reads the answer and the plan
+record, not the tool results that substantiate it); the model closed the reviewer's step and
+re-sent the same correct answer; and the guard vetoed the identical re-send twenty times, to
+`max_iterations`, each veto billing a 37,000-token context. Half of each run's calls, and —
+on main, where none of it was cached — more than half its cost, bought nothing. A third run
+ended `completed` only because the model reworded its fifth answer, at which point the
+cascade cap, reached for the first time, let it stand. The guard was written against a
+small model that parrots "forever"; its own veto loop was the forever.
+
+**Decision.** The guard speaks at most `_MAX_BROKEN_RECORD_RAILS = 2` times for one text —
+its first wording, then the sharper "occurrence 3" wording, each used once. The next
+identical re-send is not vetoed: one `broken_record_stand_down` note, the turn marked
+degraded, and the completion goes on to the gates every other completion meets — by then
+the ADR-0058 cap has stood the evidence gates down, the review is spent, and the Stop-hook
+seam keeps its own contract (unbounded by design, with the ADR-0187 fence for a skill
+re-entry). The count stays per text, as ADR-0026 made it: a rail that works costs nothing
+more, and a second parroted text later in a long turn gets its own two rails. Both twins.
+
+**Alternatives rejected.** Letting the cascade cap run ahead of the guard: the guard is first
+for a reason, and the cap counts consecutive text-only completions, which a tool call
+between re-sends resets. A per-turn bound instead of per text: a served turn runs for
+hundreds of calls, and an early episode the rail cured would silence the guard for a later
+one. Ending the turn with a stop reason of its own: the text the model insists on is its
+answer, and "the answer stands, degraded" is what ADR-0058 already does with a model that
+answers every nudge in words. Fixing the reviewer instead: it is bounded, fail-open and
+worth its own measurement (it cannot see the tool results that prove an answer — noted, not
+changed here); the unbounded loop was the defect whatever starts it.
+
+**Consequences.** A model that has nothing new to say costs three extra calls, not the rest
+of the iteration budget; on a served run that is the difference between a finished turn and
+a `max_iterations` stop with the answer already given. `test_small_model_containment.py`
+pins the bound in both twins (the same file run against main's source fails exactly those
+two tests, `max_iterations` where `completed` is expected), that the count is per text, and
+that a rail that works is unchanged.
+
+## ADR-0195: a streamed call is priced with its cached tokens — and a token the price map has no cached rate for costs the input rate
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** A whole response carries litellm's own cost (`_hidden_params.response_cost`),
+and that figure prices cache reads at the cached rate: five recorded gpt-5.6-luna calls
+reconcile to the token against (prompt − read) × input + read × cached + completion ×
+output. A streamed chunk carries no `response_cost` — litellm computes it in a callback the
+consumer never sees — so `_extract_usage` rebuilds the cost from the counts (PROV-12). The
+rebuild passed the prompt and completion counts and nothing else, so every streamed call
+was priced as if nothing had been cached. Streaming is the path the CLI and `zakcode serve`
+take (`astream_turn`). Measured 2026-09-18 on a streamed luna call through the provider
+itself: 9,231 of 9,234 prompt tokens read from the cache, and the call recorded $0.00185280
+— the uncached price exactly — against $0.00019122 at the provider's rates, 9.7x. A vessel
+run of 2026-09-17 (243 streamed gpt-5-mini calls, 97% of the prompt read from the cache)
+recorded $8.20 for $1.38 of spend. The figure is not decoration: `max_cost_usd` ends a turn
+on it, the shared sub-agent budget counts it, `/cost` shows it, and a vessel's budget meter
+can bill only what the served usage says. ADR-0193 makes it matter more — it moves the 5.6
+tier from about a third cached to about 87%, and none of that saving would have shown in
+the session's own cost.
+
+**Decision.** `_litellm_token_cost` passes the call's cache-read and cache-write counts to
+`litellm.cost_per_token`, which prices them as it prices a whole response: the tier above
+272k tokens, Anthropic's write premium, and both vendor shapes, since litellm's
+`prompt_tokens` includes the cached counts in each. Two fences, both measured. A count is
+passed only when the price map lists that cached rate for the model: handed a cached count
+for a model with no cached rate, litellm prices those tokens at nothing (gpt-4, 800 of 1,000
+cached: $0.006 for a $0.03 prompt), and 1,687 of the 3,096 priced chat models in its map
+list none — a backend reporting cache reads for one of them would make the session look
+nearly free and the ceiling unreachable. Such a token costs the input rate: a ceiling reached
+early is a nuisance, one never reached is the incident. And a count larger than the prompt is
+clamped to it, so a junk count never prices a call above what its prompt could have cost. The
+oldest litellm the project allows (1.55.0) already takes both arguments, so there is no
+second code path for an older one.
+
+**Alternatives rejected.** Assembling the stream into a whole response and asking litellm
+for its cost: it needs every chunk kept, and the provider keeps a bounded sample by design.
+A rate table of our own: the last one was removed (g-369-295) after it mispriced by stem.
+Applying an observed hit rate: the call's own count is exact and needs no model of the
+cache. Putting the whole-response path behind the same fences: that figure is litellm's
+price for litellm's parse of the response, it reconciles to the token on the models we run,
+and re-pricing it would put two sources of truth where there is one.
+
+**Consequences.** A streamed session's cost is what the provider charges for the counts it
+reported: the same probe after the change records $0.00019118 for a call that read 9,229 of
+9,232 tokens. A ceiling sized from earlier recorded figures is reached later for the same
+work, by the cached share times the discount, and should be re-read against real spend: the
+2026-09-18 churn run recorded $155.63 for $139.31 at the provider's rates — close only
+because so little of it was cached — and the same calls under ADR-0193's rule come to
+$17.68. Still unknown: litellm's map lists a cache-WRITE rate for the 5.6 tier (1.25x
+input), and the tier's usage reports no write count at all, streamed or whole, so whether
+writes are billed can be read only off the provider's invoice. Noted, not changed here: the
+5.6 tier is priced only in the map litellm fetches at import; its bundled map (what a box
+gets when that fetch fails, or under `LITELLM_LOCAL_MODEL_COST_MAP`) has no such entry, and
+a streamed luna call then costs $0.0 — a ceiling that cannot be reached. Tests:
+`tests/test_provider_stream.py` — the measured luna shape through `astream`, the flat
+Anthropic shape, the unrated model (with litellm's own behavior as the control for that
+fence: when it stops holding, the fence can go), the junk count, and the unchanged uncached
+and whole-response cases. The same file against main's source fails exactly the three tests
+that need the change.
+
+## ADR-0196: a skill asked for again after the model has acted is a re-entry and gets the body — and at a refused stop the harness speaks before the hook
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Four decisions meet at one tool result. ADR-0063 answers a second `Skill(X)`
+in a turn with a pointer ("[already loaded] … continue those instructions from where you
+are; do not reload them") instead of a second copy of the body. ADR-0048 forgets that at
+every refused stop, because four such pointers killed a live loop (2026-08-26, ~29 h dark).
+ADR-0187 has the harness deliver the skill a turn-end hook names and counts that delivery
+as loaded, so the model's own call for it "answers with the ADR-0067 section pointer" — a
+pointer that carries the current section's text. ADR-0192 then delivers a body that fits
+the window whole, with no sections: the pointer ADR-0187 leaned on carries nothing again.
+
+Measured 2026-09-18, a served loop on gpt-5.6-luna against a Mind (sample 1,
+`bench/results/served-luna-preregistration.log`): 10 refused stops, 8 harness deliveries,
+11 "[already loaded]" answers against 3 real loads, two turns ended `veto_stall` after
+four refusals in a row, each followed by a 600 s rest — about 330 s of model activity in a
+2,101 s run, and no iteration closed. Two doors were shut by the same sentence. At the
+refused stop the hook's words arrive at the head of the delivered skill — "Your FIRST
+action MUST be: Skill('aspirations') with args='loop' … Do NOT run Bash commands first",
+written for a harness that delivers nothing until the model calls the skill tool. The
+model obeyed them to the letter, called the tool, was told the body was already loaded and
+to continue from where it was — it had not started — summarised, and ended; the hook
+refused again. And mid-turn, the framework's own contract closes every iteration on
+`Skill('aspirations') args='loop'`: the pass that had just FINISHED was told to continue
+from where it was. The same model, at the wake-up door, whose note says "carry out these
+instructions from where the plan stands", ran the skill's twelve entry steps in order. So
+the model can carry a skill; the harness was telling it not to.
+
+Claude Code's Skill tool answers every call with the body, and the framework's own
+re-invocation gate on that harness exempts its loop orchestrators because deduplicating
+the per-iteration re-invocation, in its words, kills the loop. A paged skill whose every
+section is closed has no current section either, so the bare pointer was never only a
+whole-body problem.
+
+**Decision.** *A skill asked for again after the model has acted on it is a re-entry, and
+gets the body.* The loop counts WORK calls at its one execution seam: a call that
+succeeded and is not the plan's bookkeeping, the skill tool or the wake-up re-arm (the
+first thing a resurrected loop is told to do). Every door that puts a body in context —
+the tool, a typed `/<skill>`, the harness's own delivery — records that count beside the
+dedup's digest, and the two are cleared together (turn start, a refused stop, a
+compaction). When the same unchanged body is asked for again and no section of it is open
+— it arrived whole, or every section is closed — a count that has moved means the model
+ran something since it arrived: the load is a real one, handed over exactly as a first
+load is (budget, selection signal, a paged skill starts over at page 1, and the ADR-0187
+fence starts over because a skill ran), flagged `reentry` for the trace only. A count that
+has not moved is ADR-0063's case and stays a pointer, but one that says what to DO:
+nothing new was loaded, loading a skill does not run it, carry the instructions out now
+from their first step, the next action is that step's tool call — not another Skill call
+and not a summary. A paged skill with a section open is untouched: its pointer always
+carried the section. The trace names which door answered (`skill_pointer`,
+`skill_reentry`), because that is the first thing a stalled loop's trace is asked.
+
+*At a refused stop the harness speaks first.* The note folded into the delivered skill's
+frame now says, in the wake-up door's measured words, that a hook refused the stop and
+asked for this skill, that the harness has made that skill call and the instructions below
+are its result, and to carry them out now from their first step without calling the skill
+tool for it again or stopping to summarise; the hook's words follow, whole, as the hook's.
+
+**Alternatives rejected.** Answering every call with the body (Claude Code exactly): at the
+refused stop a literal model then pays for two bodies per refusal, 55 KB each for the loop
+skill measured, and ADR-0063's own case (65 KB landing twice inside `/start`)
+returns unconditionally; it stays the fallback for that one door if the pointer is measured
+not to move such a model. Exempting named loop skills, as the framework's gate does on
+Claude Code: the harness must not know a framework's skill names. Keying on the arguments
+(`loop`): one framework's convention. A threshold above one work call: no count separates
+"lost my place" from "finished a pass", and the costs are not symmetric — a duplicate body
+against a dead loop. Starting the ADR-0187 fence over on work: the spin it was built for
+(2026-09-17) ran `echo` between refusals, which this counter calls work; the fence keeps
+counting real loads and nothing else. Dropping the hook's words: they carry more than the
+skill's name — the agent binding, a phase's next action. Writing the skill call into the
+transcript as if the model had made it: a fabricated model action, and not a valid
+assistant turn on every provider.
+
+**Consequences.** A loop that closes its iteration on the skill call gets the body each
+time — one body per iteration in context, the price Claude Code pays, and an earlier
+compaction for it. A model that re-asks mid-skill after acting now gets the body where it
+got the pointer (ADR-0063's measured 65 KB among them): accepted for the asymmetry above.
+NOT claimed: that gpt-5.6-luna closes an iteration on this build. The re-entry half is
+deterministic; the refused-stop half is wording aimed at a literal model, and the second
+sample of the served-loop measurement reads it off the two trace kinds. If that door still
+stalls with the new pointer served, the first rejected alternative is the next step, at
+that door only. Noted, not changed: a sub-agent shares its parent's resolver, and `load`
+takes no caller, so a sub-agent asking for a skill its parent holds is told the body is in
+ITS context, where it never was (probed 2026-09-18). And the ADR-0027 decompose hint
+("FIRST call update_plan and decompose…") rides every whole body of 2,000 characters or
+more, re-entries included; sample 1 spent 31–42% of its tool calls on the plan against a
+target under 20%, and whether the hint drives that is unmeasured.
+
+Tests: `tests/test_use_skill.py` — the no-work control, the pointer's words, the re-entry
+through the resolver, every door's mark, the marks forgotten at a fresh skill turn, the
+classification through the loop (plan, wake-up and a failed read are not work; one read
+is), the refused stop end to end on both the buffered and the streamed path, and the paged
+skill with a section open; `tests/test_turn_end_reentry.py` — the note's order and that
+every word of the hook still arrives. The same `test_use_skill.py` against main's source
+(2ad5005): 7 fail, 3 of them on the behaviour itself — the after-work call answered with
+the pointer, buffered and streamed — while the control and the paged test pass there.
+
+## ADR-0197: the served process runs on the stdlib event loop — under uvloop a command that leaves anything running is never seen to finish
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** `zakcode webapp` built its server as `uvicorn.Config(app, host=…, port=…)`, and
+uvicorn's default loop is "auto": uvloop wherever it can be imported. The `server` extra
+depends on `uvicorn[standard]`, which installs uvloop on every non-Windows box. So the
+served path ran on uvloop, while the terminal client and this whole test suite run on the
+stdlib loop. Nothing chose that; it came with the install.
+
+Measured 2026-09-18. In sample 1 of the served-loop measurement
+(`bench/results/served-luna-preregistration.log`) the first served turn logged
+`lifecycle hook […sessionstart-orchestrator.sh] timed out after 95.0s`, and the first model
+call came 99 s into the run. The same hook through the same runner from a plain asyncio
+script took 0.7 s with no daemon running and 0.5 s with one. Everything the hook writes was
+on disk within 0.9 s of its start. A process snapshot during the stall shows the hook's own
+process gone by the fourth second and only two processes left: the web app, and the
+framework daemon the hook had started, with all three of its streams redirected.
+
+The cause, reproduced without zakcode or the framework: spawn
+`bash -c 'sleep 25 </dev/null >/dev/null 2>&1 & echo done'` with three pipes and wait with
+`communicate()`. On the stdlib loop it returns in 0.00 s. On uvloop 0.22.1 it never
+returns, although the exit code is already known. The background child's descriptor table
+says why: on the stdlib loop it holds 0, 1 and 2, all `/dev/null`; under uvloop it holds
+those and three sockets at 13, 17 and 19 — the child-side ends of the three streams,
+which uvloop creates as socket pairs and leaves open and inheritable in the process it
+spawns. Every descendant carries them whatever it redirects, so end-of-stream never
+arrives while any descendant lives. Killing the background child returns the call at once.
+`close_fds=True` changes nothing.
+
+Through zakcode's own shell-tool runner the same command returns `started`, exit 0, in
+0.00 s on the stdlib loop, and raises `CommandTimeout` at the tool's timeout under uvloop
+— after which the runner kills the process tree, the background process with it.
+
+Every spawn site is exposed: the four hook runners, the shell tool, the MCP stdio
+transport, the status line, background jobs. A production vessel showed none of it — no
+hook timeout in 3,567 log lines, no shell timeout in 282 tool results across two sessions
+— because its daemon is its own systemd unit, so its hook starts nothing. Any other
+install pays 95 s on its first served turn, and any shell command that leaves a process
+running — a playbook's `nohup … &`, a wrapper that starts the daemon on demand — would
+wait out its timeout and lose the process it started.
+
+**Decision.** The served process runs on the stdlib loop: `uvicorn.Config(…,
+loop="asyncio")`, at the one place the server is built (`serve` and `webapp` are one
+function, and the vessel's unit runs it).
+
+**Alternatives rejected.** *Keep uvloop and stop waiting for end-of-stream once the process
+has exited.* Every spawn site would need it, now and for every site added later, and it
+changes behaviour on the loop where nothing is wrong. *`close_fds=True` at each spawn.*
+Measured: no effect under uvloop. *Drop `[standard]` from the dependency.* The loop would
+still be chosen by whatever happens to be installed: a box that has uvloop for any other
+reason is exposed again, and the faster HTTP parser goes with it for nothing. *Close
+descriptors above 2 in a wrapper shell.* Per site, shell-specific, and the numbers are not
+fixed.
+
+**Consequences.** The served path, the terminal client and the suite now run on one loop,
+so the suite exercises the loop production runs on. uvloop's throughput is given up; the
+served process is a single-tenant sidecar whose time goes to model calls, no request
+throughput was measured and none is claimed. Windows is unchanged: "auto" already resolved
+to the stdlib loop there.
+
+Verified end to end in a sandboxed throwaway world with a dummy model key (both model
+calls refused with 401, no spend). Before: the hook started at 18:37:25.6 and
+`timed out after 95.0s` was logged at 18:39:00.6. After: startup at 18:48:19.1, the first
+model attempt refused at 18:48:20.3, no timeout line, and the daemon the hook started still
+running.
+
+**Not claimed.** That this explains any production stall: the production logs show none.
+That the defect is uvloop's rather than libuv's; it has not been reported upstream.
+
+**Noted, not changed.** A child that keeps the command's stdout ON PURPOSE
+(`sleep 25 </dev/null &`, no output redirect) holds `communicate()` for the whole timeout
+on BOTH loops. That is the ordinary pipe contract and no field case has been measured.
+Sample 1's 95 s is now an explained deviation; sample 2 runs on this build.
+
+Tests: `tests/test_cli_webapp.py` pins `config.loop == "asyncio"`; with the pin removed
+exactly that test fails, `'auto' == 'asyncio'`. Two POSIX controls hold the behaviour the
+served process now shares — `tests/test_proc.py` at the shell-tool seam and
+`tests/test_lifecycle_hooks.py` at the SessionStart hook seam: a command that leaves a
+fully redirected child running returns in under 4 s against a 6 s timeout. They pass with
+or without the pin, because the suite already runs on the stdlib loop.
+
+---
+
+## ADR-0198: what the harness tells the model must be true for THIS turn — the operator's own command, the hook's own words, and a sentence that is not a command
+
+**Status:** Accepted (2026-09-18)
+
+**Context.** Sample 3 of the served-loop measurement
+(`bench/results/served-luna-preregistration.log`, gpt-5.6-luna, 2026-09-18) ended at its
+first decision. The operator's `/start` opened the turn, so the skill's instructions were in
+the turn's own message. Sample 2 had opened the same turn with a plan and seven shell calls
+and reached `RUNNING` inside a minute. This time the model's first call was `Skill(start)`.
+Three things the harness said next were each false for that turn, and together they ended
+the turn 42 seconds in, with no loop started and no wake-up armed to start another.
+
+1. **The refusal.** `start` carries `disable-model-invocation: true`, and ADR-0109 refuses
+   the tool door for such a skill BEFORE the reload dedup (ADR-0063) is consulted. The
+   answer was "the operator types it in their terminal; it cannot be run from here. Tell
+   them — do not retry." The operator HAD typed it; it was being run from here. ADR-0063's
+   own field case was `use_skill start` inside a typed `/start`, and it exists so that call
+   gets the pointer at the instructions. ADR-0109 put a check in front of it that makes the
+   pointer unreachable for exactly the skills an operator types most. The model obeyed the
+   sentence, marked its plan done, and said the command could not be run.
+2. **The routing.** It said so in one line that opened with the command in backticks and
+   went on to explain. `_slash_invocation` strips wrapping backticks and then takes
+   everything after the skill name as arguments, so the sentence was routed as
+   `Skill(start, args="mind` must be executed by the operator's …")` — fourteen times in
+   the turn, each a provider call, until the stuck ladder stepped in.
+3. **The block.** Each routed call was stopped by the framework's own `PreToolUse[Skill]`
+   gate, which exits 2 and writes its reason to stderr: the instructions are already in
+   context, follow them, do not re-invoke. That is Claude Code's contract — on exit 2 the
+   hook's stderr is what the model reads. `_run_shell` read stdout only and discarded
+   stderr, so fourteen times the model read `Blocked by hook for 'Skill': blocked by hook`.
+   The one sentence that would have put it back on the instructions never arrived.
+
+**Decision.**
+
+- **A user-only skill the operator typed THIS turn answers the model's `Skill` call with the
+  pointer, never the refusal and never the body.** `_typed_this_turn_pointer` holds when the
+  skill's digest is registered for this turn — and for a user-only skill only the command
+  door can have registered it, because the tool and harness doors are refused before they
+  register anything. Before any work the answer is the ADR-0196 sentence ("carry those
+  instructions out now, starting from their first step"); after work it is a new one
+  ("continue from the step you are on"). The tool door still LOADS nothing: a second 65 KB
+  does not come through the door ADR-0109 closed, and no budget is spent. Everything else
+  keeps the refusal — a turn the operator did not open with the command (ADR-0109's own
+  incident), the harness door even inside a typed turn, a fresh skill turn after a veto or
+  a compaction, and a body that changed since it was typed. The three pointer sentences
+  now live in one function, `_already_loaded_pointer`.
+- **A backtick left inside the line is prose.** After the wrapping backticks and a trailing
+  period are gone, `_slash_invocation` refuses a line that still contains one: a code span
+  that closes mid-sentence is followed by words ABOUT the command. Every spelling the door
+  took before still routes.
+- **A block's reason is stdout's message or, when there is none, the hook's stderr**, in
+  both blocking runners: the tool hooks (`exit 2`, and a `permissionDecision: deny` that
+  carries no reason) and the turn-end hooks (`exit 2`). Bounded at 4,000 characters.
+  Allow and warn are unchanged — their stderr is noise the model never needed.
+
+**Alternatives rejected.** Moving the user-only refusal behind the whole dedup block — that
+also reaches the re-entry branch, which delivers the BODY, and a user-only body must never
+come through the tool door. Dropping the refusal's "do not retry" — it is the right sentence
+when the operator did not type the command. Refusing to route ANY text that names a
+user-only skill — a model that echoes the operator's own `/start mind` as its whole
+completion is now answered with the pointer, which is the help it needed. A per-turn fence
+on routing the same text twice — a perpetual loop legitimately types `/aspirations loop` at
+the end of every iteration of one turn; the stuck ladder already bounds a routed call that
+keeps failing. Appending stderr to a stdout message — a hook that speaks on stdout has
+chosen its words, and its stderr is usually noise.
+
+**Consequences.** The first decision of a served run no longer has a fatal branch: whichever
+way a small model opens a typed command, the next thing it reads tells it to carry the
+instructions out. A Claude Code hook that blocks the way Claude Code documents is heard the
+way Claude Code would let it be heard, with no change on the framework's side. NOT changed,
+and measured in the same run: the ended-turn marker still tells the model to reload an
+elided skill with `use_skill`, which a user-only skill will refuse; and nothing restarts a
+served run whose first turn ends before the loop arms its own wake-up.
+
+Tests: `tests/test_user_only_skills.py` (the typed turn, after work, and the four controls
+that keep the refusal), `tests/test_use_skill.py` (the same through the real turn door, with
+the trace naming the pointer), `tests/test_slash_text.py` (the sentence, and every clean
+spelling as the positive control), `tests/test_claude_code_hook_contract.py` part 9 and
+`tests/test_turn_end.py` (stderr as the reason, stdout first, the wordless default, allow and
+warn untouched, the bound). Each fix was removed in turn and its tests went red with the
+field symptom in the message: the user-only refusal, the routed call, `blocked by hook`,
+`Continue.`.
+
+## ADR-0199: a served conversation is not left on OpenAI's servers — the retention field rides `extra_body`, and only to OpenAI's own API
+
+**Status:** Accepted (2026-09-19)
+
+**Context.** ADR-0188 put `reasoning_effort="none"` on every gpt-5.6-tier call that carries tools,
+because the chat route refuses that combination with a 400. What was not noticed is where litellm
+then sends the call. Its `responses_api_bridge_check` moves a gpt-5.4+ chat call onto OpenAI's
+Responses API whenever function tools ride with a non-None effort — and the string `"none"` counts
+— so since 2026-09-17 every tool call of a served luna or terra Mind has gone to `/v1/responses`,
+not to `/v1/chat/completions`. The bench on the product's own route measured this directly:
+80 of 80 product calls reached `/v1/responses`, each carrying its own effort
+(`bench/results/effort-decision-points-preregistration.log`, batches 1 and 2).
+
+The Responses API STORES a response unless the request says otherwise. Measured live, same day,
+through the product's own provider: a request with no `store` field came back with `store: true`
+echoed, and a `GET` on the returned id returned it. The identical request with `store: false`
+echoed `false`, and the `GET` on that id was a 404. Chat completions stores only on request (the
+documented default; not measured here). So a change that was about reasoning depth switched
+provider-side retention on for every served conversation, and nobody decided that. A served Mind's
+prompt carries the framework's skill bodies, the world's own state and whatever the operator's
+vessel put in front of it. Retention of that is a decision, and the decision here is no.
+
+Two wire facts shape the implementation, both measured 2026-09-19 against the real endpoint:
+
+1. **`store` must ride `extra_body`.** A top-level `litellm.completion(..., store=False)` never
+   reaches the Responses request — the body arrives with NO `store` key at all, silently — even
+   though `store` is one of the 27 `ResponsesAPIOptionalRequestParams` annotations and sits in the
+   gpt-5 chat supported-params list. Through `extra_body` it arrives as `store: false`, beside the
+   `prompt_cache_key` that already rides the same door. Four requests, all 200, all on the bridge:
+   litellm alone top-level (dropped), litellm alone via `extra_body` (arrives), the provider's
+   instance `extra_body` (arrives, with the cache key), the provider's per-call `extra_body`
+   (arrives). This is why the annotation lists were not evidence: what a library declares it
+   supports and what its bridge puts on the wire are different questions, and only the second one
+   is the answer.
+
+2. **Which API a call reaches is litellm's decision, not ours.** Nothing in this repo asks for the
+   Responses API; a version bump could route differently, or stop forwarding `extra_body` across
+   the bridge, and retention would change back with no error anywhere. So the request litellm
+   actually builds is asserted, offline, against a canned response.
+
+**Decision.**
+
+- **A call to OpenAI's own API carries `store: False` in `extra_body` by default.** OpenAI's own
+  API is an `openai/`-prefixed or bare `gpt-` model with NO `api_base`: with a base configured
+  those same names mean the OpenAI-compatible server behind it — the pod, a llama-server — which
+  is somebody else's API with somebody else's fields, and what a given backend does with a field
+  it does not know was never measured. Deliberately narrow: `azure/` takes the same litellm bridge
+  and was not sent, so nothing is assumed about it.
+- **Both routes, not just the bridged one.** The field is added whether or not tools ride, so a
+  change inside litellm's routing cannot switch retention back on for a call shape that happens to
+  stay on chat completions. On chat completions `store: false` is the documented default restated.
+- **`setdefault`, and before the refused-field filter.** An operator who configures `store` — on
+  the instance or per call — keeps their word. And because the field is a key of the `extra_body`
+  this call sent, ADR-0181's repair already covers it: a server that refuses the request by name
+  drops `store` for the session and the call is re-issued once, with no new machinery.
+
+**Alternatives rejected.** Passing `store=False` as a top-level litellm argument — measured not to
+reach the wire, which is the whole reason this ADR names the door. Sending it to every destination
+— a named cloud refuses an unknown body argument outright, and that would trade a retention default
+for a request failure. Gating it on whether tools are present, or on the bridge predicate — that
+re-derives litellm's routing decision on our side, which is exactly the coupling that would go
+stale silently. Making it configurable with a new setting — `extra_body` already is that setting.
+
+**Consequences.** Served conversations stop accumulating provider-side. Nothing else about the
+request changes: the effort, the tools, the cache key and the rest of the body are untouched, and
+the bench's "product route" arms are unaffected. The product keeps no response ids and asks for no
+server-side state, so nothing in it depended on retention. NOT changed and worth naming: `azure/`
+is unmeasured and gets nothing; a deployment pointing `OPENAI_BASE_URL` at a proxy while leaving
+`api_base` unset would still be treated as OpenAI's own API, because the product never reads that
+variable and the environment is the operator's to know.
+
+Tests: `tests/test_openai_store_default.py` — the request the provider builds (three first-party
+model spellings, with tools and without, the cache key riding beside it, a configured server behind
+the same prefix, four named clouds, the operator's own `store` winning on both doors, the
+refused-field drop), and the request litellm actually sends, pinned offline with `httpx` patched and
+a canned Responses body: path `/v1/responses`, `store: false`, `reasoning.effort` none, and the
+chat-route twin. `tests/test_local_only.py` — the two assertions that pinned the old request shape
+now say what the shape is. Removing the two-line default turns 8 of these red, naming the wire fact
+each one guards.
+
+## ADR-0200: what a tool call on the gpt-5.6 tier needs is AN explicit reasoning depth, not the value `none` — so a configured depth rides, and only the provider's own refusal overrides it
+
+**Status:** Accepted (2026-09-19)
+
+**Context.** ADR-0188 sent `reasoning_effort="none"` whenever function tools ride on a gpt-5.6-tier
+model, set LAST in `_build_kwargs` so it won over a configured depth. The reasoning at the time was
+that "with tools in the request a depth cannot be honoured on this route at all". That reading of
+the 400 was too strong, and measuring where the call actually goes is what corrected it.
+
+The product does not build its own HTTP request. litellm's `responses_api_bridge_check` moves a
+gpt-5.4+ chat call onto OpenAI's Responses API whenever function tools ride with a reasoning effort
+that is not Python `None` — and the string `"none"` is not `None`. So ADR-0188's own rule is what
+puts every served tool call on `/v1/responses`, where tools are accepted at any depth. The 400 it
+was written against is a CHAT-route refusal, and a request reaches the chat route precisely when it
+carries NO explicit effort, in which case the model's default depth counts as "with" and is refused.
+
+What the request needs, then, is AN explicit depth. The value is free.
+
+Measured on that exact route, through the product's own provider, in two batches pre-registered
+before launch and read by a reader committed and self-tested before the second batch ran
+(`bench/results/effort-decision-points-preregistration.log`, PRs #560 and #561). The wire gate was
+read first and held: 160 of 160 product calls reached `/v1/responses` carrying their own effort,
+0 errors. Passes out of 20 per cell, today's forced `none` against a configured `low`:
+
+| cell | today (none) | at low | Fisher two-sided |
+|---|---|---|---|
+| order — build, then deploy only after seeing the build succeed | 5, then 7 | 19, then 18 | p = 1e-05 and 0.00077 |
+| refusal — a call refused twice, the advice naming the refused call | 0, then 0 | 20, then 20 | p = 1.45e-11 both |
+
+Decision REPLICATED under the pre-registered rule; all three registered estimates were HITs. Cost
+of low on that route: about +19 output tokens a call, some 15 of them reasoning tokens, input
+unchanged by construction, and no measurable latency cost — low came in marginally faster in both
+batches, which on 40 calls an arm reads as no difference rather than a speed-up.
+
+**Decision.**
+
+- **The rule becomes "never send a tool call with NO depth", not "always send none".** On the
+  predicate-known tier a configured `reasoning_effort` now rides with tools. With nothing
+  configured the request would carry no depth at all — which is the 400 — so it still gets `none`.
+  That is the default, and it is unchanged: no existing deployment sends anything different.
+- **A provider that NAMED `none` as the remedy still overrides everything.** `_wants_effort_none`
+  now also sets `_effort_none_demanded_by_server`, and while that is set every tool call of the
+  session sends `none` whatever is configured. The distinction is evidentiary: the predicate is
+  OURS and the depth is measured to work behind it, whereas a remedy 400 is the server's own
+  statement about a tier we do not know. Without the split, an operator's configured depth would
+  buy one 400 and one re-issue on every turn for the rest of the session.
+- **The operator's configuration is never mutated.** `self.reasoning_effort` keeps what was
+  configured even while the session sends `none`, so the diagnostic stays honest — the same
+  posture `rejected_request_fields` already takes (ADR-0181).
+
+**Alternatives rejected.** Keeping the override and adding a flag to opt out — the flag would
+default to today's behaviour, which the measurement says is the floor on both cells, and a
+default nobody changes is the only default that matters. Deciding by re-deriving litellm's bridge
+predicate on our side — that couples us to a routing decision that is not ours and would go stale
+silently; the offline wire test watches it instead. Letting a configured depth override the
+server-demanded `none` too — measured refusals outrank our predicate, and the cost is a 400 per
+turn. Raising the DEFAULT to `low` on the strength of this bench — refused: the cells are two
+hand-built decisions at ~294 input tokens, while the served samples stall at 17K-token prompts
+with whole skill bodies in context, so whether a served Mind should RUN at low is a question for
+its own pre-registered served sample.
+
+**Consequences.** Reasoning depth is configurable again for tool calls on this tier, which
+ADR-0188 had made unreachable; on the bench's two decision cells that is the difference between
+the floor and the ceiling. Nothing changes for a deployment that configures no depth, for the
+fallback tier, for a self-hosted gpt-5.6-named server, or for any other provider. NOT explained
+and reported as measured: at the same declared effort of `none` the chat route beats the Responses
+route on both cells — pooled over four batches, order 75/80 against 25/80 and refusal 17/80
+against 0/80 — and today's product is the Responses route. That effect needs its own arms.
+
+Tests: `tests/test_gpt56_tools_effort_none.py` — a configured depth rides (four levels), the
+default with nothing configured still sends `none`, a server that asked for `none` keeps it over a
+configured depth, the latch sets the new flag and every later call of that session sends `none`
+while the configured value stays intact, and an offline wire pin that both `none` and a configured
+`low` reach `/v1/responses` with that effort rendered, against a canned response. Two mutations,
+each with its kills attributed: restoring the unconditional override turns 8 red, and dropping the
+server-demand guard turns the two safety-net tests red.
+
+## ADR-0201: reasoning tokens are recorded on `Usage`, because the depth a call was asked for is not observable after the fact and the reasoning it actually did is
+
+Date: 2026-09-19
+
+Context. A served run was pre-registered with a wire gate that asks a simple question: did the
+configured reasoning depth actually take effect on the calls the loop made? The product could not
+answer it. The sent `reasoning_effort` appears in no trace row, no session usage row and no server
+log line, and `reasoning_tokens` appeared nowhere in the source at all — so a reasoning model's
+thinking was billed at the output rate, folded into `completion_tokens`, and then indistinguishable
+from the visible answer in every record the product keeps. The gate was unreadable as written, and
+the run was stopped rather than spend against a measurement that could not be read.
+
+Decision. `Usage` gains `reasoning_tokens: int = 0`, extracted in `LiteLLMProvider._extract_usage`
+and populated from the provider's own response. This is the same shape as the prompt-cache fields
+that already sit beside it: a subset view of a total the record already carries, broken out for
+visibility, defaulting 0 so a message persisted before the field existed loads forward-compatibly.
+OpenAI reports the count under `completion_tokens_details.reasoning_tokens` on the chat route and
+`output_tokens_details.reasoning_tokens` on the Responses route, and litellm's bridge does not
+normalize the second onto the first, so both shapes are probed exactly as the cache read above it
+probes Anthropic's key and then OpenAI's.
+
+The sent effort is deliberately NOT recorded. `Usage` is a response-side record, and the requested
+depth is a knob on the way out that the configuration already states; writing it back would only
+confirm what was asked for. What was missing is what happened, and the token count is that.
+
+What this licenses, and the limit. `reasoning_tokens > 0` on a call proves a reasoning depth was in
+effect on it. The converse does NOT hold, and this is the load-bearing caveat: the field measures
+reasoning DONE, not depth REQUESTED, so a zero is ambiguous between "the depth was none" and "the
+depth was low and the call was easy enough that the model spent nothing on it". Measured here, both
+directions, against the live tier — on a trivial prompt ("reply with the word ok") `low` and `none`
+were INDISTINGUISHABLE at 0 reasoning tokens, 4 completion tokens and identical cost; on a prompt
+that forces arithmetic they separated cleanly at 69 against 0, and again at 52 against 0 on a
+second pair. Any gate built on this field is therefore one-directional: a non-zero anywhere in a
+sample confirms the depth was live, and a sample of zeros confirms nothing on its own.
+
+Evidence that it reaches a reader, not merely a model. A green suite and a mutation proof bind at
+the producer and cannot tell you a consumer reads the field (guard-6374@ayoai-mind). So the chain
+was run end to end from provider-real output: two live calls at `low` and `none`, the `Usage`
+objects the real provider returned, through the real `Session.add_usage` and `SessionStore.save`,
+to a real file on disk, re-read as plain JSON the way a reader reads it. `reasoning_tokens` is
+present in every usage row, 52 on the discriminating case and 0 on the negative control, and
+`cumulative_usage()` sums it correctly. Total live spend across all probes: $0.00028.
+
+Tests: `tests/test_usage.py` — default 0, sums across a mixed total, a legacy record without the
+field still loads, and a model-dump round trip (the session store and the event stream both
+serialize `Usage` whole, so the field only reaches a trace row if it survives that).
+`tests/test_provider_edge.py` — the chat shape and the Responses shape each read, a positive
+control that an absent details block reads 0 rather than raising, junk coerced like every other
+count, and an end-to-end pin that the count survives onto `LLMResult.usage`. Two mutations, each
+with its kills attributed: deleting the Responses-shape probe turns 2 red, and dropping the field
+from the returned record turns 3 red.
+
+## ADR-0202: the plan-advance is unconditional, because a correctness fix does not get a switch
+
+Date: 2026-09-19. Supersedes the flag half of ADR-0168 lever N; the lever's behaviour is unchanged.
+
+Context. Lever N (ADR-0168) shipped behind `Settings.plan_autoadvance` / `ZAKCODE_PLAN_AUTOADVANCE`,
+opt-in at #433, flipped default-on at #439 after arm R. A second, quieter switch sat beside it:
+`ToolContext.plan_autoadvance` defaulted `False`, so the loop got the fix and a bare/embedder context
+did not. The flag was written as insurance for a regime arm R could not test — no model larger than
+35B is servable on the pod — and the opt-out was described as shipping "for any harmed caller".
+
+Decision. Both switches are deleted. `update_plan` advances a worked-on step on an unchanged resend,
+always, in every caller. There is no setting, no environment variable and no context field.
+
+Why, and this is a user directive, not a preference. Verbatim: *"I hate feature flags. I want it
+working one way, all the time. Feature flags cause confusion long term."* The argument holds on its
+own merits. Lever N is not a capability someone might reasonably not want — it is the fix for a
+measured defect in which a turn burns itself out resending an all-`pending` plan (arm M: a 35B did
+the work, then resent the same plan six times saying "The work is already done … I just need to mark
+the plan steps complete", and doom-looped). A flag on a defect fix means the defect is still shipped,
+reachable, and reportable; every future bug report about the planner then has to establish which of
+two behaviours produced it before anyone can read it.
+
+The dual default made that worse rather than safer. A `Settings`-wired loop advanced and a bare
+`ToolContext` did not, so the conservative path was the one with NO configuration surface — an
+invisible switch. The `ToolContext` half protected nothing real: `update_plan` returns early when
+`ctx.task_network is None`, so a genuinely bare loop never reaches the advance decision at all, and
+the only callers that did reach it with the flag off were tests asserting the pre-lever behaviour.
+
+What bounds an always-on advance is the TRIGGER, not a flag, and that was already true. The lever
+fires only when the submission is byte-identical to the one in force AND the current step is
+non-terminal AND something was actually worked on — evidence attached, or an outcome the model
+recorded. A model that emits `status: done` never meets the first condition; a plan nobody has
+touched never meets the third (`test_a_never_worked_plan_resent_unchanged_is_not_advanced` pins
+exactly that, and is the test that matters most now). A genuine reopen is an edit, not an unchanged
+resend, so the lever stays dormant through it — measured byte-identically in both arms at R3.
+
+The untested regime is answered differently now. Arm R's residual stands: no model above 35B was
+testable here, so "a large model is never harmed" is favourable-but-inferred, not measured. The
+remedy for that is to narrow the trigger with evidence if a large model is ever observed being
+harmed — not to hand every operator a knob against a defect fix on the strength of a hypothetical.
+Removing the flag also makes such a report legible, because there is only one behaviour to report on.
+
+Safety of the removal, checked rather than assumed. `Settings` uses `extra="ignore"`, so a stale
+`ZAKCODE_PLAN_AUTOADVANCE` in someone's environment is dropped silently instead of failing startup —
+the same property config.py already documents for deleted fields. Nothing in the fleet sets it: zero
+occurrences across the Mind framework, its deployment config and the live environment, the only hits
+being stale scratch worktrees of this repo.
+
+Four stale comments went with it, and finding them is half of why this ADR exists. `tools/base.py`,
+`agent/loop.py` (two sites) and `tasks.py` all still described the lever as "opt-in" or "inert
+unless" days after it became default-on, and `loop.py:6422` asserted something flatly false —
+"byte-identical by default". A comment that describes a flag's state is a comment with an expiry
+date; the ones here expired in three days. They now describe the mechanism (an advance sets
+`last_autoadvanced`; a harness-marked leaf is sticky) rather than a configuration that no longer
+exists, which is the form that cannot go stale. `docs/CONFIG.md` lost the row and
+`docs/DETERMINISM-REVIEW.md`'s lever-N entry now reads "unconditional".
+
+Tests. `tests/test_plan_autoadvance.py` keeps every behavioural test and drops the `autoadvance`
+parameter. The opt-out test is gone with the opt-out; what it pinned — a worked-on step resent
+unchanged going nowhere — survives in the never-worked test, which is the case that still exists.
+`test_the_shipped_default_is_on_and_a_bare_context_is_the_conservative_opt_out` is REPLACED, not
+deleted, by `test_there_is_no_switch_the_advance_is_unconditional`: it asserts the knob is absent
+from both `Settings` and `ToolContext.model_fields`, and that a context built with no `Settings` at
+all still advances. That is the regression pin — re-introducing either flag fails there. The
+loop-level doom-guard test loses its OFF control arm, which was a control for a flag rather than for
+the behaviour; its positive assertion is unchanged and still fails if the guard's reset regresses,
+because the frontier walk dies partway and `is_complete()` goes False.
+
+One branch died with the flag, and the suite found it rather than a reading of the code. Removing
+the switch turned red a test in `test_plan_unchanged.py` — `test_the_rail_names_a_recorded_outcome_
+whose_status_never_moved`, wrapped here for width — that pinned the unchanged rail's "Step N already carries an outcome but its
+status is still 'pending'" prefix. That shape (outcome recorded, status left pending) is now
+ADVANCED rather than described, so the prefix can no longer be reached: `TaskNetwork.current()`
+returns an `in_progress` leaf or a non-terminal non-`blocked` one, `_TERMINAL` is `{done, cancelled}`
+and `TaskStatus` has five members, so `current().status` is always `pending` or `in_progress` —
+exactly the set the advance fires on. `_OUTCOME_WITHOUT_STATUS` and its branch are deleted and the
+rail is left with the one hint it can still emit. The test is REPOINTED at the advance rather than
+dropped, so the file still covers that shape.
+
+Measured before deleting, not reasoned: all 25 status pairs of a two-step plan carrying an outcome,
+zero of which reach the rail with an outcome on the current step. The first run of that probe
+reported NINE, because a bare `python` imports the editable install from the main checkout rather
+than the worktree under test — the same class of mistake as reading a green suite from the wrong
+tree. `PYTHONPATH` pinned to the worktree's `src`, with the import path and the field's absence
+printed beside the result, is what made the second run evidence.
+
+Mutation proofs, each with its kills attributed. Re-adding `ToolContext.plan_autoadvance` as an
+unused field kills exactly one test — `test_there_is_no_switch_the_advance_is_unconditional` — which
+is the point of that pin: the flag's reappearance fails before it can change any behaviour. Re-gating
+the advance on it kills eight, across the advance surface and the repointed rail test. Full gate at
+the tip: ruff format and check clean, mypy clean on 154 files, 4344 passed / 9 skipped.

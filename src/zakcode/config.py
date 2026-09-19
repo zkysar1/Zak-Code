@@ -27,7 +27,11 @@ from dotenv import dotenv_values, load_dotenv
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from zakcode.providers.routing import ZAKPICK_CATEGORIES, ZakpickModel
+from zakcode.providers.routing import (
+    ZAKPICK_CATEGORIES,
+    ZakpickModel,
+    normalise_reasoning_effort,
+)
 
 
 class PermissionTier(IntEnum):
@@ -150,7 +154,8 @@ class Settings(BaseSettings):
         description=(
             "Per-category model assignments for default_model='zakpick' (JSON; keys "
             "quick_code | deep_code | summarize | plan | delegate | classify; each value "
-            "{model, source}, source defaults to 'openai'). Unset categories use OpenAI defaults."
+            "{model, source, thinking?, reasoning_effort?, context_window?}, source defaults "
+            "to 'openai'). Unset categories use OpenAI defaults."
         ),
     )
     # None (the default) sends NO temperature, so every backend runs at its own intended
@@ -160,6 +165,32 @@ class Settings(BaseSettings):
     # what a field deployment hit (2026-08-26, ADR-0018). Set a value only when you truly
     # need one; it is then sent verbatim to every model.
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Reasoning DEPTH for a reasoning model whose backend takes a level (ADR-0182): litellm's
+    # ``reasoning_effort`` — none / minimal / low / medium / high / xhigh — which litellm maps
+    # per backend (a thinkingLevel on Gemini 3+, a thinkingBudget on Gemini 2.5, OpenAI's own
+    # reasoning_effort on the gpt-5 family, a thinking budget on Claude, ``think`` on Ollama).
+    # Unset (the default) sends nothing, so every model runs at its own default depth. Sent
+    # ONLY where litellm flags the model reasoning-capable; against any other model it is
+    # inert — never a 400 — and the provider logs once that it is not sent. A per-category
+    # ``zakpick_models[...].reasoning_effort`` overrides this for that category.
+    #
+    # A DEPTH, not the on/off switch: a category's ``thinking: false`` (and the loop's
+    # reasoning-overflow retry, ADR-0056, which switches thinking off for one request) wins
+    # over it for that request. A self-hosted OpenAI-compatible server (ZAKCODE_API_BASE)
+    # does not take this knob — litellm's generic path drops it before the request — so there
+    # the server's own body form goes in ``extra_body`` (llama.cpp serving gpt-oss:
+    # {"chat_template_kwargs": {"reasoning_effort": "high"}}).
+    #
+    # Field origin: a Vertex/Gemini 3 deployment asked how to raise reasoning and no
+    # configurable path existed (2026-09-16) — the level is litellm's real Gemini knob.
+    reasoning_effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning depth for reasoning models (litellm reasoning_effort): none | minimal | "
+            "low | medium | high | xhigh. Unset = the model's own default. Sent only where "
+            "litellm flags the model reasoning-capable; inert elsewhere."
+        ),
+    )
     # Omit the session id from the system prompt's Environment block. Default OFF: ADR-0072 put
     # the id there deliberately, so a model asked "which session are you?" can answer.
     # Turn it ON for REPRODUCIBLE runs. Measured 2026-09-12 (ADR-0157): with temperature pinned
@@ -323,7 +354,7 @@ class Settings(BaseSettings):
     # invocation is operator-controlled and never throttled. 0 (default) = unlimited, so behavior
     # is unchanged.
     skill_invocation_budget: int = Field(
-        default=0, ge=0, description="Max model-driven use_skill invocations per turn (0 = off)."
+        default=0, ge=0, description="Max model-driven Skill invocations per turn (0 = off)."
     )
     # Fold the workspace README.md into the agent's project-context block (alongside the discovered
     # AGENTS.md / CLAUDE.md / ZAK.md guides). The guides are always loaded; this toggles ONLY the
@@ -378,7 +409,12 @@ class Settings(BaseSettings):
     # 6-second budget killed a 42-iteration run in the field). Timeouts and
     # provider-rejected tool calls retry a fixed _MAX_INTERRUPT_RETRIES times.
     # Other provider errors are never retried — the turn ends gracefully
-    # (stop_reason="provider_error") with the session persisted and resumable.
+    # (stop_reason="provider_error") with the session persisted and resumable,
+    # unless a TURN_END (Stop) hook vetoes that end: a perpetual-loop framework
+    # may re-enter a provider-failed turn up to six consecutive times, paced
+    # 15 s doubling to 300 s (ADR-0181; _MAX_PROVIDER_ERROR_VETOES). A request
+    # field the provider refuses BY NAME is dropped for the session and the call
+    # re-issued once, inside the provider (ADR-0181) — not a retry knob either.
     # The loop is still THE retry mechanism: litellm's own ``num_retries`` stays 0
     # so two layers can never compound (see the Provider ABC docstring). NOTE:
     # because this Settings model uses extra="ignore", a deleted field passed by
@@ -427,6 +463,34 @@ class Settings(BaseSettings):
         default=None,
         gt=0,
         description="Wall-clock ceiling (seconds) for the whole run; None = unbounded.",
+    )
+    # The SECOND bound, and it answers a different question. `run_max_duration` is a
+    # PATIENCE CAP — total elapsed duration, anchored once at run start. This is a
+    # LIVENESS CLOCK — time since the last say, re-stamped on every one. A member who
+    # walks away mid-conversation is bounded by neither `request_timeout` (one model
+    # call) nor `max_cost_usd` (an idle vessel spends nothing and bills wall-clock
+    # anyway); the cap alone makes them pay the whole price they agreed to for a
+    # conversation that ended twenty minutes in.
+    #
+    # THIS IS NOT THE AUTO-EXTEND KNOB THE RULING ABOVE REFUSES, and the distinction is
+    # one-directional rather than a matter of degree: this value can only ever end a run
+    # EARLIER than it would otherwise have ended. It cannot lengthen a run, cannot
+    # re-stamp `run_max_duration`, and is not consulted while a turn is in flight. A
+    # misconfiguration here costs a conversation, never an invoice — which is the exact
+    # inverse of the failure the no-knobs ruling protects against.
+    #
+    # It also stays strictly INSIDE the host's own reaper rather than replacing it: the
+    # environment server stops an idle vessel through the seeded file world's tick at
+    # roughly 33 minutes (idle cutoff + the streaming reaper). Nothing here publishes on
+    # that channel or touches that dial — this fires first, or not at all, and the host
+    # bound remains the backstop it always was.
+    run_idle_timeout: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Seconds without a say before the run stops itself (reason `idle`); "
+            "None = no idle stop. Measures time since the last say, not total duration."
+        ),
     )
     run_consolidation_reserve: float = Field(
         default=0.0,
@@ -564,20 +628,6 @@ class Settings(BaseSettings):
             "Makefile's lint/check/test targets, else a pyproject ruff config (review lever L4)."
         ),
     )
-    plan_autoadvance: bool = Field(
-        default=True,
-        description=(
-            "When the model resends the plan UNCHANGED and the current step has already been "
-            "worked on (evidence attached or an outcome recorded) but left non-terminal, mark that "
-            "step done and advance — the harness does what a weak model demonstrably will not, "
-            "instead of asking again in words (review lever N, the update_plan doom loop). "
-            "DEFAULT-ON since arm R (ADR-0168): measured byte-identical when it does not fire "
-            "(R1), and on zds-qwen3.8-27b it broke doom runs (doom 2/6 -> 0/6, R2) without harming "
-            "a genuine reopen (a reopen is an edit, not an unchanged resend, so the lever stays "
-            "dormant during it — R3). Set False to opt out (e.g. a >35B model, the untested "
-            "regime)."
-        ),
-    )
     # Plan-first gate (R5, opt-in, OFF by default). When true, the harness will not run a MUTATING
     # tool (write/edit/shell) until the model has laid out a plan with update_plan — "plan before
     # you act", the harness-enforced-planning pole. Read-only investigation is never gated, and the
@@ -643,14 +693,14 @@ class Settings(BaseSettings):
     # exfil residual (see docs/RISKS.md). Comma/space/JSON list from the env, like allowed_models.
     web_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="If non-empty, web_fetch may only reach these domains (and their subdomains).",
+        description="If non-empty, WebFetch may only reach these domains (and their subdomains).",
     )
     # Per-call confirmation gate for web_fetch egress (the other named hardening for the
     # public-egress residual). When true, every web_fetch is escalated to a confirmation prompt
     # (session-grantable, like a write); in ``deny`` mode it is blocked outright. Default off.
     web_fetch_confirm: bool = Field(
         default=False,
-        description="Require operator confirmation before each web_fetch (egress gate).",
+        description="Require operator confirmation before each WebFetch (egress gate).",
     )
     # Named secrets for {{secret:NAME}} substitution (tools/builtins/_secrets.py). These are
     # PATHS, not secrets — the values stay in the pointed-at file, consistent with the "secrets
@@ -751,6 +801,13 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _check_reasoning_effort(cls, value: object) -> str | None:
+        """Refuse a misspelled level at load (naming the accepted ones) rather than silently
+        running every model at its default depth."""
+        return normalise_reasoning_effort(value)
+
     @field_validator("zakpick_models", mode="after")
     @classmethod
     def _check_zakpick_models(cls, value: dict[str, ZakpickModel]) -> dict[str, ZakpickModel]:
@@ -827,7 +884,7 @@ class Settings(BaseSettings):
     # config change, never a code change. (web_fetch needs no backend — it is plain HTTP.)
     search_backend: Literal["ddgs", "tavily", "searxng"] = Field(
         default="ddgs",
-        description="web_search backend: ddgs (default, no key) | tavily | searxng.",
+        description="WebSearch backend: ddgs (default, no key) | tavily | searxng.",
     )
     searxng_url: str | None = Field(
         default=None,

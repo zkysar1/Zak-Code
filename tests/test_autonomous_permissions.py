@@ -153,7 +153,7 @@ def test_grant_persistence(tmp_path) -> None:
     assert len(grants) == 1
     record = grants[0]
     assert record["kind"] == "allow"
-    assert record["tool"] == "write_file"
+    assert record["tool"] == "Write"  # canonical (ADR-0190), whatever spelling the spec carried
     assert record["args_scope"] == "*"
     assert record["mode_at_grant"] == "ask"
     assert record["timestamp"]  # ISO-8601, non-empty

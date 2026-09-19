@@ -45,8 +45,10 @@ bad; hanging a paid run is worse.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import logging
 import os
+import time
 from pathlib import Path
 
 from zakcode.session.framework_signal import (
@@ -76,6 +78,16 @@ AGENT_MODE_FILENAME = "agent-mode"
 #: Where a stopped run lands: user-directed, reconciliation-ready, loop off.
 DEFAULT_STOP_TARGET_MODE = "assistant"
 
+#: First line this module writes INTO ``stop-requested`` after the framework's setter
+#: has created it. The framework's own writers leave the marker EMPTY, so the line is
+#: this sidecar's signature, and the framework's /start Step 2.5 guard
+#: (``session.py::live_stop_decision``) keeps a signed signal WITHOUT consulting time.
+#: Why time was not enough (measured 2026-09-17, prod vessel debc47de, run B): the
+#: raise landed at 20:29:29, /start wrote its binding — the guard's notion of "session
+#: start" — at 20:31:43 after two minutes of onboarding on a slow model, and the guard
+#: read mtime < started_at as "stale" and deleted the run's only ending.
+SIDECAR_RAISE_MARKER = "raised_by: vessel-sidecar"
+
 #: The modes a graceful stop can land in. A mind whose loop still runs reads ``autonomous``.
 _STOPPED_MODES = frozenset({"assistant", "reader"})
 
@@ -87,6 +99,7 @@ __all__ = [
     "DEFAULT_STOP_TARGET_MODE",
     "SIGNAL_SET_SCRIPT",
     "SIGNAL_SET_TIMEOUT_S",
+    "SIDECAR_RAISE_MARKER",
     "STOP_CHECKPOINT_FILENAME",
     "STOP_REQUESTED_SIGNAL",
     "STOP_TARGET_MODE_FILENAME",
@@ -94,6 +107,8 @@ __all__ = [
     "abandon_framework_stop",
     "framework_stop_complete",
     "request_framework_stop",
+    "retire_expired_sidecar_stop",
+    "sidecar_raise_time",
 ]
 
 
@@ -150,8 +165,95 @@ def request_framework_stop(
         _revert_target_mode(mode_file)
         return False
 
+    _sign_signal(signal_file)
     logger.info("framework stop requested for agent %s (target mode %s)", agent, target_mode)
     return True
+
+
+def _sign_signal(signal_file: Path) -> None:
+    """Write the sidecar's signature into the marker the setter just created.
+
+    Best effort: the signal is already raised, and an unsigned one still works
+    through the framework's mtime rule, so a write failure is logged, never raised.
+
+    NEVER CREATES the marker. The ask is live from the moment the setter touches it, and a
+    mind that reads it at once can consume it (D3 removes the file) before this line runs.
+    ``Path.write_text`` creates, so it put a consumed ``stop-requested`` BACK: the raise
+    reported success, ``framework_stop_complete`` read "not yet" for the whole grace, and a
+    run whose mind had finished its stop beat on until the window closed. Measured
+    2026-09-18 on windows-latest as a bare TimeoutError in the R4 end-to-end test (30 s
+    grace against a 10 s wait), then reproduced with no timing at all by consuming the ask
+    between the setter's verification and this write. Opened without ``O_CREAT``, a
+    consumed ask stays consumed.
+    """
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        descriptor = os.open(signal_file, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"{SIDECAR_RAISE_MARKER}\nraised_at: {stamp}\n")
+    except FileNotFoundError:
+        logger.info(
+            "framework stop: %s was consumed before it could be signed; leaving it consumed",
+            signal_file,
+        )
+    except OSError as exc:
+        logger.warning("framework stop: raised but could not sign %s (%s)", signal_file, exc)
+
+
+def sidecar_raise_time(workspace_root: str | os.PathLike[str], agent: str) -> float | None:
+    """Epoch seconds of the signed raise on disk for ``agent``, or None when the signal is
+    absent, unsigned, or carries no parseable ``raised_at``."""
+    if not agent:
+        return None
+    try:
+        text = (framework_session_dir(workspace_root, agent) / STOP_REQUESTED_SIGNAL).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != SIDECAR_RAISE_MARKER:
+        return None
+    for line in lines[1:]:
+        if line.startswith("raised_at:"):
+            raw = line.split(":", 1)[1].strip()
+            try:
+                return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+    return None
+
+
+def retire_expired_sidecar_stop(
+    workspace_root: str | os.PathLike[str],
+    agent: str,
+    *,
+    grace_s: float,
+    now: float | None = None,
+) -> bool:
+    """At server start: retire a SIGNED stop whose grace ran out before this process began.
+
+    A signed signal never reads as stale to the framework (that is the point of the
+    signature), so its lifetime has to be owned here. ``abandon_framework_stop`` already
+    retires the pair when THIS process's grace expires; this is the same decision for a
+    pair a previous process left behind — a sidecar that died between its raise and its
+    retirement. Only a raise older than ``grace_s`` qualifies: the docstring rule
+    "call it only where the grace is already spent" holds, and a fresher one (a restart
+    inside the window) is left for the mind. Returns True when a pair was retired.
+    """
+    raised = sidecar_raise_time(workspace_root, agent)
+    if raised is None:
+        return False
+    current = time.time() if now is None else now
+    if current - raised < grace_s:
+        return False
+    logger.warning(
+        "framework stop for agent %s was raised %.0fs ago by a previous sidecar and never "
+        "consumed -- retiring it at startup rather than letting this run open on it",
+        agent,
+        current - raised,
+    )
+    return abandon_framework_stop(workspace_root, agent)
 
 
 def framework_stop_complete(workspace_root: str | os.PathLike[str], agent: str) -> bool:

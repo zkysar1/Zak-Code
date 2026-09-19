@@ -3,13 +3,14 @@
 Consumes a stream of :class:`~zakcode.events.AgentEvent` objects and renders them
 with ``rich`` in the Zak look: a two-level marker grammar (``●`` block / ``└``
 receipt) on a fixed column grid, a continuous ``│`` rail binding every result body
-to its block (red under a failed tool), synthesized receipts with durations from an
-injectable monotonic clock, and a state-colored turn receipt::
+to its block (red under a failed tool), synthesized receipts that open with the
+outcome mark and the verb (durations from an injectable monotonic clock), and a
+state-colored turn receipt stamped with the wall clock (ADR-0185)::
 
     ● Read(src/config.py)
-      └ 134 lines · 0.1s
+      └ ✓ Read 134 lines · 0.1s
 
-    ● done · 3 iterations · 15.3k tokens · $0.023 · 41.2s
+    ● done · 3 iterations · 15.3k tokens · $0.023 · 41.2s · 14:23
 
 No agent logic, no network, no provider imports — feed a fake async generator into
 :meth:`StreamRenderer.render` over a ``Console`` backed by ``io.StringIO`` to test
@@ -97,12 +98,26 @@ _LIST_PREVIEW_LINES = 5
 #: Max error-detail rail rows under a failed tool's receipt.
 _ERROR_DETAIL_LINES = 8
 
-#: Tool args middle-truncate at this many chars; paths keep their tail instead.
-_ARG_LIMIT = 64
+#: Tool args middle-truncate at this many chars; paths keep their tail instead. A
+#: command keeps more (ADR-0185): the flags at its tail are what a reader checks.
+_ARG_LIMIT = 96
+_COMMAND_LIMIT = 160
 
 #: Map a tool name to the bold display name on the call line; unknown tools
 #: title-case their parts (``some_tool`` -> ``SomeTool``).
 _DISPLAY_NAME = {
+    # Canonical names since ADR-0190 (Claude Code's); the snake_case rows below are the
+    # pre-0190 aliases, kept so a stored transcript from an older session renders the same.
+    "Read": "Read",
+    "Write": "Write",
+    "Edit": "Edit",
+    "LS": "List",
+    "Glob": "Glob",
+    "Grep": "Search",
+    "Bash": "Run",
+    "WebFetch": "Fetch",
+    "WebSearch": "WebSearch",
+    "ScheduleWakeup": "WakeUp",
     "read_file": "Read",
     "write_file": "Write",
     "edit_file": "Edit",
@@ -130,6 +145,9 @@ _STOP_LABEL = {
     "gave_up": "stopped {dash} gave up (no output)",
     "recipe_stalled": "stopped {dash} recipe stalled",
     "skill_too_large": "stopped {dash} skill too large for this model's window",
+    "veto_stall": (
+        "stopped {dash} re-entry stalled: the stop hook kept asking for a skill that never ran"
+    ),
     "awaiting_user": "waiting for you {dash} answer to continue",
     "restart": "restarting {dash} a newer build is installed; this session resumes there",
 }
@@ -230,8 +248,8 @@ def display_call(name: str, arguments: object, *, glyphs: dict[str, str] | None 
     """The call headline: bold display name + dim parens + condensed argument.
 
     Shared by the renderer's tool-call line and the permission panel so the two can
-    never drift. Commands get a dim ``$ `` prefix; args middle-truncate at 64 chars;
-    paths truncate from the left so the filename survives.
+    never drift. Commands get a dim ``$ `` prefix and middle-truncate at 160 chars;
+    other args at 96; paths truncate from the left so the filename survives.
     """
     g = glyphs or _env_glyphs()
     is_command, args = _condense_args(arguments, g)
@@ -252,7 +270,7 @@ def _condense_args(arguments: object, g: dict[str, str]) -> tuple[bool, str]:
     if isinstance(arguments, dict):
         command = arguments.get("command")
         if isinstance(command, str) and command:
-            return True, _squeeze_middle(_one_line(command), _ARG_LIMIT, ellipsis)
+            return True, _squeeze_middle(_one_line(command), _COMMAND_LIMIT, ellipsis)
         pattern = arguments.get("pattern")
         if isinstance(pattern, str) and pattern:
             # Search/Glob calls read "pattern in scope" when a scope is given.
@@ -292,11 +310,17 @@ class StreamRenderer:
     """
 
     def __init__(
-        self, console: Console | None = None, clock: Callable[[], float] | None = None
+        self,
+        console: Console | None = None,
+        clock: Callable[[], float] | None = None,
+        wall: Callable[[], float] | None = None,
     ) -> None:
         self.console = console if console is not None else Console()
         self._g = resolve_glyphs(self.console)
         self._clock: Callable[[], float] = clock if clock is not None else time.monotonic
+        #: Wall clock (epoch seconds) for the footer's ``HH:MM`` stamp — injectable like
+        #: the monotonic clock so tests never read the real time of day.
+        self._wall: Callable[[], float] = wall if wall is not None else time.time
         self._text_buffer = ""
         self._usage = Usage()
         #: tool_use_id -> display name (receipts are synthesized per display name).
@@ -397,12 +421,18 @@ class StreamRenderer:
                 # model blank lines never print directly; runs collapse to one gap
                 self._gap()
                 continue
+            rendered = _inline_md(line, self._g)
+            if rendered is None:
+                # A horizontal rule: the transcript draws no rules (docs/UX.md); the
+                # section break it means is the gap itself.
+                self._gap()
+                continue
             if not self._assistant_marked:
                 self._gap()
                 self._out(
                     block(
                         self.console,
-                        _inline_md(line, self._g),
+                        rendered,
                         marker=self._g["marker"],
                         marker_style="assistant.marker",
                     )
@@ -411,7 +441,7 @@ class StreamRenderer:
             else:
                 if line.lstrip().startswith("#"):
                     self._gap()  # headings force a blank line above
-                self._out(block(self.console, _inline_md(line, self._g)))
+                self._out(block(self.console, rendered))
             self._last_block = "prose"
 
     def _print_code(self, lang: str, body: str) -> None:
@@ -476,13 +506,13 @@ class StreamRenderer:
         if name == "Todo" and not event.is_error:
             self._last_plan_key = _plan_key(lines)
 
-        summary, rows = self._synthesize_result(name, lines, is_error=event.is_error)
-        if not attached:
-            head = Text.assemble(
-                ((name or "Tool") + " ", "result.summary"),
-                (self._g["dot"] + " ", "result.summary"),
-            )
-            head.append_text(summary)
+        summary, rows = self._synthesize_result(name or "Tool", lines, is_error=event.is_error)
+        if not attached and event.is_error:
+            # A success receipt names its tool in the verb (ADR-0185); a failure's first
+            # line does not, so a detached failure still says whose it is.
+            head = Text.assemble((self._g["fail"] + " ", "err"), (name or "Tool", "err"))
+            head.append(f" {self._g['dot']} ", style="result.summary")
+            head.append_text(summary[2:])
             summary = head
         if duration:
             summary.append(f" {self._g['dot']} {duration}", style="result.summary")
@@ -518,12 +548,10 @@ class StreamRenderer:
         self._flush_remaining_text()
         self._gap()
         summary, rows = self._synthesize_result("Todo", lines, is_error=False)
-        head = Text.assemble(("Plan ", "result.summary"), (self._g["dot"] + " ", "result.summary"))
-        head.append_text(summary)
         self._out(
             block(
                 self.console,
-                head,
+                summary,
                 marker=self._g["elbow"],
                 marker_style="result.connector",
                 indent=4,
@@ -536,7 +564,22 @@ class StreamRenderer:
     def _synthesize_result(
         self, name: str, lines: list[str], *, is_error: bool
     ) -> tuple[Text, list[Text]]:
-        """The ``└`` receipt summary + the rail rows beneath it, per display name."""
+        """The ``└`` receipt summary + the rail rows beneath it, per display name.
+
+        Every receipt opens with its outcome mark and reads as a sentence that names the
+        tool (ADR-0185): ``✓ Read 134 lines``, ``✓ Found 3 matches``, ``✓ Ran · 5 lines``,
+        ``✗ exited with code 1`` — so the eye never has to travel up to learn what happened.
+        """
+        summary, rows = self._result_body(name, lines, is_error=is_error)
+        if is_error:
+            return summary, rows
+        marked = Text.assemble((self._g["ok"] + " ", "ok"))
+        marked.append_text(summary)
+        return marked, rows
+
+    def _result_body(
+        self, name: str, lines: list[str], *, is_error: bool
+    ) -> tuple[Text, list[Text]]:
         g = self._g
         n = len(lines)
 
@@ -555,6 +598,7 @@ class StreamRenderer:
 
         if name in ("Run", "Fetch"):
             label = _plural(n, "line") if n else "no output"
+            label = f"Fetched {label}" if name == "Fetch" else f"Ran {g['dot']} {label}"
             if n > _RUN_CAP:
                 hidden = n - _RUN_HEAD - _RUN_TAIL
                 rows = [Text(ln, style="result.output") for ln in lines[:_RUN_HEAD]]
@@ -570,7 +614,7 @@ class StreamRenderer:
             return Text(label, style="result.summary"), rows
 
         if name == "Search":
-            summary = Text(_plural(n, "match", "matches"), style="result.summary")
+            summary = Text(f"Found {_plural(n, 'match', 'matches')}", style="result.summary")
             rows = [Text(ln, style="result.output") for ln in lines[:_LIST_PREVIEW_LINES]]
             if n > _LIST_PREVIEW_LINES:
                 more = n - _LIST_PREVIEW_LINES
@@ -578,7 +622,7 @@ class StreamRenderer:
             return summary, rows
 
         if name == "Glob":
-            summary = Text(_plural(n, "file"), style="result.summary")
+            summary = Text(f"Found {_plural(n, 'file')}", style="result.summary")
             rows = [Text(ln, style="result.output") for ln in lines[:_LIST_PREVIEW_LINES]]
             if n > _LIST_PREVIEW_LINES:
                 more = n - _LIST_PREVIEW_LINES
@@ -590,11 +634,11 @@ class StreamRenderer:
             if diff_rows is not None:
                 adds = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
                 dels = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
-                return Text(f"+{adds} -{dels}", style="result.summary"), diff_rows
-            return Text(_plural(n, "line"), style="result.summary"), []
+                return Text(f"Updated +{adds} -{dels}", style="result.summary"), diff_rows
+            return Text(f"Edited {g['dot']} {_plural(n, 'line')}", style="result.summary"), []
 
         if name == "Write":
-            return Text("written", style="result.summary"), []
+            return Text("Written", style="result.summary"), []
 
         if name == "Todo":
             items = [ln for ln in lines if ln.strip()]
@@ -606,14 +650,14 @@ class StreamRenderer:
             # this list kept a finished plan from collapsing (measured 2026-09-05, ADR-0110).
             steps = [ln.strip() for ln in lines if _GLYPH_ROW_RE.match(ln.strip())]
             if steps and all(s.startswith(("[x] ", "[-] ")) for s in steps):
-                collapsed = f"complete {g['dot']} {_plural(len(steps), 'step')}"
+                collapsed = f"Plan complete {g['dot']} {_plural(len(steps), 'step')}"
                 return Text(collapsed, style="result.summary"), []
             if steps:
                 # A PARTIAL plan collapses too (ADR-0124): progress plus the step in hand.
                 # Forty rows on every edit buried the work under the checklist; the full
                 # plan is one `/todo` away.
                 head = _PLAN_HEADER_RE.search("\n".join(lines))
-                label = (
+                label = f"Plan {g['dot']} " + (
                     f"{head.group(1)}/{head.group(2)} steps"
                     if head
                     else _plural(len(steps), "step")
@@ -627,10 +671,16 @@ class StreamRenderer:
                     label += f" {g['dot']} current: {_plan_step_label(current)[:80]}"
                 return Text(label, style="result.summary"), []
             rows = [self._todo_row(ln) for ln in lines]
-            return Text(_plural(len(items), "item"), style="result.summary"), rows
+            return Text(
+                f"Plan {g['dot']} {_plural(len(items), 'item')}", style="result.summary"
+            ), rows
 
-        # Read / List / unknown tools: a count, no preview.
-        return Text(_plural(n, "line"), style="result.summary"), []
+        # Read / List: a verb and a count, no preview. Any other tool: its name and a count.
+        if name == "Read":
+            return Text(f"Read {_plural(n, 'line')}", style="result.summary"), []
+        if name == "List":
+            return Text(f"Listed {_plural(n, 'entry', 'entries')}", style="result.summary"), []
+        return Text(f"{name} {g['dot']} {_plural(n, 'line')}", style="result.summary"), []
 
     def _todo_row(self, line: str) -> Text:
         # Format-tolerant: only "[x] " / "[ ] " prefixes glyph-map; others pass through.
@@ -717,6 +767,9 @@ class StreamRenderer:
                     tokens_item,
                     _fmt_cost(usage.cost_usd),
                     _fmt_duration(self._clock() - self._turn_start),
+                    # When the turn ended, wall clock (ADR-0185): with the operator's line
+                    # stamped too, every turn shows its time bracket.
+                    time.strftime("%H:%M", time.localtime(self._wall())),
                 )
             ),
             style="footer",
@@ -769,17 +822,40 @@ class StreamRenderer:
         return label, "warn"
 
 
-def _inline_md(line: str, glyphs: dict[str, str]) -> Text:
-    """Render one prose line with lightweight inline markdown.
+#: A horizontal rule on a line of its own: the section break it means is a gap.
+_RULE_RE = re.compile(r"^(?:-{3,}|\*{3,}|_{3,})$")
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+#: Inline span delimiters, longest first. A span needs a word boundary on both sides
+#: (``snake_case``, ``2*3*4`` and ``a*b*c`` stay literal), no space inside the delimiters
+#: (``2 * 3``), a letter or digit in its content (``*/*``, ``**/*.py`` stay literal), no
+#: file extension after the closer (``__init__.py``), never its own delimiter inside
+#: (``**/*.py and src/**/*.py`` cannot pair across the globs), and ``__`` never wraps a bare
+#: identifier (``__str__``) — in a coding transcript those are names, not emphasis
+#: (fresh-eyes review of ADR-0185).
+_SPAN_TOKENS: tuple[tuple[str, str], ...] = (
+    ("***", "bold italic"),
+    ("**", "bold"),
+    ("__", "bold"),
+    ("~~", "md.strike"),
+    ("*", "md.italic"),
+    ("_", "md.italic"),
+)
+
+
+def _inline_md(line: str, glyphs: dict[str, str]) -> Text | None:
+    """Render one prose line with lightweight inline markdown, or ``None`` for a rule.
 
     Handles list bullets (``- ``/``* `` -> the bullet glyph), ATX headings (``##`` ->
-    ``md.h``), ``**bold**`` and ``` `code` ```. Built by hand with ``Text.append`` so
-    model text can never inject rich console markup (the markup=False safety we rely
-    on).
+    ``md.h``), block quotes (``> `` -> ``md.quote``), a lone rule (``---`` -> None, the
+    caller draws the gap) and the inline spans of :func:`_inline_spans`. Built by hand
+    with ``Text.append`` so model text can never inject rich console markup (the
+    markup=False safety we rely on).
     """
     stripped = line.lstrip(" ")
     lead = line[: len(line) - len(stripped)]
     out = Text(lead)
+    if _RULE_RE.match(stripped.rstrip()):
+        return None
     if stripped[:2] in ("- ", "* "):
         out.append(glyphs["bullet"] + " ", style="md.bullet")
         out.append_text(_inline_spans(stripped[2:]))
@@ -789,27 +865,73 @@ def _inline_md(line: str, glyphs: dict[str, str]) -> Text:
         body.stylize("md.h")
         out.append_text(body)
         return out
+    if stripped.startswith("> "):
+        body = _inline_spans(stripped[2:])
+        body.stylize("md.quote")
+        out.append_text(body)
+        return out
     out.append_text(_inline_spans(stripped))
     return out
 
 
+def _span_at(text: str, i: int) -> tuple[Text, int] | None:
+    """The styled span opening at ``text[i]`` and the index after it, else None."""
+    ch = text[i]
+    if ch == "`":
+        end = text.find("`", i + 1)
+        return (Text(text[i + 1 : end], style="md.code"), end + 1) if end != -1 else None
+    if ch == "[":
+        m = _LINK_RE.match(text, i)
+        if m is None:
+            return None
+        label, url = m.group(1), m.group(2)
+        span = Text(label, style="md.link")
+        if url != label:
+            span.append(f" ({url})", style="md.link.url")
+        return span, m.end()
+    for token, style in _SPAN_TOKENS:
+        if not text.startswith(token, i):
+            continue
+        start = i + len(token)
+        end = text.find(token, start)
+        after = end + len(token)
+        content = text[start:end]
+        if (
+            end <= start  # unclosed, or nothing between the delimiters
+            or text[start].isspace()
+            or text[end - 1].isspace()
+            or not any(c.isalnum() for c in content)
+            or token[0] in content  # ``**/*.py and src/**/*.py``: never pair across a glob
+            or (i > 0 and (_word_char(text[i - 1]) or text[i - 1] == token[0]))
+            or (after < len(text) and (_word_char(text[after]) or text[after] == token[0]))
+            or (after + 1 < len(text) and text[after] == "." and text[after + 1].isalnum())
+            or (token == "__" and content.replace("_", "").isalnum())
+        ):
+            continue  # a shorter token may still open here (``**/*.py`` -> ``*``)
+        return Text(content, style=style), after
+    return None
+
+
+def _word_char(c: str) -> bool:
+    return c.isalnum() or c == "_"
+
+
 def _inline_spans(text: str) -> Text:
-    """Parse non-nested ``**bold**`` and ``` `code` ``` spans into a styled Text."""
+    """Parse non-nested inline markdown into a styled Text (ADR-0185).
+
+    ``**bold**`` / ``__bold__``, ``*italic*`` / ``_italic_`` (word-bounded, so
+    ``snake_case`` and ``2 * 3`` stay literal), ``~~strike~~``, ``[label](url)`` (label
+    underlined, the url dim in parens) and ``` `code` ```. Built by hand with
+    ``Text.append`` so model text can never inject rich console markup.
+    """
     out = Text()
     i, n = 0, len(text)
     while i < n:
-        if text.startswith("**", i):
-            end = text.find("**", i + 2)
-            if end != -1:
-                out.append(text[i + 2 : end], style="bold")
-                i = end + 2
-                continue
-        if text[i] == "`":
-            end = text.find("`", i + 1)
-            if end != -1:
-                out.append(text[i + 1 : end], style="md.code")
-                i = end + 1
-                continue
+        span = _span_at(text, i) if text[i] in "`[*_~" else None
+        if span is not None:
+            out.append_text(span[0])
+            i = span[1]
+            continue
         out.append(text[i])
         i += 1
     return out

@@ -9,10 +9,13 @@ NEVER mutates the session (the body rides back as the tool result, not a mid-tur
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from zakcode import Agent
 from zakcode.agent.budget import IterationBudget
@@ -27,6 +30,7 @@ from zakcode.providers.base import (
     ProviderStreamEvent,
     StreamDone,
     StreamTextDelta,
+    StreamToolCallDelta,
     ToolCall,
 )
 from zakcode.tools.base import SkillLoad, ToolContext, ToolRegistry
@@ -70,7 +74,7 @@ async def test_use_skill_returns_body_as_result(tmp_path: Path) -> None:
     assert res.is_error is False
     assert res.output == "DO THE THING"  # the body IS the tool result
     assert res.data == {"skill": "alpha"}
-    assert res.hint and "use_skill" in res.hint  # nudges the chain
+    assert res.hint and "Skill" in res.hint  # nudges the chain
 
 
 async def test_long_skill_body_gets_the_decompose_hint(tmp_path: Path) -> None:
@@ -84,7 +88,7 @@ async def test_long_skill_body_gets_the_decompose_hint(tmp_path: Path) -> None:
     assert res.data == {"skill": "alpha", "decompose": True}
     assert res.hint is not None
     assert "decompose" in res.hint and "update_plan" in res.hint
-    assert "use_skill" in res.hint  # the chaining nudge survives
+    assert "Skill" in res.hint  # the chaining nudge survives
 
 
 async def test_short_skill_body_keeps_the_plain_hint(tmp_path: Path) -> None:
@@ -120,7 +124,7 @@ async def test_use_skill_requires_a_name(tmp_path: Path) -> None:
     resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
     for args in ({}, {"name": ""}, {"name": "   "}, {"name": 5}):
         res = await UseSkillTool().execute(args, _ctx(tmp_path, resolver))  # type: ignore[arg-type]
-        assert res.is_error is True and "'name' is required" in res.output
+        assert res.is_error is True and "'skill' is required" in res.output
     assert resolver.loaded == []  # never reached the resolver
 
 
@@ -164,17 +168,17 @@ def _write_skill(workspace: Path, name: str, body: str = "Do the thing.") -> Non
 
 def test_use_skill_registered_only_when_skills_enabled(tmp_path: Path) -> None:
     on = _agent(tmp_path, enable_skills=True)
-    assert "use_skill" in on.registry.names()
+    assert "Skill" in on.registry.names()
     # Off by default: the tool surface is unchanged when skills are disabled.
     off = _agent(tmp_path, enable_skills=False)
-    assert "use_skill" not in off.registry.names()
+    assert "Skill" not in off.registry.names()
 
 
 def test_catalog_tells_the_model_to_use_the_tool(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter")
     agent = _agent(tmp_path, enable_skills=True)
     prompt = agent.loop.prompt_builder.build(agent.settings)
-    assert "use_skill" in prompt  # the model is told HOW to invoke, not just that skills exist
+    assert "Skill" in prompt  # the model is told HOW to invoke, not just that skills exist
 
 
 def _capture(into: list[LifecyclePayload]):
@@ -203,7 +207,7 @@ async def test_tool_load_fires_signal_with_source_tool(tmp_path: Path) -> None:
 async def test_full_execute_through_wired_agent(tmp_path: Path) -> None:
     _write_skill(tmp_path, "greeter", body="Greet warmly.")
     agent = _agent(tmp_path, enable_skills=True)
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = _ctx(tmp_path, agent.loop._skill_resolver)
     before = len(agent.session.messages)
@@ -353,7 +357,7 @@ async def test_skills_chain_across_invocations_in_one_turn(tmp_path: Path) -> No
     resolver = _RecordingResolver()
     registry = ToolRegistry()
     registry.register(UseSkillTool())
-    chain = [("use_skill", {"name": "step-a"}), ("use_skill", {"name": "step-b"})]
+    chain = [("Skill", {"name": "step-a"}), ("Skill", {"name": "step-b"})]
     runner = SubAgentRunner(
         provider=_SequenceProvider(chain),
         registry=registry,
@@ -412,7 +416,7 @@ async def test_subagent_can_invoke_a_skill_through_the_wired_resolver(tmp_path: 
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     runner = SubAgentRunner(
-        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        provider=_ToolThenTextProvider("Skill", {"name": "greeter"}),
         registry=registry,
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
@@ -439,7 +443,7 @@ async def test_subagent_attributes_the_signal_to_the_child_prompt(tmp_path: Path
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     runner = SubAgentRunner(
-        provider=_ToolThenTextProvider("use_skill", {"name": "greeter"}),
+        provider=_ToolThenTextProvider("Skill", {"name": "greeter"}),
         registry=registry,
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
@@ -463,15 +467,15 @@ def test_agent_wires_skill_resolver_into_subagents(tmp_path: Path) -> None:
     assert runner._skill_resolver is not None
     # The general-purpose delegate (full toolset) gets use_skill; the read-only planner does not.
     defs = agent.loop.spawner._defs
-    assert "use_skill" in runner.child_registry(defs["general-purpose"]).names()
-    assert "use_skill" not in runner.child_registry(defs["plan"]).names()
+    assert "Skill" in runner.child_registry(defs["general-purpose"]).names()
+    assert "Skill" not in runner.child_registry(defs["plan"]).names()
 
 
 def test_subagents_have_no_skill_seam_when_skills_off(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=False, enable_subagents=True)
     runner = agent.loop.spawner._runner
     assert runner._skill_resolver is None  # nothing to resolve …
-    assert "use_skill" not in runner.registry.names()  # … and the tool isn't on the child surface
+    assert "Skill" not in runner.registry.names()  # … and the tool isn't on the child surface
 
 
 # ── per-turn skill-invocation budget ─────────────────────────────────────────────
@@ -541,7 +545,7 @@ async def test_use_skill_tool_surfaces_a_budget_denial(tmp_path: Path) -> None:
         ),
         enable_skills=True,
     )
-    tool = agent.registry.get("use_skill")
+    tool = agent.registry.get("Skill")
     assert tool is not None
     ctx = ToolContext(workspace_root=tmp_path, skill_resolver=agent.loop._skill_resolver)
     ok = await tool.execute({"name": "greeter"}, ctx)
@@ -671,7 +675,7 @@ class _VetoOnce:
 
 def _use(name: str, call_id: str) -> LLMResult:
     return LLMResult(
-        tool_calls=[ToolCall(id=call_id, name="use_skill", arguments={"name": name})],
+        tool_calls=[ToolCall(id=call_id, name="Skill", arguments={"name": name})],
         usage=Usage(total_tokens=1),
     )
 
@@ -741,3 +745,391 @@ async def test_no_veto_keeps_the_same_turn_dedup(tmp_path: Path) -> None:
     assert len(outputs) == 2
     assert "greet warmly" in (outputs[0] or "").lower()
     assert "[already loaded]" in (outputs[1] or "")
+
+
+# ── ADR-0196: a skill asked for again AFTER WORK is a re-entry ────────────────
+
+#: The framework's own words at a refused stop (the stop hook's reducer reason, in shape),
+#: naming the fixture skill: written for a harness that delivers nothing until the model
+#: calls the skill tool.
+_HOOK_WORDS = (
+    "Turn ended without a Skill(greeter) re-entry. Your FIRST action MUST be: "
+    "Skill('greeter') with args='loop'. Do NOT run Bash commands first."
+)
+
+
+def _call(tool: str, call_id: str, **arguments: Any) -> LLMResult:
+    return LLMResult(
+        tool_calls=[ToolCall(id=call_id, name=tool, arguments=dict(arguments))],
+        usage=Usage(total_tokens=1),
+    )
+
+
+class _StreamingReplay(_ReplayProvider):
+    """A replay that streams its tool calls too (the plain one streams text only), so one
+    script drives the buffered path and the served path's streamed twin alike."""
+
+    async def astream(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        result = await self.acomplete(messages, tools=tools, system=system)
+        for index, call in enumerate(result.tool_calls):
+            yield StreamToolCallDelta(
+                index=index, id=call.id, name=call.name, arguments_delta=json.dumps(call.arguments)
+            )
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        yield StreamDone()
+
+
+def _skill_outputs(agent: Agent) -> list[tuple[str, str]]:
+    """``(tool_use_id, output)`` of every tool result in the session, in order."""
+    return [
+        (block.tool_use_id, block.output or "")
+        for message in agent.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+
+
+def _door_notes(agent: Agent) -> list[str]:
+    """Which skill door answered, in order, from the turn's trace."""
+    return [
+        str(e.data.get("kind"))
+        for e in agent.loop._trace.events
+        if e.data.get("kind") in ("skill_pointer", "skill_reentry")
+    ]
+
+
+async def test_asked_for_again_with_nothing_run_since_is_still_the_pointer(tmp_path: Path) -> None:
+    """The control (ADR-0063 stands): a second load with NO work between the two is the
+    pointer, whatever it says — never a second copy of the body. Touches nothing this
+    change added, so it holds on the source before it as well (the mutation proof's
+    other half: the tests below fail there, this one does not)."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    again = await agent.loop._skill_resolver.load("greeter", args="loop")
+    assert (again.body or "").startswith("[arguments: loop]\n\n[already loaded]")
+    assert "greet warmly" not in (again.body or "").lower()
+    assert agent._skill_invocations_this_turn == 1
+
+
+async def test_the_pointer_says_what_to_do_not_where_to_continue(tmp_path: Path) -> None:
+    """Nothing has run since the body arrived, so there is no "where you are": the pointer
+    names the next action. The bare one ("continue … from where you are; do not reload")
+    drew a summary and a stop from a model that had not started (2026-09-18, gpt-5.6-luna)."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    pointer = (await agent.loop._skill_resolver.load("greeter")).body or ""
+    assert pointer.startswith("[already loaded] Nothing new was loaded")
+    assert "Loading a skill does not run it" in pointer
+    assert "starting from their first step" in pointer
+    assert "not another Skill call and not a summary" in pointer
+    assert "from where you are" not in pointer
+
+
+async def test_asked_for_again_after_work_gets_the_body(tmp_path: Path) -> None:
+    """A perpetual loop closes every iteration on ``Skill(<loop skill>)``: the model has
+    ACTED on the body since it arrived, so the call is a re-entry and the body comes back —
+    a real load (budget, selection signal), flagged for the trace."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    fired: list[LifecyclePayload] = []
+    agent.hook_manager.register_lifecycle(HookEvent.ON_SKILL_SELECTED, _capture(fired))
+
+    first = await agent.loop._skill_resolver.load("greeter", args="loop")
+    agent.loop._work_calls += 1  # one successful work call, as the execution seam counts it
+    second = await agent.loop._skill_resolver.load("greeter", args="loop")
+
+    assert first.reentry is False and second.reentry is True
+    assert second.body == first.body  # handed over exactly as a first load is
+    assert "[already loaded]" not in (second.body or "")
+    assert agent._skill_invocations_this_turn == 2 and len(fired) == 2
+    # …and the body just delivered is the new mark: asked for AGAIN with nothing run since,
+    # it is the pointer once more.
+    third = await agent.loop._skill_resolver.load("greeter", args="loop")
+    assert "[already loaded]" in (third.body or "") and third.reentry is False
+
+
+async def test_every_door_marks_where_the_work_count_stood(tmp_path: Path) -> None:
+    """The harness's own delivery (ADR-0187) and a typed ``/<skill>`` (ADR-0063) register the
+    same way the tool does: pointer until the model has acted, the body after."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    composed = await agent.compose_skill_turn("greeter", "loop", source="harness")
+    assert composed.turn_text is not None
+    for door in ("harness", "command"):
+        agent._begin_skill_turn()
+        if door == "harness":
+            await agent._load_skill_body("greeter", source="harness", args="loop")
+        else:
+            agent._register_composed_skill(composed.turn_text)
+        before = await agent.loop._skill_resolver.load("greeter")
+        assert "[already loaded]" in (before.body or ""), door
+        agent.loop._work_calls += 1
+        after = await agent.loop._skill_resolver.load("greeter")
+        assert after.reentry is True and "greet warmly" in (after.body or "").lower(), door
+
+
+async def test_a_fresh_skill_turn_forgets_the_marks(tmp_path: Path) -> None:
+    """A veto and a compaction both open a fresh skill turn: the next load is a FIRST load
+    again, not a re-entry, whatever ran before."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(tmp_path, enable_skills=True)
+    await agent.loop._skill_resolver.load("greeter")
+    agent.loop._work_calls += 3
+    agent.loop._skill_resolver.forget_loads()
+    assert agent._skill_loaded_at_work == {}
+    fresh = await agent.loop._skill_resolver.load("greeter")
+    assert fresh.reentry is False and "greet warmly" in (fresh.body or "").lower()
+
+
+async def test_only_a_call_that_ran_and_was_work_makes_a_re_entry(tmp_path: Path) -> None:
+    """Keeping the plan, re-arming the wake-up and a call that FAILED are not acts on a
+    skill's instructions: the skill asked for again after only those is still the pointer.
+    One successful read is work, and the next ask is a re-entry."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                _call("Skill", "s1", skill="greeter"),
+                _call("update_plan", "p1", tasks=[{"title": "greet", "status": "in_progress"}]),
+                _call(
+                    "ScheduleWakeup",
+                    "w1",
+                    prompt="<<autonomous-loop-dynamic>>",
+                    delaySeconds=600,
+                    reason="net",
+                ),
+                _call("Read", "r1", file_path=str(tmp_path / "no-such-file.txt")),
+                _call("Skill", "s2", skill="greeter"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s3", skill="greeter"),
+                _call("update_plan", "p2", tasks=[{"title": "greet", "status": "done"}]),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    result = await agent.arun_turn("greet")
+    assert result.stop_reason == "completed"
+    outputs = dict(_skill_outputs(agent))
+    assert "greet warmly" in outputs["s1"].lower()
+    assert "[already loaded]" in outputs["s2"]  # plan + wake-up + a failed read: no work
+    # The behaviour under test, through the model's own calls and nothing else: before
+    # this change the answer here was the pointer too, and the pass that had just finished
+    # was told to "continue from where you are".
+    assert "greet warmly" in outputs["s3"].lower() and "[already loaded]" not in outputs["s3"]
+    assert _door_notes(agent) == ["skill_pointer", "skill_reentry"]
+    assert agent.loop.work_calls() == 1
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_the_veto_door_end_to_end(tmp_path: Path, streamed: bool) -> None:
+    """The served-loop stall of 2026-09-18 in miniature. The model ends in words; the hook
+    refuses the stop in Claude Code's vocabulary; the harness delivers the skill (ADR-0187)
+    and says so AHEAD of the hook's words; a literal model still calls the skill tool first
+    and gets the pointer that tells it to start; it acts; and the call that closes its
+    iteration is a re-entry — the body, and the fence starts over."""
+    _write_skill(tmp_path, "greeter", body="Greet warmly.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_StreamingReplay(
+            [
+                LLMResult(
+                    text="Summary: the greeting loop is set up.", usage=Usage(total_tokens=1)
+                ),
+                _call("Skill", "s1", skill="greeter", args="loop"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s2", skill="greeter", args="loop"),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    agent.hook_manager.register_turn_end(_VetoOnce(_HOOK_WORDS))
+
+    if streamed:  # the served path streams; both funnel through one execution seam
+        _ = [event async for event in agent.astream_turn("greet")]
+    else:
+        assert (await agent.arun_turn("greet")).stop_reason == "completed"
+
+    delivered = [
+        m.text
+        for m in agent.session.messages
+        if m.role == "user" and m.text.startswith("<command-message>greeter is running")
+    ]
+    assert len(delivered) == 1
+    outputs = dict(_skill_outputs(agent))
+    assert "[already loaded]" in outputs["s1"]  # nothing run since the harness delivered it
+    # The behaviour under test: the call that closes the iteration gets the body, a real
+    # load, so the ADR-0187 fence starts over. Before this change it was a second pointer.
+    assert "greet warmly" in outputs["s2"].lower() and "[already loaded]" not in outputs["s2"]
+    assert agent.loop._vetoes_without_skill == 0
+    # …and the words either side of it.
+    assert "Carry those instructions out now" in outputs["s1"]
+    head = delivered[0].split("\n", 1)[0]
+    told, hook_words = head.index("The harness has made that skill call"), head.index("FIRST")
+    assert told < hook_words  # the harness speaks first; the hook's words follow, quoted
+    assert _door_notes(agent) == ["skill_pointer", "skill_reentry"]
+
+
+class _CountingReplay(_ReplayProvider):
+    """A replay whose token count tracks the text it is shown, under a 32k window — so a
+    skill body can be too large to arrive whole (ADR-0192) and is paged instead. Past its
+    script it keeps answering in words: a paged skill leaves plan steps open, and the turn
+    takes a few nudges to end."""
+
+    async def acomplete(  # noqa: ANN401
+        self, messages: list, *, tools: list | None = None, system: str | None = None, **kw: Any
+    ) -> LLMResult:
+        if not self._results:
+            self.calls += 1
+            return LLMResult(text=f"stopping here ({self.calls})", usage=Usage(total_tokens=1))
+        return await super().acomplete(messages, tools=tools, system=system, **kw)
+
+    def count_tokens(self, messages: list, *, system: str | None = None) -> int:
+        chars = len(system or "")
+        for message in messages:
+            for block in message.blocks:
+                chars += len(getattr(block, "text", "") or "")
+        return chars // 4
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=32_768)
+
+
+async def test_a_paged_skill_with_a_section_open_keeps_its_section_pointer(tmp_path: Path) -> None:
+    """Unchanged (ADR-0067), and so true of the source before this change as well: a skill
+    too large for the window arrives a section at a time, and while a section is OPEN the
+    skill asked for again is that section again — work or no work. The pointer there
+    carries the instructions; it was never the dead end."""
+    filler = ("do the thing carefully " * 1_800)[:40_000]
+    body = "# /big — a sectioned skill\n\nIntro.\n\n" + "".join(
+        f"## Step {i}: Part {i}\n\n{filler}\n\n" for i in range(1, 5)
+    )
+    _write_skill(tmp_path, "big", body=body)
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=32_768, workspace_root=tmp_path
+        ),
+        enable_skills=True,
+        provider=_CountingReplay(
+            [
+                _call("Skill", "s1", skill="big"),
+                _call("LS", "l1", path="."),
+                _call("Skill", "s2", skill="big"),
+            ]
+        ),
+    )
+    await agent.arun_turn("run the big skill")
+    outputs = dict(_skill_outputs(agent))
+    assert "## Step 1: Part 1" in outputs["s1"] and "## Step 2: Part 2" not in outputs["s1"]
+    assert outputs["l1"] and "[already loaded]" not in outputs["l1"]  # the model HAD acted
+    assert outputs["s2"].startswith("[already loaded] Skill 'big' is running this turn")
+    assert "here is the CURRENT section again" in outputs["s2"]
+
+
+# ── ADR-0187: the harness source ─────────────────────────────────────────────
+
+
+def _write_skill_with(workspace: Path, name: str, frontmatter: str, body: str = "Loop.") -> None:
+    d = workspace / ".zakcode" / "skills" / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} skill.\n{frontmatter}\n---\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+async def test_harness_source_composes_a_user_invocable_false_skill(tmp_path: Path) -> None:
+    """A framework's loop orchestrator is ``user-invocable: false`` (only the model, or another
+    skill, runs it). The harness delivering it on a Stop hook's say-so is neither a human's
+    keystroke (refused) nor the model's choice: it composes."""
+    _write_skill_with(tmp_path, "aspirations", "user-invocable: false", body="# Loop\n\nRun it.")
+    agent = _agent(tmp_path, enable_skills=True)
+    denied = await agent.compose_skill_turn("aspirations", "loop")
+    assert denied.invoked and denied.denied_reason and "not user-invocable" in denied.denied_reason
+    composed = await agent.compose_skill_turn("aspirations", "loop", source="harness")
+    assert composed.invoked and composed.denied_reason is None and composed.error is None
+    assert composed.turn_text is not None
+    assert composed.turn_text.startswith(
+        "<command-message>aspirations is running</command-message>\n"
+        "<command-name>/aspirations</command-name>\n<command-args>loop</command-args>\n\n"
+    )
+    assert "Run it." in composed.turn_text
+
+
+async def test_harness_source_still_refuses_an_operator_only_skill(tmp_path: Path) -> None:
+    _write_skill_with(tmp_path, "start", "disable-model-invocation: true")
+    agent = _agent(tmp_path, enable_skills=True)
+    refused = await agent.compose_skill_turn("start", source="harness")
+    assert refused.invoked and refused.denied_reason and "user-only" in refused.denied_reason
+    human = await agent.compose_skill_turn("start")  # the operator's own keystroke still runs
+    assert human.turn_text is not None
+
+
+async def test_the_operators_own_command_survives_the_models_redundant_skill_call(
+    tmp_path: Path,
+) -> None:
+    """ADR-0198, through the real turn door. Measured 2026-09-18 (gpt-5.6-luna, served): the
+    operator typed ``/start``, the model's FIRST call was ``Skill(start)``, the refusal said
+    "it cannot be run from here. Tell them — do not retry", and the run ended there. The
+    body is already in the turn's own message, so the answer is the pointer at it: not an
+    error, not the body a second time, and visible in the trace as the pointer door."""
+    _write_skill_with(
+        tmp_path, "start", "disable-model-invocation: true", body="# /start\n\nStep 1: say up."
+    )
+    provider = _ReplayProvider(
+        [_call("Skill", "s1", skill="start", args="coach")]
+        + [LLMResult(text="The agent is up.", usage=Usage(total_tokens=1))] * 6
+    )
+    agent = _agent(tmp_path, enable_skills=True, provider=provider)
+    typed = await agent.compose_skill_turn("start", "coach")
+    assert typed.turn_text is not None and "Step 1: say up." in typed.turn_text
+    await agent.arun_turn(typed.turn_text)
+
+    (answer,) = [
+        b for m in agent.session.messages for b in m.blocks if isinstance(b, ToolResultBlock)
+    ]
+    assert answer.is_error is False and "user-only" not in answer.output
+    assert "[already loaded]" in answer.output and "Step 1: say up." not in answer.output
+    assert "skill_pointer" in [e.data.get("kind") for e in agent.loop._trace.events]
+
+
+async def test_harness_source_is_unbudgeted_but_counts_as_loaded(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "aspirations", body="Loop body.")
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+    )
+    agent.settings.skill_invocation_budget = 1
+    for _ in range(3):
+        load = await agent._load_skill_body("aspirations", source="harness")
+        assert load.body is not None and load.denied_reason is None
+    assert agent._skill_invocations_this_turn == 0  # never drawn from the budget
+    # The model's own use_skill of the skill the harness just delivered gets the pointer,
+    # not a second copy of the body.
+    again = await agent._load_skill_body("aspirations", source="tool")
+    assert again.body is not None and again.body.startswith("[already loaded]")
+
+
+async def test_use_skill_accepts_claude_codes_skill_parameter(tmp_path: Path) -> None:
+    # The registry routes a ``Skill(...)`` call here by alias; its parameter is ``skill``.
+    resolver = _FakeResolver({"alpha": SkillLoad(found=True, name="alpha", body="x")})
+    res = await UseSkillTool().execute({"skill": "alpha", "args": "loop"}, _ctx(tmp_path, resolver))
+    assert not res.is_error
+    assert resolver.loaded == ["alpha"] and resolver.loaded_args == ["loop"]
+
+
+def test_the_agent_exports_the_harness_marker(tmp_path: Path, monkeypatch: Any) -> None:
+    """Claude Code exports CLAUDECODE=1 to hooks and shells; a framework's harness detector
+    keys on it and answers Claude Code's tool names otherwise. Zak Code exports its own."""
+    import os
+
+    monkeypatch.delenv("ZAKCODE_SESSION", raising=False)
+    agent = _agent(tmp_path)
+    assert os.environ["ZAKCODE_SESSION"] == agent.session.id

@@ -156,6 +156,11 @@ def _normalize(events: Sequence[AgentEvent]) -> list[tuple[Any, ...]]:
 
 
 # ── golden scenarios (goldens captured from the live SDK, not guessed) ────────────
+#
+# The scripts call the tools by their pre-0190 spellings (``write_file``, ``read_file``) and the
+# goldens expect the canonical ones (``Write``, ``Read``): every interface streams, and a streamed
+# call is rewritten where it enters like a buffered one (ADR-0190, amended 2026-09-18). Until then
+# these goldens recorded the alias, because nothing rewrote a streamed call.
 
 
 @dataclass(frozen=True)
@@ -200,7 +205,7 @@ SCENARIOS: list[Scenario] = [
             reply("Wrote parity.txt."),
         ),
         expected=[
-            ("tool_call", "w1", "write_file", {"path": "parity.txt", "content": "hi"}),
+            ("tool_call", "w1", "Write", {"path": "parity.txt", "content": "hi"}),
             ("tool_result", "w1", False, "Wrote 2 bytes to parity.txt"),
             ("text", "Wrote parity.txt."),
             ("usage",),
@@ -212,17 +217,17 @@ SCENARIOS: list[Scenario] = [
         canonical_input=_CANONICAL_INPUT,
         script=_LONG_HORIZON_SCRIPT,
         expected=[
-            ("tool_call", "w1", "write_file", {"path": "note-1.txt", "content": "x"}),
+            ("tool_call", "w1", "Write", {"path": "note-1.txt", "content": "x"}),
             ("tool_result", "w1", False, "Wrote 1 bytes to note-1.txt"),
-            ("tool_call", "w2", "write_file", {"path": "note-2.txt", "content": "xx"}),
+            ("tool_call", "w2", "Write", {"path": "note-2.txt", "content": "xx"}),
             ("tool_result", "w2", False, "Wrote 2 bytes to note-2.txt"),
-            ("tool_call", "w3", "write_file", {"path": "note-3.txt", "content": "xxx"}),
+            ("tool_call", "w3", "Write", {"path": "note-3.txt", "content": "xxx"}),
             ("tool_result", "w3", False, "Wrote 3 bytes to note-3.txt"),
-            ("tool_call", "w4", "write_file", {"path": "note-4.txt", "content": "xxxx"}),
+            ("tool_call", "w4", "Write", {"path": "note-4.txt", "content": "xxxx"}),
             ("tool_result", "w4", False, "Wrote 4 bytes to note-4.txt"),
-            ("tool_call", "w5", "write_file", {"path": "note-5.txt", "content": "xxxxx"}),
+            ("tool_call", "w5", "Write", {"path": "note-5.txt", "content": "xxxxx"}),
             ("tool_result", "w5", False, "Wrote 5 bytes to note-5.txt"),
-            ("tool_call", "w6", "write_file", {"path": "note-6.txt", "content": "xxxxxx"}),
+            ("tool_call", "w6", "Write", {"path": "note-6.txt", "content": "xxxxxx"}),
             ("tool_result", "w6", False, "Wrote 6 bytes to note-6.txt"),
             ("text", "Wrote all six notes."),
             ("usage",),
@@ -243,9 +248,9 @@ SCENARIOS: list[Scenario] = [
             reply("Read the note back."),
         ),
         expected=[
-            ("tool_call", "w1", "write_file", {"path": "note.txt", "content": "hello horizon"}),
+            ("tool_call", "w1", "Write", {"path": "note.txt", "content": "hello horizon"}),
             ("tool_result", "w1", False, "Wrote 13 bytes to note.txt"),
-            ("tool_call", "r1", "read_file", {"path": "note.txt"}),
+            ("tool_call", "r1", "Read", {"path": "note.txt"}),
             ("tool_result", "r1", False, "hello horizon"),
             ("text", "Read the note back."),
             ("usage",),
@@ -267,7 +272,7 @@ SCENARIOS: list[Scenario] = [
             reply("Could not read it."),
         ),
         expected=[
-            ("tool_call", "r1", "read_file", {"path": "missing.txt"}),
+            ("tool_call", "r1", "Read", {"path": "missing.txt"}),
             (
                 "tool_result",
                 "r1",
