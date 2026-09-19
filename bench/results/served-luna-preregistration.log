@@ -910,3 +910,75 @@ re-entry in an uninitialised world) are fixed; none of them is, and a MOVED read
 the loop no longer arrives at them by that route. Anything about terra, the pod tier, or azure.
 
 SPEND. Bounded by the supervisor at $6.00 and 2400 s; sample 4 cost $1.2786 at the same bounds.
+
+=== 11:12 UTC 2026-09-19 AMENDMENT TO SAMPLE 5 -- W1 WAS UNREADABLE AS PRE-REGISTERED ===
+
+WHAT HAPPENED, reported as measured. Sample 5 launched at 10:12:53Z on world zc-served5-Vjh75V with
+all nine pre-flight assertions passing, HEAD 08e38d7, src tree 9c08740d. It ran cleanly -- 11 calls
+in 30 s, 88% cached, 0 errors, 0 failovers. At t+147 s I checked whether W1 could be read and it
+could not, so I stopped the run at $0.0292 rather than spend the remaining budget against a gate
+whose verdict would have been NOT READ whatever the loop did.
+
+W1 said: "Read from the serve log and the trace, not from the config." Neither carries the effort.
+The sent reasoning_effort appears in no trace usage row (keys: completion_tokens, cost_usd,
+latency_s, model, prompt_tokens, streamed, total_tokens), in no session usage row (which adds
+cache_creation_tokens and cache_read_tokens), and in no serve.log line. LITELLM_LOG=DEBUG on an
+offline canned call produced no effort lines either. And grep -rn 'reasoning_tokens' over
+src/zakcode returned NOTHING: the product recorded neither the depth it asked for nor the reasoning
+it was billed for. The gate was unwritable against this product, and that is my error at
+pre-registration time, not a property of the run.
+
+THE ABORTED RUN IS DISCARDED. It is not read for B1, B2, P1, S1 or anything else, and its 11 calls
+contribute to no measure. It is recorded here only so the $0.0292 is on the ledger.
+
+THE INSTRUMENT FIX, merged before this amendment. Usage now carries reasoning_tokens, extracted from
+the provider's own response (ADR-0201, PR #565). The count was always being billed at the output
+rate and folded into completion_tokens; it was simply never read out. The session store and the
+event stream serialize Usage whole, so it reaches every trace and session usage row unassisted.
+Verified end to end from provider-real output through the real SessionStore to a file on disk, read
+back as plain JSON: present in every usage row, 52 on the discriminating case, 0 on the control.
+
+THE MEASURED LIMIT, which is what forces this amendment to change the rule rather than just the
+source. reasoning_tokens measures reasoning DONE, not depth REQUESTED. Measured both directions
+against the live tier with effort the only variable: on a trivial prompt low and none are
+INDISTINGUISHABLE at 0 reasoning tokens and 4 completion tokens; on a prompt forcing arithmetic they
+separate 69 against 0, and 52 against 0 on a second pair. So a non-zero confirms a depth was live
+and a zero confirms nothing. W1 cannot be a symmetric gate and must not be written as one.
+
+W1, RESTATED IN TWO PARTS, fixed before launch.
+  W1a CONFIGURATION, offline, asserted in the launcher before any spend. The product's own provider
+      factory in this exact configuration sends reasoning_effort='low' on all five luna categories,
+      with tools and without. Deterministic, and independent of what the model then chooses to do.
+  W1b EFFECT, read from the run. At least one luna call records reasoning_tokens > 0.
+  Plus a PRE-FLIGHT LIVE PIN immediately before launch, on the day, on the build under test: one
+      call at low and one at none on the same reasoning-inducing prompt, asserting separation. This
+      is the positive control for W1b, taken in the same session as the run it guards.
+
+THE READING RULE, over every outcome, replacing the single W1 branch above.
+  W1a FAILS                -- NOT READ, exactly as before. The depth never reached the request the
+                              product builds, so nothing about effort is concluded and the run is
+                              reported. The pre-flight pin failing is the same verdict.
+  W1a holds, W1b CONFIRMED -- W1 HOLDS. The four branches above (MOVED / NOT MOVED / BLOCKED
+                              EARLIER) are read exactly as written.
+  W1a holds, W1b ALL ZERO  -- W1 HOLDS WEAKLY. The run IS still read, because W1a is a deterministic
+                              property of the code path and ADR-0200's tests pin that a configured
+                              depth rides. But the reading of a NOT MOVED changes and must be
+                              reported in these words: luna spent NO reasoning on this workload, so
+                              'low' was inert here, and that is a finding about the workload rather
+                              than evidence that a depth does not help. It does NOT license the
+                              claim that reasoning fails to move the served loop.
+  A W1b zero is never reported as a W1 failure, and a W1b non-zero is never reported as proof that
+  every call carried the depth. One-directional evidence is labelled as such in the results block.
+
+BUILD PROOF, and it comes free. reasoning_tokens can only be written by a build carrying #565, so
+its PRESENCE as a key in the session usage rows is itself the proof that the build under test is the
+one that executed -- no separate assertion needed (rb-11335's lesson, satisfied structurally).
+
+EVERYTHING ELSE IS UNCHANGED. The one declared difference, the assembly, the seed, the patched claim
+endpoint at sha 74b5eca7c44d0189, the measures M1/M2/M3, the predictions P1/P2/P3/B1/B2/S1/E1/C1
+with their estimates, the second-sample rule, and what this cannot settle all stand exactly as
+pre-registered at 10:05 UTC. A fresh world is required because zc-served5-Vjh75V now holds a session
+from the aborted run; the assembly is otherwise rebuilt from the same seed by the same script.
+
+SPEND. sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, the aborted sample-5 launch
+$0.0292, the ADR-0201 instrument probes $0.00028. Sample 5 stays bounded at $6.00 and 2400 s.
