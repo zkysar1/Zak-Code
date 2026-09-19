@@ -11753,3 +11753,95 @@ control that an absent details block reads 0 rather than raising, junk coerced l
 count, and an end-to-end pin that the count survives onto `LLMResult.usage`. Two mutations, each
 with its kills attributed: deleting the Responses-shape probe turns 2 red, and dropping the field
 from the returned record turns 3 red.
+
+## ADR-0202: the plan-advance is unconditional, because a correctness fix does not get a switch
+
+Date: 2026-09-19. Supersedes the flag half of ADR-0168 lever N; the lever's behaviour is unchanged.
+
+Context. Lever N (ADR-0168) shipped behind `Settings.plan_autoadvance` / `ZAKCODE_PLAN_AUTOADVANCE`,
+opt-in at #433, flipped default-on at #439 after arm R. A second, quieter switch sat beside it:
+`ToolContext.plan_autoadvance` defaulted `False`, so the loop got the fix and a bare/embedder context
+did not. The flag was written as insurance for a regime arm R could not test — no model larger than
+35B is servable on the pod — and the opt-out was described as shipping "for any harmed caller".
+
+Decision. Both switches are deleted. `update_plan` advances a worked-on step on an unchanged resend,
+always, in every caller. There is no setting, no environment variable and no context field.
+
+Why, and this is a user directive, not a preference. Verbatim: *"I hate feature flags. I want it
+working one way, all the time. Feature flags cause confusion long term."* The argument holds on its
+own merits. Lever N is not a capability someone might reasonably not want — it is the fix for a
+measured defect in which a turn burns itself out resending an all-`pending` plan (arm M: a 35B did
+the work, then resent the same plan six times saying "The work is already done … I just need to mark
+the plan steps complete", and doom-looped). A flag on a defect fix means the defect is still shipped,
+reachable, and reportable; every future bug report about the planner then has to establish which of
+two behaviours produced it before anyone can read it.
+
+The dual default made that worse rather than safer. A `Settings`-wired loop advanced and a bare
+`ToolContext` did not, so the conservative path was the one with NO configuration surface — an
+invisible switch. The `ToolContext` half protected nothing real: `update_plan` returns early when
+`ctx.task_network is None`, so a genuinely bare loop never reaches the advance decision at all, and
+the only callers that did reach it with the flag off were tests asserting the pre-lever behaviour.
+
+What bounds an always-on advance is the TRIGGER, not a flag, and that was already true. The lever
+fires only when the submission is byte-identical to the one in force AND the current step is
+non-terminal AND something was actually worked on — evidence attached, or an outcome the model
+recorded. A model that emits `status: done` never meets the first condition; a plan nobody has
+touched never meets the third (`test_a_never_worked_plan_resent_unchanged_is_not_advanced` pins
+exactly that, and is the test that matters most now). A genuine reopen is an edit, not an unchanged
+resend, so the lever stays dormant through it — measured byte-identically in both arms at R3.
+
+The untested regime is answered differently now. Arm R's residual stands: no model above 35B was
+testable here, so "a large model is never harmed" is favourable-but-inferred, not measured. The
+remedy for that is to narrow the trigger with evidence if a large model is ever observed being
+harmed — not to hand every operator a knob against a defect fix on the strength of a hypothetical.
+Removing the flag also makes such a report legible, because there is only one behaviour to report on.
+
+Safety of the removal, checked rather than assumed. `Settings` uses `extra="ignore"`, so a stale
+`ZAKCODE_PLAN_AUTOADVANCE` in someone's environment is dropped silently instead of failing startup —
+the same property config.py already documents for deleted fields. Nothing in the fleet sets it: zero
+occurrences across the Mind framework, its deployment config and the live environment, the only hits
+being stale scratch worktrees of this repo.
+
+Four stale comments went with it, and finding them is half of why this ADR exists. `tools/base.py`,
+`agent/loop.py` (two sites) and `tasks.py` all still described the lever as "opt-in" or "inert
+unless" days after it became default-on, and `loop.py:6422` asserted something flatly false —
+"byte-identical by default". A comment that describes a flag's state is a comment with an expiry
+date; the ones here expired in three days. They now describe the mechanism (an advance sets
+`last_autoadvanced`; a harness-marked leaf is sticky) rather than a configuration that no longer
+exists, which is the form that cannot go stale. `docs/CONFIG.md` lost the row and
+`docs/DETERMINISM-REVIEW.md`'s lever-N entry now reads "unconditional".
+
+Tests. `tests/test_plan_autoadvance.py` keeps every behavioural test and drops the `autoadvance`
+parameter. The opt-out test is gone with the opt-out; what it pinned — a worked-on step resent
+unchanged going nowhere — survives in the never-worked test, which is the case that still exists.
+`test_the_shipped_default_is_on_and_a_bare_context_is_the_conservative_opt_out` is REPLACED, not
+deleted, by `test_there_is_no_switch_the_advance_is_unconditional`: it asserts the knob is absent
+from both `Settings` and `ToolContext.model_fields`, and that a context built with no `Settings` at
+all still advances. That is the regression pin — re-introducing either flag fails there. The
+loop-level doom-guard test loses its OFF control arm, which was a control for a flag rather than for
+the behaviour; its positive assertion is unchanged and still fails if the guard's reset regresses,
+because the frontier walk dies partway and `is_complete()` goes False.
+
+One branch died with the flag, and the suite found it rather than a reading of the code. Removing
+the switch turned red a test in `test_plan_unchanged.py` — `test_the_rail_names_a_recorded_outcome_
+whose_status_never_moved`, wrapped here for width — that pinned the unchanged rail's "Step N already carries an outcome but its
+status is still 'pending'" prefix. That shape (outcome recorded, status left pending) is now
+ADVANCED rather than described, so the prefix can no longer be reached: `TaskNetwork.current()`
+returns an `in_progress` leaf or a non-terminal non-`blocked` one, `_TERMINAL` is `{done, cancelled}`
+and `TaskStatus` has five members, so `current().status` is always `pending` or `in_progress` —
+exactly the set the advance fires on. `_OUTCOME_WITHOUT_STATUS` and its branch are deleted and the
+rail is left with the one hint it can still emit. The test is REPOINTED at the advance rather than
+dropped, so the file still covers that shape.
+
+Measured before deleting, not reasoned: all 25 status pairs of a two-step plan carrying an outcome,
+zero of which reach the rail with an outcome on the current step. The first run of that probe
+reported NINE, because a bare `python` imports the editable install from the main checkout rather
+than the worktree under test — the same class of mistake as reading a green suite from the wrong
+tree. `PYTHONPATH` pinned to the worktree's `src`, with the import path and the field's absence
+printed beside the result, is what made the second run evidence.
+
+Mutation proofs, each with its kills attributed. Re-adding `ToolContext.plan_autoadvance` as an
+unused field kills exactly one test — `test_there_is_no_switch_the_advance_is_unconditional` — which
+is the point of that pin: the flag's reappearance fails before it can change any behaviour. Re-gating
+the advance on it kills eight, across the advance surface and the repointed rail test. Full gate at
+the tip: ruff format and check clean, mypy clean on 154 files, 4344 passed / 9 skipped.

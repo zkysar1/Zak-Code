@@ -1,6 +1,6 @@
-"""Lever N (ADR-0168, ``plan_autoadvance``, DEFAULT-ON since arm R): when the model resends the
-plan unchanged and the current step has been worked on but left non-terminal, the harness marks it
-done and advances.
+"""Lever N (ADR-0168): when the model resends the plan unchanged and the current step has been
+worked on but left non-terminal, the harness marks it done and advances. UNCONDITIONAL since
+ADR-0202 — there is no setting, no env var, and no context flag.
 
 Measured on the bench (arm M, 2026-09-13, a 35B on task 10): the model wrote the module, exported
 it, wrote passing tests, fixed a test bug — then resent an all-``pending`` plan six times, saying
@@ -25,11 +25,9 @@ PLAN = [
 ]
 
 
-def _ctx(*, autoadvance: bool) -> tuple[ToolContext, TaskNetwork]:
+def _ctx() -> tuple[ToolContext, TaskNetwork]:
     net = TaskNetwork()
-    return ToolContext(
-        workspace_root=Path("/tmp"), task_network=net, plan_autoadvance=autoadvance
-    ), net
+    return ToolContext(workspace_root=Path("/tmp"), task_network=net), net
 
 
 async def _lay_out_and_work(ctx: ToolContext, net: TaskNetwork) -> None:
@@ -38,31 +36,25 @@ async def _lay_out_and_work(ctx: ToolContext, net: TaskNetwork) -> None:
     net.attach_evidence(net.current(), "wrote /tmp/utils/duration.py")
 
 
-async def test_opt_out_a_worked_step_resent_unchanged_stays_unchanged() -> None:
-    # Lever N is DEFAULT-ON since arm R, but the opt-out (autoadvance=False) still fully disables
-    # it: a worked step resent unchanged stays unchanged, byte-for-byte the pre-lever behaviour.
-    ctx, net = _ctx(autoadvance=False)
-    await _lay_out_and_work(ctx, net)
-    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
-    assert result.output.startswith("Plan unchanged")
-    assert result.data is not None and not result.data.get("autoadvanced")
-    assert net.current().title == "write the module"  # nothing advanced
-
-
-def test_the_shipped_default_is_on_and_a_bare_context_is_the_conservative_opt_out() -> None:
-    # Flipped default-on at arm R (ADR-0168): a real run is Settings-wired, so it autoadvances by
-    # default; a bare ToolContext built without Settings stays conservative (False) so direct/test
-    # construction never advances unless asked. The loop ALWAYS wires ctx from Settings
-    # (loop.py plan_autoadvance=self.settings.plan_autoadvance), so production gets the True.
+async def test_there_is_no_switch_the_advance_is_unconditional() -> None:
+    # ADR-0202. This lever fixes a defect (a doom loop that burns a whole turn), and a defect fix
+    # does not get a switch: two behaviours means every future reader has to establish which one
+    # they are looking at, and every bug report has to say which side it came from. The pin is on
+    # the ABSENCE of the knob in both places it used to live, so re-introducing one fails here.
     from zakcode.config import Settings
 
-    assert Settings().plan_autoadvance is True
-    bare = ToolContext(workspace_root=Path("/tmp"), task_network=TaskNetwork())
-    assert bare.plan_autoadvance is False
+    assert not hasattr(Settings(), "plan_autoadvance")
+    assert "plan_autoadvance" not in ToolContext.model_fields
+    # And the behaviour reaches a context built with no Settings at all — the bare/embedder path
+    # that used to default to the conservative side and silently get the doom loop instead.
+    ctx, net = _ctx()
+    await _lay_out_and_work(ctx, net)
+    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    assert result.data is not None and result.data["autoadvanced"] is True
 
 
-async def test_on_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> None:
-    ctx, net = _ctx(autoadvance=True)
+async def test_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> None:
+    ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
     result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
     assert result.output.startswith("Advanced step 1 ('write the module') to done")
@@ -77,7 +69,7 @@ async def test_on_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> 
 
 
 async def test_the_advance_is_sticky_across_a_blind_resend_of_the_same_plan() -> None:
-    ctx, net = _ctx(autoadvance=True)
+    ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
     await UpdatePlanTool().execute({"tasks": PLAN}, ctx)  # advances step 1
     assert net.tasks[0].status == "done"
@@ -92,7 +84,7 @@ async def test_the_advance_is_sticky_across_a_blind_resend_of_the_same_plan() ->
 
 
 async def test_it_walks_the_frontier_to_completion_then_hands_over_the_verdict() -> None:
-    ctx, net = _ctx(autoadvance=True)
+    ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
     # The model keeps resending the same all-pending plan; the harness walks each worked step done.
     r1 = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
@@ -109,8 +101,9 @@ async def test_it_walks_the_frontier_to_completion_then_hands_over_the_verdict()
 
 
 async def test_a_never_worked_plan_resent_unchanged_is_not_advanced() -> None:
-    # No evidence anywhere and no outcome: the harness invents no progress it has no sign of.
-    ctx, net = _ctx(autoadvance=True)
+    # No evidence anywhere and no outcome: the harness invents no progress it has no sign of. This
+    # is what bounds an unconditional lever — the trigger is the evidence, not a setting.
+    ctx, net = _ctx()
     await UpdatePlanTool().execute({"tasks": PLAN}, ctx)  # laid out, never worked
     result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
     assert result.output.startswith("Plan unchanged")
@@ -120,7 +113,7 @@ async def test_a_never_worked_plan_resent_unchanged_is_not_advanced() -> None:
 
 async def test_an_outcome_recorded_but_status_left_pending_is_advanced() -> None:
     # The "recorded the result, forgot the status" shape — advanced on the model's own outcome.
-    ctx, net = _ctx(autoadvance=True)
+    ctx, net = _ctx()
     plan = [dict(PLAN[0], outcome="wrote the module"), PLAN[1], PLAN[2]]
     await UpdatePlanTool().execute({"tasks": plan}, ctx)
     result = await UpdatePlanTool().execute({"tasks": plan}, ctx)
@@ -130,7 +123,7 @@ async def test_an_outcome_recorded_but_status_left_pending_is_advanced() -> None
 
 async def test_an_edit_is_still_an_edit_not_an_advance() -> None:
     # Autoadvance only fires on an UNCHANGED resend; a real status tick is a normal update.
-    ctx, net = _ctx(autoadvance=True)
+    ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
     ticked = [dict(PLAN[0], status="done"), PLAN[1], PLAN[2]]
     result = await UpdatePlanTool().execute({"tasks": ticked}, ctx)
@@ -145,7 +138,7 @@ async def test_a_same_title_child_does_not_break_the_advance_or_its_stickiness()
     # parent's empty evidence and harness_done=False on every full-replace, and the advance never
     # stuck (progress frozen at 0/3). The carryover now keys on (title, is-parent), so the child
     # keeps its own memory. Regression for that collision.
-    ctx, net = _ctx(autoadvance=True)
+    ctx, net = _ctx()
     plan = [
         {
             "title": "Create utils/duration.py",
@@ -168,10 +161,11 @@ async def test_a_same_title_child_does_not_break_the_advance_or_its_stickiness()
 
 async def test_the_doom_guard_lets_the_harness_walk_a_resent_plan_to_completion() -> None:
     # Fix (b), ADR-0168 lever N: the doom-loop guard keys on the model's identical tool-call batch,
-    # so a model that resends the same plan trips it. But with the flag ON the harness ADVANCES the
-    # plan on each resend — progress, not a stall — so the guard now resets its counter on a harness
-    # advance and the frontier walks to completion instead of dying mid-walk. Measured (arm N ON b3
-    # r3): the advance fired but the run still doom-looped. Loop-level regression, OFF as control.
+    # so a model that resends the same plan trips it. But the harness ADVANCES the plan on each
+    # resend — progress, not a stall — so the guard resets its counter on a harness advance and the
+    # frontier walks to completion instead of dying mid-walk. Measured (arm N ON b3 r3): the
+    # advance fired but the run still doom-looped. Loop-level regression: if the reset regresses,
+    # the walk dies partway and is_complete() is False, which is exactly what this asserts.
     from tests.test_loop_planning import _judge_ok, _plan_call, _Scripted
     from zakcode.agent.loop import AgentLoop
     from zakcode.config import Settings
@@ -185,25 +179,12 @@ async def test_the_doom_guard_lets_the_harness_walk_a_resent_plan_to_completion(
         {"title": "B", "outcome": "did B"},
         {"title": "C", "outcome": "did C"},
     ]
+    # author, decomposition judge, then resend the identical plan (Scripted repeats the last).
+    provider = _Scripted([_plan_call(plan), _judge_ok(), _plan_call(plan)])
+    session = Session(cwd="/tmp", model="test/model")
+    loop = AgentLoop(provider, default_registry(), session, max_iterations=20, settings=Settings())
+    await loop.arun_turn("do a three-step thing")
 
-    async def walk(flag: bool) -> TaskNetwork:
-        # author, decomposition judge, then resend the identical plan (Scripted repeats the last).
-        provider = _Scripted([_plan_call(plan), _judge_ok(), _plan_call(plan)])
-        session = Session(cwd="/tmp", model="test/model")
-        loop = AgentLoop(
-            provider,
-            default_registry(),
-            session,
-            max_iterations=20,
-            settings=Settings(plan_autoadvance=flag),
-        )
-        await loop.arun_turn("do a three-step thing")
-        return session.task_network
-
-    on = await walk(True)
-    assert on.is_complete()  # the harness walked all three steps done across identical resends
-    assert [t.status for t in on.tasks] == ["done", "done", "done"]
-
-    off = await walk(False)
-    assert not off.is_complete()  # without the reset the walk never happens
-    assert not any(t.title in {"A", "B", "C"} and t.status == "done" for t in off.tasks)
+    net = session.task_network
+    assert net.is_complete()  # the harness walked all three steps done across identical resends
+    assert [t.status for t in net.tasks] == ["done", "done", "done"]

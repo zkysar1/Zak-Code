@@ -531,8 +531,8 @@ class TaskNetwork(BaseModel):
                 # ADR-0168 lever N: a harness-advanced leaf is STICKY. The model that drives the
                 # doom loop will not emit ``status: done`` and resends its plan with the step still
                 # ``pending``; without this, the full-replace would undo the advance every call and
-                # the frontier could never move. Only ever fires when ``harness_advance`` set the
-                # flag (opt-in ``plan_autoadvance``), so it is dormant otherwise. A genuine reopen
+                # the frontier could never move. Only ever fires on a leaf ``harness_advance``
+                # itself marked, so an ordinary plan edit is untouched. A genuine reopen
                 # would carry NEW work (evidence), which the next advance decision sees.
                 task.status = "done"
             if task.children or task.status == prior.status:
