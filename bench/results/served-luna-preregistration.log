@@ -649,3 +649,171 @@ Reading rules: A-L apply unchanged, word for word, with one repair that sample 3
      ADR-0198 is credited only through E2, E3 and E4, each mechanical and read off the trace or the ledger.
 A fifth sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
 rate is stated. Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03; this block's controls cost $0.00.
+
+=== 01:39 UTC 2026-09-19 RESULTS -- SERVED LOOP ON LUNA, sample 4 (launched 00:39:43Z 2026-09-19, web app exited at t+2191 s, run done 01:16:17Z)
+Validity: a VALID SAMPLE under rule B. 231 luna calls and no other model; none of rule A fired (first luna call at
+t+5 s and 10 inside the first 30 s, the /start command accepted and run as a turn, 0 provider-error aborts, 0
+failovers, 0 tracebacks in 1,227 serve.log lines, spend $1.2786 against the $6.00 stop, zakcode HEAD 399cd82 on main
+with a clean status and src tree 53a1d1c1 at start and end, host daemon pid/port/health unchanged, 0 leaked mounts, 0
+listeners left on the web app's port). 399cd82 is the merge of this sample's own pre-registration (#557, no product
+code); its src tree is the one that block names. Rule J's instrument clause holds: the patched endpoint read sha256
+7779c82cc8ea41d5 at start and end. No PR merged during the run. While the web app ran I wrote a bench script in a
+separate worktree and ran ruff and an offline self-test there; the run's checkout (HEAD, status, src tree) was not
+touched, and my next model call went out at 01:18Z, after the end lines were on file (01:16:32Z).
+Rule A's assembly clause, checked because this run's finding touches it. The world this sample started in had never
+been fully initialized, and that is the recipe's state, not my assembly's: the vessel recipe (the environment
+server's mind-sidecar bootstrap, read in a local clone dated 2026-08) creates the same empty directories, plants the
+agent and leaves full initialization to the boot skill that /start chains into. My assembly mirrors those steps and
+is byte-identical to the one samples 1 to 3 used. Sample 2's world was initialized 51 s after its launch (its program
+file and world queue carry that time); which command did it is not on record.
+Instrument limit, and it decides how P1 is read: compaction ran 7 times, so the surviving session file holds 91
+messages and 40 tool calls of a run that made 213. The whole-run ledger is the per-turn trace: 4 turn files, 514 rows
+(231 usage, 209 tool, 66 intervention, 4 route, 4 stop), 0 sub-agent files, 0 non-JSON lines. The diagnosis ledger
+copied from the first call (494 rows: 213 tool calls, 213 results, 68 text rows; a message the harness rewrites is
+recorded again, so text rows overcount messages). It holds 4 more Bash calls than the trace has tool notes: the 4
+the plan-first gate refused before they ran, each matched by a plan_first note.
+It is an aid, not part of the instrument, and it stays in scratch.
+
+  P1  MISS.      The instrument reads 0 banner lines (0 loose mentions) in the surviving session file; A2 = 0
+                 completion requests; the store's completed query returns 0 goals. Beside it stands an outcome my
+                 rules did not name. The diagnosis ledger shows what compaction took out of the instrument's view: 3
+                 closing-script calls, each printing the banner as a line (00:54:20Z, 00:56:40Z, 01:10:40Z). None
+                 names a goal, and the access log holds 0 claim requests: no goal was selected, claimed, worked or
+                 completed, so each is the close of an iteration that did no goal work. By M1's letter that is three
+                 closed iterations. The letter is wrong, not the run right: the closing script prints its banner
+                 whether or not the iteration had a goal. Rule E governs: an outcome not named is reported as
+                 measured and never upgraded to a HIT. On the instrument M1 and A2 agree (0 and 0); on the ledger
+                 they disagree (3 and 0), and M1's wording is repaired below. Samples 1 to 3 read M1 from the
+                 surviving session file too; each of those 0s also rests on the store (0 completed), and samples 2
+                 and 3 on A2 = 0. Whether samples 1 and 2 printed such banners is not on record.
+  P2  HIT.       update_plan was 31 of 209 tool notes on the whole-run trace ledger (14.8%); the surviving session
+                 file reads 7 of 40 (17.5%). Samples 2 and 3 read 17.1% and 10.5%.
+  P3  HIT; the empty-completion gate itself UNTESTED. The instrument reads 0: no empty_completion note in 231 calls.
+                 The usage rows and the ledger show ONE completion with no visible output (4 completion tokens, turn
+                 3, 01:11:00Z). The plan gate answered it first, because the plan had an open step, and the plan
+                 gate writes no trace note; the empty-completion gate behind it never ran. Longest run of empties:
+                 1. M3 as defined cannot see an empty completion the plan gate absorbs; repaired below.
+  P4  HIT, and the mechanism was exercised. 71.7% of 17,578,907 luna prompt tokens were cache reads (12,596,931;
+                 the first call at or over 80% was call 2; max prompt 130,936 tokens). One cache_friendly_tail note
+                 marks the ADR-0193 switch at call 51, after a flat read of 44,882 tokens while the prompt grew. The
+                 per-call cached share has a median of 63% over the 51 calls before the note and 98% over the 180
+                 after it. Not a clean before/after: see the three flat stretches under Cost below.
+  P5  MISS.      3 of 4 turns ended veto_stall (turns 1, 2 and 3). 0 broken_record notes, so this says nothing about
+                 the ADR-0194 bound.
+  P6  HIT.       duration_cap, IDLE, assistant, own exit at t+2191 s, 329 s inside the supervisor clock, no
+                 supervisor signal, both stop files consumed. Its condition held in this form: at the cap less the
+                 reserve the loop was alive and at rest (state RUNNING, a wake-up armed after turn 3's stall). The
+                 stop path is reported below.
+  P7  HIT.       Recorded $1.2786 on 231 streamed luna calls with 12,596,931 cached tokens; the list-rate re-price
+                 of the same rows is $1.2786. ADR-0195 holds on the served path, a fourth time.
+  D1  HIT at the veto door, thin: after 5 such pointers the next completion ran a work call 3 times (60%). At the
+                 mid-turn door 0 of 2. The door's real finding is under Causes: the count that matters is what
+                 follows a DELIVERY, and no delivery was followed by work.
+  D2  MISS.      3 turns ended veto_stall; the bound was 1.
+  D3  HIT.       7 re-entries; 5 were followed by at least one work call before the turn ended (71%). Read closer
+                 below: 3 of the 7 re-entry bodies were followed by no work call at all before the next skill call,
+                 delivery or stop.
+  D4  HIT.       0 hook timeout lines in 1,227 serve.log lines; first luna call at t+5 s.
+  C1  UNTESTED.  0 claim requests, so none named a queue.
+  C2  UNTESTED.  0 claim requests. The declared claim fix was not exercised, a second time.
+  S1  HIT.       3 stuck notes (turn 2: 2, turn 4: 1), all carrying evidence fields (signals repeated-outcome 2,
+                 all-errors 2, no-progress 2; repeated-outcome by tool: update_plan 1, Bash 1); 0 naming a harness
+                 delivery tool.
+  A2  0 completion requests. A1 = 0 claim requests.
+  E1  HIT.       The loop ENTERED: 69 of 73 samples read RUNNING, from the first sample (about t+30 s). The 4 that
+                 do not are the last four (t+2101 to t+2191), inside the stop turn, reading IDLE.
+  E2  UNTESTED.  The run's first tool note was update_plan (ok), preceded by one plan_first note: luna's first call
+                 was a Bash call the plan-first gate refused, and it planned next. Not a Skill call, as in sample 2.
+  E3  HIT by the number; mechanism UNTESTED. 0 slash_text_routed notes of any kind, so the backtick rule never ran.
+  E4  UNTESTED.  0 hook blocks in 213 ledger tool results and 0 in the surviving file's 40.
+  Reported: 231 calls, 17,578,907 prompt and 25,209 completion tokens, $1.2786. Tool notes: Bash 136 (26 failed),
+  update_plan 31, Skill 30, ScheduleWakeup 7, Read 4, LS 1; 115 work calls under the ADR-0196 definition.
+  Interventions: wakeup 16, turn_end_skill 13, skill_pointer 7, skill_reentry 7, compaction 7, plan_first 4,
+  veto_stall 3, plan 3, stuck 3, gate_cascade 2, cache_friendly_tail 1. Skill calls by answer: the loop skill 17 (10
+  bodies of 55,932 characters, 7 pointers), the precheck 5 (132,117 characters each), the strategic scan 2 (104,992
+  each), graceful stop 2, boot 1 (38,142), select 1, consolidate 1, tree 1. 94 distinct framework scripts were run.
+  4 turns: 00:39:48-00:41:31 (32 calls, veto_stall), 00:51:31-00:58:59 (92, veto_stall), 01:09:00-01:12:18 (66,
+  veto_stall), 01:13:57-01:16:07 (41, completed). Model activity covered 879 s of 2,191; the rest is two 600 s waits
+  for the wake-up after a stall and 99 s before the stop. REST, longest stretch: 570 s (t+120..t+690). Goals: 0
+  completed, 13 pending: the agent queue's 9 plus 4 filed by framework scripts inside the third close (the access log
+  holds 5 add-goal requests, none from a command the model wrote; the first, from inside the first close, was
+  refused 404 aspiration_not_found). The access log holds 583 requests: 59 writes over 13 routes, 18 refused or
+  failed (9 unknown_goal_field on the goal query, 6 not_found on the aspiration read, 3 others).
+
+Reading, under the rules as written. C: MISS on P1 (0 on the instrument; an unnamed outcome beside it, not upgraded).
+P2 and P3 HIT. No rate is claimed in either direction (F): four samples, N=1 each. D: not the named outcome. The loop
+rested for 1,300 of 2,191 s, and every rest but the last was the wait for a wake-up that came. M: not triggered, the
+loop entered. N: E1 HIT with E2 UNTESTED says nothing about ADR-0198, and nothing here credits it. H does not apply:
+P1's MISS came with stalls. K's first branch applies as written: no claim was granted, so the finding is the
+selection and claim path, and C1 and C2, both UNTESTED, place it before any claim: at SELECTION.
+
+Where the loop stopped (rule K), from the access log and the ledger and nothing else.
+  1  The goal selector failed on every invocation, 9 of 9, the same way: an unhandled file-not-found for a strategy
+     file that full initialization creates under the world's meta directory. At the end of the run that directory
+     holds 3 files and not that one. The failure is a raw traceback that names the file and not the remedy.
+  2  Full initialization never ran. It is the boot skill's first step. luna finished the start ceremony correctly
+     in 9 calls (a plan, the state change to RUNNING, the plan closed), loaded boot as the ceremony's last act (one
+     Skill call, 38,142 characters) and then answered with 83 tokens of text. No step of boot ran: 0 of the run's
+     140 Bash commands names an initialization script.
+  3  Nothing sent the model back to boot. The turn-end hook refused that ending and asked for the loop skill, as it
+     does for any ending while the state is RUNNING, and the harness delivered the loop. From there every turn ran
+     the loop in a world that was never initialized: the entry battery, the precheck (loaded 5 times), a strategic
+     scan, then the selector, which failed. luna probed the file system, reported accurately that selection was
+     blocked (12 of its 17 text-only messages say so; median 486 characters), and three times closed the iteration
+     with no goal, which the closing script accepted.
+  This is a framework finding and a first-decision finding, not a verdict on the iteration body, which stays
+  UNTESTED a fourth time: no sample has yet selected a goal and worked it to a close.
+
+The stalls (rule L), in my words. Three turns ended veto_stall after text-only completions, and the pattern across
+the run is the same decision made 13 times.
+  4  What follows a veto-door delivery. 13 deliveries. After 7 of them luna's next act was to call the loop skill
+     again, the redundant call, answered with the pointer. After 6 it answered with text alone. After 0 did it go
+     straight to work. The delivery's frame is the product's own sentence: it says the harness has made the skill
+     call, says not to call the skill again, and then relays the hook's words, which ask for exactly that call. One
+     message carries both instructions. This is an association over 13 deliveries in one run, not an established
+     cause: the frame's wording has no arm of its own here.
+  5  What follows a re-entry body. 7 re-entries. Before the next skill call, delivery or stop, 3 were followed by no
+     work call, 2 by one, 2 by three or more. In turn 1 the first delivery was followed by 11 shell calls (8
+     succeeded), the second by 1, the third and fourth by none.
+  6  The ending that started it. The first text-only ending came two calls after the plan read complete. The
+     plan-complete hint tells the model to answer the original request, conclusion first, and the 83-token text has
+     that form. One occurrence, an association, not pursued further here.
+  All of this happened at reasoning effort none, which this tier is forced to whenever tools ride along. The effort
+  bench's decision-point cells (2026-09-19) are the same kind of moment: a refused or pointed call where the right
+  act is work and the observed act at effort none is text or the same call again. Whether depth changes what luna
+  does at THESE decision points, with the real context, is not measured by either instrument yet.
+
+Cost, reported because 17.6M prompt tokens bought 115 work calls.
+  7  Each veto-door delivery re-sends the whole loop body. The prompt grew by a median of 14,451 tokens across a
+     delivery (n=13, max 14,537); turn 1 went from 55K to 130K tokens in 4 deliveries and one re-entry body, inside
+     76 s, and compacted. The run compacted 7 times. Bodies that arrive as tool results are larger still: the precheck
+     is 132,117 characters and was loaded 5 times.
+  8  Three stretches of calls read a flat 27K to 30K cached tokens, or none, against prompts of 44K to 130K: calls
+     22-33, 104-125 and 175-191. Each covers the last part of a stalled turn and the first call of the next turn.
+     Together they hold 3,316,843 of the run's 4,981,976 uncached prompt tokens (67%), about $0.66 of $1.28. Two
+     of the three come AFTER the ADR-0193 switch. Why the read goes flat there is not established.
+
+The stop path, seen for the first time on a loop that was alive and at rest. At 01:13:57Z (t+2054 s, the cap less
+the reserve) the harness raised the framework stop and, with no turn in flight, started the loop's re-entry itself,
+as ADR-0189 specifies. That turn read the stop and ran the framework's own ending: the graceful-stop skill twice,
+consolidation in stop mode, tree maintenance in stop mode, 41 calls in 130 s, ended "completed" at 01:16:07Z. State
+IDLE, mode assistant, both stop files consumed, own exit 329 s inside the supervisor clock. Nothing was interrupted.
+
+Instrument repairs owed before any fifth sample, each a change to MY instrument and none to a criterion's intent.
+  M1  counts a close only if it did goal work: a closing-script banner LINE from a call that names a goal id, with
+      a granted completion request for that goal in the access log. Banner lines from closes that name no goal are
+      printed beside it as EMPTY CLOSES and never count. M1 is read from the whole-run ledger as well as the
+      surviving session file, with both coverages printed.
+  M3  counts a completion with no visible output from the usage rows and the persisted placeholder, not only from
+      empty_completion notes, which the plan gate can pre-empt.
+  The known answers these must read back before launch: on this run, M1 = 0 with 3 empty closes and M3 = 1.
+
+Not claimed: that luna cannot select or work a goal (no sample has reached a working selector on this build); that
+the veto-door frame causes the redundant call; that effort none causes the text-only endings; that the flat cache
+stretches come from the deliveries. Named follow-ups, none started by this block: the selector's unguarded failure
+and the boot dependency (framework); the delivery frame that relays a satisfied demand, the whole-body re-delivery
+and the plan-complete hint inside a skill chain (product, each needs its own evidence first); a trace note for
+plan-gate nudges (product, observability). Still open from sample 3: the ended-turn marker's advice to reload an
+elided skill with use_skill, and nothing restarting a served run whose first turn ends before the loop is RUNNING.
+Second-sample rule: no named product cause is fixed and merged yet, so no fifth sample is licensed by this block.
+Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.28.
