@@ -11544,3 +11544,83 @@ spelling as the positive control), `tests/test_claude_code_hook_contract.py` par
 warn untouched, the bound). Each fix was removed in turn and its tests went red with the
 field symptom in the message: the user-only refusal, the routed call, `blocked by hook`,
 `Continue.`.
+
+## ADR-0199: a served conversation is not left on OpenAI's servers — the retention field rides `extra_body`, and only to OpenAI's own API
+
+**Status:** Accepted (2026-09-19)
+
+**Context.** ADR-0188 put `reasoning_effort="none"` on every gpt-5.6-tier call that carries tools,
+because the chat route refuses that combination with a 400. What was not noticed is where litellm
+then sends the call. Its `responses_api_bridge_check` moves a gpt-5.4+ chat call onto OpenAI's
+Responses API whenever function tools ride with a non-None effort — and the string `"none"` counts
+— so since 2026-09-17 every tool call of a served luna or terra Mind has gone to `/v1/responses`,
+not to `/v1/chat/completions`. The bench on the product's own route measured this directly:
+80 of 80 product calls reached `/v1/responses`, each carrying its own effort
+(`bench/results/effort-decision-points-preregistration.log`, batches 1 and 2).
+
+The Responses API STORES a response unless the request says otherwise. Measured live, same day,
+through the product's own provider: a request with no `store` field came back with `store: true`
+echoed, and a `GET` on the returned id returned it. The identical request with `store: false`
+echoed `false`, and the `GET` on that id was a 404. Chat completions stores only on request (the
+documented default; not measured here). So a change that was about reasoning depth switched
+provider-side retention on for every served conversation, and nobody decided that. A served Mind's
+prompt carries the framework's skill bodies, the world's own state and whatever the operator's
+vessel put in front of it. Retention of that is a decision, and the decision here is no.
+
+Two wire facts shape the implementation, both measured 2026-09-19 against the real endpoint:
+
+1. **`store` must ride `extra_body`.** A top-level `litellm.completion(..., store=False)` never
+   reaches the Responses request — the body arrives with NO `store` key at all, silently — even
+   though `store` is one of the 27 `ResponsesAPIOptionalRequestParams` annotations and sits in the
+   gpt-5 chat supported-params list. Through `extra_body` it arrives as `store: false`, beside the
+   `prompt_cache_key` that already rides the same door. Four requests, all 200, all on the bridge:
+   litellm alone top-level (dropped), litellm alone via `extra_body` (arrives), the provider's
+   instance `extra_body` (arrives, with the cache key), the provider's per-call `extra_body`
+   (arrives). This is why the annotation lists were not evidence: what a library declares it
+   supports and what its bridge puts on the wire are different questions, and only the second one
+   is the answer.
+
+2. **Which API a call reaches is litellm's decision, not ours.** Nothing in this repo asks for the
+   Responses API; a version bump could route differently, or stop forwarding `extra_body` across
+   the bridge, and retention would change back with no error anywhere. So the request litellm
+   actually builds is asserted, offline, against a canned response.
+
+**Decision.**
+
+- **A call to OpenAI's own API carries `store: False` in `extra_body` by default.** OpenAI's own
+  API is an `openai/`-prefixed or bare `gpt-` model with NO `api_base`: with a base configured
+  those same names mean the OpenAI-compatible server behind it — the pod, a llama-server — which
+  is somebody else's API with somebody else's fields, and what a given backend does with a field
+  it does not know was never measured. Deliberately narrow: `azure/` takes the same litellm bridge
+  and was not sent, so nothing is assumed about it.
+- **Both routes, not just the bridged one.** The field is added whether or not tools ride, so a
+  change inside litellm's routing cannot switch retention back on for a call shape that happens to
+  stay on chat completions. On chat completions `store: false` is the documented default restated.
+- **`setdefault`, and before the refused-field filter.** An operator who configures `store` — on
+  the instance or per call — keeps their word. And because the field is a key of the `extra_body`
+  this call sent, ADR-0181's repair already covers it: a server that refuses the request by name
+  drops `store` for the session and the call is re-issued once, with no new machinery.
+
+**Alternatives rejected.** Passing `store=False` as a top-level litellm argument — measured not to
+reach the wire, which is the whole reason this ADR names the door. Sending it to every destination
+— a named cloud refuses an unknown body argument outright, and that would trade a retention default
+for a request failure. Gating it on whether tools are present, or on the bridge predicate — that
+re-derives litellm's routing decision on our side, which is exactly the coupling that would go
+stale silently. Making it configurable with a new setting — `extra_body` already is that setting.
+
+**Consequences.** Served conversations stop accumulating provider-side. Nothing else about the
+request changes: the effort, the tools, the cache key and the rest of the body are untouched, and
+the bench's "product route" arms are unaffected. The product keeps no response ids and asks for no
+server-side state, so nothing in it depended on retention. NOT changed and worth naming: `azure/`
+is unmeasured and gets nothing; a deployment pointing `OPENAI_BASE_URL` at a proxy while leaving
+`api_base` unset would still be treated as OpenAI's own API, because the product never reads that
+variable and the environment is the operator's to know.
+
+Tests: `tests/test_openai_store_default.py` — the request the provider builds (three first-party
+model spellings, with tools and without, the cache key riding beside it, a configured server behind
+the same prefix, four named clouds, the operator's own `store` winning on both doors, the
+refused-field drop), and the request litellm actually sends, pinned offline with `httpx` patched and
+a canned Responses body: path `/v1/responses`, `store: false`, `reasoning.effort` none, and the
+chat-route twin. `tests/test_local_only.py` — the two assertions that pinned the old request shape
+now say what the shape is. Removing the two-line default turns 8 of these red, naming the wire fact
+each one guards.
