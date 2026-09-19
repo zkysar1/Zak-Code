@@ -161,3 +161,42 @@ to replicate against today's product (batch 1: +2, no room); if it does, that is
 not as confirmation.
 My estimates: refusal REPLICATES against today's product 85%, within the route 95%. Route effect REPLICATES on
 order 80%, on refusal 50% (batch 1's 6 against 0, p = 0.02, is the weakest of the four comparisons).
+
+=== 00:32 UTC 2026-09-19 RESULTS -- REASONING EFFORT AT DECISION POINTS, replication of the two moved cells (launched 00:29:13Z 2026-09-19, done 00:31:23Z, 120 of 120 calls scored)
+Validity: MEASURED. 120 rows, 20 scored calls in every arm x cell, 0 HTTP errors, every row served by "gpt-5.6-luna".
+Call instrument sha256 b3a252a2b07e6907 and reader sha256 3a69244293ca4cd6 at start and end; zakcode HEAD e08fc37,
+the merge of this replication's own pre-registration, with a clean status at start and end. Spend: $0.0135 as an
+upper bound.
+
+As the reader prints it, with batch 1 beside it:
+  passes of 20   A    B    C    against today's product        within the route   route effect   batch 1 (A / B / C)
+  order          20   18    8   DOES NOT REPLICATE (NO ROOM)   REPLICATES         REPLICATES     17 / 19 / 6
+  refusal         3   20    0   REPLICATES                     REPLICATES         REPLICATES      6 / 20 / 0
+Decision, as stamped: refusal REPLICATES on the first line, so BUILD-CANDIDATE stands against today's product. It
+rests on that one cell. order behaves as expected: no room against today's product, while the effort effect inside
+the Responses route and the route effect both replicate.
+Exact p, this batch alone: refusal B vs A 2.6e-08, B vs C 1.5e-11, A vs C 0.23; order B vs A 0.49, B vs C 0.002,
+A vs C 0.00005. The refusal route effect earns its label at exactly the threshold (3) and is weak by the exact test
+in this batch; batch 1's was 6 against 0. The order route effect is strong in both batches.
+Labels. refusal: A text-only 17 and different-action 3; B different-action 20; C text-only 20. All 20 of B's responses
+read the refusing script's source, and 3 of them also asked for its help. order: every FAIL is again the chained form
+(B 2, C 12); no response deployed unconditionally. Reasoning tokens in B: order median 18, refusal median 10. Mean
+latency per response (A / B / C): order 0.87 / 1.01 / 0.85 s, refusal 1.06 / 1.49 / 1.15 s.
+Both batches side by side, as arithmetic only, since no pooled verdict was pre-registered: order A 37 of 40, B 37 of
+40, C 14 of 40; refusal A 9 of 40, B 40 of 40, C 0 of 40.
+My estimates: refusal against today's product 85% (HIT) and within the route 95% (HIT); route effect on order 80%
+(HIT) and on refusal 50% (HIT, at the threshold).
+
+What this licenses, and what it does not. R8 as written: designing a Responses route for this tier behind a flag,
+whose own served sample decides shipping. The finding the design rests on is narrow and has now been seen twice. When
+a call has been refused twice with advice that names the refused call, luna at effort none stops calling tools and
+writes a short text (chat 31 of 40, Responses 40 of 40); at effort low it investigates (40 of 40), for about ten
+reasoning tokens and a few tenths of a second. In a served loop a text where a call was needed is a stall. That is
+one decision point of five. The other point where the arms differ, order, shows no gain over today's product.
+Constraints the design inherits:
+  1  A Responses route must not run this tier at effort none: C is the worst arm in all four cell-batches.
+  2  "Route" here is the endpoint AND my rendering: the system text rides in the instructions field and the tools
+     are flattened. Which of the two moves order is measured first, in a stamped block of its own.
+  3  This bench scores one response. Carrying reasoning items across a tool loop, prompt-cache behaviour on the
+     Responses route (ADR-0193 was measured on chat) and streamed cost accounting (ADR-0195) are all unmeasured on
+     that route, and belong to the design's own measurements.

@@ -564,3 +564,88 @@ The iteration body (sample 1's cause 2) and sample 2's cause 3 stay UNTESTED, an
 Second-sample rule: a named product cause is fixed and merged, so a fourth sample is licensed: the same arm, a new
 build, a new block here. Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03; this block's controls
 cost $0.00.
+
+=== 00:32 UTC 2026-09-19 PRE-REGISTRATION -- SERVED LOOP ON LUNA, sample 4: the same arm on a new build (second-sample rule: three named causes fixed and merged)
+Nothing has been run on this build or in this world with a model; every control below used a dummy key or a scripted
+provider. The three fixed criteria are unchanged: at least one aspirations iteration closes, update_plan under 20% of
+tool calls, no run of more than 3 consecutive empty completions.
+
+What changed since sample 3 (zakcode main fb991f9 -> e08fc37 plus this block's own merge, src tree 6bb0f172 ->
+53a1d1c1, the tree published build 1352 carries):
+  #553 ADR-0198  causes 1, 2 and 3 of sample 3. A user-only skill the operator typed THIS turn answers the model's
+                 redundant call with the already-loaded pointer. A line that still holds a backtick after its
+                 wrapping ones are stripped is a sentence about the command and is not routed. On exit 2, and on a
+                 deny with no reason, a hook's stderr is what the model reads. Five mutation proofs.
+  #554 to #556   bench logs, the effort bench and its replication reader. No product code.
+The ONE DECLARED ASSEMBLY DIFFERENCE is sample 3's, unchanged and copied by hash: the world's copy of
+mind_api/src/endpoints/aspirations_write.py differs from the seed's by one added and one changed line (sha256
+50294cc7a8b53c72 -> 7779c82cc8ea41d5), the functional part of the dev framework's claim fix, which is in no release
+yet. Sample 3 never exercised it (0 claim requests).
+NOT changed, and therefore still in the arm: cause 3 of sample 2 (turn 1's stall after a re-entry body; not
+established); sample 1's cause 2 (the iteration body, which luna has not reached so far) and cause 3 (the plan-first
+gate reads a read-only shell query as mutating); the ADR-0027 decompose hint on whole bodies; the veto message
+quoting the hook's words; the framework's stop-pending hook text; the ended-turn marker's advice to reload an elided
+skill with use_skill, which a user-only skill will refuse; and the fact that nothing restarts a served run whose
+first turn ends before the loop is RUNNING. Also unchanged: this tier runs at reasoning effort none, where the
+effort bench (batch 1, 2026-09-19) saw luna answer a twice-refused call with text and no call in 14 of 20 responses.
+
+Same arm otherwise: the same seed tarball (release 2.12.76, sha256 71c88a26f3b953c0..., 15,999,157 bytes), a FRESH
+throwaway world assembled by the same steps, init_world.sh / served.env / run_served.sh / progress.py / the three
+control scripts byte-identical to sample 3's, the same sandbox, the same ceremony, the same bounds (cap 2400 s,
+reserve 350 s, supervisor wall clock 2520 s, spend stop $6.00, outer timeout 3000 s). Starting state verified equal to
+samples 1 to 3: IDLE, persona false, the two goal queries byte-identical to sample 3's (2 and 1,569 bytes), price map
+luna 2e-07 / 2e-08, web app health 200 in 3 s, host daemon pid/port/health unchanged, 0 leaked mounts.
+First-decision control, no model, on two COPIES of this world (the sample's world is untouched by it). It uses the
+production construction: the served door's own command composition, the served factory's own agent arguments, the
+world's real /start skill and real hooks, the env file the launcher sources, and a scripted provider that answers as
+luna did in sample 3 (the redundant skill call, the same call again, then text):
+  build fb991f9   the typed command is 65,686 characters, sample 3's size exactly. Call 1 -> the user-only refusal, an
+                  error, 215 characters. Call 2 -> a hook block carrying the bare default, 44 characters, sample 3's
+                  size exactly. Sample 3's first decision, reproduced without a model.
+  this build      call 1 -> the already-loaded pointer, not an error, 563 characters, with a skill_pointer note on
+                  the trace. Call 2 -> a hook block carrying the gate's own reason, 140 characters.
+Instrument changes (mine, outside the product): firstdecision.py reads E1 to E4 below from the run's own records. Its
+known answers, read back exactly: on sample 3, 0 of 81 samples RUNNING, first tool note Skill failed, 14 routed notes
+with a backtick, 14 bare defaults in both the ledger and the surviving session file; on sample 2, 72 of 81 samples
+RUNNING from about t+60 s, first tool note update_plan succeeded, 0 routed notes, 0 hook blocks. The diagnosis ledger
+runs from the first call as in sample 3; it is an aid, holds tool outputs and skill text, and is never committed.
+
+Measures and predictions. M1-M7, D1-D4, C1, C2, S1 and A2 keep their definitions.
+  P1  M1 >= 1 iteration closed.                           My estimate: 30% HIT.
+  P2  M2 < 20% on the whole-run trace ledger.             My estimate: 55% HIT (samples 2 and 3: 17.1%, 10.5%).
+  P3  M3 <= 3 consecutive empties.                        My estimate: 85% HIT.
+  P4  >= 70% of luna prompt tokens read from cache.       My estimate: 85% HIT.
+  P5  no turn ends veto_stall.                            My estimate: 35% HIT. Cause 3 of sample 2 is untouched.
+  P6  duration_cap, IDLE, assistant, own exit.            My estimate: 50% HIT. Only if a loop is alive at the cap.
+  P7  recorded luna cost = list-rate re-price within 1%.  My estimate: 90% HIT.
+  D1  veto door, >= 50% of such pointers.                 My estimate: 65% HIT. UNTESTED if none.
+  D2  turns ended veto_stall <= 1.                        My estimate: 50% HIT.
+  D3  re-entry then a work call, >= 50%.                  My estimate: 65% HIT. UNTESTED if none.
+  D4  no hook timeout line, first luna call inside 30 s.  My estimate: 95% HIT.
+  C1  0 claim requests that NAME a queue refused goal_id_collision.
+                                                          My estimate: 95% HIT. UNTESTED if none names one.
+  C2  a goal id granted on the queue its first claim request named.
+                                                          My estimate: 60% HIT. UNTESTED if no claim request.
+  S1  0 stuck notes naming a harness delivery tool, 0 without evidence fields.
+                                                          My estimate: 95% HIT. UNTESTED if none.
+ New, the first decision:
+  E1  the loop ENTERS: at least one 30 s sample reads agent-state RUNNING.      My estimate: 75% HIT.
+  E2  if the run's first tool note is a Skill call, a skill_pointer note answers it and at least one work call runs
+      before that turn ends.                              My estimate: 65% HIT. UNTESTED if the first note is not
+      Skill.
+      I put the chance that it IS tested at 40%: sample 3 opened that way and sample 2 did not (update_plan first).
+      Sample 1's first call is not on record: its build wrote no tool notes. It entered the loop by t+150 s.
+  E3  0 slash_text_routed notes whose routed args carry a backtick.             My estimate: 95% HIT.
+  E4  0 tool results that are the bare hook default.      My estimate: 85% HIT. UNTESTED if no hook blocks a call;
+      read from the ledger and the surviving session file, with their coverage printed beside the count.
+
+Reading rules: A-L apply unchanged, word for word, with one repair that sample 3 showed to be needed:
+  M  THE LOOP NEVER STARTED is a named outcome: no sample reads RUNNING and the access log holds no request from the
+     model. It is read BEFORE rules H and K, which then do not apply: both name stages of a loop that was entered.
+     The finding is then the FIRST DECISION: the first tool notes of the run, their outcomes and what the model was
+     told, read locally and reported in my words. A loop that enters and stops before any claim is K's first branch
+     as written. M is not a verdict on luna and is never upgraded.
+  N  E1 HIT with E2 UNTESTED says nothing about ADR-0198: luna opened another way, as it did in sample 2.
+     ADR-0198 is credited only through E2, E3 and E4, each mechanical and read off the trace or the ledger.
+A fifth sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
+rate is stated. Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03; this block's controls cost $0.00.
