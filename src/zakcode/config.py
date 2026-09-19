@@ -600,20 +600,6 @@ class Settings(BaseSettings):
             "Makefile's lint/check/test targets, else a pyproject ruff config (review lever L4)."
         ),
     )
-    plan_autoadvance: bool = Field(
-        default=True,
-        description=(
-            "When the model resends the plan UNCHANGED and the current step has already been "
-            "worked on (evidence attached or an outcome recorded) but left non-terminal, mark that "
-            "step done and advance — the harness does what a weak model demonstrably will not, "
-            "instead of asking again in words (review lever N, the update_plan doom loop). "
-            "DEFAULT-ON since arm R (ADR-0168): measured byte-identical when it does not fire "
-            "(R1), and on zds-qwen3.8-27b it broke doom runs (doom 2/6 -> 0/6, R2) without harming "
-            "a genuine reopen (a reopen is an edit, not an unchanged resend, so the lever stays "
-            "dormant during it — R3). Set False to opt out (e.g. a >35B model, the untested "
-            "regime)."
-        ),
-    )
     # Plan-first gate (R5, opt-in, OFF by default). When true, the harness will not run a MUTATING
     # tool (write/edit/shell) until the model has laid out a plan with update_plan — "plan before
     # you act", the harness-enforced-planning pole. Read-only investigation is never gated, and the

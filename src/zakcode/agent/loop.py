@@ -6419,7 +6419,7 @@ class AgentLoop:
         repeat_count = 0
         # ADR-0168 lever N: did the previous iteration's batch draw a harness plan advance? Such an
         # identical resend is deterministic PROGRESS, not a stall, so the guard below does not count
-        # it. Only ever True with the opt-in ``plan_autoadvance`` on — byte-identical by default.
+        # it. Set only by an advance that actually fired, which needs a worked-on step (ADR-0202).
         last_autoadvanced = False
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
@@ -6432,7 +6432,6 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
-            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
@@ -7506,8 +7505,8 @@ class AgentLoop:
                     # The previous identical batch was answered with a harness plan advance —
                     # deterministic progress, not a stall. Reset the counter (consume the signal;
                     # the next execution re-sets it) so the frontier walk to completion is not
-                    # killed by the exact-repeat guard. (ADR-0168 lever N; inert unless the opt-in
-                    # plan_autoadvance is on, which is the only path that sets last_autoadvanced.)
+                    # killed by the exact-repeat guard. (ADR-0168 lever N; an advance is the only
+                    # path that sets last_autoadvanced, so an ordinary repeat still counts.)
                     repeat_count = 1
                     last_autoadvanced = False
                 else:
@@ -7946,7 +7945,6 @@ class AgentLoop:
             # The live plan board the update_plan tool rewrites; the loop persists and
             # re-injects it. Shared by reference, so the tool's edits are visible here.
             task_network=self.session.task_network,
-            plan_autoadvance=self.settings.plan_autoadvance,
             sampler=self._sampler,  # deep_think's model access (None = tool returns unavailable)
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
@@ -9307,7 +9305,7 @@ class AgentLoop:
                 if signature == last_signature:
                     if last_autoadvanced:
                         # Previous identical batch drew a harness plan advance — progress, not a
-                        # stall; don't count it (ADR-0168 lever N; inert unless plan_autoadvance).
+                        # stall; don't count it (ADR-0168 lever N; same rule as the buffered path).
                         repeat_count = 1
                         last_autoadvanced = False
                     else:

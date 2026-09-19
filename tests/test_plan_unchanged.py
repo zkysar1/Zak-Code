@@ -72,8 +72,12 @@ async def test_a_status_tick_a_note_or_an_outcome_edit_is_an_update() -> None:
     assert result.output.startswith("Plan unchanged: 1/3 steps done · current: 2 Export")
 
 
-async def test_the_rail_names_a_recorded_outcome_whose_status_never_moved() -> None:
-    # The measured shape: every step still pending, the finished one carrying an outcome.
+async def test_a_recorded_outcome_whose_status_never_moved_is_ADVANCED_not_railed() -> None:
+    # The measured shape: every step still pending, the finished one carrying an outcome. Until
+    # ADR-0202 this reached the unchanged rail with a "you recorded an outcome but left the status"
+    # prefix, because the advance was behind a flag that a bare ToolContext defaulted OFF. The
+    # advance is unconditional now, so the harness closes the step instead of describing it — and
+    # this file's rail is left with exactly one reachable hint (see _unchanged).
     plan = [
         {"title": "Create utils/duration.py", "outcome": "wrote the module"},
         {"title": "Export parse_duration"},
@@ -81,11 +85,8 @@ async def test_the_rail_names_a_recorded_outcome_whose_status_never_moved() -> N
     ctx, _ = _ctx()
     await UpdatePlanTool().execute({"tasks": plan}, ctx)
     again = await UpdatePlanTool().execute({"tasks": plan}, ctx)
-    assert again.output.startswith("Plan unchanged: 0/2 steps done · current: 1 ")
-    assert again.hint is not None
-    assert again.hint.startswith(
-        "Step 1 already carries an outcome but its status is still 'pending'. "
-    )
+    assert again.output.startswith("Advanced step 1 ('Create utils/duration.py') to done")
+    assert again.data is not None and again.data["autoadvanced"] is True
 
 
 async def test_a_finished_plan_resent_gets_the_verdict_rail() -> None:
