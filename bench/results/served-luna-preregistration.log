@@ -434,3 +434,133 @@ Reading rules: A-I apply unchanged, word for word. Added for this sample:
      locally and the finding is reported in my words, never by quoting framework text.
 A fourth sample is taken only under the same second-sample rule. After a PASS, two more samples are owed before any
 rate is stated. Spend so far: sample 1 $0.27, sample 2 $1.14; this block's controls cost $0.00.
+
+=== 00:08 UTC 2026-09-19 RESULTS -- SERVED LOOP ON LUNA, sample 3 (launched 23:13:43Z 2026-09-18, web app exited at t+2432 s, run done 23:54:17Z)
+Validity: a VALID SAMPLE under rule B. 20 luna calls and no other model; none of rule A fired (first luna call at
+t+5 s and 14 inside the first 30 s, the /start command accepted and run as a turn, 0 provider-error aborts, 0
+failovers, 0 tracebacks in 119 serve.log lines, spend $0.0336 against the $6.00 stop, zakcode HEAD fb991f9 on main
+with a clean status and src tree 6bb0f172 at start and end, host daemon pid/port/health unchanged, 0 leaked mounts, 0
+listeners left on the web app's port). fb991f9 is the merge of this sample's own pre-registration (#552, no product
+code); its src tree is the one that block names. Rule J's instrument clause holds: the patched endpoint read sha256
+7779c82cc8ea41d5 at start and end. Zak-Code #553 and #554 merged to origin/main DURING the run (23:48:40Z and
+23:53:27Z), both while the web app sat at rest. The fix was written and tested in a separate worktree; refs were
+fetched for it, and the run's checkout (HEAD, status, src tree) was not touched until the end lines were on file.
+Instrument limit: the harness elides an ended skill turn's body from the session file, so the surviving file (41
+messages) no longer holds the 65,686-character command message the turn opened with. The whole-run ledger is the
+per-turn trace: 1 turn file, 57 rows (20 usage, 19 tool, 16 intervention, 1 route, 1 stop), 0 sub-agent files, 0
+non-JSON lines. The diagnosis ledger copied from the first call this time (42 rows: 19 tool calls, 19 results, 4
+text-only messages). It is an aid, not part of the instrument, and it stays in scratch.
+
+  P1  MISS.      0 iterations closed (0 banner lines, 0 loose mentions). Three independent readings agree: A2 = 0
+                 completion requests in the access log, and the store's completed and pending queries are
+                 byte-identical to the starting-state control (2 and 1,569 bytes). Read under rule D, which names it:
+                 the loop was at REST from t+60 to t+2432 (2,372 of 2,432 s), with no say, no wake-up and no re-entry
+                 after the one turn ended at t+42 s. More exactly, THE LOOP NEVER STARTED. agent-state read IDLE at
+                 all 81 samples, and the daemon's access log holds 0 requests from the model (8 in all: 5 from my
+                 23:03 controls, the launcher's health probe at 23:13:47, its two closing queries at 23:54:17). No
+                 step of the start ceremony reached the framework. This MISS says "no entry". It says nothing about
+                 whether luna can close an iteration, which this sample never tested.
+  P2  HIT by the number, and thin. update_plan was 2 of 19 tool notes on the whole-run trace ledger (10.5%); the
+                 session file reads the same 2 of 19. Coverage: one 42-second turn. 14 of the 19 notes are Skill
+                 calls the HARNESS synthesized from the model's text (cause 2). Of the 5 calls the model issued
+                 itself (Skill 1, update_plan 2, LS 1, Read 1), update_plan is 2. P2 is read on the ledger as
+                 pre-registered; the second figure is printed because most of the first one's denominator is the
+                 harness's own routing.
+  P3  HIT by the number; mechanism UNTESTED. 0 empty completions in 20 calls, so the empty-completion handling
+                 was never exercised.
+  P4  HIT by the number; mechanism UNTESTED. 91.1% of 899,988 luna prompt tokens were cache reads (819,929; the
+                 first call at or over 80% was call 2; max prompt 47,035 tokens). No cache_friendly_tail note marks
+                 a switch, so this says nothing about the ADR-0193 tail.
+  P5  HIT by the number; mechanism UNTESTED. 0 turns ended veto_stall; the one turn ended "completed". 0
+                 broken_record notes and 0 turn-end vetoes. Cause 3 of sample 2 was not exercised.
+  P6  UNTESTED.  Its condition, a turn loop alive at the cap, was not met. By the number: duration_cap, IDLE, own
+                 exit at t+2432 s (88 s inside the supervisor clock, no supervisor signal), and agent-mode ABSENT
+                 rather than assistant: nothing in the run ever wrote a mode. The stop path is reported below.
+  P7  HIT.       Recorded $0.0336 on 20 streamed luna calls with 819,929 cached tokens; the list-rate re-price of
+                 the same rows is $0.0336. ADR-0195 holds on the served path, a third time.
+  D1  UNTESTED.  0 skill_pointer notes at either door.
+  D2  HIT by the number (0 turns ended veto_stall; the bound was 1), with P5's caveat.
+  D3  UNTESTED.  0 skill_reentry notes.
+  D4  HIT.       0 hook timeout lines in 119 serve.log lines; first luna call at t+5 s.
+  C1  UNTESTED.  0 claim requests, so none named a queue.
+  C2  UNTESTED.  0 claim requests. The two-line claim fix this sample declared was never exercised, so rule J's
+                 bound on what a HIT would mean is moot.
+  S1  HIT.       1 stuck note, carrying its evidence fields (signals all-errors and repeated-failure); 0 notes
+                 without evidence fields; 0 repeated-outcome notes naming a harness delivery tool. The note is
+                 attributable, which sample 2's were not, and it is legitimate: 15 failed Skill calls in a row.
+  A2  0 completion requests, agreeing with M1 = 0.
+  Reported: 20 calls, 899,988 prompt and 1,015 completion tokens, $0.0336. Tool notes: Skill 15 (15 failed),
+  update_plan 2, LS 1, Read 1; 2 work calls under the ADR-0196 definition. Interventions: slash_text_routed 14, plan
+  1, stuck 1; 0 wake-up notes; 0 compactions. Skills invoked: start, 15 times. 1 turn (completed, 20 iterations,
+  escalated). Model activity covered about 37 s of 2,432 (23:13:48Z to 23:14:25Z); REST t+60..t+2432. Goals: 0
+  completed, 9 pending: the agent queue's 9. Sample 2 ended with 15, those 9 plus the 6 of the world queue that its
+  boot initialized; here no boot ran.
+
+Reading, under the rules as written. F: three samples, N=1 each, no rate is claimed. G and I: not triggered. H and
+K MISNAME this outcome, and I do not take their reading. H says a P1 MISS with no stall is sample 1's cause 2, the
+iteration body; K's first branch says no claim granted means the selection and claim path. Both rules enumerate
+where a STARTED loop stops. Neither names "the loop never started", so each would file this run under a stage it
+never reached. That is a gap in MY enumeration, not a finding about the product. Rule D names the outcome and rule
+E governs it: reported as measured, never upgraded. Sample 4's rules name it. L: not triggered; the findings below
+are in my words all the same.
+
+Causes, each named from this run's own record. All three are HARNESS defects, and each told the model something that
+was false for that turn.
+  1  The first decision, fatal. The operator's typed /start arrived as a command message carrying the whole skill
+     (65,686 characters). luna's first act was to call Skill(start) itself: the redundant call a small model makes
+     right after a command lands. ADR-0109's user-only refusal stood IN FRONT of ADR-0063's already-loaded answer,
+     so instead of "you already have it, carry on" the model was told that the skill cannot be run from here and to
+     tell the operator so without retrying. The operator HAD run it, and its instructions were in the model's
+     context. luna obeyed the sentence.
+  2  The amplifier. luna's reply was a single line that opened with the command in backticks and went on to say the
+     operator must run it. _slash_invocation read that line as the model invoking the skill by typing it, and routed
+     it as Skill(start) with the rest of the sentence as its arguments (114 to 124 characters, a backtick in each).
+     This happened 14 times in a row: 14 of the run's 19 tool notes are calls the model never made.
+  3  The parity gap. Each routed call was stopped by the framework's Skill gate, which exits 2 with its reason on
+     stderr. That is Claude Code's hook contract: on exit 2 the model reads stderr. Zak-Code read stdout only, so 14
+     times the model was handed the harness default ("blocked by hook") and never the gate's own sentence, which
+     says in effect that the skill is already loaded and is to be followed, not invoked again. That sentence is the
+     one that points back to work.
+  After the 14th block the stuck ladder's first rung fired. luna listed a directory, read a file, updated its plan
+  and ended the turn with a 306-character answer telling the operator that the command is theirs to run. The turn
+  ended "completed" at t+42 s and nothing followed. In sample 2 every stalled turn was followed by a new turn 600 s
+  later (19:33:04 -> 19:43:04, 19:50:51 -> 20:00:52): a wake-up armed by a turn-end hook, 14 such notes across its
+  turns. Here agent-state stayed IDLE and the trace holds 0 wake-up notes.
+  Sample 2's opening, same seed and ceremony: update_plan, then seven shell calls, RUNNING inside 60 s. What differs
+  between the two is luna's first decision. N=1 each: this pair cannot say how often either opening occurs.
+
+No-model control for cause 3 (dummy key), on a COPY of the finished world: the framework's real Skill gate driven
+through the product's HookManager with the payload shape the run used.
+  build fb991f9   start: blocked, message = the 15-character default, on both attempts. Positive control, a skill
+                  the gate had not recorded yet: allowed on attempt 1, blocked with the same default on attempt 2.
+  the fix's tree  start: blocked, message = the gate's own 111-character reason, on both attempts.
+  My first run of this control failed OPEN in every arm, the positive control included: I had launched it without
+  the world's served.env, so the gate could not resolve its agent. A control that does not carry the production
+  call shape measures nothing. It was re-run with the env lines run_served.sh exports. One arm-order artifact
+  remains and is not a finding: on the fix's tree the positive-control skill was blocked on attempt 1, because the
+  first arm had already recorded it in the same copy.
+
+The stop path, seen for the first time with no loop running. The harness raised the framework stop at 23:47:57Z
+(t+2054 s: 2,050 s after the web app came up, the cap minus the reserve) although agent-state read IDLE. Nothing
+consumed it. At 23:53:47Z the harness logged that the stop went unconsumed and retired the signal pair itself; both
+files were absent at exit. The log line is accurate here, where in sample 2 the same line overstated a stop that had
+been consumed. Whether a stop should be raised at all for an agent that is not RUNNING is noted and not pursued.
+
+Fixed and merged: ADR-0198 (#553, f4c8d1d; CI green on four jobs, Windows included). A user-only skill the operator
+typed THIS turn answers the model's redundant call with the already-loaded pointer, and the refusal stands
+everywhere else (never typed, the harness door, a fresh turn, a changed body). A line that still holds a backtick
+after its wrapping ones are stripped is a sentence about the command, not the command. On exit 2, and on a deny with
+no reason, a hook's stderr is what the model reads, bounded at 4,000 characters, with stdout winning when both
+speak. Five mutation proofs (the typed pointer, the backtick rule, the tool hook's stderr, the turn-end hook's
+stderr, the end-to-end replay); each sabotaged run fails on the symptom it guards: the refusal as an error, the
+routed call, "blocked by hook", and for the turn-end hook the wordless "Continue.". The fix is in published build
+1350, which latest/ points at (read back from the bucket: commit 860e54d, 3,402,910 bytes).
+NOT changed, and named as follow-ups: the ended-turn marker still tells the model to reload an elided skill with
+use_skill, which a user-only skill will refuse; and nothing restarts a served run whose first turn ends before the
+loop is RUNNING. The second is a product decision, not a defect to patch quietly. Not measured: how Claude Code
+renders an exit-2 hook whose reason is on stdout only, which is how the framework's Read gate speaks.
+Not claimed: that ADR-0198 closes an iteration, or that luna now starts reliably. One sample showed one opening.
+The iteration body (sample 1's cause 2) and sample 2's cause 3 stay UNTESTED, and so does the claim fix.
+Second-sample rule: a named product cause is fixed and merged, so a fourth sample is licensed: the same arm, a new
+build, a new block here. Spend so far: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03; this block's controls
+cost $0.00.
