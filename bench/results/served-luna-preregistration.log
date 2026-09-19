@@ -982,3 +982,74 @@ from the aborted run; the assembly is otherwise rebuilt from the same seed by th
 
 SPEND. sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, the aborted sample-5 launch
 $0.0292, the ADR-0201 instrument probes $0.00028. Sample 5 stays bounded at $6.00 and 2400 s.
+
+=== 11:02 UTC 2026-09-19 SAMPLE 5 ATTEMPT 2 IS INVALID -- AN ASSEMBLY DEVIATION, NOT A READING ===
+
+THE VERDICT FIRST. The 10:50:10Z run is INVALID and is read for nothing. Its world was never
+provisioned, so it was not sample 5's declared assembly and none of the four branches applies. It
+cost $0.0338. I am recording this before relaunching, so the record cannot be written after seeing a
+result.
+
+WHAT WENT WRONG, and it is mine. build-world.sh was written this window as a RECONSTRUCTION of the
+assembly samples 1-4 used, and it omitted one file: the agent's local-paths.conf. Without it
+WORLD_DIR resolves to None, so init-agent.sh dies in aspirations.py, the agent tier is never
+initialised, and the kit's init_world.sh never writes the real self.md or sets agent-state IDLE.
+The pre-registration says "EVERYTHING ELSE IS SAMPLE 4'S ASSEMBLY" and this was not that.
+
+HOW IT PRESENTED, because the run looked healthy the whole way. 23 tool calls, 0 errors, 0
+failovers, 90% cached, a maintained plan. The model read files, grepped, and ran the scaffolding
+check. Then it called await_user twice and ended: agent mind was a genuine first-run agent, /start's
+UNINITIALIZED protocol requires the operator to supply a Self, aspirations and a curriculum choice,
+and a served run has no operator. The turn ended stop_reason=completed at 16 iterations and nothing
+restarted it. skill_pages_delivered was empty -- boot never loaded at all.
+
+Read plainly: luna was CORRECT. It followed the framework's own first-run protocol, asked for what
+that protocol demands, and refused to mutate state without it, closing with "remains safely
+uninitialized". That is the right behaviour on an unprovisioned world, which is exactly why it is
+evidence about my assembly and not about reasoning depth.
+
+B1 WAS NOT TESTED. Not a MISS -- boot was unreachable, so the measure had no opportunity to fire.
+Reporting a MISS here would have recorded a null result against a configured depth that never got
+the chance to matter, and that is the specific error this block exists to prevent.
+
+WHAT DID READ, and it stands independent of the assembly, because none of it depends on the world
+being provisioned:
+  W1a  PASS. The product's own factory sent reasoning_effort='low' on all five luna categories,
+       with tools and without; classify sent none.
+  W1b  CONFIRMED on a real served loop. The pre-flight pin separated 53 reasoning tokens against 0
+       on this build, and the run's session file then carried reasoning_tokens on all 16 usage rows
+       -- 14 of 16 NON-ZERO, maximum 115. So luna does spend reasoning at a configured low on real
+       served prompts, and the restated gate reads end to end.
+  ADR-0201's build proof held: the key's presence in the session rows is what proves #565's build
+       executed, with no separate assertion.
+  One instrument correction found while reading it: the TRACE usage row is a hand-built projection
+       (completion_tokens, cost_usd, latency_s, model, prompt_tokens, streamed, total_tokens) and
+       carries neither reasoning_tokens NOR the cache fields. The SESSION usage row is a whole
+       serialized Usage and carries all of them. W1b must be read from the session file, which is
+       what the amendment above already specifies. A new field is not wired where a consumer
+       projects fields by hand (guard-6374@ayoai-mind, which is what prompted checking at all).
+
+THE FIX, asserted at build time so it cannot recur silently. build-world.sh now plants
+agents/mind/local-paths.conf inside the sandbox and then refuses to return a world unless
+.initialized is present, self.md is NON-EMPTY, and agent-state reads IDLE. Verified on the world
+built for attempt 3: self.md 1619 bytes, state IDLE, persona false, and an agent directory whose
+entries match world 1's.
+  Deliberately NOT added: the framework's own init-world.sh and init-meta.sh. They scaffold 28 and
+  32 top-level entries, while world 1 -- the reference assembly -- shows only 5 and 1 AFTER a
+  complete run, so those were created lazily by the running agent and were never launch state.
+  knowledge/ and meta/ are therefore REPORTED by the builder and never asserted.
+
+A FOURTH FRAMEWORK FINDING, filed beside sample 4's three and not fixed here. /start's UNINITIALIZED
+protocol is unsatisfiable by construction in a served context: it requires operator input, a served
+run has no operator, and the result is a turn that ends correctly and is then restarted by nothing.
+On a provisioned world this branch is never reached, so it is not a blocker for sample 5 -- but a
+vessel that ever starts against an unprovisioned workspace will sit at that gate indefinitely.
+
+NOTHING ABOUT EFFORT IS CONCLUDED. The question, the declared difference, the measures, every
+prediction and estimate, the reading rule and the second-sample rule all stand exactly as
+pre-registered at 10:05 UTC and amended at 11:12 UTC. Attempt 3 launches against a provisioned
+world built by the corrected script; the world for attempt 2 is retired unread.
+
+SPEND. sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, the aborted attempt 1
+$0.0292, the invalid attempt 2 $0.0338, the ADR-0201 probes $0.00028, the attempt-3 pre-flight pin
+~$0.0002. Attempt 3 stays bounded at $6.00 and 2400 s.
