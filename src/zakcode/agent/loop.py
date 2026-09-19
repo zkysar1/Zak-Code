@@ -5687,7 +5687,7 @@ class AgentLoop:
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(usage, model=self.provider.model_id())
             if self.budget is not None:
-                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         return verdict.approved, verdict.issues
 
     def _judge_provider(self) -> Provider:
@@ -5727,7 +5727,7 @@ class AgentLoop:
         with contextlib.suppress(Exception):  # accounting must never break the tool result
             self.session.add_usage(usage, model=self._judge_provider().model_id())
             if self.budget is not None:
-                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         if not card.scores or card.overall >= _PLAN_JUDGE_SILENCE:
             return ""  # empty scores = could not judge (fail-open); high overall = sound plan
         weakest = sorted(card.scores.items(), key=lambda kv: kv[1])[:2]
@@ -5762,7 +5762,7 @@ class AgentLoop:
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(usage, model=self._judge_provider().model_id())
             if self.budget is not None:
-                self.budget.add_usage(usage.cost_usd, usage.total_tokens)
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         if not card.scores or card.overall >= threshold:  # empty => fail-OPEN (couldn't judge)
             return True, ""
         return False, weak_dimensions(card, threshold)
@@ -6729,7 +6729,9 @@ class AgentLoop:
             self.session.add_usage(result.usage, model=self.provider.model_id())
             turn_usage = turn_usage + result.usage
             if self.budget is not None:
-                self.budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+                self.budget.add_usage(
+                    result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced
+                )
 
             # Degeneration guard (ADR-0018): a completion whose tail is one short chunk
             # repeated over and over is the documented low-temperature Gemini 2.5 /
@@ -6823,6 +6825,36 @@ class AgentLoop:
                             "Not executed: the cost/token budget was exhausted "
                             "before this tool batch ran.",
                             "budget_exhausted",
+                        )
+                    )
+                    self._persist()
+                break
+
+            # A cost ceiling was set but a call could not be priced at all, so the meter
+            # cannot enforce it: $0.00 here means "unknown", not "unspent". Checked AFTER
+            # over_budget so a genuine crossing keeps the accurate label, and reported under
+            # its own reason — borrowing "exhausted" would claim a spend that never happened.
+            # Stopping is the safe direction: the alternative is running unbounded under a
+            # ceiling the operator believes is protecting them (max_tokens still applies).
+            if self.budget is not None and self.budget.cost_ceiling_unenforceable():
+                stop_reason = "budget_unpriced"
+                self._note(
+                    "intervention",
+                    "cost ceiling unenforceable: model has no price",
+                    kind="budget_unpriced",
+                )
+                logger.warning(
+                    "turn stopped: max_cost_usd is set but %d call(s) could not be priced "
+                    "(model absent from the price map), so the ceiling cannot be enforced",
+                    self.budget.unpriced_calls,
+                )
+                if result.has_tool_calls:
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            "Not executed: a cost ceiling is set but this model has no "
+                            "known price, so spend cannot be bounded.",
+                            "budget_unpriced",
                         )
                     )
                     self._persist()
@@ -8236,7 +8268,9 @@ class AgentLoop:
                         turn_usage = turn_usage + attempt_usage
                         if self.budget is not None:
                             self.budget.add_usage(
-                                attempt_usage.cost_usd, attempt_usage.total_tokens
+                                attempt_usage.cost_usd,
+                                attempt_usage.total_tokens,
+                                attempt_usage.cost_unpriced,
                             )
                         if saw_usage:
                             # Tag with the model for per-model /cost attribution (streaming).
@@ -8588,6 +8622,34 @@ class AgentLoop:
                         )
                         self._persist()
                     yield AgentStatus(message="stopping: cost/token budget exhausted")
+                    break
+
+                # Unenforceable-ceiling stop, streaming twin of the buffered path.
+                if self.budget is not None and self.budget.cost_ceiling_unenforceable():
+                    stop_reason = "budget_unpriced"
+                    self._note(
+                        "intervention",
+                        "cost ceiling unenforceable: model has no price",
+                        kind="budget_unpriced",
+                    )
+                    logger.warning(
+                        "turn stopped: max_cost_usd is set but %d call(s) could not be priced "
+                        "(model absent from the price map), so the ceiling cannot be enforced",
+                        self.budget.unpriced_calls,
+                    )
+                    if tool_calls:
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                "Not executed: a cost ceiling is set but this model has no "
+                                "known price, so spend cannot be bounded.",
+                                "budget_unpriced",
+                            )
+                        )
+                        self._persist()
+                    yield AgentStatus(
+                        message="stopping: cost ceiling unenforceable (model has no price)"
+                    )
                     break
 
                 # No tool calls → the turn is complete.

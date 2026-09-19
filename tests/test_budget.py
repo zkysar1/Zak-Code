@@ -114,3 +114,56 @@ def test_reset_starts_a_fresh_turn_tree() -> None:
     assert b.tokens_spent == 0
     assert b.children_spawned == 0
     assert b.try_consume(1)  # the next turn gets a full pool
+
+
+def test_unpriced_call_makes_a_cost_ceiling_unenforceable() -> None:
+    # A model absent from litellm's price map yields cost_usd 0.0 because nothing is KNOWN,
+    # not because nothing was spent. Folded in naively that 0.0 is indistinguishable from a
+    # free call, so _cost_spent sits at $0.00 forever and max_cost_usd can never trip.
+    b = IterationBudget(10, max_cost_usd=5.0)
+    b.add_usage(0.0, 1_000_000, cost_unpriced=True)
+
+    assert b.unpriced_calls == 1
+    assert b.cost_spent == 0.0  # still never guessed
+    assert b.cost_ceiling_unenforceable() is True
+    # ...and it must NOT masquerade as a crossed ceiling: nothing was spent, so reporting
+    # "budget_exhausted" here would claim a measurement that never happened.
+    assert b.over_budget() is False
+    assert b.cost_exhausted() is False
+
+
+def test_unpriced_call_is_inert_without_a_cost_ceiling() -> None:
+    # No max_cost_usd = nothing to enforce, so an unpriceable call is not a problem to report.
+    b = IterationBudget(10)
+    b.add_usage(0.0, 1_000, cost_unpriced=True)
+    assert b.unpriced_calls == 1
+    assert b.cost_ceiling_unenforceable() is False
+
+
+def test_priced_calls_leave_the_ceiling_enforceable() -> None:
+    b = IterationBudget(10, max_cost_usd=5.0)
+    b.add_usage(1.5, 100)
+    b.add_usage(2.0, 100)
+    assert b.unpriced_calls == 0
+    assert b.cost_ceiling_unenforceable() is False
+    assert b.cost_spent == pytest.approx(3.5)
+
+
+def test_token_ceiling_still_bounds_an_unpriced_lane() -> None:
+    # The cost ceiling is the only casualty: token counts are always reported, so max_tokens
+    # remains a real bound on exactly the lane whose price is unknown.
+    b = IterationBudget(10, max_cost_usd=5.0, max_tokens=1_000)
+    b.add_usage(0.0, 1_500, cost_unpriced=True)
+    assert b.tokens_exhausted() is True
+    assert b.over_budget() is True
+
+
+def test_reset_clears_the_unpriced_count() -> None:
+    # reset() is per-turn; a prior turn's unpriceable call must not wedge every later turn
+    # into an instant unenforceable-ceiling stop (the max_iterations wedge, one field over).
+    b = IterationBudget(10, max_cost_usd=5.0)
+    b.add_usage(0.0, 10, cost_unpriced=True)
+    assert b.cost_ceiling_unenforceable() is True
+    b.reset()
+    assert b.unpriced_calls == 0
+    assert b.cost_ceiling_unenforceable() is False

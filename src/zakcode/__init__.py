@@ -1658,7 +1658,9 @@ class Agent:
         with contextlib.suppress(Exception):  # accounting must never break routing
             self.session.add_usage(result.usage, model=model)
             if self._shared_budget is not None:
-                self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+                self._shared_budget.add_usage(
+                    result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced
+                )
         try:
             data = coerce_structured(result.text, schema=DIFFICULTY_SCHEMA)
         except StructuredValidationError:
@@ -1693,7 +1695,9 @@ class Agent:
         with contextlib.suppress(Exception):  # accounting must never break the deliberation
             self.session.add_usage(result.usage, model=provider.model_id())
             if self._shared_budget is not None:
-                self._shared_budget.add_usage(result.usage.cost_usd, result.usage.total_tokens)
+                self._shared_budget.add_usage(
+                    result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced
+                )
         return result.text
 
     async def _load_skill_body(
