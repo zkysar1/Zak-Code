@@ -614,6 +614,12 @@ class LiteLLMProvider(Provider):
         #: latched at call time when a provider answers with the remedy text — one
         #: re-issued call, never the same 400 twice, never a failover to another model.
         self.tools_require_effort_none: bool = _is_openai_gpt56_tools_effort_none_model(self.model)
+        #: Set ONLY when a provider's own 4xx named ``reasoning_effort='none'`` as the
+        #: remedy. That is a measured refusal from the server for THIS tier, so it
+        #: outranks a configured depth; the predicate-known tier does not, because the
+        #: depth is measured to work there (ADR-0200). Never reset: a server that refused
+        #: once is not asked again this session.
+        self._effort_none_demanded_by_server: bool = False
         #: Reasoning DEPTH (ADR-0182): litellm's ``reasoning_effort`` level, sent only where
         #: litellm flags the model reasoning-capable (providers/thinking.py); kept as
         #: configured even where it will not be sent — diagnostic, like ``extra_body``.
@@ -1038,6 +1044,7 @@ class LiteLLMProvider(Provider):
         if _EFFORT_NONE_REMEDY not in message:
             return False
         self.tools_require_effort_none = True
+        self._effort_none_demanded_by_server = True
         logger.warning(
             "%s takes function tools only with reasoning_effort='none' on this route (%s) "
             "— sending 'none' with tools for the rest of this session and re-issuing "
@@ -1367,26 +1374,37 @@ class LiteLLMProvider(Provider):
             temperature = call_kwargs.get("temperature")
             if temperature is not None and temperature != 1:
                 call_kwargs.pop("temperature", None)
-        # Function tools + any reasoning depth (including the model's DEFAULT depth) is a
-        # 400 on the gpt-5.6 tier's chat route; the accepted shape is an explicit
-        # ``reasoning_effort="none"``. Set last so it wins over a configured depth — with
-        # tools in the request a depth cannot be honoured on this route at all, and a
-        # 400 on every call would have handed the whole session to the fallback model.
-        # Without tools the configured/default depth stands. Same LOCAL-server exemption
-        # as the temperature rule: a gpt-5.6-named self-hosted model has no such route.
+        # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
+        # chat route; what the request needs is an EXPLICIT reasoning_effort, and the
+        # value is free (ADR-0200). Any explicit level takes the call off that route:
+        # litellm's responses_api_bridge_check moves a gpt-5.4+ chat call carrying tools
+        # and a non-None effort onto /v1/responses, and the string "none" counts — which
+        # is why 'none' has worked since ADR-0188, and why a configured depth works the
+        # same way. Measured on this exact route, two pre-registered batches
+        # (bench/results/effort-decision-points-preregistration.log): 160 of 160 product
+        # calls reached /v1/responses carrying their own effort, 0 errors, and a
+        # configured low beat none on both decision cells. So the rule here is only
+        # "never send a tool call with NO depth"; it no longer overrides a depth the
+        # operator configured. Same LOCAL-server exemption as the temperature rule: a
+        # gpt-5.6-named self-hosted model has no such route.
         if (
             self.tools_require_effort_none
             and tools
             and not (self.api_base is not None and _model_uses_generic_endpoint(self.model))
         ):
-            if call_kwargs.get("reasoning_effort") not in (None, "none"):
+            configured = call_kwargs.get("reasoning_effort")
+            # A server that NAMED 'none' as the remedy keeps it. There the refusal is
+            # measured for that tier and a depth would 400 on every call; here the
+            # predicate is ours, and the depth is measured to work.
+            if self._effort_none_demanded_by_server and configured not in (None, "none"):
                 logger.info(
-                    "%s: reasoning_effort %r cannot ride with function tools on the chat "
-                    "route; sending 'none' for this tool call",
+                    "%s: this provider answered a tool call by asking for "
+                    "reasoning_effort='none', so the configured %r is not sent",
                     self.model,
-                    call_kwargs.get("reasoning_effort"),
+                    configured,
                 )
-            call_kwargs["reasoning_effort"] = "none"
+            if self._effort_none_demanded_by_server or configured is None:
+                call_kwargs["reasoning_effort"] = "none"
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
