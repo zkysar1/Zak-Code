@@ -261,8 +261,10 @@ def test_local_only_defaults_off_and_changes_nothing(monkeypatch) -> None:
 
 
 def test_extra_body_absent_by_default() -> None:
-    """The default request shape must be byte-identical to before this feature."""
-    provider = LiteLLMProvider(Settings(default_model="openai/gpt-4o", _env_file=None))
+    """The default request shape must be byte-identical to before this feature. A named cloud
+    is the witness: OpenAI's own API carries the retention default since ADR-0199, which
+    ``tests/test_openai_store_default.py`` pins on its own."""
+    provider = LiteLLMProvider(Settings(default_model="groq/qwen/qwen3-32b", _env_file=None))
     assert "extra_body" not in provider._build_kwargs([{"role": "user", "content": "hi"}], None)
 
 
@@ -366,10 +368,11 @@ def test_per_call_extra_body_merges_over_the_instance_body() -> None:
     }
     # Hosted OpenAI (no api_base) gets NO switch (ADR-0181): api.openai.com refuses an
     # unknown body argument with a 400, and there is no measured per-call "off" for it —
-    # the retry runs with its rail alone. The request shape stays the default.
+    # the retry runs with its rail alone. The request shape stays the default, which for
+    # OpenAI's own API is the retention field and nothing else (ADR-0199).
     bare = LiteLLMProvider(Settings(default_model="openai/gpt-4o", _env_file=None))
     only = bare._build_kwargs(msgs, None, extra_body=thinking_extra_body(False))
-    assert "extra_body" not in only and "reasoning_effort" not in only
+    assert only["extra_body"] == {"store": False} and "reasoning_effort" not in only
 
 
 # ---- extra_headers: one config line, N distinguishable terminals ----

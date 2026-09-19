@@ -1284,6 +1284,23 @@ class LiteLLMProvider(Provider):
         merged_body, thinking_kwargs = render_thinking_switch(
             self.model, self.api_base, merged_body
         )
+        # Provider-side retention (ADR-0199). OpenAI's Responses API STORES a response unless
+        # the request says ``store: false`` (measured 2026-09-19: no field -> echoed
+        # ``store: true`` and retrievable by id; ``false`` -> a 404), and litellm moves a
+        # gpt-5.4+ chat call onto that API whenever tools ride with a reasoning effort, which
+        # is every tool call of the 5.6 tier since the forced-none rule. Nobody chose that
+        # retention, so the default here is not to be stored. It rides ``extra_body`` because
+        # that is the one door that reaches the wire: a top-level ``store=False`` is dropped
+        # by litellm's bridge (measured, same day). Sent on BOTH routes of OpenAI's own API,
+        # where it is a documented field, so a routing change inside litellm cannot switch
+        # retention back on. ``setdefault``: an operator who configures ``store`` keeps their
+        # word. Added BEFORE the refused-field filter, so a server that refuses it by name
+        # loses it for the session like any other field we sent (ADR-0181). OpenAI's own API
+        # is an ``openai/`` or bare ``gpt-`` model with NO ``api_base``: with a base configured
+        # the same names mean the server behind it (the pod, a llama-server), which is somebody
+        # else's API. ``azure/`` takes the same bridge but was never measured: nothing assumed.
+        if self.api_base is None and self.model.startswith(("openai/", "gpt-")):
+            merged_body.setdefault("store", False)
         refused = set(self.rejected_request_fields)
         merged_body = {k: v for k, v in merged_body.items() if k not in refused}
         native = {**effort_kwargs, **thinking_kwargs}
