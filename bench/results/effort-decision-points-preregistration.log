@@ -200,3 +200,92 @@ Constraints the design inherits:
   3  This bench scores one response. Carrying reasoning items across a tool loop, prompt-cache behaviour on the
      Responses route (ADR-0193 was measured on chat) and streamed cost accounting (ADR-0195) are all unmeasured on
      that route, and belong to the design's own measurements.
+
+=== 01:39 UTC 2026-09-19 CORRECTION AND PRE-REGISTRATION -- REASONING EFFORT ON THE ROUTE THE PRODUCT ACTUALLY USES (gpt-5.6-luna)
+CORRECTION first, because it changes what the three blocks above mean. They call arm A (a hand-built request to
+/v1/chat/completions at effort none) "what the product sends today". I never measured that. The product does not
+build its own HTTP request: its provider calls litellm, and litellm 1.86.2 moves a chat call for a gpt-5.4+ model onto
+the Responses API whenever function tools ride with a reasoning effort that is not Python None
+(litellm.main.responses_api_bridge_check; the string "none" counts). The provider's own 2026-09-17 rule sends exactly
+that string with every tool-carrying call on this tier. Read offline from the installed library, no network: luna
+with tools and effort "none" -> mode responses; "low" -> responses; effort unset -> chat; no tools -> chat.
+Measured on the wire 2026-09-19 at 01:18Z, 6 requests, with a send hook that records the URL path and the body's
+effort field and never a header:
+  chat-none         litellm, plain openai/gpt-5.6-luna, one tool, effort none   POST /v1/responses 200, effort none
+  chat-low          the same at effort low                                      POST /v1/responses 200, effort low
+  product-complete  the product's provider, buffered, nothing configured        POST /v1/responses 200, effort none
+  product-stream    the same, streamed, which is what a served app does         POST /v1/responses 200, effort none
+  bridge-low-loop   litellm's explicit responses/ prefix, effort low, 2 turns   both 200; the second request carries
+                    the function_call and function_call_output items, and the model answered it
+  In every request the system text rode as `instructions` and the tool arrived flattened. No request went to
+  /v1/chat/completions. The product's two requests carry the same body keys (input, instructions,
+  max_output_tokens, model, reasoning, stream, tool_choice, tools). 0 key-shaped strings in the probe's output.
+So today's product sits on arm C's ROUTE (the Responses API at effort none), and litellm renders the request much
+as my arm C does: the system message becomes `instructions` and tools are flattened. Three rendering differences
+are on record: litellm sends `strict: null` on each tool where arm C sends no strict key (read offline from its
+converter), the product adds max_output_tokens and tool_choice auto, and arm C sends `store: false`. Whether any of
+them moves behaviour is what Q1 below reads.
+What stands in the blocks above: every count, every exact test, and the B-against-C readings. What does not stand:
+the phrase "against today's product" wherever it meant arm A. Batch 1 and the replication read B against A as
+"order no room, refusal +14 and +17"; against C, the route the product is on, the same two batches read order 19
+against 6 and 18 against 8, refusal 20 against 0 twice. I do not re-label the verdict from those numbers: C is my
+hand-built request, not the product's, and this block measures the product's own.
+
+A consequence of the route, measured the same hour because it is live in production. None of those requests carries
+a `store` field, and the product never sets one. On the Responses API that means stored: a request with no `store`
+field came back `store: true` and was retrievable by its id afterwards (GET 200; I deleted it, DELETE 200), and the
+same request with `store: false` came back `store: false` and its id was a 404. Chat completions stores only on
+request (the documented default, not measured here), so for luna tool calls this has held at least since the
+2026-09-17 rule began sending effort none with tools, which is what moves them onto the bridge. terra takes the same
+branch in the offline check and was not sent. The opt-out has one working door: a top-level `store=False` handed
+to litellm never reaches the wire (measured: no `store` key in the body), while `extra_body={"store": false}` does,
+through litellm alone and through the product's provider, where the cache routing key already rides that door
+(measured: both on the wire together). The fix is a product change with its own decision record, not part of this
+bench. The P arms below are sent exactly as the product sends them, so their responses are stored; they carry
+synthetic prompts only. The raw B and C arms have sent `store: false` since the first batch.
+
+Why it matters: the served loop's stall signature is a text-only completion at a decision point (sample 4, 2026-09-19:
+three turns ended veto_stall after text-only completions), and the one arm that showed that signature most in
+isolation is the route the product turns out to be on.
+
+PRE-REGISTRATION. Nothing below has been run. Script: bench/effort_product_route.py (sha256 prefix a072d3e1c58a83d6),
+which imports the cells, the scorer and the raw request builders from bench/effort_decision_points.py (sha256 prefix
+b3a252a2b07e6907, unchanged) so the two benches cannot drift. Model gpt-5.6-luna, 20 repetitions, arms interleaved
+inside every repetition, the two cells that had room (order, refusal): 5 arms x 2 cells x 20 = 200 calls, upper-bound
+spend about $0.03 at list rates, stopped above $1.00 by the same watcher as before.
+Arms:
+  P-none  the product's provider class (zakcode.providers.litellm_provider.LiteLLMProvider), built for
+          openai/gpt-5.6-luna with nothing configured: tools force effort none. This is today's product.
+  P-low   the same class with a configured depth of low and the forced-none latch released on that instance: what the
+          provider would send if a configured depth were allowed to ride with tools. Not a product change; the
+          bench flips one attribute on its own object.
+  A, B, C the three hand-built requests of the first bench, byte-identical builders, as same-batch controls.
+Both P arms use the provider's buffered call; a served app streams. The wire request differs by the stream flag only
+(measured above: same path, same body keys, same effort, same tool count).
+Measures, per cell, in passes per 20 with the scored count beside each:
+  W   every scored P call's LAST request went to /v1/responses carrying the arm's own effort.
+      My estimate: 95% that all of them did.
+  Q1  where today's product sits: P-none within 4 of C and not within 4 of A reads SITS WITH C; the mirror reads SITS
+      WITH A; within 4 of both reads BETWEEN THE CONTROLS; within 4 of neither reads NEITHER; A and C fewer than 5
+      apart in this batch reads NOT SEPARABLE.
+      My estimates: order SITS WITH C 75%; refusal NOT SEPARABLE 50%, SITS WITH C 35%.
+  Q2  what a depth of low does on the product's own route: P-low minus P-none >= 7 reads GAIN; <= -4 reads HARM (read
+      first); P-none >= 17 reads NO ROOM; within 2 reads FLAT; anything else reads BETWEEN.
+      My estimates: order GAIN 75%; refusal GAIN 90%.
+Reading rules, over every outcome:
+  a  W false for any scored P call: NOT THE BRIDGE, NOT READ. The batch is reported as measured, Q1 and Q2 are not
+     read, and the finding is where those calls went.
+  b  Fewer than 18 scored calls in P-none or P-low on a cell: that cell is NOT MEASURED and so is the verdict.
+  c  Any HARM: verdict HARM. Nothing changes and the harm is reported with its labels.
+  d  Otherwise any GAIN: CHANGE-CANDIDATE. It licenses ONE replication of the gained cells (P-none, P-low and the
+     three controls, bar >= 5 as before). Only a replicated gain licenses a product change, and that change is
+     limited to letting a CONFIGURED depth ride with tools on this tier; the default stays none, and whether a
+     served Mind should run at low is decided by its own pre-registered served sample, never by this bench.
+  e  Every cell FLAT or NO ROOM: NO CHANGE. The effort bench's BUILD-CANDIDATE is then withdrawn for the product's
+     route and said so here.
+  f  Anything else: INCONCLUSIVE, reported as measured, one replication of the unclear cells allowed and no more.
+  g  Q1 is a description, never a gate: whatever it reads, Q2 is read on the product's own arms.
+Second-sample rule: a second batch is run only as rule d's or f's replication, or as the re-run after an instrument
+failure (any HTTP error rate above 10% in an arm, or W false because of my hook). Never to improve a number.
+Self-test, no network: 31 literal boundary cases and 12 batch cases; every one of the seven reading constants moved by
+one in either direction (14 sabotages) fails it.
