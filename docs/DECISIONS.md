@@ -11624,3 +11624,80 @@ a canned Responses body: path `/v1/responses`, `store: false`, `reasoning.effort
 chat-route twin. `tests/test_local_only.py` — the two assertions that pinned the old request shape
 now say what the shape is. Removing the two-line default turns 8 of these red, naming the wire fact
 each one guards.
+
+## ADR-0200: what a tool call on the gpt-5.6 tier needs is AN explicit reasoning depth, not the value `none` — so a configured depth rides, and only the provider's own refusal overrides it
+
+**Status:** Accepted (2026-09-19)
+
+**Context.** ADR-0188 sent `reasoning_effort="none"` whenever function tools ride on a gpt-5.6-tier
+model, set LAST in `_build_kwargs` so it won over a configured depth. The reasoning at the time was
+that "with tools in the request a depth cannot be honoured on this route at all". That reading of
+the 400 was too strong, and measuring where the call actually goes is what corrected it.
+
+The product does not build its own HTTP request. litellm's `responses_api_bridge_check` moves a
+gpt-5.4+ chat call onto OpenAI's Responses API whenever function tools ride with a reasoning effort
+that is not Python `None` — and the string `"none"` is not `None`. So ADR-0188's own rule is what
+puts every served tool call on `/v1/responses`, where tools are accepted at any depth. The 400 it
+was written against is a CHAT-route refusal, and a request reaches the chat route precisely when it
+carries NO explicit effort, in which case the model's default depth counts as "with" and is refused.
+
+What the request needs, then, is AN explicit depth. The value is free.
+
+Measured on that exact route, through the product's own provider, in two batches pre-registered
+before launch and read by a reader committed and self-tested before the second batch ran
+(`bench/results/effort-decision-points-preregistration.log`, PRs #560 and #561). The wire gate was
+read first and held: 160 of 160 product calls reached `/v1/responses` carrying their own effort,
+0 errors. Passes out of 20 per cell, today's forced `none` against a configured `low`:
+
+| cell | today (none) | at low | Fisher two-sided |
+|---|---|---|---|
+| order — build, then deploy only after seeing the build succeed | 5, then 7 | 19, then 18 | p = 1e-05 and 0.00077 |
+| refusal — a call refused twice, the advice naming the refused call | 0, then 0 | 20, then 20 | p = 1.45e-11 both |
+
+Decision REPLICATED under the pre-registered rule; all three registered estimates were HITs. Cost
+of low on that route: about +19 output tokens a call, some 15 of them reasoning tokens, input
+unchanged by construction, and no measurable latency cost — low came in marginally faster in both
+batches, which on 40 calls an arm reads as no difference rather than a speed-up.
+
+**Decision.**
+
+- **The rule becomes "never send a tool call with NO depth", not "always send none".** On the
+  predicate-known tier a configured `reasoning_effort` now rides with tools. With nothing
+  configured the request would carry no depth at all — which is the 400 — so it still gets `none`.
+  That is the default, and it is unchanged: no existing deployment sends anything different.
+- **A provider that NAMED `none` as the remedy still overrides everything.** `_wants_effort_none`
+  now also sets `_effort_none_demanded_by_server`, and while that is set every tool call of the
+  session sends `none` whatever is configured. The distinction is evidentiary: the predicate is
+  OURS and the depth is measured to work behind it, whereas a remedy 400 is the server's own
+  statement about a tier we do not know. Without the split, an operator's configured depth would
+  buy one 400 and one re-issue on every turn for the rest of the session.
+- **The operator's configuration is never mutated.** `self.reasoning_effort` keeps what was
+  configured even while the session sends `none`, so the diagnostic stays honest — the same
+  posture `rejected_request_fields` already takes (ADR-0181).
+
+**Alternatives rejected.** Keeping the override and adding a flag to opt out — the flag would
+default to today's behaviour, which the measurement says is the floor on both cells, and a
+default nobody changes is the only default that matters. Deciding by re-deriving litellm's bridge
+predicate on our side — that couples us to a routing decision that is not ours and would go stale
+silently; the offline wire test watches it instead. Letting a configured depth override the
+server-demanded `none` too — measured refusals outrank our predicate, and the cost is a 400 per
+turn. Raising the DEFAULT to `low` on the strength of this bench — refused: the cells are two
+hand-built decisions at ~294 input tokens, while the served samples stall at 17K-token prompts
+with whole skill bodies in context, so whether a served Mind should RUN at low is a question for
+its own pre-registered served sample.
+
+**Consequences.** Reasoning depth is configurable again for tool calls on this tier, which
+ADR-0188 had made unreachable; on the bench's two decision cells that is the difference between
+the floor and the ceiling. Nothing changes for a deployment that configures no depth, for the
+fallback tier, for a self-hosted gpt-5.6-named server, or for any other provider. NOT explained
+and reported as measured: at the same declared effort of `none` the chat route beats the Responses
+route on both cells — pooled over four batches, order 75/80 against 25/80 and refusal 17/80
+against 0/80 — and today's product is the Responses route. That effect needs its own arms.
+
+Tests: `tests/test_gpt56_tools_effort_none.py` — a configured depth rides (four levels), the
+default with nothing configured still sends `none`, a server that asked for `none` keeps it over a
+configured depth, the latch sets the new flag and every later call of that session sends `none`
+while the configured value stays intact, and an offline wire pin that both `none` and a configured
+`low` reach `/v1/responses` with that effort rendered, against a canned response. Two mutations,
+each with its kills attributed: restoring the unconditional override turns 8 red, and dropping the
+server-demand guard turns the two safety-net tests red.
