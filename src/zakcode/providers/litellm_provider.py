@@ -826,6 +826,18 @@ class LiteLLMProvider(Provider):
             cache_read = cls._coerce_int(_get(details, "cached_tokens"))
         cache_creation = cls._coerce_int(_get(usage_obj, "cache_creation_input_tokens"))
 
+        # Reasoning accounting. A reasoning model bills its thinking at the OUTPUT rate and folds
+        # it into ``completion_tokens``, so without this the visible answer and the reasoning behind
+        # it are indistinguishable in the record. OpenAI reports it under
+        # ``completion_tokens_details`` on the chat route and ``output_tokens_details`` on the
+        # Responses route; litellm's bridge does not normalize the second onto the first, so probe
+        # both shapes the way the cache read above does. Absent fields read 0.
+        details = _get(usage_obj, "completion_tokens_details")
+        reasoning = cls._coerce_int(_get(details, "reasoning_tokens"))
+        if reasoning == 0:
+            details = _get(usage_obj, "output_tokens_details")
+            reasoning = cls._coerce_int(_get(details, "reasoning_tokens"))
+
         cost = 0.0
         hidden = _get(response, "_hidden_params")
         if isinstance(hidden, dict):
@@ -848,6 +860,7 @@ class LiteLLMProvider(Provider):
             cost_usd=cost,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
+            reasoning_tokens=reasoning,
         )
 
     @staticmethod

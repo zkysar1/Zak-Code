@@ -11701,3 +11701,55 @@ while the configured value stays intact, and an offline wire pin that both `none
 `low` reach `/v1/responses` with that effort rendered, against a canned response. Two mutations,
 each with its kills attributed: restoring the unconditional override turns 8 red, and dropping the
 server-demand guard turns the two safety-net tests red.
+
+## ADR-0201: reasoning tokens are recorded on `Usage`, because the depth a call was asked for is not observable after the fact and the reasoning it actually did is
+
+Date: 2026-09-19
+
+Context. A served run was pre-registered with a wire gate that asks a simple question: did the
+configured reasoning depth actually take effect on the calls the loop made? The product could not
+answer it. The sent `reasoning_effort` appears in no trace row, no session usage row and no server
+log line, and `reasoning_tokens` appeared nowhere in the source at all — so a reasoning model's
+thinking was billed at the output rate, folded into `completion_tokens`, and then indistinguishable
+from the visible answer in every record the product keeps. The gate was unreadable as written, and
+the run was stopped rather than spend against a measurement that could not be read.
+
+Decision. `Usage` gains `reasoning_tokens: int = 0`, extracted in `LiteLLMProvider._extract_usage`
+and populated from the provider's own response. This is the same shape as the prompt-cache fields
+that already sit beside it: a subset view of a total the record already carries, broken out for
+visibility, defaulting 0 so a message persisted before the field existed loads forward-compatibly.
+OpenAI reports the count under `completion_tokens_details.reasoning_tokens` on the chat route and
+`output_tokens_details.reasoning_tokens` on the Responses route, and litellm's bridge does not
+normalize the second onto the first, so both shapes are probed exactly as the cache read above it
+probes Anthropic's key and then OpenAI's.
+
+The sent effort is deliberately NOT recorded. `Usage` is a response-side record, and the requested
+depth is a knob on the way out that the configuration already states; writing it back would only
+confirm what was asked for. What was missing is what happened, and the token count is that.
+
+What this licenses, and the limit. `reasoning_tokens > 0` on a call proves a reasoning depth was in
+effect on it. The converse does NOT hold, and this is the load-bearing caveat: the field measures
+reasoning DONE, not depth REQUESTED, so a zero is ambiguous between "the depth was none" and "the
+depth was low and the call was easy enough that the model spent nothing on it". Measured here, both
+directions, against the live tier — on a trivial prompt ("reply with the word ok") `low` and `none`
+were INDISTINGUISHABLE at 0 reasoning tokens, 4 completion tokens and identical cost; on a prompt
+that forces arithmetic they separated cleanly at 69 against 0, and again at 52 against 0 on a
+second pair. Any gate built on this field is therefore one-directional: a non-zero anywhere in a
+sample confirms the depth was live, and a sample of zeros confirms nothing on its own.
+
+Evidence that it reaches a reader, not merely a model. A green suite and a mutation proof bind at
+the producer and cannot tell you a consumer reads the field (guard-6374@ayoai-mind). So the chain
+was run end to end from provider-real output: two live calls at `low` and `none`, the `Usage`
+objects the real provider returned, through the real `Session.add_usage` and `SessionStore.save`,
+to a real file on disk, re-read as plain JSON the way a reader reads it. `reasoning_tokens` is
+present in every usage row, 52 on the discriminating case and 0 on the negative control, and
+`cumulative_usage()` sums it correctly. Total live spend across all probes: $0.00028.
+
+Tests: `tests/test_usage.py` — default 0, sums across a mixed total, a legacy record without the
+field still loads, and a model-dump round trip (the session store and the event stream both
+serialize `Usage` whole, so the field only reaches a trace row if it survives that).
+`tests/test_provider_edge.py` — the chat shape and the Responses shape each read, a positive
+control that an absent details block reads 0 rather than raising, junk coerced like every other
+count, and an end-to-end pin that the count survives onto `LLMResult.usage`. Two mutations, each
+with its kills attributed: deleting the Responses-shape probe turns 2 red, and dropping the field
+from the returned record turns 3 red.
