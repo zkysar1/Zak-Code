@@ -289,3 +289,77 @@ Second-sample rule: a second batch is run only as rule d's or f's replication, o
 failure (any HTTP error rate above 10% in an arm, or W false because of my hook). Never to improve a number.
 Self-test, no network: 31 literal boundary cases and 12 batch cases; every one of the seven reading constants moved by
 one in either direction (14 sabotages) fails it.
+
+=== 04:03 UTC 2026-09-19 RESULTS -- REASONING EFFORT ON THE PRODUCT'S OWN ROUTE, batch 1 (launched 01:48:17Z 2026-09-19, done 01:51:42Z, 200 of 200 calls scored)
+Validity: MEASURED. 200 rows, 20 scored calls in every arm x cell, 0 HTTP errors, 0 provider errors. Call script
+sha256 a072d3e1c58a83d6 and cells b3a252a2b07e6907 at start and end; zakcode HEAD 5bcb100, the merge of this batch's
+own pre-registration (#558), with a clean status at start and end; litellm 1.86.2. Spend: 61,860 input and 8,505
+output tokens, $0.0226 with every input token priced uncached, which is an upper bound.
+W   HIT. Every scored product call made ONE request, to /v1/responses, carrying its arm's own effort: P-none 40 of 40
+    at none, P-low 40 of 40 at low. The released latch was never set again by a 400.
+Instrument limit: the raw arms' rows name the served model (gpt-5.6-luna, 120 of 120). The product arms' rows do not:
+the provider's buffered result leaves its usage model empty on this route. What those 80 requests asked for is
+pinned by W's path and effort, and by the 01:18Z probe, which read the model name in the product's request body.
+
+VERDICT, as the script prints it: CHANGE-CANDIDATE. Two GAIN cells, no HARM.
+  passes of 20   A chat/none   B resp/low   C resp/none   P-none   P-low   P-low - P-none   effect   P-none sits
+  order          19            18            6             5       19      +14  p 0.00001   GAIN     WITH C
+  refusal         2            20            0             0       20      +20  p 1.5e-11   GAIN     NOT SEPARABLE
+  p is the exact two-sided test of P-low against P-none. P-none against C: p = 1 on both cells. P-none against A:
+  order p = 0.00001, refusal p = 0.49. P-low against B: p = 1 on both cells.
+My estimates, all five as they fell: the wire gate holds (95%) HIT; order SITS WITH C (75%) HIT; refusal NOT SEPARABLE
+(50%) HIT; order GAIN (75%) HIT; refusal GAIN (90%) HIT.
+
+What the batch shows.
+  1  Today's product behaves as my hand-built Responses request at effort none does, and not as arm A does: order 5
+     against C's 6 and A's 19; refusal 0 against 0 and 2. The correction above is now a measurement and not only a
+     reading of the wire. The rendering differences on record (strict null, max_output_tokens, tool_choice auto, no
+     store field) moved nothing these cells can see: P-none reads as C, and P-low reads as B (19 and 18, 20 and 20).
+  2  On the product's own route a depth of low moves both cells from the floor to the ceiling. Labels: every order
+     FAIL is the chained form (A 1, B 2, C 14, P-none 15, P-low 1); no response of 100 deployed unconditionally.
+     refusal: P-none text-only 20 of 20, P-low a different action 20 of 20, as C and B.
+  3  What low costs here: reasoning tokens median 17 (order) and 10 (refusal); mean output tokens 46 against 29 and
+     64 against 43; mean seconds per response 0.96 against 1.04 and 1.20 against 1.21. About 20 output tokens a
+     call, and no latency these samples can see.
+What the verdict does not say.
+  4  These are synthetic single decisions: a 135-character system prompt, four tools, at most five messages. The
+     served loop's decision points carry 44K to 130K tokens. Whether depth moves THOSE is for a pre-registered served
+     sample, as the pre-registration said, and is not claimed here.
+  5  The order GAIN rests on the strict label, as in the first bench: the chained form counts as a FAIL.
+  6  Reported and not decided here: the ROUTE effect at effort none. Across three batches the chat route reads order
+     56 of 60 and refusal 11 of 60; the Responses route reads 20 of 60 and 0 of 60, and today's product 5 and 0 of
+     20. Arm A's request is reachable only by hand today: the product's client moves any tool call that carries an
+     effort onto the bridge, and the chat route refuses tools with any effort but none. Whether the DEFAULT should
+     stay on the bridge is its own question with its own arms; nothing here licenses changing it.
+  7  The product arms' 80 responses were stored by the provider, as the pre-registration said; synthetic prompts only.
+Rule d applies: CHANGE-CANDIDATE licenses ONE replication of the gained cells, pre-registered below. Spend on this
+bench so far: $0.02.
+
+=== 04:03 UTC 2026-09-19 PRE-REGISTRATION -- REASONING EFFORT ON THE PRODUCT'S OWN ROUTE, replication of the two gained cells (order, refusal)
+Rule d's one replication. Same instrument for the calls (bench/effort_product_route.py at sha256 a072d3e1c58a83d6
+and the cells it imports at b3a252a2b07e6907, both unchanged), the same five arms interleaved inside every
+repetition, the same two cells, N = 20 per cell per arm: 200 calls, expected about $0.02, the same $1.00 stop and
+1500 s timeout. No call of it has been made.
+Reader: bench/effort_product_route_replication_read.py at sha256 c10d4ad3583993fb (stdlib and the two sibling
+scripts, no network). It imports the first replication reader's thresholds and the call script's own wire gate
+instead of copying either, so the readers cannot drift. Self-test: 24 literal cases and all 441 (P-none, P-low)
+pairs. Each of six sabotages fails it: the two arms swapped, every-cell weakened to any-cell, the wire gate
+removed, the not-measured branch removed, the reversal branch removed, a thin arm read anyway. Run on batch 1 it
+prints REPLICATES on both cells and REPLICATED.
+Reading, per cell, one line on the product's own arms, in passes per 20:
+  the product's route   REPLICATES if P-low - P-none >= 5. REVERSED if P-none - P-low >= 4. Otherwise DOES NOT
+                        REPLICATE, marked NO ROOM when P-none >= 16, so that a ceiling is never read as a
+                        contradiction.
+  A cell with P-none or P-low under 18 scored calls is NOT MEASURED. The wire gate is read first: any scored product
+  call whose last request did not go to /v1/responses with its arm's own effort makes the batch NOT THE BRIDGE: NOT
+  READ. The three raw arms are printed as controls and decide nothing. There is no pooling: the second batch is read
+  on its own counts, with batch 1's printed beside it.
+What it decides.
+  REPLICATED (both cells REPLICATE): the change rule d names is licensed, and nothing more. A CONFIGURED reasoning
+      depth may ride with tools on this tier. The default stays none. The re-issue at none after a 400 stays as the
+      safety net. Whether a served Mind should RUN at low is decided by its own pre-registered served sample.
+  NOT REPLICATED: CHANGE-CANDIDATE is withdrawn to MIXED, the cells are named, and no product change is made from
+      this bench.
+  REVERSED on either cell: withdrawn, and a third batch of that cell comes before any design.
+  NOT MEASURED, or NOT READ: an instrument failure. The same batch is re-run once, and the failure is reported.
+My estimates: order REPLICATES 85%; refusal REPLICATES 95%; the wire gate holds 97%.
