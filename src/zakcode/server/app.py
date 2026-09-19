@@ -2262,6 +2262,12 @@ def create_app(
     run_stop_reason: str | None = None
     run_deadline: float | None = None
     turn_deadline: float | None = None
+    #: THE LIVENESS CLOCK, and the one stamp in this block that IS re-stamped per beat.
+    #: The comment above says a stamp rewritten each cycle measures time since the last
+    #: event while a preserved one measures total duration; both questions are worth
+    #: asking, so both stamps exist and neither is derived from the other. This one
+    #: answers "has anyone said anything lately" — see `run_idle_timeout` in config.py.
+    last_say_at: float = 0.0
     #: The reserve actually in force, CLAMPED to the cap. Resolved once at arm time and
     #: used everywhere after, because the reserve is also the FLOOR on the digest budget
     #: below: leaving the raw value there would let a reserve larger than the cap push
@@ -2275,7 +2281,11 @@ def create_app(
     run_ended = asyncio.Event()
 
     def _arm_run_deadlines() -> None:
-        nonlocal run_deadline, turn_deadline, effective_reserve
+        nonlocal run_deadline, turn_deadline, effective_reserve, last_say_at
+        # BEFORE the cap branch, deliberately: an UNBOUNDED run returns early below, and
+        # it is the run that most needs an idle bound — there is no cap behind it to
+        # catch an abandoned vessel at all.
+        last_say_at = time.monotonic()
         cap = resolved_settings.run_max_duration
         if cap is None:
             run_deadline = turn_deadline = None
@@ -2599,7 +2609,7 @@ def create_app(
         request_interrupt(interrupt_path(resolved_settings.workspace_root))
 
     async def _consume_say_loop() -> None:
-        nonlocal run_stop_reason
+        nonlocal run_stop_reason, last_say_at
         _arm_run_deadlines()
         deadline_watcher = asyncio.create_task(_watch_turn_deadline())
         # Exposed so a test can assert the cancellation ORDERING directly — that the
@@ -2634,6 +2644,28 @@ def create_app(
                     # ending is exactly what it was before this change: break now.
                     if framework_stop_until is None or not _keep_beating():
                         break
+                # The ABANDONED case, which the cap above cannot bound: a member who
+                # walks away mid-conversation pays the full price they agreed to for a
+                # run that ended twenty minutes in. Checked AFTER the cap so a run that
+                # trips both still ends as `duration_cap` — the ceiling is the stronger
+                # statement and the one the customer was quoted.
+                #
+                # `not inflight` is load-bearing. A long turn is activity, and the stamp
+                # only moves when a say is CONSUMED, so a turn that outlives the window
+                # would otherwise be stopped for idling while it is the opposite of idle.
+                if (
+                    resolved_settings.run_idle_timeout is not None
+                    and not inflight
+                    and time.monotonic() - last_say_at >= resolved_settings.run_idle_timeout
+                ):
+                    logger.info(
+                        "no say in %.0fs — stopping the run",
+                        resolved_settings.run_idle_timeout,
+                    )
+                    run_stop_reason = "idle"
+                    await _begin_framework_stop()
+                    if framework_stop_until is None or not _keep_beating():
+                        break
                 try:
                     ran = await _consume_one_say()
                 except asyncio.CancelledError:
@@ -2641,6 +2673,11 @@ def create_app(
                 except Exception:  # noqa: BLE001 — a bad beat must not kill the runner
                     logger.exception("say consumer: beat failed")
                     ran = False
+                if ran:
+                    # A CONSUMED say, never an arriving one: this is the same signal the
+                    # beat interval already keys on, so the idle window and the beat
+                    # cadence can never disagree about what counts as activity.
+                    last_say_at = time.monotonic()
                 await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
         finally:
             # BEFORE `_end_run()`, always, on every exit path — the consolidation turn

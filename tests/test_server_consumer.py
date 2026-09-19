@@ -376,6 +376,7 @@ def _build_bounded(
     reserve: float = 0.0,
     message: str | None = None,
     run_end_command: str | None = None,
+    idle_timeout: float | None = None,
 ) -> tuple[Any, list[tuple[str, float]], list[str], float]:
     """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
     t0 = time.monotonic()
@@ -389,6 +390,7 @@ def _build_bounded(
         run_consolidation_reserve=reserve,
         run_consolidation_message=message,
         run_end_command=run_end_command,
+        run_idle_timeout=idle_timeout,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -401,6 +403,79 @@ def _build_bounded(
         on_run_end=_on_run_end,
     )
     return app, seen, endings, t0
+
+
+# ── the idle bound: the ABANDONED run, which the cap cannot reach ────────────
+# `run_max_duration` is a patience cap anchored once at run start; `run_idle_timeout`
+# is a liveness clock re-stamped on every consumed say. A member who walks away
+# mid-conversation trips the second and never the first, and on an UNCAPPED run the
+# second is the only bound there is.
+
+
+def test_idle_timeout_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
+    """Nobody says anything; the run stops itself and the ending is named `idle`."""
+    app, seen, endings, _t0 = _build_bounded(tmp_path, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())  # returns only because the window closed
+
+    assert endings == ["idle"]
+    assert seen == []  # it really did idle — no turn ran
+
+
+def test_idle_bound_holds_on_an_uncapped_run(tmp_path: Path) -> None:
+    """The run that most needs an idle bound is the one with no cap behind it.
+
+    `_arm_run_deadlines` returns EARLY when `run_max_duration` is None, so a stamp
+    written after that branch would never be written for exactly this run — and the
+    unbounded case is the one where nothing else would ever end it.
+    """
+    app, _seen, endings, _t0 = _build_bounded(tmp_path, max_duration=None, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["idle"]
+
+
+def test_a_consumed_say_refreshes_the_idle_window(tmp_path: Path) -> None:
+    """The stamp MOVES. Without the re-stamp this run ends while it is being used.
+
+    A feeder writes a say every 0.25s for ~1.2s against a 0.6s window. If the stamp
+    stayed at run start the loop would stop at ~0.6s, mid-conversation, with at most
+    one turn behind it. Surviving past that is only possible if each consumed say
+    pushed the window out.
+    """
+    app, seen, endings, _t0 = _build_bounded(tmp_path, max_duration=None, idle_timeout=0.6)
+    say_file = say_path(tmp_path)
+
+    async def _drive() -> None:
+        async def _feed() -> None:
+            deadline = time.monotonic() + 1.2
+            while time.monotonic() < deadline:
+                write_say(say_file, "still here")
+                await asyncio.sleep(0.25)
+
+        feeder = asyncio.create_task(_feed())
+        try:
+            await app.state.consume_say_loop()
+        finally:
+            feeder.cancel()
+
+    started = time.monotonic()
+    asyncio.run(_drive())
+    elapsed = time.monotonic() - started
+
+    assert endings == ["idle"]  # it did stop — once the saying actually stopped
+    assert elapsed > 1.2, f"run ended after {elapsed:.2f}s — the window never moved"
+    assert len(seen) >= 2, f"only {len(seen)} turn(s) ran — the says were not consumed"
+
+
+def test_duration_cap_outranks_the_idle_window(tmp_path: Path) -> None:
+    """Both trip on the same beat; the ending is the ceiling the customer was quoted."""
+    app, _seen, endings, _t0 = _build_bounded(tmp_path, max_duration=0.3, idle_timeout=0.3)
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["duration_cap"]
 
 
 def test_duration_cap_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
