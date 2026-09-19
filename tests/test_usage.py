@@ -37,3 +37,29 @@ def test_usage_tracker_accumulates() -> None:
     assert result2.prompt_tokens == 15
     assert result2.completion_tokens == 10
     assert tracker.total == result2
+
+
+def test_reasoning_tokens_default_zero() -> None:
+    assert Usage().reasoning_tokens == 0
+
+
+def test_reasoning_tokens_sum() -> None:
+    a = Usage(completion_tokens=40, reasoning_tokens=12)
+    b = Usage(completion_tokens=30, reasoning_tokens=0)
+    c = a + b
+    assert c.reasoning_tokens == 12
+    # Still a subset of the completion total it is drawn from.
+    assert c.reasoning_tokens <= c.completion_tokens
+
+
+def test_reasoning_tokens_load_forward_compatibly() -> None:
+    # A message persisted before the field existed must still load, reading 0.
+    legacy = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost_usd": 0.1}
+    assert Usage.model_validate(legacy).reasoning_tokens == 0
+
+
+def test_reasoning_tokens_survive_a_round_trip() -> None:
+    # The session store and the event stream both serialize Usage whole, so the field only
+    # reaches a trace row if it round-trips through the model dump.
+    u = Usage(completion_tokens=40, reasoning_tokens=12)
+    assert Usage.model_validate(u.model_dump()).reasoning_tokens == 12
