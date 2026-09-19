@@ -1053,3 +1053,112 @@ world built by the corrected script; the world for attempt 2 is retired unread.
 SPEND. sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, the aborted attempt 1
 $0.0292, the invalid attempt 2 $0.0338, the ADR-0201 probes $0.00028, the attempt-3 pre-flight pin
 ~$0.0002. Attempt 3 stays bounded at $6.00 and 2400 s.
+
+=== 11:53 UTC 2026-09-19 SERVED LOOP ON LUNA, SAMPLE 5 ATTEMPT 3 -- READING: MOVED ===
+
+THE VERDICT FIRST, by the rule fixed before launch. W1 HOLDS and B1 HITS, so the reading is MOVED.
+A configured reasoning depth got the served loop past the decision sample 4 died at. Sample 4 loaded
+the 38,142-character boot body and answered it with 83 tokens of TEXT; 0 of its 140 shell commands
+named an initialization script. This run ran one, at t+456 s, and then walked a full iteration body.
+
+Run: 11:08:17Z -> 11:44:53Z, 2194 s inside a 2520 s cap, 381 model calls, $2.3455 of a $6.00 cap.
+World 11 (zc-served5f), build 6b5a5277bcec, seed 2.12.76. Ended agent-state IDLE, mode assistant,
+via the framework's own graceful stop. Nothing was interrupted and nothing crashed.
+
+THE GATE.
+  W1a  PASS, asserted offline before any spend. The product's own factory sent reasoning_effort=
+       'low' on all five luna categories, with tools and without; classify sent none.
+  W1b  CONFIRMED, and far more strongly than on the invalid attempt. All 381 session usage rows
+       carry reasoning_tokens; 279 of 381 are NON-ZERO, maximum 276, total 12,714. A configured low
+       was live on the wire for the whole run, measured by effect rather than by configuration.
+       Read from the SESSION file, as the amendment requires -- the trace usage row is a hand-built
+       projection and carries neither reasoning_tokens nor the cache fields.
+
+B1 -- BOOT RUNS. HIT. The evidence chain, because the obvious instrument was destroyed mid-run:
+  1. meta/.initialized exists in the run's world with mtime 11:15:53Z, which is t+456 s. It was
+     ABSENT at launch: provisioning ran the kit's init_world.sh only and never the framework inits
+     (world 10, which did run them, was rejected for exactly that reason), and the agent-tier marker
+     it did write is stamped 11:00:15Z -- a different event fifteen minutes earlier.
+  2. core/scripts/init-meta.sh:272 'touch "$META/.initialized"' is the ONLY writer of that path in
+     the whole seed. init-world.sh writes $WORLD/.initialized, init-agent.sh writes $AGENT/.
+     initialized, and _transplant_pack.py only READS markers.
+  3. mind_api/src/ contains zero references to init-meta, so no daemon path could have produced it.
+     The script runs only when a shell command names it.
+  4. Its one other caller, init-mind.sh:43, is excluded: init-mind.sh runs init-world.sh first, and
+     knowledge/.initialized (that script's marker, $WORLD being mind-workspace/knowledge here) is
+     ABSENT. So the command named init-meta.sh directly.
+  5. Corroboration with an independent writer: meta/changelog.jsonl's FIRST row is 11:15:56 by agent
+     'mind', three seconds after the marker -- the seeded tree began recording immediately -- and
+     serve.log shows live model calls at 11:15:51, :53 and :56, so the model was mid-loop.
+  The seeding was real, not a touch: 33 entries now sit under meta/, including goal-selection-
+  strategy.yaml -- the file sample 4's selector failed on 9 times out of 9.
+
+THE INSTRUMENT DEFECT THAT FORCED THAT CHAIN, and it is a product finding, not a bench one.
+B1 as pre-registered reads the run's shell COMMANDS. They are no longer recoverable. The run made
+209 Bash calls; the persisted session retains 11, all from the closing stop sequence, because 13
+compactions collapsed the history. The trace is no help: a tool record is {"kind":"tool","detail":
+"<tool name>","data":{"ok":true}} and carries no arguments at all. So after compaction there is no
+artifact anywhere that answers "what did this run execute?". That is an observability gap in the
+product worth its own goal; it is why B1 was read from the artifact the script itself writes.
+
+THE OTHER MEASURES.
+  P1  MISS. M1 = 0 iterations closed. The loop selected g-001-04 "Generate progress report",
+      executed it, verified, updated state and ran the learning gate -- but the goal ended
+      in-progress, so no close with a granted completion request exists. 0 completed, 10 pending.
+  P2  HIT. M2 plan-tool share 69/415 = 16.6% on the whole-run ledger (< 20%). The compacted session
+      window reads 10/23 = 43.5%; the whole-run number is the pre-registered one.
+  P3  HIT. M3 = 0 consecutive empty model calls, from all three sources. 0 persisted placeholders,
+      0 trace empty_completion notes, 0 silent turns, 0 calls no source could read.
+  S1  HIT. The selector ran 3 times (aspirations-select) and the run's artifacts contain ZERO
+      tracebacks. The four files in the world carrying that string are stock framework content --
+      a history-vacuum log and three test files.
+  B2  NOT READABLE as written. The boot-skill turn cannot be isolated: compaction took the message
+      window and the trace names tools, not skills. The nearest measured signal is D1 -- of 12
+      skill_pointer deliveries at the veto door, 12 of 12 were followed by a work call rather than a
+      text-only completion. Reported, not upgraded to a HIT.
+  E1  HIT. Reached RUNNING and held it for all but the closing minutes.
+  C1  381 calls, $2.3455, prompt 32,649,658, cached 23,614,820 (72.3%), uncached 9,034,838,
+      completion 55,206. Sample 4: 231 calls, $1.2786, uncached 4,981,976, 67% cached. Recorded and
+      re-priced at list rates agree exactly, so ADR-0195 holds on the served path.
+
+WHAT THE LOOP ACTUALLY DID, from the agent's own skill-invocation log (36 rows): boot 1, prime 1,
+aspirations 11, aspirations-precheck 8, aspirations-select 3, aspirations-execute 3, strategic-scan
+2, state-update 1, learning-gate and productivity via iteration-close, evolve 1, review-hypotheses 1,
+curriculum-gates 1, agent-completion-report 1, graceful-stop 1, consolidate 1. Its execution diary
+(37 rows) walks phase-0-precheck -> phase-2-select -> phase-4-execute -> phase-5-verify ->
+phase-8-state-update -> phase-12-learning-gate -> phase-12-productivity. The pre-registration said
+the iteration body was UNTESTED after four samples and would stay untested unless P1 hit. P1 did not
+hit, and the body ran anyway -- so that sentence was wrong about its own condition, and the body is
+now tested. It produced a real artifact: agents/mind/session/fleet-digest.md and .html.
+Ledger: 415 tool notes -- Bash 209, update_plan 69, Read 52, Skill 50, Grep 15, ScheduleWakeup 8,
+LS 8, plan_recall 2, Glob 1, Write 1; 47 failed. Turn 1 ran 268 calls and ended veto_stall; turn 2
+ran 113 and ended completed.
+
+WHAT THIS DOES NOT LICENSE, stated as firmly as the reading.
+  Not a product default change. The served default stays none whatever this run read; that was fixed
+  before launch and nothing here revisits it.
+  Not an attribution to depth ALONE. Sample 4's world was deleted before its repairs were written,
+  so byte-identity with this assembly cannot be established, and build-world.sh is a RECONSTRUCTION
+  of what samples 1-4 used. What IS established is that the decisive state matched: this world's meta
+  tier was uninitialised at launch, exactly as sample 4's was when its selector failed 9 of 9 on a
+  file only full initialization creates. One run at N=1 with one declared difference and one
+  unverifiable assembly delta is a MOVED reading, not a measured effect size.
+  Not a claim that the loop is now healthy. It closed no goal in 36 minutes and $2.35, turn 1 died
+  on a veto_stall after 268 calls, and 47 of 415 tool calls failed.
+
+SECOND SAMPLE. MOVED licenses exactly one replication at the same assembly, pre-registered
+separately. The better spend of that one sample is a CONTROL: the identical world-11 assembly at
+effort NONE. That is the single measurement that separates the declared difference from the assembly
+delta named above, it costs about what this run cost, and its outcome is named in advance -- if the
+control also runs an init script and walks the body, the depth was not the operative difference and
+this MOVED reading is downgraded to the assembly. Nothing else is licensed by this block.
+
+STILL NOT ESTABLISHED, unchanged: why luna ends with text at real decision points on other builds;
+why cache reads go flat; why the chat route beats the Responses route at the same declared effort of
+none; anything about terra, the pod tier, or azure. The three framework findings sample 4 named --
+the selector's unguarded crash, the goal-less close, the stop hook demanding re-entry in a never-
+initialised world -- are still unfixed, plus the fourth filed this window (the UNINITIALIZED
+protocol is unsatisfiable by construction in a served context).
+
+Spend: sample 1 $0.27, sample 2 $1.14, sample 3 $0.03, sample 4 $1.2786, attempt 1 $0.0292
+(aborted), attempt 2 $0.0338 (INVALID), attempt 3 $2.3455.
