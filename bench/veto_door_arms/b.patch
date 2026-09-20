@@ -1,0 +1,129 @@
+diff --git a/src/zakcode/__init__.py b/src/zakcode/__init__.py
+index 99fae48..87ebef2 100644
+--- a/src/zakcode/__init__.py
++++ b/src/zakcode/__init__.py
+@@ -680,6 +680,11 @@ class Agent:
+         #: iteration on one — and gets the body; asked for again with nothing run since, it
+         #: gets the pointer. Written and cleared with the dedup map, never apart from it.
+         self._skill_loaded_at_work: dict[str, int] = {}
++        #: Skills the HARNESS delivered at a refused stop whose veto door is still open: the
++        #: first ``use_skill`` of one, with nothing run since, is answered with the body
++        #: instead of the pointer, once. Cleared with the dedup map, so each refused stop
++        #: opens it afresh (the delivery follows the reset).
++        self._veto_door_open: set[str] = set()
+         skill_resolver: SkillResolver | None = None
+         skills_catalog = ""
+         if enable_skills:
+@@ -1168,6 +1173,7 @@ class Agent:
+         self._skill_invocations_this_turn = 0
+         self._skills_loaded_this_turn.clear()
+         self._skill_loaded_at_work.clear()
++        self._veto_door_open.clear()
+ 
+     def _register_composed_skill(self, user_text: str) -> None:
+         """Count a typed ``/<skill>`` turn's body as loaded for the reload dedup (ADR-0063).
+@@ -1792,6 +1798,7 @@ class Agent:
+         from zakcode.providers.text_tools import defang_untrusted
+ 
+         reentry = False
++        redelivered = False
+         if source == "tool":
+             # Per-turn reload dedup: the SAME unchanged body already injected this turn is
+             # not re-injected — a short pointer back to it is returned instead (args still
+@@ -1813,11 +1820,20 @@ class Agent:
+                 reentry = (
+                     page is None and arrived_at is not None and self._loop_work_calls() > arrived_at
+                 )
+-                if not reentry:
++                # The veto door: the harness delivered this skill at a refused stop, nothing
++                # has run since, and the model asked for it all the same, which is what the
++                # hook's own words told it to do. It gets the body once, the answer it asked
++                # for, in place of a pointer back to a message it did not act on.
++                redelivered = not reentry and page is None and skill.name in self._veto_door_open
++                self._veto_door_open.discard(skill.name)
++                if not reentry and not redelivered:
+                     pointer = _already_loaded_pointer(skill.name, page, args, worked=False)
+                     logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
+                     return SkillLoad(found=True, name=skill.name, body=pointer)
+-                logger.info("skill %r asked for again after work — a re-entry", skill.name)
++                if redelivered:
++                    logger.info("skill %r asked for at the veto door — the body again", skill.name)
++                else:
++                    logger.info("skill %r asked for again after work — a re-entry", skill.name)
+             self._note_skill_delivered(skill.name, digest)
+         elif source == "harness":
+             # A harness-composed re-entry counts as loaded this turn (ADR-0187): the model's
+@@ -1825,6 +1841,7 @@ class Agent:
+             # with a pointer instead of a second copy of the body — until it has acted on
+             # it (ADR-0196).
+             self._note_skill_delivered(skill.name, _skill_digest(body))
++            self._veto_door_open.add(skill.name)
+         if source == "tool":  # count only model-driven loads that actually inject a body
+             self._skill_invocations_this_turn += 1
+             self._skill_invocations_total += 1
+@@ -1849,7 +1866,12 @@ class Agent:
+             # the model tell a user-typed slash from a model-chained load (provenance).
+             rendered = f"[arguments: {defang_untrusted(args.strip())}]\n\n{rendered}"
+         return SkillLoad(
+-            found=True, name=skill.name, body=rendered, path=str(skill.path), reentry=reentry
++            found=True,
++            name=skill.name,
++            body=rendered,
++            path=str(skill.path),
++            reentry=reentry,
++            redelivered=redelivered,
+         )
+ 
+     async def compose_skill_turn(
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index fa3267a..7c17af2 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -3635,7 +3635,18 @@ class AgentLoop:
+                     skill=name,
+                 )
+             self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
+-            self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
++            if data.get("redelivered"):
++                # The body again at the veto door: the harness's own delivery answered a
++                # second time, not a skill the model ran. The ADR-0187 fence keeps counting,
++                # or a model that only ever asks again would never reach ``veto_stall``.
++                self._note(
++                    "intervention",
++                    f"/{name} asked for at the veto door — the body delivered again",
++                    kind="skill_redelivered",
++                    skill=name,
++                )
++            else:
++                self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
+             steps = self._seed_skill_skeleton(name, block.output, seeded)
+             if steps:
+                 out.append((name, steps))
+diff --git a/src/zakcode/tools/base.py b/src/zakcode/tools/base.py
+index 66151f6..48844ca 100644
+--- a/src/zakcode/tools/base.py
++++ b/src/zakcode/tools/base.py
+@@ -195,6 +195,10 @@ class SkillLoad(BaseModel):
+     #: describes the skill from memory of its own writing ("it is a python file, not a skill").
+     #: ``use_skill`` lists the siblings from this path so the answer is in the tool result.
+     path: str | None = None
++    #: The body handed over AGAIN at the veto door: the harness delivered this skill at a
++    #: refused stop, the model has run nothing since, and it asked for the skill anyway. Not
++    #: a load the model made, so it does not start the turn-end fence over.
++    redelivered: bool = False
+     #: True when this load delivered a body the turn ALREADY held, because the model had
+     #: acted on it since (ADR-0196): a loop's re-entry, not a redundant reload. The body is
+     #: handed over exactly as a first load is; the flag is for the trace.
+diff --git a/src/zakcode/tools/builtins/use_skill.py b/src/zakcode/tools/builtins/use_skill.py
+index 0c1c46a..ba7cd9a 100644
+--- a/src/zakcode/tools/builtins/use_skill.py
++++ b/src/zakcode/tools/builtins/use_skill.py
+@@ -149,6 +149,8 @@ class UseSkillTool(Tool):
+         # A re-entry (ADR-0196) is handed over exactly as a first load is — the way Claude
+         # Code's Skill tool answers every call; only the trace is told which it was.
+         extra: dict[str, Any] = {"reentry": True} if load.reentry else {}
++        if load.redelivered:
++            extra["redelivered"] = True
+         if load.body.startswith("[already loaded]"):
+             # The per-turn reload pointer (ADR-0063) — or, for a paged skill, the current
+             # section again (ADR-0067). Nothing new to seed or decompose; hand it over as is.

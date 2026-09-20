@@ -1,0 +1,185 @@
+=== 21:22 UTC 2026-09-20 PRE-REGISTRATION -- THE VETO DOOR: what gpt-5.6-luna does after a refused stop, under each candidate build (capture and fork; arms are builds)
+Question: after a Stop hook refuses a stop and the harness delivers the skill the hook named, which change to Zak
+Code -- if any -- gets gpt-5.6-luna (served posture, reasoning effort none) back to the loop's own work instead of
+answering in words again? This block fixes the instrument, the arms, the outcome, the gates and the reading BEFORE any
+scored call. No scored call has been made.
+
+Why this bench exists. The served-luna log named it in advance (rule G of the 2026-09-19 pair): if D1 missed on three
+or more veto-door pointers, the next product change was "the body at the veto door", tested by a pre-registered door
+bench with the arms "this build / body at the veto door", not by another served sample. D1 then missed: on the control
+run (effort none) a veto-door pointer was followed by a work call 4 times of 8, three of four turns ended veto_stall,
+turn 1 went 3 deliveries, 3 pointers, 0 skills run to a 600 s rest in 46 s, and 73.2% of the run made no model call.
+Both of rule G's arms are here (A and B), read exactly as rule G meant. Six more arms and a placebo are added, each
+read against A alone, so their presence changes nothing about how B is read.
+
+What was found while building the instrument, and is NOT evidence yet. One unscored pilot capture (below) stopped AT
+the fork, so no arm's outcome has been seen by anyone. Its fork request ends with three messages: the model's closing
+words, the harness's delivery of the skill (55,461 characters, closing with the instruction to carry it out and not
+summarize), and then the product's own one-line reminder for a FINISHED plan: plan complete, answer the original
+request now, lead with the conclusion. That reminder is ephemeral: it rides each request and is written to no session
+file and no trace, which is why four served samples never showed it. Two arms (R and P) exist because of it. Whether
+it matters is what the bench is for; nothing here says it does.
+
+Instrument. bench/veto_door.py, bench/veto_door_world.py and bench/veto_door_arms/*.patch at the hashes in the
+MANIFEST lines under this block. Capture and fork:
+  capture  one live run of the real product in the served agent factory's posture (zakpick: deep_code, plan,
+           quick_code, summarize and delegate on gpt-5.6-luna with a 163,840 window, classify on gpt-5-nano, fallback
+           gpt-5-mini; permission mode autonomous; lean rules; skills, rules and compaction on; streamed turns; the
+           workspace's own session store), opened the way a typed "/cycle loop" is, recorded call by call by a tape on
+           the provider class, and cancelled at the first tools-bearing call after the FIRST refused stop's delivery.
+           That call is the FORK. Only a run's first delivery is a fork, so the prefix owes nothing to any arm.
+           Captures are always the unpatched build's.
+  rollout  the same world rebuilt at the same path, the capture's session id and model pinned, every recorded
+           completion served from the tape (each replayed request must match the recorded one in roles, block kinds,
+           tool names and call ids, or the rollout is invalid; every character is compared too and a mismatch makes
+           the row unusable), live from the fork on. Every arm therefore starts from the same conversation,
+           workspace, plan, fence count and hook budget, rebuilt by the product itself.
+  arms are BUILDS  a detached worktree of this commit plus the arm's patches, run as its own process with PYTHONPATH
+           on its src. Nothing is switched at run time and nothing is monkeypatched: what is measured could ship.
+The world is synthesized and carries no framework text: a stock-recount loop (skill "cycle", argument "loop", a
+54,851-character body whose first step is `bash scripts/cycle-open.sh`; a sub-skill "cycle-check"; eight shell
+scripts that are the only writers of the files they own; twenty queued lots) and a shell Stop hook that refuses the
+stop up to six times, naming the skill re-entry in the words a perpetual-loop framework uses. 18 files, digest
+0f58ab7a5c10c328a451e0b145e3309f651a1dfeafc5d81a429a1dc9b4ca2a56. Workspaces are built under /srv/zc-door, outside
+every repository, because the product folds project guides from the workspace up to the repository root.
+Tapes, request snapshots and completion text stay in a scratch directory and are never committed. Ledger rows carry
+labels, counts, hashes, usage and the wire's URL path and four body fields (effort, tool_choice, tool count, model),
+never a header and never prompt text.
+
+Arms (the letter is the patch; a two-letter arm carries both):
+  A   this build.
+  A2  the PLACEBO: this build again, under another name, read against A like any arm. It can never be selected.
+  R   the finished plan's "answer now" reminder is silent once a stop has been refused on that plan, and speaks again
+      the moment the plan changes. Nothing else about the plan changes.
+  P   the finished plan leaves the board when a stop is refused, as it already does at a turn start. This removes the
+      reminder too, and ALSO empties the board, so the product's plan-first gate withholds an unplanned command: the
+      offline selftest shows a direct first step refused under P and run under every other arm. R and P differ by
+      that.
+  C   the "[already loaded]" pointer repeats the skill's first step (at most 2,000 characters) instead of naming it.
+  F   after a delivery, completions carry tool_choice "required" until the model has run one work call, for at most
+      3 completions. The engine binds where the delivery's words are advisory.
+  B   the fallback named in advance: the first Skill call for the delivered skill, with nothing run since, is answered
+      with the body again, once per delivery. It does not reset the veto fence.
+  RC, RF   R with C, R with F.
+
+Outcome of one rollout (one SEGMENT: from the delivery to the first of these):
+  pass            the loop RESUMED: a call to one of the loop's own commands (scripts/*.sh) came back from the product
+                  without an error. A call the product withheld or refused is an error result, as a failed script is.
+  stopped-again   the model ended in words and the hook refused the stop a second time.
+  cap             6 live completions and the loop had not resumed (a plan or skill spiral, or reading without end).
+  ended:<reason>  the turn ended by itself.
+  invalid:<why>   the replay left its tape, or the process did not import its own tree's package.
+The product sends luna no temperature and no seed (max_tokens 8192, provider defaults otherwise), so repetitions of
+one fork are samples, not copies; they still share a conversation, so the FORK is the unit of every test, and each
+fork sits at its own unpinned temporary path.
+Reading a file is acting and is NOT resuming; an echo is neither. Both leave the segment open. This is deliberately
+wider than rule G's single-step D1 ("the next completion is a work call"): the product's rendering of a long body asks
+for a plan FIRST, and arm P makes the model plan before it may act, so a one-completion measure would mis-score
+exactly the arms under test. Secondary, reported and deciding nothing: any-work rate, the completion the pass came on,
+first act, what followed a door answer, skill-again spirals, echoes, live completions, prompt tokens and cost per
+rollout, and the harness's own notes per arm.
+
+A row is USABLE only if all of these hold, and none of them looks at what the model did:
+  build     the process imported the package beside its own bench file, and its source diff hash is its arm's.
+  prefix    every replayed call matched its recording character for character, all of them were replayed, and the
+            fork request is byte-identical to the capture's -- except under R and P where the plan was finished at the
+            fork, where it must NOT be (the reminder is what those patches remove).
+  wire      every tools-bearing request went to /v1/responses at effort none on gpt-5.6-luna with tool_choice auto
+            (or required, under F only), and no live completion came from the fallback model.
+  witness   every patch shows itself in its own arm's rows and in no other's: R and P by their trace note and the
+            reminder's absence from the fork request, F by its note and "required" on the first live call, C by the
+            first step in a veto-door pointer, B by its redelivery note (at most one per delivery).
+  outcome   not invalid, not a provider error, not the product's own budget stop.
+An unusable cell is run once more and no further. A CELL is (fork, arm, repetition); it is filled by its first usable
+row, and a child that died without writing a row leaves its cell unfilled. A fork arm A could not fill is a bad fork,
+not a bad arm, so an arm is judged on the forks A filled: with under 90% of its cells filled there it is VOID. A fork
+is COMPLETE when A and every arm that is not VOID have all of their cells on it. Every rate and every comparison is
+over the complete forks only, so all arms are read on the same conversations.
+
+Gates before the first scored call (a failed gate is fixed and re-run; it spends nothing scored):
+  W0  the offline selftest passes in the baseline's built tree (it captures on a scripted model), and then in EVERY
+      arm's built tree against that capture: the baseline's tape replays under each arm's build message for message,
+      each patch shows its witness, no patch shows another's, the fence still counts, and the reading rule returns its
+      known answers on synthetic ledgers.
+  W1  preflight, offline: each luna category would send effort none with tools and none without, tool_choice auto,
+      "required" when asked, store false, no api_base.
+  W2  probe, two live calls (unscored, about $0.0002): tool_choice "required" reaches the wire and comes back as a
+      tool call. If it does not, F and RF are dropped BEFORE the batch and recorded as untestable on this route.
+
+Batch 1, the SCREEN. Up to 14 capture runs for 10 forks; 9 arms; 2 repetitions: 180 rollouts. Inside a fork the arms
+are interleaved and the starting arm moves one along per fork and per repetition; forks run four at a time.
+Denominators, fixed now: 20 rollouts an arm at 10 complete forks (one rollout = 5 points), 14 at the floor of 7 forks
+(7.1 points); a fork's own share is 0, 50 or 100%. Read:
+  NOT MEASURED        fewer than 7 complete forks. Nothing is concluded about any arm; the instrument is fixed and
+                      the batch re-registered. No batch 2.
+  NOT DISCRIMINATING  arm A resumes on 85% or more of its rollouts. The door is not where this world loses the loop;
+                      no arm is read. No batch 2.
+  NOT MEASURED        also if the placebo reads GAIN or HARM: a verdict from nothing means this batch's scale turns
+                      noise into verdicts, and no other verdict in it can be believed.
+  otherwise each arm X is read against A over the complete forks, d = X's pooled pass rate minus A's, p = an exact
+  two-sided sign-flip permutation test over the per-fork differences (the fork is the unit: rollouts of one fork share
+  a conversation), in this order:
+    VOID    under 90% of its cells filled (on the forks A filled).
+    HARM    d <= -15 points AND p < 0.05.
+    GAIN    d >= +20 points AND p < 0.05.
+    FLAT    |d| < 10 points.
+    MIXED   anything else.
+  A GAIN or HARM must also stand with any ONE fork left out: d is re-taken on each set of forks-minus-one, and if it
+  falls back across its threshold on any of them the arm reads MIXED and the forks it rested on are named. (The p is
+  not re-taken on the smaller sets: losing a fork costs any test power and says nothing about one fork carrying it.)
+  Then: if any arm GAINs, ONE arm goes to batch 2 -- the first in the order R, P, C, RC, F, RF, B (least product
+  change first) among the GAIN arms within 10 points of the best GAIN arm. If none GAINs, the MIXED arms that read
+  ABOVE the baseline go forward, the two with the largest d at most (ties: that order). If no arm is GAIN or MIXED
+  above the baseline there is no batch 2: nothing ships, rule G's fallback is FALSIFIED on its own test if B read
+  FLAT, HARM or MIXED below the baseline (and is said to be UNTESTED if B was VOID), and the next lever is the one
+  already named -- reasoning depth for the one completion after a delivery -- under its own pre-registration.
+  Seven arms are read at p < 0.05 each, so the screen alone ships nothing: it only picks what batch 2 tests.
+
+Batch 2, the CONFIRMATION (second-sample rule). Fresh captures (up to 12 runs for 8 forks), arms A and A2 plus the one
+or two arms batch 1 sent forward, 3 repetitions (24 rollouts an arm at 8 forks, one rollout = 4.2 points; 18 at the
+floor), read ALONE and never pooled with batch 1. Same usability rules, same gates; NOT MEASURED below 6 complete
+forks or if the placebo reads CONFIRMED, NOT DISCRIMINATING at 85%.
+  CONFIRMED       d >= +15 points AND p < 0.05, standing with any one fork left out.   NOT CONFIRMED   anything else.
+  One arm CONFIRMED: it ships. Two: the earlier in the order above ships, unless the other leads it by more than 10
+  points, then that one. None: nothing ships from this bench and the next lever is the one named above. A NOT
+  MEASURED batch 2 may be re-run once on fresh captures; a second one ends the bench with nothing shipped.
+"Ships" means built properly on main afterwards: no flag, one behaviour, tests including the deterministic re-spiral
+test that the fence still ends veto_stall at three, an ADR, and the next served sample reads whether the rests went.
+An outcome not named in this block is never upgraded to "ships".
+
+What the numbers will NOT show, kept apart from the rule on purpose. A GAIN for R or P is what the reminder
+hypothesis predicts, and is also what "any change to the last message of the request" would predict; the bench does
+not separate the two, and P changes the board as well. The numbers decide what ships, not why it works. The segment
+ends at the first resumed command: whether the loop then KEEPS running is the next served sample's question, not this
+bench's. One synthesized world, one model, one effort, the first refused stop of each run only: nothing here is a rate
+for the framework's own skills, for terra, for the pod tier, or for later stops in a long run.
+
+My estimates, recorded so they can be scored: arm A resumes on 30% of its rollouts (NOT DISCRIMINATING 5%; NOT
+MEASURED 12%, of which the placebo 4%). GAIN in batch 1: R 45%, P 35%, C 30%, F 35%, B 35%, RC 50%, RF 50%; at least
+one arm GAINs 65%; an arm sent forward is CONFIRMED 60% of the time one is sent.
+
+The pilot, declared. One capture was taken on 2026-09-20 to shake the instrument down (unpatched build 9a0c8fa, world
+digest as above): 14 streamed calls, all on /v1/responses at effort none with tool_choice auto, 85% of prompt tokens
+read from cache, $0.0192, 33.9 s, labels plan, first-step, skill-other, plan, script, plan, script, script, plan,
+script, plan, first-step, plan, text-only; fork at call 14 with a finished 5/5 plan and the reminder as the last
+message. It stopped at the fork, no rollout has ever been run against it, and it is EXCLUDED: both batches capture
+afresh.
+
+Spend. Hard bounds the orchestrators enforce by not launching past them: batch 1 captures $1.00 and rollouts $2.50,
+batch 2 captures $0.75 and rollouts $1.25; each run also carries the product's own cost stop ($0.40 a capture, $0.60
+a rollout). Expected about half of that. Campaign live spend to date approximately $6.08, pilot included.
+
+Pre-apply consultation (two queries, subject and mechanism, before this block was fixed). It changed the rule three
+ways: a verdict from seven to ten forks is re-taken with each fork left out; the placebo arm exists because a
+registered quantity can be noise at the registered scale, and only a control inside the batch shows it; denominators
+are written down here, before anyone counts. It also confirmed two choices already made: forks at unpinned paths with
+the fork as the unit of analysis, and a wire check rather than a client library's word for what was sent.
+
+MANIFEST (sha256 of the instrument as committed with this block; HEAD before it: 9a0c8fa)
+  2009b41e64889453eff122acf828478c8abe74242a4f74115c159ceb7ffb29ad  bench/veto_door.py
+  cb07e3b1bcf620c1e12d8dcad51314e20556f09effd9fbadbdd5cf3885494ae8  bench/veto_door_world.py
+  e73a3300e305d9ec5c6b0899219c9cd1c5461f550b50ebf758bb56ce818964e0  bench/veto_door_arms/r.patch
+  946c1a55bd75f7ad28aa7d4c877ad486f0cf05b5712977a5e826b4391dd9314a  bench/veto_door_arms/p.patch
+  bc9d5bda846c1b8cb59a621f6ace3df4ca14b5b17e133c396da68cfbc30fc35e  bench/veto_door_arms/c.patch
+  f61de3fddadb3566d427b5e0f204a703752ef736953125e4d654ffccdbfd97cd  bench/veto_door_arms/f.patch
+  8a24f7f5684b32abc1a2237f27bf703e5c80a54847186402b3cf3a2272de51f7  bench/veto_door_arms/b.patch

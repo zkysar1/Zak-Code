@@ -1,0 +1,57 @@
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index fa3267a..5fa109b 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -2258,6 +2258,9 @@ class AgentLoop:
+         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
+         # readings of it, and only ever within one skill turn.
+         self._work_calls = 0
++        # The finished plan a turn-end hook refused a stop on (its progress signature), or
++        # ``None``. Set in :meth:`_fire_turn_end`, read and dropped in :meth:`_plan_reminder`.
++        self._refused_plan: str | None = None
+         self._turn_paging: dict[str, dict[str, Any]] = {}
+         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
+         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
+@@ -3201,11 +3204,19 @@ class AgentLoop:
+     def _plan_reminder(self) -> Message | None:
+         """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
+         network = self.session.task_network
++        if not network.is_complete():
++            # The plan moved on (new steps, or none): whatever plan finishes next is a new one,
++            # even if it reads the same, and its reminder is owed once.
++            self._refused_plan = None
+         rendered = network.render(elide_done=True)  # the working-memory form (ADR-0184)
+         if not rendered:
+             return None
+         request = network.context.request
+         if network.is_complete():
++            if self._refused_plan == network.progress_signature():
++                # The answer this line asks for was given, and a turn-end hook refused it as
++                # the end (see :meth:`_fire_turn_end`): asking again contradicts the hook.
++                return None
+             # ADR-0108: the call after the last step closes is the one that must produce the
+             # ANSWER. Handing it the finished checklist as its highest-salience message is
+             # what made small models narrate the plan's state instead ("all steps are
+@@ -6002,6 +6013,22 @@ class AgentLoop:
+         if self._turn_end_veto_reset is not None:
+             self._turn_end_veto_reset()
+         self._veto_delivered = None
++        # The plan that just closed was the means of the pass the hook refused to accept as the
++        # end. Its one-line reminder (ADR-0108: "Plan complete ... Answer the user's original
++        # request now") has done its work: the model answered, and the answer was refused.
++        # Repeated from here on it would be the LAST message of every call that follows,
++        # directly under the hook's refusal and the skill the harness delivered: one message
++        # says act, the next says answer in words. Remember WHICH plan it was, so the reminder
++        # is silent for exactly that plan and speaks again the moment the plan changes.
++        network = self.session.task_network
++        if network.tasks and network.is_complete():
++            self._refused_plan = network.progress_signature()
++            self._note(
++                "intervention",
++                "turn-end hook refused the stop on a finished plan; its answer-now reminder is "
++                "silent until the plan changes",
++                kind="veto_plan_silenced",
++            )
+         if reentry is not None:
+             self._vetoes_without_skill += 1
+             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)

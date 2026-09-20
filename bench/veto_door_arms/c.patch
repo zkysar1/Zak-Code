@@ -1,0 +1,71 @@
+diff --git a/src/zakcode/__init__.py b/src/zakcode/__init__.py
+index 99fae48..5b19c76 100644
+--- a/src/zakcode/__init__.py
++++ b/src/zakcode/__init__.py
+@@ -230,13 +230,40 @@ def _skill_digest(body: str) -> str:
+     return hashlib.sha1(body.encode("utf-8", errors="replace")).hexdigest()
+ 
+ 
+-def _already_loaded_pointer(name: str, page: str | None, args: str, *, worked: bool) -> str:
++#: The most of a skill's first step a pointer repeats. A step is a screenful of instructions
++#: by design (the sections ADR-0067 pages by); one that is not is cut at a line and says so.
++_POINTER_FIRST_STEP_MAX_CHARS = 2_000
++
++
++def _first_step_of(body: str, name: str) -> str | None:
++    """The first numbered section of a skill body, as the plan pages it (ADR-0067), or
++    ``None`` for a body with no such sections. The pointer repeats it so that "start from the
++    first step" names the step: in a long skill that step sits under pages of reference
++    tables, and a pointer that only mentions it leaves the model to find it again."""
++    from zakcode.tasks import _outline
++
++    pages = _outline(body, skill=name).pages
++    if not pages:
++        return None
++    step = pages[0].text.strip()
++    if len(step) > _POINTER_FIRST_STEP_MAX_CHARS:
++        cut = step.rfind("\n", 0, _POINTER_FIRST_STEP_MAX_CHARS)
++        step = step[: cut if cut > 0 else _POINTER_FIRST_STEP_MAX_CHARS].rstrip()
++        step += "\n[... the rest of this step is in the instructions already in your context]"
++    return step
++
++
++def _already_loaded_pointer(
++    name: str, page: str | None, args: str, *, worked: bool, first_step: str | None = None
++) -> str:
+     """What a ``Skill`` call gets when the body it names is already in context this turn.
+ 
+     Three situations, three sentences — each says what to DO, because a bare "already loaded"
+     drew a summary and a stop from a model that had not started. ``worked`` is reached only
+     for a user-only skill the operator typed (ADR-0198): every other skill asked for again
+-    after work is a re-entry and gets its body (ADR-0196).
++    after work is a re-entry and gets its body (ADR-0196). ``first_step`` is the skill's first
++    section, repeated under the third sentence: every pointer then carries the section to act
++    on, the open page for a paged skill and the first step for one that arrived whole.
+     """
+     from zakcode.providers.text_tools import defang_untrusted
+ 
+@@ -268,6 +295,8 @@ def _already_loaded_pointer(name: str, page: str | None, args: str, *, worked: b
+             "action is that step's tool call, not another Skill call and not "
+             "a summary."
+         )
++        if first_step:
++            pointer += f" That first step, repeated here so you can act on it:\n\n{first_step}"
+     if args.strip():
+         pointer = f"[arguments: {defang_untrusted(args.strip())}]\n\n{pointer}"
+     return pointer
+@@ -1814,7 +1843,13 @@ class Agent:
+                     page is None and arrived_at is not None and self._loop_work_calls() > arrived_at
+                 )
+                 if not reentry:
+-                    pointer = _already_loaded_pointer(skill.name, page, args, worked=False)
++                    pointer = _already_loaded_pointer(
++                        skill.name,
++                        page,
++                        args,
++                        worked=False,
++                        first_step=None if page is not None else _first_step_of(body, skill.name),
++                    )
+                     logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
+                     return SkillLoad(found=True, name=skill.name, body=pointer)
+                 logger.info("skill %r asked for again after work — a re-entry", skill.name)
