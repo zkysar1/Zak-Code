@@ -265,3 +265,132 @@ CHANGED replace the same lines of the block above; the five patches are byte for
   bc9d5bda846c1b8cb59a621f6ace3df4ca14b5b17e133c396da68cfbc30fc35e  bench/veto_door_arms/c.patch
   f61de3fddadb3566d427b5e0f204a703752ef736953125e4d654ffccdbfd97cd  bench/veto_door_arms/f.patch
   8a24f7f5684b32abc1a2237f27bf703e5c80a54847186402b3cf3a2272de51f7  bench/veto_door_arms/b.patch
+
+=== 22:53 UTC 2026-09-20 RESULTS -- THE VETO DOOR, BATCH 1 (THE SCREEN): NOT DISCRIMINATING. Arm A resumed on 16 of 18 rollouts (88.9%), so no arm is read, there is no batch 2, and nothing ships from this bench
+Read with the instrument at the AMENDMENT 1 manifest (HEAD 465b332), by the registered rule and nothing else.
+
+Gates. W0 passed in all nine built trees (A 130 of 130 checks; A2, R, P, C, F, B, RC, RF 126 of 126 each). W1 passed
+(every luna category: effort none with tools and none without, tool_choice auto, "required" when asked, store false,
+no api_base; 31 tools). W2 passed: "auto" came back as words and "required" as a tool call, both on /v1/responses at
+effort none, $0.000052. F and RF stayed in the batch.
+
+What ran. Captures 22:11-22:20 UTC: 10 runs, 10 forks, $0.2867 (12 to 49 calls and 19 to 154 s a run). At every fork
+the plan was finished (2/2 up to 9/9) and the finished plan's reminder was the last message of the request: 10 of 10.
+Rollouts 22:21-22:32 UTC: 180 first tries and 42 second tries (an unusable cell is run once more), 222 rows, no child
+died, $0.9515 ($0.0043 and 6.6 s a rollout, 92% of prompt tokens read from cache). All 610 tools-bearing requests
+went to /v1/responses at effort none on gpt-5.6-luna. Outcomes over all rows: pass 200, stopped-again 19, cap 3; no
+turn ended by itself.
+
+AUDIT (the rule amendment 1 added; done before the reading below was written). named_not_run: 8 calls, 8 distinct
+commands, every one a READ of a script or a test for one (six `sed -n` listings, one `test -x` chain, one printf of a
+note to self), none with a script's line in its result. run_unproven: 0. Cells that did not pass and hold a named
+call whose result shows a script's line: 0. No real run went uncounted, so there is no second reading of that kind.
+
+THE READING (registered rule, screen). Forks 10; forks arm A filled 9; complete forks 9 (floor 7).
+  arm  cells  pass  rate    Wilson 95%     filled  rows  unusable rows
+  A    18     16    88.9%   67.2 - 96.9    100%    22    prefix 4
+  A2   18     13    72.2%   49.1 - 87.5    100%    22    prefix 4
+  R    18     18    100%    82.4 - 100     100%    22    prefix 4
+  P    18     17    94.4%   74.2 - 99.0    100%    22    prefix 4
+  C    10      6    60.0%   31.3 - 83.2     56%    33    witness:C-absent 15, prefix 8
+  RC    6      6    100%    61.0 - 100      33%    35    witness:C-absent 21, prefix 8
+  F    18     17    94.4%   74.2 - 99.0    100%    22    prefix 4
+  RF   18     18    100%    82.4 - 100     100%    22    prefix 4
+  B    18     13    72.2%   49.1 - 87.5    100%    22    prefix 4
+Arm A stands at 88.9%, above the 85% ceiling: NOT DISCRIMINATING. By the rule the door is not where this world loses
+the loop, NO arm is read against A (the report computed no d, no p and no verdict for any of them), there is no
+batch 2, and nothing ships from this bench. Rule G's fallback (B, the body at the veto door) is UNTESTED here: not
+falsified, not supported. The table is bookkeeping, not a comparison. R's 18 of 18 is 18 of 18 in a world where the
+unpatched build already gets 16; and the placebo, the SAME build under another name, read 13 of 18 beside A's 16: a
+17-point gap out of nothing, which is this batch's noise at 18 cells an arm.
+
+My estimates, scored. "Arm A resumes on 30% of its rollouts": a MISS by 59 points (88.9%). NOT DISCRIMINATING: I gave
+it 5%, and it is what happened. NOT MEASURED, 12%: did not happen. The per-arm GAIN estimates and "at least one arm
+GAINs, 65%" cannot be scored, because no arm was read; they are not counted as hits. Why the first one missed: I
+carried the served control's numbers (a pointer followed by a work call 4 times of 8, three turns of four ending in a
+veto stall) into a world I had built myself, and that world is easier at exactly that point (below). A base rate
+measured in one world is not a prior for another. A rule whose first branch is a ceiling on the baseline needs the
+baseline measured in THIS world first, alone, under its own registration: arm A by itself shows no arm's outcome to
+anyone and costs a ninth of a screen.
+
+What the instrument got wrong or could not do, found by reading the unusable rows. None of it touches arm A's cells,
+so none of it changes the reading.
+  1. One fork in ten could not be replayed even by the build that captured it (all nine arms' 4 rows on it refused
+     as "prefix", 36 rows). In that capture the model had asked the product for its plan's history (plan_recall),
+     and that result prints each plan event's clock time. A replay re-runs the tool at a later minute: same roles,
+     same sizes, different characters, from call 38 of 49 on. Reproduced after the batch by a dry replay that refuses
+     its first live call: 49 calls replayed, 11 differing (38 to 48), 0 requests on the wire, and the fork request
+     differs from the capture's in exactly one message, that tool result. The usability rule did its job; a capture
+     that holds a clock cannot be a fork until the replay freezes it.
+  2. Arm C changes a text one capture already held. That run had met a pointer BEFORE its fork, so under C the
+     replayed prefix itself differs (18 of 19 calls) and C and RC lose that fork to "prefix" (8 rows each). The
+     design assumed a patch acts only after the fork; a patch to a text the prefix can contain does not.
+  3. The C witness could not fire at the door, in any arm. The detector asked whether the door's answer OPENS with
+     the pointer's tag; the product writes a call's argument ahead of that tag, and this model always passes the
+     argument. The flag read false on every door answer of the batch, so every C and RC row whose first act was the
+     skill call was refused (36 rows) and the rows kept were the ones where the patch could not act: usability ended
+     up depending on what the model did, which the registration says it never may. The patch itself was live: a C or
+     RC door answered 1,139 characters carrying the first step, every other pointer 563 without it (B's door answers
+     with the body, 55,314). The offline proof missed this because its scripted model calls the skill with no
+     argument and its C check looked for the first step only: the positive control was missing for the one form the
+     live model uses. With a pointer recognised as "the door's answer that is not the body" and every other rule
+     unchanged, the batch reads the same (NOT DISCRIMINATING; A, A2, R, P, F, RF and B cell for cell identical), C
+     becomes 12 of 16 and RC 16 of 16, and both stay under 90% filled because of item 2. Printed beside the
+     registered reading, as the rule for a corrected instrument asks; it decides nothing.
+
+Found on the way: a product fault, not a bench result. The detector's mistake in item 3 is also the product's. The
+Skill tool decides whether what it is about to return is a pointer by testing how the text OPENS, and when the call
+carries an argument the product writes the argument's frame ahead of the pointer's tag. So a pointer for a call WITH
+an argument is handled as a fresh body. A whole-body skill's pointer gains the follow-these-instructions hint: the
+563 characters measured at every unpatched door here are the 456-character pointer plus that 107-character line. A
+PAGED skill's pointer, which exists to hand the current section over again, is fed back through the pager: offline,
+on a 32k window, a model on section 2 of 4 that asks again with an argument gets that section headed a second time,
+as page 1 of 2, without its closing line (the one that says how section 3 arrives), under the first-load hint: its
+plan now holds two sections, this is SECTION 1, carry out section 1. Without an argument both cases are correct. A
+perpetual-loop framework's re-entry always carries an argument, and the one pointer left in the served control's
+session file shows the same stray line. In the product since 2026-08-28 (the pager's change, #275, brought the test;
+the argument's frame is older, #210). It goes to main by itself, under its own ADR with deterministic tests: it
+is a plain fault, not one of this bench's levers, and nothing here measures what it does to a model.
+
+Secondary, reported and deciding nothing (first tries only, rows whose prefix replayed cleanly: 18 an arm, 16 for C
+and RC).
+  The door here is easier than the served one. After a veto-door pointer the unpatched build's next completion was a
+  work call 22 times of 22 (A 11 of 11, A2 11 of 11). The served control read 4 of 8, with another instrument in
+  another world: the two are not one series, but they are far enough apart to say this world does not reproduce the
+  served door.
+  First act of the unpatched build (A and A2, 36 rollouts): the skill call 22, the loop's first step directly 6,
+  words 4, a plan call 3, other work 1.
+  The loop's first step usually FAILS here, and the failure hands over the recovery. Of 206 calls that ran it, 132
+  came back as errors, 128 of them showing the script's own line, and that script has one refusal: a cycle is
+  already open, close it first, naming the command. 203 calls carried a pass in the 200 passing rollouts:
+  cycle-close.sh alone 94, cycle-open.sh alone 51, cycle-select.sh alone 17, the first four scripts in one call 15,
+  the three checks in one call 11, others 15. A world whose first error names the next command is a world that is
+  easy to resume, whatever the door says.
+  What followed the door's answer (the next completion is a work call): A 11 of 11, A2 11 of 11, C 15 of 15, F 8 of
+  8, RF 14 of 14, RC 19 of 21, R 10 of 14, P 3 of 13, B 0 of 10. Under B the body came back and the next completion
+  was a plan call 9 times of 10 and words once: a long body is rendered with a request to plan first, so a second
+  body buys a second plan. Under P the emptied board makes the plan-first gate ask for a plan (10 of 13), as the
+  selftest showed it would. B cost $0.0079 a rollout against $0.0047 for A.
+  Where the second refusals sat. Arms that kept the finished plan's reminder and forced no tool (A, A2, B, C): 16
+  rollouts of 70 did not resume, all 16 a second refused stop, 10 of them words as the very first act. Arms where
+  the reminder was gone (R, P, RC, RF): 1 of 70, a cap under P, and words first 0 of 70. F: 1 of 18. THIS IS NOT A
+  READING. It pools arms after seeing them, it was no registered contrast, and at this ceiling the registered one
+  could not be run. It is written down because it is the shape the reminder hypothesis predicted, so that the next
+  registration can test it: on the failure this world does produce, a second refused stop, not on a gain the ceiling
+  leaves no room for.
+
+What the numbers do NOT show. Nothing about any arm: not that R works, not that B fails. Nothing about the served
+loop: the unpatched build passed this world's door 22 times of 22 and the served one 4 of 8, so whatever stalls the
+served loop at its door is not reproduced by a 55,000-character synthesized skill, a finished plan and a refused
+stop alone. Two differences are visible and unmeasured: here the first step's refusal names the next command, and
+the segment allows six completions where the served measure allowed one. One world, one model, one effort, and the
+first refused stop of a run only.
+
+Spend. Batch 1: W2 $0.000052, captures $0.2867, rollouts $0.9515, $1.2383 in all against a $3.50 bound. The dry
+replay made no provider call. Campaign live spend to date approximately $7.32.
+
+Next. No batch 2 and nothing ships from this bench, as registered. The product fault goes to main by itself. The
+instrument is repaired before it is used again: the pointer detector, with a scripted call that carries an argument
+as its positive control, and a clock the replay can freeze. Any further measurement of the door is registered
+first, in its own block, and starts with the baseline alone.
+
