@@ -11845,3 +11845,70 @@ unused field kills exactly one test — `test_there_is_no_switch_the_advance_is_
 is the point of that pin: the flag's reappearance fails before it can change any behaviour. Re-gating
 the advance on it kills eight, across the advance surface and the repointed rail test. Full gate at
 the tip: ruff format and check clean, mypy clean on 154 files, 4344 passed / 9 skipped.
+
+## ADR-0203: whoever builds a Skill answer says what it is — a pointer is flagged by the resolver, never recognised by how its text opens
+
+Date: 2026-09-20. Restores the delivery ADR-0063 and ADR-0067 describe, for the calls it never reached.
+
+Context. A `Skill` call for a body the turn already holds is answered with a pointer, not the body: the
+`[already loaded]` sentence (ADR-0063), a paged skill's CURRENT section again (ADR-0067), or the answer
+to a user-only skill the operator typed (ADR-0198). The resolver builds that text and the tool hands it
+on — and the tool decided which of the two it was holding with `load.body.startswith("[already
+loaded]")`. When the call carries `args`, the resolver writes the `[arguments: …]` frame AHEAD of the
+tag (#210, three days older than the test, #275). So for every call with an argument the test was
+false, and the pointer went down the path of a fresh body:
+
+- a whole-body skill's pointer gained a body's rail — "Nothing new was loaded … not another Skill call
+  and not a summary", then `Hint: Follow these skill instructions now`;
+- a paged skill's pointer went back through the PAGER. Reproduced offline on a 32k window: a model on
+  section 2 of 4 that asks again with an argument received that section under a second header, `page 1
+  of 2`, without the closing line that says how section 3 arrives (the line ADR-0087 added because its
+  absence stalled unattended runs), under the FIRST-load hint: its plan now holds two sections, this
+  result is SECTION 1, carry out section 1. Nothing in that was true for the turn;
+- the trace was told `{"skill": …}` and not `{"pointer": true}`.
+
+The call that carries an argument is not a corner. A perpetual loop's Stop hook names its re-entry as a
+Skill call WITH its argument, so at a refused stop it is the only form the pointer door sees. Found on
+2026-09-20 by the veto-door bench (`bench/results/veto-door-preregistration.log`, batch 1): its arm-C
+witness made the same test and never fired, and reading why led here. Measured there on gpt-5.6-luna:
+137 of 137 repeated Skill calls carried `args`, and every unpatched door answered 563 characters — the
+456-character pointer plus that 107-character hint line. The one pointer left in a served sample's
+session file shows the same line. Without an argument both doors were always correct, which is why no
+test saw it: every assertion on a pointer WITH an argument asked whether the tag was IN the output.
+
+Decision. `SkillLoad` gains `pointer: bool`. The two places that build a pointer set it
+(`_load_skill_body`'s reload dedup and the operator-typed answer). `Skill` branches on the flag and
+hands the text on as it is: no footer, no hint, no pager, `data={"skill": …, "pointer": True}`. The
+loop's seeding step, which asked the same question a second way (`"[already loaded]" in output[:300]`),
+reads the tool's flag instead. This is a field on a result, not a setting: there is one behaviour.
+
+Why a flag and not a better test of the text. Searching the first 300 characters instead of testing the
+first 16 would have closed the argument case and kept the design that caused it: two components agreeing
+on a marker string, each with its own idea of where to look. The two readers already disagreed — the
+loop's search found the tag behind the frame and the tool's prefix test did not, which is how one turn's
+trace could say "answered with the pointer" while the tool dressed that same result as a body. A marker
+in the text also fails the other way: a skill whose OWN instructions open with the tag (one documenting
+this protocol, say) is a body, and both readers would have called it a pointer — never delivered as
+instructions, never counted as a load. Only the code that built the text knows which it built.
+
+What changes for a model, and what is not claimed. A pointer for a call with an argument is now the
+frame plus exactly the text the argument-free door gives. For a whole-body skill that removes one
+contradictory line; for a paged skill it restores the current section, once, with its way on. No effect
+on behaviour is claimed. The bench's unpatched door, stray line included, was followed by a work call 22
+times of 22, so nothing says the line hurt luna there; the paged case is the one that told a model
+something false about where it stood, and on a small window that is the door every re-entry uses. What
+a harness tells a small model must be true for this turn (ADR-0198's lesson), whether or not a bench
+has caught it lying yet. This does NOT settle the veto-door stall: batch 1 read NOT DISCRIMINATING, no
+arm was read, and nothing from that bench ships.
+
+Tests (`tests/test_use_skill.py`). Each compares the door WITH an argument against the door without
+one, reading the expected text from the other form at run time rather than restating it, because the
+fault lay between a producer and a consumer:
+`test_a_pointer_is_a_pointer_whether_or_not_the_call_carried_arguments` (whole body, at a refused
+stop), `test_a_paged_skills_current_section_survives_the_arguments_frame` (section 2 of 4: one header,
+the closing line intact, no "SECTION 1"), `test_a_body_that_quotes_the_pointers_tag_is_delivered_as_a_
+body` (the reverse misreading), and the ADR-0198 test now also asserts the operator-typed answer is
+flagged and carries no body's hint. Proven to discriminate on a throwaway worktree of the unfixed
+commit with `PYTHONPATH` pinned to its `src` and the import path printed: all four fail there, each for
+its intended reason (the stray hint; the second page header; the quoted tag taken for a pointer; the
+missing flag), and all four pass here.

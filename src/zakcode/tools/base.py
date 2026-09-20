@@ -199,6 +199,13 @@ class SkillLoad(BaseModel):
     #: acted on it since (ADR-0196): a loop's re-entry, not a redundant reload. The body is
     #: handed over exactly as a first load is; the flag is for the trace.
     reentry: bool = False
+    #: True when ``body`` is NOT the skill's instructions but the answer to a redundant call:
+    #: the ``[already loaded]`` pointer (ADR-0063), a paged skill's current section again
+    #: (ADR-0067), or the operator-typed answer (ADR-0198). Whoever BUILT the text says so
+    #: here, because the text cannot: a call's arguments are framed ahead of the pointer's
+    #: tag, so a reader that tests how ``body`` opens takes a pointer for a fresh body
+    #: (ADR-0203), and a skill whose own instructions open with that tag would be the reverse.
+    pointer: bool = False
 
 
 @runtime_checkable

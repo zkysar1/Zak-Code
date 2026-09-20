@@ -1762,7 +1762,7 @@ class Agent:
             typed = self._typed_this_turn_pointer(skill, args) if source == "tool" else None
             if typed is not None:
                 logger.info("skill %r use_skill answered: the operator typed it", skill.name)
-                return SkillLoad(found=True, name=skill.name, body=typed)
+                return SkillLoad(found=True, name=skill.name, body=typed, pointer=True)
             return SkillLoad(
                 found=True,
                 name=skill.name,
@@ -1816,7 +1816,7 @@ class Agent:
                 if not reentry:
                     pointer = _already_loaded_pointer(skill.name, page, args, worked=False)
                     logger.info("skill %r use_skill deduped (already loaded this turn)", skill.name)
-                    return SkillLoad(found=True, name=skill.name, body=pointer)
+                    return SkillLoad(found=True, name=skill.name, body=pointer, pointer=True)
                 logger.info("skill %r asked for again after work — a re-entry", skill.name)
             self._note_skill_delivered(skill.name, digest)
         elif source == "harness":
