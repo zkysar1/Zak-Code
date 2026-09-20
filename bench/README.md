@@ -309,7 +309,7 @@ $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A --reps 2 \
 $PY bench/veto_door.py report --ledger $OUT/calibration.jsonl --arms-dir $ARMS --out $OUT \
     --arms A --reps 2 --mode calibrate
 $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A,A2,R --reps 4 \
-    --stage comparison --forks-of calibration --budget 2.00
+    --stage comparison --forks-of calibration --budget 2.20
 $PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --out $OUT \
     --arms A,A2,R --reps 4 --mode refusal
 ```

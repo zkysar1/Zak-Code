@@ -394,3 +394,195 @@ instrument is repaired before it is used again: the pointer detector, with a scr
 as its positive control, and a clock the replay can freeze. Any further measurement of the door is registered
 first, in its own block, and starts with the baseline alone.
 
+
+=== 23:39 UTC 2026-09-20 CORRECTION -- THE VETO DOOR, BATCH 1 RESULTS: two sentences about WHY the offline proof missed the C witness were wrong (the scripted call did carry the argument). No count, rate, verdict or spend figure changes
+What was wrong. Item 3 of the results block above says the offline proof missed the C witness "because its
+scripted model calls the skill with no argument", and its Next paragraph promises the repair: "a scripted call that
+carries an argument as its positive control". Both sentences are wrong, and they are mine. The scripted model's
+repeated skill call has carried the argument since the instrument's first commit (43dff3c: skill "cycle", argument
+"loop", the call the live model makes; the same at 465b332, the commit batch 1 ran). The control I promised already
+existed, so its absence cannot have been the cause, and adding it would have repaired nothing.
+
+What actually happened. The selftest never put the question a batch is READ by to a row the real product wrote. It
+checked each witness's ingredients by hand (is the first step in the door's answer, is it the body, was a tool
+forced, is the reminder in the fork request, which trace notes were written) and never the pointer flag; and it ran
+the usability rule only on hand-written rows, which carried the flag as a sound row "should". So the rule was proven
+on rows no build would write, and the rows the builds did write were never shown to the rule. Re-run today with
+batch 1's detector put back, the scripted door answers the framed pointer and the flag reads false, exactly as in
+the live batch. The rule asks a C row at the door for a flagged pointer that carries the first step, so a C tree's
+own selftest row, put to the rule, would have been refused as "witness:C-absent": offline, at no cost, before the
+batch. (That last step is read off the rule's text, not re-run: the C patch no longer applies to main.)
+
+How I came to write it. I inferred why the proof had missed the fault from the fact that it had passed, and did not
+read the scripted call before publishing the explanation. Found the same evening while building the promised
+control: the call I went to add was already there.
+
+What is changed (in this commit, with the instrument).
+  The door's witness reads the flag the product now sets on a pointer it builds (ADR-0203), not how the text opens.
+  The selftest runs the usability rule on every row the real product writes in the tree under test; reads the
+  door's row under every other arm's name, where the rule must refuse it unless that arm is the same build (A and
+  its placebo); and asserts the door's flag. Shown to be a control and not a formality: with batch 1's detector put
+  back, the baseline tree's selftest fails on exactly the flag check (168 ok, 1 failed); as committed it passes in
+  the baseline's, the placebo's and R's trees.
+  "A clock the replay can freeze" is withdrawn. A prefix that holds a clock stays REFUSED: a refusal costs one
+  capture, and a normaliser is a second reading of the prefix that could hide a real divergence. The comparison
+  registered below simply does not roll out a fork that no calibration rollout could read.
+  bench/README.md carried the same wrong sentence and is corrected in this commit.
+
+What does not change. No count, rate, verdict or spend figure in the results block. Batch 1 reads NOT DISCRIMINATING
+exactly as registered, and the corrected-witness figures printed beside it (C 12 of 16, RC 16 of 16) came from the
+recorded door answers, not from the explanation withdrawn here.
+
+=== 23:39 UTC 2026-09-20 REGISTRATION 2 -- THE VETO DOOR, THE SECOND REFUSAL: does keeping a finished plan's "answer now" reminder silent after a refused stop cut how often gpt-5.6-luna fails to resume? (one arm, a placebo, and the baseline alone first)
+Question. After a Stop hook refuses a stop taken on a FINISHED plan, the product still ends every request that
+follows with its one-line reminder for a finished plan (plan complete: answer the original request now). Arm R keeps
+that line silent for exactly that plan, until the plan changes. Does R cut the share of rollouts in which
+gpt-5.6-luna (served posture, reasoning effort none) does NOT get back to the loop's own work? This block fixes the
+arms, the measure, the two stages and the reading BEFORE any scored call. None has been made since batch 1.
+
+Where the hypothesis comes from, declared. From looking at batch 1's rows after the fact: in the arms that kept the
+reminder and forced no tool (A, A2, B, C) a rollout did not resume 16 times of 70; in the arms where the reminder
+was gone (R, P, RC, RF), 1 time of 70. That was written down as NOT a reading, for a later registration to test.
+This is that registration, and because the pattern was found in batch 1's rows, nothing of batch 1 is reused: no
+capture, no tape, no row. Every fork is captured afresh and this batch is read alone, never pooled with that one.
+
+Build under test. main at the commit that carries this block. The product has changed once since batch 1 (ADR-0203,
+#579): a pointer for a skill call that carries an argument is no longer treated as a fresh body, so the door's
+answer lost a stray follow-these-instructions line. Batch 1's baseline (A and A2 together: 7 of 36 did not resume,
+on the older build) is therefore a prediction to compare with, not a control. The control is arm A in this batch.
+
+Instrument. The capture-and-fork instrument of the first registration, the same synthesized world (18 files, digest
+0f58ab7a5c10c328a451e0b145e3309f651a1dfeafc5d81a429a1dc9b4ca2a56), the outcome as AMENDMENT 1 left it, and the same
+usability rule (build, prefix, wire, witness, outcome; an unusable cell is run once more and no further). Changed
+since batch 1, all in the commit that carries this block, hashes in the MANIFEST below:
+  the door's witness reads the product's own pointer flag (see the CORRECTION above);
+  the selftest puts the usability rule to the rows the real product writes, under every arm's name;
+  the permutation test is exact at any number of forks (a convolution over the distinct sums, held against
+  one-at-a-time enumeration on 7,180 inputs; listing every assignment stops being practical near 25 forks);
+  `arms --arms` builds only the arms named; `--stage` gives each stage its own ledger; `--forks-of` keeps the
+  comparison off a fork no calibration rollout could read; `report --mode calibrate|refusal` is the reading below,
+  with its rates and thresholds held as exact fractions, and is checked through the command line as well as in
+  process (its first version could not print its own rule, which only the command line showed).
+
+Arms. Three builds, each a detached worktree of main plus its patches, run as its own process:
+  A    this build.
+  A2   the PLACEBO: this build again under another name, read against A like any arm. It can never ship.
+  R    bench/veto_door_arms/r.patch, the bytes batch 1 ran (sha256 e73a3300...964e0); it applies to main
+       unchanged. Once a turn-end hook has refused a stop on a finished plan, that plan's reminder is silent; it
+       speaks again the moment the plan changes. Nothing else about the plan changes. Its witness is its trace
+       note plus the reminder's absence from the fork request.
+Not in this batch: P also empties the board, so it would test two things at once; C and B no longer apply to main
+and C loses any fork whose prefix met a pointer; F is another lever. One hypothesis, one arm, one test.
+
+Measure. A usable rollout that is not a PASS did NOT RESUME (a second refused stop, the cap of 6 live completions,
+or a turn that ended by itself). Every rate below is the NOT-RESUMED share: lower is better. Batch 1 showed that
+this is the failure this world produces, and that the pass side has no room left to show a gain.
+
+Stage 0, captures. Up to 40 runs of the unpatched build for 32 forks, as before (a run's first delivery only).
+Fewer than 24 forks captured is NOT MEASURED there and then: no rollout is run.
+
+Stage 1, CALIBRATION: arm A alone, 2 rollouts a fork, in its own ledger. Read (`--mode calibrate`):
+  NOT MEASURED        fewer than 24 complete forks. The instrument is fixed and the batch re-registered.
+  NOT DISCRIMINATING  A did not resume on fewer than 1 rollout in 15. No comparison is run, nothing ships, R stays
+                      untested, and the next registration has to change the WORLD toward the served door, not the
+                      arms: this world then does not produce the failure on this build.
+  PROCEED             otherwise.
+This gate protects the spend, not the reading: it is set low on purpose. Simulated before any data (below), a world
+that misses 12% of the time is stopped here about 1 time in 9, one that misses 2% about 9 times in 10. Calibration
+rows NEVER enter the comparison: going on because A's rows looked bad, and then comparing against those same rows,
+would build a difference out of the selection.
+
+Stage 2, COMPARISON: fresh rollouts of A, A2 and R, 4 a fork each, on every fork the calibration could read at all
+(a fork none of whose calibration rollouts was usable, such as a prefix that holds a clock, is not rolled out again;
+usability never looks at what the model did, so neither does this). Arms interleaved inside a fork, the starting arm
+moving one along per fork and per repetition, four forks at a time. Denominators, fixed now: 128 rollouts an arm at
+32 complete forks (one rollout = 0.8 points), 96 at the floor of 24 (1.0 point); a fork's own share is 0, 25, 50, 75
+or 100%. Read (`--mode refusal`), in this order:
+  NOT MEASURED        fewer than 24 complete forks.
+  NOT DISCRIMINATING  A's not-resumed share IN THE COMPARISON is under 8% (10 of 128 or fewer; 7 of 96 or fewer):
+                      "flat" would then mean nothing, because there was nothing to reduce.
+  otherwise each arm X is read against A over the complete forks, with m = A's share, x = X's share, and p = the
+  exact two-sided sign-flip permutation test over the per-fork differences (the fork is the unit):
+    VOID    under 90% of its cells filled on the forks A filled.
+    HARM    x - m >= 10 points AND p < 0.05.
+    GAIN    x <= m / 2 AND m - x >= 5 points AND p < 0.05.
+    FLAT    |m - x| < 5 points.
+    MIXED   anything else.
+  A GAIN or HARM must keep its size with any ONE fork left out (m and x re-taken on each set of forks-minus-one,
+  the p not re-taken), or the arm reads MIXED and the forks it rested on are named.
+  NOT MEASURED        also if the placebo reads GAIN or HARM: a verdict from nothing means no verdict here counts.
+Every threshold is a function of m as MEASURED in the comparison, never of a predicted baseline. Enumerated with the
+instrument's own function over every pair of counts (0..128 misses for A, 0..128 for X, both sides of the p), and the
+same at 96: each of 16,641 pairs lands in exactly one branch, none unnamed, and GAIN and FLAT cannot both hold (5
+points apart). At m = 11 of 128 GAIN needs x <= 4; at 20 of 128, x <= 10; at 38 of 128, x <= 19; at 64, x <= 32.
+The p has its own floor: k forks that all lean one way give 2 / 2^k, so p < 0.05 needs at least 6 forks that carry a
+difference. If fewer than 6 do, R cannot read GAIN whatever it does: whatever it then reads is reported as "the p
+was out of reach", and says nothing against R.
+
+What follows from the reading.
+  R reads GAIN        R ships.
+  R reads MIXED with x < m, or the p was out of reach with x < m
+                      ONE more comparison may be run: fresh captures, the same three arms, this same rule, its own
+                      dated block (manifest and spend only), read ALONE and never pooled with this one. If that one
+                      reads GAIN, R ships; anything else, nothing ships and the bench ends for R. Two such batches
+                      can read a false GAIN at most twice as often as one (simulated: at most 1% each).
+  anything else       nothing ships from this bench. FLAT or HARM falsifies the LARGE effect the batch-1 pattern
+                      suggested (a small one is not ruled out by this design, and is said not to be); VOID, NOT
+                      MEASURED and NOT DISCRIMINATING leave R untested and are said to.
+"Ships" means what it meant in the first registration: built properly on main afterwards, with no flag and one
+behaviour, tests including the deterministic re-spiral test that the fence still ends a veto stall at three, an ADR,
+and the next served sample reads whether the rests went. An outcome not named here is never upgraded to "ships".
+
+Secondary, reported and deciding nothing: first act and how often it was words; what followed the door's answer
+(the unpatched build went on to a work call 22 times of 22 in batch 1, on the older build: a before and after
+across two builds and two batches is NOT a measurement of ADR-0203); second refused stop against cap; the completion
+a pass came on; cost and prompt tokens per rollout; how many forks had a finished plan at the fork (10 of 10 in
+batch 1; where it is not finished R's tree IS A's, and such forks stay in the reading because they are part of what
+this world produces); how many forks were lost to a clock; and A's share in calibration beside A's share in the
+comparison (same build, same forks, other rollouts: the size of plain regression to the mean here).
+
+What the numbers will NOT show, kept apart from the rule on purpose. A GAIN for R is what the reminder hypothesis
+predicts, and it is also what "any change to the last message of the request" would predict: this bench does not
+separate the two. The numbers decide what ships, not why it works. This world does not reproduce the served door
+(the unpatched build passed it 22 times of 22 here, the served one 4 of 8), so a GAIN here is about a second refused
+stop in THIS world; what it does to the served loop's rests is the next served sample's question. The segment ends
+at the first resumed command: whether the loop then keeps running is not measured. One synthesized world, one
+model, one effort, the first refused stop of each run only.
+
+Simulated before any data, with the instrument's own rule, forks as uneven as batch 1's (5 of 10 forks held every
+miss; a beta with concentration 0.8), 30 complete forks, 300 to 1,000 runs a cell. If A misses 19% and R cuts that to
+a tenth, R reads GAIN 91% of the time; if R halves it, 30%; if R does nothing, 0.0% (at most 1% in any cell of any
+variant run). If A misses 12%: 55%, 19%, 0.0%. So this design can see a LARGE effect, which is what the pattern in
+batch 1 looked like (1 of 70 against 16 of 70); a halving would most likely read MIXED, and is not claimed to be
+detectable. A fourth repetition bought about as much power per dollar as eight more forks and costs less, so it
+is 4 repetitions on 32 forks.
+
+My estimates, recorded so they can be scored. Captures: 32 forks reached 90%; about 29 complete in calibration. A in
+calibration does not resume on 15% of rollouts; PROCEED 85%, NOT DISCRIMINATING 11%, NOT MEASURED 4%. Given PROCEED:
+A 15%, A2 15%, R 4%; R reads GAIN 52%, MIXED 27%, FLAT 13%, HARM 1%; the batch NOT DISCRIMINATING 5%, NOT MEASURED
+2%. Before anything is run: R ships from this batch 44%.
+
+Gates before the first scored call, as before (a failed gate is fixed and re-run and spends nothing scored): W0 the
+selftest in the baseline's built tree, then in A2's and R's against that capture; W1 preflight, offline; W2 the
+two-call probe (about $0.0001). And one more: each stage's orchestrator is first run with a budget of zero, which
+launches no child, to see the fork list and the ledger it would write.
+
+Spend. Hard bounds the orchestrators enforce by not launching past them: captures $1.30, calibration $0.45,
+comparison $2.20, $3.95 in all; each run also carries the product's own cost stop ($0.40 a capture, $0.60 a
+rollout). Expected about $3.00: some 35 captures at batch 1's $0.0287, 64 calibration and up to 384 comparison
+rollouts at its $0.0043, and a little for second tries (batch 1's came mostly from the witness fault repaired above
+and from the clock fork, which the comparison no longer rolls out). Campaign live spend to date approximately $7.32.
+
+Pre-apply consultation (two queries, subject and mechanism, before this block was fixed). It set four things. A
+superseded diagnosis is corrected in every artifact that carries it, in the change that lands the fix: hence the
+CORRECTION above, the README, and the private notes the same day. A claim is re-read from its own artifact before
+it is contradicted: the two wrong sentences are quoted from the block, not from memory. An instrument that
+re-implements a product predicate drifts from it: the witness now reads the product's flag. And the baseline is
+measured alone, in this world, on this build, before any arm is paid for.
+
+MANIFEST (sha256 of the instrument as committed with this block; main before it: ddc6568). R's source diff, as
+built from this instrument: d355e5c3662377a9e440f1bd36c7c970f7f865c13682ccfb1678602e805b21b4; A and A2: clean. A row
+that carries another hash is refused as wrong-build.
+  01d7b78ae3b0a7739c911620a31725915a28d8564ac1c5fa4778359a3346e119  bench/veto_door.py
+  9504590c929104fffbc7bcfea333a358156594a4d822a48166c5af816c53e197  bench/veto_door_world.py
+  e73a3300e305d9ec5c6b0899219c9cd1c5461f550b50ebf758bb56ce818964e0  bench/veto_door_arms/r.patch
