@@ -258,6 +258,14 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   `--out`; ledger rows hold labels, counts, hashes and usage. The wire hook keeps a URL path
   and four body fields, never a header. Workspaces are built under `--base`, which must sit
   outside every repository (the product folds project guides up to the repository root).
+- **Known limits, from batch 1 (2026-09-20, read NOT DISCRIMINATING).** This world does not
+  reproduce the served door: the unpatched build resumed on 16 of 18 rollouts, so no arm was
+  read. A capture whose prefix holds a clock (a `plan_recall` result prints event times) cannot
+  be replayed character for character and is refused. A patch that changes text a capture's
+  prefix already holds (C, where a run met a pointer before its fork) loses that fork. And the
+  C witness tests how the door's answer OPENS, which misses a pointer whose call carried an
+  argument: repair that detector, with an argument-carrying call as its positive control,
+  before C or RC is read again. The results block in the registration log has the detail.
 
 ```bash
 PY=./.venv/bin/python; OUT=/somewhere/scratch; ARMS=$OUT/arms
