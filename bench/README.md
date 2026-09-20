@@ -241,6 +241,14 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   child process on that tree's `src`. Nothing is switched at run time. Each ledger row carries
   the build it ran and a witness only that build can write, and a row missing its witness (or
   showing another arm's) is refused by the reading.
+- **Resuming is a loop script that RAN.** A rollout passes on the first successful call that
+  ran one of the loop's scripts, and it ends there, so the scorer errs one way only. The
+  command must start the script as a shell would (`bash scripts/x.sh`, behind `cd … &&`,
+  `timeout`, `$(…)`, `bash -c`; never `cat scripts/x.sh`, `bash -n`, a quoted mention, a
+  comment or a here-document body), and the result must show a line only that script prints
+  when it runs, because the text of `false && bash scripts/x.sh; echo done` cannot say it ran
+  nothing. Rows count what each test left out (`named_not_run`, `run_unproven`), and the
+  per-call flags stay in the local detail so a corrected scorer can be re-applied.
 - **Offline first.** `selftest` runs the real Agent, the real shell Stop hook and the real
   plan and skill machinery on a scripted model: the baseline's tree captures, every arm's tree
   replays that capture (`--capture`), and the reading rule is checked on ledgers whose answer
