@@ -284,7 +284,8 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   the baseline on how often a rollout did NOT resume, thresholds relative to the baseline
   measured in the same batch, the fork as the unit of an exact paired test, and a verdict
   that must keep its size with any one fork left out. `arms --arms A,A2,R` builds only the
-  arms a batch names.
+  arms a batch names, and `--forks-of calibration` keeps the comparison off a fork no
+  calibration rollout could read at all (a prefix with a clock in it never replays).
 - **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
   batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
   changed the line they both patch (the resolver now flags the pointer it builds). An arm that
@@ -308,7 +309,7 @@ $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A --reps 2 \
 $PY bench/veto_door.py report --ledger $OUT/calibration.jsonl --arms-dir $ARMS --out $OUT \
     --arms A --reps 2 --mode calibrate
 $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A,A2,R --reps 4 \
-    --stage comparison --budget 2.00
+    --stage comparison --forks-of calibration --budget 2.00
 $PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --out $OUT \
     --arms A,A2,R --reps 4 --mode refusal
 ```

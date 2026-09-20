@@ -1756,6 +1756,17 @@ def _second_reading_known_answers(check: Callable[..., None]) -> None:
             "a baseline that misses 5 of 72 leaves nothing to reduce: NOT DISCRIMINATING",
             calm["batch"] == "NOT DISCRIMINATING" and "vs_baseline" not in calm["arms"]["R"],
         )
+        clocked = [_fake_row("w00", "A", rep, True, strict_mismatches=11) for rep in (0, 1)]
+        mixed = [*clocked, _fake_row("w01", "A", 0, False), _fake_row("w02", "A", 0, True)]
+        (scratch / "calibration.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in mixed), encoding="utf-8"
+        )
+        kept = _forks_filled_in(scratch / "calibration.jsonl", {})
+        check(
+            "a fork no rollout could read is not rolled out again; a fork that MISSED is",
+            kept == {"w01", "w02"},
+            str(sorted(kept)),
+        )
         thin = read(rows({"A": base, "A2": base, "R": {}}, without=("R", 3)), "refusal")
         got_thin = (versus(thin, "R")[0], versus(thin, "A2")[0], thin["complete_forks"])
         check(
@@ -2308,6 +2319,21 @@ def _forks(out: Path) -> list[Path]:
     )
 
 
+def _forks_filled_in(ledger: Path, manifest: dict[str, Any]) -> set[str]:
+    """The forks on which ``ledger`` holds at least one usable row. A fork none of whose
+    rollouts could be read (its prefix holds a clock, so no replay of it can match its
+    recording) will not be readable the next time either: the comparison does not pay to roll
+    it out twelve more times. Usability never looks at what the model did, so neither does
+    this, and the reading already sets such a fork aside (the baseline could not fill it)."""
+    if not ledger.is_file():
+        raise SystemExit(f"no such ledger: {ledger}")
+    return {
+        row["capture"]
+        for row in map(json.loads, filter(None, ledger.read_text(encoding="utf-8").splitlines()))
+        if _unusable(row, (manifest.get(row["arm"]) or {}).get("src_diff_sha256")) is None
+    }
+
+
 def run_captures(
     base: Path, out: Path, arms_dir: Path, want: int, runs: int, budget: float
 ) -> None:
@@ -2340,16 +2366,22 @@ def run_rollouts(
     budget: float,
     workers: int,
     stage: str = "rollouts",
+    forks_of: str | None = None,
 ) -> None:
     """Every fork, every arm, ``reps`` times. Arms are interleaved inside a fork (so drift in
     the provider over the batch lands on all of them alike), starting one arm further along for
     each fork and each repetition (so no arm always goes first, on a cold prompt cache, or
     last). Forks run side by side, each at its own pinned path; two rollouts of one fork never
     overlap. ``stage`` names the ledger (``<stage>.jsonl``): a calibration's rows are kept out
-    of the comparison's ledger by never being written to it."""
+    of the comparison's ledger by never being written to it. ``forks_of`` names an EARLIER
+    stage: only the forks that stage could read at all are rolled out (:func:`_forks_filled_in`)."""
     manifest = json.loads((arms_dir / "arms.json").read_text())["arms"]
     ledger = out / f"{stage}.jsonl"
     forks = _forks(out)
+    if forks_of:
+        readable = _forks_filled_in(out / f"{forks_of}.jsonl", manifest)
+        print(f"not rolled out: {[f.name for f in forks if f.name not in readable]}", flush=True)
+        forks = [f for f in forks if f.name in readable]
     # A cell is settled by one usable row, or by two tries: an unusable run (the provider
     # failed, the replay left its tape, a witness is missing) is tried once more and no further.
     filled: set[tuple[str, str, int]] = set()
@@ -2938,6 +2970,9 @@ def main() -> int:
     parser.add_argument(
         "--stage", default="rollouts", help="rollouts: the ledger's name (<stage>.jsonl)"
     )
+    parser.add_argument(
+        "--forks-of", help="rollouts: only the forks this earlier stage's ledger could read"
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--budget", type=float, default=1.0, help="stop launching at this live spend (USD)"
@@ -2980,6 +3015,7 @@ def main() -> int:
             args.budget,
             args.workers,
             args.stage,
+            args.forks_of,
         )
         return 0
 
