@@ -1381,3 +1381,70 @@ answered the question it was bought for. No further sample is taken at this arm.
 SPEND. Control $0.8305 of a $6.00 bound; the run ended on the 2520 s duration cap at 13:05:46Z.
 W1b-C preflight $0.000116. Attempt 3 cost $2.3455 at the same bounds. Campaign live spend to date
 approximately $6.06.
+
+=== 2026-09-20 19:13 UTC CORRECTION -- THE FOURTH FRAMEWORK FINDING IS WITHDRAWN; STATUS OF THE OTHER THREE ===
+
+THE CORRECTION FIRST. The 11:02 UTC block on 2026-09-19 filed a fourth framework finding: that the
+framework's first-run protocol cannot be satisfied in a served context, and that a vessel started
+against an unprovisioned workspace "will sit at that gate indefinitely". Both halves were wrong, and
+the three blocks after it (11:53, 12:15, 13:12) each repeated the finding as open. It is WITHDRAWN.
+
+  "Indefinitely" was false of this product. A served run is bounded by its duration cap, and since
+  #571 by an optional idle window. The operator-wait tool is already refused in an unattended session
+  (ADR-0133), so the turn ENDS instead of parking as awaiting -- which is what attempt 2 showed: two
+  refused waits, then a completed turn. My harness would have sat until its cap, not forever.
+
+  "Open" was false of the deployment. The production provisioner already closes this at the right
+  boundary: before the served process starts it lands the framework's agent the way a transplant
+  lands one -- no first-run ceremony, no human -- and it refuses to continue if that step fails. Its
+  own record dates that fix to late August, three weeks before my run. Attempt 2 reached the state
+  only because the world builder I wrote that morning omitted the provisioner's step; the builder has
+  asserted it since attempt 3. So this was never a framework defect -- the framework is right to
+  refuse to invent an identity -- and never a product defect. It was a harness defect, found, fixed
+  and recorded in that same 11:02 block, and then mislabelled as somebody else's.
+
+  HOW THE ERROR WAS MADE, since the method matters more than the instance. I filed the finding from
+  what my run showed and read the provisioner AFTERWARDS. One read of the component that owns
+  provisioning would have answered it. A state my own harness manufactured is evidence about my
+  harness until the owning component has been read.
+
+STATUS OF SAMPLE 4'S THREE FINDINGS, which the 13:12 UTC block left "open and unfixed". All changes
+are in the framework's dev repository at 4c2c30047f and are NOT yet promoted to any other deployment.
+
+  1. THE SELECTOR DIED WITH A BARE TRACEBACK -- FIXED, both halves. The selector now names which of
+     two states it is in (never initialized on this box, or initialized with a seed file missing),
+     prints the remedy, and exits with a code of its own, with no traceback and nothing on stdout.
+     That alone would have been inert: the composed entry script captured the selector's stderr and
+     discarded it, then parsed an empty stdout, so every failure arrived as a JSON parse error that
+     named the parser and never the cause. It now checks the exit code before parsing and carries the
+     selector's own reason. A fix to a producer's message does nothing until the consumer that
+     composes it carries stderr and reads the exit code.
+
+  2. CLOSING SCRIPTS ACCEPT A GOAL-LESS CLOSE -- RECLASSIFIED, deliberately NOT patched. Reading the
+     closing script changed the diagnosis: its completion banner is the loop's CONTINUITY marker, not
+     a success marker, and withholding it on an empty close would turn a slow loop into a dead one.
+     The one candidate signal for "this iteration did no goal work" is unreliable by the script's own
+     record. What sample 4 actually exposed is a detection gap, now measured on its ledger: all 3
+     goal-less closes exited 0 and printed no line at all from the productivity gate, which leaves
+     silently below a floor of 10 completed goals; and the loop-exhaustion fence needs a frozen
+     execution diary, which the loop's own entry and close machinery keeps fresh. A second instance
+     with a different cause was already on record from another box. Filed in the framework's queue
+     with the measurements and NO prescribed remedy; frequency is to be measured first.
+
+  3. RUNNING BUT NEVER INITIALIZED -- FIXED at the entry check. The loop's entry check now reports a
+     missing init marker FIRST and dispatches the init step, and an unresolvable root reads as blind,
+     never as a false dispatch. It ran 5 times in sample 4 and said nothing each time.
+
+ONE NEW READING of an existing artifact -- sample 4's tool ledger, no new run and no spend. Over 140
+shell calls: the init script 0, the persona write 0, the entry check 5, the composed entry script 5,
+the selector 10; the boot skill loaded once. So BOTH of boot's unconditional state writes were
+skipped, not one. The init half is what fix 3 nets. The persona half is not reproduced by that
+dispatch, on purpose -- the marker predicate does not measure it -- and is filed as its own
+observation, consequence unmeasured.
+
+WHAT IS NOT CLAIMED. Every fix above is proven by tests with mutation controls (each sabotage turned
+exactly the intended tests red and the restore was byte-verified), and NONE has been measured on a
+served small-model loop. Whether a small model FOLLOWS the new dispatch is the open question, and this
+campaign's own record says an instruction is not a control (0 of 3 with it, 3 of 3 when the engine
+binds it). That measurement needs a world that is running and never booted, and is not registered
+here. Nothing about effort, terra, the pod tier or azure. No run is licensed by this block.
