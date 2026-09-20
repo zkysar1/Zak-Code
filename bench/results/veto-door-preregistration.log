@@ -518,6 +518,11 @@ points apart). At m = 11 of 128 GAIN needs x <= 4; at 20 of 128, x <= 10; at 38 
 The p has its own floor: k forks that all lean one way give 2 / 2^k, so p < 0.05 needs at least 6 forks that carry a
 difference. If fewer than 6 do, R cannot read GAIN whatever it does: whatever it then reads is reported as "the p
 was out of reach", and says nothing against R.
+AMENDMENT 1's AUDIT applies to each stage, before its reading is written: the commands behind both scorer counts are
+read in the local tapes. A real, successful run found uncounted in a cell that did not pass is named with its arm
+and fork, the stage is read a second time with those cells as passes, and both readings are printed. PROCEED, GAIN
+and HARM stand only if they are the same under both; where they differ the calibration reads NOT DISCRIMINATING and
+the arm reads MIXED.
 
 What follows from the reading.
   R reads GAIN        R ships.
