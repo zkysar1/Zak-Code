@@ -149,9 +149,13 @@ class UseSkillTool(Tool):
         # A re-entry (ADR-0196) is handed over exactly as a first load is — the way Claude
         # Code's Skill tool answers every call; only the trace is told which it was.
         extra: dict[str, Any] = {"reentry": True} if load.reentry else {}
-        if load.body.startswith("[already loaded]"):
+        if load.pointer:
             # The per-turn reload pointer (ADR-0063) — or, for a paged skill, the current
             # section again (ADR-0067). Nothing new to seed or decompose; hand it over as is.
+            # The resolver's flag decides, never how the text opens (ADR-0203): a call that
+            # carries arguments gets them framed AHEAD of the pointer's tag, and a pointer
+            # taken for a body was sent on with a body's hint — or, paged, back through the
+            # pager, where a model on section 2 was told it held SECTION 1 of a new plan.
             return ToolResult.ok(
                 load.body, data={"skill": load.name, "pointer": True}, verbatim=True
             )

@@ -1036,6 +1036,131 @@ async def test_a_paged_skill_with_a_section_open_keeps_its_section_pointer(tmp_p
 # ── ADR-0187: the harness source ─────────────────────────────────────────────
 
 
+def _skill_results(agent: Agent) -> dict[str, ToolResultBlock]:
+    """Every tool result in the session, by the id of the call it answers."""
+    return {
+        block.tool_use_id: block
+        for message in agent.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    }
+
+
+#: What the product writes ahead of a ``Skill`` result when the call carried ``args``.
+_ARGS_FRAME = "[arguments: loop]\n\n"
+
+
+async def _plain_pointer(workspace: Path, **arguments: str) -> ToolResultBlock:
+    """The door's answer to ``Skill(greeter, **arguments)`` right after the harness delivered
+    that skill at a refused stop: nothing has run on it, so the answer is the pointer."""
+    _write_skill(workspace, "greeter", body="Greet warmly.")
+    agent = _agent(
+        workspace,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                LLMResult(text="Summary: the loop is set up.", usage=Usage(total_tokens=1)),
+                _call("Skill", "s1", skill="greeter", **arguments),
+                LLMResult(text="done", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    agent.hook_manager.register_turn_end(_VetoOnce(_HOOK_WORDS))
+    await agent.arun_turn("greet")
+    assert _door_notes(agent) == ["skill_pointer"]  # the trace names the door either way
+    return _skill_results(agent)["s1"]
+
+
+async def test_a_pointer_is_a_pointer_whether_or_not_the_call_carried_arguments(
+    tmp_path: Path,
+) -> None:
+    """ADR-0203. The product frames a call's arguments AHEAD of the pointer's tag, and the
+    Skill tool used to decide "is this a pointer" by how the text opened. So the pointer for
+    ``Skill(x, args="loop")`` — the call a perpetual loop's Stop hook names, always with its
+    argument — was handed on as a fresh body, under "Hint: Follow these skill instructions
+    now". Measured 2026-09-20: 137 of 137 veto-door answers on gpt-5.6-luna carried that
+    line. The expected text is READ from the argument-free door, never restated here: the
+    two forms differ by the frame and nothing else."""
+    bare = await _plain_pointer(tmp_path / "bare")
+    framed = await _plain_pointer(tmp_path / "framed", args="loop")
+    assert bare.output.startswith("[already loaded]") and "Hint:" not in bare.output
+    assert framed.output == _ARGS_FRAME + bare.output
+    assert (bare.data or {}).get("pointer") is True and (framed.data or {}).get("pointer") is True
+
+
+async def _section_two_pointer(workspace: Path, **arguments: str) -> ToolResultBlock:
+    """A skill too large for a 32k window, asked for again while its SECTION 2 is open."""
+    filler = ("do the thing carefully " * 1_800)[:40_000]
+    body = "# /big — a sectioned skill\n\nIntro.\n\n" + "".join(
+        f"## Step {i}: Part {i}\n\n{filler}\n\n" for i in range(1, 5)
+    )
+    _write_skill(workspace, "big", body=body)
+    plan = [{"title": "Step 1: Part 1", "status": "done", "note": "carried out"}] + [
+        {"title": f"Step {i}: Part {i}", "status": "in_progress" if i == 2 else "pending"}
+        for i in range(2, 5)
+    ]
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=32_768, workspace_root=workspace
+        ),
+        enable_skills=True,
+        provider=_CountingReplay(
+            [
+                _call("Skill", "s1", skill="big", **arguments),
+                _call("LS", "l1", path="."),
+                _call("update_plan", "p1", tasks=plan),
+                _call("LS", "l2", path="."),
+                _call("Skill", "s2", skill="big", **arguments),
+            ]
+        ),
+    )
+    await agent.arun_turn("run the big skill")
+    return _skill_results(agent)["s2"]
+
+
+async def test_a_paged_skills_current_section_survives_the_arguments_frame(tmp_path: Path) -> None:
+    """ADR-0203, the case that misled rather than merely cluttered. A paged skill's pointer
+    IS its current section (ADR-0067), so taken for a body it went back through the pager:
+    a model on section 2 of 4 was handed that section under a second header, "page 1 of 2",
+    without the closing line that says how section 3 arrives, and under the FIRST-load hint
+    — its plan now holds two sections, this is SECTION 1, carry out section 1. None of that
+    was true for the turn. With the frame or without it, the answer is the same section."""
+    bare = await _section_two_pointer(tmp_path / "bare")
+    framed = await _section_two_pointer(tmp_path / "framed", args="loop")
+    assert bare.output.startswith("[already loaded] Skill 'big' is running this turn")
+    assert bare.output.count("[/big — page ") == 1 and "[/big — page 2 of 4" in bare.output
+    assert "section 3 of 4 arrives" in bare.output  # the way on (ADR-0087's footer) is intact
+    assert framed.output == _ARGS_FRAME + bare.output
+    assert "SECTION 1" not in framed.output and "Hint:" not in framed.output
+    assert (framed.data or {}).get("pointer") is True
+
+
+async def test_a_body_that_quotes_the_pointers_tag_is_delivered_as_a_body(tmp_path: Path) -> None:
+    """ADR-0203, the reverse misreading the same flag closes. A skill whose OWN instructions
+    open with the tag (one that documents this protocol, say) is a body on its first load:
+    it arrives with a body's hint, it is a load in the trace, and it is not called a pointer.
+    Both readers of the tag — the tool, by how the text opened; the loop, by a search of the
+    result — would have called it one."""
+    _write_skill(
+        tmp_path, "quoter", body="[already loaded] is what a repeated call gets. Step 1: say hi."
+    )
+    agent = _agent(
+        tmp_path,
+        enable_skills=True,
+        provider=_ReplayProvider(
+            [
+                _call("Skill", "s1", skill="quoter"),
+                LLMResult(text="hi", usage=Usage(total_tokens=1)),
+            ]
+        ),
+    )
+    await agent.arun_turn("use the quoter skill")
+    answer = _skill_results(agent)["s1"]
+    assert "Step 1: say hi." in answer.output and "Hint: Follow these skill" in answer.output
+    assert not (answer.data or {}).get("pointer")
+    assert _door_notes(agent) == []  # a first load is neither the pointer door nor a re-entry
+
+
 def _write_skill_with(workspace: Path, name: str, frontmatter: str, body: str = "Loop.") -> None:
     d = workspace / ".zakcode" / "skills" / name
     d.mkdir(parents=True)
@@ -1098,6 +1223,9 @@ async def test_the_operators_own_command_survives_the_models_redundant_skill_cal
     assert answer.is_error is False and "user-only" not in answer.output
     assert "[already loaded]" in answer.output and "Step 1: say up." not in answer.output
     assert "skill_pointer" in [e.data.get("kind") for e in agent.loop._trace.events]
+    # …and it is handed on AS a pointer although the call carried an argument (ADR-0203):
+    # no body's hint under "nothing new was loaded".
+    assert (answer.data or {}).get("pointer") is True and "Hint:" not in answer.output
 
 
 async def test_harness_source_is_unbudgeted_but_counts_as_loaded(tmp_path: Path) -> None:

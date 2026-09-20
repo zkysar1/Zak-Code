@@ -266,6 +266,10 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   C witness tests how the door's answer OPENS, which misses a pointer whose call carried an
   argument: repair that detector, with an argument-carrying call as its positive control,
   before C or RC is read again. The results block in the registration log has the detail.
+- **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
+  batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
+  changed the line they both patch (the resolver now flags the pointer it builds). An arm that
+  is used again is re-cut from HEAD and registered under its new hash.
 
 ```bash
 PY=./.venv/bin/python; OUT=/somewhere/scratch; ARMS=$OUT/arms

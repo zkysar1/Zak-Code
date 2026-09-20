@@ -3615,9 +3615,11 @@ class AgentLoop:
                 continue
             data = block.data or {}
             name = str(data.get("skill") or call.arguments.get("name", "")).strip()
-            if "[already loaded]" in block.output[:300]:
+            if data.get("pointer"):
                 # Which door answered is the first thing a stalled loop's trace is asked
-                # (ADR-0196): the pointer is not a load, and the fence keeps counting.
+                # (ADR-0196): the pointer is not a load, and the fence keeps counting. The
+                # tool's flag says so, from the resolver that built the text (ADR-0203): a
+                # search of the output would take a BODY that quotes the tag for a pointer.
                 self._note(
                     "intervention",
                     f"/{name} asked for again — already loaded, answered with the pointer",
