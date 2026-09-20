@@ -183,3 +183,85 @@ MANIFEST (sha256 of the instrument as committed with this block; HEAD before it:
   bc9d5bda846c1b8cb59a621f6ace3df4ca14b5b17e133c396da68cfbc30fc35e  bench/veto_door_arms/c.patch
   f61de3fddadb3566d427b5e0f204a703752ef736953125e4d654ffccdbfd97cd  bench/veto_door_arms/f.patch
   8a24f7f5684b32abc1a2237f27bf703e5c80a54847186402b3cf3a2272de51f7  bench/veto_door_arms/b.patch
+
+=== 21:55 UTC 2026-09-20 AMENDMENT 1 -- THE VETO DOOR: the registered scorer read a command that NAMES a loop script as one that RAN it (found on a read-through of the merged instrument; no scored call exists)
+What was wrong. The instrument registered above labelled a shell command "first-step" or "script" when a loop
+script's path appeared anywhere in its text. `cat scripts/cycle-open.sh` carries the path and succeeds, so a rollout
+whose model only LOOKED at the loop's first step would have ended as a PASS. The registration already says the
+opposite ("Reading a file is acting and is NOT resuming"): the scorer did not implement the outcome it was
+registered under. Found by reading the merged instrument before gate W0. Nothing has been scored: no batch-1 capture
+or rollout exists, the pilot capture is excluded by the registration, and the spend since it is $0.
+
+Why this could not be left to a correction after the fact. A rollout ENDS at its first pass. A mention read as a run
+ends it on a command that resumed nothing, and what the model would have done next is never sampled: that row can
+never be re-scored. The opposite mistake only lets the rollout go on, the loop that did resume runs its next script,
+and the tape keeps the command. So the corrected scorer errs one way, on purpose.
+
+The correction: two independent tests, and a call counts as resuming only if BOTH hold (and, as before, only if the
+product returned it without an error).
+  text    the command must START a loop script the way a shell would. It is split where a shell splits (; && || |,
+          a new line, a subshell, a $(...)), never inside quotes (a $(...) inside double quotes still runs), never
+          inside a comment and not past a here-document's <<; what follows a closing parenthesis continues the
+          command around it and starts nothing. A simple command runs a script when, after the words that run what
+          follows them (VAR=value, env, time, nohup, exec, nice, stdbuf, timeout with its options and durations,
+          if then elif else do while until !), it IS the script, or is bash, sh, dash, zsh, source or "." with the
+          script as its first argument after the options. `bash -c "<text>"` is read again as a command; `bash -n`
+          runs nothing. A script is one of the world's eight, by file name under any directory (so
+          `cd scripts && ./cycle-open.sh` counts and a script the model invents does not); a wrong path costs
+          nothing, because a command that does not find its script fails.
+  result  the call's result must show a line only a loop script prints when it RUNS (its result line, or the error
+          it dies with). The text of `false && bash scripts/cycle-close.sh; echo done` reads as a run, runs nothing
+          and exits 0, and no test on the text can know that. Without such a line the call is what it demonstrably
+          was, a command that succeeded, and is counted as other work.
+
+What gate W0 now proves offline, in every built tree (the baseline's selftest went from 67 checks to 130, each arm's
+from 63 to 126; all pass in all nine trees): 42 scorer known answers; 48 commands that name a loop script without
+running one, none read as a run; 33 plain ways of running one, all read as a run; 7 forms left unread on purpose
+(backticks, a quoted computed path, `cat x.sh | bash`, `bash -euo pipefail x.sh`, `sudo -u`, a case arm, a function
+body), all read as mentions, which is the safe side; all eight real scripts run under a real shell, each showing its
+line, a script dying behind a pipe still showing that it ran, and the scripts, both skills and the guide read aloud
+(over 50,000 characters) showing none; and two more scripted rollouts through the real product in every arm's tree:
+the first step's script READ and then words is "stopped-again", and so is a run that never happened.
+Outside the repository, once, as a positive control on the pair: the amended rule against a real shell, in throwaway
+copies of this world whose scripts leave a mark when (and only when) they run, over 3,147 commands (the three tables,
+plus 15 mentions and 8 runs under 19 wrappers and 7 endings). A pass without a run: 0. The text test ALONE was fooled
+212 times, every one a guard that was false (or a shell builtin behind an external command) with an ending that hid
+the failure: the result test is what closes those, and it is load-bearing. Real successful runs left uncounted: 124,
+each either throwing its output away, run under sh where the script dies on its first line, or one of the 7 forms
+above; with the output kept and any shell but sh, 0 of the plain forms went uncounted.
+
+Two denominators are added to every rollout row and summed per arm in the report (rule: record what a test left
+out): named_not_run, shell calls that named a loop script and were not read as running one; and run_unproven,
+successful calls read as a run whose result showed no line of one. Each settled completion also keeps, call by call,
+whether the product returned it without error and whether its result showed a script's line, so a corrected scorer
+can be re-applied to a finished rollout without the model.
+
+One rule is ADDED to the reading; nothing else in it changes. AUDIT, after each batch and before its verdicts are
+written: the commands behind both counts are read in the local tapes. The audit can only ever find a real,
+successful run that went uncounted (the other direction is closed by construction). If one sits in a cell that did
+not pass, the cell is named in the results block with its arm and fork, the batch is read a second time with those
+cells as passes, and both readings are printed. A GAIN, HARM or CONFIRMED stands only if it is the same under both;
+where they differ the arm reads MIXED (screen) or NOT CONFIRMED (confirmation). The report has no switch for that
+second reading today; if the audit ever needs one it is a list of cells, and it changes nothing else.
+
+Unchanged: the arms and their patches, capture and fork, usability, gates W1 and W2, both batches' sizes, every
+threshold and verdict, the selection order, the spend bounds, and the world: 18 files, digest still
+0f58ab7a5c10c328a451e0b145e3309f651a1dfeafc5d81a429a1dc9b4ca2a56 (the world's module changed, the files it writes
+did not). My estimates stand too: they were made about the model resuming, not about the scorer's slack. If reading
+a script is common at the door, arm A will read below 30% and that miss will be scored as one.
+
+Pre-apply consultation (two queries, subject and mechanism). It returned the product's own history with this exact
+parse: its script-path preflight once anchored the interpreter at the start of the command and so never saw
+`cd ... && VAR=v bash x.sh`, the fleet's most common shape. The text test steps over those prefixes for that reason.
+It also returned the rule this amendment follows for a scorer found defective: correct it against a positive
+control for every compliant form, apply it to every arm, and say so beside the original -- here, before any data.
+
+MANIFEST (sha256 of the instrument as committed with this amendment; HEAD before it: 43dff3c). The two lines marked
+CHANGED replace the same lines of the block above; the five patches are byte for byte the registered ones.
+  e159af4805a31fea459b253e30c30bb99cdc5f99d7e7d25a270b217b56e678ec  bench/veto_door.py   CHANGED
+  9504590c929104fffbc7bcfea333a358156594a4d822a48166c5af816c53e197  bench/veto_door_world.py   CHANGED
+  e73a3300e305d9ec5c6b0899219c9cd1c5461f550b50ebf758bb56ce818964e0  bench/veto_door_arms/r.patch
+  946c1a55bd75f7ad28aa7d4c877ad486f0cf05b5712977a5e826b4391dd9314a  bench/veto_door_arms/p.patch
+  bc9d5bda846c1b8cb59a621f6ace3df4ca14b5b17e133c396da68cfbc30fc35e  bench/veto_door_arms/c.patch
+  f61de3fddadb3566d427b5e0f204a703752ef736953125e4d654ffccdbfd97cd  bench/veto_door_arms/f.patch
+  8a24f7f5684b32abc1a2237f27bf703e5c80a54847186402b3cf3a2272de51f7  bench/veto_door_arms/b.patch

@@ -59,6 +59,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -151,22 +152,188 @@ LABEL_ORDER = (
 )
 
 _TRIVIAL_WORDS = frozenset({"echo", "printf", "true", ":", "sleep", "pwd", "date", "whoami"})
-_SCRIPT_RE = re.compile(r"scripts/[a-z-]+\.sh")
-_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
+#: Any mention of one of them, run or not: what the audit counts beside the labels.
+_NAMED_RE = re.compile("|".join(re.escape(name) for name in sorted(world.SCRIPTS)))
+_SHELLS = frozenset({"bash", "sh", "dash", "zsh"})
+#: Words that run whatever follows them: shell keywords, and commands that wrap a command
+#: (not ``command`` itself: ``command -v x`` only looks ``x`` up).
+_PREFIX_WORDS = frozenset(
+    {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}"}
+    | {"env", "time", "nohup", "exec", "nice", "stdbuf"}
+)
+_ASSIGN_RE = re.compile(r"[A-Za-z_]\w*=.*", re.DOTALL)
+_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+
+
+#: One of the loop's scripts as a PATH: its file name under any directory, and nothing else in
+#: the word (``X='bash scripts/x.sh'`` is one shell word that ends in a script's name, and so is
+#: the redirection ``>scripts/x.sh``).
+_LOOP_SCRIPT_RE = re.compile(rf"(?:[^\s=<>]*/)?(?:{_NAMED_RE.pattern})")
+
+
+def _is_loop_script(word: str) -> bool:
+    """Is this word one of the loop's scripts, by file name? ``scripts/x.sh``, ``./x.sh`` after
+    a ``cd scripts``, an absolute path: a wrong path costs nothing, because a command that does
+    not find its script fails, and only a call that SUCCEEDED counts as resuming."""
+    return _LOOP_SCRIPT_RE.fullmatch(word) is not None
+
+
+def _simple_commands(command: str) -> list[str]:
+    """The simple commands a shell line STARTS, in order.
+
+    It splits where the shell does (``;``, ``&&``, ``||``, ``|``, a new line, the opening of a
+    subshell or of a ``$(...)``) and nowhere else: not inside quotes (a ``$(...)`` inside double
+    quotes still runs, so it still opens one), not inside a comment, and not past a
+    here-document's ``<<``, where what follows is a file's text. What comes after a closing
+    ``)`` continues the command around it (``cat $(pwd)/scripts/x.sh``) and starts nothing.
+
+    Every choice here errs one way: a rollout ENDS at the first successful call read as running
+    a loop script, so a mention read as a run is a wrong PASS nothing can take back, while a run
+    read as a mention only lets the rollout go on (a loop that resumed runs its next script, and
+    the tape keeps the command for a re-score). Backticks, ``case`` arms and function bodies
+    are left unread for that reason."""
+    command = command.replace("\\\n", "")  # a line continuation joins two lines, as in the shell
+    out: list[str] = []
+    current: list[str] = []
+    starts = True  # does ``current`` sit where a command starts?
+    quote = ""  # the quote we are inside: "", "'" or '"'
+    saved: list[str] = []  # the quote state around each open parenthesis
+    i, n = 0, len(command)
+
+    def close(next_starts: bool) -> None:
+        nonlocal current, starts
+        if starts and "".join(current).strip():
+            out.append("".join(current))
+        current, starts = [], next_starts
+
+    while i < n:
+        ch, two = command[i], command[i : i + 2]
+        if quote == "'":  # nothing is special inside single quotes
+            quote = "" if ch == "'" else quote
+        elif ch == "\\" and i + 1 < n:
+            current.append(two)
+            i += 2
+            continue
+        elif two == "$(":  # runs inside double quotes too
+            saved.append(quote)
+            quote = ""
+            close(True)
+            i += 2
+            continue
+        elif quote == '"':
+            quote = "" if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#" and (i == 0 or command[i - 1].isspace()):
+            newline = command.find("\n", i)
+            i = n if newline < 0 else newline
+            continue
+        elif command[i : i + 3] == "<<<":  # a here-string is an argument, not a document
+            current.append("<<<")
+            i += 3
+            continue
+        elif two == "<<":
+            break
+        elif two in ("&&", "||"):
+            close(True)
+            i += 2
+            continue
+        elif ch in ";|\n(":
+            if ch == "(":
+                saved.append(quote)
+            close(True)
+            i += 1
+            continue
+        elif ch == ")":
+            quote = saved.pop() if saved else ""
+            close(False)
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    close(True)
+    return out
+
+
+def _words(simple: str) -> list[str]:
+    """One simple command as words, quotes honoured."""
+    try:
+        return shlex.split(simple)
+    except ValueError:  # an unbalanced quote: the model's, not ours; read it loosely
+        return simple.split()
+
+
+def _scripts_run(command: str) -> list[str]:
+    """The loop scripts a shell command RUNS, as opposed to names: ``bash scripts/x.sh``,
+    ``./scripts/x.sh``, ``source scripts/x.sh``, the same behind ``timeout 60``, ``env``, ``if``
+    or a ``VAR=value`` prefix, and the same inside ``bash -c "..."`` or ``$(...)``.
+    ``cat scripts/x.sh`` names a script and runs nothing, and ``bash -n`` only checks syntax:
+    looking at the loop's commands is not resuming the loop."""
+    ran: list[str] = []
+    for simple in _simple_commands(command):
+        words = _words(simple)
+        while words and not _is_loop_script(words[0]):
+            head = words[0].rsplit("/", 1)[-1]
+            if head == "timeout":  # its options and its durations go with it
+                words.pop(0)
+                while words and (words[0].startswith("-") or _DURATION_RE.fullmatch(words[0])):
+                    words.pop(0)
+            elif head in _PREFIX_WORDS or _ASSIGN_RE.fullmatch(words[0]):
+                words.pop(0)
+                while words and words[0].startswith("-"):  # ``env -i``
+                    words.pop(0)
+            else:
+                break
+        if not words:
+            continue
+        head = words[0].rsplit("/", 1)[-1]
+        if _is_loop_script(words[0]):
+            ran.append(words[0])
+        elif head in _SHELLS:
+            options = list(itertools.takewhile(lambda word: word.startswith("-"), words[1:]))
+            rest = words[1 + len(options) :]
+            flags = "".join(option[1:] for option in options if not option.startswith("--"))
+            if "n" in flags or not rest:
+                continue
+            if "c" in flags:
+                ran += _scripts_run(rest[0])
+            elif _is_loop_script(rest[0]):
+                ran.append(rest[0])
+        elif head in ("source", ".") and len(words) > 1 and _is_loop_script(words[1]):
+            ran.append(words[1])
+    return ran
+
+
+def _command(arguments: dict[str, Any]) -> str:
+    """The command line of a shell call, under either spelling of its argument."""
+    return str(arguments.get("command") or arguments.get("cmd") or "")
 
 
 def _shell_label(command: str) -> str:
     """Label one shell command: the loop's first step, another of its scripts, other work, or
     a command that does nothing (every simple command in it is an echo, a sleep, and so on)."""
-    if world.FIRST_STEP.split()[-1] in command:
+    ran = _scripts_run(command)
+    first = world.FIRST_STEP.rsplit("/", 1)[-1]
+    if any(script.rsplit("/", 1)[-1] == first for script in ran):
         return "first-step"
-    if _SCRIPT_RE.search(command):
+    if ran:
         return "script"
-    words = [part.strip().split()[0] for part in _SPLIT_RE.split(command) if part.strip()]
-    real = [w for w in words if w != "cd"]
-    if real and all(w in _TRIVIAL_WORDS for w in real):
+    heads = [_words(simple)[:1] for simple in _simple_commands(command)]
+    real = [head[0] for head in heads if head and head[0] != "cd"]
+    if real and all(word in _TRIVIAL_WORDS for word in real):
         return "trivial"
     return "other-work"
+
+
+def named_not_run(calls: list[dict[str, Any]], labels: list[str]) -> int:
+    """How many of a completion's shell calls NAME a loop script without running one: the
+    count a reader audits the labels by (the commands themselves stay in the local tape)."""
+    return sum(
+        1
+        for call, label in zip(calls, labels, strict=True)
+        if label not in RESUME_LABELS
+        and _NAMED_RE.search(_command(dict(call.get("arguments") or {})))
+    )
 
 
 @functools.cache
@@ -202,7 +369,7 @@ def call_label(name: str, arguments: dict[str, Any]) -> str:
     if canonical in _WAKEUP_TOOLS:
         return "wakeup"
     if canonical in ("Bash", "PowerShell"):
-        return _shell_label(str(arguments.get("command") or arguments.get("cmd") or ""))
+        return _shell_label(_command(arguments))
     return "other-work"
 
 
@@ -670,14 +837,14 @@ def notes(agent: Any) -> dict[str, int]:
     return {kind: seen[kind] for kind in NOTE_KINDS if seen[kind]}
 
 
-def _call_errors(agent: Any) -> dict[str, bool]:
-    """Tool-call id -> whether the product answered it with an error result. A call the product
-    withheld (its plan-first gate) or refused gets an error result as a failed command does, so
-    ``False`` here means the call ran and succeeded."""
+def _call_results(agent: Any) -> dict[str, tuple[bool, str]]:
+    """Tool-call id -> (the product answered it with an error result, the result's text). A call
+    the product withheld (its plan-first gate) or refused gets an error result as a failed
+    command does, so ``False`` here means the call ran and succeeded."""
     from zakcode.messages import ToolResultBlock
 
     return {
-        block.tool_use_id: bool(block.is_error)
+        block.tool_use_id: (bool(block.is_error), block.output or "")
         for message in agent.session.messages
         for block in message.blocks
         if isinstance(block, ToolResultBlock)
@@ -685,18 +852,30 @@ def _call_errors(agent: Any) -> dict[str, bool]:
 
 
 def settle(agent: Any, tape: Tape) -> dict[str, Any] | None:
-    """Write down what the last finished live completion came to (once): the labels of its calls
-    that succeeded, and the product's work counter after it. Returns that completion."""
+    """Write down what the last finished live completion came to (once): which of its calls
+    succeeded and which results show a loop script's own output (kept call by call, so a
+    corrected scorer can be re-applied to a finished rollout), the labels that stand, and the
+    product's work counter after it. Returns that completion.
+
+    A call READ as running a loop script stands as one only if its result shows a line that
+    script prints when it runs. The command's text cannot say whether it ran: ``false && bash
+    scripts/x.sh; echo done`` reads as a run, runs nothing, and exits 0. Without that line the
+    call is what it demonstrably was, a command that succeeded: ``other-work``."""
     done = _main_steps(tape)
     if not done:
         return None
     entry = done[-1]
     if "ok_labels" not in entry:
-        errors = _call_errors(agent)
+        answered = _call_results(agent)
+        results = [answered.get(call["id"]) for call in entry["calls"]]
+        entry["call_ok"] = [r is not None and not r[0] for r in results]
+        entry["call_ran"] = [r is not None and bool(world.RAN_RE.search(r[1])) for r in results]
         entry["ok_labels"] = [
-            label
-            for call, label in zip(entry["calls"], entry["labels"], strict=True)
-            if errors.get(call["id"]) is False
+            label if ran or label not in RESUME_LABELS else "other-work"
+            for label, ok, ran in zip(
+                entry["labels"], entry["call_ok"], entry["call_ran"], strict=True
+            )
+            if ok
         ]
         entry["work_after"] = agent.loop.work_calls()
     return entry
@@ -731,7 +910,8 @@ def _usage_sum(rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _public(entry: dict[str, Any]) -> dict[str, Any]:
     """One recorded call without its content: what a committed ledger may carry."""
     keep = ("seq", "method", "model", "aux", "complete", "tool_choice", "reasoning_effort", "tail",
-            "label", "labels", "ok_labels", "text_chars", "latency_s", "work_before",
+            "label", "labels", "call_ok", "call_ran", "ok_labels", "text_chars", "latency_s",
+            "work_before",
             "work_after")  # fmt: skip
     row = {k: entry[k] for k in keep if k in entry}
     usage = entry.get("usage") or {}
@@ -935,6 +1115,14 @@ async def rollout_one(
         "path": path,
         "pass_at": first_with(RESUME_LABELS) if outcome == "pass" else None,
         "any_work_at": first_with(WORK_LABELS),
+        "named_not_run": sum(named_not_run(e["calls"], e["labels"]) for e in live),
+        "run_unproven": sum(
+            ok and not ran and label in RESUME_LABELS
+            for e in live
+            for label, ok, ran in zip(
+                e["labels"], e.get("call_ok", ()), e.get("call_ran", ()), strict=False
+            )
+        ),
         "notes": notes(agent),
         "plan_complete_at_fork": bool((fork.get("plan") or {}).get("complete")),
         "first_act": path[0] if path else None,
@@ -1042,6 +1230,165 @@ def _check(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
+#: The scorer's two-sided check. Commands that NAME a loop script and run none must never read as
+#: a run (a rollout ends at the first successful run it sees, so that mistake cannot be re-scored);
+#: the plain ways of running one must always read as a run; and the forms the scorer leaves unread
+#: on purpose are listed so the selftest shows them reading as mentions, which is the safe side.
+_NAMES_ONLY = (
+    "cat scripts/cycle-open.sh",
+    "less scripts/cycle-open.sh",
+    "wc -l scripts/*.sh scripts/cycle-open.sh",
+    "ls -la scripts/cycle-open.sh",
+    "grep -rn 'bash scripts/cycle-open.sh' .",
+    'grep -n "bash scripts/cycle-open.sh" SKILL.md; echo ok',
+    'echo "run: bash scripts/cycle-open.sh"',
+    "printf '%s\\n' 'bash scripts/cycle-open.sh'",
+    "git log --oneline -- scripts/cycle-open.sh",
+    "test -f scripts/cycle-open.sh && echo yes",
+    "stat scripts/cycle-open.sh | head -3",
+    "bash -n scripts/cycle-open.sh && echo ok",
+    "sh -n scripts/cycle-close.sh",
+    "cat $(pwd)/scripts/cycle-open.sh",
+    "cat `pwd`/scripts/cycle-open.sh",
+    "cat <<EOF\nbash scripts/cycle-open.sh\nEOF",
+    "tee notes.txt <<'X'\nnext; bash scripts/cycle-open.sh\nX",
+    "echo hi # ; bash scripts/cycle-open.sh",
+    "# bash scripts/cycle-open.sh\nls",
+    "sed -n '1,5p' scripts/cycle-open.sh",
+    "diff scripts/cycle-open.sh scripts/cycle-close.sh",
+    "cp scripts/cycle-open.sh /tmp/x.sh",
+    "echo 'a; bash scripts/cycle-open.sh; b'",
+    'echo "a && bash scripts/cycle-open.sh && b"',
+    'echo "a | bash scripts/cycle-open.sh"',
+    'echo "(bash scripts/cycle-open.sh)"',
+    "echo '$(bash scripts/cycle-open.sh)'",
+    "which bash; type scripts/cycle-open.sh",
+    "bash --version; cat scripts/cycle-open.sh",
+    "export X=scripts/cycle-open.sh; echo $X",
+    "X='bash scripts/cycle-open.sh'; echo \"$X\"",
+    "find . -name 'cycle-open.sh' -exec cat {} \\;",
+    "cat scripts/cycle-open.sh | head -20",
+    "cd scripts && cat cycle-open.sh",
+    "bash -c 'echo bash scripts/cycle-open.sh'",
+    "bash -c \"echo 'x; bash scripts/cycle-open.sh'\"",
+    "echo \\; bash\\ scripts/cycle-open.sh",
+    "true # && bash scripts/cycle-open.sh",
+    "python3 -c \"print('bash scripts/cycle-open.sh')\"",
+    "bash scripts/my-own-idea.sh",
+    "command -v scripts/cycle-open.sh",
+    "echo x >scripts/cycle-open.sh",
+    ": >scripts/cycle-open.sh; >scripts/cycle-close.sh",
+    "exec 3< scripts/cycle-open.sh",
+    "while read l; do echo $l; done < scripts/cycle-open.sh",
+    "diff <(cat scripts/cycle-open.sh) /tmp/x",
+    "alias go='bash scripts/cycle-open.sh'",
+    "[ -f scripts/cycle-open.sh ] && echo present",
+)
+_PLAIN_RUNS = (
+    "bash scripts/cycle-open.sh",
+    "cd /w && bash scripts/cycle-open.sh",
+    "./scripts/cycle-open.sh",
+    "sh scripts/cycle-open.sh",
+    "bash scripts/cycle-open.sh 2>&1 | tail -n 20",
+    "timeout 120 bash scripts/cycle-open.sh",
+    "timeout -k 5 60 bash scripts/cycle-open.sh",
+    'bash scripts/cycle-open.sh; echo "exit=$?"',
+    'out=$(bash scripts/cycle-open.sh 2>&1); echo "$out"',
+    'echo "$(bash scripts/cycle-open.sh)"',
+    "(cd /w && bash scripts/cycle-open.sh)",
+    'bash -c "bash scripts/cycle-open.sh"',
+    "bash -lc 'cd /w && bash scripts/cycle-open.sh'",
+    "set -e; bash scripts/cycle-open.sh",
+    "bash -x scripts/cycle-open.sh",
+    "bash ./scripts/cycle-open.sh",
+    "bash /srv/zc-door/w1/scripts/cycle-open.sh",
+    "source scripts/cycle-open.sh",
+    ". scripts/cycle-open.sh",
+    "exec bash scripts/cycle-open.sh",
+    "time bash scripts/cycle-open.sh",
+    "nohup bash scripts/cycle-open.sh &",
+    "/usr/bin/env bash scripts/cycle-open.sh",
+    "bash scripts/cycle-open.sh > /tmp/o.txt 2>&1; cat /tmp/o.txt",
+    "bash scripts/cycle-open.sh <<< ''",
+    "FOO=1 BAR=2 bash scripts/cycle-open.sh",
+    "{ bash scripts/cycle-open.sh; }",
+    "bash scripts/cycle-open.sh || echo failed",
+    "echo start && bash scripts/cycle-open.sh && echo done",
+    "bash scripts/cycle-open.sh # open the cycle",
+    "if true; then bash scripts/cycle-open.sh; fi",
+    "timeout 60 \\\n  bash scripts/cycle-open.sh",
+    "cd scripts && ./cycle-open.sh",
+)
+_LEFT_UNREAD = (
+    'bash "$(pwd)/scripts/cycle-open.sh"',
+    "OUT=`bash scripts/cycle-open.sh`; echo $OUT",
+    "cat scripts/cycle-open.sh | bash",
+    "bash -euo pipefail scripts/cycle-open.sh",
+    "sudo -u x bash scripts/cycle-open.sh",
+    "case x in x) bash scripts/cycle-open.sh ;; esac",
+    "f() { bash scripts/cycle-open.sh; }; f",
+)
+
+
+def _scripts_known_answers(check: Callable[..., None]) -> None:
+    """``world.RAN_RE`` against the real scripts under a real shell: every one of the eight shows
+    its line when it runs (and when it dies), none shows one when it is only read, and a
+    command that reads as a run but runs nothing shows none either."""
+    from zakcode._subprocess import find_bash
+
+    bash = find_bash()
+    check("there is a shell to run the scripts with", bash is not None)
+    if bash is None:
+        return
+    root = Path(tempfile.mkdtemp(prefix="veto-door-scripts-"))
+    shutil.rmtree(root)
+    world.build(root)
+
+    def run(command: str) -> str:
+        done = subprocess.run(  # noqa: S603  (a fixed shell, the bench's own commands)
+            [bash, "-c", command],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return done.stdout
+
+    try:
+        selected = run("bash scripts/cycle-open.sh >/dev/null && bash scripts/cycle-select.sh")
+        lot = json.loads(selected.splitlines()[-1])
+        delta = lot["recount"] - lot["ledger"]
+        walk = {
+            "cycle-open.sh": "bash scripts/cycle-close.sh >/dev/null; bash scripts/cycle-open.sh",
+            "check-ledger.sh": "bash scripts/check-ledger.sh",
+            "check-queue.sh": "bash scripts/check-queue.sh",
+            "cycle-select.sh": "bash scripts/cycle-select.sh",
+            "correct.sh": f"bash scripts/correct.sh {lot['lot']} {delta:+d} RC-01",
+            "validate.sh": "bash scripts/validate.sh",
+            "cycle-record.sh": f"bash scripts/cycle-record.sh {lot['lot']} corrected",
+            "cycle-close.sh": "bash scripts/cycle-close.sh",
+        }
+        check("the walk covers every script", sorted(walk) == sorted(world.SCRIPTS))
+        for name, command in walk.items():
+            output = run(command)
+            check(f"{name} shows its line when it runs", bool(world.RAN_RE.search(output)), output)
+        died = run("bash scripts/cycle-open.sh; bash scripts/cycle-open.sh | tail -1")
+        check("a script that dies behind a pipe still shows it ran", "E105" in died
+              and bool(world.RAN_RE.search(died.splitlines()[-1])), died)  # fmt: skip
+        source = run("cat scripts/*.sh .claude/skills/*/SKILL.md CLAUDE.md; grep -rh PASS scripts/")
+        check("reading the scripts, the skills and the guide shows no such line",
+              len(source) > 50_000 and not world.RAN_RE.search(source))  # fmt: skip
+        skipped = run("false && bash scripts/cycle-close.sh; echo done")
+        check("a run that never happened shows none", _shell_label("false && bash "
+              "scripts/cycle-close.sh; echo done") == "script"
+              and not world.RAN_RE.search(skipped), skipped)  # fmt: skip
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _known_answers() -> list[tuple[list[dict[str, Any]], str]]:
     """The scorer's known answers: one completion each, with the label it must get."""
 
@@ -1054,6 +1401,75 @@ def _known_answers() -> list[tuple[list[dict[str, Any]], str]]:
         ([call("bash", command="cd /w && bash scripts/check-queue.sh")], "script"),
         ([call("Bash", command="echo resuming; sleep 1")], "trivial"),
         ([call("Bash", command="cat queue/lots.tsv | head")], "other-work"),
+        # Naming a script is not running it: reading the loop's commands is not resuming.
+        ([call("Bash", command="cat scripts/cycle-open.sh")], "other-work"),
+        (
+            [call("Bash", command="sed -n 1,20p scripts/cycle-select.sh && ls scripts/")],
+            "other-work",
+        ),
+        ([call("Bash", command="grep -n open scripts/cycle-open.sh; echo done")], "other-work"),
+        ([call("Bash", command='bash -c "cat scripts/check-queue.sh"')], "other-work"),
+        ([call("Bash", command="./scripts/cycle-open.sh")], "first-step"),
+        (
+            [call("Bash", command="timeout 60 bash scripts/cycle-open.sh 2>&1 | tail -5")],
+            "first-step",
+        ),
+        (
+            [call("Bash", command="(cd /w && LOG=1 bash /w/scripts/cycle-record.sh L-0001 held)")],
+            "script",
+        ),
+        ([call("Bash", command='bash -c "bash scripts/check-queue.sh"')], "script"),
+        ([call("Bash", command="bash scripts/cycle-select.sh; echo exit=$?")], "script"),
+        ([call("Bash", command="timeout -k 5 60 bash scripts/cycle-select.sh")], "script"),
+        ([call("Bash", command="/usr/bin/env bash scripts/validate.sh")], "script"),
+        ([call("Bash", command="bash -lc 'cd /w && bash scripts/cycle-open.sh'")], "first-step"),
+        (
+            [call("Bash", command='OUT=$(bash scripts/cycle-open.sh 2>&1); echo "$OUT"')],
+            "first-step",
+        ),
+        ([call("Bash", command='echo "$(bash scripts/cycle-open.sh)"')], "first-step"),
+        (
+            [
+                call(
+                    "Bash",
+                    command="if bash scripts/check-queue.sh; then ./scripts/cycle-open.sh; fi",
+                )
+            ],
+            "first-step",
+        ),
+        (
+            [call("Bash", command="[ -x scripts/correct.sh ] && scripts/correct.sh L-0002")],
+            "script",
+        ),
+        ([call("Bash", command="cd scripts && ./cycle-open.sh")], "first-step"),
+        ([call("Bash", command="timeout 60 \\\n  bash scripts/cycle-open.sh")], "first-step"),
+        # ... and every way of naming one without running it, which must never read as a run:
+        # a rollout ends on the first run it sees, so this side of the scorer cannot be re-scored.
+        ([call("Bash", command="cd scripts && cat cycle-open.sh")], "other-work"),
+        ([call("Bash", command="bash scripts/my-own-idea.sh")], "other-work"),
+        ([call("Bash", command="bash -n scripts/cycle-open.sh")], "other-work"),
+        ([call("Bash", command="cat $(pwd)/scripts/cycle-open.sh")], "other-work"),
+        ([call("Bash", command='head -5 "$(pwd)/scripts/cycle-open.sh"')], "other-work"),
+        ([call("Bash", command="chmod +x scripts/cycle-open.sh && ls -la scripts/")], "other-work"),
+        ([call("Bash", command="ls scripts/ # then: bash scripts/cycle-open.sh")], "other-work"),
+        (
+            [call("Bash", command="cat <<'EOF' > run.sh\nbash scripts/cycle-open.sh\nEOF")],
+            "other-work",
+        ),
+        (
+            [
+                call(
+                    "Bash", command="python3 -c \"print('x'); print('bash scripts/cycle-open.sh')\""
+                )
+            ],
+            "other-work",
+        ),
+        ([call("Bash", command="echo 'next: bash scripts/cycle-open.sh'")], "trivial"),
+        (
+            [call("Bash", command='echo "plan: open; bash scripts/cycle-open.sh now" >> notes.md')],
+            "trivial",
+        ),
+        ([call("Bash", command="echo next && echo bash scripts/cycle-open.sh")], "trivial"),
         ([call("Read", path="queue/lots.tsv")], "other-work"),
         ([call("update_plan", tasks=[])], "plan"),
         ([call("TodoWrite", todos=[])], "plan"),
@@ -1110,6 +1526,26 @@ def _suffixes(retired: bool) -> dict[str, tuple[list[Any], str, list[str]]]:
                 _do("update_plan", "r1", **plan),
                 _do("Bash", "r2", command="bash scripts/cycle-select.sh"),
                 _say("The cycle could not be selected."),
+            ],
+            "stopped-again",
+            ["plan", "script", "text-only"],
+        ),
+        # Naming a loop script is not running it: the loop has not resumed on a ``cat``.
+        "the first step's script read, then words": (
+            [
+                _do("update_plan", "r1", **plan),
+                _do("Bash", "r2", command="cat scripts/cycle-open.sh"),
+                _say("I have read the first step."),
+            ],
+            "stopped-again",
+            ["plan", "other-work", "text-only"],
+        ),
+        # A command that reads as a run, exits 0 and ran nothing: no line of the script, no pass.
+        "a run that never happened, then words": (
+            [
+                _do("update_plan", "r1", **plan),
+                _do("Bash", "r2", command="false && bash scripts/cycle-close.sh; echo done"),
+                _say("Closed."),
             ],
             "stopped-again",
             ["plan", "script", "text-only"],
@@ -1388,8 +1824,28 @@ def selftest(base: Path, expect: str, capture: Path | None) -> int:
     for calls, want in _known_answers():
         got = completion_label(calls)[0]
         check(want, got == want, f"got {got}")
+    # The audit's count: shell calls that name a loop script and were not read as running it.
+    reads = [
+        {"name": "Bash", "arguments": {"command": c}} for c in ("cat scripts/correct.sh", "ls")
+    ]
+    runs = [{"name": "Bash", "arguments": {"command": world.FIRST_STEP}}]
+    check("a read of a loop script is counted as named, not run",
+          named_not_run(reads, completion_label(reads)[1]) == 1)  # fmt: skip
+    check("a run of one is not", named_not_run(runs, completion_label(runs)[1]) == 0)
+    generous = [c for c in _NAMES_ONLY if _scripts_run(c)]
+    check(f"none of {len(_NAMES_ONLY)} commands that only name a loop script reads as a run",
+          not generous, "; ".join(generous))  # fmt: skip
+    missed = [c for c in _PLAIN_RUNS if not _scripts_run(c)]
+    check(f"each of {len(_PLAIN_RUNS)} plain ways of running one reads as a run",
+          not missed, "; ".join(missed))  # fmt: skip
+    read = [c for c in _LEFT_UNREAD if _scripts_run(c)]
+    check(f"the {len(_LEFT_UNREAD)} forms left unread on purpose read as mentions", not read,
+          "; ".join(read))  # fmt: skip
 
     _reading_known_answers(check)
+
+    print("the loop's scripts, run for real")
+    _scripts_known_answers(check)
 
     print("world and product agree")
     named = skill_reentry_in(world.HOOK_REASON)
@@ -1441,6 +1897,17 @@ def selftest(base: Path, expect: str, capture: Path | None) -> int:
         if name.startswith("a read"):
             at = (row["any_work_at"], row["pass_at"])
             check("  the read counted as acting, the first step as resuming", at == (1, 3), str(at))
+        audit = (row["named_not_run"], row["run_unproven"])
+        if name.startswith("the first step's script read"):
+            check(
+                "  it is counted as naming a script without running one",
+                audit == (1, 0),
+                str(audit),
+            )
+        elif name.startswith("a run that never happened"):
+            check("  it is counted as a run its result does not show", audit == (0, 1), str(audit))
+        else:
+            check("  the audit counts nothing", audit == (0, 0), str(audit))
 
     print("a tampered tape is caught")
     tape_path = capture_dir / "tape.json"
@@ -1882,6 +2349,13 @@ def _arm_summary(cells: list[dict[str, Any]], attempts: list[dict[str, Any]]) ->
         "after_door": _tally(x for r in cells for x in r["after_door"]),
         "spiral_rate": _share(cells, lambda r: r["path"].count("skill-again") >= 2),
         "trivial_rate": _share(cells, lambda r: "trivial" in r["path"]),
+        # Shell calls that named a loop script and were NOT read as running it, and the cells
+        # they sit in: the scorer reads only plain forms as a run, and this is what it left out.
+        "named_not_run": sum(int(r.get("named_not_run") or 0) for r in cells),
+        "named_not_run_cells": sum(1 for r in cells if r.get("named_not_run")),
+        # Successful calls read as running a loop script whose result showed no line of one: the
+        # other side of the same audit (each was counted as other work, not as resuming).
+        "run_unproven": sum(int(r.get("run_unproven") or 0) for r in cells),
         "mean_live_steps": _mean([float(len(r["path"])) for r in cells]),
         "mean_prompt_tokens": _mean([float(r["usage"].get("prompt_tokens") or 0) for r in cells]),
         "mean_cost_usd": round(sum(float(r["usage"].get("cost_usd") or 0) for r in cells) / n, 5)

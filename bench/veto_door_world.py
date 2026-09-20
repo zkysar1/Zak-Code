@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import stat
 import sys
 from collections.abc import Sequence
@@ -552,6 +553,15 @@ echo "CYCLE $cycle CLOSED handled=$handled pending=$(pending)"
 }
 
 #: The Stop hook: refuses the stop while the run's veto budget lasts, then lets the turn end.
+#: A line only a loop script prints, and only when it RUNS: its result, or the error it dies
+#: with. A script's source carries the same words behind an ``echo`` or a ``die``, never at the
+#: start of a line with a number filled in, so reading a script shows no such line.
+RAN_RE = re.compile(
+    r'^(?:\{"cycle": \d+, "state": "OPEN"|\{"lot": "L-\d{4}"|(?:PASS|FAIL) (?:ledger|queue)\b'
+    r"|VALID rows=\d|INVALID |appended: L-\d{4}|recorded: cycle \d|CYCLE \d+ CLOSED|E1\d\d )",
+    re.MULTILINE,
+)
+
 STOP_GATE = """#!/usr/bin/env bash
 # Stop gate of the reconciliation loop. While lots remain and the budget lasts, the stop is
 # refused with the reason in stop-reason.json; after that the turn is allowed to end.
