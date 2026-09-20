@@ -263,9 +263,29 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   read. A capture whose prefix holds a clock (a `plan_recall` result prints event times) cannot
   be replayed character for character and is refused. A patch that changes text a capture's
   prefix already holds (C, where a run met a pointer before its fork) loses that fork. And the
-  C witness tests how the door's answer OPENS, which misses a pointer whose call carried an
-  argument: repair that detector, with an argument-carrying call as its positive control,
-  before C or RC is read again. The results block in the registration log has the detail.
+  C witness asked how the door's answer OPENS, which misses a pointer whose call carried an
+  argument (the product frames the argument first): it read false on 137 door answers of 137.
+  The results block in the registration log has the detail, and a correction of its account
+  of why the offline proof missed this.
+- **Repaired since (2026-09-20).** The door's witness reads the flag the product sets on a
+  pointer it builds (ADR-0203), not the text. The offline proof had checked each witness's
+  ingredients by hand and had run the usability RULE only on hand-written rows, so a flag the
+  rule needed and no real row carried went unseen (its scripted call did carry the argument).
+  `selftest` now runs that rule on every row the real product writes in the tree under test,
+  reads the same row under every other arm's name (refused unless the build is the same), and
+  asserts the door's flag. With the old detector put back, that last check fails. The
+  permutation test is exact at any number of forks (a convolution over the distinct sums,
+  checked against one-at-a-time enumeration). A prefix that holds a clock is still refused,
+  not normalised: a refusal costs a capture, a normaliser could hide a real divergence.
+- **Two readings for the second registration.** `--mode calibrate` reads the baseline ALONE
+  (its own ledger, `--stage calibration`) and says PROCEED only if the unpatched build fails
+  to resume often enough for an arm to have something to reduce; those rows are never the
+  comparison's. `--mode refusal` is the comparison (`--stage comparison`): each arm against
+  the baseline on how often a rollout did NOT resume, thresholds relative to the baseline
+  measured in the same batch, the fork as the unit of an exact paired test, and a verdict
+  that must keep its size with any one fork left out. `arms --arms A,A2,R` builds only the
+  arms a batch names, and `--forks-of calibration` keeps the comparison off a fork no
+  calibration rollout could read at all (a prefix with a clock in it never replays).
 - **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
   batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
   changed the line they both patch (the resolver now flags the pointer it builds). An arm that
@@ -280,6 +300,18 @@ $PY bench/veto_door.py preflight
 $PY bench/veto_door.py capture  --out $OUT --arms-dir $ARMS --forks 10 --runs 14 --budget 1.00
 $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --reps 2 --budget 2.50
 $PY bench/veto_door.py report   --ledger $OUT/rollouts.jsonl --arms-dir $ARMS --reps 2
+
+# the second registration: three arms, the baseline alone first, then the comparison
+$PY bench/veto_door.py arms --arms-dir $ARMS --arms A,A2,R
+$PY bench/veto_door.py capture  --out $OUT --arms-dir $ARMS --forks 32 --runs 40 --budget 1.30
+$PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A --reps 2 \
+    --stage calibration --budget 0.45
+$PY bench/veto_door.py report --ledger $OUT/calibration.jsonl --arms-dir $ARMS --out $OUT \
+    --arms A --reps 2 --mode calibrate
+$PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A,A2,R --reps 4 \
+    --stage comparison --forks-of calibration --budget 2.20
+$PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --out $OUT \
+    --arms A,A2,R --reps 4 --mode refusal
 ```
 
 ## In CI

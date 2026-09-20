@@ -67,6 +67,7 @@ import tempfile
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -1150,8 +1151,12 @@ async def rollout_one(
 
 def _door_answers(agent: Any, live: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What the skill door answered each time the model asked for the loop skill again: the
-    witness of which build ran. A pointer opens ``[already loaded]``; arm C's carries the first
-    step; arm B's is the whole body."""
+    witness of which build ran. A pointer is what the PRODUCT flags as one (ADR-0203); arm
+    C's carries the first step; arm B's is the whole body.
+
+    Batch 1 asked the text instead — does the answer OPEN with the pointer's tag — and the
+    product frames a call's arguments ahead of that tag, so the flag read false on 137 door
+    answers of 137 and arm C's witness never fired."""
     from zakcode.messages import ToolResultBlock
 
     asked = {
@@ -1168,7 +1173,7 @@ def _door_answers(agent: Any, live: list[dict[str, Any]]) -> list[dict[str, Any]
                 answers.append(
                     {
                         "chars": len(output),
-                        "pointer": output.lstrip().startswith("[already loaded]"),
+                        "pointer": bool((block.data or {}).get("pointer")),
                         "first_step": world.FIRST_STEP in output,
                         "body": len(output) > len(world.loop_skill_body()) // 2,
                     }
@@ -1633,6 +1638,163 @@ def _fake_row(capture: str, arm: str, rep: int, passed: bool, **over: Any) -> di
     return row | over
 
 
+def _second_reading_known_answers(check: Callable[..., None]) -> None:
+    """The second registration's rule on ledgers whose answer is known, each p worked by hand
+    first: ``k`` forks that all lean one way give 2 / 2**k."""
+    print("the second reading (known answers)")
+    scratch = Path(tempfile.mkdtemp(prefix="veto-door-second-"))
+    forks, reps = RULE2["min_forks"], 3
+
+    def rows(
+        missed: dict[str, dict[int, int]], n: int = forks, without: tuple[str, int] | None = None
+    ) -> list[dict[str, Any]]:
+        """``missed[arm][fork]`` rollouts of that arm on that fork do NOT resume. ``without``
+        (arm, k) leaves that arm's first ``k`` forks unwritten, as dead children would."""
+        return [
+            _fake_row(f"w{fork:02d}", arm, rep, rep >= by_fork.get(fork, 0))
+            for arm, by_fork in missed.items()
+            for fork in range(n)
+            for rep in range(reps)
+            if not (without and without[0] == arm and fork < without[1])
+        ]
+
+    def read(ledger_rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
+        ledger = scratch / "ledger.jsonl"
+        ledger.write_text("".join(json.dumps(r) + "\n" for r in ledger_rows), encoding="utf-8")
+        return report(ledger, None, mode=mode, reps=reps)
+
+    def read_by_command(mode: str, arms: str) -> dict[str, Any]:
+        """The ledger ``read`` last wrote, through ``report`` as a batch runs it: the parser's
+        choices and the printing are part of the reading (a rule echoed with a value JSON
+        cannot hold reads fine in process and dies at the print)."""
+        argv = [sys.executable, str(Path(__file__).resolve()), "report", "--mode", mode]
+        argv += ["--ledger", str(scratch / "ledger.jsonl"), "--reps", str(reps), "--arms", arms]
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
+        if done.returncode != 0:
+            return {"batch": f"exit {done.returncode}: {done.stderr.strip()[-200:]}"}
+        return dict(json.loads(done.stdout))
+
+    def one_on(first: int, last: int) -> dict[int, int]:
+        return dict.fromkeys(range(first, last), 1)
+
+    def versus(read_out: dict[str, Any], arm: str) -> tuple[str, float | None]:
+        seen = read_out["arms"][arm]["vs_baseline"]
+        return seen["verdict"], seen.get("paired_p")
+
+    try:
+        alone = read(rows({"A": one_on(0, 5)}), "calibrate")
+        got = (alone["batch"], alone["baseline_not_resumed"], alone["forks_with_a_miss"])
+        check("the baseline alone, missing 5 of 72, says PROCEED", got == ("PROCEED", 0.0694, 5))
+        by_command = read_by_command("calibrate", "A")
+        check(
+            "  and says so through the command line, rule and all",
+            (by_command.get("batch"), (by_command.get("rule") or {}).get("calibrate_floor"))
+            == ("PROCEED", "1/15"),
+            str(by_command.get("batch")),
+        )
+        easy = read(rows({"A": one_on(0, 4)}), "calibrate")
+        check(
+            "missing 4 of 72 it says NOT DISCRIMINATING",
+            easy["batch"] == "NOT DISCRIMINATING",
+            str(easy["batch"]),
+        )
+        short = read(rows({"A": one_on(0, 5)}, n=forks - 1), "calibrate")
+        check("one fork short it says NOT MEASURED", short["batch"] == "NOT MEASURED")
+
+        base = one_on(0, 12)  # 12 of 72: 16.7%
+        gain = read(rows({"A": base, "A2": base, "R": {}}), "refusal")
+        got_gain = (versus(gain, "R"), versus(gain, "A2"), gain.get("next"))
+        check(
+            "an arm that never misses where the baseline missed on 12 forks is a GAIN",
+            got_gain == (("GAIN", round(2 / 2**12, 4)), ("FLAT", 1.0), "ship R"),
+            str(got_gain),
+        )
+        by_command = read_by_command("refusal", "A,A2,R")
+        check(
+            "  and through the command line it is the same reading",
+            (by_command.get("batch"), by_command.get("next")) == ("READ", "ship R")
+            and by_command["arms"]["R"]["vs_baseline"] == gain["arms"]["R"]["vs_baseline"],
+            str(by_command.get("batch")),
+        )
+        flat = read(rows({"A": base, "R": one_on(12, 23)}), "refusal")
+        check("one that misses about as often is FLAT", versus(flat, "R")[0] == "FLAT")
+        harm = read(rows({"A": base, "R": one_on(0, 20)}), "refusal")
+        check(
+            "one that misses 11 points more often, on 8 forks, is a HARM",
+            versus(harm, "R") == ("HARM", round(2 / 2**8, 4)),
+            str(versus(harm, "R")),
+        )
+        few = read(rows({"A": {f: 3 for f in range(4)}, "R": {}}), "refusal")
+        check(
+            "the same 12 misses on only 4 forks cannot reach the p: MIXED",
+            versus(few, "R") == ("MIXED", round(2 / 2**4, 4)),
+            str(versus(few, "R")),
+        )
+        carried = read(rows({"A": {0: 3, **one_on(1, 12)}, "R": one_on(1, 7)}), "refusal")
+        rests = carried["arms"]["R"]["vs_baseline"]
+        check(
+            "a gain one fork carries is MIXED, and the fork is named",
+            (rests["verdict"], rests["rests_on"], carried.get("next"))
+            == ("MIXED", ["w00"], "nothing ships from this bench"),
+            str(rests),
+        )
+        edge = read(rows({"A": {0: 3, **one_on(1, 13)}, "R": one_on(1, 7)}), "refusal")
+        check(
+            "a threshold met exactly (6 of 69 against half of 12 of 69) is met",
+            versus(edge, "R")[0] == "GAIN",
+            str(edge["arms"]["R"]["vs_baseline"]),
+        )
+        ghost = read(rows({"A": base, "A2": {}, "R": {}}), "refusal")
+        check(
+            "a placebo that reads GAIN makes the batch NOT MEASURED",
+            (ghost["batch"], ghost.get("why"), ghost.get("next"))
+            == ("NOT MEASURED", "the placebo read GAIN", None),
+            str((ghost["batch"], ghost.get("why"))),
+        )
+        calm = read(rows({"A": one_on(0, 5), "R": {}}), "refusal")
+        check(
+            "a baseline that misses 5 of 72 leaves nothing to reduce: NOT DISCRIMINATING",
+            calm["batch"] == "NOT DISCRIMINATING" and "vs_baseline" not in calm["arms"]["R"],
+        )
+        clocked = [_fake_row("w00", "A", rep, True, strict_mismatches=11) for rep in (0, 1)]
+        mixed = [*clocked, _fake_row("w01", "A", 0, False), _fake_row("w02", "A", 0, True)]
+        (scratch / "calibration.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in mixed), encoding="utf-8"
+        )
+        kept = _forks_filled_in(scratch / "calibration.jsonl", {})
+        check(
+            "a fork no rollout could read is not rolled out again; a fork that MISSED is",
+            kept == {"w01", "w02"},
+            str(sorted(kept)),
+        )
+        thin = read(rows({"A": base, "A2": base, "R": {}}, without=("R", 3)), "refusal")
+        got_thin = (versus(thin, "R")[0], versus(thin, "A2")[0], thin["complete_forks"])
+        check(
+            "an arm with 87.5% of its cells is VOID, and costs the others no fork",
+            got_thin == ("VOID", "FLAT", forks),
+            str(got_thin),
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _paired_p_known_answers(check: Callable[..., None]) -> None:
+    """The exact test counted by sum against the same test counted one assignment at a time,
+    on every shape a batch can produce that is small enough to list."""
+    print("the permutation test (exact, against the one-at-a-time count)")
+    worst, cases = 0.0, 0
+    for reps in (2, 3, 4):
+        steps = [Fraction(k, reps) for k in range(-reps, reps + 1)]
+        for n in range(1, 7):
+            for combo in itertools.combinations_with_replacement(steps, n):
+                diffs = [float(d) for d in combo]
+                worst = max(worst, abs(paired_p(diffs) - _paired_p_one_at_a_time(diffs)))
+                cases += 1
+    check(f"  {cases} sets of per-fork differences agree exactly", worst == 0.0, str(worst))
+    check("  no difference anywhere is p = 1", paired_p([0.0, 0.0]) == 1.0)
+    check("  thirty forks leaning one way is 2 / 2**30", paired_p([1 / 3] * 30) == 2 / 2**30)
+
+
 def _reading_known_answers(check: Callable[..., None]) -> None:
     """The reading rule on ledgers whose answer is known: every verdict the rule can give, the
     arm it selects, and the rows it must refuse to read."""
@@ -1843,6 +2005,8 @@ def selftest(base: Path, expect: str, capture: Path | None) -> int:
           "; ".join(read))  # fmt: skip
 
     _reading_known_answers(check)
+    _second_reading_known_answers(check)
+    _paired_p_known_answers(check)
 
     print("the loop's scripts, run for real")
     _scripts_known_answers(check)
@@ -1891,6 +2055,12 @@ def selftest(base: Path, expect: str, capture: Path | None) -> int:
         )
         seen = {k: row[k] for k in ("replayed", "diverged", "fork_identical", "strict_mismatches")}
         check("  the prefix came off the tape, on the recorded trajectory", faithful, str(seen))
+        # The rule a batch is READ by, on a row the real product wrote in this tree. Batch 1
+        # checked each witness's ingredients by hand and ran the rule on hand-written rows
+        # only, so a flag the rule needed and no row carried (the door's ``pointer``) cost
+        # arm C every row in which its patch had acted.
+        refused = _witness_failure(row, [step for step in row["steps"] if not step.get("aux")])
+        check("  the usability rule takes it for a row of this arm", refused is None, str(refused))
         if not witness:
             witness = {"doors": row["doors"], "sent": model.seen, "row": row}
             check("  it resumed on its third completion", row["pass_at"] == 3, str(row["pass_at"]))
@@ -1938,6 +2108,22 @@ def selftest(base: Path, expect: str, capture: Path | None) -> int:
     wrote = shown.get("notes", {})
     rails = [m.get("rail") for m in _first_live(shown).get("tail", [])]
     check("the door answered the repeated skill call", bool(witness.get("doors")))
+    check(
+        f"the product flagged that answer a pointer: {not body}",
+        door.get("pointer") is (not body),
+        str(door),
+    )
+    # ...and the same row under every OTHER arm's name: the rule must refuse it unless that arm
+    # is this very build (A and its placebo). "No patch shows another's", said by the rule.
+    live = [step for step in shown.get("steps", []) if not step.get("aux")]
+    for label, patches in ARMS.items():
+        same_build = sorted(patches) == sorted(ARMS[expect])
+        refusal = _witness_failure({**shown, "arm": label}, live)
+        check(
+            f"  read as arm {label} it is {'usable' if same_build else 'refused'}",
+            (refusal is None) is same_build,
+            str(refusal),
+        )
     check(
         f"its answer carries the first step: {first_step}",
         door.get("first_step") is first_step,
@@ -2089,15 +2275,20 @@ def _spent(ledgers: list[Path]) -> float:
     return total
 
 
-def build_arms(out: Path) -> dict[str, Any]:
+def build_arms(out: Path, arms: list[str]) -> dict[str, Any]:
     """One detached worktree per arm at HEAD, with the arm's patches applied. The manifest
-    records each tree's source-diff hash: a rollout row must carry the same one."""
+    records each tree's source-diff hash: a rollout row must carry the same one. Only the
+    arms a batch names are built: a patch cut against an older HEAD (batch 1's ``b`` and ``c``
+    after ADR-0203) need not apply for a batch that does not use it."""
+    unknown = [arm for arm in arms if arm not in ARMS]
+    if unknown:
+        raise SystemExit(f"no such arm: {', '.join(unknown)} (known: {', '.join(ARMS)})")
     out.mkdir(parents=True, exist_ok=True)
     head = _git("rev-parse", "HEAD").strip()
     if _git("status", "--porcelain", "--", "src", "bench").strip():
         raise SystemExit("commit src/ and bench/ first: the arms are built from HEAD")
     manifest: dict[str, Any] = {"head": head, "arms": {}}
-    for arm, patches in ARMS.items():
+    for arm, patches in ((arm, ARMS[arm]) for arm in arms):
         tree = out / arm
         if tree.exists():
             _git("worktree", "remove", "--force", str(tree))
@@ -2128,6 +2319,21 @@ def _forks(out: Path) -> list[Path]:
     )
 
 
+def _forks_filled_in(ledger: Path, manifest: dict[str, Any]) -> set[str]:
+    """The forks on which ``ledger`` holds at least one usable row. A fork none of whose
+    rollouts could be read (its prefix holds a clock, so no replay of it can match its
+    recording) will not be readable the next time either: the comparison does not pay to roll
+    it out twelve more times. Usability never looks at what the model did, so neither does
+    this, and the reading already sets such a fork aside (the baseline could not fill it)."""
+    if not ledger.is_file():
+        raise SystemExit(f"no such ledger: {ledger}")
+    return {
+        row["capture"]
+        for row in map(json.loads, filter(None, ledger.read_text(encoding="utf-8").splitlines()))
+        if _unusable(row, (manifest.get(row["arm"]) or {}).get("src_diff_sha256")) is None
+    }
+
+
 def run_captures(
     base: Path, out: Path, arms_dir: Path, want: int, runs: int, budget: float
 ) -> None:
@@ -2152,16 +2358,30 @@ def run_captures(
 
 
 def run_rollouts(
-    base: Path, out: Path, arms_dir: Path, arms: list[str], reps: int, budget: float, workers: int
+    base: Path,
+    out: Path,
+    arms_dir: Path,
+    arms: list[str],
+    reps: int,
+    budget: float,
+    workers: int,
+    stage: str = "rollouts",
+    forks_of: str | None = None,
 ) -> None:
     """Every fork, every arm, ``reps`` times. Arms are interleaved inside a fork (so drift in
     the provider over the batch lands on all of them alike), starting one arm further along for
     each fork and each repetition (so no arm always goes first, on a cold prompt cache, or
     last). Forks run side by side, each at its own pinned path; two rollouts of one fork never
-    overlap."""
+    overlap. ``stage`` names the ledger (``<stage>.jsonl``): a calibration's rows are kept out
+    of the comparison's ledger by never being written to it. ``forks_of`` names an EARLIER
+    stage: only the forks that stage could read at all are rolled out (:func:`_forks_filled_in`)."""
     manifest = json.loads((arms_dir / "arms.json").read_text())["arms"]
-    ledger = out / "rollouts.jsonl"
+    ledger = out / f"{stage}.jsonl"
     forks = _forks(out)
+    if forks_of:
+        readable = _forks_filled_in(out / f"{forks_of}.jsonl", manifest)
+        print(f"not rolled out: {[f.name for f in forks if f.name not in readable]}", flush=True)
+        forks = [f for f in forks if f.name in readable]
     # A cell is settled by one usable row, or by two tries: an unusable run (the provider
     # failed, the replay left its tape, a witness is missing) is tried once more and no further.
     filled: set[tuple[str, str, int]] = set()
@@ -2187,6 +2407,7 @@ def run_rollouts(
                         return
                     args = ["rollout-one", "--base", str(base), "--out", str(out)]
                     args += ["--capture", str(capture_dir), "--arm", arm, "--rep", str(rep)]
+                    args += ["--stage", stage]
                     log = out / "logs" / f"rollout-{capture_dir.name}.log"
                     code = await asyncio.to_thread(
                         _child, Path(manifest[arm]["tree"]), args, log, 420
@@ -2213,18 +2434,39 @@ def wilson(k: int, n: int) -> tuple[float, float]:
 
 
 def paired_p(differences: list[float]) -> float:
-    """Two-sided sign-flip permutation test over per-fork differences, enumerated exactly: the
-    unit is the fork, because rollouts of one fork share a conversation and are not
-    independent samples of the population of refused stops."""
-    live = [d for d in differences if d != 0.0]
+    """Two-sided sign-flip permutation test over per-fork differences, exact: the unit is the
+    fork, because rollouts of one fork share a conversation and are not independent samples of
+    the population of refused stops.
+
+    Every assignment of signs is counted, but by SUM rather than one at a time: a fork's
+    difference is a whole number of rollouts over its repetitions, so the distinct sums stay
+    few while the assignments double with every fork (thirty forks are 2**30 of them). The
+    selftest holds this against the one-at-a-time count on every input small enough to do."""
+    live = [Fraction(d).limit_denominator(10**6) for d in differences if d != 0.0]
     if not live:
         return 1.0
-    observed = abs(sum(live))
-    hits = total = 0
-    for signs in itertools.product((1.0, -1.0), repeat=len(live)):
-        total += 1
-        hits += abs(sum(s * d for s, d in zip(signs, live, strict=True))) >= observed - 1e-12
-    return hits / total
+    observed = abs(sum(live, Fraction(0)))
+    sums: dict[Fraction, int] = {Fraction(0): 1}
+    for d in live:
+        spread: dict[Fraction, int] = {}
+        for total, ways in sums.items():
+            spread[total + d] = spread.get(total + d, 0) + ways
+            spread[total - d] = spread.get(total - d, 0) + ways
+        sums = spread
+    return sum(ways for total, ways in sums.items() if abs(total) >= observed) / 2 ** len(live)
+
+
+def _paired_p_one_at_a_time(differences: list[float]) -> float:
+    """The same test by listing every assignment of signs: the check on :func:`paired_p`."""
+    live = [Fraction(d).limit_denominator(10**6) for d in differences if d != 0.0]
+    if not live:
+        return 1.0
+    observed = abs(sum(live, Fraction(0)))
+    hits = sum(
+        abs(sum((sign * d for sign, d in zip(signs, live, strict=True)), Fraction(0))) >= observed
+        for signs in itertools.product((1, -1), repeat=len(live))
+    )
+    return hits / 2 ** len(live)
 
 
 #: Outcomes that say nothing about the model: the replay left its tape, the process ran some
@@ -2376,6 +2618,82 @@ def _arm_summary(cells: list[dict[str, Any]], attempts: list[dict[str, Any]]) ->
     }
 
 
+#: The SECOND registration's rule (REGISTRATION 2 in the same log): one hypothesis, read on the
+#: failure this world does produce — a rollout that does NOT resume — and every threshold a
+#: function of the baseline's rate as MEASURED in the batch being read, never of a predicted
+#: one (batch 1 read NOT DISCRIMINATING against an estimate that missed by 59 points).
+RULE2: dict[str, Any] = {
+    "min_forks": 24,  # complete forks the calibration and the comparison each need
+    "min_filled": 0.90,  # as in the first rule: an arm under this share of its cells is VOID
+    # The baseline ALONE must miss at least this often (1 rollout in 15) for the comparison to
+    # be run at all. It is a gate on SPEND, set low on purpose: simulated before any data, a
+    # world that misses 12% of the time is stopped here about 1 time in 9, one that misses 2%
+    # about 9 times in 10. Whether a batch can be READ is the comparison's own floor, below.
+    "calibrate_floor": Fraction(1, 15),
+    "floor": Fraction(8, 100),  # ...and the comparison's own baseline this often, or no reading
+    "gain_ratio": Fraction(1, 2),  # GAIN: the arm misses at most this share of the baseline, and
+    "gain_points": Fraction(5, 100),  # ...at least this far below it, and
+    "p": 0.05,  # ...a paired p below this
+    "harm_points": Fraction(10, 100),  # HARM: the arm misses at least this far ABOVE it, same p
+    "flat": Fraction(5, 100),  # FLAT: closer to the baseline than this
+}
+
+
+def _verdict2(base_rate: Fraction, arm_rate: Fraction, p: float) -> str:
+    """One sound arm against the baseline under :data:`RULE2`, both as NOT-RESUMED rates (lower
+    is better). Read in this order, so an arm that meets GAIN is never called FLAT. The rates
+    are exact fractions of rollouts: a threshold met exactly (6 of 69 against half of 12 of 69)
+    must not turn on the last bit of a float."""
+    if arm_rate - base_rate >= RULE2["harm_points"] and p < RULE2["p"]:
+        return "HARM"
+    if (
+        arm_rate <= RULE2["gain_ratio"] * base_rate
+        and base_rate - arm_rate >= RULE2["gain_points"]
+        and p < RULE2["p"]
+    ):
+        return "GAIN"
+    if abs(base_rate - arm_rate) < RULE2["flat"]:
+        return "FLAT"
+    return "MIXED"
+
+
+def _missed(per_fork: PerFork, over: list[str]) -> Fraction:
+    """The share of rollouts over ``over`` that did NOT resume, exactly."""
+    rollouts = sum(per_fork[f][1] for f in over)
+    return Fraction(rollouts - sum(per_fork[f][0] for f in over), rollouts)
+
+
+def _against2(arm: PerFork, base: PerFork, forks: list[str]) -> dict[str, Any]:
+    """One arm against the baseline on how often a rollout did NOT resume, over ``forks``. The
+    fork is the unit of the test; a GAIN or a HARM must keep its SIZE with any one fork left
+    out (the p is not re-taken: losing a fork costs any test power and says nothing about
+    whether one fork carried the result), or the arm reads MIXED and those forks are named."""
+    diffs = [arm[f][0] / arm[f][1] - base[f][0] / base[f][1] for f in forks]
+    p = paired_p(diffs)
+    base_rate, arm_rate = _missed(base, forks), _missed(arm, forks)
+    verdict = _verdict2(base_rate, arm_rate, p)
+    rests_on: list[str] = []
+    if verdict in ("GAIN", "HARM"):
+        for left_out in forks:
+            rest = [f for f in forks if f != left_out]
+            if _verdict2(_missed(base, rest), _missed(arm, rest), p) != verdict:
+                rests_on.append(left_out)
+    if rests_on:
+        verdict = "MIXED"
+    return {
+        "baseline_not_resumed": round(float(base_rate), 4),
+        "arm_not_resumed": round(float(arm_rate), 4),
+        "fewer_by": round(float(base_rate - arm_rate), 4),
+        "share_of_baseline": round(float(arm_rate / base_rate), 4) if base_rate else None,
+        "forks_better": sum(d > 0 for d in diffs),
+        "forks_same": sum(d == 0 for d in diffs),
+        "forks_worse": sum(d < 0 for d in diffs),
+        "paired_p": round(p, 4),
+        "rests_on": rests_on,
+        "verdict": verdict,
+    }
+
+
 def _verdict(mode: str, difference: float, p: float) -> str:
     """One sound arm against the baseline. ``screen`` names every outcome; ``confirm`` has
     two. (An arm with too few of its cells filled is VOID before it gets here.)"""
@@ -2505,7 +2823,8 @@ def report(
         / max(1, len(held) * reps)
         for arm in arms
     }
-    void = {arm: share_filled[arm] < RULE["min_filled"] for arm in arms}
+    rule = RULE2 if mode in SECOND_MODES else RULE  # the one rule this batch is read by
+    void = {arm: share_filled[arm] < rule["min_filled"] for arm in arms}
     sound = [arm for arm in arms if not void[arm]]
     complete = [
         f for f in held if all((f, arm, rep) in filled for arm in sound for rep in range(reps))
@@ -2513,7 +2832,10 @@ def report(
     spend = sum(float(r["usage"].get("cost_usd") or 0.0) for r in rows)
     out: dict[str, Any] = {
         "mode": mode,
-        "rule": RULE,
+        # Echoed as it was applied. The second rule's thresholds are exact fractions, which
+        # JSON has no form for: they go out as "n/d" (a report that cannot print is a batch
+        # that cannot be read, found only after the spend).
+        "rule": {k: str(v) if isinstance(v, Fraction) else v for k, v in rule.items()},
         "rows": len(rows),
         "spend_usd": round(spend, 4),
         "forks": len(forks),
@@ -2533,9 +2855,12 @@ def report(
         summary["unusable"] = dict(unusable[arm])
         out["arms"][arm] = summary
     base = out["arms"].get(baseline)
-    if base is None or len(complete) < RULE["min_forks"][mode]:
+    needed = rule["min_forks"] if mode in SECOND_MODES else rule["min_forks"][mode]
+    if base is None or len(complete) < needed:
         out["batch"] = "NOT MEASURED"
         return out
+    if mode in SECOND_MODES:
+        return _read_second(mode, out, baseline, void, complete)
     if (base["rate"] or 0.0) >= RULE["ceiling"]:
         out["batch"] = "NOT DISCRIMINATING"
         return out
@@ -2556,6 +2881,54 @@ def report(
         out["why"] = f"the placebo read {placebo}"
         return out
     out["next"] = _next_step(mode, out["arms"], baseline)
+    return out
+
+
+#: The two readings of the second registration: the baseline alone, then the comparison.
+SECOND_MODES = ("calibrate", "refusal")
+
+
+def _read_second(
+    mode: str, out: dict[str, Any], baseline: str, void: dict[str, bool], complete: list[str]
+) -> dict[str, Any]:
+    """The second registration's two readings, over forks already known to be complete.
+
+    ``calibrate`` reads the baseline ALONE and says only whether the comparison is worth
+    running: a world where the unpatched build almost always resumes has no failure for an arm
+    to reduce. Its rows are never the comparison's (choosing to go on because an arm's own
+    rows looked bad, and then comparing against those rows, would manufacture a difference).
+    ``refusal`` is the comparison: each arm against the baseline on how often a rollout did
+    not resume, the placebo read like any arm, and the one step the rule names next."""
+    base = out["arms"][baseline]
+    missed = _missed(base["per_fork"], complete)
+    out["baseline_not_resumed"] = round(float(missed), 4)
+    out["forks_with_a_miss"] = sum(passes < n for passes, n in base["per_fork"].values())
+    floor = RULE2["calibrate_floor"] if mode == "calibrate" else RULE2["floor"]
+    if missed < floor:
+        out["batch"] = "NOT DISCRIMINATING"
+        return out
+    if mode == "calibrate":
+        out["batch"] = "PROCEED"
+        return out
+    out["batch"] = "READ"
+    for arm, summary in out["arms"].items():
+        if arm == baseline:
+            continue
+        if void[arm]:
+            summary["vs_baseline"] = {"verdict": "VOID"}
+            continue
+        summary["vs_baseline"] = _against2(summary["per_fork"], base["per_fork"], complete)
+    placebo = (out["arms"].get(PLACEBO) or {}).get("vs_baseline", {}).get("verdict")
+    if placebo in ("GAIN", "HARM"):
+        out["batch"] = "NOT MEASURED"
+        out["why"] = f"the placebo read {placebo}"
+        return out
+    gains = [
+        arm
+        for arm, summary in out["arms"].items()
+        if arm not in (baseline, PLACEBO) and summary["vs_baseline"]["verdict"] == "GAIN"
+    ]
+    out["next"] = f"ship {_simplest(gains)[0]}" if gains else "nothing ships from this bench"
     return out
 
 
@@ -2591,7 +2964,15 @@ def main() -> int:
     parser.add_argument("--forks", type=int, default=10, help="capture: fork points wanted")
     parser.add_argument("--runs", type=int, default=14, help="capture: runs tried at most")
     parser.add_argument("--reps", type=int, default=2, help="rollouts per arm per fork")
-    parser.add_argument("--mode", choices=("screen", "confirm"), default="screen")
+    parser.add_argument(
+        "--mode", choices=("screen", "confirm", "calibrate", "refusal"), default="screen"
+    )
+    parser.add_argument(
+        "--stage", default="rollouts", help="rollouts: the ledger's name (<stage>.jsonl)"
+    )
+    parser.add_argument(
+        "--forks-of", help="rollouts: only the forks this earlier stage's ledger could read"
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--budget", type=float, default=1.0, help="stop launching at this live spend (USD)"
@@ -2604,7 +2985,7 @@ def main() -> int:
     if args.command == "preflight":
         return preflight(args.base)
     if args.command == "arms":
-        print(json.dumps(build_arms(args.arms_dir), indent=1))
+        print(json.dumps(build_arms(args.arms_dir, args.arms.split(",")), indent=1))
         return 0
     if args.command == "report":
         arms_json = args.arms_dir / "arms.json" if args.arms_dir else None
@@ -2633,6 +3014,8 @@ def main() -> int:
             args.reps,
             args.budget,
             args.workers,
+            args.stage,
+            args.forks_of,
         )
         return 0
 
@@ -2649,8 +3032,8 @@ def main() -> int:
         print(json.dumps({k: public[k] for k in ("capture", "outcome", "calls", "seconds")}))
         return 0
     row, detail = asyncio.run(rollout_one(args.base, args.capture, args.arm, args.rep))
-    _append(args.out / "rollouts.jsonl", row)
-    _append(args.out / "rollouts-detail.jsonl", detail)
+    _append(args.out / f"{args.stage}.jsonl", row)
+    _append(args.out / f"{args.stage}-detail.jsonl", detail)
     print(json.dumps({k: row[k] for k in ("capture", "arm", "rep", "outcome", "path", "seconds")}))
     return 0
 
