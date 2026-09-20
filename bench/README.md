@@ -23,6 +23,9 @@ bench/
   run_seam_b.py          # seam B live: best-of-N retry rescuing a STALLED turn
   run_skill_chain.py     # skills live: a model invoking 3 skills that daisy-chain (use_skill)
   run_skill_branch.py    # skills live: one skill ROUTES to one of two next-skills (conditional)
+  veto_door.py           # after a refused stop: capture, fork, one rollout per candidate BUILD
+  veto_door_world.py     # the synthesized loop the veto-door bench runs in (no framework text)
+  veto_door_arms/        # one patch per arm; an arm is HEAD plus its patches, as a worktree
   skill_chain/skills/    # the 3 relay skills (relay-start -> relay-middle -> relay-finish)
   skill_chain/branch/    # the triage-start + handle-urgent/handle-normal branch skills
   tasks/
@@ -222,6 +225,42 @@ each writing the matching `RESULT.md` marker. (Skills are also invokable from **
 delegated general-purpose agent resolves and chains the same skills; the read-only planner cannot. And
 `ZAKCODE_SKILL_INVOCATION_BUDGET=N` caps model-driven invocations per turn — run the relay with `=2` to
 watch the third hand-off denied while the agent still finishes gracefully.)
+
+## The veto door: capture, fork, and arms that are builds (`veto_door.py`)
+
+What a small model does in the completions right after a Stop hook refuses its stop and the
+harness delivers the skill the hook named (ADR-0187), under each candidate BUILD of Zak Code.
+The reading rule is fixed in `results/veto-door-preregistration.log` before any scored call.
+
+- **Capture and fork.** A capture is one live run of the real product (the served factory's
+  posture) in the synthesized world of `veto_door_world.py`, recorded call by call and stopped
+  at the first call after the first delivery: the fork. A rollout rebuilds that world at the
+  same path, serves every recorded completion from the tape (checked message by message), and
+  goes live from the fork. Every arm starts from the same conversation, plan and fence count.
+- **Arms are builds.** `veto_door_arms/<letter>.patch` on a detached worktree of HEAD, run as a
+  child process on that tree's `src`. Nothing is switched at run time. Each ledger row carries
+  the build it ran and a witness only that build can write, and a row missing its witness (or
+  showing another arm's) is refused by the reading.
+- **Offline first.** `selftest` runs the real Agent, the real shell Stop hook and the real
+  plan and skill machinery on a scripted model: the baseline's tree captures, every arm's tree
+  replays that capture (`--capture`), and the reading rule is checked on ledgers whose answer
+  is known. `preflight` prints what each category would put on the wire. Neither touches the
+  network.
+- **Private by construction.** Tapes, request snapshots and completion text stay under
+  `--out`; ledger rows hold labels, counts, hashes and usage. The wire hook keeps a URL path
+  and four body fields, never a header. Workspaces are built under `--base`, which must sit
+  outside every repository (the product folds project guides up to the repository root).
+
+```bash
+PY=./.venv/bin/python; OUT=/somewhere/scratch; ARMS=$OUT/arms
+$PY bench/veto_door.py selftest --expect A            # prints "capture kept at: <dir>"
+$PY bench/veto_door.py arms --arms-dir $ARMS          # one worktree per arm, from HEAD
+(cd $ARMS/R && PYTHONPATH=$ARMS/R/src $PY bench/veto_door.py selftest --expect R --capture <dir>)
+$PY bench/veto_door.py preflight
+$PY bench/veto_door.py capture  --out $OUT --arms-dir $ARMS --forks 10 --runs 14 --budget 1.00
+$PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --reps 2 --budget 2.50
+$PY bench/veto_door.py report   --ledger $OUT/rollouts.jsonl --arms-dir $ARMS --reps 2
+```
 
 ## In CI
 

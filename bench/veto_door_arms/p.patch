@@ -1,0 +1,75 @@
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index fa3267a..5e868ba 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -3151,18 +3151,7 @@ class AgentLoop:
+         """
+         session = self.session
+         network = session.task_network
+-        if network.is_empty() or network.is_complete():
+-            if network.tasks:
+-                # ADR-0110: the finished plan leaves the board, not the record.
+-                finished, total = network.progress()
+-                network.record(
+-                    "reset",
+-                    detail=f"completed {finished}/{total}: "
+-                    + "; ".join(clip(t.title, 40) for t in network.leaves()[:6]),
+-                )
+-            network.tasks = []  # no-op when already empty; clears a finished plan
+-            session.plan_idle_turns = 0
+-            session.plan_signature = ""
++        if self._retire_finished_plan():
+             return
+         # An unfinished plan: advance the staleness counter, dropping the plan once it stalls.
+         signature = network.progress_signature()
+@@ -3181,6 +3170,29 @@ class AgentLoop:
+             session.plan_idle_turns = 0
+             session.plan_signature = ""
+ 
++    def _retire_finished_plan(self) -> bool:
++        """Take a finished plan off the board; ``True`` when no live plan is left on it.
++
++        ADR-0110: the finished plan leaves the board, not the record. The two boundaries a
++        finished plan does not outlive share this: a turn start, and a refused stop (see
++        :meth:`_fire_turn_end`). An unfinished plan is left exactly as it is.
++        """
++        session = self.session
++        network = session.task_network
++        if not (network.is_empty() or network.is_complete()):
++            return False
++        if network.tasks:
++            finished, total = network.progress()
++            network.record(
++                "reset",
++                detail=f"completed {finished}/{total}: "
++                + "; ".join(clip(t.title, 40) for t in network.leaves()[:6]),
++            )
++        network.tasks = []  # no-op when already empty; clears a finished plan
++        session.plan_idle_turns = 0
++        session.plan_signature = ""
++        return True
++
+     def _anchor_request(self, user_text: str) -> None:
+         """Remember what a fresh plan is FOR (ADR-0110).
+ 
+@@ -6002,6 +6014,20 @@ class AgentLoop:
+         if self._turn_end_veto_reset is not None:
+             self._turn_end_veto_reset()
+         self._veto_delivered = None
++        # A refused stop is a boundary for the PLAN as well. The plan that just closed was the
++        # means of the pass the hook refused to accept as the end; left on the board, its
++        # one-line reminder (ADR-0108: "Plan complete ... Answer the user's original request
++        # now") rides every call that follows as the LAST message the model reads, directly
++        # under the hook's refusal and the skill the harness delivered: one message says act,
++        # the next says answer in words. The finished plan leaves the board here exactly as
++        # it does at a turn start; an unfinished plan is kept.
++        if self.session.task_network.tasks and self._retire_finished_plan():
++            self._note(
++                "intervention",
++                "turn-end hook refused the stop with a finished plan on the board; retired it "
++                "so its answer-now reminder does not follow the hook's continuation",
++                kind="veto_plan_retired",
++            )
+         if reentry is not None:
+             self._vetoes_without_skill += 1
+             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)

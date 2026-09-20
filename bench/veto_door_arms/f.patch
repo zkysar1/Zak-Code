@@ -1,0 +1,115 @@
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index fa3267a..16b3128 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -1389,6 +1389,15 @@ _SKILL_REENTRY_NEGATED_RE = re.compile(
+ #: hook keeps Claude Code's unbounded contract.
+ _VETO_STALL_THRESHOLD = 3
+ 
++#: How many completions after a refused stop must carry a tool call, at most, while the model
++#: has run no work since the harness delivered the skill the hook asked for. The hook refused
++#: the stop, so words are not an answer: they end the turn again, and three such refusals are
++#: the fence (``veto_stall``) and a 600 s rest. The instruction not to summarize is in the
++#: delivery already and is advisory to a small model at no reasoning depth; the request's
++#: ``tool_choice`` is not. Bounded, so a model that can only plan or re-ask for the skill is
++#: released to the fence rather than held.
++_VETO_FORCED_CALLS = 3
++
+ 
+ def skill_reentry_in(reason: str) -> tuple[str, str] | None:
+     """The ``(skill, args)`` a turn-end hook's continuation asks the loop to re-enter with, or
+@@ -2254,6 +2263,10 @@ class AgentLoop:
+         self._vetoes_without_skill = 0
+         self._veto_stall = False
+         self._veto_delivered: str | None = None
++        # Completions still owed a tool call after a refused stop, and the work count when
++        # the skill was delivered (see ``_VETO_FORCED_CALLS``). Per turn.
++        self._veto_forced_left = 0
++        self._veto_forced_mark = 0
+         # Work calls this loop has run (ADR-0196): successful calls to anything but the
+         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
+         # readings of it, and only ever within one skill turn.
+@@ -4499,9 +4512,13 @@ class AgentLoop:
+         vetoes that end, which it may a bounded, paced number of times (ADR-0181).
+         """
+ 
++        forced_choice = self._forced_tool_choice(tools)
++
+         async def complete(call_kw: dict[str, Any]) -> LLMResult:
+             if extra_body:
+                 call_kw["extra_body"] = extra_body
++            if forced_choice:
++                call_kw["tool_choice"] = forced_choice
+             call_started = time.monotonic()
+             result = await self.provider.acomplete(
+                 messages,
+@@ -6070,6 +6087,8 @@ class AgentLoop:
+         self._seed_skill_skeleton(skill, _composed_skill_body(text), set())
+         self._register_skill_load(skill)
+         self._veto_delivered = f"/{skill} {args}".strip()
++        self._veto_forced_left = _VETO_FORCED_CALLS
++        self._veto_forced_mark = self._work_calls
+         # The sentinel wake-up resolves to this skill from now on (the REPL door, ADR-0187):
+         # the hook has said what "re-enter the loop" means here, so the harness need not
+         # ask the model to remember it.
+@@ -6084,6 +6103,27 @@ class AgentLoop:
+         logger.info("turn-end hook asked for %s — delivered", self._veto_delivered)
+         return text
+ 
++    def _forced_tool_choice(self, tools: list[dict[str, Any]] | None) -> str | None:
++        """``"required"`` for a completion that must carry a tool call, else ``None``.
++
++        Owed after the harness delivers the skill a refused stop named, until the model has
++        run one work call or ``_VETO_FORCED_CALLS`` completions have been asked for. Taken
++        once per completion (not per retry of it). A request without tools is never forced.
++        """
++        if self._veto_forced_left <= 0 or not tools:
++            return None
++        if self._work_calls > self._veto_forced_mark:
++            self._veto_forced_left = 0  # the model has acted: nothing further is owed
++            return None
++        self._veto_forced_left -= 1
++        self._note(
++            "intervention",
++            "a refused stop is owed an action: this completion must carry a tool call",
++            kind="veto_forced_tool",
++            left=self._veto_forced_left,
++        )
++        return "required"
++
+     def _veto_status(self) -> str:
+         """The streaming twin's status line for a honoured veto: names the skill delivered."""
+         if self._veto_delivered:
+@@ -6398,6 +6438,7 @@ class AgentLoop:
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+         self._veto_stall = False
+         self._veto_delivered = None
++        self._veto_forced_left = 0
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
+         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
+@@ -7945,6 +7986,7 @@ class AgentLoop:
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+         self._veto_stall = False
+         self._veto_delivered = None
++        self._veto_forced_left = 0
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
+         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
+@@ -8178,6 +8220,7 @@ class AgentLoop:
+                 call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
+                 thinking_off_next_call = False
+                 context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
++                forced_choice = self._forced_tool_choice(tool_defs or None)
+                 while True:
+                     text_parts: list[str] = []
+                     accumulator = ToolCallAccumulator()
+@@ -8202,6 +8245,8 @@ class AgentLoop:
+                     )
+                     if call_extra_body:
+                         call_kw["extra_body"] = call_extra_body
++                    if forced_choice:
++                        call_kw["tool_choice"] = forced_choice
+                     saw_thinking = False  # a reasoning channel arrived on THIS attempt
+                     try:
+                         async for ev in self.provider.astream(
