@@ -11986,3 +11986,83 @@ unfixed `loop.py` under the same tests all nine fail, each for its intended reas
 three times; the gate's kind absent from the list six times); and with a mutant that labels
 `plan_complete` but does not send the line, the three rails tests fail on the wire comparison while
 the label comparison still passes. All nine pass here.
+
+## ADR-0205: after a turn-end hook refuses a stop taken on a finished plan, that plan's "answer now" line stays silent until the plan changes
+
+Date: 2026-09-21. Amends ADR-0108 for one state. Ships arm R of the veto-door bench, as its second
+registration committed to before it was run. One behaviour, no setting.
+
+Context. When every step of a plan is closed, the checklist leaves the prompt and one line takes its
+place: plan complete, answer the original request now, lead with the conclusion (ADR-0108). It is what
+makes the closing call produce the answer instead of a recital of the plan, and it is ephemeral: built
+per request, never stored, always LAST (ADR-0204).
+
+A perpetual loop ends every pass with exactly such a stop, and its Stop hook refuses it: the refusal is
+how the loop re-enters (ADR-0187 delivers the skill the hook names). From that moment the finished plan
+is still on the board, so every request went out as: the hook's words, the skill it asked for, and then
+the harness's own last line — answer now. One message says carry on, the next says answer and stop. A
+large model reads past that. A small one, some of the time, does what the last line says: it answers in
+words, the turn ends, the hook refuses again, and three such rounds end the turn as `veto_stall`.
+
+How it was found and tested (`bench/results/veto-door-preregistration.log`). The line was invisible in
+every transcript and trace; the bench's request snapshots showed it last in 10 of 10 forks. Batch 1
+could not read its arms (the baseline resumed too often), but its rows, looked at afterwards, showed the
+second refusal 16 times in 70 where the line was kept and 1 in 70 where it was gone. That was written
+down as a hypothesis and not a reading, and REGISTRATION 2 tested it alone on fresh captures: a
+calibration stage, a placebo arm, thresholds relative to the baseline measured in the same batch, the
+fork as the unit of an exact paired test, and what would ship fixed beforehand. Read on 2026-09-21 on
+gpt-5.6-luna at reasoning effort none, 29 forks, 116 rollouts an arm: with the line a rollout failed to
+resume 18 times (15.5%; the placebo 20, FLAT, p = 0.86); without it, 0 times (p = 0.0078, and the
+verdict keeps its size with any one fork left out). Every miss was a second refused stop, and 33 of the
+38 in the two unpatched arms began with a text-only answer; under R no first act was words.
+
+Decision.
+
+1. When a turn-end hook's refusal is honoured and the board holds a finished plan, the loop remembers
+   that plan by its progress signature (`_refused_plan`) and notes it on the trace (`intervention`,
+   `kind="veto_plan_silenced"`). ANY honoured refusal counts, whatever the stop reason: what matters is
+   that the hook now has the last word, not why the turn was ending.
+2. While the board holds exactly that plan, `_plan_reminder` returns nothing, so the hook's words (or
+   the skill delivered for them) end the request. "Exactly" is the signature: ids, statuses and titles.
+3. The moment the plan is no longer complete — new steps, a reopened step, a cleared board — the
+   refused plan is forgotten. Whatever finishes next is a new plan, even if it reads the same, and its
+   closing line is owed once. A plan edited while still finished has a different signature and gets the
+   line back the same way.
+4. The silence is said per request: both `usage` trace events carry `rails_silenced`, always present,
+   `["plan_complete"]` on a request the line was withheld from and `[]` otherwise. This is the follow-up
+   ADR-0204 recorded: without it a silenced request (`rails: []`) would read exactly like "no plan".
+
+What differs from the bytes the bench ran, and why. The bench's patch forgot the refused plan inside
+`_plan_reminder`. On a model whose tail rests every other call (ADR-0193) a resting call builds no
+reminder, so a plan reopened by the response to a tailed request and closed again by the response to
+the resting one was never seen to move, and its second closing line was lost. The shipped code looks on
+EVERY request, before the rest decision, in `_messages_for_call`. The two are the same on every request
+the batch made: of its 731 live requests, 113 came after a plan call and none of those ended with the
+finished-plan line, so no rollout re-closed a plan inside its segment. The corner is pinned by a test
+the bench's placement fails. The reminder and the trace label read one predicate
+(`_refused_plan_is_current`), not two copies of a condition.
+
+What is left alone. A finished plan still never rests its tail (ADR-0193), silenced or not: with a
+non-plan tail on a sparse-cache model that costs a few uncached calls until the next plan, and changing
+it would ship something the bench did not run. The fence is untouched (ADR-0187): three deliveries with
+no skill run between them and the fourth such veto ends the turn `veto_stall`, with the line silent
+throughout. At the next turn start a finished plan leaves the board as before, which forgets it too.
+
+What is not claimed. The bench does not separate "this line" from "any change to the last message of
+the request", so nothing here says WHY the silence works; that every miss began in words and R had none
+describes those rows, it is not a tested mechanism. It was one synthesized world, one model, one
+effort, the first refused stop of each run, and that world does not reproduce the served door. Zero of
+116 leaves up to 3.2% at 95%. Whether the served loop's rests go is what the next served sample reads,
+and ADR-0204's `rails` and this ADR's `rails_silenced` are how it will read it.
+
+Tests (`tests/test_refused_stop_silences_answer_now.py`; the scripted provider keeps which plan
+reminder each request it was HANDED ended with, so every claim is checked on the wire as well as on the
+label): the line rides until the refusal and not after it, and the hook's words are then last (both
+twins); a plan that moves on and finishes again gets its line again, with the SAME signature as the
+refused one; the same across a resting call; a refusal with no finished plan silences nothing; and the
+deterministic re-spiral — finished plan, a hook that names a skill every time, a model that answers in
+words every time — still ends `veto_stall` after three deliveries, the line silent on each (both twins).
+Proven against five mutants: on the unfixed loop six of the seven fail; never forgetting the refused
+plan fails the two "again" tests; forgetting it only where a reminder is built (the bench's placement)
+fails exactly the resting-call test; letting the silencing reset the fence's count fails both fence
+tests; labelling the silence but still sending the line fails all five wire checks.
