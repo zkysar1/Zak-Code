@@ -246,10 +246,9 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   at the first call after the first delivery: the fork. A rollout rebuilds that world at the
   same path, serves every recorded completion from the tape (checked message by message), and
   goes live from the fork. Every arm starts from the same conversation, plan and fence count.
-  `--fork-at lap-end` lets the run go on past the door and forks at the first request that
-  carries a finished plan's "answer now" line: a plan that finished later in a turn whose end a
-  hook already governs. The second refused stop is then counted from the deliveries the fork had
-  already seen, and the cap of live completions is two higher (8). Proven offline, never run.
+  A second fork kind, `lap-end`, forked past the door at the first request that carried a
+  finished plan's "answer now" line in a turn whose end a hook already governed. It was proven
+  offline, never run live, and retired with ADR-0208: no build sends such a request any more.
 - **Arms are builds.** `veto_door_arms/<letter>.patch` on a detached worktree of HEAD, run as a
   child process on that tree's `src`. Nothing is switched at run time. Each ledger row carries
   the build it ran and a witness only that build can write, and a row missing its witness (or
@@ -326,6 +325,15 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   that silences the line could never show it. A registration that forks there has to change
   the world first, and pilot what it yields. The line is to be tested in the served loop
   itself instead; that registration belongs in `results/served-luna-preregistration.log`.
+- **After L shipped (2026-09-21): no patched arm is live.** The served loop measured L directly
+  (sample 7 of `results/served-luna-preregistration.log`: GAIN) and L is ADR-0208 now, so like R
+  it is every build's behaviour and no longer an arm. Its note (`turn_end_governed`) is the
+  baseline's, and the `lap-end` fork has nothing left to fork at, so both are retired from the
+  instrument: `ARMS` holds A and its placebo A2, `--fork-at` knows `door`, and the selftest's
+  known answers (177 of them) use P, a retired arm whose witness the rule still knows, where
+  they need an arm that alters the fork request. With L in the tree and the instrument
+  unchanged, that selftest failed the way main's had after R shipped: every baseline row read
+  as a row of arm L. The next arm is cut from HEAD and registered under its own hash.
 - **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
   batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
   changed the line they both patch (the resolver now flags the pointer it builds). An arm that
@@ -333,9 +341,10 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
 
 ```bash
 PY=./.venv/bin/python; OUT=/somewhere/scratch; ARMS=$OUT/arms
-$PY bench/veto_door.py selftest --expect A            # prints "capture kept at: <dir>", per fork kind
+$PY bench/veto_door.py selftest --expect A            # prints "capture kept at: <dir>"
 $PY bench/veto_door.py arms --arms-dir $ARMS          # one worktree per arm, from HEAD
-(cd $ARMS/L && PYTHONPATH=$ARMS/L/src $PY bench/veto_door.py selftest --expect L --capture <dir>)
+# an arm's own tree proves itself against the baseline's capture (X: the arm's letter):
+(cd $ARMS/X && PYTHONPATH=$ARMS/X/src $PY bench/veto_door.py selftest --expect X --capture <dir>)
 $PY bench/veto_door.py preflight
 $PY bench/veto_door.py capture  --out $OUT --arms-dir $ARMS --forks 10 --runs 14 --budget 1.00
 $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --reps 2 --budget 2.50
@@ -353,8 +362,8 @@ $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A,A2,R --reps
 $PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --out $OUT \
     --arms A,A2,R --reps 4 --mode refusal
 
-# (the commands above are the record of registrations 1 and 2; from this commit on the arms that
-# build are A, A2 and L, and `capture --fork-at lap-end` forks past the door)
+# (the commands above are the record of registrations 1 and 2; from ADR-0208 on the arms that
+# build are A and A2, and the one fork kind is `door`)
 ```
 
 ## A reminder tested inside the served loop (`served_coin.py`, `served_builds/k.patch`)
@@ -392,6 +401,10 @@ Sample 7 read **GAIN** over 13 pairs in three of its four runs: a finished plan 
 times of 13 (7 pairs differ, all the same way, p 0.0156, and no single pair undoes it).
 That licenses arm L as a product change (ADR-0208; the registration said 0207, a number
 another change took first) and nothing about a whole run.
+
+L shipped as ADR-0208. `served_builds/k.patch` is from then on a record of what was measured: it
+applies to the commit the registration names (`87cd349`), not to HEAD, which carries the rule
+the patch drew lots over.
 
 ## What the stuck ladder fired on in a served loop (`served_ladder.py`)
 

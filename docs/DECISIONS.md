@@ -12260,3 +12260,91 @@ Tests. `tests/test_turn_duration_line.py` pins the field on both paths and parse
 regex the log analysis uses, so a reformat that breaks the grep breaks a test rather than silently
 returning zero rows. Its third case is the positive control: the pre-change line must NOT parse, so a
 pattern loose enough to match the old shape cannot make the other two pass over an unchanged loop.
+
+## ADR-0208: once a turn-end hook's refusal has named a skill re-entry, no plan that finishes later in that turn is sent its "answer now" line
+
+Date: 2026-09-21. Extends ADR-0205 and amends ADR-0108 for one more state. Ships arm L of the veto-door
+bench, as the served-loop log's sample 7 committed to before it was run. One behaviour, no setting.
+(That registration called this ADR-0207. Another change took the number on main while the sample ran;
+only the number differs.)
+
+Context. A finished plan ends every request with one ephemeral line: plan complete, answer the original
+request now (ADR-0108). ADR-0205 keeps that line silent for exactly the plan a turn-end hook refused a
+stop on, until the plan changes. In a perpetual loop the plan changes at once: the refusal delivers the
+loop's skill (ADR-0187), the skill's sections become plan steps (ADR-0062), and one pass later a NEW
+plan finishes. Its line is owed under ADR-0205, so it rides, last, and asks for the closing answer the
+hook has already said it will refuse. A re-read of sample 6's three served runs found 29 finished-plan
+episodes and every one ended in a stop the model made in words, 19 of them on the first request that
+named the finished plan. It could not tell the line from the moment: the line rides exactly when a plan
+has just finished, which is also when a model is most likely to feel done.
+
+How it was tested (`bench/results/served-luna-preregistration.log`, sample 7). The line and the moment
+were separated by drawing lots INSIDE a served run. A measurement build (`bench/served_builds/k.patch`,
+never merged) applied this ADR's rule to a random half of the plans in scope, in pairs of one sent and
+one silent plan in random order, wrote every draw to the trace, and was proven offline before any spend.
+Read on 2026-09-21 on gpt-5.6-luna at reasoning effort none, under a rule fixed beforehand: four runs,
+one not read (too few pairs), 13 complete pairs. Sent, a finished plan ended in a stop in words 12 times
+of 13. Silent, 5 times of 13. Seven pairs differ and all seven the same way (exact two-sided sign test,
+p = 0.0156), and the size holds with any one pair left out. Cost $6.01.
+
+Decision.
+
+1. When a turn-end hook's refusal is honoured and its reason NAMES a skill re-entry
+   (`skill_reentry_in`), the loop sets `_hook_governs_turn_end` and says so once per turn on the trace
+   (`intervention`, `kind="turn_end_governed"`, `skill`). From there to the end of the turn the hook,
+   and not the plan, decides when the turn may end.
+2. While it is set, no finished plan is sent the line. `_answer_now_is_silent` is ONE predicate,
+   ADR-0205's exact plan or a governed turn with a finished plan, and both `_plan_reminder` and the
+   per-request trace label read it, so what is sent and what is said to be sent cannot differ. A
+   silenced request reads `rails_silenced: ["plan_complete"]`, as under ADR-0205.
+3. Every turn starts ungoverned, on both turn paths. A new turn's first finished plan is owed its line:
+   whether a hook governs is a fact about one turn, learned inside it. A wake-up and a typed message
+   each open a new turn.
+4. A refusal in plain words governs nothing. It answers one stop and says nothing about the next, so
+   ADR-0205 alone applies to it.
+
+What is left alone. The OPEN checklist still rides in a governed turn; only the finished plan's line is
+withheld. The fence is untouched (ADR-0187): three deliveries with no skill run between them and the
+fourth such veto ends the turn `veto_stall`. A finished plan still never rests its tail (ADR-0193). A
+session with no turn-end hook, or one whose hook never names a skill, never sets the flag, so nothing
+changes outside a hook-governed loop. Claude Code has no such line, so the Mind changes nothing and the
+two harnesses stay on one contract.
+
+What differs from the bytes the sample ran. The measurement build drew lots and kept HALF the plans in
+scope silent; this keeps all of them silent. The scope rule, the single predicate, the note and the two
+resets are that build's, less the draw. No whole-run figure of the measurement build's says what this
+change's would be.
+
+What it retires. In the veto-door bench L was the one live arm, and its `lap-end` fork was defined as
+the first request, in a governed turn, that carries a finished plan's line. From this commit on every
+build writes L's note and no build sends that request, so with L in the tree the bench's selftest failed
+the way main's had after R shipped: every baseline row read as a row of arm L. `bench/veto_door.py` now
+holds A and its placebo, forks at the door only, and keeps P, a retired arm whose witness its rule still
+knows, where a known answer needs an arm that alters the fork request (177 known answers, all green).
+`bench/served_builds/k.patch` and `bench/veto_door_arms/l.patch` stay as the record of what was
+measured; they apply to the commit they name, not to HEAD.
+
+What is not claimed. The silent side still stopped 5 times of 13, so the line is not the only reason
+this model stops at a finished plan. Nothing here says a WHOLE run changes: refused stops, the time
+spent getting back to work and laps closed need their own registered sample with a concurrent control.
+Run 2's silent side stopped 3 times of 4 against 1 of 4 and 1 of 5 in the other two runs, and three runs
+cannot say whether that is chance. One model, one loop, one seed.
+
+Tests (`tests/test_hook_governed_turn_keeps_answer_now_silent.py`, continuing the ADR-0205 file's
+scenario and read off the WIRE as it is): a plan finished after a skill-naming refusal stays silent
+while the line still rode before the refusal and the open checklist still rides after it (both twins);
+the note is written once however often the hook refuses; a refusal in plain words governs nothing; a new
+turn starts ungoverned (both twins, since each path starts a turn in its own code); and the re-spiral
+with a new plan finished after the first refusal still ends `veto_stall` at three (both twins). This is
+a narrowing change, so the proof is an ASYMMETRY: for each of eight mutants the tests that go red were
+written down BEFORE the run, and every other test of the two files had to stay green. The hook never
+governing, the reminder reading the old predicate and the note going unwritten each turn the same seven
+red and leave the plain-words control and all seven ADR-0205 tests green; dropping either turn path's
+reset turns exactly that path's new-turn test red; a plain refusal governing too turns the plain-words
+control and ADR-0205's two "again" tests red; every finished plan silent turns the eleven tests that
+expect a line red and leaves four green; the label reading the old predicate turns exactly the two tests
+that check the label red. The first run of that proof read 0 red for every mutant: pytest's own
+`pythonpath` setting imported the worktree and not the mutated copy, whatever PYTHONPATH said. The
+stated red sets caught it; the driver now overrides the setting and carries a witness test that fails
+unless the mutated tree is the one imported.
+
