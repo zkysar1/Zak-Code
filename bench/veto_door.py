@@ -28,12 +28,12 @@ message against what was recorded), and goes live from the fork. Every arm there
 the same conversation, tool state, plan, fence count and hook budget, because the product rebuilt
 them itself.
 
-TWO FORK POINTS (``--fork-at``). ``door`` is the one above: the first request after the delivery
-(registrations 1 and 2). ``lap-end`` lets the run go on past the door and forks at the first
-request that carries a finished plan's "answer now" line: a plan that finished LATER in a turn
-whose end a hook already governs. The segment measured from there is the same one, with the
-second refused stop counted from the deliveries the fork had already seen. It is built and proven
-offline and has NOT been run: see the README for why (cost, and a confound in this world).
+THE FORK POINT (``--fork-at``) is ``door``, the one above: the first request after the delivery
+(registrations 1 and 2). A second kind, ``lap-end``, forked at the first request that carried a
+finished plan's "answer now" line LATER in a turn whose end a hook already governed. It was built
+and proven offline, never run live (the README says why), and RETIRED with ADR-0208: from that
+commit on no build sends such a request, so there is nothing to fork at. Captures and rows still
+say which kind they are, so a second kind can be added without touching a ledger.
 
 ARMS ARE BUILDS. An arm is this repository at one commit plus the patches under
 ``veto_door_arms/``, checked out as a worktree and run with ``PYTHONPATH`` on its ``src``. Nothing
@@ -103,16 +103,11 @@ CAPTURE_MAX_ITERATIONS = 60
 #: Live completions one rollout may spend before it is scored ``cap``.
 LIVE_CAP = 6
 #: WHERE a capture forks. ``door``: the first main-loop request after the harness delivered the
-#: skill at a refused stop (registrations 1 and 2). ``lap-end`` (never run live): the first such
-#: request, after at least one delivery, that carries the finished plan's "answer now" line: a
-#: plan that finished LATER in a turn a hook already governs. Its cap is two higher, fixed before
-#: any lap-end rollout was run: the scripted way back (the skill, a plan, the first step) takes
-#: three completions, and registration 2's passes from the door came as late as the fifth.
-FORK_KINDS = ("door", "lap-end")
-LIVE_CAPS = {"door": LIVE_CAP, "lap-end": LIVE_CAP + 2}
-#: A lap-end capture runs through at least a second pass of the loop before it forks: room for
-#: the door and three passes, and no more, because a run that never forks is the dearest kind.
-CAPTURE_MAX_ITERATIONS_BY_KIND = {"door": CAPTURE_MAX_ITERATIONS, "lap-end": 90}
+#: skill at a refused stop (registrations 1 and 2). It is the only kind: ``lap-end`` was retired
+#: with ADR-0208 (see the module docstring). The caps stay keyed by kind, as rows and captures are.
+FORK_KINDS = ("door",)
+LIVE_CAPS = {"door": LIVE_CAP}
+CAPTURE_MAX_ITERATIONS_BY_KIND = {"door": CAPTURE_MAX_ITERATIONS}
 #: Iteration bound for a rollout: the replayed prefix counts, so it sits well above both.
 ROLLOUT_MAX_ITERATIONS = 200
 #: Per-run cost ceilings handed to the product (its own budget stop). The bench's spend bound is
@@ -123,18 +118,17 @@ ROLLOUT_COST_CAP = 0.60
 #: The arms and the patches each one is built from (``veto_door_arms/<name>.patch``). A letter
 #: in an arm's name is a patch it carries, which is how the selftest knows what to expect of it.
 #:
-#: RETIRED, and no longer buildable from this file: R (``r.patch``) SHIPPED as ADR-0205 and is in
-#: every build now, so its trace note is the baseline's and proves nothing about an arm; P, C, F,
-#: B, RC and RF were batch 1's screen and their patches no longer apply to main. The patches stay
-#: in ``veto_door_arms/`` for the record, and a ledger of an earlier registration is read by the
-#: instrument at that registration's own MANIFEST commit, not by this one.
+#: RETIRED, and no longer buildable from this file: R (``r.patch``) SHIPPED as ADR-0205 and L
+#: (``l.patch``) SHIPPED as ADR-0208, after the served loop itself measured it (sample 7 of
+#: ``results/served-luna-preregistration.log``). Both are in every build now, so their trace
+#: notes are the baseline's and prove nothing about an arm. P, C, F, B, RC and RF were batch 1's
+#: screen and their patches no longer apply to main. The patches stay in ``veto_door_arms/`` for
+#: the record, and a ledger of an earlier registration is read by the instrument at that
+#: registration's own MANIFEST commit, not by this one. No patched arm is live: the next one is
+#: cut from HEAD and registered under its own hash.
 ARMS: dict[str, list[str]] = {
     "A": [],  # this build
     "A2": [],  # the placebo: this build again, read against A like any arm (see ``report``)
-    # Once a refused stop has NAMED a skill re-entry, a hook governs the turn's end: no finished
-    # plan later in that turn is sent its "answer now" line. The candidate the served re-read of
-    # sample 6 pointed at; tested in the served loop itself, not here (see the README).
-    "L": ["l"],
 }
 
 #: The arm that is the baseline under another name. It can never be selected or shipped.
@@ -156,7 +150,7 @@ NOTE_KINDS = (
     "skill_reentry",
     "plan_first",
     "veto_plan_silenced",  # ADR-0205 (was arm R): every build writes it now
-    "turn_end_governed",  # L
+    "turn_end_governed",  # ADR-0208 (was arm L): every build writes it at the door now
     "veto_plan_retired",  # P
     "veto_forced_tool",  # F
     "skill_redelivered",  # B
@@ -965,11 +959,6 @@ def _append(path: Path, row: dict[str, Any]) -> None:
 # ── one capture ──────────────────────────────────────────────────────────────────────────────────
 
 
-def _carries_answer_now(request: dict[str, Any]) -> bool:
-    """Whether the finished plan's "answer now" line rides this request (its tail view)."""
-    return any(m.get("rail") == "[plan:complete]" for m in request.get("tail", []))
-
-
 async def capture_one(
     base: Path,
     out: Path,
@@ -990,8 +979,6 @@ async def capture_one(
     def decide(tape: Tape, request: dict[str, Any], messages: list[Any], *_: Any) -> str | None:
         if request["aux"] or deliveries(holder["agent"]) < 1:
             return None
-        if fork_at == "lap-end" and not _carries_answer_now(request):
-            return None  # past the door, and no plan has finished since: keep going
         network = holder["agent"].session.task_network
         holder["fork"] = {
             "kind": fork_at,
@@ -1033,8 +1020,7 @@ async def capture_one(
         "session": {"id": agent.session.id, "model": agent.session.model},
         "world_digest": world.digest(),
         "build": build_identity(),
-        # ``no-stop`` is the door's word for a run that never forked. At a lap-end fork such a run
-        # may well have been refused a stop; ``deliveries`` says whether it was.
+        # ``no-stop``: a run that never forked, because no stop of its was refused.
         "outcome": "fork" if fork else f"no-stop:{stop}",
         "fork_at": fork_at,
         "deliveries": deliveries(agent),
@@ -1638,15 +1624,16 @@ def _fake_row(capture: str, arm: str, rep: int, passed: bool, **over: Any) -> di
     """A ledger row as a sound rollout of ``arm`` would write it, for the reading's known
     answers: every witness the arm's patches owe is present and no other.
 
-    The row left a LAP-END fork, the kind arm L acts at: the fork request carries the finished
-    plan's line unless the arm is L, whose patch takes it out and says so in the trace. Every
-    build writes ``veto_plan_silenced`` (ADR-0205 shipped). C, F and B are retired arms whose
-    witnesses the rule still knows, which is what the first reading's known answers use them
-    for."""
-    altered = "L" in arm
+    The known answers need ONE arm that alters the fork request, so that the prefix check is
+    put to both shapes. That arm is P, as batch 1's rows showed it: at a door whose plan was
+    finished it took the plan's line out of the fork request and said so in the trace. Every
+    build writes ``veto_plan_silenced`` (ADR-0205) and ``turn_end_governed`` (ADR-0208): both
+    shipped. P, C, F and B are retired arms whose witnesses the rule still knows, which is what
+    the known answers use them for; no patched arm is live."""
+    altered = "P" in arm
     forced = "F" in arm
-    wrote = {"turn_end_skill": 1, "veto_plan_silenced": 1}
-    for patch, kind in (("L", "turn_end_governed"), ("F", "veto_forced_tool")):
+    wrote = {"turn_end_skill": 1, "veto_plan_silenced": 1, "turn_end_governed": 1}
+    for patch, kind in (("P", "veto_plan_retired"), ("F", "veto_forced_tool")):
         if patch in arm:
             wrote[kind] = 1
     tail = [{"role": "user", "chars": 50_000, "rail": None}]
@@ -1677,7 +1664,7 @@ def _fake_row(capture: str, arm: str, rep: int, passed: bool, **over: Any) -> di
         "any_work_at": 2 if passed else None,
         "notes": wrote,
         "plan_complete_at_fork": True,
-        "fork_kind": "lap-end",
+        "fork_kind": "door",
         "deliveries_at_fork": 1,
         "first_act": "plan" if passed else "text-only",
         "after_door": [],
@@ -1759,59 +1746,59 @@ def _second_reading_known_answers(check: Callable[..., None]) -> None:
         check("one fork short it says NOT MEASURED", short["batch"] == "NOT MEASURED")
 
         base = one_on(0, 12)  # 12 of 72: 16.7%
-        gain = read(rows({"A": base, "A2": base, "L": {}}), "refusal")
-        got_gain = (versus(gain, "L"), versus(gain, "A2"), gain.get("next"))
+        gain = read(rows({"A": base, "A2": base, "P": {}}), "refusal")
+        got_gain = (versus(gain, "P"), versus(gain, "A2"), gain.get("next"))
         check(
             "an arm that never misses where the baseline missed on 12 forks is a GAIN",
-            got_gain == (("GAIN", round(2 / 2**12, 4)), ("FLAT", 1.0), "ship L"),
+            got_gain == (("GAIN", round(2 / 2**12, 4)), ("FLAT", 1.0), "ship P"),
             str(got_gain),
         )
         by_command = read_by_command("refusal", "A,A2,L")
         check(
             "  and through the command line it is the same reading",
-            (by_command.get("batch"), by_command.get("next")) == ("READ", "ship L")
-            and by_command["arms"]["L"]["vs_baseline"] == gain["arms"]["L"]["vs_baseline"],
+            (by_command.get("batch"), by_command.get("next")) == ("READ", "ship P")
+            and by_command["arms"]["P"]["vs_baseline"] == gain["arms"]["P"]["vs_baseline"],
             str(by_command.get("batch")),
         )
-        flat = read(rows({"A": base, "L": one_on(12, 23)}), "refusal")
-        check("one that misses about as often is FLAT", versus(flat, "L")[0] == "FLAT")
-        harm = read(rows({"A": base, "L": one_on(0, 20)}), "refusal")
+        flat = read(rows({"A": base, "P": one_on(12, 23)}), "refusal")
+        check("one that misses about as often is FLAT", versus(flat, "P")[0] == "FLAT")
+        harm = read(rows({"A": base, "P": one_on(0, 20)}), "refusal")
         check(
             "one that misses 11 points more often, on 8 forks, is a HARM",
-            versus(harm, "L") == ("HARM", round(2 / 2**8, 4)),
-            str(versus(harm, "L")),
+            versus(harm, "P") == ("HARM", round(2 / 2**8, 4)),
+            str(versus(harm, "P")),
         )
-        few = read(rows({"A": {f: 3 for f in range(4)}, "L": {}}), "refusal")
+        few = read(rows({"A": {f: 3 for f in range(4)}, "P": {}}), "refusal")
         check(
             "the same 12 misses on only 4 forks cannot reach the p: MIXED",
-            versus(few, "L") == ("MIXED", round(2 / 2**4, 4)),
-            str(versus(few, "L")),
+            versus(few, "P") == ("MIXED", round(2 / 2**4, 4)),
+            str(versus(few, "P")),
         )
-        carried = read(rows({"A": {0: 3, **one_on(1, 12)}, "L": one_on(1, 7)}), "refusal")
-        rests = carried["arms"]["L"]["vs_baseline"]
+        carried = read(rows({"A": {0: 3, **one_on(1, 12)}, "P": one_on(1, 7)}), "refusal")
+        rests = carried["arms"]["P"]["vs_baseline"]
         check(
             "a gain one fork carries is MIXED, and the fork is named",
             (rests["verdict"], rests["rests_on"], carried.get("next"))
             == ("MIXED", ["w00"], "nothing ships from this bench"),
             str(rests),
         )
-        edge = read(rows({"A": {0: 3, **one_on(1, 13)}, "L": one_on(1, 7)}), "refusal")
+        edge = read(rows({"A": {0: 3, **one_on(1, 13)}, "P": one_on(1, 7)}), "refusal")
         check(
             "a threshold met exactly (6 of 69 against half of 12 of 69) is met",
-            versus(edge, "L")[0] == "GAIN",
-            str(edge["arms"]["L"]["vs_baseline"]),
+            versus(edge, "P")[0] == "GAIN",
+            str(edge["arms"]["P"]["vs_baseline"]),
         )
-        ghost = read(rows({"A": base, "A2": {}, "L": {}}), "refusal")
+        ghost = read(rows({"A": base, "A2": {}, "P": {}}), "refusal")
         check(
             "a placebo that reads GAIN makes the batch NOT MEASURED",
             (ghost["batch"], ghost.get("why"), ghost.get("next"))
             == ("NOT MEASURED", "the placebo read GAIN", None),
             str((ghost["batch"], ghost.get("why"))),
         )
-        calm = read(rows({"A": one_on(0, 5), "L": {}}), "refusal")
+        calm = read(rows({"A": one_on(0, 5), "P": {}}), "refusal")
         check(
             "a baseline that misses 5 of 72 leaves nothing to reduce: NOT DISCRIMINATING",
-            calm["batch"] == "NOT DISCRIMINATING" and "vs_baseline" not in calm["arms"]["L"],
+            calm["batch"] == "NOT DISCRIMINATING" and "vs_baseline" not in calm["arms"]["P"],
         )
         clocked = [_fake_row("w00", "A", rep, True, strict_mismatches=11) for rep in (0, 1)]
         mixed = [*clocked, _fake_row("w01", "A", 0, False), _fake_row("w02", "A", 0, True)]
@@ -1824,8 +1811,8 @@ def _second_reading_known_answers(check: Callable[..., None]) -> None:
             kept == {"w01", "w02"},
             str(sorted(kept)),
         )
-        thin = read(rows({"A": base, "A2": base, "L": {}}, without=("L", 3)), "refusal")
-        got_thin = (versus(thin, "L")[0], versus(thin, "A2")[0], thin["complete_forks"])
+        thin = read(rows({"A": base, "A2": base, "P": {}}, without=("P", 3)), "refusal")
+        got_thin = (versus(thin, "P")[0], versus(thin, "A2")[0], thin["complete_forks"])
         check(
             "an arm with 87.5% of its cells is VOID, and costs the others no fork",
             got_thin == ("VOID", "FLAT", forks),
@@ -1879,17 +1866,17 @@ def _reading_known_answers(check: Callable[..., None]) -> None:
         }
 
     try:
-        screen = read(batch({"A": 8, "L": 16, "C": 8, "F": 0, "B": 10}))
-        want = {"L": "GAIN", "C": "FLAT", "F": "HARM", "B": "MIXED"}
+        screen = read(batch({"A": 8, "P": 16, "C": 8, "F": 0, "B": 10}))
+        want = {"P": "GAIN", "C": "FLAT", "F": "HARM", "B": "MIXED"}
         check("a screen reads GAIN, FLAT, HARM and MIXED", verdicts(screen) == want, str(screen))
         check(
             "and names the arm to confirm",
-            screen.get("next") == "confirm L",
+            screen.get("next") == "confirm P",
             str(screen.get("next")),
         )
-        near = read(batch({"A": 2, "L": 13, "B": 14}))
-        check("the simplest arm close to the best is selected", near.get("next") == "confirm L")
-        far = read(batch({"A": 2, "L": 10, "B": 16}))
+        near = read(batch({"A": 2, "P": 13, "B": 14}))
+        check("the simplest arm close to the best is selected", near.get("next") == "confirm P")
+        far = read(batch({"A": 2, "P": 10, "B": 16}))
         check("but not one far behind it", far.get("next") == "confirm B", str(far.get("next")))
         mixed = read(batch({"A": 4, "C": 6, "B": 7, "F": 4}))
         check("with no GAIN the MIXED arms go forward", mixed.get("next") == "confirm B,C")
@@ -1899,13 +1886,13 @@ def _reading_known_answers(check: Callable[..., None]) -> None:
             none.get("next") == "no arm gains: nothing to confirm",
             str((verdicts(none), none.get("next"))),
         )
-        few = read(batch({"A": 1, "L": 12}, forks=6))
+        few = read(batch({"A": 1, "P": 12}, forks=6))
         check("too few forks is NOT MEASURED", few["batch"] == "NOT MEASURED", few["batch"])
-        high = read(batch({"A": 14, "L": 16}))
+        high = read(batch({"A": 14, "P": 16}))
         check(
             "a baseline at the ceiling is NOT DISCRIMINATING", high["batch"] == "NOT DISCRIMINATING"
         )
-        wrong = batch({"A": 4, "L": 16, "C": 16})
+        wrong = batch({"A": 4, "P": 16, "C": 16})
         for row in wrong:
             if row["arm"] == "C" and row["capture"] in ("w0", "w1"):
                 row["doors"] = [{"pointer": True, "first_step": False, "body": False, "chars": 300}]
@@ -1914,35 +1901,35 @@ def _reading_known_answers(check: Callable[..., None]) -> None:
         got = (verdicts(void), void["complete_forks"], void["arms"]["C"]["unusable"])
         check(
             "an arm whose patch does not show is VOID, and costs the others no fork",
-            got == ({"L": "GAIN", "C": "VOID"}, 8, {"witness:C-absent": 4}),
+            got == ({"P": "GAIN", "C": "VOID"}, 8, {"witness:C-absent": 4}),
             str(got),
         )
-        stray = batch({"A": 4, "L": 16})
-        stray[0]["notes"] = {**stray[0]["notes"], "turn_end_governed": 1}
+        stray = batch({"A": 4, "P": 16})
+        stray[0]["notes"] = {**stray[0]["notes"], "veto_plan_retired": 1}
         stray[1]["wire"] = [{**stray[1]["wire"][0], "effort": "low"}]
         stray[2]["steps"] = [{**stray[2]["steps"][0], "model": "openai/gpt-5-mini"}]
         stray[3]["fork_identical"] = False
         seen = read(stray)["arms"]["A"]["unusable"]
-        want_seen = {"witness:L-present": 1, "wire": 1, "not-luna": 1, "prefix": 1}
+        want_seen = {"witness:P-present": 1, "wire": 1, "not-luna": 1, "prefix": 1}
         check(
             "a patch showing in the wrong arm, a wrong wire, model or prefix is refused",
             seen == want_seen,
             str(seen),
         )
-        gone = read(batch({"A": 4, "L": 16}), expected_arms=["A", "L", "F"], expected_forks=["w9"])
+        gone = read(batch({"A": 4, "P": 16}), expected_arms=["A", "P", "F"], expected_forks=["w9"])
         got_gone = (verdicts(gone), gone["forks"], gone["complete_forks"])
         check(
             "an arm and a fork that wrote no row count as unfilled, not as absent",
-            got_gone == ({"L": "GAIN", "F": "VOID"}, 9, 8),
+            got_gone == ({"P": "GAIN", "F": "VOID"}, 9, 8),
             str(got_gone),
         )
-        calm = read(batch({"A": 4, "A2": 5, "L": 16}))
+        calm = read(batch({"A": 4, "A2": 5, "P": 16}))
         check(
             "a placebo that reads no verdict lets the batch be read",
             (calm["batch"], verdicts(calm)["A2"], calm.get("next"))
-            == ("READ", "FLAT", "confirm L"),
+            == ("READ", "FLAT", "confirm P"),
         )
-        loud = read(batch({"A": 0, "A2": 16, "L": 16}))
+        loud = read(batch({"A": 0, "A2": 16, "P": 16}))
         check(
             "a placebo that reads a verdict voids the batch",
             (loud["batch"], loud.get("why")) == ("NOT MEASURED", "the placebo read GAIN"),
@@ -1964,16 +1951,16 @@ def _reading_known_answers(check: Callable[..., None]) -> None:
         check(
             "a GAIN every fork carries stands", (even["verdict"], even["rests_on"]) == ("GAIN", [])
         )
-        yes = read(batch({"A": 4, "L": 16}, forks=6, reps=3), mode="confirm", reps=3)
+        yes = read(batch({"A": 4, "P": 16}, forks=6, reps=3), mode="confirm", reps=3)
         check(
             "a confirmation CONFIRMS and ships",
-            (verdicts(yes), yes.get("next")) == ({"L": "CONFIRMED"}, "ship L"),
+            (verdicts(yes), yes.get("next")) == ({"P": "CONFIRMED"}, "ship P"),
         )
-        no = read(batch({"A": 4, "L": 6}, forks=6, reps=3), mode="confirm", reps=3)
+        no = read(batch({"A": 4, "P": 6}, forks=6, reps=3), mode="confirm", reps=3)
         check(
             "or does not, and ships nothing",
             (verdicts(no), no.get("next"))
-            == ({"L": "NOT CONFIRMED"}, "nothing ships from this bench"),
+            == ({"P": "NOT CONFIRMED"}, "nothing ships from this bench"),
             str(no.get("next")),
         )
     finally:
@@ -1984,8 +1971,8 @@ def _scripted_capture(
     base: Path, scripted: Any, check: Callable[..., None], fork_at: str = "door"
 ) -> tuple[Path, dict[str, Any]]:
     """One capture on a scripted model: a planned cycle, closed, then words. The turn a Stop hook
-    refuses. For a ``lap-end`` fork the model then plans and runs a SECOND cycle and closes that
-    plan too, and the fork is the request that follows. Returns where it was kept and its facts."""
+    refuses, and the fork is the request that follows the delivery. Returns where it was kept and
+    its facts."""
     print(f"capture (scripted, fork at {fork_at})")
     # The product holds shell work until a plan exists (its plan-first gate), so the scripted
     # model plans, runs one cycle, closes its plan and reports.
@@ -2001,16 +1988,6 @@ def _scripted_capture(
         _do("update_plan", "c4", tasks=[{"title": t, "status": "done"} for t in titles]),
         _say("Cycle 1 closed with nothing handled. Twenty lots remain."),
     ]
-    if fork_at == "lap-end":
-        # Past the door the model goes round once more. Its new plan is a NEW plan (the refused
-        # one moved on), so when it finishes the product owes it the "answer now" line: the
-        # request that follows carries that line, and that request is the fork.
-        cycle += [
-            _do("update_plan", "d0", tasks=opened),
-            _do("Bash", "d1", command="bash scripts/cycle-open.sh"),
-            _do("Bash", "d2", command="bash scripts/cycle-close.sh"),
-            _do("update_plan", "d3", tasks=[{"title": t, "status": "done"} for t in titles]),
-        ]
     out = _registry(base) / f"selftest-out-{fork_at}"
     shutil.rmtree(out, ignore_errors=True)
     model = scripted(list(cycle))
@@ -2024,21 +2001,13 @@ def _scripted_capture(
     check("the fork says which kind it is", fork.get("kind") == fork_at, str(fork.get("kind")))
     check("the fork is the call after the scripted cycle", fork.get("seq") == len(cycle))
     check("one delivery came before it", fork.get("deliveries") == 1, str(fork.get("deliveries")))
-    ran = 4 if fork_at == "lap-end" else 2
-    check("each cycle's two scripts ran before it", fork.get("work_calls") == ran,
+    check("the cycle's two scripts ran before it", fork.get("work_calls") == 2,
           str(fork.get("work_calls")))  # fmt: skip
-    if fork_at == "door":
-        check(
-            "the delivery is in the request's tail, whole",
-            any(m.get("role") == "user" and m.get("chars", 0) > body_chars // 2 for m in tail),
-            str(tail),
-        )
-    else:
-        check(
-            "the finished plan's answer-now line is in the request's tail",
-            _carries_answer_now(fork),
-            str(tail),
-        )
+    check(
+        "the delivery is in the request's tail, whole",
+        any(m.get("role") == "user" and m.get("chars", 0) > body_chars // 2 for m in tail),
+        str(tail),
+    )
     check(
         "the plan was finished at the fork",
         (fork.get("plan") or {}).get("complete") is True,
@@ -2055,26 +2024,15 @@ def _selftest_fork(
     facts: dict[str, Any],
 ) -> None:
     """The scripted rollouts, the tampered tape and the witnesses of arm ``expect``, from ONE
-    capture. The capture's fork kind decides what a sound row looks like:
-
-    ``door``     nothing has run since the delivery. The refused plan's "answer now" line is
-                 already silent in every build (ADR-0205), so no arm alters the fork request;
-                 asking for the skill again is answered with the pointer, which is not a load,
-                 so the fence still counts the refused stop at the end.
-    ``lap-end``  a lap's work has run since the delivery and a NEW plan has finished. The
-                 baseline's fork request carries that plan's line (it is what makes the fork),
-                 and arm L is the one build that takes it out. Asking for the skill again is a
-                 re-entry after work (ADR-0196): the body is handed over, that is a load, and
-                 the fence starts over.
+    capture. What a sound row looks like at the ``door``: nothing has run since the delivery.
+    The refused plan's "answer now" line is silent in every build (ADR-0205) and the hook governs
+    the turn's end in every build (ADR-0208), so no arm alters the fork request. Asking for the
+    skill again is answered with the pointer, which is not a load, so the fence still counts the
+    refused stop at the end.
     """
     fork = facts["fork"] or {}
     fork_kind = str(fork.get("kind") or "door")
-    lap_end = fork_kind == "lap-end"
     print(f"rollouts (scripted, from the {fork_kind} fork)")
-    # Only L at a lap-end fork changes the fork request itself, so only there is the fork
-    # expected NOT to be byte-identical to the capture's.
-    altered = lap_end and "L" in expect
-    line_rides = lap_end and "L" not in expect
     witness: dict[str, Any] = {}
     for name, (script, want, want_path) in _suffixes(LIVE_CAPS[fork_kind]).items():
         model = scripted(list(script))
@@ -2093,7 +2051,7 @@ def _selftest_fork(
             row["replayed"] == fork["seq"]
             and not row["diverged"]
             and not row["strict_mismatches"]
-            and row["fork_identical"] is (not altered)
+            and row["fork_identical"] is True
         )
         seen = {k: row[k] for k in ("replayed", "diverged", "fork_identical", "strict_mismatches")}
         check("  the prefix came off the tape, on the recorded trajectory", faithful, str(seen))
@@ -2149,22 +2107,11 @@ def _selftest_fork(
     wrote = shown.get("notes", {})
     rails = [m.get("rail") for m in _first_live(shown).get("tail", [])]
     check("the door answered the repeated skill call", bool(witness.get("doors")))
-    check(
-        f"the product flagged that answer a pointer: {not lap_end}",
-        door.get("pointer") is (not lap_end),
-        str(door),
-    )
-    check(f"its answer is the whole body: {lap_end}", door.get("body") is lap_end, str(door))
-    check(
-        f"its answer carries the first step: {lap_end}",
-        door.get("first_step") is lap_end,
-        str(door),
-    )
-    check(
-        f"the trace says the repeated call was a re-entry: {lap_end}",
-        ("skill_reentry" in wrote) is lap_end,
-        str(wrote),
-    )
+    check("the product flagged that answer a pointer", door.get("pointer") is True, str(door))
+    check("its answer is not the whole body", door.get("body") is False, str(door))
+    check("its answer does not carry the first step", door.get("first_step") is False, str(door))
+    check("the trace does not call the repeated call a re-entry", "skill_reentry" not in wrote,
+          str(wrote))  # fmt: skip
     # ...and the same row under every OTHER arm's name: the rule must refuse it unless that arm
     # is this very build (A and its placebo). "No patch shows another's", said by the rule.
     live = [step for step in shown.get("steps", []) if not step.get("aux")]
@@ -2177,27 +2124,15 @@ def _selftest_fork(
             str(refusal),
         )
     check("no completion was forced", "required" not in sent, str(sent))
-    check(
-        f"the finished plan's answer-now line rode the fork request: {line_rides}",
-        ("[plan:complete]" in rails) is line_rides,
-        str(rails),
-    )
-    governed = "L" in expect
-    check(
-        f"the trace carries turn_end_governed: {governed}",
-        ("turn_end_governed" in wrote) is governed,
-        str(wrote),
-    )
-    # Every build silences the refused plan's line at the door (ADR-0205 is the baseline now).
+    check("no plan line rode the fork request", "[plan:complete]" not in rails, str(rails))
+    # Every build silences the refused plan's line at the door (ADR-0205) and says the hook
+    # governs the turn's end from there (ADR-0208): both are the baseline now.
     check("the trace carries veto_plan_silenced", "veto_plan_silenced" in wrote, str(wrote))
+    check("the trace carries turn_end_governed", "turn_end_governed" in wrote, str(wrote))
     for kind in ("veto_plan_retired", "veto_forced_tool", "skill_redelivered"):
         check(f"the trace carries no {kind} (a retired arm's note)", kind not in wrote, str(wrote))
-    want_fences = (1, 0) if lap_end else (1, 1)
-    check(
-        f"the fence counts the refused stop, then reads {want_fences[1]} at the end",
-        fences == want_fences,
-        str(fences),
-    )
+    check("the fence counts the refused stop, and still reads 1 at the end", fences == (1, 1),
+          str(fences))  # fmt: skip
 
 
 def selftest(base: Path, expect: str, capture: Path | None) -> int:
@@ -2606,9 +2541,9 @@ RULE: dict[str, Any] = {
     "harm": -0.15,  # screen: at least this far below it
     "near_best": 0.10,  # the simplest GAIN arm this close to the best one is the one selected
     "confirm": 0.15,  # confirm: at least this far above the baseline, with the same p
-    # L is the one live candidate. The rest are registration 1's arms, retired; the known
+    # Registration 1's arms, all retired (R and L shipped and are no arm at all); the known
     # answers still order by them.
-    "simplest_first": ("L", "P", "C", "RC", "F", "RF", "B"),
+    "simplest_first": ("P", "C", "RC", "F", "RF", "B"),
 }
 
 
@@ -2623,10 +2558,8 @@ def _unusable(row: dict[str, Any], expected_diff: str | None) -> str | None:
         return "wrong-build"
     # The fork request is the capture's own, byte for byte, unless the arm takes the finished
     # plan's reminder out of it, which it can only do where that reminder was: P at a door whose
-    # plan was finished, L at a lap-end fork (which by definition carries the line).
-    altered = ("P" in arm and row["plan_complete_at_fork"]) or (
-        "L" in arm and row.get("fork_kind") == "lap-end"
-    )
+    # plan was finished (batch 1's world; the known answers keep that one altering arm).
+    altered = "P" in arm and row["plan_complete_at_fork"]
     if (
         row["strict_mismatches"]
         or row["replayed"] != row["fork_seq"]
@@ -2662,15 +2595,7 @@ def _witness_failure(row: dict[str, Any], steps: list[dict[str, Any]]) -> str | 
                 return f"witness:{patch}-absent"
         elif kind in wrote:
             return f"witness:{patch}-present"
-    # L: its note, and at a lap-end fork the line's absence from the fork request. Every other
-    # build must show neither: no note, and the line where the capture saw it.
-    lap_end = row.get("fork_kind") == "lap-end"
-    governed = "turn_end_governed" in wrote
-    if "L" in arm:
-        if not governed or (lap_end and "[plan:complete]" in rails):
-            return "witness:L-absent"
-    elif governed or (lap_end and "[plan:complete]" not in rails):
-        return "witness:L-present"
+    # ``turn_end_governed`` is no witness any more either: ADR-0208 shipped, every build writes it.
     forced = [s.get("tool_choice") == "required" for s in steps]
     if "F" in arm:
         if not (forced[:1] == [True] and "veto_forced_tool" in wrote):

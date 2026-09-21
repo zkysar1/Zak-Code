@@ -2251,8 +2251,9 @@ class AgentLoop:
         self._call_rails: list[str] = []
         self._call_rails_rested = False
         #: ADR-0205: the rails deliberately NOT sent on the call being assembled, by kind. Today
-        #: that is one thing, ``plan_complete`` (see ``_refused_plan``). Written beside ``rails``
-        #: so that "there was no finished plan" and "its line was kept silent" read differently.
+        #: that is one thing, ``plan_complete`` (see ``_refused_plan`` and, since ADR-0208,
+        #: ``_hook_governs_turn_end``). Written beside ``rails`` so that "there was no finished
+        #: plan" and "its line was kept silent" read differently.
         self._call_rails_silenced: list[str] = []
         #: ADR-0205: the FINISHED plan a turn-end hook refused a stop on, as its progress
         #: signature, or ``None``. While the board still holds exactly that plan, its "answer
@@ -2260,6 +2261,16 @@ class AgentLoop:
         #: would be the last word of every request after it, saying the opposite. Set in
         #: :meth:`_fire_turn_end`; dropped in :meth:`_messages_for_call` once the plan moves on.
         self._refused_plan: str | None = None
+        #: ADR-0208: a turn-end hook's honoured refusal has NAMED a skill re-entry in this turn
+        #: (ADR-0187), so the hook, and not the plan, decides when this turn may end. That is how
+        #: a perpetual loop goes round: it finishes a plan on every pass, and each finished plan's
+        #: "answer now" line (ADR-0108) asks for a closing answer the hook will refuse. From the
+        #: first such refusal to the end of the turn, no finished plan is sent that line. Measured
+        #: on gpt-5.6-luna in a served loop, the line drawn by lot inside the run (sample 7,
+        #: bench/results/served-luna-preregistration.log): sent, 12 of 13 finished plans ended in
+        #: a stop the model made in words; kept silent, 5 of 13. Set in :meth:`_fire_turn_end`;
+        #: dropped where a turn starts, so a new turn owes its first finished plan the line again.
+        self._hook_governs_turn_end = False
         self._cache_flat_run: tuple[str, int, int, int, int] | None = None
         self._cache_probe_rests_next = False
         self._cache_probe_rested: tuple[str, int, int] | None = None
@@ -3123,8 +3134,10 @@ class AgentLoop:
             # chose the form a moment ago, not a guess from the text it produced.
             finished = self.session.task_network.is_complete()
             self._call_rails.append("plan_complete" if finished else "plan")
-        elif self._refused_plan_is_current():
-            self._call_rails_silenced.append("plan_complete")  # ADR-0205: withheld on purpose
+        elif self._answer_now_is_silent():
+            # ADR-0205 / ADR-0208: withheld on purpose. The SAME predicate the reminder read a
+            # moment ago, so the label and the wire cannot disagree.
+            self._call_rails_silenced.append("plan_complete")
         if not tail:
             return self.session.messages
         self._call_has_tail = True
@@ -3305,22 +3318,37 @@ class AgentLoop:
             and network.progress_signature() == self._refused_plan
         )
 
+    def _answer_now_is_silent(self) -> bool:
+        """Whether a FINISHED plan on the board is kept silent, for either of two reasons: it is
+        the very plan a turn-end hook refused a stop on (ADR-0205), or a hook that names a skill
+        re-entry governs this turn's end (ADR-0208). ONE predicate, read by the reminder and by
+        the per-request trace label, so what is sent and what is said to be sent cannot differ."""
+        if self._refused_plan_is_current():
+            return True
+        return self._hook_governs_turn_end and self.session.task_network.is_complete()
+
     def _plan_reminder(self) -> Message | None:
         """An ephemeral user message carrying the live plan, or ``None`` when there is no plan
-        to show: none exists, or (ADR-0205) it is the finished plan whose stop a hook refused."""
+        to show: none exists, or it is a finished plan whose "answer now" line is kept silent
+        (ADR-0205, ADR-0208: see :meth:`_answer_now_is_silent`)."""
         network = self.session.task_network
         rendered = network.render(elide_done=True)  # the working-memory form (ADR-0184)
         if not rendered:
             return None
         request = network.context.request
         if network.is_complete():
-            if self._refused_plan_is_current():
+            if self._answer_now_is_silent():
                 # ADR-0205: this line asks for the closing answer. A turn-end hook has just
                 # refused to let the turn close and said what to do instead, and an ephemeral
                 # line rides LAST: sent now, it would follow the hook's words on every request
                 # and contradict them (one message says carry on, the next says answer and
                 # stop). Measured on gpt-5.6-luna: 18 of 116 rollouts stopped a second time
                 # with the line, 0 of 116 without it (bench/results/veto-door-preregistration.log).
+                #
+                # ADR-0208 widens that from "the plan that was refused" to "every plan that
+                # finishes after a refusal named a skill re-entry, until the turn ends". A
+                # perpetual loop finishes a NEW plan on every pass, so ADR-0205 alone let the
+                # line ride again one pass later and ask for the closing answer the hook refuses.
                 return None
             # ADR-0108: the call after the last step closes is the one that must produce the
             # ANSWER. Handing it the finished checklist as its highest-salience message is
@@ -6225,6 +6253,22 @@ class AgentLoop:
                 "silent until the plan changes",
                 kind="veto_plan_silenced",
             )
+        if reentry is not None and not self._hook_governs_turn_end:
+            # ADR-0208: a refusal that names a skill to re-enter is how a perpetual loop goes
+            # round, and from here to the end of this turn the hook has the last word on when it
+            # ends. A plan that finishes LATER in the turn is therefore not asked for a closing
+            # answer either (see the attribute). A refusal in plain words does NOT set this: it
+            # answers one stop and says nothing about the next. Noted once per turn, by name, so
+            # a trace reader can tell "silent because this plan was refused" (veto_plan_silenced)
+            # from "silent because the hook governs" without guessing from the order of events.
+            self._hook_governs_turn_end = True
+            self._note(
+                "intervention",
+                f"a turn-end hook governs this turn's end (it asked for /{reentry[0]}); finished "
+                "plans keep their answer-now reminder silent until the turn ends",
+                kind="turn_end_governed",
+                skill=reentry[0],
+            )
         if reentry is not None:
             self._vetoes_without_skill += 1
             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
@@ -6623,6 +6667,7 @@ class AgentLoop:
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._hook_governs_turn_end = False  # ADR-0208: every turn starts ungoverned
         self._veto_stall = False
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
@@ -8193,6 +8238,7 @@ class AgentLoop:
         failed_over = False  # runtime model failover fires at most once per turn
         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
+        self._hook_governs_turn_end = False  # ADR-0208: every turn starts ungoverned
         self._veto_stall = False
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
