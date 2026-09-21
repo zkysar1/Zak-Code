@@ -2740,3 +2740,115 @@ that ADR-0210 and ADR-0211 deliver two framework texts no served run has carried
 
 SPEND. $5.8088 for the four runs against an expected $6 and a supervisor bound of $24. Campaign spend is now about
 $26.06. No other model call was made while a run was in flight, and the arms' worktrees were not touched.
+
+=== 15:09 UTC 2026-09-21 PRE-REGISTRATION -- SERVED LOOP ON LUNA, SAMPLE 9 (A CANARY, NOT AN EFFECT STUDY): the first served run on a build that DELIVERS what two framework hooks say (ADR-0210, ADR-0211). One run. It asks whether the deliveries happen in a real run and whether any of three harm lines, named here in advance, is crossed. No branch claims an effect ===
+
+WHY A CANARY AND NOT A PAIR. ADR-0210 (PR #601) gives a PostToolUse shell hook the result object Claude Code gives it,
+so the framework's reminder after a closing script can fire under this product for the first time. ADR-0211 (PR #602)
+hands the model what the framework's SessionStart hook prints, which after a compaction is its report of what was in
+flight; until now that text was dropped at every compaction (14 to 19 a run). Both shipped on unit and mutation
+evidence. Neither has run in a served loop. A free re-read of sample 8's worlds (the 14:23 UTC block) looked for an
+outcome an effect study could be built on and found none: re-entry after a completed close already happens (a Skill
+call within 3 tool calls after 19 of 19), and goal continuity across a compaction has too few units (21 pairs, 2
+abandonment candidates). So this sample buys what is actually owed before anything else is built on these two changes:
+proof that the words ARRIVE in production shape, and an early warning if arriving does damage.
+
+THE BUILD. N9 = main 47efdb6, src tree d51ecbbc0e31. It differs under src/ from sample 8's arm C (280b887, src tree
+ac4646c9cb34, kept as worktree C8) in FIVE files: __init__.py, agent/loop.py, hooks/__init__.py, tools/base.py and
+tools/builtins/bash.py (+253 -24), which is ADR-0210 and ADR-0211 and nothing else under src/.
+
+THE ASSEMBLY is sample 8's, rebuilt by the same script from the same seed: seed 2.12.76 (sha256 prefix
+71c88a26f3b953c0), the provisioning step and its assertions, the same sandbox, ceremony, caps (2400 s run, 350 s
+reserve, 2520 s supervisor wall clock, $6.00 supervisor budget), trace directory and claim-endpoint patch (sha256
+prefix 74b5eca7c44d0189); no reasoning_effort configured, so the product's forced none applies (ADR-0200). The three
+kit files are byte-identical to the sample-5 control world's and the launcher asserts it. The build is selected inside
+the sandbox by PYTHONPATH=/srv/zc-builds/N9/src. World of run 1: zc-served9n1-9937d107. Fresh, never run.
+  The seed's own settings register the two consumers: one SessionStart hook, and a PostToolUse hook on the shell tool
+  that speaks after a closing script. Read from the seed's settings before this block was written.
+
+THE GATES, asserted by the launcher before any spend. A failure is RUN NOT READ.
+  G1  the worktree is at the registered commit, clean, its src tree hash is the registered one, and the two builds
+      differ under src/ in exactly the five files named above.
+  G2  the world is provisioned and unrun (the same twelve assertions as sample 8).
+  G3  INSIDE the sandbox, under the run's own environment: zakcode, its loop, its tracker, its tools base and its
+      hooks module all import from the build's tree, and five BEHAVIOURAL markers hold. ADR-0210: the shell tool's
+      result object is built with stdout cut where the tool's footer begins; a PostToolUse wire document carries
+      tool_response; it names the event as Claude Code does. ADR-0211: firing a SessionStart shell hook RETURNS what
+      it printed; the loop can say it. All five are true on N9 and all five false on C8. Both builds carry
+      ADR-0209's four markers, ADR-0204, ADR-0205, ADR-0208 and no draw note; the posture is forced none WITH tools
+      on the five luna categories; the idle-window stop is unset. SHOWN TO FAIL in two wrong shapes before it was
+      trusted: C8's tree asked as N9 (five import-path and five marker complaints) and no PYTHONPATH asked as N9
+      (import-path complaints only, since the editable install is now N9's code: only the path check catches that
+      shape). C8 asked as C8 passes, so the licensed control below can be gated by the same file.
+  G4  this block is on origin/main; the four published readers on this box are origin/main's byte for byte; the
+      scratch readers are the registered ones (sha256 prefixes: preflight9.py 7ed4ea50f828b914, deliver9.py
+      6bf01482fa96e7d0, reading9.sh b6b2a099b11aa2d7, after9.sh e724a1cdb3ed0bf3, after9.py 94fe603c5529581a,
+      after_events.py e3318d8ea255c820, plan_receipts.py d4df03990817d7fd, describe9.py ae0c779d1108dc77, final9.sh
+      ceb8e9f6c65934f9).
+  G5  the live Mind's daemon on this box answers health before and after the run, and no mount leaked.
+  After the run: G6 the run's first progress line names the build's tree as the zakcode source; G7 every usage event
+  carries rails, no draw note exists, and the ladder reader's written_under is not `turn` (both builds ship ADR-0209).
+  The run is READ if it wrote its last line, G6 and G7 pass, and it reached at least one lap boundary.
+
+THE DELIVERY GATES, read from two records that must agree.
+  D   (ADR-0211) on the product's trace: notes of kind session_start_said whose source is compact, against compaction
+      notes that really compacted. PASS = equal and non-zero. PARTIAL = fewer but non-zero. FAIL = zero. NOTHING OWED
+      = no compaction. The product writes that note only when the hook said something, so PARTIAL can mean the hook
+      chose silence; it is reported with the sizes (min, median, max chars) and decides nothing. Cross-check: on the
+      append-only transcript, compact boundaries followed, before the model's next row, by a user row opening with the
+      product's own frame for such words. The two records must agree on both counts, and the reader says if not.
+  D2  (ADR-0210) on the transcript: shell results where the framework hook's OWN full predicate holds (a command
+      segment invokes a closing script, and the output carries its completion marker), against those whose result
+      also carries the first line of one of the hook's reminder texts. Same four verdicts. The predicate and the
+      lines are rebuilt from the world's own copy of the hook at run time and are never copied or printed.
+  The reader was proven both ways before this block: a selftest with a real marker and a real reminder line (PASS,
+  PARTIAL and FAIL shapes told apart, 3 of 3), and sample 8's four worlds as the negative control (builds without
+  either change): D FAIL with 0 of 16, 16, 19 and 14; D2 FAIL with 0 of 10, 6, 3 and 4; the two records agreed on
+  every compaction count. One of those worlds holds 6 completed closes of which the hook's predicate accepts 4: the
+  other two ran inside another command, where the hook is silent by its own design. D2's denominator is the 4.
+
+THE HARM LINES. Tripwires against history, NOT a control (guard-6772): crossing one proves nothing about cause and
+only licenses the concurrent pair below.
+  H1  more than 24 compactions. History: 14 to 19 over eight runs of three builds; both of arm C's runs made 16. The
+      risk it watches is a loop: words after a compaction that send the model to reload a skill body fill the
+      context sooner.
+  H2  any turn that ended veto_stall or stuck. History: 1 of 8 runs (sample 7, an older build), 0 of 2 on arm C.
+  H3  zero laps closed (the iteration diary's end-of-iteration phase). History on arm C: 10 and 6.
+
+THE READING, a pure function of the gates (reading9.sh), tested over every branch before this block:
+  RUN NOT READ                       a run gate failed (one re-run is licensed, by hand), or a reader failed (fix
+                                     the reader and re-read for free; no run).
+  NOT DELIVERED                      D or D2 reads FAIL. Diagnose offline on a copy of the world. No further run.
+  UNOBSERVED                         both read NOTHING OWED. Nothing is read.
+  DELIVERED AND NO HARM LINE CROSSED D and D2 each read PASS, PARTIAL or NOTHING OWED, not both the last, and no
+                                     line is crossed. Each ADR's word is printed (delivered, delivered IN PART,
+                                     UNOBSERVED).
+  DELIVERED, HARM LINE(S) CROSSED    the same, with the lines named.
+  No branch says the deliveries helped or hurt anything. A crossed line is a reason to look, with a control.
+
+SECOND-SAMPLE RULE. Only DELIVERED, HARM LINE(S) CROSSED on run 1 licenses more: ONE more run of N9 and ONE concurrent
+run of C8 (the same build sample 8's arm C ran), in that order, sequential, same assembly, fresh worlds. The pair's
+reading rule is NOT written here: it will be written after run 1 lands, in terms of the concurrent control's measured
+values and as relative margins (guard-6786), registered on main as AMENDMENT 1 before run 2, and the launcher refuses
+runs 2 and 3 without it. A single pair can only show a gross difference, and the amendment will say so. Every other
+reading ends the sample at one run.
+
+DESCRIBED, LICENSING NOTHING (history from sample 8's worlds in brackets): the first tool call after a compaction,
+and how often it is the wake-up re-arm [1 of 51]; a Skill call within 5 tool calls after one [24 of 51]; skill
+bodies delivered [55 to 74]; repeated-outcome notes [0 and 0 on arm C]; refused stops [4 to 14]; failed tool events
+[45 to 71]; plan share [10.8% to 19.6%]; laps closed and their shapes; goals completed [1, 2, 4, 5]; what followed
+a finished plan [the next row was words only after 14 of 32]; cost [$1.29 to $1.77].
+
+MY ESTIMATES, to be scored as measured.
+  D reads PASS 60%, PARTIAL 30%, FAIL 10%.                D2 reads PASS 55%, PARTIAL 15%, FAIL 20%, NOTHING OWED 10%.
+  H1 crossed 10%. H2 crossed 10%. H3 crossed 3%.          compactions 17, and 70% that they fall in 14 to 20.
+  the first call after a compaction is the re-arm after 40% of compactions (80% interval 10% to 80%).
+  a Skill call within 5 calls after 70% of compactions.   goals completed at least 3: 50%.
+  cost within $1.20 to $1.90: 80%.
+
+WHAT THIS CANNOT SETTLE. Whether the deliveries change what the loop achieves: one run, no control, and the free
+re-read found no outcome with both headroom and units. Whether a PARTIAL is the hook's choice or a loss: that is an
+offline question on a copy of the world. Anything about another model, another seed or a longer run.
+
+SPEND. About $1.5 for the one run ($6.00 supervisor cap). If the pair is licensed, about $3 more. Campaign spend so
+far about $26.06.
