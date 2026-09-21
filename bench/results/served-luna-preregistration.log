@@ -2991,3 +2991,49 @@ world registers that this product does not know (StopFailure, UserPromptExpansio
 fire). Why the same ceremony block lost four of six scripts in this run and none in eight others.
 
 SPEND. $1.11 for the run, the diagnosis free. Campaign spend so far about $27.17.
+
+=== 16:48 UTC 2026-09-21 AMENDMENT TO THE SAMPLE 9 RESULTS -- THE CORRECTED D2 READER, RE-APPLIED TO EVERY WORLD THE OLD ONE READ. Sample 9's D2 reads NOTHING OWED under the hook's full predicate. The eight worlds of samples 7 and 8 held 40 completed closes, all 40 truly owed a reminder and none carried one, on builds that could not deliver it. No run, no spend ===
+
+This is the open item the 16:17 UTC block owed (PR #606). It changes no registered reading: sample 9 stays NOT
+DELIVERED as registered, because its rule was fixed before launch. It says what the same world reads under the
+predicate the rule should have used, and it re-reads the older worlds with it, as a corrected scorer must be.
+
+THE READER. A scratch reader (sha256 prefix 76ec7edbde1e232f), not committed, because like its siblings it rebuilds
+the framework's patterns and reminder lines from the WORLD's own copy of the hook at run time. A close is a shell
+call whose command invokes a closing script and whose result holds the completion marker (the registered
+denominator). It is OWED only if, at that point of the append-only transcript, the three session files the hook
+reads stood as it needs them: state running, mode self-directed, runner id written. The three are taken from the
+ceremony's OWN calls (each setter the model ran, and how the call was answered) and from the getters' own answers.
+  Rules for a call that was refused or errored, each pinned by a known answer: the state setter's refusal writes
+  nothing, so the state stays; what the same command asked for BEFORE the refused setter had already run, so with
+  no error line it landed, even when the refusal as last command made the whole call error; what it asked for
+  AFTER it, and everything in a call that errored with no refusal line, is UNKNOWN until a later setter or getter
+  settles it; an accepted running state proves the runner id, because this world's own setter refuses without one.
+  A close that rests on an unresolved value is counted UNKNOWN, never dropped and never owed.
+  Selftest: 17 known answers of 17, built from a real world's own marker, closing command and reminder line.
+
+THE RE-READ. 17 worlds, every world the old reader was used on. The eight worlds of samples 1 to 6 hold no close by
+command and marker (their transcripts were live windows until ADR-0206).
+  world              build has ADR-0210   closes   owed   carrying the reminder   unknown   D2, full predicate
+  sample 7 run 1     no                   3        3      0                       0         FAIL
+  sample 7 run 2     no                   3        3      0                       0         FAIL
+  sample 7 run 3     no                   8        8      0                       0         FAIL
+  sample 7 run 4     no                   3        3      0                       0         FAIL
+  sample 8 run 1 M   no                   3        3      0                       0         FAIL
+  sample 8 run 4 M   no                   4        4      0                       0         FAIL
+  sample 8 run 2 C   no                   10       10     0                       0         FAIL
+  sample 8 run 3 C   no                   6        6      0                       0         FAIL
+  sample 9 run 1     YES                  5        0      0                       0         NOTHING OWED
+  (sample 9: all 5 closes fell while the mode read as the read-only default)
+  So the premise of ADR-0210 holds under the full predicate too: 40 of 40 completed closes in eight runs were owed
+  the reminder by the hook's own rule and got none, on builds that did not carry the result object the hook reads.
+  And the one run on a build that does carry it owed nothing, so ADR-0210 stays UNOBSERVED live, as the results
+  block said. Sample 8's first M run is the one the old reader could not have settled: its mode step ran inside a
+  call that errored, and only the positional rule above shows that it landed.
+
+WHAT THIS LICENSES. Nothing new. The next served sample's D2 gate is this reader, registered by hash, with the
+state in which the hook CAN fire inside its positive control.
+
+SINCE THE RESULTS BLOCK. The framework now refuses the running state unless the mode is recorded as self-directed
+(its owners' repair, with tests and a mutation proof; not a change to this product). Whether a small model met with
+that refusal goes back and takes the step is unmeasured.
