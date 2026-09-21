@@ -6566,6 +6566,10 @@ class AgentLoop:
         )
 
     async def _run_turn(self, user_text: str) -> TurnResult:
+        # Wall-clock span reported as duration_s on the turn-ended line. Started here,
+        # once the busy lease is held, so the streamed twin measures the same span and
+        # neither includes lease wait.
+        turn_started = time.monotonic()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         await self._maybe_compact()
@@ -8048,10 +8052,11 @@ class AgentLoop:
         if self._veto_stall:
             stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
-            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            "turn ended: stop_reason=%s iterations=%d tokens=%d duration_s=%.3f",
             stop_reason,
             iterations,
             turn_usage.total_tokens,
+            time.monotonic() - turn_started,
         )
         self._retire_investigation_steps(investigation_steps)  # they live one turn (ADR-0057)
         # zakpick routing report (coherent regardless of where the turn ended): "escalated" only
@@ -8130,6 +8135,8 @@ class AgentLoop:
         lease = self._busy_lease()
         if lease is not None:
             await lease.acquire()
+        # duration_s span — see _run_turn (buffered twin): started once the lease is held.
+        turn_started = time.monotonic()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
         compaction = asyncio.ensure_future(self._maybe_compact())
@@ -9945,10 +9952,11 @@ class AgentLoop:
         if self._veto_stall:
             stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
         logger.info(
-            "turn ended: stop_reason=%s iterations=%d tokens=%d",
+            "turn ended: stop_reason=%s iterations=%d tokens=%d duration_s=%.3f",
             stop_reason,
             iterations,
             turn_usage.total_tokens,
+            time.monotonic() - turn_started,
         )
         self._retire_investigation_steps(investigation_steps)  # they live one turn (ADR-0057)
         yield AgentUsage(usage=turn_usage)

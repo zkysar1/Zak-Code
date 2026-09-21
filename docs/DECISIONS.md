@@ -12218,3 +12218,45 @@ for an empty session. The harness carries its own two controls (the change as wr
 that writes nothing fails thirteen tests) and asserts which copy of the package each run imported:
 its first version set PYTHONPATH, which this repo's pytest config outranks, and every mutant
 "survived" against the unmutated source.
+
+## ADR-0207: the turn-ended line carries the turn's wall-clock seconds, so a served run's log can be read as a distribution
+
+Date: 2026-09-21. One field on a line that already existed, on both turn paths. No behaviour change,
+no setting, no new line.
+
+Context. The framework-stop grace (ADR-0184, the vessel sidecar's `run_stop` window) is a fixed
+number of seconds. Whether it is the right number is a question about how long this agent's turns
+actually take when it is working — and the grace is spent, today, on turns that are still running.
+Sizing it wants the distribution of real turn lengths from real served runs.
+
+The loop has logged `turn ended: stop_reason=... iterations=... tokens=...` unconditionally since the
+first commit, on both `_run_turn` and `astream_turn`. Measured over the estate's served logs on
+2026-09-21: 52 `serve.log` files, 37,144 lines, **55** of these lines (30 `completed`, 21
+`veto_stall`, 3 `skill_too_large`, 1 `provider_error`), each with a wall-clock timestamp. So the
+boundary was there and the corpus was readable — it simply carried no duration, and with an END
+marker only, consecutive timestamps measure turn **plus** the idle wait before it, which is not the
+quantity the grace is set against.
+
+`iterations` and `tokens` are the wrong proxies: a turn can spend minutes inside one tool call, and a
+turn on a large context can burn tokens in seconds.
+
+Decision. Both twins stamp `time.monotonic()` once the busy lease is held, and append
+`duration_s=%.3f` to the turn-ended line. The span is deliberately identical on the two paths —
+started after the lease so neither includes lease wait — because a distribution pooled from a
+streamed run and a buffered one must not be measuring two different things.
+
+Both paths, not one, is the load-bearing half. `astream_turn` is not a wrapper around `arun_turn`: it
+is a full twin with its own copy of the turn body and its own copy of this log call, and it is the
+path the server's `_run_turn_for_say` drives. An instrument added to the buffered path alone emits
+nothing at all on served runs — the only runs this measurement is for — while reading as done.
+
+What this deliberately does NOT do. It does not change any ending, any ceiling, or any number
+(`_retire_unconsumed_framework_stop`'s docstring declined to act on an ambiguous stamp for the same
+reason). It observes. Sizing the grace is a separate decision that this line is a prerequisite for,
+and it should be taken from the measured TAIL of a real corpus rather than from a median or from
+another process's diary.
+
+Tests. `tests/test_turn_duration_line.py` pins the field on both paths and parses it with the same
+regex the log analysis uses, so a reformat that breaks the grep breaks a test rather than silently
+returning zero rows. Its third case is the positive control: the pre-change line must NOT parse, so a
+pattern loose enough to match the old shape cannot make the other two pass over an unchanged loop.
