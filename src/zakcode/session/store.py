@@ -213,6 +213,16 @@ class Session(BaseModel):
     #: SAFE — the pre-ADR-0077 behavior).
     prompt_anchor_tokens: int = 0
     prompt_anchor_index: int = 0
+    #: How many of ``messages`` the transcript file already holds (ADR-0206). That file
+    #: (``transcripts/<id>.jsonl``, beside this store) is an append-only record: each message
+    #: is written once, and this count is what lets the next write start where the last one
+    #: stopped — in this process or in the one that resumes the session. A compaction moves
+    #: it to the end of the new, shorter list, because the kept tail is already in the file.
+    #: Schema v1 stays append-only: an OLDER build drops the field and rewrites the file from
+    #: the live history, as every build before ADR-0206 did, so a downgrade loses the record
+    #: and nothing else; this build then reads 0 and appends the live history once. At worst
+    #: one window is in the file twice. Nothing the model is sent depends on this number.
+    transcript_cursor: int = 0
     #: The one scheduled wake-up (ADR-0094): what the session is told at its next idle
     #: prompt on or after ``due_at``. Armed by the ``schedule_wakeup`` tool (replace-slot),
     #: consumed when it fires. Persisted so it survives the ADR-0034 restart into a new

@@ -2447,6 +2447,13 @@ the container and the projection goes with the host that no longer holds the onl
 two served workspaces share no transcript directory. Hooks are unaffected — they read the
 path they are handed. A host user's home stops accumulating other minds' conversations.
 
+**Amended 2026-09-21 (ADR-0206).** Where the file lives and who may read it stand as decided
+here. What the file IS changed: it is no longer a projection rendered whole at each hook
+fire, which lost everything before a compaction, but an append-only record written at every
+persist of a stored session whether or not a hook is registered. "Nothing resumes from it"
+still holds; "skip it when nothing reads it" no longer does, because the record that matters
+most is the one nobody knew to ask for until the run was over.
+
 ## ADR-0062: A loaded skill's sections are the plan — the harness decomposes, the model refines
 
 **Context.** ADR-0027 asked the model to decompose a long skill body into plan steps
@@ -12066,3 +12073,106 @@ Proven against five mutants: on the unfixed loop six of the seven fail; never fo
 plan fails the two "again" tests; forgetting it only where a reminder is built (the bench's placement)
 fails exactly the resting-call test; letting the silencing reset the fence's count fails both fence
 tests; labelling the silence but still sending the line fails all five wire checks.
+
+## ADR-0206: the transcript on disk is an append-only record, as Claude Code's is — a compaction adds two rows and removes none
+
+Date: 2026-09-21. Amends ADR-0061: where the file lives and who may read it are unchanged; its
+"re-rendered on each fire" clause is replaced. One behaviour, no setting.
+
+Context. A hook is handed `transcript_path` and reads the conversation from that file. Since ADR-0061
+the file was a projection of the LIVE history, rendered whole at every fire, on the reasoning that a
+compaction rewrites the history and an append-only copy would go stale. So each compaction erased
+from disk everything that came before it.
+
+Claude Code's transcript does not work that way, and that is the contract its consumers were written
+against. Read off a real Claude Code 2.1 transcript on this box (keys only): the file is append-only;
+at a compaction it gains a `system` row with `subtype: "compact_boundary"` and a `compactMetadata`
+object, then a `user` row flagged `isCompactSummary` holding the summary; nothing above them is
+touched. Three kinds of reader depend on it, all of them in a framework Zak Code serves unmodified:
+a report that counts `isCompactSummary` rows and iteration closes per compaction (on Zak Code it read
+zero compactions for ever); an audit that finds the last boundary row and asks what the model called
+first after it (there was no boundary row to find); and an archiver whose whole purpose is a record
+of what existed (it kept faithful copies of a file that held one window).
+
+How it was found. Served sample 6 (`bench/results/served-luna-preregistration.log`, 04:05 UTC block)
+left a question the box could not answer. Two 34-minute runs closed three laps each in their first
+250 or so provider calls and none in the 236 and 315 calls that followed, while the stuck ladder fired
+17 and 18 times. Whether the ladder was reading a circling loop correctly or misreading a long turn
+turns on what those calls WERE. The traces carry names and counts by design. The session document is
+compacted, 19 times in the longer run. The transcript held 64 lines at the end. A run of 575 calls had
+left no record of itself.
+
+Decision.
+
+1. The transcript file is append-only. Each message is written once, in order, the first time the
+   file is brought up to date after the message exists (`_flush_transcript`). This loop has exactly
+   one way to write the file (`_append_transcript`, mode `a`); nothing truncates or rewrites it.
+2. `Session.transcript_cursor` counts the live messages already written, and is saved with the
+   session document, so a resumed session carries on where the last process stopped. The file is
+   written BEFORE the document in `_persist`, so the saved cursor is one the file really reached: a
+   crash between the two can leave a message in the file twice, never out of it.
+3. The file is as current as the session document: it is brought up to date at every persist of a
+   STORED session, with or without a hook registered, and on demand whenever a hook payload needs
+   `transcript_path`. ADR-0061 skipped the file when nothing would read it; a record is for the
+   reader nobody knew about until the run was over. A loop with no store has no durable session
+   either, and its persist writes nothing, as before.
+4. A compaction writes down what it is about to drop before it drops it (`_adopt_compacted`), whether
+   or not anything had asked for the file. Then, when a region was really summarized, it appends the
+   two rows Claude Code writes (`render_compaction_rows`), and moves the cursor to the end of the new
+   list. The kept tail is not written again: those messages went in when they happened and sit above
+   the boundary, which is Claude Code's layout too.
+5. The summary row carries the summary AS THE MODEL NOW READS IT: the head message of the new list,
+   marker and continuation note included. `compactMetadata` carries only what was measured: the
+   trigger (`auto`, `manual`, `resume`), the live message counts on each side, and `preTokens` — the
+   provider's last REPORTED prompt size (ADR-0077) — only when there is one. No estimate is written
+   under a measured name.
+6. A model-free elision (ADR-0083) shortens tool outputs and summarizes nothing, so it adds no rows.
+   The file already holds those outputs whole. The same goes for a skill body elided in place once
+   its turn ended (ADR-0045): the file says what was said when it was said.
+
+What differs from Claude Code, and why. Envelope ids stay empty (`uuid`, `parentUuid`), as they have
+been since the projection existed: no reader found needs them. `compactMetadata` names message counts
+(`preMessages`, `postMessages`) beside Claude Code's `trigger` and `preTokens`, and omits the fields
+Zak Code does not measure (`postTokens`, durations). Zak Code keeps a verbatim tail across a
+compaction where Claude Code keeps none; on disk the two look alike, because a kept message was
+already written above the boundary.
+
+What is left alone. Where the file lives, its 0600/0700 permissions and its self-ignoring directory
+(ADR-0061, ADR-0159). The line shape of a message (ADR-0049's event times included). What the model
+is sent: the session document is still the source of truth for that, and nothing here reads the file
+back. Tool-gate and prompt-submit hook payloads still carry no `transcript_path`; no consumer found
+asks for one there.
+
+What it costs. The file now grows for the life of the session and is never pruned by Zak Code, as a
+Claude Code transcript is not. On a served loop that is on the order of one or two megabytes an hour:
+an earlier served run's whole-run ledger held 0.68 MB of message text for 36 minutes and 316 calls.
+It holds the full conversation for longer than the session document does, at the same permissions
+and in the same directory. A fire is cheaper than it was: it renders the new messages, not all of
+them.
+
+One-time effect. A session document written before this change loads with a cursor of 0, so the live
+history is appended once to whatever an older build had rendered: at worst one window appears twice in
+that one file. The other way round, an OLDER build that opens a newer session rewrites the file from
+the live history as it always did, so a downgrade loses the record and nothing else.
+
+What is not claimed. That this explains sample 6's lap-less stretch: it only makes the next run able
+to answer. That every Claude Code reader works unchanged: the three read patterns above were checked,
+others were not looked for.
+
+Tests (`tests/test_transcript_append_only.py`, every assertion made on the FILE): a message is written
+once however often the file is asked for; an empty session still hands a hook a real file; a
+compaction adds two rows and removes none, and the kept tail is not doubled; the summary row is the
+head of the live list verbatim; what a compaction drops is written first even when nothing had asked;
+`preTokens` appears only when measured; an elision and an in-place shrink leave the file alone; a
+stored session is written at every persist with no hook at all and a storeless persist writes nothing;
+a resumed session appends; a pre-existing file is never overwritten; a cursor past the end takes
+nothing back; a file that cannot be written breaks neither a persist nor a compaction; and the two
+consumer read patterns (count the summaries; first call after the last boundary) give the known
+answer. Proven against thirteen mutants, each killed by the test written for it: the old re-render;
+no flush before a compaction; a cursor left alone, or set to 1, by a compaction; rows on an elision;
+the document saved before the file; no write at persist; a write at a storeless persist; the bare
+summary in the row; `preTokens` always; a write error that escapes; a cursor rewound to 0; no file
+for an empty session. The harness carries its own two controls (the change as written passes; a flush
+that writes nothing fails thirteen tests) and asserts which copy of the package each run imported:
+its first version set PYTHONPATH, which this repo's pytest config outranks, and every mutant
+"survived" against the unmutated source.

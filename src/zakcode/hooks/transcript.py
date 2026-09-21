@@ -1,10 +1,17 @@
 """Project Zak Code's session messages into Claude Code's ``.jsonl`` transcript format.
 
 A Claude-Code hook is handed a ``transcript_path`` and reads the conversation *from that
-file*. Zak Code's :class:`~zakcode.messages.Message` history is the real source of truth;
-this module renders a **read-only projection** of it in the exact line shape those Claude
-Code consumers parse, so a CC framework's hook (e.g. a Stop-hook trailing-text detector,
-or an audit that scans for ``tool_use`` events) works against us unchanged.
+file*. Zak Code's :class:`~zakcode.messages.Message` history is the real source of truth for
+what the model is sent; this module renders it in the exact line shape those Claude Code
+consumers parse, so a CC framework's hook (e.g. a Stop-hook trailing-text detector, or an
+audit that scans for ``tool_use`` events) works against us unchanged.
+
+The FILE those lines go to is an **append-only record** (ADR-0206), as Claude Code's own is:
+the loop writes each message once, in order, and never rewrites or truncates what is there.
+A compaction shortens what the MODEL is sent; on disk it adds two lines and removes none —
+see :func:`render_compaction_rows`. So a reader finds the whole session in the file, can
+count its compactions, and can ask what happened after any one of them. This module only
+renders text; the loop owns the file and the cursor that says what is already in it.
 
 The shape is reverse-engineered from how it is *consumed* — the consumers' read pattern is
 the contract, not any proprietary writer. Each transcript line is one JSON object:
@@ -183,4 +190,73 @@ def render_claude_code_transcript(
     return "\n".join(lines) + "\n"
 
 
-__all__ = ["render_claude_code_transcript"]
+#: What Claude Code writes as the boundary row's ``content`` (read off a real transcript).
+_COMPACT_BOUNDARY_TEXT = "Conversation compacted"
+
+
+def render_compaction_rows(
+    summary: str,
+    *,
+    trigger: str = "",
+    messages_before: int = 0,
+    messages_after: int = 0,
+    pre_tokens: int = 0,
+    session_id: str = "",
+    cwd: str = "",
+    timestamp: datetime | None = None,
+) -> str:
+    """The two lines a compaction adds to the transcript file, newline-terminated (ADR-0206).
+
+    Claude Code's transcript is append-only, and a compaction shows in it as a pair of rows
+    (shape read off a real Claude Code 2.1 transcript, keys only):
+
+    * ``{"type": "system", "subtype": "compact_boundary", "content": "Conversation
+      compacted", "compactMetadata": {"trigger": ..., "preTokens": ...}}`` — where the
+      context was cut. A reader that asks "what was the first call AFTER the compaction"
+      finds this row and walks forward from it.
+    * ``{"type": "user", "isCompactSummary": true, "message": {"role": "user", "content":
+      "<the summary>"}}`` — what replaced the cut region. A reader that counts a session's
+      compactions counts these rows.
+
+    Everything written before the pair stays in the file, the kept tail included: those
+    messages were appended when they happened, so they sit ABOVE the boundary even though
+    the model still sees them after it. That is Claude Code's layout too.
+
+    ``compactMetadata`` carries only what was measured: ``trigger`` (``auto`` / ``manual`` /
+    ``resume``), the live message counts on each side, and ``preTokens`` — the provider's
+    last REPORTED prompt size (ADR-0077) — only when there is one. No estimate is written
+    under a measured name. Never raises; ``summary`` is written as given.
+    """
+    ts = _iso_z(timestamp if timestamp is not None else datetime.now(UTC))
+    envelope: dict[str, Any] = {
+        "timestamp": ts,
+        "sessionId": session_id,
+        "uuid": "",
+        "parentUuid": None,
+        "cwd": cwd,
+    }
+    metadata: dict[str, Any] = {
+        "trigger": trigger,
+        "preMessages": int(messages_before),
+        "postMessages": int(messages_after),
+    }
+    if pre_tokens > 0:
+        metadata["preTokens"] = int(pre_tokens)
+    boundary = {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "content": _COMPACT_BOUNDARY_TEXT,
+        "level": "info",
+        "compactMetadata": metadata,
+        **envelope,
+    }
+    summary_row = {
+        "type": "user",
+        "message": {"role": "user", "content": str(summary)},
+        "isCompactSummary": True,
+        **envelope,
+    }
+    return "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in (boundary, summary_row))
+
+
+__all__ = ["render_claude_code_transcript", "render_compaction_rows"]

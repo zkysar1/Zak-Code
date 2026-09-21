@@ -112,7 +112,7 @@ from pydantic import BaseModel, Field
 
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
-from zakcode.agent.compact import Compactor
+from zakcode.agent.compact import Compactor, is_summary
 from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.prompt import SystemPromptBuilder
@@ -150,6 +150,7 @@ from zakcode.hooks import (
     TurnEndResult,
     UserPromptSubmitPayload,
 )
+from zakcode.hooks.transcript import render_claude_code_transcript, render_compaction_rows
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
@@ -2305,6 +2306,9 @@ class AgentLoop:
         #: What the last compaction did, in words (ADR-0083) — the overflow recovery and
         #: the ``/compact`` command surface it, so a failed summarizer is never silent.
         self.last_compaction = ""
+        #: The transcript file whose directory this loop has already made ready (ADR-0206):
+        #: the mkdir / ignore-file / chmod run once per file, not at every persist.
+        self._transcript_ready_for = ""
         # Reliability scaffolding is ALWAYS ON and self-arming — it is not configurable
         # (one way of doing things). Write-grounding (read a written file back so a weak
         # model can't hallucinate the write) fires after any successful write; it no-ops
@@ -2440,6 +2444,10 @@ class AgentLoop:
             # ``running_build`` is the identity frozen at import (ADR-0034), so a reinstall
             # that lands mid-session can never re-label a document this process wrote.
             self.session.build = running_build()
+            # The transcript file is as current as the session document (ADR-0206). Written
+            # FIRST, so the cursor the document saves is the one the file really reached; a
+            # crash between the two can only leave a message in the file twice, never out.
+            self._flush_transcript()
             self.store.save(self.session)
 
     def _elide_ended_skill_bodies(self) -> int:
@@ -2749,13 +2757,23 @@ class AgentLoop:
             return None
         # Let a host serialize learning/state before the transcript is compacted.
         await self._fire_pre_compact("auto")
-        compacted, outcome = await self._compact_or_elide()
+        compacted, outcome = await self._compact_or_elide(trigger="auto")
         if not compacted:
             return f"compaction failed — {outcome}; continuing with the full history"
         return f"context near the window — {outcome}"
 
-    def _adopt_compacted(self, messages: list[Message]) -> None:
+    def _adopt_compacted(
+        self, messages: list[Message], *, summary: str | None = None, trigger: str = ""
+    ) -> None:
         """Install a compacted transcript and drop every cache keyed to the old one.
+
+        The transcript FILE is the one thing here that is not dropped (ADR-0206). Everything
+        about to leave the model's context is appended to it first; then, when a region was
+        really summarized (``summary`` is not None), the two rows Claude Code writes at a
+        compaction follow; then the cursor moves to the end of the new list, because the kept
+        tail is already in the file. A model-free elision (``summary`` is None) shortens
+        outputs and summarizes nothing, so it adds no rows: the file already holds the
+        outputs as they were.
 
         The prompt anchor (ADR-0077) measured a prefix that no longer exists. The per-turn
         skill reload dedup (ADR-0063) is keyed to the same premise — "that body is still in
@@ -2766,7 +2784,13 @@ class AgentLoop:
         instructions gone; the Body improvised its close by hand. Forgetting the loads
         here makes the next use_skill deliver the body again.
         """
+        self._flush_transcript()
+        before = len(self.session.messages)
+        pre_tokens = self.session.prompt_anchor_tokens  # measured, and about to be forgotten
         self.session.messages[:] = messages
+        self._mark_transcript_compacted(
+            summary, trigger=trigger, before=before, pre_tokens=pre_tokens
+        )
         self._forget_prompt_anchor()
         forget = getattr(self._skill_resolver, "forget_loads", None)
         if callable(forget):
@@ -2840,7 +2864,7 @@ class AgentLoop:
         if self.compactor is None:
             return False
         await self._fire_pre_compact(trigger)
-        compacted, _ = await self._compact_or_elide()
+        compacted, _ = await self._compact_or_elide(trigger=trigger)
         return compacted
 
     async def elide_now(self, *, trigger: str = "auto") -> bool:
@@ -2864,14 +2888,16 @@ class AgentLoop:
         await self._install_compaction(
             result.messages,
             f"elided {result.summarized_count} long tool output(s) across all {before} messages",
+            trigger=trigger,
         )
         return True
 
-    async def _compact_or_elide(self) -> tuple[bool, str]:
+    async def _compact_or_elide(self, *, trigger: str) -> tuple[bool, str]:
         """Summarize the old region; if the summarizer fails, elide its long tool outputs
         instead (ADR-0083). Returns ``(compacted, what happened)``; the outcome is also
         recorded on :attr:`last_compaction` and the turn trace, so a failure is never
-        silent.
+        silent. ``trigger`` (``auto`` / ``manual`` / ``resume``) is who asked, for the
+        transcript's boundary row (ADR-0206).
         """
         assert self.compactor is not None
         before = len(self.session.messages)
@@ -2914,7 +2940,14 @@ class AgentLoop:
                 f"summarizer failed ({failure}); elided {result.summarized_count} long "
                 f"tool output(s) instead — {outcome}"
             )
-        await self._install_compaction(result.messages, outcome)
+        # ``summary`` is None when the summarizer failed and only tool outputs were elided:
+        # nothing was summarized, so the transcript gets no compaction rows (ADR-0206).
+        await self._install_compaction(
+            result.messages,
+            outcome,
+            summary=getattr(result, "summary", None),  # a bare test double has none
+            trigger=trigger,
+        )
         return True, outcome
 
     async def _fire_pre_compact(self, trigger: str) -> None:
@@ -2929,8 +2962,15 @@ class AgentLoop:
             trigger=trigger,
         )
 
-    async def _install_compaction(self, messages: list[Message], outcome: str) -> None:
-        self._adopt_compacted(messages)
+    async def _install_compaction(
+        self,
+        messages: list[Message],
+        outcome: str,
+        *,
+        summary: str | None = None,
+        trigger: str = "",
+    ) -> None:
+        self._adopt_compacted(messages, summary=summary, trigger=trigger)
         # Claude Code parity: SessionStart(source="compact") right after each compaction —
         # the seam a framework's post-compact state-restore automation plugs into.
         await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
@@ -5830,61 +5870,148 @@ class AgentLoop:
         return False, weak_dimensions(card, threshold)
 
     def _cc_transcript_path(self) -> str:
-        """Materialize a Claude-Code-shaped ``.jsonl`` projection of the session transcript and
-        return its path, for hooks that read ``transcript_path``. Best-effort: returns ``""`` on any
-        error (or an unsafe session id) so a hook fire is never broken. The SessionStore stays the
-        source of truth — this is a read-only edge projection (:mod:`zakcode.hooks.transcript`).
+        """Bring this session's Claude-Code-shaped ``.jsonl`` transcript up to date and return
+        its path, for hooks that read ``transcript_path``. Best-effort: returns ``""`` on any
+        error (or an unsafe session id) so a hook fire is never broken. The SessionStore stays
+        the source of truth for what the model is sent; the file is the record of what was
+        said (:mod:`zakcode.hooks.transcript`).
 
-        Written BESIDE the session store, in a ``transcripts`` directory that is the sibling of
-        its ``sessions`` one (ADR-0061, mirroring ADR-0032). The terminal client's store is
-        ``~/.zakcode/sessions`` (re-rooted with it by ``ZAKCODE_HOME``, ADR-0159), so this stays
-        ``~/.zakcode/transcripts`` — unchanged for a real user. A SERVED
-        workspace's store is ``<workspace>/.zakcode/sessions``, so the projection of that mind's
-        conversation stays inside that mind's home. It followed ``Path.home()`` until then, which
-        pooled the FULL conversation text of every mind served by one host user into one shared
-        directory keyed only by session id — the cross-workspace leak ADR-0032 closed for the
-        store itself while its projection went on bypassing it.
-
-        The directory is 0700 and the file 0600, NOT a world-readable predictable temp path — the
-        transcript carries the full conversation (maybe secrets) — and it carries the same
-        self-ignoring ``.gitignore`` ``for_workspace`` writes, so a served workspace that is also
-        a git checkout never commits one. The session id is validated as a safe filename component
-        first (the same trust boundary the SessionStore enforces). Re-rendered on each fire that
-        needs it (O(messages) per fire): accepted, because the projection must reflect the LIVE
-        history — compaction rewrites it, so an append-only cache would go stale — and the cost is
-        small next to a model call.
+        APPEND-ONLY (ADR-0206). Until then the file was re-rendered from the live history on
+        every fire, so each compaction erased everything before it from disk. Claude Code's
+        transcript does not work that way — a compaction ADDS a boundary row and a summary row
+        and removes nothing — and consumers written against it depend on that: a framework
+        report that counts ``isCompactSummary`` rows read 0 compactions for ever, an audit of
+        "the first call after the boundary" had no boundary to find, an archiver kept a copy
+        of a file that held one window, and a served run of 575 calls and 19 compactions left
+        64 lines from which nobody could say what its last 300 calls had been doing. Now each
+        message is written once (:meth:`_flush_transcript`), at every persist and on demand
+        here, and :meth:`_adopt_compacted` writes down what a compaction is about to drop
+        before it drops it. Cheaper as well: a fire costs the new messages, not all of them.
         """
-        from zakcode.hooks.transcript import render_claude_code_transcript
+        return self._flush_transcript()
+
+    def _transcript_file(self) -> Path | None:
+        """Where this session's transcript lives, its directory made ready — ``None`` for a
+        session id that is not a safe filename (the same trust boundary the SessionStore
+        enforces; defense-in-depth, never build a filesystem path from an unvalidated id).
+
+        BESIDE the session store, in a ``transcripts`` directory that is the sibling of its
+        ``sessions`` one (ADR-0061, mirroring ADR-0032). The terminal client's store is
+        ``~/.zakcode/sessions`` (re-rooted with it by ``ZAKCODE_HOME``, ADR-0159), so this stays
+        ``~/.zakcode/transcripts`` — unchanged for a real user. A SERVED workspace's store is
+        ``<workspace>/.zakcode/sessions``, so that mind's conversation stays inside that mind's
+        home. It followed ``Path.home()`` until then, which pooled the FULL conversation text
+        of every mind served by one host user into one shared directory keyed only by session
+        id — the cross-workspace leak ADR-0032 closed for the store itself while this file
+        went on bypassing it. No store injected (a bare AgentLoop) keeps the per-user config
+        home, which honours ZAKCODE_HOME (ADR-0159) — a bare Path.home() here leaked every
+        test run's transcripts.
+
+        The directory is 0700 and the file 0600, NOT a world-readable predictable temp path —
+        the transcript carries the full conversation (maybe secrets) — and it carries the same
+        self-ignoring ``.gitignore`` ``for_workspace`` writes, so a served workspace that is
+        also a git checkout never commits one. Made ready once per session id, not per write.
+        """
         from zakcode.session.store import _is_safe_session_id
 
         sid = self.session.id
         if not _is_safe_session_id(sid):
-            return ""  # defense-in-depth: never build a filesystem path from an unvalidated id
-        try:
-            text = render_claude_code_transcript(
-                self.session.messages, session_id=sid, cwd=self.session.cwd
-            )
-            # Sibling of the store's own directory, so the projection shares the conversation's
-            # lifetime and isolation instead of the serving host's (ADR-0061). No store injected
-            # (a bare AgentLoop) keeps the per-user config home, which honours ZAKCODE_HOME
-            # (ADR-0159) -- a bare Path.home() here leaked every test run's transcripts.
-            store = self.store
-            root = store.base_dir.parent if store is not None else zakcode_home()
-            directory = root / "transcripts"
+            return None
+        store = self.store
+        root = store.base_dir.parent if store is not None else zakcode_home()
+        directory = root / "transcripts"
+        path = directory / f"{sid}.jsonl"
+        if self._transcript_ready_for != str(path):
             directory.mkdir(parents=True, exist_ok=True)
             ignore = directory / ".gitignore"
             if not ignore.exists():  # never overwritten — the workspace may have its own
                 with contextlib.suppress(OSError):
                     ignore.write_text("*\n", encoding="utf-8")
-            path = directory / f"{sid}.jsonl"
-            path.write_text(text, encoding="utf-8")
             with contextlib.suppress(OSError):  # POSIX perms; harmless where unsupported
                 os.chmod(directory, 0o700)
+            self._transcript_ready_for = str(path)
+        return path
+
+    def _append_transcript(self, path: Path, text: str) -> None:
+        """Add ``text`` to the end of the transcript file, creating it 0600 if it is new.
+        The ONLY way this loop writes that file: nothing truncates or rewrites it."""
+        is_new = not path.exists()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(text)
+        if is_new:
+            with contextlib.suppress(OSError):  # POSIX perms; harmless where unsupported
                 os.chmod(path, 0o600)
+
+    def _flush_transcript(self) -> str:
+        """Append every message the transcript file does not hold yet and return the file's
+        path (ADR-0206) — ``""`` on any error, because the record must never be the thing
+        that breaks a turn, a persist or a compaction.
+
+        ``session.transcript_cursor`` counts the messages already written, so a message goes
+        in once however often this runs, and a resumed session carries on where the last
+        process stopped. Only three things happen to ``session.messages``: an append (picked
+        up here), a same-index replacement that shrinks an OLD message (a skill body elided
+        once its turn ended, ADR-0045 — the file keeps what was said when it was said), and a
+        compaction, which moves the cursor itself (:meth:`_mark_transcript_compacted`). A
+        cursor past the end of the list would mean a fourth road this loop does not know;
+        nothing already written is taken back, the count just restarts from where the list
+        ends now.
+        """
+        try:
+            path = self._transcript_file()
+            if path is None:
+                return ""
+            messages = self.session.messages
+            cursor = self.session.transcript_cursor
+            if not 0 <= cursor <= len(messages):
+                cursor = len(messages)
+            pending = messages[cursor:]
+            if pending or not path.exists():  # an empty session still hands hooks a real file
+                text = render_claude_code_transcript(
+                    pending, session_id=self.session.id, cwd=self.session.cwd
+                )
+                self._append_transcript(path, text)
+            self.session.transcript_cursor = len(messages)
             return str(path)
-        except Exception:  # noqa: BLE001 — a transcript projection must never break a hook fire
-            logger.warning("could not materialize CC transcript", exc_info=True)
+        except Exception:  # noqa: BLE001 — the record must never break its caller
+            logger.warning("could not write the CC transcript", exc_info=True)
             return ""
+
+    def _mark_transcript_compacted(
+        self, summary: str | None, *, trigger: str, before: int, pre_tokens: int
+    ) -> None:
+        """After ``session.messages`` was replaced by a compacted list: write the two rows
+        Claude Code writes at a compaction — when a region was really summarized — and move
+        the cursor to the end of the new list (ADR-0206).
+
+        The row carries the summary AS THE MODEL NOW READS IT (the head message of the new
+        list, marker and continuation note included), so the file says what the context was
+        replaced with and not a paraphrase of it. The kept tail is not written again: those
+        messages went in when they happened and sit above the boundary, as they do in a Claude
+        Code transcript. Never raises; whatever happens to the file, the cursor ends at the
+        new length, or the next flush would write the kept tail a second time.
+        """
+        messages = self.session.messages
+        try:
+            path = self._transcript_file() if summary is not None else None
+            if path is not None:
+                head = messages[0] if messages else None
+                said = head.text if head is not None and is_summary(head) else summary
+                self._append_transcript(
+                    path,
+                    render_compaction_rows(
+                        said or "",
+                        trigger=trigger,
+                        messages_before=before,
+                        messages_after=len(messages),
+                        pre_tokens=pre_tokens,
+                        session_id=self.session.id,
+                        cwd=self.session.cwd,
+                    ),
+                )
+        except Exception:  # noqa: BLE001 — the record must never break a compaction
+            logger.warning("could not mark the compaction in the CC transcript", exc_info=True)
+        self.session.transcript_cursor = len(messages)
 
     async def _fire_lifecycle(
         self,
