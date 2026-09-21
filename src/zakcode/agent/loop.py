@@ -2229,6 +2229,16 @@ class AgentLoop:
         #: are never persisted, so this is the only record of what the model was told last.
         self._call_rails: list[str] = []
         self._call_rails_rested = False
+        #: ADR-0205: the rails deliberately NOT sent on the call being assembled, by kind. Today
+        #: that is one thing, ``plan_complete`` (see ``_refused_plan``). Written beside ``rails``
+        #: so that "there was no finished plan" and "its line was kept silent" read differently.
+        self._call_rails_silenced: list[str] = []
+        #: ADR-0205: the FINISHED plan a turn-end hook refused a stop on, as its progress
+        #: signature, or ``None``. While the board still holds exactly that plan, its "answer
+        #: now" line (ADR-0108) is not sent: the hook has said what happens next, and the line
+        #: would be the last word of every request after it, saying the opposite. Set in
+        #: :meth:`_fire_turn_end`; dropped in :meth:`_messages_for_call` once the plan moves on.
+        self._refused_plan: str | None = None
         self._cache_flat_run: tuple[str, int, int, int, int] | None = None
         self._cache_probe_rests_next = False
         self._cache_probe_rested: tuple[str, int, int] | None = None
@@ -3007,6 +3017,13 @@ class AgentLoop:
         """
         self._call_has_tail = False
         self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
+        self._call_rails_silenced = []
+        if self._refused_plan is not None and not self.session.task_network.is_complete():
+            # ADR-0205: the refused plan moved on (new steps, or the board was cleared). Whatever
+            # finishes next is a NEW plan even if it reads the same, and its closing line is owed
+            # once. Looked at on EVERY request, before the rest decision below: a plan reopened on
+            # a resting call and closed again by the next would otherwise never be seen to move.
+            self._refused_plan = None
         if self._tail_rests_this_call():
             # ADR-0193: this call goes out as the persisted history alone, so the provider
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
@@ -3045,6 +3062,8 @@ class AgentLoop:
             # chose the form a moment ago, not a guess from the text it produced.
             finished = self.session.task_network.is_complete()
             self._call_rails.append("plan_complete" if finished else "plan")
+        elif self._refused_plan_is_current():
+            self._call_rails_silenced.append("plan_complete")  # ADR-0205: withheld on purpose
         if not tail:
             return self.session.messages
         self._call_has_tail = True
@@ -3214,14 +3233,34 @@ class AgentLoop:
         # Head AND tail (ADR-0112): a long request's constraints live at its end.
         network.context = PlanContext(request=clip_ends(headline, MAX_REQUEST_CHARS))
 
+    def _refused_plan_is_current(self) -> bool:
+        """Whether the board holds exactly the finished plan a turn-end hook refused a stop on
+        (ADR-0205). Exactly: any edit, reopening or new step changes the signature, and the
+        plan that then finishes is owed its closing line again."""
+        network = self.session.task_network
+        return (
+            self._refused_plan is not None
+            and network.is_complete()
+            and network.progress_signature() == self._refused_plan
+        )
+
     def _plan_reminder(self) -> Message | None:
-        """An ephemeral user message carrying the live plan, or ``None`` when no plan exists."""
+        """An ephemeral user message carrying the live plan, or ``None`` when there is no plan
+        to show: none exists, or (ADR-0205) it is the finished plan whose stop a hook refused."""
         network = self.session.task_network
         rendered = network.render(elide_done=True)  # the working-memory form (ADR-0184)
         if not rendered:
             return None
         request = network.context.request
         if network.is_complete():
+            if self._refused_plan_is_current():
+                # ADR-0205: this line asks for the closing answer. A turn-end hook has just
+                # refused to let the turn close and said what to do instead, and an ephemeral
+                # line rides LAST: sent now, it would follow the hook's words on every request
+                # and contradict them (one message says carry on, the next says answer and
+                # stop). Measured on gpt-5.6-luna: 18 of 116 rollouts stopped a second time
+                # with the line, 0 of 116 without it (bench/results/veto-door-preregistration.log).
+                return None
             # ADR-0108: the call after the last step closes is the one that must produce the
             # ANSWER. Handing it the finished checklist as its highest-salience message is
             # what made small models narrate the plan's state instead ("all steps are
@@ -4547,6 +4586,7 @@ class AgentLoop:
                 # present (an empty list says "nothing"), so a missing key means an older build.
                 rails=list(self._call_rails),
                 rails_rested=self._call_rails_rested,
+                rails_silenced=list(self._call_rails_silenced),  # ADR-0205
             )
             # The measured size of what was just sent floors the next pre-call
             # compaction check (ADR-0077).
@@ -6024,6 +6064,19 @@ class AgentLoop:
         if self._turn_end_veto_reset is not None:
             self._turn_end_veto_reset()
         self._veto_delivered = None
+        # ADR-0205: the stop is refused and the turn goes on. If it was taken on a FINISHED plan,
+        # remember which, so that plan's "answer now" line stays silent (see
+        # :meth:`_plan_reminder`) for as long as the board holds exactly it. Any refusal counts,
+        # whatever the stop reason: what matters is that the hook now has the last word.
+        network = self.session.task_network
+        if network.is_complete():
+            self._refused_plan = network.progress_signature()
+            self._note(
+                "intervention",
+                "turn-end hook refused the stop on a finished plan; its answer-now reminder is "
+                "silent until the plan changes",
+                kind="veto_plan_silenced",
+            )
         if reentry is not None:
             self._vetoes_without_skill += 1
             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
@@ -8334,6 +8387,7 @@ class AgentLoop:
                                 streamed=True,
                                 rails=list(self._call_rails),  # ADR-0204, as the buffered twin
                                 rails_rested=self._call_rails_rested,
+                                rails_silenced=list(self._call_rails_silenced),  # ADR-0205
                             )
                             # Streaming twin of _call_provider's anchor (ADR-0077).
                             self._anchor_prompt(attempt_usage.prompt_tokens)
