@@ -8,10 +8,11 @@ events.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from zakcode.hooks import HookEvent
-from zakcode.hooks.settings_loader import load_settings_hooks
+from zakcode.hooks.settings_loader import _SKIP_EVENTS, load_settings_hooks
 
 
 def _write_settings(ws: Path, obj: dict, *, subdir: str = ".claude") -> None:
@@ -137,7 +138,7 @@ def test_load_settings_stop_failure_skipped(tmp_path: Path) -> None:
     assert "not implemented" in errors["StopFailure"].lower()
 
 
-# ── UserPromptSubmit => skipped, not "unknown" ──────────────────────────
+# ── UserPromptSubmit => registers (ADR-0134) ────────────────────────────
 
 
 def test_load_settings_user_prompt_submit_registers(tmp_path: Path) -> None:
@@ -207,6 +208,45 @@ def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> Non
     assert len(specs) == len(registered), (
         f"{len(registered)} events reported no error but only {len(specs)} specs loaded"
     )
+
+
+# ── the docs' deferred lists are the loader's ────────────────────────────────
+
+_DOCS = Path(__file__).resolve().parents[1] / "docs"
+
+
+def _deferred_events_named_by(doc_text: str) -> set[str]:
+    """The event names in the bold HEAD of the one bullet that lists deferred hook events.
+
+    Both docs open that bullet the same way: a list item whose bold head is backticked event
+    names and ends in ``events**``. Exactly one such bullet may exist, so a doc that grows a
+    second, or rewords the head out of reach, fails here instead of going unread.
+    """
+    heads = re.findall(r"^- \*\*(`[^*]*events)\*\*", doc_text, flags=re.MULTILINE)
+    assert len(heads) == 1, f"expected ONE deferred-events bullet, found {len(heads)}"
+    return set(re.findall(r"`([A-Za-z]+)`", heads[0]))
+
+
+def test_the_docs_name_exactly_the_deferred_hook_events() -> None:
+    """A compat-map claim that no test reads is a claim nobody keeps, in EITHER direction.
+
+    The test above pins the deferral set, and its comment says why: a deferral nobody is forced
+    to retire leaves the doc lying. It forced the implementer of ``UserPromptSubmit`` (ADR-0134)
+    to update the TEST. Nothing forced the docs, and for weeks both went on telling a framework
+    author that a hook which fires on every prompt was skipped. So the docs are read here.
+    """
+    for name in ("CLAUDE-MIND-COMPAT.md", "CLAUDE-CODE-HOST-ROADMAP.md"):
+        named = _deferred_events_named_by((_DOCS / name).read_text(encoding="utf-8"))
+        assert named == _SKIP_EVENTS, f"{name} names {sorted(named)}, the loader skips " + str(
+            sorted(_SKIP_EVENTS)
+        )
+
+
+def test_the_docs_check_can_see_a_stale_bullet() -> None:
+    """The positive control: the head both docs carried until 2026-09-21 must FAIL the check."""
+    stale = "- **`StopFailure` + `UserPromptExpansion` + `UserPromptSubmit` events** — skipped\n"
+    assert _deferred_events_named_by(stale) != _SKIP_EVENTS
+    assert _deferred_events_named_by(stale) == _SKIP_EVENTS | {"UserPromptSubmit"}
 
 
 # ── timeout honored ──────────────────────────────────────────────────────────
