@@ -1623,3 +1623,116 @@ MANIFEST  bench/served_doors.py  sha256 prefix 1a436d4c2d60a6c4
           0 / 9 / 8; the fence check holds on all 6 turns of the two runs.
 MANIFEST  bench/served_rests.py  sha256 prefix 28f80f34866e0791
           control: windows 600.30 / 600.29 / 302.06 s, 1502.65 of 2054.25 s.
+
+=== 03:09 UTC 2026-09-21 RESULTS -- SERVED LOOP ON LUNA, SAMPLE 6: READING = RESTS GONE, at one run per arm. C: 2 turns ended veto_stall, 1200.75 of 2055.46 s idle. T: 0 turns, 0 s idle. The one licensed replication is declared below and has NOT run ===
+
+Read exactly as registered in the 01:32 UTC block (PR #584, on main as 32cf0b4 before either launch; the launcher
+fetched origin and refused until it was there). Both readers were run from main at their MANIFEST hashes.
+  C  launched 01:45:25Z, run-stop request 02:19:40.456, done 02:22:59Z.   world zc-served6c-2ef7373f
+  T  launched 02:23:57Z, run-stop request 02:58:11.589, done 03:04:31Z.   world zc-served6t-ce005e7b
+The spend gate did its job in the order it was written: C was read first (V_C = 2), and only then was T launched.
+
+GATES. All seven held for both arms.
+  G1-G5  asserted by the launcher before spend, per arm: commit, clean tree and src hash (C 665e9ad / 0f84ac1b4a2a,
+         T c22b46f / b0ca42e66e16); the world unrun, provisioned, patched (74b5eca7c44d0189), queue 7234 bytes, the
+         kit identical to the control's; the in-sandbox check of import path, arm marker, posture and the unset idle
+         stop; this log's block on origin/main; the live daemon healthy (200) before and after each run, 0 leaked
+         mounts.
+  G6     each run's first progress line names its own arm's tree as the zakcode source.
+  G7     C: 277 usage events, 277 with rails, 0 with the rails_silenced key. T: 503, 503 and 503.
+  The reader's check on its own reading of the fence holds on all five turns: both of C's stalled turns end on
+  exactly three doors with no skill body loaded.
+
+READING: RESTS GONE.  V_C = 2.  V_T = 0.
+  The registered condition for attributing it is met in both halves: C shows the mechanism live where it stalled (its
+  first stalled turn ended on two finished-plan doors, line SENT, answered in words again), and every one of T's 11
+  finished-plan doors shows the line SILENT. So, in the rule's own words, it is ATTRIBUTED to ADR-0205.
+  And, in the rule's own words again, IT IS ONE RUN PER ARM. Six earlier served runs ended 0, 1, 2, 2, 3 and 3 turns
+  veto_stall on their own, so a single run with 0 is something the baseline has done by itself. Nothing ships or
+  un-ships from this. The one replication the rule licenses is declared at the foot of this block and has NOT run.
+
+                                              C  (ADR-0205 absent)        T  (ADR-0205 present)
+  turns ended veto_stall before the stop      2  (of 3 turns)             0  (1 turn of 497 iterations, to the stop)
+  windows with no model call                  600.39 s, 600.36 s          none
+  idle / run (launch to run-stop request)     1200.75 / 2055.46 s  58.4%  0 / 2054.59 s  0%
+  doors (honoured refusals)                   8                           12
+    on a finished plan (F) / other (o)        8 / 0                       11 / 1
+    finished-plan line at F doors             sent 8                      silent 11
+    stopped again in words (-)                2                           0
+    resumed, loaded no skill body (+)         4                           2
+    loaded a skill body (*)                   2                           10
+  by turn                                     F+ F- F-  |  F+ F+ F+  |    F+* F+* F+* F+* F+* F+* F+* F+ F+* o+* F+
+                                              F+* F+*                     F+*
+  requests / line SENT / line SILENCED        277 / 54 / 0                503 / 18 / 133
+  open-plan reminder sent / tail rested       124 / 95                    190 / 159
+  T's refusals noted on a finished plan       --                          11, equal to its 11 F doors: nothing
+                                                                          reopened a plan between a refusal and the
+                                                                          next request.
+
+WHAT THE DOOR TABLE SHOWS THAT THE RULE DID NOT ASK FOR. Description, not cause.
+  The outcome the pre-registration named in advance as class N -- a door that resumes work and leaves the fence
+  counting -- turned up in the BASELINE, not in T. C's second stalled turn ended on three doors that ALL resumed (9,
+  2 and 2 tool calls) and loaded nothing; C's first ended on one such door and two answered in words. Of C's six
+  trailing doors, four are N and two are words-again. ADR-0205 was shipped for the two. Had T differed from C only
+  at doors of that kind, C's second stall would have survived in T. It did not: in T, 10 of 12 doors went on to load
+  a skill body, against 2 of 8 in C. The line is not only the last thing said at a door. On C's build it rides every
+  request for as long as the plan stays finished: 54 of C's 277 requests. On T's build it still rides a finished
+  plan's requests until a stop on that plan is refused (18 of 503), and from then on it stays off until the plan
+  changes (133 of 503). That is a difference in how the two arms were treated, measured; this sample cannot say
+  whether it is why resumed doors went on to load. I had reasoned before launch that resumed-but-unloaded doors
+  would keep T's turns stalling. The reasoning about the fence was right and its weight was wrong.
+
+ESTIMATES, scored.
+  C is read                       85%   READ.
+  V_C >= 1                        80%   2.
+  T is read                       85%   READ.
+  V_T = 0                         20%   IT HAPPENED. On the wrong side again, as with the control's 30% call two days
+                                        ago: twice now I have under-rated the branch in which the loop keeps going.
+  share of C's doors that are F   65%   100% (8 of 8). T: 11 of 12. I said I did not know this. The largest miss.
+  F doors answered in words       C 55%, T 20%   C 25% (2 of 8), T 0% (0 of 11).
+  largest class if RESTS REMAIN   not reached.
+
+SECONDARY MEASURES, deciding nothing.
+                                              C                           T
+  main-loop calls / cost / cached share       277 / $1.1359 / 83%         503 / $1.6264 / 91%
+  cost per second of model activity           $0.00133 (854.71 s active)  $0.00079 (2054.59 s active)
+  tool calls / failed                         275 / 20  (7.3%)            500 / 62  (12.4%)
+  plan share of the tool ledger               21.1%  (58 / 275)           23.6%  (118 / 500)
+  skill bodies loaded / pointers answered     25 / 6                      45 / 11
+  goals the run completed                     1                           1
+  the run-stop sequence                       finished: mode assistant,   started, NOT finished: state IDLE, mode
+                                              no stop artifact left       still autonomous, a checkpoint left behind
+  Both arms reached and held RUNNING, initialised the meta tier, and spent well under the $6.00 bound. My spend
+  estimate for T ($1 to $3.3) held. T cost less per active second than C; 91% of its prompt tokens were cached
+  against C's 83%.
+
+MEASURED HERE AND NOT EXPLAINED. None of these touches the branch.
+  - T's run-stop sequence did not finish inside its grace. The sidecar logged that a stop HAD started and left the
+    pair for the framework's own resume, which is its designed behaviour; C's finished. One run each, so nothing is
+    concluded about the arms from it.
+  - T failed 62 of 500 tool calls against C's 20 of 275. T also ran 2.4 times as long with the model active.
+  - The completed goal in each arm is one the loop itself FILED during that run and then closed. It is the first
+    completion a served run of this campaign has recorded (six earlier runs: 0), and whether either completion did
+    its work was not examined. A marker that a run closed something is not evidence that it produced something.
+  - Persona read false under a RUNNING autonomous loop in C, sampled live twice mid-run (02:00:29Z and 02:01:13Z).
+    The skill that would set it loaded 0 times in C's whole run. T was not sampled mid-run, so nothing is said about
+    it. This is the state Ayoai-Mind goal g-115-10414 already owns; one more instance for it.
+
+WHAT THIS DOES NOT SHOW. That the rests are gone for good: one run per arm, and the baseline has produced a 0 before.
+Why T's doors went on to load skill bodies. Anything about another model, another depth or another tier. That a loop
+which keeps running does useful work: T made 503 calls and closed one goal it had filed itself. Whether the fence's
+definition is right -- it never fired in T, so T says nothing about it.
+
+THE ONE LICENSED REPLICATION, declared before it runs. RESTS GONE licenses exactly one: arm T's build again (c22b46f,
+the same worktree, src tree b0ca42e66e16), in a fresh world, at the same settings and behind the same seven gates. The
+launcher additionally refuses until THIS block is on origin/main.
+  World zc-served6t2-5c989f3b, built by the repaired world builder, so its claim patch was applied BEFORE provisioning
+  where C's and T's were applied after it; same patched hash, same 7234-byte starting queue, 0 session files.
+  Reading, as registered: 0 turns ended veto_stall before the run-stop request reads "RESTS GONE, replicated once".
+  One or more reads RESTS REMAIN, standing on the run that stalled, and the registered partition (W / O / N / U) is
+  then applied to that run's trailing doors. Either way no further served run is licensed by this registration.
+  My estimate, before it runs: 0 stalled turns 60%. One clean run moved me a long way from 20%, and it should not move
+  me to certainty: 2 of T's 12 doors still resumed without loading, and three of those in a row ends a turn.
+
+SPEND. C $1.1359 + T $1.6264 = $2.7623 for the pair. Campaign total about $12.35. The replication is expected at about
+$1.6 and is bounded, like every run here, at $6.00 by the supervisor.
