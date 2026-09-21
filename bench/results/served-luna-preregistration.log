@@ -2138,3 +2138,78 @@ mount table whether a run was in flight. The sandbox mounts a world in a PRIVATE
 sees it and that check could only ever say no. Found with run 1 in flight and the check reading 0. Both scripts now
 look for the run's own process; with run 1 alive the count was 4 and both refused, as they must. Runs had in fact been
 kept sequential by the run-done gate, not by that check.
+
+=== 08:47 UTC 2026-09-21 PRE-REGISTRATION -- THE STUCK LADDER IN A SERVED LOOP, A FREE RE-READ OF SAMPLE 7'S OWN LOGS: were its rungs the loop's regular repeats or a model circling? No run, no spend, read after sample 7's own reading ===
+WHY. The ladder's repeated-outcome signal (ADR-0038) counts identical (tool, epoch, output) observations over a whole
+turn, and only a successful workspace-write call opens a new epoch. A served perpetual loop is one very long turn that
+changes its world through shell scripts, so in it the count can only grow: the third return of any output is a nudge,
+the fourth a read-only iteration, the fifth a step back, the sixth a stop. Sample 6's second treated run drew 18 stuck
+notes in one turn, 17 of them on a repeated outcome (tools: Bash 13, Read 2, update_plan 1, LS 1; repeats 3 to 5), two
+of them before its last lap closed at request 243, one at request 252 and fourteen between requests 314 and 567. That,
+and reading the tracker's code, is what prompted this; I say so because it is a look at data before a rule. ADR-0038's
+own amendment says keeping the counts across a refused stop has not been shown wrong by any run. No run could show it:
+the transcript was a live window. Since ADR-0206 it is append-only.
+THE QUESTION. Were the rungs a served run drew the loop's own regular repeats (one output returning once a lap), or a
+model circling inside a lap? It is a question about logs already paid for. No run, no spend.
+WHAT IS READ. Every world of sample 7 that passed its gates (runs 1 to 3 as I write, run 4 if it gates), whatever its
+pair count: the pair floor belongs to sample 7's question, not to this one. Build K's tracker is main's
+(agent/stuck.py sha256 prefix 7eac8c537046ec74 in both), and K's lots change a plan reminder, never the ladder. The
+reader is run with the build that served the runs on its import path.
+WHAT I KNOW OF SAMPLE 7 AS I WRITE. The gates and pair counts of runs 1 to 3 (2, 4 and 4 complete pairs; run 4 is in
+flight). From run 1 also its diary's phase labels and clocks and its transcript's row count and size, the deviation
+already owed to sample 7's results block. I have seen no stuck note, no tool call and no tool output of any sample 7
+world, and no ladder reader of any version has been pointed at one. Sample 7's own reading is taken first and this
+re-read cannot touch it.
+THE INSTRUMENT. bench/served_ladder.py feeds the product's own StuckTracker the transcript's calls the way the loop
+does: a fresh tracker per turn (turns split by the trace's per-turn call counts; a served run is one session, and a
+world holding more than one is refused by name), the epoch read after the batch ran, and a reset where the loop resets
+(after a completion that called no tool and was answered by the harness, and after a stop rung the run went on from).
+What could drift is asked of the product and not copied: the uncounted tools, the workspace-write tier, the note a
+refused stop's delivery carries; and the selftest's transcripts are rendered by the product's transcript writer. 65
+known answers; bench/served_ladder_mutants.py holds 51 mutants and each dies by a named check, the unchanged copy
+passing. It prints labels, counts and distances only.
+WHAT A LAP IS. Only what the product itself can know. A turn-end hook that refuses a stop names the skill the loop is,
+the harness delivers it and keeps its name (ADR-0187). A lap boundary is that skill delivered again: by the harness at
+a refused stop, or as the BODY answering the model's own Skill call for it. A pointer is not a delivery, the body of
+another skill is not a lap, and before the first refused stop nothing is.
+THE CONTROL, per world. A replay is believed only if it reproduces the product's own record. (1) The (tool, repeats)
+sequence of the trace's repeated-outcome stuck notes must match the replay's under the shipped rule, at least 80% in
+order, counted against the LONGER of the two lists. (2) The refused stops found in the transcript must be the
+deliveries the trace noted, give or take one. A world failing either is left out and named. Already run on real logs:
+sample 6's three worlds, whose transcripts were live windows (22, 19 and 52 calls against 275, 500 and 617 on the
+trace), are all refused and the reading is REPLAY NOT TRUSTED, as it must be; the trace side of those worlds read 8,
+12 and 16 delivered refusals, the published counts. Whether the control can PASS on a real append-only world is not
+known until sample 7's are read: that is the first thing the re-read reports.
+RULES REPLAYED on the same calls. turn: the product's. lap: the count starts again at a lap boundary. body: at any
+skill body. reentry: at any Skill call. window:40: only the last 40 tool-call iterations are remembered. The reading
+is taken on lap. The other three are described only: under body or reentry a model that hops between skills, or
+alternates a Skill call with one probe, would never climb.
+WHAT IS REPORTED, per world and pooled over the worlds that pass the control: rungs by kind under each rule; and for
+every repeated-outcome rung under the shipped rule its tool, its repeat count, how many iterations apart the identical
+observations were, whether a lap boundary, a body or any Skill call lay between them, whether ONLY refused stops lay
+between them, whether the repeated output was an error, and the errors in the iteration after a read-only rung.
+THE READING, one, pooled, in this order. REPLAY NOT TRUSTED: fewer than half the worlds pass the control, or none. TOO
+FEW: fewer than 10 repeated-outcome rungs under the shipped rule. With S those rungs and L the rungs the lap rule
+draws on the same calls, the share removed is (S - L) / S. LOOP REGULARITY: the share is at least 70%. CIRCLING: at
+most 30%. MIXED: anything between. Thresholds met exactly are met.
+WHAT EACH LICENSES. REPLAY NOT TRUSTED: nothing about the ladder. I may look at WHY the control failed (counts only),
+repair the reader, rerun its mutation proof, and read ONCE more, reported as a second reading with the repair
+described; a second failure ends it. TOO FEW: nothing; the table is published. CIRCLING: the counting rule stays as it
+is; the ladder is catching repeats inside a lap, and the next question is what the model repeats, from the by-tool and
+error columns. MIXED: no product change; the same reader is run on the next served sample's worlds and read alone, not
+pooled with these. LOOP REGULARITY: a change to the counting rule may be DESIGNED, one behaviour and no flag, with
+every existing ADR-0038 test kept green and new tests for: a healthy many-lap loop draws no rung; circling inside a
+lap still climbs; a pointer is not a lap; the body of another skill is not a lap; and a model that stops in words
+after every probe while one result keeps returning is still caught. That last one is this replay's blind spot: a
+refused stop is a lap boundary here, so such a model never climbs under the lap rule as replayed. The
+refused-stops-only column says how much of the removed share sits there, and if it is most of it the design must carry
+a bound of its own before it is a candidate. A product change then needs a separately registered served sample with a
+concurrent control before anything is said about laps.
+WHAT NO OUTCOME LICENSES. That the rungs harmed a run, that fewer rungs would close more laps, or that the model would
+have acted the same without the rungs it really drew. A replay shows where a rule would have fired on the same calls
+and nothing else.
+MY ESTIMATES, to be scored. The control passes in at least half the worlds: 65% (first use on real append-only logs; a
+reset the transcript cannot show, or a tool tier the registry does not list, would cost matches). Given that, 10 or
+more pooled rungs: 85%. Share the lap rule removes: 60%, anywhere from 25% to 90%. Of the rungs it removes, those with
+only refused stops between the repeats: 65%. Reading: LOOP REGULARITY 35%, MIXED 35%, REPLAY NOT TRUSTED 15%, CIRCLING
+10%, TOO FEW 5%.
