@@ -382,4 +382,7 @@ if __name__ == "__main__":
         at = argv.index("--skill")
         name = argv[at + 1]
         del argv[at : at + 2]
+    if len(argv) != 1:  # no world named: say how it is used, as the other served readers do
+        print(__doc__)
+        raise SystemExit(2)
     print(json.dumps(read_world(Path(argv[0]), name), indent=2))
