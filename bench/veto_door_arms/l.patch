@@ -1,0 +1,85 @@
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index 7476908..bcf165a 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -2240,6 +2240,12 @@ class AgentLoop:
+         #: would be the last word of every request after it, saying the opposite. Set in
+         #: :meth:`_fire_turn_end`; dropped in :meth:`_messages_for_call` once the plan moves on.
+         self._refused_plan: str | None = None
++        #: Arm L of the veto-door bench (registration 3): a turn-end hook's honoured refusal has
++        #: NAMED a skill re-entry in this turn, so the hook, and not the plan, decides when the
++        #: turn may end. From then on no finished plan in this turn is sent its "answer now" line
++        #: (ADR-0108): a loop finishes a plan on every pass, and the line asks for a closing answer
++        #: the hook will refuse. Set in :meth:`_fire_turn_end`, dropped where a turn starts.
++        self._hook_governs_turn_end = False
+         self._cache_flat_run: tuple[str, int, int, int, int] | None = None
+         self._cache_probe_rests_next = False
+         self._cache_probe_rested: tuple[str, int, int] | None = None
+@@ -3102,7 +3108,7 @@ class AgentLoop:
+             # chose the form a moment ago, not a guess from the text it produced.
+             finished = self.session.task_network.is_complete()
+             self._call_rails.append("plan_complete" if finished else "plan")
+-        elif self._refused_plan_is_current():
++        elif self._answer_now_is_silent():
+             self._call_rails_silenced.append("plan_complete")  # ADR-0205: withheld on purpose
+         if not tail:
+             return self.session.messages
+@@ -3284,6 +3290,14 @@ class AgentLoop:
+             and network.progress_signature() == self._refused_plan
+         )
+ 
++    def _answer_now_is_silent(self) -> bool:
++        """Whether a FINISHED plan on the board is kept silent: it is the plan a turn-end hook
++        refused a stop on (ADR-0205), or (arm L) a hook that names a skill re-entry governs this
++        turn's end. One predicate, read by the reminder and by the per-request trace label."""
++        if self._refused_plan_is_current():
++            return True
++        return self._hook_governs_turn_end and self.session.task_network.is_complete()
++
+     def _plan_reminder(self) -> Message | None:
+         """An ephemeral user message carrying the live plan, or ``None`` when there is no plan
+         to show: none exists, or (ADR-0205) it is the finished plan whose stop a hook refused."""
+@@ -3293,7 +3307,7 @@ class AgentLoop:
+             return None
+         request = network.context.request
+         if network.is_complete():
+-            if self._refused_plan_is_current():
++            if self._answer_now_is_silent():
+                 # ADR-0205: this line asks for the closing answer. A turn-end hook has just
+                 # refused to let the turn close and said what to do instead, and an ephemeral
+                 # line rides LAST: sent now, it would follow the hook's words on every request
+@@ -6204,6 +6218,18 @@ class AgentLoop:
+                 "silent until the plan changes",
+                 kind="veto_plan_silenced",
+             )
++        if reentry is not None and not self._hook_governs_turn_end:
++            # Arm L: a refusal that names a skill to re-enter is how a perpetual loop goes round.
++            # The hook has the last word on this turn's end from here on, so a plan that finishes
++            # later in it is not asked for a closing answer either (see the attribute).
++            self._hook_governs_turn_end = True
++            self._note(
++                "intervention",
++                f"a turn-end hook governs this turn's end (it asked for /{reentry[0]}); finished "
++                "plans keep their answer-now reminder silent until the turn ends",
++                kind="turn_end_governed",
++                skill=reentry[0],
++            )
+         if reentry is not None:
+             self._vetoes_without_skill += 1
+             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
+@@ -6598,6 +6624,7 @@ class AgentLoop:
+         failed_over = False  # runtime model failover fires at most once per turn
+         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
++        self._hook_governs_turn_end = False  # arm L: a new turn owes its first finished plan a line
+         self._veto_stall = False
+         self._veto_delivered = None
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
+@@ -8165,6 +8192,7 @@ class AgentLoop:
+         failed_over = False  # runtime model failover fires at most once per turn
+         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
++        self._hook_governs_turn_end = False  # arm L: a new turn owes its first finished plan a line
+         self._veto_stall = False
+         self._veto_delivered = None
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
