@@ -270,7 +270,7 @@ class WebFetchTool(Tool):
         if not _looks_textual(content_type):
             return ToolResult.error(
                 f"{self._out(final_url)} returned non-text content (content-type: "
-                f"{defang_untrusted(content_type) or 'unknown'}); web_fetch only reads text/HTML.",
+                f"{defang_untrusted(content_type) or 'unknown'}); WebFetch only reads text/HTML.",
                 data={"final_url": self._secrets.scrub(final_url), "content_type": content_type},
             )
 
@@ -331,7 +331,7 @@ class WebFetchTool(Tool):
                 host = urlsplit(current).hostname or ""
                 if self._allowed and not host_allowed(host, self._allowed):
                     raise BlockedUrlError(
-                        f"host {host!r} is not in the configured web_fetch allowlist "
+                        f"host {host!r} is not in the configured WebFetch allowlist "
                         f"(ZAKCODE_WEB_ALLOWED_DOMAINS)"
                     )
                 # Validate + pin to the checked IP off the event loop (the guard does DNS).

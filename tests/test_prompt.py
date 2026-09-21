@@ -457,7 +457,7 @@ def test_skill_paging_contract_is_in_the_stable_tier(tmp_path: Path) -> None:
     settings = load_settings(workspace_root=tmp_path)
     prompt = SystemPromptBuilder().build(settings)
     stable = prompt[: prompt.index(DYNAMIC_BOUNDARY)]
-    assert "Skills (use_skill):" in stable
+    assert "Skills (Skill):" in stable
     assert "PAGED" in stable and "page k/N" in stable
     assert "update_plan" in stable
     assert "`skill_too_large`" in stable

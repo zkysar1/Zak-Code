@@ -377,7 +377,7 @@ async def test_web_search_happy_path(tmp_path: Path) -> None:
     assert not res.is_error
     assert "1. Python" in res.output and "https://python.org" in res.output
     assert res.data and res.data["count"] == 2 and res.data["backend"] == "fake"
-    assert res.hint and "web_fetch" in res.hint
+    assert res.hint and "WebFetch" in res.hint
 
 
 async def test_web_search_caps_results(tmp_path: Path) -> None:

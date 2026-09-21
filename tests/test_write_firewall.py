@@ -112,7 +112,7 @@ def test_refusal_classifies_content_cut_off_at_its_last_line_as_truncated() -> N
         r = diagnose_python_syntax("a.py", content)
         assert r is not None, content
         assert r.cause == "truncated", (content, r.message)
-        assert "was cut off" in r.fix and "edit_file" in r.fix
+        assert "was cut off" in r.fix and "Edit" in r.fix
 
 
 def test_refusal_classifies_a_real_newline_inside_a_string() -> None:
@@ -227,7 +227,7 @@ def test_a_skill_naming_a_host_that_does_not_exist_is_refused_with_the_remedy() 
     message, bad = hit
     assert bad == ["api.fantasy.yahoo.com"]
     assert "api.fantasy.yahoo.com" in message and "does not exist" in message
-    assert "web_search" in message and "unverified" in message  # both remedies named
+    assert "WebSearch" in message and "unverified" in message  # both remedies named
     assert "Never invent a host" in message
 
 

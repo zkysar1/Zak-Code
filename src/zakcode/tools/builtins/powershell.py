@@ -52,7 +52,7 @@ class PowerShellTool(Tool):
         name="powershell",
         description=(
             "Run a PowerShell command with the workspace as the working directory "
-            "(uses pwsh / powershell.exe — prefer this over 'bash' on Windows for "
+            "(uses pwsh / powershell.exe — prefer this over 'Bash' on Windows for "
             "cmdlets and PowerShell syntax). stdout and stderr are combined. Times out "
             "after 60s by default (max 600s). Returns a non-zero exit code as an error."
         ),
@@ -86,7 +86,7 @@ class PowerShellTool(Tool):
         if exe is None:
             return ToolResult.error(
                 "PowerShell is not available on this host (neither 'pwsh' nor "
-                "'powershell' is on PATH). Use the 'bash' tool instead.",
+                "'powershell' is on PATH). Use the 'Bash' tool instead.",
                 data={"command": command, "powershell_missing": True},
             )
 

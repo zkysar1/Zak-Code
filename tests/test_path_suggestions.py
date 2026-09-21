@@ -55,7 +55,7 @@ def test_read_file_not_found_with_nothing_close_says_search_first(tmp_path: Path
     (tmp_path / "a.txt").write_text("x\n")
     result = _run(ReadFileTool(), {"path": "zzz-missing.py"}, ToolContext(workspace_root=tmp_path))
     assert result.is_error and result.output == "File not found: zzz-missing.py"
-    assert result.fix is not None and 'grep(pattern="zzz\\-missing\\.py")' in result.fix
+    assert result.fix is not None and 'Grep(pattern="zzz\\-missing\\.py")' in result.fix
     assert result.data == {"suggestions": {"by_name": [], "by_content": []}}
 
 

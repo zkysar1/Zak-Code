@@ -30,7 +30,7 @@ class SecretNamesTool(Tool):
         name="secret_names",
         description=(
             "List the names of secrets saved for this session (API keys etc.). Values are "
-            "never shown; use a name as {{secret:NAME}} in web_fetch's url or headers and "
+            "never shown; use a name as {{secret:NAME}} in WebFetch's url or headers and "
             "the real value is substituted outside your context."
         ),
         parameters={"type": "object", "properties": {}},
@@ -50,9 +50,9 @@ class SecretNamesTool(Tool):
             )
         listing = "\n".join(f"- {name}" for name in names)
         return ToolResult.ok(
-            f"Available secrets (reference as {{{{secret:NAME}}}} in web_fetch):\n{listing}",
+            f"Available secrets (reference as {{{{secret:NAME}}}} in WebFetch):\n{listing}",
             data={"names": names},
-            hint='e.g. web_fetch with headers {"Authorization": "Bearer {{secret:'
+            hint='e.g. WebFetch with headers {"Authorization": "Bearer {{secret:'
             + names[0]
             + '}}"}',
         )

@@ -60,7 +60,7 @@ def skill_directory_line(skill_md: str | None, workspace_root: Path) -> str:
         listed = "(only SKILL.md)"
     return (
         f"[skill directory] {_display(skill_dir, Path(workspace_root))}: {listed}. "
-        "The skill IS this directory; read_file its scripts before describing what it is or does."
+        "The skill IS this directory; Read its scripts before describing what it is or does."
     )
 
 

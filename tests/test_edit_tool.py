@@ -127,7 +127,7 @@ def test_empty_old_string_is_error(tmp_path: Path) -> None:
     )
 
     assert result.is_error
-    assert "write_file" in result.output
+    assert "Write" in result.output
     assert target.read_text(encoding="utf-8") == "content"
 
 

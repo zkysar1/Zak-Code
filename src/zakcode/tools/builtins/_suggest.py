@@ -170,8 +170,8 @@ def not_found_fix(missing: str, found_any: bool) -> str:
             "not the workspace. Do not ask the user for a path the suggestions already name."
         )
     return (
-        f'search before concluding it is missing: grep(pattern="{re.escape(stem)}") from the '
-        "workspace root searches every file by content, and list_dir shows what a directory "
+        f'search before concluding it is missing: Grep(pattern="{re.escape(stem)}") from the '
+        "workspace root searches every file by content, and LS shows what a directory "
         "actually holds. Only when both come back empty is the file genuinely absent."
     )
 

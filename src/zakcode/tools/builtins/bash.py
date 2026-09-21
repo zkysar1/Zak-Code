@@ -43,13 +43,13 @@ def _windows_shell_fix(command: str, output: str) -> str | None:
     low = output.lower()
     if "'" in command or "unterminated string literal" in low:
         return (
-            "On Windows the bash tool runs under cmd.exe, where bash-style single-quote quoting "
+            "On Windows the Bash tool runs under cmd.exe, where bash-style single-quote quoting "
             "(and ';' chaining) do not parse. Use the powershell tool, double-quote the code, "
             "or write a script file and run it."
         )
     if "is not recognized" in low:
         return (
-            "cmd.exe did not find that command (the bash tool runs under cmd.exe on Windows). "
+            "cmd.exe did not find that command (the Bash tool runs under cmd.exe on Windows). "
             "Check the name, or use the powershell tool."
         )
     return None
@@ -139,7 +139,7 @@ def _python_inline_fix(command: str, output: str) -> str | None:
         "The inline -c program likely got mangled by shell quoting — an apostrophe "
         'inside a single-quoted program (e.g. a comment like "we\'ll") ends the quote '
         "and truncates the code, so the reported syntax error is not the real problem. "
-        "Do not retry the same command: write the program to a file with the write_file "
+        "Do not retry the same command: write the program to a file with the Write "
         "tool and run `python3 <file>` instead."
     )
 
