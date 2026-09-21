@@ -26,6 +26,13 @@ bench/
   veto_door.py           # after a refused stop: capture, fork, one rollout per candidate BUILD
   veto_door_world.py     # the synthesized loop the veto-door bench runs in (no framework text)
   veto_door_arms/        # one patch per arm; an arm is HEAD plus its patches, as a worktree
+  served_rests.py        # a served run's logs: idle windows after a turn the veto fence ended
+  served_doors.py        # a served run's traces: each refused stop and what its segment did
+  served_stops.py        # ...what each refused stop ANSWERED, and what getting back to work cost
+  served_coin.py         # ...finished-plan episodes, and the reading of a build that draws lots
+  served_coin_build_proof.py  # offline proof of that build: real Agent + hook, scripted model
+  served_coin_mutants.py # mutation proof of the two files above (every mutant dies by name)
+  served_builds/         # MEASUREMENT builds as patches on main; never merged into src/
   skill_chain/skills/    # the 3 relay skills (relay-start -> relay-middle -> relay-finish)
   skill_chain/branch/    # the triage-start + handle-urgent/handle-normal branch skills
   tasks/
@@ -347,6 +354,36 @@ $PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --
 # (the commands above are the record of registrations 1 and 2; from this commit on the arms that
 # build are A, A2 and L, and `capture --fork-at lap-end` forks past the door)
 ```
+
+## A reminder tested inside the served loop (`served_coin.py`, `served_builds/k.patch`)
+
+Some questions are about the served loop itself, and a bench world cannot stand in for it (the
+veto-door section above says why, for the "answer now" line of a finished plan). For those the
+treatment is randomised INSIDE a served run by a **measurement build**: a patch on main that
+draws lots, writes every draw to the trace, and is **never merged** (a product does one
+thing). `served_builds/k.patch` is the first. It applies arm L's rule to a random half of the
+finished plans L would silence, in pairs of one silent and one sent plan in random order, so
+one run holds both treatments at the same kind of moment and the unit is the pair, not the run.
+
+A measurement build is trusted only after three free, offline steps, all committed here:
+
+```bash
+PY=./.venv/bin/python; K=/somewhere/outside-any-repo/K     # a worktree of main + the patch
+git worktree add --detach $K HEAD && git -C $K apply $PWD/bench/served_builds/k.patch
+PYTHONPATH=$K/src $PY bench/served_coin_build_proof.py --base /somewhere/outside-any-repo
+$PY bench/served_coin_build_proof.py --base /somewhere/outside-any-repo   # main: MUST fail
+$PY bench/served_coin.py --selftest                                       # the reader
+$PY bench/served_coin_mutants.py reader                                   # 26 mutants
+$PY bench/served_coin_mutants.py build $K/src --base /somewhere/outside-any-repo
+$PY bench/served_coin.py <world-dir> [<world-dir> ...]                    # the reading
+```
+
+The build proof drives the real `Agent` with a real shell Stop hook and a scripted model in
+the veto-door world, with the coin forced each way, and checks the wire as well as the trace
+label. The reader refuses a run whose requests contradict a draw, leaves out a run with too
+few pairs, and codes the registered rule (`RULE`, `verdict`, `reading`) so the reading can be
+re-run by anyone. The registration, the gates of a served run and the results are in
+`results/served-luna-preregistration.log` (sample 7).
 
 ## In CI
 
