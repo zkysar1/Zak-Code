@@ -186,7 +186,7 @@ async def test_denial_names_the_remedy(tmp_path: Path) -> None:
 
 async def test_read_file_not_found_has_fix(tmp_path: Path) -> None:
     res = await ReadFileTool().execute({"path": "nope.txt"}, ToolContext(workspace_root=tmp_path))
-    assert res.is_error and res.fix and ("list_dir" in res.fix or "glob" in res.fix)
+    assert res.is_error and res.fix and ("LS" in res.fix or "Grep" in res.fix)
 
 
 async def test_edit_not_found_has_fix(tmp_path: Path) -> None:
@@ -194,7 +194,7 @@ async def test_edit_not_found_has_fix(tmp_path: Path) -> None:
         {"path": "nope.txt", "old_string": "a", "new_string": "b"},
         ToolContext(workspace_root=tmp_path),
     )
-    assert res.is_error and res.fix and "write_file" in res.fix
+    assert res.is_error and res.fix and "Write" in res.fix
 
 
 async def test_edit_old_string_not_found_has_fix(tmp_path: Path) -> None:

@@ -128,7 +128,7 @@ class ListDirTool(Tool):
             if truncated:
                 hidden = len(entries) - _MAX_ENTRIES
                 shown = entries[:_MAX_ENTRIES] + [
-                    f"[... {hidden} more entries; use glob with a pattern to narrow ...]"
+                    f"[... {hidden} more entries; use Glob with a pattern to narrow ...]"
                 ]
             if all_ignored:
                 notes = [

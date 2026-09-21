@@ -199,7 +199,7 @@ _PLANNING = (
 )
 
 _SKILLS = (
-    "Skills (use_skill):\n"
+    "Skills (Skill):\n"
     "- A skill whose body fits this model's context window beside this prompt arrives "
     "WHOLE: follow it as written, and plan with update_plan only where its steps need "
     "tracking, as for any other long request.\n"
@@ -420,11 +420,11 @@ class SystemPromptBuilder:
         # a common small-model trap (it retries the broken quoting until the stuck guard halts).
         if platform.system() == "Windows":
             shell = (
-                "the `bash` tool runs commands through cmd.exe — prefer the `powershell` tool "
+                "the `Bash` tool runs commands through cmd.exe — prefer the `powershell` tool "
                 "for shell work, and avoid bash-isms (single-quote quoting, ';' chaining)"
             )
         else:
-            shell = "the `bash` tool runs commands through a POSIX shell (/bin/sh)"
+            shell = "the `Bash` tool runs commands through a POSIX shell (/bin/sh)"
         # `stable_prompt_identity` suppresses this line so two runs of the same work receive a
         # byte-identical prompt (ADR-0157). The session still HAS its id -- hooks and persistence
         # are untouched; the model simply is not told it.

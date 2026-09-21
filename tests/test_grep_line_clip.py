@@ -47,7 +47,7 @@ async def test_a_long_match_line_is_clipped_around_the_match(tmp_path: Path) -> 
     assert "Yahoo league data" in long_row
     body = _body(long_row, ws / "records.jsonl")
     assert len(body) <= _MAX_LINE_CHARS + 60  # the window plus the tail marker
-    assert "chars; read_file the line for the rest]" in long_row
+    assert "chars; Read the line for the rest]" in long_row
     assert short_row.endswith("the Yahoo league id lives in prep-tasks")  # short lines untouched
     assert result.data is not None and result.data["count"] == 2 and result.data["capped"] == 0
 

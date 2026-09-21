@@ -227,7 +227,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
         ("Workspace root", str(settings.workspace_root)),
         ("Search backend", settings.search_backend),
         (
-            "web_fetch egress",
+            "WebFetch egress",
             (
                 ", ".join(settings.web_allowed_domains)
                 if settings.web_allowed_domains

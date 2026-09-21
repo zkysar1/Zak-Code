@@ -145,7 +145,7 @@ class WebSearchTool(Tool):
             return ToolResult.error(str(exc), data={"backend": self._backend.name}, fix=exc.fix)
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(
-                f"web_search failed: {exc}", data={"backend": self._backend.name}
+                f"WebSearch failed: {exc}", data={"backend": self._backend.name}
             )
 
         # Defensively enforce the cap on the OUTPUT too: a backend that ignores max_results
@@ -168,5 +168,5 @@ class WebSearchTool(Tool):
         return ToolResult.ok(
             _render(items),
             data=data,
-            hint="read a result with web_fetch <url>",
+            hint="read a result with WebFetch <url>",
         )

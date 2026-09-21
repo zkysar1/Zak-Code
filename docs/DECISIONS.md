@@ -10851,6 +10851,29 @@ schema says. `_canonicalize_calls` now also runs where a stream is finalized. Th
 tests in `tests/test_claude_code_tool_names.py` run on both paths; with the streamed rewrite
 removed exactly their streamed cases fail, and the buffered ones pass.
 
+**Amended 2026-09-21 (decision 7, finished: the sentences a model reads).** "Prose follows the
+names" was carried out for the system prompt's tool section, the skill catalog and the restart
+continuation, and stopped there. Reading every string literal in the package found 37 places
+in 14 files that still named a tool the old way (36 in text a model reads, and the `web_fetch
+egress` label of `zakcode info`): refusals and their `fix` lines (`use
+write_file to create a file`, `re-read the file (read_file)`), result hints (`read a result with
+web_fetch <url>`), the loop's rails (`run it now with use_skill`, `grep(pattern=...)`, `list_dir
+the directory`), the ended-turn marker of a composed skill (`load it with use_skill`), the
+prompt's `Skills (use_skill)` heading and its "the `bash` tool" line, and one that was half
+renamed: "call Write with the first part ... then edit_file to append the rest". Every one of
+those calls still RESOLVES, since the old names are aliases. This ADR's own finding was that
+resolving is not the point: a small model calls what it can see, and these sentences named tools
+its list does not show. They now say `Read`, `Write`, `Edit`, `LS`, `Glob`, `Grep`, `Bash`,
+`WebFetch`, `WebSearch` and `Skill`. Not changed, on purpose: the role sets and alias rows of
+decision 4, the re-entry pattern that reads hook text in either spelling, shell commands that
+merely share a name (`bash script.sh`, a pipe through `grep`), and three LOG lines (`invoked via
+use_skill`, `use_skill deduped`, `use_skill answered`) that the served-run readers under
+`bench/` parse. No effect on a model is claimed or was measured; the change makes the harness's
+sentences true of the tool list. `tests/test_model_facing_tool_names.py` reads every literal,
+docstrings aside, and fails on a sentence that names a tool the old way; it carries a positive
+control (a check whose passing state is "nothing found" has to be seen to find something) and a
+test that every allowance is still needed. Restoring one stale hint fails it by file and line.
+
 ## ADR-0191: `Bash(run_in_background=true)` — a background command with its exit reported at the session's idle door
 
 **Status:** Accepted (2026-09-18)

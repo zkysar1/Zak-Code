@@ -161,7 +161,7 @@ def check_literal_content(content: str) -> str | None:
     stripped = content.strip()
     if stripped and (_WHOLE_CMD_SUB_RE.match(stripped) or _WHOLE_BACKTICK_RE.match(stripped)):
         return (
-            "Refusing to write a shell command as file content: write_file/edit_file store "
+            "Refusing to write a shell command as file content: Write/Edit store "
             "text LITERALLY and do not evaluate $(...) or backticks. Pass the actual file "
             "contents, not a command that would produce them."
         )
@@ -184,8 +184,8 @@ _CONTEXT_LINES = 2
 #: exactly the bytes sent, and the remedy is smaller edits — never the user's hands.
 _SYNTAX_FIX_TAIL = (
     "The refusal is about the text you sent, not the file or the environment. Fix that "
-    "line and resend; if a whole-file write keeps failing, read_file the current file and "
-    "make the change with a smaller edit_file. Never report this as an environmental "
+    "line and resend; if a whole-file write keeps failing, Read the current file and "
+    "make the change with a smaller Edit. Never report this as an environmental "
     "blocker or ask the user to apply the change by hand — you have the tools."
 )
 
@@ -250,7 +250,7 @@ def diagnose_python_syntax(path: str, content: str) -> SyntaxRefusal | None:
                 f"The content stops mid-statement on its last line ({last} of {last}), "
                 "so the text you sent was cut off — nothing is wrong with the file. Send "
                 "the complete content, or change only the lines that need changing with "
-                "edit_file (each edit is small enough to arrive whole). "
+                "Edit (each edit is small enough to arrive whole). "
             )
         elif _UNTERMINATED_STRING_RE.search(msg):
             cause = "newline_in_string"
@@ -305,7 +305,7 @@ _MAX_HOST_LOOKUPS = 12
 _LOOKUP_TIMEOUT_S = 2.5
 _SKILL_CLAIMS_FIX = (
     "Nothing was written. A skill is followed by a future session, so an endpoint it names "
-    "must be real: look the API up (web_search / web_fetch its documentation) and use the "
+    "must be real: look the API up (WebSearch / WebFetch its documentation) and use the "
     "host you verified, or if you cannot verify it, say so on that line — a line containing "
     "the word 'unverified' is exempt from this check. Never invent a host."
 )

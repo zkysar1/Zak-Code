@@ -292,7 +292,7 @@ for confirmation before each fetch. Unset (the default), any public host is allo
 Pure-Python; runs anywhere `uv` + Python 3.11+ run — **Windows, macOS, Linux.** One
 caveat to know:
 
-> The `bash` tool runs commands through the **platform shell** (`subprocess(shell=True)`):
+> The `Bash` tool runs commands through the **platform shell** (`subprocess(shell=True)`):
 > `/bin/sh` on macOS/Linux, **`cmd.exe` on Windows**. For PowerShell cmdlets and syntax,
 > use the dedicated **`powershell`** tool (prefers `pwsh`, falls back to `powershell.exe`;
 > returns a clean error on a host with neither). The agent is told the host OS and picks

@@ -278,8 +278,8 @@ SCENARIOS: list[Scenario] = [
                 "r1",
                 True,
                 "File not found: missing.txt\n"
-                'Fix: search before concluding it is missing: grep(pattern="missing\\.txt") '
-                "from the workspace root searches every file by content, and list_dir shows "
+                'Fix: search before concluding it is missing: Grep(pattern="missing\\.txt") '
+                "from the workspace root searches every file by content, and LS shows "
                 "what a directory actually holds. Only when both come back empty is the file "
                 "genuinely absent.",
             ),

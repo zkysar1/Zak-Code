@@ -44,7 +44,7 @@ def _clip_line(line: str, regex: re.Pattern[str]) -> str:
     head = f"[… +{start} chars] " if start else ""
     tail = ""
     if end < len(line):
-        tail = f" [… +{len(line) - end} chars; read_file the line for the rest]"
+        tail = f" [… +{len(line) - end} chars; Read the line for the rest]"
     return f"{head}{line[start:end]}{tail}"
 
 

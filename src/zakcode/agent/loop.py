@@ -806,7 +806,7 @@ _WORK_CLAIM_RE = re.compile(
 )
 _CLAIM_NUDGE = (
     'You reported a change as done ("I have updated / created / registered …"), but no '
-    "edit or write_file tool ran this turn. If you made the change another way (for "
+    "Edit or Write tool ran this turn. If you made the change another way (for "
     "example with a shell command), verify it NOW: read the file back and confirm the "
     "content is there. If the change has not been made, make it NOW with a real tool "
     "call. If it was made in an EARLIER turn, say so in one sentence and finish. Never "
@@ -857,7 +857,7 @@ _REFUSAL_BLOCKER_NUDGE = (
     "You reported a blocker, but the only failures this turn were tools refusing content "
     "YOU sent (a write that does not parse, or an old_string that did not match). Nothing "
     "in the environment failed and the file was not changed. The refusal names the line: "
-    "read_file the current file, fix the content, and retry with a smaller edit_file. Do "
+    "Read the current file, fix the content, and retry with a smaller Edit. Do "
     "not restate the blocker and do not hand the user a change you can make yourself."
 )
 #: Operator-only command rail (ADR-0127): the classify side-call named a skill the model may
@@ -867,7 +867,7 @@ _REFUSAL_BLOCKER_NUDGE = (
 #: iterations inside the wrong skill, then a report that it had started. Claude Code's model
 #: says "run /start yourself" in one turn; this rail says exactly that, and where to stop.
 _USER_ONLY_SKILL_NUDGE = (
-    "The request asks for /{name}, a command only the operator can run: use_skill refuses "
+    "The request asks for /{name}, a command only the operator can run: Skill refuses "
     "it, and you must not stand in for it with another skill or improvise its steps. Do the "
     "parts of the request that do not depend on it, then tell the operator to type /{name} "
     "themselves (with the arguments they want). If the rest of the request depends on it, "
@@ -902,8 +902,8 @@ _SEARCH_TOOLS = frozenset({"Grep", "Glob", "grep", "glob"})
 _MISSING_NUDGE = (
     "You concluded that something could not be found, but no content search ran this turn. "
     "A not-found answer is about the ONE path you tried, not the workspace. Run "
-    'grep(pattern="<the name>") from the workspace root — it searches every file by content '
-    '— and glob(pattern="**/*<the name>*") for every path, then read what they find. Do not '
+    'Grep(pattern="<the name>") from the workspace root — it searches every file by content '
+    '— and Glob(pattern="**/*<the name>*") for every path, then read what they find. Do not '
     "ask the user for a path you have not searched for."
 )
 
@@ -1205,8 +1205,8 @@ _IDENTITY_CLAIM_RE = re.compile(
 )
 _IDENTITY_NUDGE = (
     "You stated what something in the workspace IS (or is not) — a skill, a script, a file — "
-    "without reading it this turn. Identity claims need evidence: list_dir the directory, "
-    "read_file the path, or glob/grep the name (use_skill for a skill), quote what you find, "
+    "without reading it this turn. Identity claims need evidence: LS the directory, "
+    "Read the path, or Glob/Grep the name (Skill for a skill), quote what you find, "
     "then answer. If you did not look, say so instead of asserting."
 )
 _FIGURE_RE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d{4,})(?![\w.,%-])")
@@ -1337,7 +1337,7 @@ _COMMAND_FRAME_FULL_RE = re.compile(
 _ELIDED_SKILL_BODY = (
     '<command-body elided="true" chars="{chars}">this message held the skill instructions '
     "while their turn ran; that turn is over, so they were removed. Do not act on this "
-    "marker — if the skill is needed again, load it with use_skill</command-body>"
+    "marker — if the skill is needed again, load it with Skill</command-body>"
 )
 
 
@@ -4380,7 +4380,7 @@ class AgentLoop:
         for name in names:
             if name.lower() in user_only or self._plan_mentions_skill(name):
                 continue
-            note = f"{reason} /{name} — invoke it via use_skill"
+            note = f"{reason} /{name} — invoke it via Skill"
             if advisory:
                 note += ", or mark this step cancelled if the request did not ask for it"
             network.tasks.append(
@@ -4466,7 +4466,7 @@ class AgentLoop:
             return None
         names = ", ".join(f"/{n}" for n in missing)
         return (
-            f"The request also asked for {names} — run it now with use_skill, or say "
+            f"The request also asked for {names} — run it now with Skill, or say "
             "explicitly why it should be skipped."
         )
 
@@ -4977,7 +4977,7 @@ class AgentLoop:
             if call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS:
                 remedy = (
                     "Write the file in pieces: call Write with the first part (keep each call "
-                    "well under the output limit), then edit_file to append the rest."
+                    "well under the output limit), then Edit to append the rest."
                 )
             else:
                 remedy = "Retry with shorter, cleanly escaped arguments."

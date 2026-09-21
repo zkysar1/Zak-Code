@@ -92,9 +92,7 @@ class EditFileTool(Tool):
         if old_string == new_string:
             return ToolResult.error("'old_string' and 'new_string' are identical.")
         if old_string == "":
-            return ToolResult.error(
-                "'old_string' must not be empty; use write_file to create a file."
-            )
+            return ToolResult.error("'old_string' must not be empty; use Write to create a file.")
 
         try:
             resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)
@@ -107,7 +105,7 @@ class EditFileTool(Tool):
             if not resolved.exists():
                 return ToolResult.error(
                     f"File not found: {path}",
-                    fix="create it with write_file first, or check the path with list_dir/glob.",
+                    fix="create it with Write first, or check the path with LS/Glob.",
                 )
             if resolved.is_dir():
                 return ToolResult.error(f"Path is a directory, not a file: {path}")
@@ -156,7 +154,7 @@ class EditFileTool(Tool):
                 return ToolResult.error(
                     f"'old_string' not found in {path}",
                     data={"refusal": "old_string_missing"},
-                    fix="re-read the file (read_file) and copy old_string exactly, including "
+                    fix="re-read the file (Read) and copy old_string exactly, including "
                     "whitespace and indentation.",
                 )
             if count > 1 and not replace_all:
