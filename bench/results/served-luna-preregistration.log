@@ -2268,10 +2268,11 @@ UNREGISTERED, as amendment 1 promised, and licensing nothing. With run 1's two p
 the other way, p 0.0078. Over every drawn episode, paired or not: sent 15 of 16, silent 7 of 16.
 
 WHAT IT CHANGES, as registered. Arm L becomes a product change on main: one behaviour, no flag and no draw, with tests
-and its own mutation proof (ADR-0207). K is retired with this block and was never a candidate for merging. Whether L
-then changes a WHOLE run (refused stops, the time spent getting back to work, laps closed) is a separate registration
-with a concurrent control, and nothing here pre-judges it: K silenced half the plans in scope and L silences all of
-them, so no whole-run figure of K's says what L's would be.
+and its own mutation proof. The registration called it ADR-0207. Another change took that number on main while this
+sample ran (PR #596), so L ships as ADR-0208; only the number differs. K is retired with this block and was never a
+candidate for merging. Whether L then changes a WHOLE run (refused stops, the time spent getting back to work, laps
+closed) is a separate registration with a concurrent control, and nothing here pre-judges it: K silenced half the
+plans in scope and L silences all of them, so no whole-run figure of K's says what L's would be.
 
 MY ESTIMATES, scored as measured.
   a launched run is read                     80%          3 of 4 were

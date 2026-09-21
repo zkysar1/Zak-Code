@@ -390,7 +390,8 @@ re-run by anyone. The registration, the gates of a served run and the results ar
 Sample 7 read **GAIN** over 13 pairs in three of its four runs: a finished plan whose
 "answer now" line was sent ended in a stop in words 12 times of 13, and one kept silent 5
 times of 13 (7 pairs differ, all the same way, p 0.0156, and no single pair undoes it).
-That licenses arm L as a product change (ADR-0207) and nothing about a whole run.
+That licenses arm L as a product change (ADR-0208; the registration said 0207, a number
+another change took first) and nothing about a whole run.
 
 ## What the stuck ladder fired on in a served loop (`served_ladder.py`)
 
