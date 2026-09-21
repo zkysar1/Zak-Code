@@ -143,6 +143,12 @@ class HookPayload(BaseModel):
     tool will resolve it — so a hook written against Claude Code's ``Write`` /
     ``tool_input.file_path`` judges the path Zak Code is about to touch instead of approving
     a shape it does not recognise. In-process hooks keep the Zak names and keys.
+
+    The wire also carries the fields Claude Code hands EVERY hook (ADR-0210):
+    ``hook_event_name``, which a script shared between events dispatches on, and
+    ``transcript_path``; and on PostToolUse Claude Code's ``tool_response``
+    (:func:`claude_code_tool_response`). ``output`` / ``is_error`` stay beside it as Zak
+    Code's own keys.
     """
 
     event: HookEvent
@@ -153,9 +159,16 @@ class HookPayload(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict, serialization_alias="tool_input")
     session_id: str = ""
     cwd: str = ""
+    #: Path to the Claude-Code-shaped ``.jsonl`` transcript. Claude Code hands it to every
+    #: hook, a tool gate included; empty when no transcript is materialized.
+    transcript_path: str = ""
     # PostToolUse only: the result the tool produced.
     output: str | None = None
     is_error: bool | None = None
+    #: PostToolUse only: the same result in Claude Code's shape, built by the loop with
+    #: :func:`claude_code_tool_response`. On the wire only for PostToolUse (Claude Code's
+    #: PreToolUse stdin has no such key), which is why :func:`wire_payload` places it.
+    tool_response: Any = Field(default=None, exclude=True)
 
 
 class LLMContextPayload(BaseModel):
@@ -189,6 +202,8 @@ class UserPromptSubmitPayload(BaseModel):
     prompt: str = ""
     session_id: str = ""
     cwd: str = ""
+    #: Path to the Claude-Code-shaped ``.jsonl`` transcript (Claude Code hands it to every hook).
+    transcript_path: str = ""
     hook_event_name: str = "UserPromptSubmit"
 
 
@@ -345,6 +360,68 @@ CLAUDE_CODE_ARG_KEYS: dict[str, dict[str, str]] = {
 }
 
 
+#: Claude Code's name for an event Zak Code spells differently. Every other ``HookEvent``
+#: value IS Claude Code's name for it (``PreToolUse``, ``SessionStart``, ...), and an event
+#: Claude Code does not have keeps its own.
+_CLAUDE_CODE_EVENT_NAMES: dict[HookEvent, str] = {HookEvent.TURN_END: "Stop"}
+
+
+def claude_code_event_name(event: HookEvent) -> str:
+    """The ``hook_event_name`` Claude Code puts on this event's stdin (ADR-0210)."""
+    return _CLAUDE_CODE_EVENT_NAMES.get(event, event.value)
+
+
+def claude_code_tool_response(
+    tool_name: str, output: str, is_error: bool, *, stdout_chars: int | None = None
+) -> Any:
+    """What Claude Code's PostToolUse stdin calls ``tool_response``, for one tool result (ADR-0210).
+
+    Claude Code hands a hook the tool's RESULT OBJECT, and a hook written for it reads that:
+    a framework's PostToolUse[Bash] reminder looks for a closing script's marker in
+    ``tool_response.stdout`` and, by design, says nothing when the field is missing. Zak Code
+    sent ``output`` / ``is_error`` only, so that reminder never fired under it, silently.
+
+    * ``Bash`` that SUCCEEDED carries Claude Code's object: ``stdout`` (the command's own
+      output, cut at ``stdout_chars`` where the tool says its ``[exit code: N]`` line begins,
+      so a hook that parses stdout never meets the footer), ``stderr`` (always empty: Zak Code
+      runs a command with the two streams combined, and says so rather than guess a split),
+      ``interrupted`` and ``isImage`` (both false: a timeout is an error here, and the shell
+      tool returns text).
+    * EVERY OTHER result carries the result text as a string. That is the shape Claude Code
+      itself uses for a failed call, and a consumer that scans the response for something (a
+      URL, a marker) reads it the same either way. Claude Code's per-tool objects for ``Read``,
+      ``Write``, ``Edit`` and the rest are NOT reproduced: a partial object would claim fields
+      it does not hold.
+    """
+    if _PRE_0190_NAMES.get(tool_name, tool_name) == "Bash" and not is_error:
+        # A count the tool did not give, or one that is no count (negative; ``bool`` is an
+        # ``int`` subclass), cuts nothing: the whole text is the honest stdout then. A count
+        # past the end cuts nothing either, which is what a slice does by itself.
+        cut = len(output)
+        if (
+            isinstance(stdout_chars, int)
+            and not isinstance(stdout_chars, bool)
+            and stdout_chars >= 0
+        ):
+            cut = stdout_chars
+        return {
+            "stdout": output[:cut],
+            "stderr": "",
+            "interrupted": False,
+            "isImage": False,
+        }
+    return output
+
+
+def _named_wire(payload: BaseModel, event: HookEvent) -> bytes:
+    """The stdin document of a hook that is not a tool gate, with Claude Code's
+    ``hook_event_name`` on it (ADR-0210): a Stop hook reads ``"Stop"`` although the event is
+    ``TurnEnd`` here. :func:`wire_payload` does the same for the tool gates."""
+    doc = payload.model_dump(mode="json", by_alias=True)
+    doc["hook_event_name"] = claude_code_event_name(event)
+    return json.dumps(doc).encode("utf-8")
+
+
 def wire_payload(payload: HookPayload) -> bytes:
     """The stdin document a shell hook receives: the Claude Code hook contract, fully.
 
@@ -372,6 +449,12 @@ def wire_payload(payload: HookPayload) -> bytes:
                 value = os.path.normpath(os.path.join(payload.cwd, value))
             wire_input[wire_key] = value
         doc["tool_input"] = wire_input
+    doc["hook_event_name"] = claude_code_event_name(payload.event)
+    if payload.event is HookEvent.POST_TOOL_USE:
+        # A payload built outside the loop carries no response object: the result text is the
+        # generic shape, so the key is there for every PostToolUse hook.
+        response = payload.tool_response
+        doc["tool_response"] = response if response is not None else (payload.output or "")
     return json.dumps(doc).encode("utf-8")
 
 
@@ -653,7 +736,7 @@ class HookManager:
         """
         if not spec.command:
             return TurnEndResult()
-        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
+        stdin_bytes = _named_wire(payload, payload.event)
 
         # Build a scrubbed child env (provider-key hygiene). The per-spec list is the
         # PRIMARY scrub (populated at settings ingestion — TE-R1: hygiene applies to
@@ -813,7 +896,7 @@ class HookManager:
         """
         if not spec.command:
             return None
-        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
+        stdin_bytes = _named_wire(payload, payload.event)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -929,7 +1012,7 @@ class HookManager:
         """Run one lifecycle shell hook for its side effects; output is advisory."""
         if not spec.command:
             return
-        stdin_bytes = payload.model_dump_json(by_alias=True).encode("utf-8")
+        stdin_bytes = _named_wire(payload, payload.event)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -1131,6 +1214,8 @@ __all__ = [
     "HookResult",
     "HookPayload",
     "wire_payload",
+    "claude_code_event_name",
+    "claude_code_tool_response",
     "LLMContextPayload",
     "UserPromptSubmitPayload",
     "LifecyclePayload",

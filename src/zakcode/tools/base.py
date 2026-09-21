@@ -344,6 +344,14 @@ class ToolContext(BaseModel):
 #: it is. A file edit needs no flag: it opens a new repeated-outcome epoch (ADR-0038).
 RECEIPT_OF_CHANGE = "receipt_of_change"
 
+#: A key a tool sets in :attr:`ToolResult.data` to the number of leading characters of its
+#: ``output`` that are the COMMAND'S OWN output, when it closes that output with words of its
+#: own (the shell tool's ``[exit code: N]`` line). The PostToolUse wire cuts Claude Code's
+#: ``tool_response.stdout`` there (ADR-0210), so a hook that parses a command's stdout (as
+#: JSON, say) never meets the harness's footer. A count, not a search for the footer's words,
+#: for the reason ADR-0203 gives: whoever builds a text says where its parts lie.
+STDOUT_CHARS = "stdout_chars"
+
 
 class ToolResult(BaseModel):
     """The outcome of a tool invocation.
@@ -661,6 +669,7 @@ __all__ = [
     "SkillResolver",
     "ToolResult",
     "RECEIPT_OF_CHANGE",
+    "STDOUT_CHARS",
     "Tool",
     "ToolRegistry",
 ]

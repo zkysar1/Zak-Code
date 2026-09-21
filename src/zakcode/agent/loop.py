@@ -149,6 +149,7 @@ from zakcode.hooks import (
     TurnEndPayload,
     TurnEndResult,
     UserPromptSubmitPayload,
+    claude_code_tool_response,
 )
 from zakcode.hooks.transcript import render_claude_code_transcript, render_compaction_rows
 from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
@@ -201,6 +202,7 @@ from zakcode.tasks import (
 )
 from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
+    STDOUT_CHARS,
     ConcurrencyClass,
     Sampler,
     SkillResolver,
@@ -5128,6 +5130,10 @@ class AgentLoop:
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it (agent/env injection)
+                # Claude Code hands every hook the transcript, a tool gate included (ADR-0210).
+                # The flush writes only messages the file does not hold yet, and by now it
+                # holds the assistant message that made this call, as Claude Code's does.
+                transcript_path=self._cc_transcript_path(),
             )
         )
         if pre.blocked:
@@ -5228,8 +5234,17 @@ class AgentLoop:
                 arguments=arguments,
                 cwd=cwd,
                 session_id=self.session.id,  # Claude-Code hooks key off it
+                transcript_path=self._cc_transcript_path(),
                 output=tool_res.output,
                 is_error=tool_res.is_error,
+                # The same result in Claude Code's shape (ADR-0210): a hook written for Claude
+                # Code reads ``tool_response``, and one that finds it missing stays silent.
+                tool_response=claude_code_tool_response(
+                    call.name,
+                    tool_res.output,
+                    tool_res.is_error,
+                    stdout_chars=(tool_res.data or {}).get(STDOUT_CHARS),
+                ),
             )
         )
         # Clamp the tool's own text BEFORE hook notes and rails are appended, so guidance
@@ -6640,6 +6655,7 @@ class AgentLoop:
                 prompt=user_text,
                 session_id=self.session.id,
                 cwd=str(self.workspace_root),
+                transcript_path=self._cc_transcript_path(),
             )
         )
 

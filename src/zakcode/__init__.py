@@ -2134,6 +2134,9 @@ class Agent:
                         event=HookEvent.SESSION_END,
                         session_id=self.session.id,
                         cwd=str(self.settings.workspace_root),
+                        # Claude Code hands SessionEnd the transcript like every other hook
+                        # (ADR-0210); best-effort, "" when the file cannot be written.
+                        transcript_path=self.loop._cc_transcript_path(),
                         data={
                             "trigger": "session_end",
                             "session_summary": self._session_summary(),
