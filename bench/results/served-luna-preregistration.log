@@ -1837,3 +1837,92 @@ another tier. That a loop which keeps running does useful work: 575 calls, three
 itself. Whether the fence's definition is right: it has not fired in either T run, so neither says anything about it.
 
 SPEND. T2 $1.8837. Sample 6 in all $4.6460 for three runs. Campaign total about $14.23.
+
+=== 05:10 UTC 2026-09-21 DESCRIPTION -- SAMPLE 6 RE-READ FROM ITS OWN LOGS: what the refused stops answered, what getting back to work cost, and which laps closed. No new run, no spend, nothing concluded ===
+
+WHY. The 04:05 block left three facts side by side and joined none of them: laps stop closing, the stuck ladder
+fires, one Bash call in five fails. It said the traces carry names and counts and so could not say what the ladder
+was reading. Before paying for another served run I re-read what the three worlds already hold, and two of their
+files say more than I had asked of them. The serve log names every skill as it answers, with a clock. Each request's
+usage event says which plan reminder rode it (ADR-0204, ADR-0205). Joined, they show what each refused stop was an
+answer TO. Everything below describes three runs already made, one per cell. No test is reported, nothing ships.
+
+THE READER is committed with this block (MANIFEST at the foot) and carries 17 known-answer checks. Eight mutants of
+it each fail a named check and the unmutated copy passes. It refuses instead of guessing in two cases: a trace older
+than ADR-0204, and a join whose two sides differ in count. The join: the trace names the TOOL of each call and never
+the skill, the serve log names each skill in order, so the k-th Skill call the trace marks ok is the k-th skill
+line of the serve log. The counts were equal in all three runs: 31 and 31, 56 and 56, 68 and 68 (T2's trace holds
+70 Skill calls; the two that failed write no line).
+
+1. WHAT EACH REFUSED STOP ANSWERED. A request either carried the finished plan's answer-now line (SENT), had that
+   line kept silent (ADR-0205), carried the open checklist, went out with a rested tail, or had no plan reminder.
+                                               C (665e9ad)      T (c22b46f)      T2 (c22b46f)
+   requests                                    277              503              575
+   refused stops (deliveries)                  8                12               16
+     answering a request with the line SENT    8                9                12
+     answering one with the line silent        -                2                3
+     answering one with a rested tail          0                1                1
+   requests with the line SENT                 54               18               25
+     answered with a stop in words             8   (15%)        9   (50%)        12  (48%)
+   every other request                         223              485              550
+     answered with a stop in words             0                2   (0.4%)       3   (0.5%)
+   Two of the refused stops were not the model's: the stuck ladder ended the turn after tool calls and the hook
+   refused that too (one in T on a silent request, one in T2 on a rested one). They are counted among the refused
+   stops above and are not "a stop in words". C's other two vetoes ended turns veto_stall and delivered nothing.
+   On the build with ADR-0205 (T and T2), 21 of 28 refused stops answered one of the 43 requests that carried the
+   line; the other 1,035 requests drew 5 stops in words. C sent the line more often because it never silenced it:
+   there it rode every request for as long as a finished plan sat on the board.
+
+2. THE LOOP'S OWN RE-ENTRY. The framework ends a pass by calling its loop skill again. When the model made that
+   call itself and was answered with the body:
+                                               C                T                T2
+   model-made re-entries                       7                11               16
+     a refused stop came before the next Skill call             3                5                8
+       last request before it: line SENT       3                5                6
+     the loop went on                          4                6                8
+       last request before the next Skill call: line SENT       0                0                1
+   Of 34 such re-entries 16 ran into a refused stop: after one to five requests in 15 of them, after 13 in the
+   other. 14 of the 16 had the answer-now line on the last request; of the 18 that went on, one had. What that
+   request holds, by the product's own code for a long body that fits the window: a fresh copy of the loop skill's
+   instructions as the tool result, under it the product's hint to plan those instructions first, and then, last,
+   a line saying the plan is complete and to answer the original request now.
+
+3. WHAT GETTING BACK TO WORK COST. From a refused stop to the next load of any skill other than the loop skill:
+                                               C                T                T2
+   seconds, of the run                         1580 of 2055     447 of 2055      744 of 2055
+   share                                       76.8%            21.7%            36.2%
+   intervals                                   3                10               8
+   C's figure contains its two ten-minute rests (the 03:09 block), so it is not comparable with the other two.
+   T2's holds one interval of 336 s with five refused stops inside it: the model re-entered the loop skill,
+   stopped in words, was refused, and did it again. The stuck ladder's one STOP of that run fell inside it.
+
+4. WHICH LAPS CLOSED. The 04:05 block counted a lap as a pass that reached the framework's end-of-iteration phase.
+   The diaries also say HOW each one got there.
+                                               C                T                T2
+   laps closed                                 4                3                3
+     by the one-script close the framework has for a recurring goal              2                3                3
+     by the end-of-iteration script called on its own           2                0                0
+   Eight of ten laps closed through one script that does verification, state update, the learning gate and the
+   end-of-iteration phase in a single call. T2 also worked three goals outside that script (one failed its
+   verification, two were completed; the one that failed is a recurring goal that C and T closed through the
+   script). The diary holds their verification findings and none of the phases the closing scripts write, while
+   the serve log shows the verify skill loaded four times and the state-update skill twice. So "no lap closed in
+   the last 315 calls" (04:05 block) stands as measured and was the wrong headline: those calls include goal passes
+   that went through the framework's sub-skills and never called the script that closes a lap. Whether that path
+   is a fault, and whose, is not read here.
+
+WHAT THIS DOES NOT SHOW. That the line CAUSES the stops. The line rides exactly when a plan has just finished, which
+is also when a model is most likely to feel done, so the line and the moment cannot be separated in these runs. The
+rows where the line was silent are no control: they follow a refusal, when the model has just been told to carry
+on. The veto-door bench separated line from moment at ONE position, the request after a refused stop (18 of 116
+against 0 of 116, ADR-0205). The position described here, a plan that finishes later in a turn a hook already
+governs, has never been forked. One run per cell, one model, one effort, one seed.
+
+WHAT FOLLOWS. A third registration of the veto-door bench, forked at that position: the first request after an
+honoured refusal that carries the answer-now line. It will be written, committed and merged before anything is
+launched, with the baseline measured alone first. The served sample on the append-only transcript (ADR-0206) comes
+after it, because which build that sample should run depends on what the bench reads.
+
+MANIFEST  bench/served_stops.py  sha256 prefix 11b3e80827ee6479
+          17 known-answer checks; 8 of 8 mutants fail a named check; refused stops C 8, T 12, T2 16; joins 31/31,
+          56/56, 68/68.
