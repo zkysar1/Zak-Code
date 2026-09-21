@@ -2106,3 +2106,35 @@ MANIFEST  bench/served_coin_mutants.py      sha256 prefix 989dd15a5ab6642d  26 +
 MANIFEST  bench/served_stops.py             sha256 prefix 11b3e80827ee6479  unchanged since the 05:10 block
 MANIFEST  bench/served_rests.py             sha256 prefix 28f80f34866e0791  unchanged since sample 6
 MANIFEST  bench/veto_door_arms/l.patch      sha256 prefix 8ab15a48bf60b3fc  the rule K applies to half
+
+=== 07:19 UTC 2026-09-21 AMENDMENT 1 TO SAMPLE 7 (the 06:31 block) -- a futility stop on the pair count, written while run 2 is in flight and before its count is known ===
+WHAT I KNOW AS I WRITE THIS. Run 1 (world zc-served7r1-1ff2a8d6, launched 06:40:09 UTC) ended 07:16:43 UTC and passed
+G6 and G7. It held 1 turn, 375 requests, 6 finished-plan episodes, 5 draws (2 sent, 3 silent), 2 complete pairs and 1
+unpaired draw, 0 contradicted draws. Under the registered rule a run with fewer than 3 complete pairs is RUN NOT READ,
+so the pair count stands at 0 after one of four runs. The after-run script printed gates and counts only; the file it
+wrote with the full reading is unopened and I know no stopped-or-not figure for either side. Run 2 (world
+zc-served7r2-18a5d4f2) was launched 07:17:25 UTC through the same gates and is in flight as this is written.
+MY ESTIMATES MISSED, as measured. I registered 80% that a run is read and 4 to 6 pairs a read run (median 5). Run 1 is
+not read and gave 2. Sample 6's two runs of this kind held 11 and 13 episodes in 503 and 575 requests; run 1 held 6 in
+375. Why is not known, and is not looked for until the sample is read.
+WHAT THIS ADDS. The registered sequence says when the next run MAY be launched (fewer than 12 pairs, fewer than 4
+runs). It says nothing about a sequence that can no longer reach 12. Added, on the PAIR COUNT alone as before: after
+run k, with c complete pairs in the runs read so far and r = 4 - k runs left, the next run is launched only if c + 6r
+>= 12. 6 is the most pairs any run of this kind has shown (what a drawing build would have yielded in sample 6's T2).
+After run 2 this can never stop the sequence (c + 12 >= 12 always). After run 3 it stops it when c < 6.
+WHAT IT DOES NOT CHANGE. The reading rule, the unit, every threshold, the per-run floor of 3 pairs, the cap of four
+runs, the one reading at the end, the gates. A sequence stopped this way reads NOT MEASURED, which is what it would
+have read anyway unless a fourth run held more pairs than any run of this kind has held. So the stop cannot move a
+verdict. It only declines to buy a run that cannot change one.
+WHAT WAS CONSIDERED AND NOT DONE. Lowering the per-run floor, or pooling run 1's two pairs, would each be a rule
+change made after seeing data from this sample. Neither is made. After the last run I will also report what the pairs
+of EVERY gated run show pooled, labelled as unregistered; it licenses nothing and changes no consequence.
+ONE CORRECTION TO THE 06:31 BLOCK. Its SECONDARY MEASURES paragraph says served_stops.py reports which laps closed and
+how. That reader reports no laps. Laps are read from each throwaway world's own iteration diary (its end-of-iteration
+phase, and whether the learning gate's end came within 10 s before it), by a scratch counter checked against sample
+6's three published answers (4 laps of which 2 through the one-script close; 3 of 3; 3 of 3).
+ONE INSTRUMENT FIX, made before run 2, no effect on a reading. The launcher and the after-run script asked the host's
+mount table whether a run was in flight. The sandbox mounts a world in a PRIVATE mount namespace, so the host never
+sees it and that check could only ever say no. Found with run 1 in flight and the check reading 0. Both scripts now
+look for the run's own process; with run 1 alive the count was 4 and both refused, as they must. Runs had in fact been
+kept sequential by the run-done gate, not by that check.
