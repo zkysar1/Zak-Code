@@ -1145,6 +1145,24 @@ _SAY_PATIENCE = 3
 #: turn's message.
 _OBSERVATION_FRAME = "[perception — from your vessel, not from a person]\n{text}"
 
+#: What a SessionStart hook said, handed to the model ONCE, where the hook fired (ADR-0211).
+#: ``[hook]``-tagged: it arrives as a user-role message that no person wrote, and the system
+#: prompt already defines that tag as automated output to act on (ADR-0021). It is deliberately
+#: NOT wrapped in the untrusted-context fence the two injection seams use: that fence tells the
+#: model not to follow what is inside, and what a framework prints here after a compaction IS
+#: an instruction from the workspace's own configuration (which goal was in flight, what to
+#: call first). Claude Code hands it over unfenced too.
+_SESSION_START_FRAME = (
+    "[hook] This workspace's SessionStart hook ran ({why}) and said the following. It is the "
+    "workspace's own automation, not a person.\n{text}"
+)
+#: ``source`` → the clause that tells the model WHY the hook ran just now.
+_SESSION_START_WHY = {
+    "startup": "a new session is starting",
+    "resume": "a saved session is being resumed",
+    "compact": "your context was just compacted, so earlier messages are now a summary",
+}
+
 #: How many newly-unlocked keys the discovery note names before it summarises the rest.
 #: A first perception in a dense room can unlock a whole bubble at once, and the note
 #: rides inside an envelope already capped at 16 KB by the vessel — an uncapped list is
@@ -2380,6 +2398,11 @@ class AgentLoop:
         # (daemon/locks) -- which can make "parallel" delegation slower than sequential. Skipping it
         # also matches Claude Code, where a sub-agent (Task) does not re-fire SessionStart.
         self._session_started = not fire_session_start
+        #: ADR-0211: what the startup/resume SessionStart hook said and the ``source`` it fired
+        #: with, held from the moment it fired (before the turn's user message exists) until
+        #: that message is in place.
+        self._session_start_said: list[str] = []
+        self._session_start_source = "startup"
         # 0 = unlimited (the only product behavior — minds run for days). A positive cap
         # is an SDK/test affordance passed by a CALLER (evals, tests, embedders), never
         # read from operator config: ZAKCODE_MAX_ITERATIONS was removed 2026-08-25.
@@ -3018,9 +3041,12 @@ class AgentLoop:
     ) -> None:
         self._adopt_compacted(messages, summary=summary, trigger=trigger)
         # Claude Code parity: SessionStart(source="compact") right after each compaction —
-        # the seam a framework's post-compact state-restore automation plugs into.
-        await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
+        # the seam a framework's post-compact state-restore automation plugs into. What the
+        # hook SAYS is the restore itself (ADR-0211): until it reached the model, a framework's
+        # checkpoint was written at every compaction and read by nobody.
+        said = await self._fire_lifecycle(HookEvent.SESSION_START, source="compact")
         self._record_compaction(outcome, compacted=True)
+        self._say_session_start(said, "compact")
 
     def _record_compaction(self, outcome: str, *, compacted: bool) -> None:
         self.last_compaction = outcome
@@ -6117,15 +6143,17 @@ class AgentLoop:
         *,
         source: str = "",
         trigger: str = "",
-    ) -> None:
-        """Fire a session-lifecycle hook (observe-only; cheap-checked, error-isolated).
+    ) -> list[str]:
+        """Fire a session-lifecycle hook (cheap-checked, error-isolated); return what it said.
 
         ``source`` (SessionStart) and ``trigger`` (PreCompact) ride at the payload top level to
-        match Claude Code's contract; ``data`` holds any other event-specific extras.
+        match Claude Code's contract; ``data`` holds any other event-specific extras. Only
+        SessionStart hooks say anything to the model (ADR-0211); for every other event the
+        list is empty.
         """
         if not self.hook_manager.has_lifecycle_hooks(event):
-            return
-        await self.hook_manager.fire(
+            return []
+        return await self.hook_manager.fire(
             LifecyclePayload(
                 event=event,
                 session_id=self.session.id,
@@ -6148,7 +6176,40 @@ class AgentLoop:
         # "compact" fires separately, right after each compaction — see _maybe_compact and
         # compact_now — never from this once-latch.
         source = "resume" if self.session.messages else "startup"
-        await self._fire_lifecycle(HookEvent.SESSION_START, source=source)
+        self._session_start_said = await self._fire_lifecycle(
+            HookEvent.SESSION_START, source=source
+        )
+        self._session_start_source = source
+
+    def _say_session_start(self, said: list[str], source: str) -> None:
+        """Hand the model what a SessionStart hook said: one persisted message, once (ADR-0211).
+
+        Persisted, not an ephemeral tail: Claude Code adds it to the conversation where the hook
+        fired, it is read once and then ages like any other message, and a tail would re-send
+        it on every request of a turn that can last a whole served run. It lands at the END of
+        the history, so after a compaction the model reads it last, after the summary and the
+        kept tail, right before it acts.
+        """
+        if not said:
+            return
+        text = "\n\n".join(said)
+        why = _SESSION_START_WHY.get(source, f"source={source}")
+        self.session.add_message(Message.user(_SESSION_START_FRAME.format(why=why, text=text)))
+        self._note(
+            "intervention",
+            f"a SessionStart hook's words handed to the model ({source}, {len(text)} chars)",
+            kind="session_start_said",
+            source=source,
+            chars=len(text),
+        )
+        self._persist()
+
+    def _say_held_session_start(self) -> None:
+        """The startup/resume words, said AFTER the turn's user message (ADR-0211): the ask
+        stays the session's first user message (the guides fold keys on it), and the hook's
+        report is the last thing read before the first request."""
+        said, self._session_start_said = self._session_start_said, []
+        self._say_session_start(said, self._session_start_source)
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -6670,6 +6731,7 @@ class AgentLoop:
         self._reset_stale_or_completed_plan()
         self._anchor_request(user_text)  # ADR-0110: a fresh plan knows what it is for
         self.session.add_message(Message.user(user_text))
+        self._say_held_session_start()  # ADR-0211 (both turn paths)
         await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040): the operator disputes the previous answer — ask for
         # the re-measurement up front, before the apology reflex gets a first token.
@@ -8245,6 +8307,7 @@ class AgentLoop:
         self._reset_stale_or_completed_plan()
         self._anchor_request(user_text)  # ADR-0110 — see _run_turn (buffered twin)
         self.session.add_message(Message.user(user_text))
+        self._say_held_session_start()  # ADR-0211 (both turn paths)
         await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040) — see _run_turn (buffered twin).
         if _contests_prior_claim(user_text) and self._previous_assistant_text():

@@ -60,13 +60,17 @@ one Agent. No contract piece is "done" without a test that proves it generically
 ### 1. Lifecycle hooks (the automation backbone)
 
 `zakcode.hooks.HookManager` fires session-lifecycle events that a framework hooks
-its prime / encode / serialize automation onto. All are **observe-only**: a hook
-runs for side effects and can never block or rewrite a turn (every failure is
-isolated).
+its prime / encode / serialize automation onto. None can block or rewrite a turn
+(every failure is isolated), and all but one are **observe-only**: a hook runs for
+its side effects. The one that also speaks is `SessionStart` (ADR-0211): what a
+`SessionStart` **shell** hook prints on exit 0 (plain stdout, or the JSON
+`hookSpecificOutput.additionalContext`) is handed to the model once, as a `[hook]`
+user message where the hook fired, which is what Claude Code does with it. A hook
+that fails, times out or prints nothing says nothing.
 
 | Event | Fires | Typical framework use |
 | --- | --- | --- |
-| `SessionStart` | once, on the first turn of a session | "prime" — load durable state into the framework's working memory |
+| `SessionStart` | on the first turn of a session (`source` = `startup` or `resume`), and again after every compaction (`source` = `compact`) | "prime" — load durable state into the framework's working memory; after a compaction, tell the model what the summary lost |
 | `PreCompact` | before the transcript is compacted (auto or `/compact`) | serialize learning state before context is dropped |
 | `SessionEnd` | on `Agent.aclose()` | "encode" — consolidate the just-finished session |
 | `OnSkillSelected` | when a skill is used (via `Agent.invoke_skill`); `data` = `{skill, query, source}` | learn **habitual skill preferences** — record `(query → skill)` to bias future selection (e.g. via a bandit + the `PreLLMCall` hook) |

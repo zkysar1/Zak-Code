@@ -72,9 +72,11 @@ class HookEvent(StrEnum):
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
     PRE_LLM_CALL = "PreLLMCall"
-    # Session-lifecycle events. Observe-only (fire-and-forget side effects): a host
-    # automation (e.g. a self-learning framework's prime / encode / serialize step)
-    # registers here. They cannot block or rewrite anything — see HookManager.fire.
+    # Session-lifecycle events: a host automation (e.g. a self-learning framework's prime /
+    # encode / serialize step) registers here. They cannot block or rewrite anything, and
+    # they are observe-only with ONE exception (ADR-0211): what a SESSION_START shell hook
+    # prints on exit 0 is handed to the model once, as Claude Code does with it — see
+    # HookManager.fire.
     SESSION_START = "SessionStart"
     SESSION_END = "SessionEnd"
     PRE_COMPACT = "PreCompact"
@@ -82,7 +84,7 @@ class HookEvent(StrEnum):
     # triggering query in the LifecyclePayload ``data`` map. The seam a learning layer records
     # (query -> skill) from to learn habitual skill preferences (it does NOT pick skills).
     ON_SKILL_SELECTED = "OnSkillSelected"
-    # Fired when the loop is about to end a turn. Unlike lifecycle events (observe-only)
+    # Fired when the loop is about to end a turn. Unlike lifecycle events (never blocking)
     # and unlike PRE_TOOL_USE (which gates individual tool calls), TURN_END gates the
     # turn's exit. A BLOCK decision vetoes the stop, injects a continuation prompt, and
     # re-enters the iteration loop.
@@ -212,7 +214,7 @@ class LifecyclePayload(BaseModel):
 
     Carries enough to locate the session's state — the ``session_id`` and ``cwd`` —
     plus a free-form ``data`` map for event-specific extras. A lifecycle hook runs
-    for its side effects only.
+    for its side effects; only a ``SessionStart`` shell hook is also heard (ADR-0211).
     """
 
     event: HookEvent
@@ -650,20 +652,35 @@ class HookManager:
                 collected.append(text.strip())
         return collected
 
-    async def fire(self, payload: LifecyclePayload) -> None:
-        """Fire a session-lifecycle event (observe-only; never blocks or rewrites).
+    async def fire(self, payload: LifecyclePayload) -> list[str]:
+        """Fire a session-lifecycle event; return what its hooks said TO THE MODEL.
 
         Runs in-process lifecycle hooks for ``payload.event`` first, then shell hooks
-        whose event matches (the payload JSON on stdin; stdout/exit code are advisory
-        and ignored). Every failure is isolated — a lifecycle hook can never break a
-        turn or session. This is the seam a host's prime / encode / serialize
-        automation plugs into.
+        whose event matches (the payload JSON on stdin). Every failure is isolated — a
+        lifecycle hook can never block, rewrite or break a turn or session. This is the seam
+        a host's prime / encode / serialize automation plugs into.
+
+        For every event but one the hooks run for their side effects alone, their stdout and
+        exit code are ignored, and the result is ``[]``. ``SessionStart`` is the one (ADR-0211):
+        Claude Code adds a SessionStart hook's stdout to the model's context, and a framework
+        written for it relies on that — after a compaction its hook prints what was in flight
+        (the goal, the loop state, what to call first), and a harness that drops the text
+        leaves the model to rebuild all of it from a summary. The texts come back in run
+        order and the CALLER decides where the model reads them.
         """
         for hook in self.lifecycle_hooks.get(payload.event, []):
             await self._run_lifecycle_in_process(hook, payload)
+        said: list[str] = []
         for spec in self.shell_hooks:
-            if spec.event is payload.event:
+            if spec.event is not payload.event:
+                continue
+            if payload.event is HookEvent.SESSION_START:
+                text = await self._run_session_start_shell(spec, payload)
+                if text:
+                    said.append(text)
+            else:
                 await self._run_lifecycle_shell(spec, payload)
+        return said
 
     # ── TURN_END dispatch (veto-capable) ─────────────────────────────────────
 
@@ -973,6 +990,28 @@ class HookManager:
         text = (additional or message).strip()
         return text or None
 
+    async def _run_session_start_shell(
+        self, spec: HookSpec, payload: LifecyclePayload
+    ) -> str | None:
+        """Run one ``SESSION_START`` shell hook ONCE, for its side effects and for its words.
+
+        Claude Code's SessionStart contract, through the same parser the UserPromptSubmit seam
+        uses: on exit 0, ``{"hookSpecificOutput": {"additionalContext": "..."}}`` contributes
+        that text and plain stdout contributes itself. A non-zero exit, a timeout or a spawn
+        failure contributes nothing — the hook still ran, so whatever it did on disk stands,
+        exactly as before this seam had a return channel. The text is bounded
+        (:data:`_MAX_SESSION_START_CHARS`): a hook that floods stdout must not be able to
+        refill the very context a compaction has just emptied.
+        """
+        stdout = await self._exec_shell_hook_stdout(spec, payload)
+        if stdout is None:
+            return None
+        message, _mutated, _deny, additional = self._parse_stdout(stdout)
+        text = (additional or message).strip()
+        if len(text) > _MAX_SESSION_START_CHARS:
+            text = text[:_MAX_SESSION_START_CHARS].rstrip() + " … [hook output truncated]"
+        return text or None
+
     def has_user_prompt_hooks(self) -> bool:
         """Whether any ``USER_PROMPT_SUBMIT`` shell hook is registered.
 
@@ -1009,7 +1048,11 @@ class HookManager:
             logger.warning("lifecycle hook raised %s: %s", type(exc).__name__, exc)
 
     async def _run_lifecycle_shell(self, spec: HookSpec, payload: LifecyclePayload) -> None:
-        """Run one lifecycle shell hook for its side effects; output is advisory."""
+        """Run one lifecycle shell hook for its side effects; its output is never read.
+
+        Every lifecycle event but ``SESSION_START`` comes through here (that one goes through
+        :meth:`_run_session_start_shell`, which also returns what the hook said).
+        """
         if not spec.command:
             return
         stdin_bytes = _named_wire(payload, payload.event)
@@ -1194,6 +1237,12 @@ def _valid_cwd(cwd: str) -> str | None:
 def _msgs(message: str) -> list[str]:
     return [message] if message else []
 
+
+#: How much of ONE SessionStart hook's output reaches the model (ADR-0211). Generous on purpose:
+#: measured 2026-09-21, the Mind framework's post-compaction banner is about 2,500 characters,
+#: and its own header says it does not truncate. The bound exists for the hook that misbehaves,
+#: not for the one that works: a quarter of the shell tool's own output ceiling.
+_MAX_SESSION_START_CHARS = 16 * 1024
 
 #: How much of a blocking hook's stderr reaches the model (ADR-0198). A reason is a sentence
 #: or a paragraph; a hook that floods stderr must not flood the context with it.

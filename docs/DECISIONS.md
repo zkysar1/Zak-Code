@@ -12573,3 +12573,92 @@ the moment a lap closes, which is where gpt-5.6-luna was measured stopping in wo
 ADR-0208). Whether that moves a small model, and which way, is unmeasured. Served samples 1 to 8 all
 ran without it, and none of their numbers describes a run with it. That needs its own registered
 served sample with a concurrent control, main before this commit against main with it.
+
+## ADR-0211: what a SessionStart hook says reaches the model, once, where the hook fired
+
+Date: 2026-09-21. Retires the compat map's "SessionStart hook stdout is NOT injected" divergence.
+Builds on ADR-0022 (the SessionStart(compact) event) and ADR-0206 (the append-only transcript). One
+behaviour, no setting.
+
+Context. Claude Code adds a SessionStart hook's stdout to the model's context, and the Mind framework
+leans on that hardest right after a compaction. Its recovery chain has four links: a PreCompact hook
+saves the loop's working state to a checkpoint file; the compaction happens; a SessionStart(compact)
+hook prints that state back for the model to read; and the loop skill's entry then restores the rest.
+Zak Code fired both events, so links one and two worked. The third did not: `HookManager.fire()` was
+observe-only and threw every lifecycle hook's stdout away. The compat map recorded that as a
+divergence with a reason and called its cost small. Nobody had measured the cost.
+
+What was measured, all on this box on 2026-09-21.
+1. How often it matters. Run 1 of served sample 8 (gpt-5.6-luna, 35 minutes) compacted 19 times: the
+   prompt grew to between 105k and 131k tokens and landed between 33k and 64k, about once every 26
+   tool calls. On a small window compaction is not an accident of a long night. It is the rhythm of
+   the run. (Sample 8's registered reading is about something else and is published on its own.)
+2. What the framework prints. Its own SessionStart hook, run the way its settings register it, on a
+   copy of that run's finished world, with the stdin main sends: for `compact`, 2,525 characters in
+   1.1 s, leading with the one call the model must make first, then the goal that was in flight, then
+   the loop's state; for `startup` and for `resume`, nothing at all. So in a served Mind world this
+   change adds exactly one thing, and adds it 19 times a run.
+3. That the framework's own guard admits a served session. The banner is printed only for the session
+   the framework believes is its runner. In the live world of run 2 that identity file held the
+   sidecar's session id. (It is removed when a run stops, so a finished world cannot show this.)
+4. What the model did without it. The first tool call after a compaction was the plan tool 11 times in
+   19, the shell 5, Read 2 and the Skill tool once. A Skill call came within the next five tool calls
+   after 11 of the 19 (run 1) and 6 of 16 (run 2). The checkpoint file was written at every one of
+   those compactions and the model was never handed a word of it.
+
+Decision.
+1. `HookManager.fire()` returns what the event's hooks said to the model. For SessionStart that is
+   each shell hook's output in run order, read by the contract Claude Code documents and the
+   UserPromptSubmit seam already parses: on exit 0, `hookSpecificOutput.additionalContext`, or else
+   plain stdout. A non-zero exit, a timeout or a spawn failure says nothing, and the hook has still
+   run once, so whatever it did on disk stands. For every other lifecycle event the list is empty and
+   the hooks are observe-only, as before: Claude Code adds neither PreCompact's nor SessionEnd's
+   stdout to context.
+2. The loop says it ONCE, as one persisted user-role message, where the hook fired. After a compaction
+   that is the end of the compacted history, behind the summary and the kept tail, so it is the last
+   thing the next request reads. At startup or resume the hook fires before the turn's user message
+   exists; the words are held and said right after it, so the ask stays the session's first user
+   message (the guides fold keys on it). Compaction runs only between a finished tool round and the
+   next request, so the message can never part a tool call from its result.
+3. Persisted, not an ephemeral tail. A tail is re-sent on every request of a turn, and a served turn
+   is the whole run. Claude Code says it once and lets it age with the conversation; so do we, and the
+   next compaction folds it into the summary like anything else.
+4. Tagged `[hook]`, told why ("your context was just compacted, so earlier messages are now a
+   summary"), and NOT wrapped in the untrusted-context fence the two injection seams use. That fence
+   tells the model not to follow what is inside it. What a framework prints here is an instruction
+   from the workspace's own configuration, the same trust as the hook's command line, and Claude Code
+   hands it over unfenced. The system prompt already defines the tag as automation to act on.
+5. Bounded at 16 KiB per hook, with a visible truncation mark. The measured banner is a sixth of that
+   and its own header says it does not truncate; the bound is for a hook that misbehaves, which must
+   not be able to refill the context a compaction has just emptied.
+6. A `session_start_said` note on the trace (source, characters), so a served run can be read for it.
+
+What was considered and not done. Claude Code's transcript holds a hook's words as an attachment row;
+ours holds them as the user-role row the model read, as it does for every other harness message. A
+consumer that walks forward from the `compact_boundary` row meets the words before the model's next
+call either way, and a test pins that, with every earlier byte of the file unmoved. Claude Code also
+has a PostCompact event; the framework registers no hook for it and none is added. Lifecycle hooks
+still ignore their matcher, so a PreCompact hook registered for `auto` also fires on a manual
+compaction: noted, not changed here. In-process lifecycle hooks still return nothing: a host that
+embeds the loop already has the context seam.
+
+Proof. `tests/test_session_start_hook_reaches_the_model.py`, 14 tests (16 cases): a REAL loop compacts
+a real transcript in the middle of a turn, on both turn paths, a hook SCRIPT decides from its own
+stdin whether to speak, and the assertion is on the REQUEST the provider is handed next. The controls
+are the things that must not change: a hook that says nothing leaves the conversation identical to a
+run with no hook; a hook that fails has still run exactly once per event and says nothing; PreCompact
+and SessionEnd hooks may print what they like. A mutation proof over six test files (83 cases, 15
+mutants, the red set of each written down before it ran). RUN 1 READ NOT PROVEN, and I say so: 14
+mutants read as stated, and the mutant that runs a SessionStart hook twice was ALSO caught by
+ADR-0210's test of the common stdin fields, which I had not named. An older test catching a mutant is
+my statement being incomplete, not the change being wrong; the set was corrected with that reason
+beside it, and run 2 read PROVEN on all 15. A hook test named `json.py` cost one red test on the way:
+a script shadows the module of its own name, dies on its first import, and reads exactly like a hook
+that said nothing. The comment stays in the test.
+
+What is not claimed. That the banner, now delivered, helps a small model. It asks for a wake-up call
+first and for a re-entry into the loop skill, and luna was already reaching for a skill after about
+half its compactions. Delivered 19 times a run it may steady the loop, or it may cost a skill body
+per compaction on a window that is already full every two minutes. Served samples 1 to 8 all ran
+without it. ADR-0210's reminder is in the same position. Both need a registered served sample with a
+concurrent control before anything is said about laps, goals or stops.
