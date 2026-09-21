@@ -2213,3 +2213,245 @@ reset the transcript cannot show, or a tool tier the registry does not list, wou
 more pooled rungs: 85%. Share the lap rule removes: 60%, anywhere from 25% to 90%. Of the rungs it removes, those with
 only refused stops between the repeats: 65%. Reading: LOOP REGULARITY 35%, MIXED 35%, REPLAY NOT TRUSTED 15%, CIRCLING
 10%, TOO FEW 5%.
+
+=== 09:31 UTC 2026-09-21 RESULTS -- SERVED LOOP ON LUNA, SAMPLE 7: READING = GAIN. Over the 13 complete pairs of the three runs read, the finished plans whose answer-now line was SENT ended in a stop in words 12 times of 13 and the ones kept SILENT 5 times of 13; 7 pairs differ and all 7 the same way (p 0.0156); no single pair undoes it. Four runs, $6.01 ===
+
+Read exactly as registered in the 06:31 UTC block (PR #590, on main as 4c016f8 before the first launch) and its
+amendment 1 (07:19 UTC, PR #593, on main before run 2's pair count was known). The reader ran at its MANIFEST hash
+(3c5f3cd56ae7c84c). The ONE reading was taken at 09:08 UTC, after run 4's gates, over every run read. Until then the
+after-run script printed gates and pair counts only, and the files it wrote with the full readings stayed unopened.
+
+THE RUNS. One at a time, each in a fresh world built by the same script from the same seed, all on build K. Draws are
+given as (sent/silent).
+  run  world                  launched  done      turns  requests  episodes  draws (s/h)  pairs  unpaired  cost
+  1    zc-served7r1-1ff2a8d6  06:40:09  07:16:43  1      375       6         5  (2/3)     2      1         $1.2508
+  2    zc-served7r2-18a5d4f2  07:17:25  07:54:29  2      523       10        8  (4/4)     4      0         $1.7219
+  3    zc-served7r3-02e99b40  07:54:58  08:31:32  1      468       10        9  (5/4)     4      1         $1.5433
+  4    zc-served7r4-4a0ee860  08:32:39  09:07:43  1      476       12        10 (5/5)     5      0         $1.4988
+  Run 1 passed its gates and is RUN NOT READ under the registered floor (2 complete pairs, under 3). None of its pairs
+  is used and it counts as one of the four. After run 3 the runs read held 8 pairs: under 12 with 3 runs launched, so
+  the sequence allowed a fourth, and amendment 1 allowed it too (8 + 6 x 1 >= 12). Run 4 brought the count to 13 and
+  was the last the cap allows.
+
+GATES. All seven held in all four runs.
+  G1-G5, asserted by the launcher before each spend: K one commit on 87cd349 and clean, src tree 35fdb8df324e, its
+  diff byte for byte origin/main's k.patch (5eae8391d012ca5d); each world unrun and provisioned (queue 7234 bytes, the
+  patched endpoint 74b5eca7c44d0189, no reasoning_effort, the kit identical to the control's); the in-sandbox check of
+  the import path, the draw predicate, the coin and the posture; the registration on origin/main and the reader byte
+  for byte main's; the live daemon healthy (200) before and after every run, the same process, 0 leaked mounts.
+  G6: each run's first progress line names K's tree as the zakcode source, and each run wrote its last line.
+  G7: usage events carrying rails 375 of 375, 523 of 523, 468 of 468, 476 of 476; one scope note in every run; draw
+  notes 5, 8, 9 and 10; NO DRAW CONTRADICTED in any run; no finished plan inside the scope went undrawn.
+
+READING: GAIN.
+                                                    sent      silent
+  complete pairs, runs 2 to 4                       13        13
+  episodes that ended in a stop in words            12        5
+  share                                             s 92.3%   h 38.5%
+  pairs where ONLY this side stopped                7         0
+  pairs where both stopped / neither stopped        5 / 1
+  exact two-sided sign test over the 7              p = 0.0156
+  The rule's three conditions: h is at most half of s (38.5% against 46.2%); s - h is 53.8 points, at least 20; p is
+  under 0.05. Each holds with any ONE pair left out. The narrowest case leaves out a pair where only the sent side
+  stopped: 11 of 12 against 5 of 12, and 41.7% is still under half of 91.7%. The reader names no pair the verdict
+  rests on.
+  By run (sent, silent): run 2 stopped 4 of 4 and 3 of 4; run 3 stopped 4 of 4 and 1 of 4; run 4 stopped 4 of 5 and 1
+  of 5. Run 2's silent side stopped more often than the other two runs' did. Three runs cannot say whether that is a
+  difference between runs or chance. The rule pools, and so does the reading.
+  What it says, and no more: for this model, in this loop, at this seed, a finished plan that carries the answer-now
+  line is followed by a stop in words far more often than the same kind of plan at the same kind of moment without it.
+  The coin put each plan on its side, so the line is the cause of that difference. The silent side still stopped 5
+  times of 13: the line is not the only reason this model stops there.
+
+UNREGISTERED, as amendment 1 promised, and licensing nothing. With run 1's two pairs pooled in: 15 pairs, sent 14 of
+15, silent 6 of 15 (the reader prints that share in lowest terms, 2/5), 8 pairs where only the sent side stopped and 0
+the other way, p 0.0078. Over every drawn episode, paired or not: sent 15 of 16, silent 7 of 16.
+
+WHAT IT CHANGES, as registered. Arm L becomes a product change on main: one behaviour, no flag and no draw, with tests
+and its own mutation proof (ADR-0207). K is retired with this block and was never a candidate for merging. Whether L
+then changes a WHOLE run (refused stops, the time spent getting back to work, laps closed) is a separate registration
+with a concurrent control, and nothing here pre-judges it: K silenced half the plans in scope and L silences all of
+them, so no whole-run figure of K's says what L's would be.
+
+MY ESTIMATES, scored as measured.
+  a launched run is read                     80%          3 of 4 were
+  complete pairs in a run that is read       4 to 6 (5)   4, 4 and 5; the run not read held 2
+  runs launched                              3 at 55%     4, the 25% bucket; my modal estimate missed
+  12 pairs are reached within 4 runs         90%          reached, 13, by one pair
+  s                                          90%          92.3%
+  h                                          45%          38.5%, inside the 15% to 75% I allowed
+  the reading                                GAIN 40%     GAIN, my top bucket
+  a silent episode that does not stop lasts at most 3 requests     60%     MISSED: 2 of 8 in the runs read, 3 of 9
+                                                                           over all four. They lasted 2, 3, 4, 6, 13,
+                                                                           13, 18 and 35 requests (run 1's one: 2).
+  The pair yield is the estimate that nearly cost the sample: sample 6's runs suggested 4 to 6 pairs a run and this
+  build's runs gave 2, 4, 4 and 5, so 12 pairs took all four runs.
+
+SECONDARY MEASURES, reported and deciding nothing. Runs 2 to 4 unless a line says all four.
+  On which request of its episode each stop came. Sent: 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 4, 5 (median 2). Silent: 1,
+  1, 1, 1, 3 (median 1). In run 1: sent 1 and 1, silent 1 and 33.
+  What answered an episode's first request. Sent, 14 episodes: tool calls 9, words that were refused 3, words that
+  ended the turn 1, neither a tool call nor a stop 1. Silent, 13 episodes: tool calls 8, words that were refused 4,
+  neither a tool call nor a stop 1. So on the sent side most stops came a request or two AFTER the line first rode,
+  not on it.
+  The one sent episode that did not stop lasted 2 requests.
+  Episodes outside the scope (a plan finished before any refusal in its turn: sent its line, never drawn), all four
+  runs: 6, of which 5 stopped in words and 1 went on. Expected: sent, and stopped.
+  Finished plans inside the scope that were never drawn: 0. Draws left unpaired: 2 (runs 1 and 3, one each).
+  Refused stops, all four runs: 5, 13, 6 and 10, 34 in all. 27 were stops the model made in words and 7 were stops the
+  stuck ladder made that the hook refused (3 in run 2, 4 in run 4). By what the refused request carried: the line sent
+  17, the line silent 10, an open plan 6, a rested plan 1.
+  Re-entries of the loop skill the model made itself: 10, 10, 11 and 9. Time spent getting back to work after refused
+  stops: 397.7, 527.1, 241.4 and 425.3 s, that is 19.4%, 25.7%, 11.7% and 20.7% of each run.
+  Turns ended veto_stall before the run-stop request: 0, 1, 0, 0. Run 2's first turn ended that way after 470
+  requests, 21.03 s before the run-stop request (1.02% of the run idle). It is the first such turn on a build that
+  carries ADR-0205, and the model's stops in words did not make it alone: of the three refusals the fence counted, two
+  answered stops the stuck ladder had made, and the stop the fence then let stand was the ladder's as well. The ladder
+  re-read below describes it. Stops the ladder made inside an episode: 0, 1, 0, 0.
+  Laps closed, read from each world's own iteration diary as amendment 1 corrected: 4, 3, 8 and 4, 19 in all. Closed
+  through the one-script close 0, 1, 2 and 3; closed piecewise 3, 2, 2 and 1; closed bare 1, 0, 4 and 0.
+  Calls, cost and cached share of prompt tokens: 375, $1.2508, 89%; 523, $1.7219, 90%; 468, $1.5433, 91%; 476,
+  $1.4988, 91%. Failed tool calls 48, 78, 61 and 49, mostly Bash. Compactions 14, 17, 18 and 16. Stuck notes 11, 15, 9
+  and 17.
+  Goals marked completed: 3, 4, 3 and 1. As in every earlier block, a marker that a run closed something is not
+  evidence that it produced something.
+
+DEVIATIONS AND SLIPS, none of which touched a reading.
+  BLINDING. Between runs I read run 1's diary phase rows (labels, clocks and goal ids) and its transcript's row count
+  and size, while building the lap counter and the ladder reader, and one broken probe listed run 1's traces
+  directory. None of these shows a side or an outcome, and no decision used them. The registration said nothing but
+  gates and pair counts would be looked at, so it is a deviation and it is recorded.
+  THE IN-FLIGHT CHECK was repaired before run 2 (amendment 1 describes it). Runs 2 to 4 were launched through the
+  repaired check.
+  AFTER RUN 3 I ran the after-run script with my own redirect onto the file the script itself writes. It failed with
+  its output file as its input, and printed a garbled head. The script is idempotent; it was run again with no
+  redirect and its own file read. Nothing was launched on the garbled output.
+
+WHAT THIS CANNOT SETTLE, unchanged from the registration. Anything about another model or another loop; what an
+earlier episode of the same run left behind in h and s as estimates; whether fewer stops in words closes more goals;
+why a model stops on a request that carried no line.
+
+SPEND. $6.0148 over the four runs, against a supervisor bound of $6.00 a run. Campaign spend so far: about $20.25.
+
+=== 09:31 UTC 2026-09-21 RESULTS -- THE STUCK LADDER IN A SERVED LOOP, RE-READ OF SAMPLE 7'S OWN LOGS: READING = LOOP REGULARITY, by a thin margin. The replay reproduced all 47 of the product's own repeated-outcome notes in all four worlds. The lap rule removes 34 of them (72.3% against a threshold of 70%), and all 13 it leaves are on the plan tool's own receipt. No run, no spend ===
+
+Read exactly as registered in the 08:47 UTC block (PR #595, on main as a1ee323 at 08:56 UTC, before run 4 ended and
+before any stuck note, tool call or tool output of a sample 7 world had been seen). Sample 7's own reading was taken
+first, at 09:08 UTC. This re-read ran at 09:09 UTC with the merged reader at its hash (35e32639b41e0e94), build K's
+source on its import path, from a directory outside any repository. The reader's selftest passed 65 of 65 against K's
+tree first. All four gated worlds are read, run 1 included, as registered: the pair floor belongs to sample 7's
+question.
+
+THE CONTROL PASSES IN 4 OF 4 WORLDS. This was the first use of the replay on real append-only logs, and it is the
+first thing reported.
+       tool calls              repeated-outcome notes                  refused stops
+  run  transcript / trace      on the trace / replayed / matched       on the trace / in the transcript   control
+  1    387 / 387               11 / 11 / 11                            5 / 5                              PASS
+  2    533 / 532               13 / 13 / 13                            13 / 13                            PASS
+  3    482 / 483               8 / 8 / 8                               6 / 6                              PASS
+  4    495 / 494               15 / 15 / 15                            10 / 10                            PASS
+  47 of 47 notes reproduced, tool and repeat count, in order. Every refused stop on a trace was found in its
+  transcript. In runs 2, 3 and 4 the two records disagree by ONE tool call on the total, so those worlds could not be
+  split into turns by the trace's per-turn counts and were replayed as one turn, which the reader says in its output.
+  Only run 2 held two turns, and its second was the 53 requests after the run-stop request. The disagreement itself is
+  not explained and is an open item for the transcript writer or the trace.
+
+READING: LOOP REGULARITY.
+  repeated-outcome rungs, by the rule that counted     run 1   run 2   run 3   run 4   pooled
+  turn, the product's rule (S)                         11      13      8       15      47
+  lap, the count starts again at a lap boundary (L)    4       1       3       5       13
+  body, at any skill body                              1       0       0       2       3
+  reentry, at any Skill call                           1       0       0       2       3
+  window:40, the last 40 tool-call iterations          4       1       3       7       15
+  share the lap rule removes, (S - L) / S              63.6%   92.3%   62.5%   66.7%   34/47 = 72.3%
+  The registered reading is the pooled share: 72.3% is at least 70%, so LOOP REGULARITY.
+  THE MARGIN IS THIN AND I SAY SO PLAINLY. Two more surviving rungs would have read MIXED. Three of the four worlds
+  are under 70% alone, and the pooled figure rests on run 2: leaving one world out gives 75.0%, 64.7% (without run 2,
+  which alone would read MIXED), 74.4% and 75.0%. Leave-one-out was not part of the registered rule and changes
+  nothing; it is here so that nobody reads 72% as a settled quantity.
+  Of the 47 rungs: a lap boundary lay between the repeats of 34; ONLY refused stops lay between them in 0; a skill
+  body lay between in 45 and a Skill call in 45; the repeated output was an error in 8.
+
+WHAT THE RUNGS WERE, by tool. Described, not part of the rule.
+  tool          rungs   a lap boundary lay between the repeats   of those, the output was an error
+  Bash          27      27                                        8
+  Read          3       3                                         0
+  LS            3       3                                         0
+  update_plan   14      1                                         0
+  So 33 of the 33 rungs on a tool that looks at the world had at least one lap boundary between their repeats, and 13
+  of the 14 on update_plan had none. Under the lap rule the 13 rungs that remain are ALL on update_plan (4, 1, 3 and 5
+  by run).
+  Rung kinds under the product's rule: nudge 30, read-only iteration 7, step back 2, stop 8 (4 in run 2, 4 in run 4).
+  Five more rungs came from the other signals (nudge 4, step back 1) and are outside this reading.
+  Laps varied widely in length: 63 laps between boundaries over the four runs, a median of 13 to 27 tool-call
+  iterations by run, the longest 82, and 18 of them 3 iterations or fewer.
+  Distances. Where a lap boundary lay between, consecutive sightings of the same output were a median of 51 tool-call
+  iterations apart (2 to 254), with a median of 8 lap boundaries (1 to 18) between the first and last sighting
+  counted. Where none did, the median gap was 4 iterations (2 to 15).
+  Errors in the iteration after a read-only rung, by run: [0], [0, 0, 0], none, [1, 0, 0]. Lap boundaries per run 14,
+  21, 15 and 17; skill bodies delivered 47, 55, 62 and 52; file edits that opened a new epoch 0, 1, 1 and 1. With one
+  epoch or none opening in 35 minutes, the product's own reset almost never happens in this loop: it changes its world
+  through shell scripts.
+
+MY ESTIMATES, scored as measured.
+  the control passes in at least half the worlds         65%                 4 of 4
+  given that, 10 or more pooled rungs                    85%                 47
+  share the lap rule removes                             60% (25% to 90%)    72.3%
+  of the rungs removed, ONLY refused stops lay between   65%                 0%. A BIG MISS.
+  the reading                                            LOOP REGULARITY 35%, tied for my top bucket with MIXED
+  The miss is worth more than the hits. I expected the model to reach the loop skill again mostly by stopping and
+  being refused. Its own calls loaded the loop skill's body 14, 15, 15 and 16 times a run, so a refused stop was never
+  the only lap boundary between two sightings.
+  THE REGISTERED COLUMN IS WEAKER THAN I TOOK IT TO BE, and an unregistered count says by how much. In 5, 7, 6 and 9
+  of those loads the model's call came in the very iteration after a refused stop: one re-entry through two doors,
+  which the column counts as the model's own. Counting only the loads with no refused stop just before them (9, 8, 9
+  and 7 a run), 31 of the 34 rungs had one somewhere between their first and last sighting, and in 20 every gap
+  between consecutive sightings held one. So between 3 and 14 of the 34 sit where a refusal was part of every
+  boundary. That is not most of the removed share, but it is not none, and the replay cannot clear the blind spot I
+  registered (a model that stops in words after every probe never climbs under the lap rule). A design has to carry
+  its own bound for it.
+
+TWO UNREGISTERED LOOKS AT THE update_plan RUNGS, labels and counts only, licensing nothing. Made after the reading, to
+find out what a plan tool can repeat.
+  What repeated. In all 14 rungs the outputs counted were byte-identical, began with the tool's "Plan updated" receipt
+  and named a current step. None was its "Plan unchanged" receipt. So each call HAD changed the plan, and the receipt,
+  which reports the done count and the current step, read the same each time.
+  What had changed. Over the four runs 43 update_plan results were byte-identical to an earlier one in the same lap
+  (12, 11, 9 and 11). Against the previous plan sent, what differed was: a step's note 13 times; nothing the step list
+  shows 8; its subtasks 7; its note and outcome 6; other mixes 9.
+  The ladder's words for such a rung say the same tool result was observed again with nothing changed in between. For
+  these 14 that is untrue twice over: the result is the harness's acknowledgement and not an observation of the world,
+  and the plan had changed. Two of run 4's four stops fell on such receipts (the 5th and 6th sighting of one, the
+  sightings 4, 4, 4, 2 and 4 iterations apart).
+
+ONE MORE UNREGISTERED DESCRIPTION: how run 2's first turn ended. Labels only.
+  The tracker puts the Nth sighting of an output straight on rung N, whatever ran in between: 3 a nudge, 4 a read-only
+  iteration, 5 a step back once and a stop after that, 6 and over a stop. In a turn that lasts a whole served run the
+  counts only grow, so late in the run ONE sighting of a familiar output is a stop. Run 2's step back and its four
+  stops fell on two Bash outputs, one of them an error: sightings 128, 54, 144, 11, 38 and 10 iterations apart for the
+  one, and 13, 51, 56, 144 and 47 for the other, with 11 to 18 lap boundaries between first and last. The turn-end
+  hook refused three of the stops and the run went on each time. At the fourth the veto fence (three honoured refusals
+  with no skill body loaded between, ADR-0187) ended the turn as veto_stall, 21 s before the run-stop request. Two of
+  the three refusals the fence counted answered the ladder's stops and one a stop the model made in words. Twice in
+  that stretch the model answered a refusal by calling the loop skill and was handed the already-loaded pointer, which
+  the fence does not count as a load, by design.
+  What this does and does not show. It shows the ladder ending a working turn of a perpetual loop on outputs that
+  returned across laps, and how: through refusals it caused itself and a fence built for a different spin. It does not
+  show that the run lost anything (21 s, with the stop sequence next), nor what the model would have done without
+  those rungs. In a longer run the same end would leave the loop idle until its next wake-up.
+
+WHAT IS LICENSED, as registered. A change to the counting rule may be DESIGNED: one behaviour, no flag, every existing
+ADR-0038 test kept green, and new tests for a healthy many-lap loop that draws no rung, circling inside a lap that
+still climbs, a pointer that is not a lap, another skill's body that is not a lap, and a model that stops in words
+after every probe and is still caught. The design must also say what a receipt from the plan tool is to the ladder,
+since the 13 rungs the lap rule leaves are all of that kind; that part rests on the unregistered looks above and is
+argued from what the receipt IS, not from a count. Before anything is said about laps or goals, a product change needs
+its own registered served sample with a concurrent control.
+
+WHAT NO OUTCOME LICENSES, unchanged. That the rungs harmed a run, that fewer rungs would close more laps, or that the
+model would have acted the same without the rungs it really drew. A replay shows where a rule would have fired on the
+same calls and nothing else.
+
+OPEN ITEMS this re-read leaves. The one-call disagreement between trace and transcript in three worlds. Whether the
+pooled share holds on the next served sample's worlds (the reader is committed and free to run). A reader for what the
+run-2 shape costs in a long run, which no 35-minute sample can show.
