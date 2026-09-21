@@ -2852,3 +2852,142 @@ offline question on a copy of the world. Anything about another model, another s
 
 SPEND. About $1.5 for the one run ($6.00 supervisor cap). If the pair is licensed, about $3 more. Campaign spend so
 far about $26.06.
+
+=== 16:17 UTC 2026-09-21 RESULTS -- SERVED LOOP ON LUNA, SAMPLE 9 (THE CANARY): READING = NOT DELIVERED, as registered. What the framework's SessionStart hook says reached the model after 18 of 18 compactions (ADR-0211). Its lap-close reminder reached it after 0 of 5 completed closes (ADR-0210). The offline diagnosis the branch prescribes found the cause OUTSIDE the product: this run's start ceremony never recorded the agent's mode, and the hook is silent by its own design without it. No harm line crossed. One run, $1.11 ===
+
+Read exactly as registered in the 15:09 UTC block (PR #605, on main as 74be48c at 15:18:15 UTC, before the launch at
+15:18:42 UTC). Every scratch reader ran at its registered hash, from a directory outside any repository. The reading
+was taken by one script straight after the run's gates (15:54 UTC), the descriptions once, after it.
+
+THE RUN.
+  run  arm  build    world                  launched  done      turns  requests  tool calls  cost
+  1    N9   47efdb6  zc-served9n1-9937d107  15:18:42  15:53:46  1      364       406         $1.1121
+  The turn ended `completed` after the run's duration cap asked the framework for its own stop, as a served run
+  should. 2054.8 run seconds, no idle time.
+
+GATES. All seven held.
+  G1-G5, asserted by the launcher before the spend: the worktree at 47efdb6 and clean, src tree d51ecbbc0e31, the
+  two builds differing under src/ in exactly the five files named; the world unrun and provisioned (seed
+  71c88a26f3b953c0, queue 7234 bytes, the patched endpoint 74b5eca7c44d0189, no reasoning_effort, the kit identical
+  to the control's); the in-sandbox check (imports from N9's tree, ADR-0210's three and ADR-0211's two behavioural
+  markers all true, ADR-0209, ADR-0204, ADR-0205 and ADR-0208 present, no draw note); this block's registration and
+  the four published readers byte for byte main's, the nine scratch readers at their hashes; the live daemon healthy
+  (200) before and after, the same process, 0 leaked mounts.
+  G6: the first progress line names N9's tree as the zakcode source, and the run wrote its last line. G7: 364 of 364
+  usage events carry rails, no draw note, written_under reads `shipped`. 16 lap boundaries, so the run is READ.
+
+THE DELIVERY GATES.
+                                                          owed   delivered   verdict   my estimate of that verdict
+  D   ADR-0211, the SessionStart hook's words             18     18          PASS      60%
+      after a compaction, on the trace
+      the same on the transcript: compact boundaries      18     18          the two records agree
+      followed by the product's frame before the
+      model's next row
+  D2  ADR-0210, the lap-close reminder in the result      5      0           FAIL      20%
+      of a close the reader's predicate accepts
+  D: what the hook said was 1,144 to 3,833 characters a time (median 2,572), 47,939 characters over the run. D2: the
+  five closes were clean (exit 0, none flagged an error, results of 1,359 to 23,848 characters with the completion
+  marker in each), and a reminder's first line occurs NOWHERE in the world: not in the transcript, the stored
+  session or the trace (positive control: the completion marker is found in 5 results by the same scan).
+
+THE HARM LINES. None crossed.
+  H1  more than 24 compactions             18             history 14 to 19      my estimate that it crosses: 10%
+  H2  a turn ended veto_stall or stuck     no, completed  history 1 of 8 runs                                  10%
+  H3  zero laps closed                     5 closed       history 10 and 6                                     3%
+
+READING: NOT DELIVERED (D PASS, D2 FAIL). As registered: diagnose offline on a copy of the world, no further run,
+and the second-sample rule is not reached. The sample ends at one run.
+
+THE OFFLINE DIAGNOSIS. Free, on a COPY of the world inside the same sandbox, the run's own build on the import path.
+Labels, counts and lengths only were read out. Each step was chosen to split what was left.
+  1. The wire. The run's own five closes, rebuilt as the loop builds them (the build's own payload class and result-
+  object function) and run through the build's own hook manager loaded from the copy's settings (91 shell hooks, 6
+  of them on the shell tool after a call), with the session files set as a live run has them: the reminder came back
+  in 5 of 5 (1,025 characters each). So did it with the command as the world's own PreToolUse hooks rewrite it (they
+  prepend three exports; the hook's segment split is built for that), and with the world's daemon up as it was live.
+  The reminder hook alone answers in 0.03 s against its 5 s limit, and the product's log holds no hook warning for
+  the whole run.
+  2. The real path. With no model: the build's Agent constructed as the served front end constructs it, on the run's
+  own stored session, executing the model's own shortest closing command through the loop's gated tool path
+  (permission, PreToolUse, the shell tool, PostToolUse, the folds). The closing script really ran on the copy, and
+  the result the model would have read carries the reminder. The product delivers.
+  3. The state. The hook speaks only to the runner of a self-directed agent: it reads three session files (state,
+  mode, runner id) and exits silently unless all three agree. One close replayed under five states of the copy:
+  delivered with state running, mode self-directed and the runner id set; SILENT with no mode file, with another
+  mode, with no runner id, and with state idle. The world's PreCompact and SessionStart hooks, fired as the loop
+  fires them around a compaction, leave all three files untouched.
+  4. What the live run had. Its start ceremony is a skill the model carries out. At 15:19:10 the run's only reading
+  of the mode answered the framework's default, the read-only one. At 15:19:14 the model ran the step block that
+  binds the session and records the mode, but named 2 of the 6 scripts that the same block named in sample 7's run
+  1: the mode setter and three others were dropped. The next block (runner claim, state) ran whole at 15:19:39. No
+  script of the ceremony other than the setter writes the mode, the state setter does not look at it, and the
+  transcript holds no mode-setter call until the stop sequence at 15:53:08. So the run was RUNNING for 34 minutes
+  with no mode recorded, and the hook was silent at all five closes BY ITS OWN DESIGN. At the first close another
+  hook's context was appended to the same result, so the hook pass itself ran.
+  5. How often. In the nine served runs whose transcripts hold their ceremony (samples 7, 8 and this one) the model
+  called the mode setter at the start in 8 (once with the mode in a shell variable, once inside a call that returned
+  an error) and skipped it in this one.
+
+WHAT THE DIAGNOSIS CHANGES, AND WHAT IT DOES NOT.
+  The reading stands as registered: a pure function of the gates, and the reminder did not arrive. What the
+  diagnosis adds is where the failure sits. ADR-0210 is NOT shown broken: on this run's own calls the product
+  delivers, offline, whenever the hook speaks. It is also NOT shown working live: it remains UNOBSERVED in a served
+  run, exactly as before this sample.
+  MY INSTRUMENT WAS NARROWER THAN THE GATE IT MEASURED, and I say so plainly. The block called D2's denominator the
+  hook's own full predicate and then listed two conditions (a closing command, a completion marker). The hook has
+  five: those two and the three session files. By the hook's real predicate this run owed NOTHING, and a reader that
+  knew it would have read D2 as NOTHING OWED and the run as delivered for ADR-0211 and unobserved for ADR-0210. I do
+  not re-read the sample that way: the rule was fixed before launch. The corrected reader (the three states taken
+  from the ceremony's own calls in the transcript) is owed before the next served sample and will be re-applied to
+  every world it has been used on.
+  What the sample did buy: proof that ADR-0211 delivers in production shape, 18 of 18, with two records agreeing; no
+  tripwire crossed by it; and a defect no unit test could have shown, because it is not in the product.
+
+A FINDING FOR THE FRAMEWORK, not for this product. A start ceremony carried out by a model can lose a step without
+any error: the state setter accepts RUNNING with no mode recorded, and every consumer that asks for the self-
+directed mode then stays quiet for the whole session. Nothing in the run said so. That much is measured. The product
+should not learn the framework's files, so this is reported to the framework's owners. NO REPAIR IS PROPOSED OR
+MEASURED HERE: what the ceremony should do about a lost step is theirs to decide and to test.
+
+DESCRIBED, LICENSING NOTHING. History from sample 8's worlds in brackets. THIS RUN IS NOT LIKE THOSE RUNS: it spent
+its whole life in the framework's read-only default mode, which other framework scripts read too, so no line below
+may be set against history as if only the build differed.
+  the first tool call after a compaction was the wake-up re-arm   18 of 18      [1 of 51]
+  a Skill call within 5 tool calls after a compaction             8 of 18       [24 of 51]
+  tool calls until the next Skill call after a compaction         median 5, never again 0
+  after a completed close: first call the re-arm 4, the plan 1;   a Skill call within 3 calls 5 of 5 [19 of 19]
+  skill bodies delivered 58 [55 to 74]; lap boundaries 16; laps closed 5 (one script 1, piecewise 2, bare 2)
+  repeated-outcome notes 0 [0 and 0 on arm C]; rungs of any signal: nudge 2; refused stops 3 [4 to 14]
+  failed tool events 52 of 405 [45 to 71]; plan calls 31, plan share 7.7% [10.8% to 19.6%]
+  finished plans 4: the next row was words only after 2 [14 of 32]
+  goals completed 3 [1, 2, 4, 5]; cost $1.11 [$1.29 to $1.77]
+  The first line is the one worth a second look, and it is still only a description. Before ADR-0211 the model's
+  first call after a compaction was the re-arm once in 51; with the hook's words in front of it, 18 times in 18. The
+  words ask for exactly that call first. One run, no concurrent control, another mode: it licenses nothing, and it
+  is the natural outcome for the next registered pair.
+
+MY ESTIMATES, scored as measured.
+  D reads PASS                                        60%                     PASS
+  D2 reads FAIL                                       20%                     FAIL, and not for a reason I had named
+  H1, H2, H3 crossed                                  10%, 10%, 3%            none crossed
+  compactions                                         17, 70% in 14 to 20     18
+  the first call after a compaction is the re-arm     40% (10% to 80%)        100%. A MISS, outside my interval.
+  a Skill call within 5 calls after a compaction      70%                     44%. A MISS.
+  goals completed at least 3                          50%                     3, yes
+  cost within $1.20 to $1.90                          80%                     $1.11. A MISS, low.
+  The misses have one shape: I priced the run as a sample 8 run plus two deliveries. I gave D2's FAIL to the wire or
+  to the hook's marker test and never asked what ELSE the hook needs, which is the question the diagnosis had to
+  answer the slow way.
+
+WHAT IS LICENSED, as registered. Nothing new ships or un-ships. No further run of this sample. ADR-0211 stands as
+delivered in a live served run. ADR-0210 stands on its unit and mutation evidence plus this offline replay on a real
+run's calls, and stays unobserved live. A future pair may take the re-arm line above as its registered outcome.
+
+WHAT NO OUTCOME LICENSES, unchanged. That either delivery helps or hurts what the loop achieves. That the re-arm
+contrast is an effect of the delivery. Anything about another model, another seed or a longer run.
+
+OPEN ITEMS. The corrected D2 reader. The framework's silent half-start (reported to its owners). Two hook events the
+world registers that this product does not know (StopFailure, UserPromptExpansion: both load as errors and never
+fire). Why the same ceremony block lost four of six scripts in this run and none in eight others.
+
+SPEND. $1.11 for the run, the diagnosis free. Campaign spend so far about $27.17.

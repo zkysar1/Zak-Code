@@ -482,6 +482,32 @@ replication and not a wide margin. On the calls the new build really made, the o
 would have climbed 13 times (a replay). Nothing about laps or goals is read from it: two runs
 an arm, and the two runs of one build differed by more than the arms did.
 
+## A delivery canary in the served loop (sample 9)
+
+ADR-0210 and ADR-0211 make the product deliver what two hooks of a hosted framework say: a
+reminder appended to the result of the shell call that closes a lap, and the words of the
+SessionStart hook after a compaction. Both were proven on unit tests and mutants. Sample 9 asked
+only whether they ARRIVE in a real served run: one run, one build, no effect claimed, the
+reading a pure function of two delivery gates, registered in
+`results/served-luna-preregistration.log` before launch.
+
+It read **NOT DELIVERED**. The SessionStart words arrived after 18 of 18 compactions, the
+transcript and the trace agreeing. The lap-close reminder arrived after 0 of 5 completed closes.
+The registered branch prescribes an offline diagnosis on a copy of the world, and that found the
+cause outside the product. Replayed through the build's own hook manager, and then through the
+loop's real gated tool path, the run's own five closes all carry the reminder once the world's
+session files say what a live run's should. The hook speaks only to the runner of a
+self-directed agent, and this run's start ceremony, which the model carries out, had dropped the
+step that records the mode. The hook was silent by its own design for 34 minutes, and nothing
+in the run said so.
+
+Two things to keep. A delivery canary catches what no unit test can: this defect was not in
+the product. And the instrument was narrower than the gate it measured: its denominator knew
+two of the hook's five conditions, so it charged the product with a debt the hook never owed.
+The reading stands as registered, and the corrected reader is owed before the next served
+sample. The scratch readers for this sample rebuild the framework's marker text from the world
+at run time, which is why they are deliberately not in this repository.
+
 ## In CI
 
 The PR gate (`ci.yml`) never runs the bench — quality is **measured, not enforced** (a noisy model
