@@ -2222,6 +2222,13 @@ class AgentLoop:
         #: ``(model, rested_prompt_tokens, flat_cache_read_tokens)`` waits for the call after.
         self._call_has_tail = False
         self._prev_call_had_tail = False
+        #: ADR-0204: WHICH rails ride the call being assembled beyond the stored history (by
+        #: kind, in the order they ride), and whether the tail was withheld for it (ADR-0193).
+        #: Set where the tail is built (:meth:`_messages_for_call`) and written onto that
+        #: request's ``usage`` trace event. The transcript is not the prompt: these messages
+        #: are never persisted, so this is the only record of what the model was told last.
+        self._call_rails: list[str] = []
+        self._call_rails_rested = False
         self._cache_flat_run: tuple[str, int, int, int, int] | None = None
         self._cache_probe_rests_next = False
         self._cache_probe_rested: tuple[str, int, int] | None = None
@@ -2999,10 +3006,12 @@ class AgentLoop:
         context hooks this is exactly ``self.session.messages``.
         """
         self._call_has_tail = False
+        self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
         if self._tail_rests_this_call():
             # ADR-0193: this call goes out as the persisted history alone, so the provider
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
             # is not sent.
+            self._call_rails_rested = True
             return self.session.messages
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
@@ -3016,12 +3025,14 @@ class AgentLoop:
             )
             if texts:
                 tail.append(Message.user(_fence_injected_context(texts)))
+                self._call_rails.append("context")
         # ADR-0134: UserPromptSubmit context, computed once at the turn's user-message
         # boundary, rides the ephemeral tail for the whole turn (prompt-cache safe, never
         # persisted) -- same mechanism as the PRE_LLM_CALL context above, a different seam and
         # timing. Injected even when no PRE_LLM_CALL context hooks exist (that block is skipped).
         if self._turn_prompt_context:
             tail.append(Message.user(_fence_injected_context(self._turn_prompt_context)))
+            self._call_rails.append("prompt_context")
         # The live plan is re-injected LAST (highest salience, countering instruction
         # fade-out) as an ephemeral tail message — never persisted, so the cached
         # system+history prefix and the on-disk session both stay clean (the plan lives
@@ -3029,6 +3040,11 @@ class AgentLoop:
         plan_msg = self._plan_reminder()
         if plan_msg is not None:
             tail.append(plan_msg)
+            # Which of its two forms the reminder took: the live checklist, or the finished
+            # plan's one "answer now" line (ADR-0108). The same reading of the same plan that
+            # chose the form a moment ago, not a guess from the text it produced.
+            finished = self.session.task_network.is_complete()
+            self._call_rails.append("plan_complete" if finished else "plan")
         if not tail:
             return self.session.messages
         self._call_has_tail = True
@@ -4527,6 +4543,10 @@ class AgentLoop:
                 total_tokens=result.usage.total_tokens,
                 cost_usd=result.usage.cost_usd,
                 latency_s=round(time.monotonic() - call_started, 3),
+                # ADR-0204: what rode this request that the session does not hold. Always
+                # present (an empty list says "nothing"), so a missing key means an older build.
+                rails=list(self._call_rails),
+                rails_rested=self._call_rails_rested,
             )
             # The measured size of what was just sent floors the next pre-call
             # compaction check (ADR-0077).
@@ -6928,6 +6948,11 @@ class AgentLoop:
                     if await self._try_harness_verify(cursor, ctx) is not None:
                         cursor.consume_attempt()
                     else:
+                        self._note(  # ADR-0204: the nudge itself, not only how it can end
+                            "intervention",
+                            "wrote a file that has not been run; asked to run it",
+                            kind="recipe_gate",
+                        )
                         self.session.add_message(Message.user(_control_rail(cursor.nudge())))
                         # A nudge over an empty completion did no work — refund the unit so a
                         # stalling recipe turn doesn't drain a shared budget. (audit2 #14)
@@ -6950,6 +6975,11 @@ class AgentLoop:
                         break
                     signal_latched = True  # struggling to verify → latch the user's deep coder
                     if await self._try_project_verify(verify, ctx) is None:
+                        self._note(  # ADR-0204: the nudge itself, not only how it can end
+                            "intervention",
+                            "changed code has not passed the project checks; asked to run them",
+                            kind="verify_gate",
+                        )
                         self.session.add_message(Message.user(_control_rail(verify.nudge())))
                         if not result.text:
                             self._refund_iteration()
@@ -6994,6 +7024,16 @@ class AgentLoop:
                     if plan_nudges < _MAX_PLAN_NUDGES:
                         plan_nudges += 1
                         open_at_nudge = open_now
+                        # ADR-0204: a gate that speaks to the model says so on the trace. This
+                        # one did not, so a turn it had kept open looked, to anything reading
+                        # traces, like a model that simply carried on.
+                        self._note(
+                            "intervention",
+                            f"plan has {open_now} open step(s); asked to finish or clear them",
+                            kind="plan_gate",
+                            open_steps=open_now,
+                            nudge=plan_nudges,
+                        )
                         self.session.add_message(Message.user(_control_rail(plan_nudge)))
                         if not result.text:
                             self._refund_iteration()  # an empty nudged completion did no work
@@ -8292,6 +8332,8 @@ class AgentLoop:
                                 cost_usd=attempt_usage.cost_usd,
                                 latency_s=round(time.monotonic() - attempt_started, 3),
                                 streamed=True,
+                                rails=list(self._call_rails),  # ADR-0204, as the buffered twin
+                                rails_rested=self._call_rails_rested,
                             )
                             # Streaming twin of _call_provider's anchor (ADR-0077).
                             self._anchor_prompt(attempt_usage.prompt_tokens)
@@ -8728,6 +8770,11 @@ class AgentLoop:
                             cursor.consume_attempt()
                             yield AgentStatus(message="ran the file to verify it works")
                         else:
+                            self._note(  # ADR-0204, as the buffered twin
+                                "intervention",
+                                "wrote a file that has not been run; asked to run it",
+                                kind="recipe_gate",
+                            )
                             self.session.add_message(Message.user(_control_rail(cursor.nudge())))
                             # Empty completion + a nudge did no work — refund. (audit2 #14)
                             if not assistant_text:
@@ -8765,6 +8812,11 @@ class AgentLoop:
                             )
                             yield AgentStatus(message="ran the project checks to verify")
                         else:
+                            self._note(  # ADR-0204, as the buffered twin
+                                "intervention",
+                                "changed code has not passed the project checks; asked to run them",
+                                kind="verify_gate",
+                            )
                             self.session.add_message(Message.user(_control_rail(verify.nudge())))
                             if not assistant_text:
                                 self._refund_iteration()
@@ -8808,6 +8860,13 @@ class AgentLoop:
                         if plan_nudges < _MAX_PLAN_NUDGES:
                             plan_nudges += 1
                             open_at_nudge = open_now
+                            self._note(  # ADR-0204, as the buffered twin
+                                "intervention",
+                                f"plan has {open_now} open step(s); asked to finish or clear them",
+                                kind="plan_gate",
+                                open_steps=open_now,
+                                nudge=plan_nudges,
+                            )
                             self.session.add_message(Message.user(_control_rail(plan_nudge)))
                             if not assistant_text:
                                 self._refund_iteration()
