@@ -2609,3 +2609,134 @@ MANIFEST  bench/served_rests.py           sha256 prefix becda453e710ef07
           Changed in this commit in ONE place: called with no world it now prints its usage and exits 2 instead of
           raising an IndexError (served_stops.py and served_doors.py likewise). On a sample 7 world the three readers'
           output is byte-identical before and after.
+
+=== 14:23 UTC 2026-09-21 RESULTS -- SERVED LOOP ON LUNA, SAMPLE 8: READING = FEWER RUNGS, replicated once. The build without ADR-0209 drew 15 and 5 repeated-outcome notes in its two runs; the build with it drew 0 and 0. The second pair sat EXACTLY on the floor of 5. Four runs, $5.81 ===
+
+Read exactly as registered in the 11:34 UTC block (PR #600, on main as 3b6b080 before the first launch). Both readers
+ran at their MANIFEST hashes (ladder fde12274bb262046, rests becda453e710ef07), from a directory outside any
+repository. Each pair's reading was taken by one script straight after its second run's gates. The descriptions were
+made once, after run 4.
+
+THE RUNS. One at a time, each in a fresh world built by the same script from the same seed.
+  run  arm  build    world                  launched  done      turns  requests  tool calls  cost
+  1    M    cfaa769  zc-served8m1-a2ff18f9  11:43:54  12:19:28  1      508       490         $1.7674
+  2    C    280b887  zc-served8c1-ea5c9a49  12:22:00  12:58:03  1      463       479         $1.4528
+  3    C    280b887  zc-served8c2-fc1b76ee  12:59:34  13:40:09  2      420       429         $1.2977
+  4    M    cfaa769  zc-served8m2-e2cc3fb7  13:43:57  14:18:40  1      406       412         $1.2909
+  Run 3's second turn is the 6 requests after its run-stop request. Order was M then C in the first pair and C then M
+  in the replication, as registered. NEITHER arm carries ADR-0210 or ADR-0211, which merged while and after this
+  sample ran: the framework's lap-close reminder and its post-compaction text were delivered in none of these runs.
+
+GATES. All seven held in all four runs.
+  G1-G5, asserted by the launcher before each spend: each arm's worktree at its registered commit and clean, its src
+  tree the registered one (4b01aee037e0, ac4646c9cb34), the two commits differing under src/ in exactly the four
+  files named; each world unrun and provisioned (queue 7234 bytes, the patched endpoint 74b5eca7c44d0189, no
+  reasoning_effort, the kit identical to the control's); the in-sandbox check of the import path, of ADR-0209's four
+  markers (all present in C, all absent in M) and of the posture; the registration on origin/main and the two readers
+  byte for byte main's (main moved twice during the sample, with no change under bench/); the live daemon healthy
+  (200) before and after every run, the same process, 0 leaked mounts.
+  G6: each run's first progress line names its arm's tree as the zakcode source, and each run wrote its last line.
+  G7: usage events carrying rails 508 of 508, 463 of 463, 420 of 420 and 406 of 406; no draw note; written_under
+  read `turn` for both M worlds and `shipped` for both C worlds, so no world contradicts its arm. The replay under
+  each arm's own count is believed in all four worlds, and every refused stop on a trace was found in its transcript.
+  Every run reached a lap boundary (31, 14, 12 and 11), so every run is READ.
+
+READING: FEWER RUNGS, replicated once.
+                                                      pair 1           pair 2 (reverse order)
+  R_M, the control's repeated-outcome notes           15  (run 1)      5  (run 4)
+  R_C, the notes of the build with ADR-0209           0   (run 2)      0  (run 3)
+  R_M >= 5 and 4 x R_C <= R_M                         yes              yes
+  the pair reads                                      FEWER RUNGS      FEWER RUNGS
+  THE SECOND PAIR SAT EXACTLY ON THE FLOOR, AND I SAY SO PLAINLY. A control must draw at least 5 notes for its pair
+  to be read at all, and run 4 drew 5. One note fewer and that pair reads NOT DISCRIMINATING and the sample "FEWER
+  RUNGS once, not replicated". The floor was fixed before launch and the count is the product's own, so the reading
+  stands as registered. Nobody should take it for a wide margin.
+  What is not thin: the build with ADR-0209 wrote 0 repeated-outcome notes in 908 tool calls over two runs, and the
+  control wrote 20 in 902.
+  What it says, and no more: in live served runs of this loop on gpt-5.6-luna the ladder no longer climbs on
+  repeated outcomes under the per-lap count, where the whole-turn count climbed 15 and 5 times. ADR-0209 does live
+  what its replay said it would. Nothing ships or un-ships from this sample, as registered.
+
+WHAT THE CONTROL'S RUNGS WERE, from the replay under the control's own count.
+                                            run 1                                 run 4
+  repeated-outcome rungs, by tool           Bash 10, update_plan 3, Read 2        Bash 4, update_plan 1
+  a lap boundary lay between the repeats    14 of 15                              4 of 5
+  on a plan receipt                         3                                     1
+  the repeated output was an error          2                                     1
+  rungs of any signal, by kind              nudge 11, read-only iteration 4,      nudge 4, read-only iteration 1,
+                                            step back 1, stop 1                   step back 1
+  So 18 of the control's 20 rungs had a lap boundary between their repeats, the shape the re-read of sample 7 found
+  (34 of 47). Run 1's one ladder stop was refused by the turn-end hook and the turn went on.
+
+THE OTHER COUNT, REPLAYED over the same calls. A replay: the model never saw the rails it names.
+  the per-lap count over the control's calls         1 rung in run 1 (Bash), 0 in run 4
+  the whole-turn count over the new build's calls    5 rungs in run 2 (update_plan 4, Bash 1), 8 in run 3 (Bash 7,
+                                                     Read 1)
+  So on calls the new build really made, the old count would have climbed 13 times and sent 13 rails that the
+  per-lap count did not send.
+
+THE WATCH LINES, named in advance and deciding nothing.
+  W1  a ladder-ended turn in C: none. No turn of any run ended `stuck` or `veto_stall` before its run-stop request.
+  W2  plan share, C at least 15 points over M: no, and the other way round. update_plan was 19.6% and 19.5% of the
+      control's tool events and 10.8% and 13.1% of the new build's. The journalling that ADR-0209 stopped counting
+      did not grow. Two runs an arm: a description.
+  W3  churn caught live: no C note on a receipt, because C wrote no repeated-outcome note at all. The churn rail's
+      words and its seeded step stay unmeasured.
+
+DESCRIBED PER RUN, as registered. Descriptions only: n is 2 per arm, the runs of ONE build differ widely, and nothing
+here is tested.
+                                                 run 1 (M)    run 4 (M)    run 2 (C)    run 3 (C)
+  stuck notes of any signal                      17           6            4            1
+  refused stops                                  14           5            4            6
+  doors: resumed and loaded nothing / loaded     4 / 10       0 / 5        0 / 4        0 / 6
+  idle seconds                                   0            0            0            0
+  lap boundaries                                 31           11           14           12
+  skill bodies delivered                         74           55           55           58
+  compactions                                    19           14           16           16
+  epochs opened by a file edit                   0            2            3            1
+  tool events that failed                        53 of 489    45 of 411    71 of 480    54 of 427
+  laps closed (one-script / piecewise / bare)    3 (2/1/0)    6 (1/1/4)    10 (2/2/6)   6 (0/2/4)
+  goals completed                                1            2            4            5
+  cost                                           $1.7674      $1.2909      $1.4528      $1.2977
+  cached share of prompt tokens                  89%          92%          92%          92%
+  The new build completed 4 and 5 goals and the control 1 and 2. That is the direction one would hope for, and it
+  licenses nothing: the registration said no test would be reported on goals or laps, two runs an arm cannot carry
+  one, and on most rows run 1 differs from run 4, the SAME build, by more than the arms differ. A bare lap is the
+  end-of-iteration script called on its own, with no goal verified or recorded in it. 14 of the 25 laps the four
+  runs closed were bare, which is ceremony and not work (the caution the registration carried).
+  All four runs carried ADR-0208, whose effect on a whole run had never been run: no turn ended veto_stall, no run
+  idled, and refused stops were 14, 5, 4 and 6 (sample 7's four runs on the drawing build: 5, 13, 6 and 10). No
+  control without ADR-0208 ran here, so that is a description too.
+
+MY ESTIMATES, scored as measured.
+  run 1 (M) is read                                        85%                read
+  R_M >= 5, given it is read                               85%                15
+  R_M, point estimate                                      10 (4 to 18)       15; the second control run drew 5
+  run 2 (C) is read, given it is launched                  85%                read
+  R_C                                                      0: 45%             0, and 0 again in run 3
+  the first pair reads FEWER RUNGS, given both read        75%                FEWER RUNGS
+  share of C's notes that are on a receipt                 60%                undefined: C wrote no such note
+  W1, a ladder-ended turn in the first C run               25%                none
+  lap boundaries, C at least M's in the first pair         55%                NO: 14 against 31. A MISS.
+  On the miss: I said I did not know, and I did not. In the second pair C had 12 against 11. Run 1 is the outlier of
+  the four on refused stops, doors, lap boundaries and skill bodies alike (14, 14, 31 and 74), and one chain fits all
+  four without being shown: a refused stop re-delivers the loop skill, which is a lap boundary and a body.
+  I gave R_C = 0 only 45%. It was 0 twice. The replay had already said 0 of 47, and I discounted it for a live model
+  more than it deserved.
+
+WHAT IS LICENSED, as registered: "ADR-0209 does live what it says, the ladder closes as a served blocker on luna, and
+the next served work is whatever the descriptions show as the largest loss." The descriptions point at three
+candidates and rank none, since none was measured against an alternative: about one tool event in eight fails (223
+of 1,807); a 35-minute run is compacted 14 to 19 times; and 55 to 74 skill bodies are delivered a run against 11 to
+31 laps of the loop skill itself.
+
+WHAT NO OUTCOME LICENSES, unchanged. That fewer rungs close more laps or complete more goals. Anything about a model
+other than gpt-5.6-luna at effort none, or about a run of hours. Why run 1 stopped in words 14 times and run 4 only
+5 on the same build.
+
+OPEN ITEMS this sample leaves. Trace and transcript disagree on the tool-call total again, by 1, 1, 2 and 1; still
+not explained (sample 7 left the same item). What the churn rail does when it fires. What a run on main does now
+that ADR-0210 and ADR-0211 deliver two framework texts no served run has carried.
+
+SPEND. $5.8088 for the four runs against an expected $6 and a supervisor bound of $24. Campaign spend is now about
+$26.06. No other model call was made while a run was in flight, and the arms' worktrees were not touched.

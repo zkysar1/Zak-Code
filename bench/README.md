@@ -472,9 +472,15 @@ every registered number is reproduced, all four worlds read `written_under: turn
 where the new count would have fired. It does not say what the model would have done
 without the rungs it really drew, which is a served sample's question.
 
-That sample is registered as sample 8 in the same log: two builds that differ by ADR-0209
-alone, the control first as the spend gate, read from the product's own trace notes, with
-this reader's `written_under` as the check that each world was served by its arm's build.
+That sample was sample 8, in the same log: two builds that differ by ADR-0209 alone, the
+control first as the spend gate, read from the product's own trace notes, with this reader's
+`written_under` as the check that each world was served by its arm's build. It read **FEWER
+RUNGS, replicated once**. The build without ADR-0209 wrote 15 and 5 repeated-outcome notes in
+its two runs and the build with it wrote 0 and 0: 20 notes in 902 tool calls against 0 in
+908. The second pair sat exactly on the registered floor of 5 control notes, so it is a
+replication and not a wide margin. On the calls the new build really made, the old count
+would have climbed 13 times (a replay). Nothing about laps or goals is read from it: two runs
+an arm, and the two runs of one build differed by more than the arms did.
 
 ## In CI
 
