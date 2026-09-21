@@ -12565,8 +12565,11 @@ required to stay green, against a copy of `src/` with a witness test that fails 
 tree is the one imported: all 15 read as stated on the first run. The framework's real predicate,
 put to the new wire outside the repository: True for a finished close, False for a failed one.
 
-What is not claimed. That the reminder, now delivered, helps a small model. It tells the model to
-re-enter its loop at the moment a lap closes, which is where gpt-5.6-luna was measured stopping in
-words (ADR-0205, ADR-0208), so it may matter a great deal, in either direction. Served samples 1 to
-8 all ran without it, and none of their numbers describes a run with it. That needs its own
-registered served sample with a concurrent control, main before this commit against main with it.
+What is not claimed. That the reminder, now delivered, helps a small model. It is a SECOND voice
+for an instruction the model already reads: the closing script's own output names the next call, and
+the served transcripts hold that line (21 rows in one sample 7 world, 23 in sample 8's first). So the
+reminder adds emphasis and position (it arrives as a hook's context, after the output), not news, at
+the moment a lap closes, which is where gpt-5.6-luna was measured stopping in words (ADR-0205,
+ADR-0208). Whether that moves a small model, and which way, is unmeasured. Served samples 1 to 8 all
+ran without it, and none of their numbers describes a run with it. That needs its own registered
+served sample with a concurrent control, main before this commit against main with it.
