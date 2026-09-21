@@ -1,0 +1,136 @@
+diff --git a/src/zakcode/agent/loop.py b/src/zakcode/agent/loop.py
+index 7476908..45aef80 100644
+--- a/src/zakcode/agent/loop.py
++++ b/src/zakcode/agent/loop.py
+@@ -2240,6 +2240,24 @@ class AgentLoop:
+         #: would be the last word of every request after it, saying the opposite. Set in
+         #: :meth:`_fire_turn_end`; dropped in :meth:`_messages_for_call` once the plan moves on.
+         self._refused_plan: str | None = None
++        #: MEASUREMENT BUILD K (served sample 7). NEVER MERGED: it draws lots, and a product does
++        #: one thing. The rule under test is arm L's: once a turn-end hook's honoured refusal has
++        #: NAMED a skill re-entry in this turn, the hook and not the plan decides when the turn may
++        #: end, so a plan that finishes later in that turn is not sent its "answer now" line
++        #: (ADR-0108). K applies that rule to a RANDOM HALF of those finished plans, so the same run
++        #: holds both treatments at the same kind of moment. Set in :meth:`_fire_turn_end`, dropped
++        #: where a turn starts.
++        self._hook_governs_turn_end = False
++        #: One draw per finished plan, held for as long as that plan stays finished. Plans are
++        #: drawn in PAIRS, one silent and one sent in random order, so the two sides stay level
++        #: however few plans a run finishes and the pair is the unit of the test. ``_coin_open``
++        #: is True while the board holds a plan that has had its draw; ``_coin_owed`` is the side
++        #: the pair's second plan will get; a turn's start drops both, so no pair spans two turns.
++        self._coin = random.SystemRandom()
++        self._coin_open = False
++        self._coin_silent = False
++        self._coin_owed: bool | None = None
++        self._coin_pair = 0
+         self._cache_flat_run: tuple[str, int, int, int, int] | None = None
+         self._cache_probe_rests_next = False
+         self._cache_probe_rested: tuple[str, int, int] | None = None
+@@ -3064,6 +3082,8 @@ class AgentLoop:
+             # once. Looked at on EVERY request, before the rest decision below: a plan reopened on
+             # a resting call and closed again by the next would otherwise never be seen to move.
+             self._refused_plan = None
++        if self._coin_open and not self.session.task_network.is_complete():
++            self._coin_open = False  # build K: that plan moved on; the next to finish draws anew
+         if self._tail_rests_this_call():
+             # ADR-0193: this call goes out as the persisted history alone, so the provider
+             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
+@@ -3102,7 +3122,7 @@ class AgentLoop:
+             # chose the form a moment ago, not a guess from the text it produced.
+             finished = self.session.task_network.is_complete()
+             self._call_rails.append("plan_complete" if finished else "plan")
+-        elif self._refused_plan_is_current():
++        elif self._answer_now_is_silent():
+             self._call_rails_silenced.append("plan_complete")  # ADR-0205: withheld on purpose
+         if not tail:
+             return self.session.messages
+@@ -3284,6 +3304,35 @@ class AgentLoop:
+             and network.progress_signature() == self._refused_plan
+         )
+ 
++    def _answer_now_is_silent(self) -> bool:
++        """Whether a FINISHED plan on the board is kept silent: it is the plan a turn-end hook
++        refused a stop on (ADR-0205), or (build K) it finished in a turn whose end a hook governs
++        and its draw came up silent. One predicate, read by the reminder and by the per-request
++        trace label; the draw is made by whichever reads first and held until the plan moves."""
++        if self._refused_plan_is_current():
++            return True
++        if not (self._hook_governs_turn_end and self.session.task_network.is_complete()):
++            return False
++        if not self._coin_open:
++            self._coin_open = True
++            if self._coin_owed is None:  # the first plan of a pair: a fair draw
++                self._coin_pair += 1
++                slot, self._coin_silent = 1, self._coin.random() < 0.5
++                self._coin_owed = not self._coin_silent
++            else:  # the second: the other side
++                slot, self._coin_silent, self._coin_owed = 2, self._coin_owed, None
++            side = "silent" if self._coin_silent else "sent"
++            self._note(
++                "intervention",
++                f"answer-now draw for a plan finished in a governed turn: {side} "
++                f"(pair {self._coin_pair}, slot {slot})",
++                kind="answer_now_coin",
++                side=side,
++                pair=self._coin_pair,
++                slot=slot,
++            )
++        return self._coin_silent
++
+     def _plan_reminder(self) -> Message | None:
+         """An ephemeral user message carrying the live plan, or ``None`` when there is no plan
+         to show: none exists, or (ADR-0205) it is the finished plan whose stop a hook refused."""
+@@ -3293,7 +3342,7 @@ class AgentLoop:
+             return None
+         request = network.context.request
+         if network.is_complete():
+-            if self._refused_plan_is_current():
++            if self._answer_now_is_silent():
+                 # ADR-0205: this line asks for the closing answer. A turn-end hook has just
+                 # refused to let the turn close and said what to do instead, and an ephemeral
+                 # line rides LAST: sent now, it would follow the hook's words on every request
+@@ -6204,6 +6253,19 @@ class AgentLoop:
+                 "silent until the plan changes",
+                 kind="veto_plan_silenced",
+             )
++        if reentry is not None and not self._hook_governs_turn_end:
++            # A refusal that names a skill to re-enter is how a perpetual loop goes round. The
++            # hook has the last word on this turn's end from here on. Under arm L no plan that
++            # finishes later in the turn would be asked for a closing answer; build K draws for
++            # each (see the attribute).
++            self._hook_governs_turn_end = True
++            self._note(
++                "intervention",
++                f"a turn-end hook governs this turn's end (it asked for /{reentry[0]}); from here "
++                "each plan that finishes in this turn draws for its answer-now reminder",
++                kind="turn_end_governed",
++                skill=reentry[0],
++            )
+         if reentry is not None:
+             self._vetoes_without_skill += 1
+             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
+@@ -6598,6 +6660,11 @@ class AgentLoop:
+         failed_over = False  # runtime model failover fires at most once per turn
+         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
++        self._hook_governs_turn_end = False  # a new turn owes its first finished plan a line
++        # Build K: no pair spans two turns, so a new turn owes no side and numbers from one.
++        self._coin_open = False
++        self._coin_owed = None
++        self._coin_pair = 0
+         self._veto_stall = False
+         self._veto_delivered = None
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
+@@ -8165,6 +8232,11 @@ class AgentLoop:
+         failed_over = False  # runtime model failover fires at most once per turn
+         turn_end_vetoes = 0  # TURN_END vetoes consumed this turn (bounded by the budget)
+         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
++        self._hook_governs_turn_end = False  # a new turn owes its first finished plan a line
++        # Build K: no pair spans two turns, so a new turn owes no side and numbers from one.
++        self._coin_open = False
++        self._coin_owed = None
++        self._coin_pair = 0
+         self._veto_stall = False
+         self._veto_delivered = None
+         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)

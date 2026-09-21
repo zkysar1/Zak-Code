@@ -1926,3 +1926,183 @@ after it, because which build that sample should run depends on what the bench r
 MANIFEST  bench/served_stops.py  sha256 prefix 11b3e80827ee6479
           17 known-answer checks; 8 of 8 mutants fail a named check; refused stops C 8, T 12, T2 16; joins 31/31,
           56/56, 68/68.
+
+=== 06:31 UTC 2026-09-21 PRE-REGISTRATION -- SERVED LOOP ON LUNA, SAMPLE 7: does a finished plan's answer-now line cause the stops in words? One build that draws lots inside the run, one run at a time, at most four ===
+
+WHY THIS SAMPLE. The 05:10 block found that on the build with ADR-0205, 21 of 28 refused stops answered one of the 43
+requests that carried a finished plan's answer-now line, and that it could not tell the line from the moment: the
+line rides exactly when a plan has just finished, which is also when a model is most likely to feel done. One more
+free re-read of the same three runs, with the reader committed beside this block, puts a number on the moment. Call
+an EPISODE one stretch, inside one turn, during which a finished plan stays on the board. Sample 6 holds 29 of them
+and EVERY ONE ended in a stop the model made in words: C 5 of 5, T 11 of 11, T2 13 of 13. In 19 of the 29 the stop
+came on the first request that named the finished plan. 23 of the 29 lay in a turn where a refused stop had already
+delivered a skill. So with the line sent, the share that stops is at its ceiling. What no run has measured is the
+same moment WITHOUT the line.
+
+WHAT CHANGED SINCE THE 05:10 BLOCK, which said the next step was a third veto-door registration forked at this
+position, with the served sample after it. That route was sized and not taken (PR #589, bench/README.md). A fork that
+deep was estimated at about $7 for one reading, three times registration 2. And the bench world's own loop skill asks
+for a closing report in words at the end of every cycle, so at that fork an arm that silences the line could not
+show it. The served loop is the place the question is about. Drawing lots INSIDE a run also removes the thing that
+limited sample 6 to one run per arm: each run holds both treatments at the same kind of moment, and the unit becomes
+a pair of finished plans instead of a run.
+
+THE BUILD. K is main 87cd349 plus bench/served_builds/k.patch: 136 lines, one file (src/zakcode/agent/loop.py),
+sha256 prefix 5eae8391d012ca5d, src tree 35fdb8df324e (main's is 71a5802643fa). K IS A MEASUREMENT BUILD AND IS NEVER
+MERGED: it draws lots, and a product does one thing. It carries the scope rule of arm L (veto_door_arms/l.patch, PR
+#589): once an honoured refusal has named a skill re-entry in a turn, the hook and not the plan decides when that turn
+may end. Under L every plan that finishes later in that turn would have its answer-now line kept silent. K does that
+to a RANDOM HALF of them:
+  - each such plan gets ONE draw, made while its first request is built and held for as long as that plan stays
+    finished; the reminder and the per-request trace label read the same predicate, so they cannot disagree;
+  - draws come in PAIRS: the first plan of a pair by a fair coin (the OS's random source, no seed), the second the
+    other side. Pairs are numbered from 1 in each turn and never span two turns;
+  - each draw is written to the trace (pair, slot, side) BEFORE the usage event of the request it governs;
+  - a plan that finishes BEFORE any refusal in its turn is outside the scope, on L and on K alike: it is sent its
+    line and draws nothing.
+Everything else is main: ADR-0204's rails on every request, ADR-0205 (a plan whose stop was refused stays silent, on
+both sides alike), and ADR-0206, of which this is the first served run and about which nothing is read here.
+
+PROVEN OFFLINE AND FREE, before this block.
+  The build  served_coin_build_proof.py drives the real Agent with the real shell Stop hook and a scripted model in
+             the veto-door world, with the coin forced each way. 20 checks pass in K's built tree: nothing is drawn
+             before the refusal; three plans finished after it draw pair 1 slot 1, pair 1 slot 2, pair 2 slot 1; the
+             second slot is the other side; each side is on the WIRE and in the trace label, also one request later
+             for a plan that lingers; a new turn starts at pair 1 owing nothing. Run on main's own source 13 of the
+             20 fail: the proof cannot pass without the build. Seven mutants of K (no reset at a turn's start, a draw
+             on every request, the second slot the same side, the scope ignored, a draw never released, always sent,
+             the coin ignored) each fail a named check, each shown to import its own copy of the tree.
+  The reader served_coin.py, 48 known-answer checks on synthetic traces. 26 mutants each fail a named check and the
+             unchanged copy passes (served_coin_mutants.py, committed, runs both proofs). On sample 6's worlds it
+             gives the 29 of 29 above and finds no draw, as it must.
+  The gate   G3 below passed inside the sandbox in the right shape and FAILED in three wrong ones: no build selected
+             (the editable install, which is main), a build path that names nothing, and main's real tree asked as K.
+
+THE ASSEMBLY is sample 6's, rebuilt by the same script from the same seed: seed 2.12.76 (sha256 prefix
+71c88a26f3b953c0), the provisioning step and its assertions, the same sandbox, ceremony, caps (2400 s run, 350 s
+reserve, 2520 s supervisor wall clock, $6.00 supervisor budget per run), trace directory and claim-endpoint patch
+(sha256 prefix 74b5eca7c44d0189); no reasoning_effort configured, so the product's forced none applies (ADR-0200).
+run_served.sh, progress.py and served.env are compared by hash with the sample-5 control world's by the launcher. The
+build is selected inside the sandbox by PYTHONPATH=/srv/zc-builds/K/src, a git worktree one commit on main.
+  World 1: zc-served7r1-1ff2a8d6, built and never run. A later world is built by the same script only when its run
+  is licensed (THE SEQUENCE, below).
+
+THE GATES, asserted by the launcher before any spend. A failure means the run is NOT READ.
+  G1  K's worktree is one commit on 87cd349 and clean; its src tree hash is the registered one; its diff from main
+      is BYTE FOR BYTE origin/main's bench/served_builds/k.patch, and it changes nothing outside src/.
+  G2  the world is provisioned and unrun: initialised, agent state IDLE, 0 session files, no serve.log, starting queue
+      7234 bytes, meta tier uninitialised, the patched claim endpoint, no reasoning_effort in served.env, the three
+      kit files identical to the control's, no leaked mount.
+  G3  INSIDE the sandbox, under the run's own environment: zakcode imports from K's tree; the draw predicate, the
+      draw note and the scope note are in its source; a fresh loop holds an OS-seeded coin, no pair open and no side
+      owed; ADR-0204 and ADR-0205 are present; the five luna categories send reasoning_effort none WITH tools and no
+      field without, and classify sends none either way; the idle-window stop is unset.
+  G4  this block is on origin/main, and the reader in the checkout that will read the run is origin/main's, byte for
+      byte. The launcher fetches and checks both, draining its pipes (the 03:18Z lesson of sample 6).
+  G5  the live Mind's daemon on this box answers health before and after each run, and no mount leaked.
+  After the run, from the artifacts:
+  G6  the run's first progress line names K's tree as the zakcode source, and the run wrote its last line.
+  G7  every usage event carries rails; the trace holds at least one scope note and one draw; and NO DRAW IS
+      CONTRADICTED. A draw is contradicted if it came up silent and the line was then sent; if it came up sent and
+      the episode's first unrested request did not carry the line; if the reader places it before any refused stop
+      had delivered a skill in its turn (the reader and the build then disagree about the scope); or if a pair's
+      draws are not slot 1 then slot 2 on opposite sides. A contradicted run is not repaired or trimmed: it is left
+      out whole.
+
+WHAT IS READ, all of it from the per-turn traces, labels and counts only.
+  An episode opens at the first request that names a finished plan (line sent or kept silent), or at a draw, and
+  closes at the first request that names an open plan or none. A rested request inside it belongs to it. It STOPPED
+  IN WORDS if any of its requests was answered by a stop the model made itself: words that a turn-end hook refused,
+  or words that ended the turn. A stop the stuck ladder made after tool calls is counted apart and is not one.
+  An episode counts under the side it DREW. The unit is a COMPLETE PAIR: the two episodes of one pair number in one
+  turn, one drawn sent and one drawn silent. A draw whose partner never came (the turn or the run ended first) is
+  reported and not used.
+  Over the complete pairs of every run that is read: s is the share of SENT episodes that stopped in words, h the
+  share of SILENT ones, and p the exact two-sided sign test over the pairs whose two episodes differ.
+
+THE READING RULE, over every outcome, fixed before launch and coded in served_coin.py (RULE, verdict, reading).
+  RUN NOT READ        a gate fails, the trace is refused, a draw is contradicted, or the run holds fewer than 3
+                      complete pairs. None of its pairs is used. It still counts as one of the four runs.
+  NOT MEASURED        the runs read hold fewer than 12 complete pairs once the sequence below has ended. The numbers
+                      are reported as a description and nothing is concluded.
+  HARM                h - s >= 20 points and p < 0.05, and that size holds with any ONE pair left out. It is read
+                      even where s is under the floor: silence can make things worse where there is little to gain.
+  NOT DISCRIMINATING  s < 30% (and not HARM). With the line sent the model seldom stopped, so there is nothing for
+                      silence to reduce. It would also contradict sample 6, where 23 of 23 such episodes stopped.
+  GAIN                h <= s / 2, and s - h >= 20 points, and p < 0.05, all holding with any ONE pair left out (the
+                      size is re-taken without the pair; the p is not, because losing a pair always costs power and
+                      says nothing about whether that pair carried the result).
+  FLAT                s and h are nearer than 20 points.
+  MIXED               anything else, including a GAIN or a HARM that one pair can undo, which is then named with the
+                      pairs it rests on. Reported with its direction.
+  Thresholds met exactly are met; p must be UNDER 0.05. Every one of the 455 ways 12 pairs can fall lands in exactly
+  one branch (enumerated in the selftest). Rule E stands: an outcome nobody named is reported as measured and never
+  upgraded.
+
+THE SEQUENCE. Runs are launched ONE AT A TIME, each in a fresh world. After a run, its gates and its PAIR COUNT are
+taken, and nothing else: the after-run script prints gates, draw counts and contradictions, writes the full reading
+to a file, and prints no stopped-or-not figure for either side. The next run is launched if and only if the runs read
+so far hold fewer than 12 complete pairs and fewer than 4 runs have been launched. That rule looks at a count the
+treatment cannot favour, so it cannot steer the result. The reading is taken ONCE, after the last run, over every
+run read. Sample 6's two runs of this kind would have given 4 and 6 complete pairs, so 2 to 3 runs are expected.
+
+WHAT EACH READING WOULD CHANGE.
+  GAIN   The line causes stops in words at this position, for this model in this loop. Arm L becomes a product
+         change on main: one behaviour, no flag and no draw, with tests and its own mutation proof (ADR-0207).
+         Whether that then changes a WHOLE run (refused stops, the time spent getting back to work, laps closed)
+         is a separate registration with a concurrent control; nothing here pre-judges it.
+  FLAT   The stops at this position are the model's own and the line is not what makes them. L does not ship. The
+         next work goes to what a refused stop COSTS rather than how often one happens: the 05:10 block's 21.7% and
+         36.2% of a run spent getting back to work.
+  HARM   L does not ship, and the result is recorded against L's argument.
+  MIXED  with h < s: one more batch under this same rule (fresh worlds, at most four runs, 12 pairs), read ALONE and
+         not pooled. That is a second look, and it is priced here: the chance that one of two looks reads a false
+         GAIN is at most the sum of the two, about 0.1. A second MIXED ends the question at this price and L does
+         not ship on this evidence. With h >= s: L does not ship and nothing further is licensed.
+  NOT DISCRIMINATING  No further run. What differs from sample 6's T build is then named, and it is short: K's patch,
+         and ADR-0206, the one commit between c22b46f and 87cd349 that touches src.
+  NOT MEASURED        No further run is licensed by this registration.
+
+ESTIMATES, recorded before launch so that each can be scored.
+  a launched run is read                                   80%
+  complete pairs in a run that is read                     4 to 6 (median 5)
+  runs launched                                            2: 20%   3: 55%   4: 25%
+  12 pairs are reached within 4 runs                       90%
+  s, the sent side                                         90%   (I would be surprised under 75%)
+  h, the silent side                                       45%   I do not know this; 15% to 75% would not surprise me.
+                                                                 Nobody has run this model at this moment without
+                                                                 the line. Against a low h: the loop skill's text
+                                                                 has just arrived and a finished checklist invites
+                                                                 a summary with or without a reminder.
+  the reading                                              GAIN 40%, MIXED 30%, FLAT 15%, NOT MEASURED 8%,
+                                                           NOT DISCRIMINATING 5%, HARM 2%
+  a silent episode that does not stop lasts at most 3 requests before the model plans again      60%
+
+SECONDARY MEASURES, reported and deciding nothing. Per side: on which request of its episode each stop came; how
+many requests each episode lasted; what answered each episode's first request. Per run: episodes outside the scope
+(expected: sent, and stopped); finished plans inside the scope that were never drawn (a plan that was already the
+refused one when it first met a request); draws left unpaired; refused stops and what each answered, the loop's own
+re-entries, the share of the run spent getting back to work, and which laps closed and how (served_stops.py); turns
+ended veto_stall and idle seconds (served_rests.py; sample 6's T and T2 had none); calls, cost, cached share; goals
+completed.
+
+WHAT THIS CANNOT SETTLE, whatever it reads. Anything about a model other than gpt-5.6-luna at effort none, or a loop
+other than this framework's at this seed. The episodes of a run share one conversation. The sign test is exact all
+the same under the hypothesis it tests, that the line changes nothing anywhere, because the coin and not the
+conversation puts each plan on its side; but h and s as ESTIMATES carry whatever an earlier episode of the same run
+left behind (a stop that was refused, a skill body delivered), met in random order. K IS NOT L: under L every plan in
+scope would be silent, and K's runs are half and half, so no whole-run figure of K's says what L's would be. Whether
+fewer stops in words closes more goals. Why a model stops on a request that carried no line.
+
+SPEND. The supervisor bounds each run at $6.00 and 2520 s, as in every earlier sample. Expected $1.6 to $1.9 a run
+(sample 6's T cost $1.63 and T2 $1.88), so about $3.3 to $7.6 for two to four runs. The bound is not lowered: a
+budget stop would end a run for a reason that is neither side's doing. Campaign spend so far: about $14.23. No other
+model call is made while a run is in flight, and K's worktree is not touched until the sample is read.
+
+MANIFEST  bench/served_builds/k.patch       sha256 prefix 5eae8391d012ca5d  136 lines; K's src tree 35fdb8df324e
+MANIFEST  bench/served_coin_build_proof.py  sha256 prefix 06fc7a9401c75d5b  20 checks; 13 fail on main's own source
+MANIFEST  bench/served_coin.py              sha256 prefix 3c5f3cd56ae7c84c  48 known-answer checks
+MANIFEST  bench/served_coin_mutants.py      sha256 prefix 989dd15a5ab6642d  26 + 7 mutants, each dies by a named check
+MANIFEST  bench/served_stops.py             sha256 prefix 11b3e80827ee6479  unchanged since the 05:10 block
+MANIFEST  bench/served_rests.py             sha256 prefix 28f80f34866e0791  unchanged since sample 6
+MANIFEST  bench/veto_door_arms/l.patch      sha256 prefix 8ab15a48bf60b3fc  the rule K applies to half
