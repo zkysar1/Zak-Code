@@ -286,6 +286,15 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   that must keep its size with any one fork left out. `arms --arms A,A2,R` builds only the
   arms a batch names, and `--forks-of calibration` keeps the comparison off a fork no
   calibration rollout could read at all (a prefix with a clock in it never replays).
+- **Registration 2, read 2026-09-21: R reads GAIN.** Calibration said PROCEED (the unpatched
+  build failed to resume on 11 of 58 rollouts). In the comparison, over 29 forks and 116
+  rollouts an arm, the unpatched build failed to resume on 18 (15.5%), its placebo on 20
+  (FLAT, p = 0.86) and R on 0 (p = 0.0078 with the fork as the unit; the verdict keeps its
+  size with any one fork left out). Both audits found nothing uncounted. $2.27. R, which
+  keeps a finished plan's "answer now" reminder silent once a stop on that plan has been
+  refused, ships as a product change; from that commit `r.patch` is a record too. The bench
+  does not say WHY it works, and this world is not the served door: the results block says
+  what the numbers do not show.
 - **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
   batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
   changed the line they both patch (the resolver now flags the pointer it builds). An arm that

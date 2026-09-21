@@ -591,3 +591,79 @@ that carries another hash is refused as wrong-build.
   01d7b78ae3b0a7739c911620a31725915a28d8564ac1c5fa4778359a3346e119  bench/veto_door.py
   9504590c929104fffbc7bcfea333a358156594a4d822a48166c5af816c53e197  bench/veto_door_world.py
   e73a3300e305d9ec5c6b0899219c9cd1c5461f550b50ebf758bb56ce818964e0  bench/veto_door_arms/r.patch
+
+=== 00:45 UTC 2026-09-21 RESULTS -- THE VETO DOOR, REGISTRATION 2: R reads GAIN. With the finished plan's reminder silent after a refused stop, gpt-5.6-luna failed to resume on 0 of 116 rollouts; the baseline on 18 of 116 (15.5%); the placebo on 20 of 116, FLAT. R ships.
+Run as registered, on main 11b2966 (the commit that carries the registration), the instrument's hashes checked against
+the MANIFEST before the first scored call, nothing changed between the block and the batch. Every count below is
+from this batch alone; nothing of batch 1 is pooled with it.
+
+Gates. W0: the selftest passed in all three built trees (A 169 checks, A2 165, R 165), R's source diff hash as
+registered. W1 preflight passed (31 tools, world digest 0f58ab7a5c10). W2: the two-call probe reached the wire in
+the served posture ($0.00005). Each stage's orchestrator was first run with a budget of zero and launched nothing.
+
+Stage 0, captures. 32 runs gave 32 forks (the target, so 8 of the 40 runs allowed were not needed), $0.9634. The
+plan was finished at the fork in all of them.
+
+Stage 1, calibration (arm A alone, 2 rollouts a fork, its own ledger). AUDIT first: 70 details read; no command that
+names a loop script without running it, no run left unproven, no cell that did not pass holding a real run. Nothing
+to re-read, so one reading: PROCEED. 29 complete forks; A did not resume on 11 of 58 rollouts (19.0%), misses on 9
+forks, against a floor of 1 in 15. Three forks were refused for their prefix on all 4 of their tries (the replay did
+not reproduce the capture's requests; the same number of requests differed on every try: 4, 7 and 4) and were not
+rolled out again, as registered. Which of their commands changes between runs was not read. Spend $0.4598: the
+bound stops LAUNCHES at $0.45 and the last second tries were already running, so the stage ended $0.0098 over its
+figure. The batch's hard bound was never near.
+
+Stage 2, comparison (A, A2, R; 4 rollouts a fork; 29 forks; 348 cells, every one filled on its first try, none
+unusable). AUDIT first: 348 details read, again nothing uncounted and nothing to re-read, so one reading is printed.
+  A    18 of 116 did not resume   15.5%   misses on 8 of 29 forks (3, 3, 3, 2, 2, 2, 2, 1)
+  A2   20 of 116                  17.2%   against A: 1.7 points MORE; 4 forks better, 17 same, 8 worse;
+                                          p = 0.86                                                            FLAT
+  R     0 of 116                   0.0%   against A: 15.5 points fewer; 8 forks better, 21 same, 0 worse;
+                                          p = 0.0078 (8 forks, all one way: 2 / 2^8)                          GAIN
+A's share is over the 8% floor, so the batch discriminates. The placebo reads FLAT, so the verdicts count. R's GAIN
+keeps its size with any one fork left out: it rests on no single fork. R's witness held in 116 of 116 rollouts
+(its trace note written, the reminder absent from the fork request); in A and in A2 the reminder was the last
+message of the fork request in 116 of 116.
+Registered consequence: R SHIPS. It is built properly on main next: no flag, one behaviour, tests including the
+deterministic one that the fence still ends a veto stall at three, an ADR; and the next served sample reads
+whether the rests went.
+
+Estimates, scored. 32 forks captured (said 90% likely): yes. Complete forks in calibration: said about 29, was 29. A
+in calibration: said 15%, was 19.0%. PROCEED (said 85%): yes. In the comparison A said 15%, was 15.5%; A2 said 15%,
+was 17.2%; R said 4%, was 0.0%. R reads GAIN (said 52%): yes. R ships from this batch (said 44%): yes. The design's
+simulation gave a tenfold cut 91% at a 19% baseline and 55% at 12%; A came in between them, and I had put 52% on the
+branch that happened. Spend: said about $3.00, was $2.2729 (captures $0.9634, calibration $0.4598, comparison
+$0.8497) against a hard bound of $3.95. The per-rollout guess ($0.0043) was wrong both ways: $0.0066 an attempt in
+calibration, $0.0024 in the comparison. The measured difference beside it is the provider's prompt cache: 68% of
+calibration's prompt tokens were read from cache, 98% of A's in the comparison and 95% of R's (a fork's first
+replays pay for its prefix; later ones mostly do not). Campaign live spend is now approximately $9.59.
+
+Secondary, reported and deciding nothing.
+  What a miss was. All 38 misses (A 18, A2 20) were a second refused stop: none was the cap of 6 live completions,
+  none a turn that ended by itself. 33 of the 38 began with words and no tool call, and every rollout whose first
+  act was words ended as a second refused stop (A 16 of 16, A2 17 of 17). Under R no first act was words: 0 of 116.
+  First act (A / A2 / R): the skill again 63 / 63 / 69; the first step 19 / 16 / 18; the plan 14 / 17 / 22; a loop
+  script 4 / 3 / 7; words 16 / 17 / 0.
+  After the door's answer: A went on to the first step 55 times and to the plan 8, of 63; A2 57, 5 and a script
+  once, of 63; R 50 and 19, of 69. In no arm was a door answer followed by a stop.
+  The completion a pass came on (1st / 2nd / 3rd / 4th / 5th): A 19 / 46 / 29 / 3 / 1; A2 14 / 53 / 28 / 1 / 0;
+  R 21 / 52 / 36 / 7 / 0.
+  Cost and size of a rollout: A $0.0022, 86.6k prompt tokens, 2.04 live completions; A2 $0.0021, 85.4k, 2.01;
+  R $0.0030, 96.1k, 2.25. R's rollouts are the longer ones because none of them ended early at a stop.
+  A in calibration beside A in the comparison (same build, same forks, other rollouts): 19.0% and 15.5%, so plain
+  regression to the mean was 3.5 points here, beside a difference of 15.5.
+  Batch 1's baseline as a prediction (A and A2, older build: 7 of 36, 19.4%): A and A2 here, 38 of 232, 16.4%.
+  Forks lost to a prefix the replay could not reproduce: 3 of 32, 12 attempts, $0.0994.
+
+What the numbers do NOT show, as registered. R's GAIN is what the reminder hypothesis predicts, and it is also what
+"any change to the last message of the request" predicts: this bench does not separate the two, and nothing here
+says WHY R works. That words-first rollouts are where every miss began, and that R had none, is a description of
+these rows, not a tested mechanism. This world is not the served door: the GAIN is about a second refused stop in
+this world, on one model at one effort, for the first refused stop of each run, and the segment ends at the first
+resumed command. Whether the served loop's rests go is the next served sample's question; whether the loop then
+keeps running was not measured. And 0 of 116 is not "never": the Wilson 95% interval for R's not-resumed share runs
+to 3.2%.
+
+Housekeeping. The three arm trees are removed and the bench workspace emptied after this block. Tapes, request
+snapshots and completion text stay in local scratch and are never committed; this block was written from the
+ledgers' labels, counts, hashes and usage and from the two reports the registered command printed.
