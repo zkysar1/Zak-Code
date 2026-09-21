@@ -237,6 +237,10 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   at the first call after the first delivery: the fork. A rollout rebuilds that world at the
   same path, serves every recorded completion from the tape (checked message by message), and
   goes live from the fork. Every arm starts from the same conversation, plan and fence count.
+  `--fork-at lap-end` lets the run go on past the door and forks at the first request that
+  carries a finished plan's "answer now" line: a plan that finished later in a turn whose end a
+  hook already governs. The second refused stop is then counted from the deliveries the fork had
+  already seen, and the cap of live completions is two higher (8). Proven offline, never run.
 - **Arms are builds.** `veto_door_arms/<letter>.patch` on a detached worktree of HEAD, run as a
   child process on that tree's `src`. Nothing is switched at run time. Each ledger row carries
   the build it ran and a witness only that build can write, and a row missing its witness (or
@@ -295,6 +299,24 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
   refused, ships as a product change; from that commit `r.patch` is a record too. The bench
   does not say WHY it works, and this world is not the served door: the results block says
   what the numbers do not show.
+- **After R shipped (2026-09-21): arm L and the lap-end fork, built and NOT run.** R is
+  ADR-0205 now, so it is every build's behaviour and no longer an arm: `ARMS` holds A, A2 and L,
+  and the selftest (which main's had been failing since R shipped: it still asked the baseline
+  to lack R's note) proves both fork kinds in the baseline's tree and one kind per run in an
+  arm's. A ledger of an earlier registration is read by the instrument at that registration's
+  own MANIFEST commit. L is the candidate the served runs' own logs pointed at
+  (`served_stops.py`): once a refused stop has named a skill re-entry, no plan that finishes
+  later in that turn is sent the "answer now" line. It is NOT measured here, for two reasons
+  found while sizing a third registration. A fork that deep costs about three times a door
+  fork (a whole further pass of the loop is captured, and every rollout pays for the longer
+  prefix): estimated at about $7, against registration 2's $2.27. And this world's loop skill
+  closes every cycle with "report, in two sentences". In all 32 of registration 2's captures
+  the words that made the door came right after the plan was marked finished, in answer to a
+  request that carried the line: the skill's instruction or the line, this world cannot say
+  which. At a lap-end fork that instruction would bring words in every arm alike, and an arm
+  that silences the line could never show it. A registration that forks there has to change
+  the world first, and pilot what it yields. The line is to be tested in the served loop
+  itself instead; that registration belongs in `results/served-luna-preregistration.log`.
 - **The batch-1 patches are a record, not a kit.** `veto_door_arms/*.patch` are the bytes
   batch 1 ran, against `465b332`. `b.patch` and `c.patch` no longer apply to HEAD: ADR-0203
   changed the line they both patch (the resolver now flags the pointer it builds). An arm that
@@ -302,9 +324,9 @@ The reading rule is fixed in `results/veto-door-preregistration.log` before any 
 
 ```bash
 PY=./.venv/bin/python; OUT=/somewhere/scratch; ARMS=$OUT/arms
-$PY bench/veto_door.py selftest --expect A            # prints "capture kept at: <dir>"
+$PY bench/veto_door.py selftest --expect A            # prints "capture kept at: <dir>", per fork kind
 $PY bench/veto_door.py arms --arms-dir $ARMS          # one worktree per arm, from HEAD
-(cd $ARMS/R && PYTHONPATH=$ARMS/R/src $PY bench/veto_door.py selftest --expect R --capture <dir>)
+(cd $ARMS/L && PYTHONPATH=$ARMS/L/src $PY bench/veto_door.py selftest --expect L --capture <dir>)
 $PY bench/veto_door.py preflight
 $PY bench/veto_door.py capture  --out $OUT --arms-dir $ARMS --forks 10 --runs 14 --budget 1.00
 $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --reps 2 --budget 2.50
@@ -321,6 +343,9 @@ $PY bench/veto_door.py rollouts --out $OUT --arms-dir $ARMS --arms A,A2,R --reps
     --stage comparison --forks-of calibration --budget 2.20
 $PY bench/veto_door.py report --ledger $OUT/comparison.jsonl --arms-dir $ARMS --out $OUT \
     --arms A,A2,R --reps 4 --mode refusal
+
+# (the commands above are the record of registrations 1 and 2; from this commit on the arms that
+# build are A, A2 and L, and `capture --fork-at lap-end` forks past the door)
 ```
 
 ## In CI
