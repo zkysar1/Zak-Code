@@ -12348,3 +12348,149 @@ that check the label red. The first run of that proof read 0 red for every mutan
 stated red sets caught it; the driver now overrides the setting and carries a witness test that fails
 unless the mutated tree is the one imported.
 
+## ADR-0209: the stuck ladder counts a repeated outcome per lap of the session's loop, and a receipt of a change is not a look at the world
+
+Date: 2026-09-21. Amends ADR-0038 and, for one case, ADR-0057. Designed under the licence of the
+served-loop log's ladder re-read (`bench/results/served-luna-preregistration.log`, the 08:47 UTC
+registration and its results block). One behaviour, no setting.
+
+Context. ADR-0038 counts identical `(tool, epoch, output)` observations over a whole turn, not
+consecutively, and puts the Nth sighting on rung N: 3 a nudge, 4 a read-only iteration, 5 a step back
+once and a stop after that, 6 and over a stop. Only a successful file edit opens a new epoch. That is
+right for an ordinary turn, where the same result coming back a third time means the model is
+re-measuring. A served perpetual loop is ONE turn that lasts the whole run: a turn-end hook refuses
+every stop and sends the model round its loop skill again (ADR-0187), and the loop changes its world
+through shell scripts, so an epoch almost never opens (0, 1, 1 and 1 file edits in four runs of 35
+minutes). In that turn a healthy loop's once-a-lap housekeeping, the same state probe and the same
+listing, climbs the ladder by itself, and because the counts only grow, late in a run ONE sighting of a
+familiar output is a stop.
+
+What was measured. The re-read replayed the product's own tracker over sample 7's four append-only
+transcripts (gpt-5.6-luna, reasoning effort none) and reproduced all 47 of the product's
+repeated-outcome notes: 30 nudges, 7 read-only iterations, 2 step backs and 8 stops, about 12
+interventions a run in a loop that was working. All 33 rungs on a tool that looks at the world (Bash 27,
+Read 3, LS 3) had at least one lap boundary between their repeats; consecutive sightings were a median
+of 51 tool-call iterations apart. The other 14 were on `update_plan`, 13 of them with no lap boundary
+between: byte-identical "Plan updated" receipts, none of them "Plan unchanged", drawn while the model
+journalled into its plan between real steps. Two of run 4's four stops fell on such receipts. In run 2
+the hook refused three of the ladder's stops and at the fourth the veto fence (ADR-0187) ended the turn
+`veto_stall`: the ladder ended a working turn through refusals it had caused itself. In a longer run
+that end leaves the loop idle until its next wake-up. The registered reading was LOOP REGULARITY by a
+thin margin (the plain lap rule removes 34 of 47, 72.3% against a threshold of 70%), which licensed
+designing a change and nothing about laps or goals.
+
+Decision.
+
+1. A LAP is the session's loop skill delivered again inside a turn, by either of the two doors the
+   product already registers: the harness at a refused stop (`_deliver_veto_skill`, the one place
+   `session.loop_skill` is set), and the BODY that answers the model's own Skill call for that skill
+   (`_seed_loaded_skill_skeletons`). A pointer is no delivery (ADR-0203), another skill's body is no
+   lap, and until a hook has named a loop skill nothing is. The loop counts laps in `_loop_laps`, never
+   reset because only a change means anything, and hands the count to the tracker at every observe
+   beside the epoch, on both turn paths. 2. At a lap boundary the repeated-outcome counts start over,
+   WITH A BOUND: only if the lap that just ended showed at least one outcome never seen before in this
+   turn (`_seen_outcomes`, 8-byte digests, never cleared, so "new" means new to the turn and a loop
+   alternating two probes is not forever new). A lap that showed nothing new was no lap of work. So a
+   model that probes, stops in words and is sent round again still climbs the whole ladder, one lap
+   late. The plain lap rule would never have caught it, which is the blind spot the re-read registered.
+   The boundary is settled before the batch that arrives with the new lap number is counted: that batch
+   belongs to the new lap. 3. A result whose tool sets `RECEIPT_OF_CHANGE` in its data
+   (`zakcode.tools.base`; the plan tool sets it on "Plan updated" only, not on "Plan unchanged" and not
+   on the advance-for-you receipt) is the harness's acknowledgement of a write that changed something,
+   not a look at the world. It is keyed on the loop's work count as well (`_work_calls`, ADR-0196:
+   successful calls to anything but the plan, skill and wake-up tools), so two identical receipts are
+   the same observation only while no work call has succeeded between them. Journalling between real
+   steps draws nothing. Rewriting the plan again and again with nothing in between climbs exactly as
+   before, which matters: ADR-0192 left a bound on consecutive plan-only completions undone, so this
+   signal is the only net under that churn. An errored result is never a receipt. A receipt is never a
+   lap's "something new": it would be new after every work call and let any spin with a plan in it off
+   the bound. The flag is the tool's own, never a search of the text (ADR-0203's rule). 4. What the
+   ladder says is true of what it counted (ADR-0198). The repeated-look rail no longer says "this turn".
+   When what came back again was a receipt, the rail says so in words that are true of one (the tool was
+   called N times, no other work succeeded in between, the receipt read the same each time), the trace
+   note carries `receipt: true`, and the step rung 1 adds to the plan (ADR-0057) is the work itself and
+   not "what the result you keep re-measuring already tells you". A receipt tells nothing, and one
+   successful work call is also what makes the next receipt a new one. One predicate,
+   `last_outcome_was_receipt`, is read by all three, so none can say what another does not.
+
+Design evidence, and what it is not. An unregistered replay of the candidate rules over the same four
+transcripts, made before any product code was written. Counts only: a replay shows where a rule would
+have fired on the SAME calls and nothing else.
+
+| counting rule | rungs | of them stops |
+| --- | --- | --- |
+| the whole turn (the product's until now) | 47 | 8 |
+| the whole turn, receipts not counted at all | 33 | 6 |
+| per lap | 13 | 0 |
+| per lap, with the bound | 13 | 0 |
+| per lap with the bound, a receipt keyed on the work count (this ADR) | 0 | 0 |
+
+Under this ADR's rule the counts started over at 56 of the 67 lap boundaries and the bound held them at
+11. Simply not counting receipts was the first design and was dropped before coding: on these logs it
+reads the same with the lap rule, and it removes the only net under plan churn, whose measured worst
+case is a dead loop and a three-figure bill. The bench reader, updated in this change, replays the
+product's own tracker and gives the same 0 and 0.
+
+What is left alone, and two limits said plainly. The say-inbox door (a message typed into a running
+turn) is not a lap: it is neither measured nor registered as a loop door. The step back stays once per
+turn. A turn with no hook-named loop skill never sees a boundary, so an ordinary session counts as it
+always did. Claude Code has no such ladder, so the Mind changes nothing and the two harnesses stay on
+one contract. The limits: a spin that shows one new result per lap cannot be told from a healthy loop by
+its outputs (livelock at the level of the loop is the hook owner's to catch, and the veto fence still
+stands); and a healthy loop that idles, going round with nothing new to show, still climbs, one lap
+later than it did. For that loop the right move is to rest (a wake-up or a background wait), not to go
+round.
+
+The instrument moved with the product. `bench/served_ladder.py` replayed the tracker by handing it the
+epoch only, so after this change it silently replayed the OLD count and stayed green: its selftest
+passed 65 of 65 against the new tree. It now replays both counts: `turn`, the whole-turn count sample
+7's worlds were written under, and `shipped`, fed the lap count, the work count and the receipt flag (a
+transcript does not keep result data, so the reader puts the flag back from how the receipt begins,
+checked against the real tool). It says which count a world's own notes were `written_under`
+(`control_by_count`), which is the build-identity check of a two-arm sample; describes a rung over the
+sightings the tracker counted as one; and counts receipts apart. Its synthetic worlds can be written by
+a product of either kind whose counts are kept apart from the replay's, so each catches the other. 83
+known answers. Its mutation proof (`served_ladder_mutants.py`) went from 51 to 72 mutants, each killed
+by a named check, after the nine whose anchors the edit had made stale were repaired. Re-read with it,
+sample 7's worlds reproduce every registered number, read `written_under: turn` four times of four, and
+draw 0 rungs under `shipped`.
+
+Tests (`tests/test_stuck_counts_by_lap.py`, 33 cases; hermetic, with scripted providers, the real
+turn-end hook door, the real Skill tool behind a resolver and the real plan tool). This change makes
+rungs STOP APPEARING, and a dead ladder draws none either, so every case stands beside a control that
+must still climb. At the tracker: many healthy laps draw nothing while the same calls with no lap
+between them climb the whole ladder; circling inside one lap climbs; the batch arriving with a new lap
+belongs to it; a lap that showed nothing new does not start the counts over; new means new to the turn;
+a receipt does not repeat while work succeeds in between, climbs as churn when none does, and an
+unflagged result repeats whatever ran between; an errored result is never a receipt; a receipt is never
+the something-new; the rail, the note and the seeded step for churn say what is true of a receipt while
+a repeated look keeps its own; the real plan tool flags "Plan updated" and neither unchanged receipt. At
+the loop, on both turn paths: a loop the hook sends round draws no rung; a refusal in plain words is no
+lap; the loop skill's body answering the model's own call is a lap, and a pointer, another skill's body,
+or any body before a hook has named a loop skill is not; a model that stops after every probe still ends
+`stuck`; journalling through the real plan tool draws nothing; plan churn still climbs and is named a
+receipt on the trace and on the wire. Every existing ADR-0038 and ADR-0057 test is unchanged and green.
+
+The proof is an asymmetry, as in ADR-0208: 23 mutants (the tracker 10, the plan tool 3, the loop 10),
+the red set of each written down before it ran, every other test of eight files (107 cases) required to
+stay green, against a copy of `src/` with a witness test that fails unless the mutated tree is the one
+imported. The old source cannot run the new tests at all (they fail at import), so the old behaviour is
+restored INSIDE the new code: a lap that never starts the counts over, a receipt keyed like any result,
+and a turn path that never tells the tracker the lap or the work count are each the old product, and
+each turns red the tests whose failure is the measured defect's own signature, rungs drawn on a healthy
+loop's housekeeping and on journalling. Two of its runs are worth recording. The first read the
+UNCHANGED copy 23 red: the witness file lay outside the worktree, which moved pytest's rootdir and with
+it the ini file, so `asyncio_mode = auto` was lost. The unchanged-copy gate caught it, and the driver
+now names the config file and the rootdir and overrides only `pythonpath`. The third, made after the
+rail's wording was added, differed on two mutants whose stated sets were too short: a test had just been
+extended to check that churn is named a receipt, one of the new file's controls pins a look's note as an
+exact dict, and an ADR-0038 test pins the word "Re-measuring". Nothing had survived. The statements were
+corrected with the reason beside each, and the fourth run read all 23 as stated.
+
+What is not claimed. That the rungs harmed a run, that fewer rungs close more laps or goals, or what the
+model would have done without the rungs it drew. A replay cannot say, and the 0 of 47 above is a replay.
+Nor that the churn rail's new words, or the step seeded for churn, change what a model does next: both
+are argued from what a receipt IS (a rail must be true of what it counted), and neither has been
+measured. One model, one loop. Before anything is said about laps or goals this change needs its own
+registered served sample with a concurrent control, main before this commit against main with it in one
+batch, which is the next entry in the served-loop log.

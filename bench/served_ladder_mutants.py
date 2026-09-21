@@ -25,6 +25,8 @@ BENCH = Path(__file__).resolve().parent
 
 _LAP = 'lap = bool(it["refused_stops"]) or own_load'
 _OWN = "own_load = _body_delivered(it, only=loop_skill)"
+_SHIPPED = '{"lap": laps, "work": work} if rule == "shipped"'  # the replay of the product's count
+_WRITTEN = '{"lap": lap, "work": work} if product == "shipped"'  # ...and the synthetic product's
 _EPOCH_LOOP = (
     '            for call in it["calls"]:'
     "  # the loop hands the tracker the epoch AFTER the batch ran\n"
@@ -118,7 +120,10 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     ],
     "bodies-never-counted": [("            bodies += body\n", "            bodies += 0\n")],
     "error-flag-never-read": [
-        ('is_error=bool(results[str(u.get("id"))].get("is_error")),', "is_error=False,")
+        (
+            'output, failed = _text(block.get("content")), bool(block.get("is_error"))',
+            'output, failed = _text(block.get("content")), False',
+        )
     ],
     "errors-after-a-read-only-rung-not-counted": [
         (
@@ -128,10 +133,8 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     ],
     "was-an-error-asks-the-whole-batch": [
         (
-            "                        if c.id in by_id\n"
-            '                        and outcome_signature(c.name, by_id[c.id].output or "", epoch)'
-            " == worst\n",
-            "                        if c.id in by_id\n",
+            "if c.id in by_id and _keyed(rule, c.name, by_id[c.id], epoch, work) == worst\n",
+            "if c.id in by_id\n",
         )
     ],
     "summary-counts-rungs-of-any-signal": [
@@ -149,7 +152,9 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     "control-forgives-notes-not-reproduced": [
         ("max(len(noted), len(mine), 1)", "max(len(mine), 1)")
     ],
-    "control-threshold-strict": [('>= RULE["control_match"]', '> RULE["control_match"]')],
+    "control-threshold-strict": [
+        ('len(mine), 1)) >= RULE["control_match"]', 'len(mine), 1)) > RULE["control_match"]')
+    ],
     "matches-need-an-unbroken-run": [
         ("if a == b else max(table[i - 1][j], table[i][j - 1])", "if a == b else 0")
     ],
@@ -161,9 +166,9 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     ],
     "replayed-rungs-of-any-signal-matched": [
         (
-            '        for r in shipped["detail"]\n'
+            '        for r in whole_turn["detail"]\n'
             '        if SIG_REPEATED_OUTCOME in str(r["signals"])\n',
-            '        for r in shipped["detail"]\n',
+            '        for r in whole_turn["detail"]\n',
         )
     ],
     "refused-stops-never-compared": [
@@ -191,8 +196,10 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     "unbelieved-worlds-are-read": [
         ('        elif not w["control"]["passes"]:', "        elif False:")
     ],
-    "min-rungs-ignored": [('if shipped < RULE["min_rungs"]:', "if shipped < 0:")],
-    "min-rungs-strict": [('if shipped < RULE["min_rungs"]:', 'if shipped <= RULE["min_rungs"]:')],
+    "min-rungs-ignored": [('if whole_turn < RULE["min_rungs"]:', "if whole_turn < 0:")],
+    "min-rungs-strict": [
+        ('if whole_turn < RULE["min_rungs"]:', 'if whole_turn <= RULE["min_rungs"]:')
+    ],
     "regular-threshold-strict": [
         ('if removed >= RULE["regular"]:', 'if removed > RULE["regular"]:')
     ],
@@ -201,21 +208,103 @@ MUTANTS: dict[str, list[tuple[str, str]]] = {
     ],
     "share-taken-of-the-lap-rule": [
         (
-            'removed = Fraction(shipped - by_rule["lap"], shipped)',
-            'removed = Fraction(by_rule["lap"], shipped)',
+            'removed = Fraction(whole_turn - by_rule["lap"], whole_turn)',
+            'removed = Fraction(by_rule["lap"], whole_turn)',
         )
     ],
     "reading-uses-the-body-rule": [
         (
-            'removed = Fraction(shipped - by_rule["lap"], shipped)',
-            'removed = Fraction(shipped - by_rule["body"], shipped)',
+            'removed = Fraction(whole_turn - by_rule["lap"], whole_turn)',
+            'removed = Fraction(whole_turn - by_rule["body"], whole_turn)',
         )
     ],
     "reading-uses-the-reentry-rule": [
         (
-            'removed = Fraction(shipped - by_rule["lap"], shipped)',
-            'removed = Fraction(shipped - by_rule["reentry"], shipped)',
+            'removed = Fraction(whole_turn - by_rule["lap"], whole_turn)',
+            'removed = Fraction(whole_turn - by_rule["reentry"], whole_turn)',
         )
+    ],
+    # ── the product's count since ADR-0209: what the `shipped` replay hands the tracker ──
+    "the-shipped-replay-hands-over-no-lap": [(_SHIPPED, '{"work": work} if rule == "shipped"')],
+    "the-shipped-replay-hands-over-no-work": [(_SHIPPED, '{"lap": laps} if rule == "shipped"')],
+    "a-plan-call-is-work-to-the-replay": [
+        ("                if call.name not in NOT_WORK\n", "                if call.name\n")
+    ],
+    "failed-work-is-work-to-the-replay": [
+        (
+            "                and (done := by_id.get(call.id)) is not None\n"
+            "                and not done.is_error\n",
+            "                and by_id.get(call.id) is not None\n",
+        )
+    ],
+    "the-receipt-flag-is-never-put-back": [
+        ("        data={RECEIPT_OF_CHANGE: True} if receipt else None,\n", "        data=None,\n")
+    ],
+    "every-plan-result-is-a-receipt-of-change": [
+        (" and not failed and output.lstrip().startswith(RECEIPT_HEAD)\n", " and not failed\n")
+    ],
+    "a-receipt-is-described-over-every-sighting-of-its-words": [
+        ("epoch, work=work if receipt else None)\n\n\ndef _matches", "epoch)\n\n\ndef _matches")
+    ],
+    "the-replay-never-says-a-rung-was-on-a-receipt": [
+        ('"receipt": bool(evidence.get("receipt")),', '"receipt": False,')
+    ],
+    "the-trace-notes-on-a-receipt-are-never-counted": [
+        ('on_a_receipt += bool(data.get("receipt"))', "on_a_receipt += 0")
+    ],
+    # ── ...and what the synthetic product since ADR-0209 hands ITS tracker ──
+    "the-synthetic-product-never-tells-the-lap": [
+        (_WRITTEN, '{"work": work} if product == "shipped"')
+    ],
+    "the-synthetic-product-never-tells-the-work": [
+        (_WRITTEN, '{"lap": lap} if product == "shipped"')
+    ],
+    "a-refused-stop-is-no-lap-to-the-synthetic-product": [
+        (
+            "            lap, loop_skill = lap + 1, skill  #",
+            "            lap, loop_skill = lap, skill  #",
+        )
+    ],
+    "an-own-load-is-no-lap-to-the-synthetic-product": [
+        ("                        and bool(loop_skill)\n", "                        and False\n")
+    ],
+    "the-synthetic-product-takes-a-pointer-for-a-body": [
+        ('                        and not (data or {}).get("pointer")\n', "")
+    ],
+    "a-plan-call-is-work-to-the-synthetic-product": [
+        ("work += tool not in NOT_WORK and not err", "work += not err")
+    ],
+    "failed-work-is-work-to-the-synthetic-product": [
+        ("work += tool not in NOT_WORK and not err", "work += tool not in NOT_WORK")
+    ],
+    # ── which count wrote a world ──
+    "written-under-always-says-either": [
+        (
+            'told[0] if len(told) == 1 else ("either" if told else "neither")',
+            '"either" if told else "neither"',
+        )
+    ],
+    "no-note-and-no-rung-is-not-agreement": [
+        (
+            '"reproduces_the_notes": longer == 0\n            or Fraction(',
+            '"reproduces_the_notes": longer > 0\n            and Fraction(',
+        )
+    ],
+    "by-count-threshold-strict": [
+        (
+            'or Fraction(agreed, longer) >= RULE["control_match"]',
+            'or Fraction(agreed, longer) > RULE["control_match"]',
+        )
+    ],
+    "by-count-rungs-of-any-signal-matched": [
+        (
+            '[RULES.index(count)]["detail"]\n'
+            '            if SIG_REPEATED_OUTCOME in str(r["signals"])\n',
+            '[RULES.index(count)]["detail"]\n',
+        )
+    ],
+    "by-count-reads-the-whole-turn-replay-twice": [
+        ('out["replays"][RULES.index(count)]["detail"]', 'out["replays"][0]["detail"]')
     ],
 }
 

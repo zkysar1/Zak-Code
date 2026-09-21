@@ -13,6 +13,12 @@ read-only iteration, the fifth a step back, the sixth a stop. Whether the rungs 
 were the loop's own regular repeats or a model circling could not be read while the transcript
 was a live window. Since ADR-0206 it is append-only, so every call and result is on disk.
 
+SINCE ADR-0209 the product counts per LAP, which is what this file's first reading licensed
+(sample 7: the lap rule removed 34 of 47 rungs, and the 13 it left were all on the plan tool's
+receipt). The whole-turn count above is now the rule `turn`, a replay of what the product did
+BEFORE; what it does now is the rule `shipped`. A world is read under both, and says which of
+the two reproduces the stuck notes its own product wrote: that names the build that ran.
+
 WHAT IT DOES. It feeds `zakcode.agent.stuck.StuckTracker`, the product's tracker, the calls and
 results the transcript holds, one tool-call iteration at a time, the way the loop does: a fresh
 tracker per turn; the epoch is the turn's count of successful workspace-write calls, read after
@@ -35,10 +41,21 @@ amended): per world the sequence of (tool, repeats) over the repeated-outcome no
 the replay's under the shipped rule, at least 80% in order, counted against the LONGER of the
 two. (2) The refused stops found in the transcript must be the deliveries the trace noted, give
 or take one (a run cut off between the two writes). A world failing either is NOT READ, and named.
+That control is sample 7's and stays as registered: under `turn`, and a world with no note has
+nothing to reproduce. `control_by_count` puts the same question to BOTH counts, and there a
+world with no note is reproduced by a replay that draws none: under the lap count a healthy run
+is expected to draw none, and `turn` beside it says what the whole-turn count would have drawn.
 
-COUNTING RULES replayed on the same calls (the product's is `turn`):
-  turn      identical observations counted over the whole turn.
-  lap       the count starts again at a lap boundary. The rule the reading is taken on.
+COUNTING RULES replayed on the same calls:
+  turn      identical observations counted over the whole turn. The product's until ADR-0209.
+  shipped   the product's since ADR-0209, fed what its loop feeds the tracker: the lap count
+            (the count starts again at a lap boundary, unless the lap that just ended showed
+            nothing new to the turn), the work count, and the plan tool's receipt flag (a
+            "Plan updated" receipt repeats only while no work call succeeded in between). The
+            transcript keeps no result data, so the flag is put back from the receipt's first
+            words; the selftest asks the real tool for them.
+  lap       the count starts again at EVERY lap boundary, with no bound and no receipt rule.
+            The candidate sample 7's reading was taken on.
   body      ...whenever ANY Skill call is answered with a body. Described only: a model that hops
             between skills while it circles would never climb under it.
   reentry   ...at ANY Skill call, pointer or body. Described only, for the same reason.
@@ -52,6 +69,7 @@ read with this file) is `reading()` below, over the worlds that pass the control
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
@@ -61,9 +79,11 @@ from fractions import Fraction
 from pathlib import Path
 
 from zakcode.agent.loop import (
+    _PLAN_TOOLS,
     _SKILL_TOOLS,
     _UNOBSERVING_TOOLS,
     _VETO_SKILL_NOTE,
+    _WAKEUP_TOOLS,
     _composed_skill_name,
     harness_skill_turn_text,
 )
@@ -71,14 +91,23 @@ from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker,
 from zakcode.hooks.transcript import render_claude_code_transcript
 from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.providers.base import ToolCall
-from zakcode.tools.base import PermissionTier
+from zakcode.tasks import TaskNetwork
+from zakcode.tools.base import RECEIPT_OF_CHANGE, PermissionTier, ToolContext
 from zakcode.tools.builtins.default_registry import default_registry
+from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.wakeup import LOOP_WAKE_NOTE
 
 #: The product's own sets: the skill tool under both spellings, and the tools whose results are
 #: the harness's own delivery and are never counted as an outcome.
 SKILL_TOOLS = _SKILL_TOOLS
 UNCOUNTED = _UNOBSERVING_TOOLS
+#: ...and the tools a successful call to is NOT work (ADR-0196): keeping the plan, loading a
+#: skill, re-arming the wake-up. The loop's work count is every other successful call.
+NOT_WORK = _PLAN_TOOLS | _SKILL_TOOLS | _WAKEUP_TOOLS
+#: How the plan tool's receipt of a CHANGE begins (ADR-0209). The product flags that result in
+#: its data, which a transcript does not keep, so the reader puts the flag back from these
+#: words. The selftest asks the real tool for both of its receipts and checks them against it.
+RECEIPT_HEAD = "Plan updated"
 POINTER_HEAD = "[already loaded"  # how every pointer the skill tool answers with begins
 #: How the `<command-message>` line of a refused stop's delivery reads (the product's own note).
 VETO_HEAD = "[harness] " + " ".join(_VETO_SKILL_NOTE.split("{")[0].split())[:48]
@@ -105,6 +134,8 @@ def _write_tier_tools() -> frozenset[str]:
 
 
 EDIT_TOOLS = _write_tier_tools()
+#: The plan tool under every name the product's registry gives it.
+PLAN_RECEIPT_TOOLS = frozenset({"update_plan", *default_registry().aliases_of("update_plan")})
 
 
 def _text(content: object) -> str:
@@ -129,6 +160,20 @@ def _said(row: dict) -> str:
             if isinstance(b, dict) and b.get("type") == "text"
         )
     return ""
+
+
+def _result(tool: str, use_id: str, block: dict) -> ToolResultBlock:
+    """A tool result as the tracker is handed one. The transcript keeps its text and whether it
+    was an error; the one piece of result DATA the tracker reads, the plan tool's receipt flag
+    (ADR-0209), is put back from how the receipt begins."""
+    output, failed = _text(block.get("content")), bool(block.get("is_error"))
+    receipt = tool in PLAN_RECEIPT_TOOLS and not failed and output.lstrip().startswith(RECEIPT_HEAD)
+    return ToolResultBlock(
+        tool_use_id=use_id,
+        output=output,
+        is_error=failed,
+        data={RECEIPT_OF_CHANGE: True} if receipt else None,
+    )
 
 
 def read_transcript(transcript: Path) -> dict:
@@ -179,11 +224,7 @@ def read_transcript(transcript: Path) -> dict:
                     for u in uses
                 ],
                 "results": [
-                    ToolResultBlock(
-                        tool_use_id=str(u.get("id")),
-                        output=_text(results[str(u.get("id"))].get("content")),
-                        is_error=bool(results[str(u.get("id"))].get("is_error")),
-                    )
+                    _result(str(u.get("name")), str(u.get("id")), results[str(u.get("id"))])
                     for u in uses
                     if str(u.get("id")) in results
                 ],
@@ -205,7 +246,7 @@ def read_trace(world: Path, session: str) -> dict:
     )
     sizes: list[int] = []
     notes: list[tuple[str, int]] = []
-    delivered = 0
+    delivered = on_a_receipt = 0
     for path in files:
         tools = 0
         for line in path.open(errors="replace"):
@@ -220,10 +261,16 @@ def read_trace(world: Path, session: str) -> dict:
                 tools += 1
             if data.get("kind") == "stuck" and SIG_REPEATED_OUTCOME in str(data.get("signals")):
                 notes.append((str(data.get("tool")), int(data.get("repeats") or 0)))
+                on_a_receipt += bool(data.get("receipt"))  # plan churn, said so (ADR-0209)
             if data.get("kind") == "turn_end_skill" and not data.get("refused"):
                 delivered += 1
         sizes.append(tools)
-    return {"sizes": sizes, "notes": notes, "refused_stops_delivered": delivered}
+    return {
+        "sizes": sizes,
+        "notes": notes,
+        "notes_on_a_receipt": on_a_receipt,
+        "refused_stops_delivered": delivered,
+    }
 
 
 def _skill_asked(call: ToolCall) -> str:
@@ -251,7 +298,7 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
     """Feed the product's tracker each turn's iterations under a counting rule."""
     window = int(rule.split(":", 1)[1]) if rule.startswith("window:") else 0
     rungs: list[dict] = []
-    index = laps = own_loads = refusals = bodies = skill_calls = edits = 0
+    index = laps = own_loads = refusals = bodies = skill_calls = edits = work = 0
     loop_skill = ""  # the session's: learned at a refused stop, kept from turn to turn
     for iterations in turns:
         tracker = StuckTracker(uncounted_outcome_tools=UNCOUNTED)  # one per turn, as the loop
@@ -284,6 +331,13 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
             bodies += body
             skill_calls += sum(c.name in SKILL_TOOLS for c in it["calls"])
             by_id = {r.tool_use_id: r for r in it["results"]}
+            work += sum(  # the loop's work count (ADR-0196), which it never resets
+                1
+                for call in it["calls"]
+                if call.name not in NOT_WORK
+                and (done := by_id.get(call.id)) is not None
+                and not done.is_error
+            )
             if narrowed and rungs:
                 rungs[-1]["errors_in_the_next_iteration"] = sum(r.is_error for r in it["results"])
             for call in it["calls"]:  # the loop hands the tracker the epoch AFTER the batch ran
@@ -296,13 +350,20 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
                 result = by_id.get(call.id)
                 if result is None:
                     continue
-                sig = outcome_signature(call.name, result.output or "", epoch)
+                sig = _keyed(rule, call.name, result, epoch, work)
                 if sig is not None:
                     seen.setdefault(sig, []).append(
                         (index, laps, own_loads, refusals, bodies, skill_calls)
                     )
                     added.append(sig)
-            tracker.observe(it["calls"], it["results"], assistant_text=it["text"], epoch=epoch)
+            # `shipped`: the lap and work counts as the loop hands them over, read after the
+            # batch ran. Only a CHANGE in either means anything to the tracker, so counting a
+            # boundary once where the loop counted two doors is the same reading. Every other
+            # rule hands over neither, which is the whole-turn count.
+            counts = {"lap": laps, "work": work} if rule == "shipped" else {}
+            tracker.observe(
+                it["calls"], it["results"], assistant_text=it["text"], epoch=epoch, **counts
+            )
             action = tracker.next_action()
             narrowed = action is StuckAction.NARROW
             stopped = action is StuckAction.STOP
@@ -314,6 +375,7 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
                     "signals": evidence.get("signals"),
                     "tool": evidence.get("tool"),
                     "repeats": evidence.get("repeats"),
+                    "receipt": bool(evidence.get("receipt")),
                 }
                 if SIG_REPEATED_OUTCOME in str(row["signals"]) and added:
                     # the observation the TRACKER counted highest under this rule (its own tie
@@ -332,8 +394,7 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
                     row["was_an_error"] = any(
                         by_id[c.id].is_error
                         for c in it["calls"]
-                        if c.id in by_id
-                        and outcome_signature(c.name, by_id[c.id].output or "", epoch) == worst
+                        if c.id in by_id and _keyed(rule, c.name, by_id[c.id], epoch, work) == worst
                     )
                 rungs.append(row)
             if window:
@@ -367,12 +428,30 @@ def replay(turns: list[list[dict]], rule: str = "turn") -> dict:
             (r.get("skill_calls_between") or 0) > 0 for r in repeated
         ),
         "of_them_the_output_was_an_error": sum(bool(r.get("was_an_error")) for r in repeated),
+        # ...and the ones on a tool's receipt for a change (ADR-0209). The TRACKER says which,
+        # from the tool's own flag, under every rule here. On a TRACE only a product since
+        # ADR-0209 writes the key, so an older world's own notes count none.
+        "of_them_on_a_receipt": sum(bool(r.get("receipt")) for r in repeated),
         "by_tool": dict(Counter(str(r["tool"]) for r in repeated)),
         "errors_in_the_iteration_after_a_read_only_rung": [
             r["errors_in_the_next_iteration"] for r in rungs if "errors_in_the_next_iteration" in r
         ],
         "detail": rungs,
     }
+
+
+def _keyed(rule: str, tool: str, result: ToolResultBlock, epoch: int, work: int) -> str | None:
+    """The signature of one result AS THE TRACKER KEYED IT under `rule`, so that what is said of
+    a rung (its gaps, what lay between, whether it was an error) is said of the sightings the
+    tracker counted as one. Since ADR-0209 the product keys a RECEIPT on the work count too.
+    The signature itself is the product's; only the choice of `work` is made here, by the
+    tracker's own test, and the mutation proof withholds it."""
+    receipt = (
+        rule == "shipped"
+        and not result.is_error
+        and bool((result.data or {}).get(RECEIPT_OF_CHANGE))
+    )
+    return outcome_signature(tool, result.output or "", epoch, work=work if receipt else None)
 
 
 def _matches(noted: list[tuple[str, int]], replayed: list[tuple[str, int]]) -> int:
@@ -387,7 +466,8 @@ def _matches(noted: list[tuple[str, int]], replayed: list[tuple[str, int]]) -> i
     return table[-1][-1]
 
 
-RULES = ("turn", "lap", "body", "reentry", "window:40")
+#: `turn` stays first and `shipped` goes last: sample 7's reading indexes the others by place.
+RULES = ("turn", "lap", "body", "reentry", "window:40", "shipped")
 
 
 def read_world(world: Path) -> dict:
@@ -422,10 +502,10 @@ def read_world(world: Path) -> dict:
         turns = [iterations]
         out["turns"] = "one (the trace and the transcript disagree on the call total)"
     out["replays"] = [replay(turns, rule) for rule in RULES]
-    shipped = out["replays"][0]
+    whole_turn = out["replays"][0]  # sample 7's control is against the whole-turn count
     mine = [
         (str(r["tool"]), int(r["repeats"] or 0))
-        for r in shipped["detail"]
+        for r in whole_turn["detail"]
         if SIG_REPEATED_OUTCOME in str(r["signals"])
     ]
     matched = _matches(noted, mine)
@@ -437,6 +517,32 @@ def read_world(world: Path) -> dict:
     stops_match = (
         abs(trace["refused_stops_delivered"] - in_transcript) <= RULE["refused_stops_may_differ_by"]
     )
+    by_count = {}
+    for count in ("turn", "shipped"):
+        drawn = [
+            (str(r["tool"]), int(r["repeats"] or 0))
+            for r in out["replays"][RULES.index(count)]["detail"]
+            if SIG_REPEATED_OUTCOME in str(r["signals"])
+        ]
+        agreed, longer = _matches(noted, drawn), max(len(noted), len(drawn))
+        by_count[count] = {
+            "repeated_outcome_rungs_replayed": len(drawn),
+            "matched_in_order": agreed,
+            # No note and no rung replayed IS agreement here: a healthy run under the lap
+            # count draws none, and a replay that draws none has reproduced that.
+            "reproduces_the_notes": longer == 0
+            or Fraction(agreed, longer) >= RULE["control_match"],
+        }
+    told = [count for count, c in by_count.items() if c["reproduces_the_notes"]]
+    out["control_by_count"] = {
+        "repeated_outcome_notes_on_the_trace": len(noted),
+        "of_them_on_a_receipt": trace["notes_on_a_receipt"],
+        **by_count,
+        # Which count the product that wrote this world used, read off its own notes. `either`:
+        # the two counts draw the same rungs on these calls, so the notes cannot tell.
+        "written_under": told[0] if len(told) == 1 else ("either" if told else "neither"),
+        "refused_stops_match": stops_match,
+    }
     out["control"] = {
         "repeated_outcome_notes_on_the_trace": len(noted),
         "repeated_outcome_rungs_replayed": len(mine),
@@ -449,8 +555,10 @@ def read_world(world: Path) -> dict:
 
 
 def reading(worlds: list[dict]) -> dict:
-    """The registered reading over every world given. A world is left out, and named, if it has
-    no transcript or its replay does not reproduce the product's own record."""
+    """Sample 7's registered reading over every world given: the share of the whole-turn
+    count's rungs that the plain lap rule removes. A world is left out, and named, if it has no
+    transcript or its replay under `turn` does not reproduce the product's own record, which is
+    what a world written since ADR-0209 will do: this reading is for worlds written before."""
     out: dict = {"rule": {k: str(v) for k, v in RULE.items()}}
     read, left_out = [], {}
     for w in worlds:
@@ -474,7 +582,7 @@ def reading(worlds: list[dict]) -> dict:
         rule: sum(w["replays"][i]["repeated_outcome_rungs"] for w in read)
         for i, rule in enumerate(RULES)
     }
-    shipped = by_rule["turn"]
+    whole_turn = by_rule["turn"]
     out["repeated_outcome_rungs_by_rule"] = by_rule
     for key in (
         "of_them_a_lap_boundary_lay_between",
@@ -484,9 +592,9 @@ def reading(worlds: list[dict]) -> dict:
         "of_them_the_output_was_an_error",
     ):
         out[key] = sum(w["replays"][0][key] for w in read)
-    if shipped < RULE["min_rungs"]:
+    if whole_turn < RULE["min_rungs"]:
         return out | {"batch": "TOO FEW"}
-    removed = Fraction(shipped - by_rule["lap"], shipped)
+    removed = Fraction(whole_turn - by_rule["lap"], whole_turn)
     out["share_the_lap_rule_removes"] = str(removed)
     if removed >= RULE["regular"]:
         return out | {"batch": "LOOP REGULARITY"}
@@ -502,20 +610,52 @@ class _Run:
     """A synthetic served run. Its transcript is rendered by the product's own writer from the
     product's own messages, and its trace is what the product's tracker says of the SAME calls,
     reset where the loop resets it. A stop rung the script runs on from was a refused stop: the
-    harness delivers the loop skill, as it does in a served run."""
+    harness delivers the loop skill, as it does in a served run.
+
+    WHICH product is `write`'s to say: the one before ADR-0209 handed its tracker the epoch and
+    nothing else (`turn`), the one since also hands it the lap and work counts (`shipped`),
+    counted HERE from the script, the way the loop counts them, and not the way `replay` reads
+    them back off a transcript. The two are kept apart so that each can catch the other."""
 
     LOOP = "loop"
     BODY = "# the loop\n" + "step: do the next thing in the procedure\n" * 8
 
     def __init__(self) -> None:
         self.turns: list[list[tuple[str, object]]] = [[]]
+        self._plan = TaskNetwork()  # the session's plan, which the REAL plan tool keeps
 
-    def batch(self, *calls: tuple[str, str, bool, dict]) -> None:
-        """One completion calling several tools: (tool, output, is_error, arguments) each."""
+    def batch(self, *calls: tuple) -> None:
+        """One completion calling several tools: (tool, output, is_error, arguments) each, and
+        the result's DATA as a fifth where the tool that answered sets any."""
         self.turns[-1].append(("calls", list(calls)))
 
-    def call(self, name: str, out: str, err: bool = False, args: dict | None = None) -> None:
-        self.batch((name, out, err, args or {}))
+    def call(
+        self,
+        name: str,
+        out: str,
+        err: bool = False,
+        args: dict | None = None,
+        data: dict | None = None,
+    ) -> None:
+        self.batch((name, out, err, args or {}, data))
+
+    def points_at_the_loop(self, text: str) -> None:
+        """The model's own Skill call for the loop skill, answered with the pointer, flagged the
+        way the skill tool flags one (ADR-0203)."""
+        self.call("Skill", text, args={"skill": self.LOOP}, data={"pointer": True})
+
+    def plans(self, note: str) -> None:
+        """The model journals into its plan, and the REAL plan tool answers: the receipt's words
+        and its flag are the product's own. Three steps, the second in progress, `note` on it:
+        every call changes the plan, and none moves the done count or the current step."""
+        tasks = [
+            {"title": "Select the goal", "status": "done", "outcome": "selected"},
+            {"title": "Carry out the goal", "status": "in_progress", "note": note},
+            {"title": "Close the iteration"},
+        ]
+        ctx = ToolContext(workspace_root=Path("."), task_network=self._plan)
+        result = asyncio.run(UpdatePlanTool().execute({"tasks": tasks}, ctx))
+        self.batch(("update_plan", result.output, result.is_error, {"tasks": tasks}, result.data))
 
     def loads_the_loop(self) -> None:
         """The model's own Skill call for the loop skill, answered with its body."""
@@ -540,9 +680,16 @@ class _Run:
         self.turns.append([("woken", None)] if woken else [])
 
     def write(
-        self, root: Path, name: str, *, trace: str = "true", forget_refusals: int = 0
+        self,
+        root: Path,
+        name: str,
+        *,
+        trace: str = "true",
+        forget_refusals: int = 0,
+        product: str = "turn",
     ) -> Path:
-        """`trace` is what the product's trace holds: "true" every stuck note the calls drew,
+        """`product` is which product wrote the world (see the class). `trace` is what the
+        product's trace holds: "true" every stuck note the calls drew,
         "none" no note, "half" every other one, "but-first" all but the first, "lies" only
         notes the calls cannot have drawn, "padded" the true notes and those false ones.
         `forget_refusals` leaves that many refused stops off the trace."""
@@ -553,6 +700,8 @@ class _Run:
         traces.mkdir(parents=True)
         messages: list[Message] = []
         n = drawn = 0
+        lap = work = 0  # the loop's two counts (ADR-0209, ADR-0196): neither is ever reset
+        loop_skill = ""  # the session's: whatever the last refused stop named (ADR-0187)
 
         def framed(skill: str, note: str) -> Message:
             frame = (
@@ -562,8 +711,9 @@ class _Run:
             return Message.user(harness_skill_turn_text(frame, note))
 
         def deliver(skill: str, events: list[dict]) -> None:
-            nonlocal forget_refusals
+            nonlocal forget_refusals, lap, loop_skill
             messages.append(framed(skill, _VETO_SKILL_NOTE.format(reason="the loop goes on")))
+            lap, loop_skill = lap + 1, skill  # door one: the harness delivers the loop skill
             if forget_refusals > 0:
                 forget_refusals -= 1
             else:
@@ -591,22 +741,37 @@ class _Run:
                     tracker.reset()
                     continue
                 uses, blocks = [], []
-                for tool, out, err, args in what:  # type: ignore[union-attr]
+                for tool, out, err, args, *rest in what:  # type: ignore[union-attr]
                     n += 1
                     given = args or {"command": f"probe {n}"}
+                    data = rest[0] if rest else None
                     uses.append(ToolUseBlock(id=f"c{n}", name=tool, input=given))
-                    blocks.append(ToolResultBlock(tool_use_id=f"c{n}", output=out, is_error=err))
+                    blocks.append(
+                        ToolResultBlock(tool_use_id=f"c{n}", output=out, is_error=err, data=data)
+                    )
                     events.append({"kind": "tool", "detail": tool, "ok": not err})
                     epoch += tool in EDIT_TOOLS and not err
+                    work += tool not in NOT_WORK and not err
+                    # Door two: the BODY of the session's loop skill answers the model's own
+                    # call. The tool's flag says what is a pointer, as it does for the loop.
+                    lap += (
+                        tool in SKILL_TOOLS
+                        and not err
+                        and not (data or {}).get("pointer")
+                        and bool(loop_skill)
+                        and given.get("skill") == loop_skill
+                    )
                 messages.append(
                     Message(role="assistant", blocks=[TextBlock(text="working"), *uses])
                 )
                 messages.append(Message.tool_results(blocks))
+                counts = {"lap": lap, "work": work} if product == "shipped" else {}
                 tracker.observe(
                     [ToolCall(id=u.id, name=u.name, arguments=u.input) for u in uses],
                     blocks,
                     assistant_text="working",
                     epoch=epoch,
+                    **counts,
                 )
                 action = tracker.next_action()
                 if action is not StuckAction.CONTINUE:
@@ -957,6 +1122,15 @@ def selftest() -> int:
             ),
             ({"nudge": 1, "narrow": 1}, 0, 0, 0),
         )
+        check(
+            "...by count too: no such note and no such rung replayed, so the notes tell nothing",
+            (
+                got["control_by_count"]["turn"]["repeated_outcome_rungs_replayed"],
+                got["control_by_count"]["shipped"]["repeated_outcome_rungs_replayed"],
+                got["control_by_count"]["written_under"],
+            ),
+            (0, 0, "either"),
+        )
         # ...and a completion in words between them is where the loop resets the tracker: the
         # streak those signals had built starts over, in the replay as in the product.
         run = _Run()
@@ -1054,6 +1228,14 @@ def selftest() -> int:
                 nearly["control"]["passes"],
             ),
             (4, 5, True),
+        )
+        check(
+            "...by count too: exactly 80% under `turn` reproduces the notes, so `turn` wrote it",
+            (
+                nearly["control_by_count"]["turn"]["reproduces_the_notes"],
+                nearly["control_by_count"]["written_under"],
+            ),
+            (True, "turn"),
         )
         check(
             "...each stop rung the run went on from was a refused stop, on both records",
@@ -1196,7 +1378,7 @@ def selftest() -> int:
         )
 
         # Thresholds met exactly are met, on counts alone (no transcript needed).
-        def counts(name: str, shipped: int, lap: int) -> dict:
+        def counts(name: str, whole_turn: int, lap: int) -> dict:
             blank = {
                 "of_them_a_lap_boundary_lay_between": 0,
                 "of_them_only_refused_stops_lay_between": 0,
@@ -1204,7 +1386,14 @@ def selftest() -> int:
                 "of_them_a_skill_call_lay_between": 0,
                 "of_them_the_output_was_an_error": 0,
             }
-            by_rule = {"turn": shipped, "lap": lap, "body": 0, "reentry": 0, "window:40": shipped}
+            by_rule = {
+                "turn": whole_turn,
+                "lap": lap,
+                "body": 0,
+                "reentry": 0,
+                "window:40": whole_turn,
+                "shipped": 0,
+            }
             return {
                 "world": name,
                 "control": {"passes": True},
@@ -1225,6 +1414,163 @@ def selftest() -> int:
             "rungs pool across worlds",
             reading([counts("a", 5, 0), counts("b", 5, 5)]).get("share_the_lap_rule_removes"),
             "1/2",
+        )
+
+        # ── ADR-0209: the product counts per lap, and this file replays both counts ──
+        def both(world: dict) -> tuple[dict, dict, str]:
+            by = {r["rule"]: r for r in world["replays"]}
+            return by["turn"], by["shipped"], world["control_by_count"]["written_under"]
+
+        whole = {"nudge": 1, "narrow": 1, "step_back": 1, "stop": 1}
+        old, new, under = both(read_world(healthy(6).write(root, "healthy-before-0209")))
+        check(
+            "a healthy loop written BEFORE ADR-0209: its notes are the whole-turn count's",
+            (old["rungs"], new["rungs"], under),
+            (whole, {}, "turn"),
+        )
+        got = read_world(healthy(6).write(root, "healthy-since-0209", product="shipped"))
+        old, new, under = both(got)
+        check(
+            "...and written SINCE: no note, none replayed under `shipped`, the ladder under `turn`",
+            (old["rungs"], new["rungs"], under),
+            (whole, {}, "shipped"),
+        )
+        check(
+            "...sample 7's control leaves that world out: it has no note to reproduce",
+            (got["control"]["repeated_outcome_notes_on_the_trace"], got["control"]["passes"]),
+            (0, False),
+        )
+        got = read_world(circling(5).write(root, "circling-since-0209", product="shipped"))
+        old, new, under = both(got)
+        check(
+            "circling inside one lap climbs under both counts, so its notes cannot say which",
+            (new["rungs"], old["rungs"] == new["rungs"], under),
+            ({"nudge": 1, "narrow": 1, "step_back": 1}, True, "either"),
+        )
+
+        # THE BOUND. A model that probes, stops and is sent round again: a lap boundary lies
+        # between every two sightings, and no lap after the first shows anything new.
+        run = _Run()
+        for _ in range(6):
+            run.call("Bash", banner)
+            run.refused_stop()
+        got = read_world(run.write(root, "stops-after-every-probe", product="shipped"))
+        old, new, under = both(got)
+        plain = {r["rule"]: r for r in got["replays"]}["lap"]
+        check(
+            "a model that stops after every probe still climbs under `shipped`, one lap late",
+            (new["rungs"], old["rungs"], under),
+            ({"nudge": 1, "narrow": 1, "step_back": 1}, whole, "shipped"),
+        )
+        check(
+            "...and never under the plain lap rule: the bound is what catches it",
+            plain["rungs"],
+            {},
+        )
+
+        run = _Run()
+        run.refused_stop()
+        for _ in range(4):
+            run.points_at_the_loop(pointer)
+            run.call("Bash", banner)
+        old, new, under = both(read_world(run.write(root, "pointers-since", product="shipped")))
+        check(
+            "a POINTER is no lap to the product either: `shipped` climbs as `turn` does",
+            (new["rungs"], old["rungs"] == new["rungs"], under),
+            ({"nudge": 1, "narrow": 1}, True, "either"),
+        )
+
+        # The plan tool's receipt, from the REAL tool. First the words this file knows it by.
+        desk = _Run()
+        desk.plans("the first note")
+        desk.plans("the first note")  # the same plan again: the tool's OTHER receipt
+        (changed,), (resent,) = (op[1] for op in desk.turns[0])
+        check(
+            "the real plan tool flags `Plan updated` and begins it with RECEIPT_HEAD",
+            (changed[1].startswith(RECEIPT_HEAD), (changed[4] or {}).get(RECEIPT_OF_CHANGE)),
+            (True, True),
+        )
+        check(
+            "...and neither flags nor so begins the receipt for a plan sent back unchanged",
+            (resent[1].startswith(RECEIPT_HEAD), RECEIPT_OF_CHANGE in (resent[4] or {})),
+            (False, False),
+        )
+        check(
+            "the flag is put back on exactly that result: not an error, not another tool's",
+            [
+                _result("update_plan", "c", {"content": changed[1]}).data,
+                _result("update_plan", "c", {"content": resent[1]}).data,
+                _result("update_plan", "c", {"content": changed[1], "is_error": True}).data,
+                _result("Bash", "c", {"content": changed[1]}).data,
+            ],
+            [{RECEIPT_OF_CHANGE: True}, None, None, None],
+        )
+
+        run = _Run()
+        run.refused_stop()
+        for k in range(6):
+            run.call("Bash", work(f"between two plan notes {k}"))
+            run.plans(f"so far: {k} checks")
+        old, new, under = both(read_world(run.write(root, "journalling", product="shipped")))
+        check(
+            "journalling into the plan between steps: no rung under `shipped`, four under `turn`",
+            (new["rungs"], old["by_tool"], under),
+            ({}, {"update_plan": 4}, "shipped"),
+        )
+        run = _Run()
+        run.refused_stop()
+        for k in range(6):
+            run.plans(f"rewritten {k} times")
+        old, new, under = both(read_world(run.write(root, "plan-churn", product="shipped")))
+        check(
+            "...rewriting the plan with NOTHING in between still climbs under `shipped`",
+            (new["by_tool"], new["rungs"] == old["rungs"], under),
+            ({"update_plan": 4}, True, "either"),
+        )
+        # Work that FAILED is no work (ADR-0196 counts successful calls): with nothing but
+        # failures between them, the receipts are plan churn still.
+        run = _Run()
+        run.refused_stop()
+        for k in range(6):
+            run.call("Read", f"no such file: notes-{k}.md (tried {k + 1} places)", err=True)
+            run.plans(f"looked in {k + 1} places")
+        old, new, under = both(read_world(run.write(root, "failed-work", product="shipped")))
+        check(
+            "...work that FAILED between two plan notes is no work: the receipts still climb",
+            (new["by_tool"].get("update_plan"), old["by_tool"].get("update_plan"), under),
+            (4, 4, "either"),
+        )
+        # One batch holding a look that FAILED (new words each time) and the churned receipt.
+        run = _Run()
+        run.refused_stop()
+        for k in range(4):
+            desk = _Run()  # asked of the real tool, then put in one batch with the look
+            desk._plan = run._plan
+            desk.plans(f"tried {k + 1} places")
+            ((receipt,),) = (op[1] for op in desk.turns[0])
+            run.batch(("Read", f"no such file: notes-{k}.md (place {k + 1})", True, {}), receipt)
+        got = read_world(run.write(root, "mixed-batch", product="shipped"))
+        _, new, under = both(got)
+        first = (new["detail"] or [{}])[0]  # no rung drawn is a FAILED check, never a crash
+        check(
+            "in a batch of a failed look and a churned receipt, the rung is said of the RECEIPT",
+            tuple(first.get(k) for k in ("tool", "receipt", "was_an_error", "gaps_in_iterations")),
+            ("update_plan", True, False, [1, 1]),
+        )
+        check(
+            "...and receipts are counted apart: by the replay under either count, and on the trace",
+            (
+                new["of_them_on_a_receipt"],
+                got["control_by_count"]["of_them_on_a_receipt"],
+                got["replays"][0]["of_them_on_a_receipt"],
+                under,
+            ),
+            (2, 2, 2, "either"),
+        )
+        check(
+            "a trace the calls cannot have written is reproduced by NEITHER count",
+            liar["control_by_count"]["written_under"],
+            "neither",
         )
 
     print(f"{sum(results)} ok, {len(results) - sum(results)} failed")

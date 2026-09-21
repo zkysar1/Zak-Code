@@ -331,6 +331,20 @@ class ToolContext(BaseModel):
         return [self.workspace_root, *self.extra_workspace_roots]
 
 
+#: A key a tool sets to ``True`` in :attr:`ToolResult.data` when its result is the harness's
+#: RECEIPT for a write the model just made, and that write CHANGED something (ADR-0209).
+#: Such a result is not a look at the world: the plan tool's "Plan updated: 3/7 steps done ·
+#: current: …" reads the same after every edit that leaves the done count and the current
+#: step alone, although the plan moved each time. The stuck ladder's repeated-outcome signal
+#: reads the flag (``zakcode.agent.stuck``): a flagged receipt is the same observation as an
+#: earlier one only while no work call has succeeded in between. Do NOT set it on a receipt
+#: that reports NO change (the plan tool's "Plan unchanged"): that one is the churn the
+#: signal exists to catch, and it must stay an ordinary, counted result. A flag, not a
+#: search of the text, for the reason ADR-0203 gives: whoever builds an answer says what
+#: it is. A file edit needs no flag: it opens a new repeated-outcome epoch (ADR-0038).
+RECEIPT_OF_CHANGE = "receipt_of_change"
+
+
 class ToolResult(BaseModel):
     """The outcome of a tool invocation.
 
@@ -646,6 +660,7 @@ __all__ = [
     "SkillLoad",
     "SkillResolver",
     "ToolResult",
+    "RECEIPT_OF_CHANGE",
     "Tool",
     "ToolRegistry",
 ]

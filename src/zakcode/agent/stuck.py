@@ -40,9 +40,11 @@ import json
 import re
 from collections import Counter
 from enum import Enum
+from hashlib import blake2b
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
+from zakcode.tools.base import RECEIPT_OF_CHANGE
 
 # ── canonical tool-call identity (shared with the loop's doom guard) ─────────────
 
@@ -96,6 +98,30 @@ SIG_NO_PROGRESS = "no-progress"
 #: nudge, narrow and step-back although distinct, successful work ran between them; the
 #: graceful-stop body, asked for again after work, drew the whole ladder and a STOP in the
 #: middle of the stop itself. Every OTHER signal still sees those calls.
+#:
+#: It counts them PER LAP of a loop the session is running, and a RECEIPT is not one of them
+#: (ADR-0209). A served perpetual loop is ONE turn that lasts the whole run: a turn-end hook
+#: refuses every stop and sends the model round its loop skill again. Counting over that whole
+#: turn, a healthy loop's housekeeping (the same state probe, the same listing, once a lap)
+#: climbed the ladder by itself, and because the Nth sighting lands on rung N, late in a run
+#: ONE sighting of a familiar output was a STOP. Measured on gpt-5.6-luna, four served runs of
+#: 35 minutes (bench/results/served-luna-preregistration.log, the ladder re-read): 47 rungs,
+#: 8 of them stops; all 33 on a tool that looks at the world had a lap boundary between their
+#: repeats, and the other 14 were on the plan tool's own receipt. So:
+#:
+#: * the counts start over when the loop goes round (``lap``, which the loop counts: the
+#:   session's loop skill delivered again, by the harness at a refused stop or as the BODY
+#:   answering the model's own Skill call). THE BOUND: only if the lap that just ended showed
+#:   at least one outcome never seen before in this turn. A lap that showed nothing new was no
+#:   lap of work, so a model that stops after every probe and is sent round again still climbs;
+#: * a result whose tool flags it ``RECEIPT_OF_CHANGE`` (the plan tool's "Plan updated") is the
+#:   harness's acknowledgement of a write that changed something, not a look at the world. It
+#:   reads the same whenever the done count and the current step do, although the plan moved.
+#:   It is the same observation as an earlier one only while NO work call has succeeded in
+#:   between (``work``, ADR-0196's count): a model journalling into its plan between real
+#:   steps is working, and one that rewrites its plan again and again with nothing in between
+#:   is the churn this signal is the only net for, and still climbs. A receipt is never the
+#:   "something new" of the bound above: it would be new after every work call.
 SIG_REPEATED_OUTCOME = "repeated-outcome"
 
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
@@ -110,17 +136,23 @@ _VOLATILE_RE = re.compile(
 )
 
 
-def outcome_signature(name: str, output: str, epoch: int = 0) -> str | None:
+def outcome_signature(
+    name: str, output: str, epoch: int = 0, *, work: int | None = None
+) -> str | None:
     """A stable identity for a tool OUTCOME, or ``None`` when it is too short to mean anything.
 
     ``epoch`` is the loop's count of successful FILE-EDIT calls so far this turn: the same
     output after an edit is a fresh measurement of a changed world (edit → test → edit → test
     is progress, not a loop) and must not compare equal to the one before the edit.
+
+    ``work`` is given for a RECEIPT only (ADR-0209): the loop's count of successful work calls.
+    Two identical receipts compare equal only while that count has not moved between them.
     """
     normalized = _VOLATILE_RE.sub("#", " ".join((output or "").split()))
     if len(normalized) < _OUTCOME_MIN_CHARS:
         return None
-    return f"{name}\x00{epoch}\x00{normalized[:_OUTCOME_HEAD_CHARS]}"
+    signature = f"{name}\x00{epoch}\x00{normalized[:_OUTCOME_HEAD_CHARS]}"
+    return signature if work is None else f"{signature}\x00{work}"
 
 
 class StuckAction(Enum):
@@ -173,9 +205,17 @@ class StuckTracker:
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
         self._error_counts: Counter[tuple[str, str]] = Counter()  # per-call failures this turn
-        self._outcome_counts: Counter[str] = Counter()  # identical outcomes this turn (ADR-0038)
+        #: Identical outcomes since the counts last started over: at the turn's start, or at a
+        #: lap boundary that followed a lap with something new in it (ADR-0038, ADR-0209).
+        self._outcome_counts: Counter[str] = Counter()
+        #: A digest of every OBSERVATION counted this turn. Never cleared: "new" means new to
+        #: the turn, not to the lap, or a loop that alternates two probes would always be new.
+        self._seen_outcomes: set[bytes] = set()
+        self._lap = 0  # the loop's lap count as of the last observe (ADR-0209)
+        self._lap_saw_new = False  # the lap under way has shown an outcome new to this turn
         self._last_outcome_repeats = 0  # the worst repeat count seen on the most recent observe
         self._last_outcome_tool = ""  # the tool that worst count belongs to
+        self._last_outcome_receipt = False  # ...and whether it was a receipt of change
         self._last_signals: list[str] = []  # signals fired on the most recent observe
         self._actions: list[str] = []  # ladder actions taken this turn (observability)
         self._step_back_used = False  # the reassessment rung is once per turn
@@ -192,6 +232,14 @@ class StuckTracker:
         return list(self._last_signals)
 
     @property
+    def last_outcome_was_receipt(self) -> bool:
+        """Whether the repeated outcome of the most recent :meth:`observe` was a tool's
+        RECEIPT for a change, come back again with no work in between (plan churn), and not
+        a look at the world (ADR-0209). ONE predicate: the rail, the trace note and the step
+        the loop seeds at rung 1 all read it, so what is said in one cannot differ from another."""
+        return SIG_REPEATED_OUTCOME in self._last_signals and self._last_outcome_receipt
+
+    @property
     def actions(self) -> list[str]:
         """The ladder actions taken this turn, in order (e.g. ``["nudge", "narrow"]``)."""
         return list(self._actions)
@@ -205,6 +253,9 @@ class StuckTracker:
         """What the ladder acted on, for the trace note: the signals that fired on the most
         recent :meth:`observe` and, when a repeated outcome is among them, the tool and how
         many times its result has now come back. Names and counts only, never the output.
+        ``receipt`` is present, and ``True``, only when what came back was the tool's receipt
+        for a change with no work in between (plan churn) and not a look at the world
+        (ADR-0209), so a reader of the trace can tell the two apart.
 
         A served run's trace said ``no progress`` eight times in one turn and nothing could say
         which signal or which tool (2026-09-18); the outputs had been compacted away.
@@ -213,6 +264,8 @@ class StuckTracker:
         if SIG_REPEATED_OUTCOME in self._last_signals:
             data["tool"] = self._last_outcome_tool
             data["repeats"] = self._last_outcome_repeats
+            if self.last_outcome_was_receipt:
+                data["receipt"] = True
         return data
 
     def error_signatures(self) -> list[tuple[str, str]]:
@@ -254,13 +307,19 @@ class StuckTracker:
         *,
         assistant_text: str = "",
         epoch: int = 0,
+        lap: int = 0,
+        work: int = 0,
     ) -> None:
         """Score one tool-call iteration, updating the stuck streak.
 
         Call once per iteration that requested tool calls, after the batch has executed.
         Iterations with no tool calls (a text/empty completion) are not stuck by definition
-        and should not be passed here. ``epoch`` is the turn's successful file-edit count
-        (see :func:`outcome_signature`).
+        and should not be passed here. Three readings of the loop's own counters, each taken
+        AFTER the batch ran (see ``SIG_REPEATED_OUTCOME``): ``epoch`` is the turn's successful
+        file-edit count, ``lap`` how many times the session's loop skill has been delivered
+        again, ``work`` the successful work calls so far. Of ``lap`` and ``work`` only a CHANGE
+        between two calls means anything, so the loop never resets either. A caller that passes
+        none of them gets the plain whole-turn count.
         """
         sig = batch_signature(calls)
         by_id = {r.tool_use_id: r for r in results}
@@ -284,23 +343,46 @@ class StuckTracker:
         if calls and not produced_success and not assistant_text.strip():
             signals.append(SIG_NO_PROGRESS)
 
+        # A lap boundary (ADR-0209): the loop went round since the last observe, so the counts
+        # start over. THE BOUND: only when the lap that just ended showed something new. This
+        # batch already belongs to the new lap, so the boundary is settled before it is counted.
+        if lap != self._lap:
+            self._lap = lap
+            if self._lap_saw_new:
+                self._outcome_counts.clear()
+            self._lap_saw_new = False
+
         # Repeated outcome (ADR-0038): count identical (tool, epoch, output) observations
-        # across the whole turn — NOT consecutively — and read the worst count this batch.
-        worst, worst_tool = 0, ""
+        # since the counts last started over — NOT consecutively — and read the worst count
+        # this batch.
+        worst, worst_tool, worst_receipt = 0, "", False
         for call in calls:
             result = by_id.get(call.id)
             if result is None:
                 continue
             if call.name in self.uncounted_outcome_tools:
                 continue  # the harness's own delivery: identical by construction, no measurement
-            osig = outcome_signature(call.name, result.output or "", epoch)
+            # The tool's own flag, never a search of the text (ADR-0203). An ERROR is never a
+            # receipt of change, whatever its data says: nothing changed.
+            receipt = not result.is_error and bool((result.data or {}).get(RECEIPT_OF_CHANGE))
+            osig = outcome_signature(
+                call.name, result.output or "", epoch, work=work if receipt else None
+            )
             if osig is None:
                 continue
+            if not receipt:
+                # Only a look at the world can be the lap's "something new": a receipt is new
+                # after every work call, and would let any spin with a plan in it off the bound.
+                digest = blake2b(osig.encode("utf-8", "surrogatepass"), digest_size=8).digest()
+                if digest not in self._seen_outcomes:
+                    self._seen_outcomes.add(digest)
+                    self._lap_saw_new = True
             self._outcome_counts[osig] += 1
             if self._outcome_counts[osig] > worst:
-                worst, worst_tool = self._outcome_counts[osig], call.name
+                worst, worst_tool, worst_receipt = self._outcome_counts[osig], call.name, receipt
         self._last_outcome_repeats = worst
         self._last_outcome_tool = worst_tool
+        self._last_outcome_receipt = worst_receipt
         if worst >= self.outcome_repeat_at:
             signals.append(SIG_REPEATED_OUTCOME)
 
@@ -310,7 +392,7 @@ class StuckTracker:
         else:
             self._streak = 0
         if worst >= self.outcome_repeat_at:
-            # A strong signal: the Nth identical observation lands on rung N of the ladder
+            # A strong signal: the Nth identical observation of a lap lands on rung N of the ladder
             # (3 → nudge, 4 → narrow, 5 → step back, 6 → stop with the defaults) regardless
             # of what the interleaved iterations did — the field loop alternated probes, so a
             # consecutive streak never formed while the same result came back fifteen times.
@@ -355,7 +437,9 @@ class StuckTracker:
         Prevents immediate re-triggering of the stuck ladder when the loop
         re-enters with an injected continuation prompt. Deliberately does NOT restore the
         one-shot STEP_BACK charge — a turn gets one reassessment no matter how many veto
-        continuations it earns, so the ladder stays bounded.
+        continuations it earns, so the ladder stays bounded. Nor does it touch the outcome
+        counts: whether THOSE start over is the lap boundary's call, made in :meth:`observe`
+        (ADR-0209), and a refusal that names no loop skill is no lap.
         """
         self._streak = 0
         self._prev_sig = None
@@ -370,9 +454,20 @@ class StuckTracker:
         in the model's own terms.
         """
         if SIG_REPEATED_OUTCOME in self._last_signals:
+            if self.last_outcome_was_receipt:
+                # Words that are TRUE of a receipt (ADR-0209, and ADR-0198's rule that a rail
+                # says only what the harness knows). The model DID change something each
+                # time, so "without changing anything" would be false, and a receipt is no
+                # observation. What did not happen is any work in between.
+                return (
+                    f"You have now called {self._last_outcome_tool} "
+                    f"{self._last_outcome_repeats} times with no other work succeeding in "
+                    "between, and its receipt read the same each time. Recording a change "
+                    "is not progress on the task: do the next piece of actual work."
+                )
             return (
                 f"You have now observed the SAME tool result {self._last_outcome_repeats} "
-                "times this turn without changing anything in between. Re-measuring a known "
+                "times without changing anything in between. Re-measuring a known "
                 "result is not progress."
             )
         return (

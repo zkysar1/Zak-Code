@@ -20,7 +20,14 @@ from typing import Any
 
 from zakcode.config import PermissionTier
 from zakcode.tasks import Task, TaskNetwork, TaskStatus, author_signature, clip
-from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
+from zakcode.tools.base import (
+    RECEIPT_OF_CHANGE,
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+)
 
 #: Maximum decomposition depth the schema exposes. The near-term layer rarely needs more than
 #: goal → step → sub-step; bounding it keeps the schema concrete (no recursive ``$ref`` that
@@ -326,6 +333,13 @@ class UpdatePlanTool(Tool):
                 "quality": quality,
                 "deficiencies": deficiencies,
                 "complete": network.is_complete(),
+                # ADR-0209: this receipt acknowledges an edit that CHANGED the plan, and it
+                # reads the same whenever the done count and the current step do. Measured
+                # in a served loop: 14 of 47 stuck rungs, two of them STOPs, fell on it while
+                # the model was journalling into its plan between real steps. The two
+                # receipts for a plan sent back UNCHANGED (below) do not carry the flag:
+                # they are the churn, and the stuck ladder must keep counting them.
+                RECEIPT_OF_CHANGE: True,
             },
             hint=self._hint(network),
         )
