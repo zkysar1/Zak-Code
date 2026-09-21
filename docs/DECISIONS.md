@@ -1791,6 +1791,25 @@ is still not rescued (ADR-0043's caveat stands). Pinned by
 `test_skill_turn_body_is_elided_once_the_turn_ends` + its streaming twin and
 `test_prior_skill_frames_are_elided_at_turn_start`.
 
+**Amended 2026-09-21 (the marker's closing advice is true of the skill it stands on).** The
+marker ended, for every skill, by telling the model to load the skill again with the Skill
+tool. For a skill only the operator may run (ADR-0109) that is false: Skill refuses the call.
+The frame that carries this marker on a served Mind is `/start`, which its framework ships
+operator-only, so the one false sentence sat in the history of a served session for the rest
+of its life, and a small model does what a harness sentence says (ADR-0198). The ending is
+now chosen by the skill the frame names. An ordinary skill keeps the reload advice. An
+operator-only skill gets: only the operator can run `/<name>` again, by typing it; Skill
+refuses it, so do not call Skill for it. The loop hands the resolver's operator-only names
+to the helper at each sweep, compared lower-cased as everywhere else. Markers already stored
+are not rewritten: the sweep stays idempotent and the prompt prefix stays where it was. No
+flag. NOT measured: how often a model acted on the old sentence. No kept served trace holds
+a `user_only_skill` note, and none holds a positive control for that note either, so that
+zero says nothing; the change rests on ADR-0198's rule and not on a count. Pinned by
+`test_elided_marker_names_the_route_that_exists_for_the_skill` and
+`test_the_sweep_asks_the_resolver_whose_skill_the_ended_turn_ran`; each goes red under its
+own mutation (the loop not passing the names; a case-sensitive comparison) and green again
+once restored.
+
 ## ADR-0046: The run's ending leaves the process through one operator command
 
 **Context.** ADR-0039 gave a bounded run its receipt: the digest turn runs on every

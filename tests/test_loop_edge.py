@@ -31,7 +31,14 @@ from zakcode.config import load_settings
 from zakcode.messages import Message, ToolUseBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session, SessionStore
-from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
+from zakcode.tools.base import (
+    SkillLoad,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 from zakcode.usage import Usage
 
 #: Iterations a forever-repeating model burns before doom_loop: THRESHOLD repeats, ONE recovery
@@ -760,6 +767,76 @@ def test_elide_skill_body_keeps_the_frame_and_is_idempotent() -> None:
     assert _elide_skill_body(compact) is None  # already compact: a sweep is idempotent
     assert _elide_skill_body(_START_FRAME.rstrip("\n")) is None  # a frame with no body
     assert _elide_skill_body("please /start the agent\n\n" + _START_BODY) is None  # prose
+
+
+def test_elided_marker_names_the_route_that_exists_for_the_skill() -> None:
+    # The marker stays in the history for the rest of the session, and a small model does
+    # what it says. "Load it with Skill" is true of an ordinary skill and FALSE of one only
+    # the operator may run (ADR-0109): Skill refuses that call. So the ending is chosen by
+    # the skill the frame names, and each ending must not carry the other's advice.
+    ordinary = _elide_skill_body(_START_FRAME + _START_BODY)
+    assert ordinary is not None
+    assert ordinary.endswith("if the skill is needed again, load it with Skill</command-body>")
+    assert "operator" not in ordinary
+
+    operator_only = _elide_skill_body(_START_FRAME + _START_BODY, user_only={"start"})
+    assert operator_only is not None
+    assert operator_only.startswith(_START_FRAME + '<command-body elided="true" chars="')
+    assert "only the operator can run /start again, by typing it" in operator_only
+    assert "Skill refuses it" in operator_only
+    assert "load it with Skill" not in operator_only  # the false sentence is gone, not joined
+    assert _composed_skill_name(operator_only) == "start"  # provenance survives either ending
+    assert _elide_skill_body(operator_only, user_only={"start"}) is None  # still idempotent
+
+    # Another skill being operator-only changes nothing for this one ...
+    assert _elide_skill_body(_START_FRAME + _START_BODY, user_only={"stop"}) == ordinary
+    # ... and the frame's spelling does not decide it: the set holds lower-cased names.
+    shouted = _START_FRAME.replace("/start<", "/Start<")
+    assert "only the operator can run /Start again" in (
+        _elide_skill_body(shouted + _START_BODY, user_only={"start"}) or ""
+    )
+
+
+class _OperatorOnlyStart:
+    """A skill resolver in which /start is the operator's alone, as the framework ships it."""
+
+    def names(self) -> list[str]:
+        return ["start", "boot"]
+
+    def user_only_names(self) -> list[str]:
+        return ["Start"]  # the loop lower-cases what the resolver reports
+
+    def body(self, name: str) -> str | None:
+        return None
+
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
+        raise AssertionError("no skill is loaded in this test")
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_asks_the_resolver_whose_skill_the_ended_turn_ran(tmp_path: Path) -> None:
+    # The helper takes the set as an argument; this pins that the LOOP passes the real one.
+    # Without it the stored marker tells a served mind to reload /start with a tool that
+    # refuses it, on every later turn of the session.
+    frame = _START_FRAME + _START_BODY
+    loop = AgentLoop(
+        ScriptedProvider([LLMResult(text="Assistant mode active.")]),
+        _registry(),
+        _session(tmp_path),
+        settings=_settings(tmp_path),
+        skill_resolver=_OperatorOnlyStart(),
+    )
+    result = await loop.arun_turn(frame)
+    assert result.stop_reason == "completed"
+    stored = next(m for m in loop.session.messages if m.role == "user")
+    assert "only the operator can run /start again, by typing it" in stored.text
+    assert "load it with Skill" not in stored.text
+
+    # The same turn on a loop with no resolver keeps the ordinary ending.
+    plain = _make_loop(ScriptedProvider([LLMResult(text="Assistant mode active.")]), tmp_path)
+    await plain.arun_turn(frame)
+    kept = next(m for m in plain.session.messages if m.role == "user")
+    assert kept.text.endswith("load it with Skill</command-body>")
 
 
 @pytest.mark.asyncio
