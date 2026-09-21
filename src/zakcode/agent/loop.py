@@ -1190,8 +1190,10 @@ _WAKEUP_TOOLS = frozenset({"ScheduleWakeup", "schedule_wakeup"})
 #: Tools whose result is the harness's own delivery or acknowledgement -- a skill's body, its
 #: "[already loaded]" pointer, a wake-up's "armed" line. Identical by construction, so the stuck
 #: ladder's repeated-outcome signal never counts them (ADR-0038, amended 2026-09-18). The plan
-#: tools are NOT here: their result echoes what the model sent, and the same plan sent again
-#: and again is the churn that signal exists to catch.
+#: tools are NOT here, because their results are not all of one kind and the tool says which
+#: (ADR-0209): "Plan unchanged" answers the same plan sent again, which is the churn that
+#: signal exists to catch, and is counted like any result; "Plan updated" carries
+#: ``RECEIPT_OF_CHANGE`` and repeats only while no work call has succeeded in between.
 _UNOBSERVING_TOOLS = _SKILL_TOOLS | _WAKEUP_TOOLS
 _READ_TOOLS = frozenset({"Read", "read_file"})
 _WRITE_TOOLS = frozenset({"Write", "write_file"})
@@ -2312,6 +2314,16 @@ class AgentLoop:
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
         # as re-measuring while probe → probe → probe with nothing changed does. Per-turn.
         self._turn_edit_calls = 0
+        # Repeated-outcome LAP (ADR-0209): how many times so far the session's loop skill
+        # has been delivered AGAIN, by either door: the harness at a refused stop
+        # (:meth:`_deliver_veto_skill`), or the BODY answering the model's own Skill call for
+        # it (:meth:`_seed_loaded_skill_skeletons`; a pointer is no delivery, another skill's
+        # body is no lap). A served perpetual loop is ONE turn for the whole run, and the
+        # stuck tracker starts its identical-outcome counts over when this moves, so a healthy
+        # loop's once-a-lap housekeeping never climbs the ladder. It is told, like the epoch;
+        # the bound on it (a lap with nothing new does not count) is the tracker's. Never
+        # reset, like the work count: each turn's tracker reads only whether it has MOVED.
+        self._loop_laps = 0
         # Missing-conclusion gate (ADR-0040): content-search calls this turn. A completion
         # that concludes "could not find" with this at zero has not looked.
         self._turn_search_calls = 0
@@ -3477,7 +3489,22 @@ class AgentLoop:
                     ),
                 )
             )
-        if SIG_REPEATED_OUTCOME in stuck.last_signals:
+        if stuck.last_outcome_was_receipt:
+            # ADR-0209: what came back again was a tool's receipt for a change (the plan
+            # tool's), with no work in between. There is no result to interpret, so the step
+            # is the work itself. One successful work call is also what makes the next
+            # receipt a new one to the ladder, so doing the step is what ends the climb.
+            steps.append(
+                Task(
+                    title="Do: one piece of actual work on the step you were on",
+                    note=(
+                        "you have been recording changes with no other work in between. Done "
+                        "when ONE call to a tool other than the plan tool has succeeded on "
+                        "that step (a read-only probe counts) and you have noted what it showed"
+                    ),
+                )
+            )
+        elif SIG_REPEATED_OUTCOME in stuck.last_signals:
             steps.append(
                 Task(
                     title="Investigate: what the result you keep re-measuring already tells you",
@@ -3782,6 +3809,12 @@ class AgentLoop:
                 )
             self._register_skill_load(name)  # a paged skill starts over at page 1 (ADR-0067)
             self._vetoes_without_skill = 0  # a skill ran: the ADR-0187 fence starts over
+            loop_skill = str(self.session.loop_skill or "").split()
+            if loop_skill and loop_skill[0].lower() == name.lower():
+                # ADR-0209: the body of the skill a hook named as this session's loop, loaded
+                # by the model itself: the loop went round. Until a hook has named one, no
+                # skill is known to be the loop and nothing is a lap.
+                self._loop_laps += 1
             steps = self._seed_skill_skeleton(name, block.output, seeded)
             if steps:
                 out.append((name, steps))
@@ -6341,6 +6374,7 @@ class AgentLoop:
         # the hook has said what "re-enter the loop" means here, so the harness need not
         # ask the model to remember it.
         self.session.loop_skill = f"{skill} {args}".strip()
+        self._loop_laps += 1  # ADR-0209: the loop went round (the hook has just named it)
         self._note(
             "intervention",
             f"turn-end hook asked for {self._veto_delivered} — delivered by the harness",
@@ -8024,6 +8058,8 @@ class AgentLoop:
                 result_blocks,
                 assistant_text=assistant_msg.text,
                 epoch=self._turn_edit_calls,
+                lap=self._loop_laps,
+                work=self._work_calls,
             )
             action = stuck.next_action()
             if action is StuckAction.STOP:
@@ -9899,6 +9935,8 @@ class AgentLoop:
                     result_blocks,
                     assistant_text=assistant_text,
                     epoch=self._turn_edit_calls,
+                    lap=self._loop_laps,
+                    work=self._work_calls,
                 )
                 action = stuck.next_action()
                 if action is StuckAction.STOP:

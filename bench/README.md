@@ -408,11 +408,11 @@ the patch drew lots over.
 
 ## What the stuck ladder fired on in a served loop (`served_ladder.py`)
 
-The ladder's repeated-outcome signal (ADR-0038) counts identical observations over a whole
-turn, and only a successful workspace-write call opens a new epoch. A served perpetual loop
-is one very long turn that changes its world through shell scripts, so whether the rungs it
-draws are the loop's own regular repeats or a model circling is a question about the logs,
-and since ADR-0206 the transcript holds every call and result.
+Until ADR-0209 the ladder's repeated-outcome signal (ADR-0038) counted identical observations
+over a whole turn, and only a successful workspace-write call opened a new epoch. A served
+perpetual loop is one very long turn that changes its world through shell scripts, so whether
+the rungs it drew were the loop's own regular repeats or a model circling was a question
+about the logs, and since ADR-0206 the transcript holds every call and result.
 
 `served_ladder.py` answers it without a run: it feeds the **product's own**
 `StuckTracker` the transcript's calls the way the loop does (a fresh tracker per turn, the
@@ -429,10 +429,29 @@ fails is left out by name; on a run whose transcript was a live window the readi
 skill a turn-end hook named at a refused stop (ADR-0187), delivered again by the harness or
 loaded again by the model with its body.
 
+**Since ADR-0209 the product counts per lap, and the reader replays both counts.** `turn` is
+the whole-turn count: the product's until then, and what sample 7's worlds were written
+under. `shipped` hands the tracker what the loop now hands it: the lap count, the work count
+(ADR-0196), and the plan tool's receipt flag, which a transcript does not keep and the reader
+puts back from how the receipt begins (the selftest asks the real tool for its receipts).
+`control_by_count` puts the control's question to both counts and says which one the world's
+own notes were `written_under`: `turn`, `shipped`, `either` (the two draw the same rungs on
+these calls, so the notes cannot tell) or `neither`. In a two-arm sample that is the check
+that each world was served by the build its arm names. Rungs on a receipt are counted apart
+(`of_them_on_a_receipt`, in a replay and on a trace, where only a product since ADR-0209
+writes the key). The registered `control` and `reading()` stay sample 7's, against the
+whole-turn count.
+
+A reader that handed the tracker LESS than the loop does would replay the old count and stay
+green: the first selftest run after ADR-0209 passed 65 of 65 against the new product for
+exactly that reason. So the selftest writes its synthetic worlds with a product of either
+kind, whose counts are kept apart from the replay's, and the mutation proof withholds each
+count on each side and must see a named check fail.
+
 ```bash
 PY=./.venv/bin/python
-$PY bench/served_ladder.py --selftest                 # 65 known answers
-$PY bench/served_ladder_mutants.py                    # 51 mutants, each dies by name
+$PY bench/served_ladder.py --selftest                 # 83 known answers
+$PY bench/served_ladder_mutants.py                    # 72 mutants, each dies by name
 PYTHONPATH=<the build that served the run>/src $PY bench/served_ladder.py <world-dir> ...
 ```
 
@@ -446,6 +465,12 @@ replay reproduced all 47 of the product's own repeated-outcome notes; the lap ru
 34 of them (72.3% against a threshold of 70%, and 64.7% with one world left out); every
 rung on a tool that looks at the world had a lap boundary between its repeats, and all 13
 the lap rule leaves are on `update_plan`'s own receipt.
+
+Read again after ADR-0209 with the reader as it is now (a replay of the same logs, no run):
+every registered number is reproduced, all four worlds read `written_under: turn`, and the
+`shipped` count draws 0 of the 47 rungs and 0 of the 8 stops on the same calls. That says
+where the new count would have fired. It does not say what the model would have done
+without the rungs it really drew, which is a served sample's question.
 
 ## In CI
 
