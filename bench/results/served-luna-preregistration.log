@@ -1736,3 +1736,104 @@ launcher additionally refuses until THIS block is on origin/main.
 
 SPEND. C $1.1359 + T $1.6264 = $2.7623 for the pair. Campaign total about $12.35. The replication is expected at about
 $1.6 and is bounded, like every run here, at $6.00 by the supervisor.
+
+=== 04:05 UTC 2026-09-21 RESULTS -- SERVED LOOP ON LUNA, SAMPLE 6 REPLICATION: READING = RESTS GONE, replicated once. Arm T's build again in a fresh world: 0 turns ended veto_stall, 0 of 2055.42 s idle. No further served run is licensed by this registration ===
+
+Read exactly as registered in the 01:32 UTC block and as declared at the foot of the 03:09 UTC block (PR #585, on
+main as 12b9c19 before the launch; the launcher refused until it was there). Both readers were run at their MANIFEST
+hashes.
+  T2  launched 03:18:54Z, run-stop request 03:53:09.424, done 03:56:59Z.   world zc-served6t2-5c989f3b
+      build c22b46f, the same worktree as T, src tree b0ca42e66e16; the run's first progress line names that tree.
+
+GATES. All seven held.
+  G1-G5  asserted by the launcher before spend: commit, clean tree and src hash; the world unrun, provisioned, patched
+         (74b5eca7c44d0189) BEFORE provisioning by the repaired builder, queue 7234 bytes, the kit identical to the
+         control's; the in-sandbox check of import path, arm marker, posture and the unset idle stop; the 03:09 block
+         on origin/main; the live daemon healthy (200) before and after, the same process, 0 leaked mounts.
+  G6     the run's first progress line names arm T's tree as the zakcode source.
+  G7     575 usage events, 575 with rails, 575 with the rails_silenced key.
+  The reader's check on its own reading of the fence holds, vacuously: no turn ended veto_stall, so there was no turn
+  on which it could have failed.
+
+READING: RESTS GONE, replicated once.  V_T2 = 0.
+  Two runs of the build that carries ADR-0205, in two fresh worlds, each ran one turn from boot to the run-stop
+  request with no rest. The seven runs without it (the six earlier served runs and this sample's C) ended 0, 1, 2, 2,
+  3, 3 and 2 turns veto_stall. The earlier six were other builds at other settings, so that is a baseline and not a
+  control; the control is C, and it is one run.
+  As registered, this closes the veto door as a served blocker for luna, and the next served work is the iteration
+  body. Nothing else follows from it. No further served run is licensed by this registration.
+
+                                              T  (03:09 block)            T2  (this run)
+  turns ended veto_stall before the stop      0  (1 turn, 497 iterations) 0  (1 turn, 575 iterations)
+  windows with no model call                  none                        none
+  idle / run (launch to run-stop request)     0 / 2054.59 s               0 / 2055.42 s
+  doors (honoured refusals)                   12                          16
+    on a finished plan (F) / other (o)        11 / 1                      15 / 1
+    finished-plan line at F doors             silent 11                   silent 15
+    stopped again in words (-)                0                           0
+    resumed, loaded no skill body (+)         2                           2
+    loaded a skill body (*)                   10                          14
+  requests / line SENT / line SILENCED        503 / 18 / 133              575 / 25 / 200
+  open-plan reminder sent / tail rested       190 / 159                   185 / 163
+  T2 by door:  F+* F+* F+* F+* F+ F+* F+* F+* F+* F+ F+* o+* F+* F+* F+* F+*
+  The two doors that resumed without loading a skill body were never adjacent, in either run. Three in a row is what
+  ends a turn, and neither run came closer than one.
+
+MY ESTIMATE, scored. 0 stalled turns at 60%: it happened. Across this sample I was on the wrong side once (T at 20%)
+and on the right side once. Two estimates say nothing about my calibration either way.
+
+SECONDARY MEASURES, T2. None of them is part of the reading.
+  calls 575, $1.8837, 90% of prompt tokens cached. Tool events 617, of which 72 failed: Bash 69 of 365, Skill 2, LS 1.
+  plan share 16.5% (102 of 617 tool events). Skill calls 70: 59 bodies, 9 pointers, 2 failed. Compactions 19.
+  goals completed 2. Both were FILED by the loop during this run (created 03:34:34Z) and closed by it at 03:38 and
+  03:49. As in the 03:09 block, a marker that a run closed something is not evidence that it produced something.
+  stop sequence: FINISHED. The turn ended "completed" 218.7 s after the run-stop request, leaving state IDLE, mode
+  assistant and the stop-loop marker. In T the same sequence started and did not finish inside its window. One run
+  each way; nothing is said about why.
+
+WHAT THE THREE RUNS SHOW ABOUT THE ITERATION BODY. Description only, from one script applied to all three worlds.
+  A lap is one pass of the loop that reaches the framework's own end-of-iteration phase, read from the loop's diary in
+  each throwaway world. Provider calls are the serve log's per-call lines, so they include compaction and routing
+  calls (T2: 627 lines for 575 loop calls).
+                                              C                 T                 T2
+  laps closed                                 4                 3                 3
+  provider calls when each lap closed         143 166 214 237   126 225 275       162 203 243
+  provider calls at the run-stop request      253               511               558
+  calls after the last lap, to the stop       16                236               315
+  stuck-ladder notes                          2                 17                18
+    iteration of the first / last note        174 / 177 of 197  246 / 485 of 497  44, then 235 / 567 of 575
+    notes that carry repeated-outcome         2                 15                17
+    rungs: plan steps / read-only / other     1 / 1 / 0         11 / 4 / 2        11 / 5 / 2
+  failed Bash calls                           19 of 149  12.8%  60 of 281  21.4%  69 of 365  18.9%
+  - In both T runs the loop closed three laps inside its first 243 to 275 provider calls and closed none in the 236
+    and 315 calls that followed. After its first lap, a lap cost 23 to 99 calls.
+  - In both T runs the stuck ladder is all but silent through those laps (T2: one note, at iteration 44) and fires
+    from about iteration 240 to the end. The traces carry no clock, so placing an iteration among provider calls is
+    a proportional estimate: by it, the ladder's first note of that stretch falls within about 15 calls of the third
+    lap's close in both runs. "Plan steps" is the rung that adds investigative steps to the plan or points back at
+    them; "other" is one step-back and one stop that the turn-end hook refused, in each T run.
+  - Nearly every note carries the repeated-outcome signal, which counts identical tool outputs across a whole turn,
+    and a turn here is the whole run.
+  - These facts sit side by side and this block does NOT join them. The traces carry names and counts, not the
+    spacing between identical observations, so they cannot say whether the ladder is correctly reading a loop that
+    has started going round in circles or misreading the regular bookkeeping of a long turn. And "no lap closed" is
+    not "no work done": T2 closed both of its goals inside that stretch.
+  - C speaks against the simplest version of the second reading. Its third turn was a new turn, begun at provider
+    call 81 with the ladder at zero, and it closed four laps in the next 156 calls with no ladder note at all; by the
+    same estimate both of its notes fall after its run-stop request, and both name the plan tool. Four laps in one
+    turn did not, by themselves, set the ladder off.
+
+INSTRUMENT NOTES.
+  - The launcher first REFUSED this launch, wrongly. Its check that the 03:09 block was on origin/main piped a 131 KB
+    "git show" into "grep -q" under pipefail: grep exits at its first match, the producer dies writing into the closed
+    pipe, and the pipeline reports failure for a pattern it found. Reproduced in script context 19 times in 20, and 0
+    in 20 once the check consumes the whole stream, which is the fix. It had passed for C and T only because the match
+    then sat in the stream's last buffer. It failed SAFE: a refused launch, no spend, and no gate changed its meaning.
+  - My own after-run health probe first asked a path the daemon does not serve (404). The launcher's path returned 200
+    from the same process, with 0 leaked mounts; that is the reading reported under G1-G5.
+
+WHAT THIS DOES NOT SHOW. Why the doors now go on to load skill bodies. Anything about another model, another depth or
+another tier. That a loop which keeps running does useful work: 575 calls, three laps, and two goals it had filed
+itself. Whether the fence's definition is right: it has not fired in either T run, so neither says anything about it.
+
+SPEND. T2 $1.8837. Sample 6 in all $4.6460 for three runs. Campaign total about $14.23.
