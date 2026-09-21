@@ -129,4 +129,7 @@ def read(world: Path) -> dict:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:  # no world named: say how it is used, as the other served readers do
+        print(__doc__)
+        raise SystemExit(2)
     print(json.dumps(read(Path(sys.argv[1])), indent=2))

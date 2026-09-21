@@ -472,6 +472,10 @@ every registered number is reproduced, all four worlds read `written_under: turn
 where the new count would have fired. It does not say what the model would have done
 without the rungs it really drew, which is a served sample's question.
 
+That sample is registered as sample 8 in the same log: two builds that differ by ADR-0209
+alone, the control first as the spend gate, read from the product's own trace notes, with
+this reader's `written_under` as the check that each world was served by its arm's build.
+
 ## In CI
 
 The PR gate (`ci.yml`) never runs the bench — quality is **measured, not enforced** (a noisy model

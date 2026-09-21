@@ -2456,3 +2456,156 @@ same calls and nothing else.
 OPEN ITEMS this re-read leaves. The one-call disagreement between trace and transcript in three worlds. Whether the
 pooled share holds on the next served sample's worlds (the reader is committed and free to run). A reader for what the
 run-2 shape costs in a long run, which no 35-minute sample can show.
+
+=== 11:34 UTC 2026-09-21 PRE-REGISTRATION -- SERVED LOOP ON LUNA, SAMPLE 8: does the stuck ladder stop firing on a healthy loop's own repeats in LIVE runs? Two builds that differ by ADR-0209 alone, the control first as the spend gate, at most four runs ===
+
+WHY THIS SAMPLE. ADR-0209 (PR #599, main 280b887) changed how the stuck ladder counts a repeated outcome in a session
+that runs a loop: per lap of the loop skill the turn-end hook names, with a bound, and with the plan tool's receipt of
+a change keyed on the work count. It was designed under the licence of the ladder re-read above (the 09:31 UTC block)
+and rests on a REPLAY: over sample 7's four transcripts the whole-turn count drew 47 rungs and 8 stops and the new
+count draws 0 and 0 on the same calls. A replay cannot say what a live run does, because the model never saw the rails
+the old count sent it. The ADR therefore claims nothing about a run and names this sample as the next entry. It asks
+one thing: in live served runs of two builds that differ by ADR-0209 alone, does the ladder stop firing on the loop's
+own regular repeats, and what does it still fire on.
+
+THE ARMS. Two builds of the product, everything else the same.
+  M  main cfaa769 (PR #598): ADR-0209 absent. The control, and an arm of THIS batch.   src tree 4b01aee037e0
+  C  main 280b887 (PR #599): ADR-0209 present.                                         src tree ac4646c9cb34
+The two trees differ under src/ in FOUR files (loop.py, stuck.py, tools/base.py, tools/builtins/update_plan.py, +178
+-16), which is ADR-0209 and nothing else: no other commit lies between them. Both carry ADR-0204 to ADR-0208. Sample
+7's runs are history, not a control: their build kept HALF the finished plans' answer-now lines silent by lot, and
+both arms here keep all of them silent (ADR-0208), so their refused stops, and with them their laps, are not these
+arms'. Its numbers are quoted for scale and decide nothing.
+
+THE ASSEMBLY is sample 6's and 7's, rebuilt by the same script from the same seed: seed 2.12.76 (sha256 prefix
+71c88a26f3b953c0), the provisioning step and its assertions, the same sandbox, ceremony, caps (2400 s run, 350 s
+reserve, 2520 s supervisor wall clock, $6.00 supervisor budget per run), trace directory and claim-endpoint patch
+(sha256 prefix 74b5eca7c44d0189); no reasoning_effort configured, so the product's forced none applies (ADR-0200).
+run_served.sh, progress.py and served.env are byte-identical to the sample-5 control world's copies and the launcher
+asserts it. The build is selected inside the sandbox by PYTHONPATH=/srv/zc-builds/<M8|C8>/src, two git worktrees of
+the public repo at the registered commits, ahead of the editable install. The editable install is now main, which is
+arm C's code, so a run with NO PYTHONPATH would run C while calling itself M: the gate below was shown to refuse that.
+  Worlds of the first pair: zc-served8m1-a2ff18f9 (arm M), zc-served8c1-ea5c9a49 (arm C). Fresh, never run.
+  ORDER. Run 1 is M and run 2 is C: the control first, because M ALONE IS THE SPEND GATE (sample 6's lesson). C is
+  launched only once M is READ and drew at least 5 repeated-outcome notes. That ties run order to the arm inside a
+  pair, a confound accepted and named. The one replication pair the rule below can license runs in REVERSE order (run
+  3 is C, run 4 is M), so that over both pairs order is balanced.
+
+THE GATES, asserted by the launcher before any spend, per run. A failure is ARM NOT READ for that run.
+  G1  the arm's worktree is at the registered commit, clean, its src tree hash is the registered one, and the two
+      commits differ under src/ in exactly the four files named above.
+  G2  the world is provisioned and unrun: initialised, agent state IDLE, 0 session files, no serve.log, starting queue
+      7234 bytes, meta tier uninitialised, the patched claim endpoint, no reasoning_effort in served.env, the three
+      kit files identical to the control's, no leaked mount.
+  G3  INSIDE the sandbox, under the run's own environment: zakcode, its loop, its tracker and its tools base all
+      import from the arm's tree; ADR-0209's four markers (the tracker's observe takes lap and work; the tools base
+      names RECEIPT_OF_CHANGE; a fresh loop counts laps from 0; the REAL plan tool flags its "Plan updated" receipt)
+      are all present in C and all absent in M; both carry ADR-0204's rails, ADR-0205's silenced field, ADR-0208's
+      predicate and scope note, and no draw note; the five luna categories send reasoning_effort none WITH tools and
+      no field without, classify none either way; the idle-window stop is unset. SHOWN TO FAIL in three wrong shapes
+      before it was trusted: C's tree asked as M and M's tree asked as C (four import-path and four marker complaints
+      each), and no PYTHONPATH at all asked as C (four import-path complaints and no marker complaint, since the
+      editable install IS C's code: only the path check catches that shape).
+  G4  this block is on origin/main, and the two readers on this box are origin/main's byte for byte.
+  G5  the live Mind's daemon on this box answers health before and after each run, and no mount leaked.
+  After the run, from the artifacts:
+  G6  the run's first progress line names the arm's tree as the zakcode source.
+  G7  every usage event on the traces carries rails, no draw note exists, and the world's own notes do not CONTRADICT
+      its arm: the ladder reader's written_under is never `shipped` for an M world nor `turn` for a C world. (`either`
+      and `neither` contradict nothing. `neither` is reported: the replay is then not believed for that world and
+      everything below that rests on a replay is left out for it. The primary count does not rest on one.) Checked on
+      a sample 7 world first: asked as M it contradicts nothing, asked as C it contradicts.
+  A run is READ if it wrote its last line, G6 and G7 pass, and it reached at least one lap boundary (a run with none
+  never posed the question).
+
+WHAT IS READ, and from where. Two committed readers (MANIFEST at the foot), run from a directory outside any
+repository with main's product tree on the import path.
+  R  THE PRIMARY. The repeated-outcome `stuck` notes on the product's OWN per-turn traces of a run, whole world,
+     counted by bench/served_ladder.py (control_by_count.repeated_outcome_notes_on_the_trace). It is the product's
+     record of what it did in the run, not a replay. R_M and R_C are the counts of a pair's two runs.
+  The same reader gives, per world: how many of those notes were on a receipt (only a build with ADR-0209 writes that
+  key); which count the notes were written under; and the rungs by kind, by tool and by what lay between their
+  repeats, from the replay under the arm's OWN count, believed only where it reproduces the notes (control_by_count).
+  It also replays the OTHER count over the same calls. That is a replay and is labelled one.
+  bench/served_rests.py gives how each turn ended and the idle windows, as in sample 6.
+
+THE READING RULE, over every outcome, fixed before launch. Per pair:
+  ARM NOT READ        a gate fails for that run, or it is not READ as defined above. Nothing is concluded from it.
+  NOT DISCRIMINATING  M is read and R_M < 5. The old count drew too few rungs in this run for the change to show. C is
+                      not launched (the spend gate).
+  FEWER RUNGS         both read, R_M >= 5 and 4 x R_C <= R_M. The threshold is a quarter of what the control drew in
+                      the same pair, not a number chosen in advance.
+  RUNGS REMAIN        both read, R_M >= 5 and 4 x R_C > R_M. What the new count still fired on is then reported as a
+                      partition of C's notes, from the replay under C's own count, each note exactly one of:
+                        P  on a receipt: the plan was rewritten with no work succeeding in between (plan churn);
+                        W  on a look, with no lap boundary between its repeats: circling inside a lap, the ladder's
+                           job;
+                        L  on a look, with a lap boundary between its repeats: the bound held the counts, so at least
+                           one lap showed nothing new to the turn;
+                        U  the replay is not believed for that world, or the note cannot be placed.
+                      The largest class is named as what is left; a tie is reported as a tie. It says WHAT the ladder
+                      fired on, not why the model did it.
+  Rule E stands: an outcome nobody named is reported as measured and never upgraded. NOTHING SHIPS OR UN-SHIPS from
+  this sample in any branch. ADR-0209 stands on its own argument and on the replay whatever this reads; what this
+  sample can change is what is said about live runs, and what is built next.
+
+NAMED IN ADVANCE AND DECIDING NOTHING, so that none of it is discovered afterwards.
+  W1  A LADDER-ENDED TURN IN C: any turn of a C run that ended `stuck` or `veto_stall` before the run-stop request.
+      Reported with what the fence counted (sample 6's door reader), since a veto_stall can also come from stops made
+      in words.
+  W2  PLAN SHARE: update_plan's share of a C run's tool calls exceeds the same pair's M run by 15 points or more.
+      ADR-0209 no longer counts journalling, and a model that journals without end is the shape it could hide.
+  W3  CHURN CAUGHT LIVE: any C note on a receipt. The rail's new words and the step seeded for churn are unmeasured
+      (the ADR says so); a count here is a description of an occasion, not a measure of their effect.
+  Described per run, for both arms: rungs by kind under the arm's own count; what the other count would have drawn on
+  the same calls (a replay); turns and how each ended; idle seconds and share; refused stops; lap boundaries;
+  tool-call iterations, tool calls and requests; cost and cached share; laps closed and goals completed (the scratch
+  readers sample 7's description used; rb-11318's caution applies: a closing banner is ceremony, a completed goal is
+  the work); plan share of the tool ledger.
+
+SECOND-SAMPLE RULE. ARM NOT READ licenses one re-run of THAT arm in a fresh world at the same settings. FEWER RUNGS
+licenses ONE replication pair in reverse order (C, then M): if that pair alone also reads FEWER RUNGS the reading is
+"FEWER RUNGS, replicated once"; otherwise it is "FEWER RUNGS once, not replicated", and both pairs are reported side
+by side with nothing pooled into a claim. In the replication pair M runs last, so the spend gate cannot apply and both
+runs are paid for; that is accepted for the sake of order. NOT DISCRIMINATING licenses one more pair, M first again,
+and a second NOT DISCRIMINATING ends the question as unanswerable at this run length. RUNGS REMAIN licenses nothing:
+the partition is the result and the next step is a design, not another run. At most 4 runs.
+
+WHAT EACH READING WOULD CHANGE. FEWER RUNGS, replicated: ADR-0209 does live what it says, the ladder closes as a
+served blocker on luna, and the next served work is whatever the descriptions show as the largest loss. RUNGS REMAIN /
+L: the bound is too strict for this loop, or the loop idles, and the next step is to read what those laps held. RUNGS
+REMAIN / W: the ladder is catching real circling and the question moves to what the model circles on. RUNGS REMAIN /
+P: plan churn is a live failure of this loop and the unmeasured rail is what to measure next. NOT DISCRIMINATING
+twice: with ADR-0208 in both arms the old count no longer reaches 5 notes in 35 minutes, and the change matters only
+in longer runs than this sample buys.
+
+ESTIMATES, recorded before launch so that each can be scored.
+  run 1 (M) is read                                        85%
+  R_M >= 5, given it is read                               85%   sample 7 drew 11, 13, 8 and 15, on another build
+  R_M, point estimate                                      10    (4 to 18)
+  run 2 (C) is read, given it is launched                  85%
+  R_C                                                      0: 45%;  1 or 2: 35%;  3 or more: 20%
+  the first pair reads FEWER RUNGS, given both read        75%
+  share of C's notes that are on a receipt, if it has any  60%
+  W1, a ladder-ended turn in the first C run               25%   the fence also counts stops made in words
+  lap boundaries, C at least M's in the first pair         55%   I do not know this, and one pair cannot say
+
+WHAT THIS CANNOT SETTLE, whatever it reads. Anything about a model other than gpt-5.6-luna at effort none. Whether
+fewer rungs close more laps or goals: the unit is the run, n is 1 or 2 per arm, the runs of one build differ widely
+(sample 7), and no test will be reported on anything. Why a model circled or churned. What a run of hours does, where
+a ladder that stops a healthy loop every few laps costs a wake-up's idle time each time: no 35-minute sample can show
+that, as the re-read's open items said.
+
+SPEND. The supervisor bounds each run at $6.00 and 2520 s, as in every earlier sample. Expected about $1.50 a run
+(sample 7: $6.01 over four), so about $3 for the first pair and at most about $7 for four runs. Campaign spend so far:
+about $20.25. No other model call is made while a run is in flight, and the arms' worktrees are not touched until the
+sample is read.
+
+MANIFEST  bench/served_ladder.py          sha256 prefix fde12274bb262046
+          83 known answers; its mutation proof (served_ladder_mutants.py, prefix 3eac51fbee871f4e) kills 72 mutants by
+          name; on sample 7's four worlds it reproduces every registered number of the re-read and reads
+          written_under: turn four times of four.
+MANIFEST  bench/served_rests.py           sha256 prefix becda453e710ef07
+          Changed in this commit in ONE place: called with no world it now prints its usage and exits 2 instead of
+          raising an IndexError (served_stops.py and served_doors.py likewise). On a sample 7 world the three readers'
+          output is byte-identical before and after.

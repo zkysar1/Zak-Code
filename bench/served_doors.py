@@ -343,4 +343,7 @@ def selftest() -> int:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--selftest"]:
         raise SystemExit(selftest())
+    if len(sys.argv) != 2:  # no world named: say how it is used, as the other served readers do
+        print(__doc__)
+        raise SystemExit(2)
     print(json.dumps(read_world(Path(sys.argv[1])), indent=1))
