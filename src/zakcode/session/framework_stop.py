@@ -78,6 +78,19 @@ AGENT_MODE_FILENAME = "agent-mode"
 #: Where a stopped run lands: user-directed, reconciliation-ready, loop off.
 DEFAULT_STOP_TARGET_MODE = "assistant"
 
+#: Where the framework's PreToolUse hook stamps "this session has been TOLD about a
+#: pending stop", relative to the MIND REPO ROOT (i.e. ``workspace_root`` -- the same root
+#: ``SIGNAL_SET_SCRIPT`` resolves against). Zero-byte files; the mtime is the whole datum.
+#: Exactly ONE writer exists in the framework -- ``bash-agent-inject.py``
+#: ``_maybe_surface_stop`` -- which is what makes the mtime attributable at all
+#: (guard-1504: enumerate every writer before reading an mtime as evidence).
+STOP_SURFACE_DIRNAME = Path("core") / "logs" / "stop-surface-hook"
+
+#: The hook's own re-stamp throttle (``STOP_SURFACE_INTERVAL_S`` in that hook). Inside
+#: this window it returns early WITHOUT touching the stamp, so the mtime is a
+#: last-surfaced time with this much granularity -- never a per-tool-call counter.
+STOP_SURFACE_INTERVAL_S = 20.0
+
 #: First line this module writes INTO ``stop-requested`` after the framework's setter
 #: has created it. The framework's own writers leave the marker EMPTY, so the line is
 #: this sidecar's signature, and the framework's /start Step 2.5 guard
@@ -102,13 +115,17 @@ __all__ = [
     "SIDECAR_RAISE_MARKER",
     "STOP_CHECKPOINT_FILENAME",
     "STOP_REQUESTED_SIGNAL",
+    "STOP_SURFACE_DIRNAME",
+    "STOP_SURFACE_INTERVAL_S",
     "STOP_TARGET_MODE_FILENAME",
     "framework_session_dir",
     "abandon_framework_stop",
     "framework_stop_complete",
+    "framework_stop_seen",
     "request_framework_stop",
     "retire_expired_sidecar_stop",
     "sidecar_raise_time",
+    "stop_surface_seen_at",
 ]
 
 
@@ -222,6 +239,69 @@ def sidecar_raise_time(workspace_root: str | os.PathLike[str], agent: str) -> fl
             except ValueError:
                 return None
     return None
+
+
+def stop_surface_seen_at(workspace_root: str | os.PathLike[str]) -> float | None:
+    """Epoch seconds of the NEWEST stop-surface stamp, or None when there is none.
+
+    THE STAMP IS THE MIND'S "I HAVE BEEN TOLD". The framework's PreToolUse hook
+    (``core/scripts/bash-agent-inject.py`` ``_maybe_surface_stop``) touches a zero-byte
+    file per session when it notices a pending stop, so the MTIME IS THE ONLY DATUM --
+    there is no content to parse, by design.
+
+    WHY THIS ROOT IS REACHABLE. The stamp lives under the MIND REPO ROOT, not under the
+    env's logs dir -- and that root is exactly ``workspace_root``, the same one
+    ``SIGNAL_SET_SCRIPT`` is resolved against. That resolution already does an
+    ``is_file()`` check which MUST pass for any raise to happen at all, so wherever this
+    sidecar can raise a stop it can also read this stamp. Verified by code-trace of the
+    working raise path rather than assumed (guard-3476: a healthy write is never evidence
+    the artifact is readable).
+
+    NEWEST ACROSS THE DIRECTORY, not keyed by session. The stamp is keyed on the
+    HARNESS's session id, which this process never learns (it is not the binding's sid),
+    and a session whose id is unusable shares one literal ``nosid`` file. A served vessel
+    runs one mind, so the newest stamp is the only reading available here. Both error
+    directions are cheap because every caller is REPORT-ONLY: reading one mind's stamp as
+    another's can only cost a missed report, never an early ending.
+
+    Fail-open on OSError: an unreadable log dir must never affect a run.
+    """
+    stamp_dir = Path(workspace_root) / STOP_SURFACE_DIRNAME
+    try:
+        mtimes = [entry.stat().st_mtime for entry in stamp_dir.iterdir() if entry.is_file()]
+    except OSError:
+        return None
+    return max(mtimes) if mtimes else None
+
+
+def framework_stop_seen(workspace_root: str | os.PathLike[str], agent: str) -> bool | None:
+    """Has the mind SEEN this raise? ``True`` / ``False`` / ``None`` when unknowable.
+
+    The companion to :func:`framework_stop_complete`, which answers DONE. Together they
+    are two booleans where the watcher used to have one: before this, "the mind never saw
+    the raise" and "the mind saw it and is still working" were indistinguishable, and both
+    burned the whole reserve in silence.
+
+    ``None`` means the question could not be asked -- no agent, or no parseable signed
+    raise time -- and is deliberately distinct from ``False``.
+
+    THE THROTTLE IS PART OF THE COMPARISON. The hook returns early without re-stamping
+    inside ``STOP_SURFACE_INTERVAL_S``, so the mtime is a LAST-SURFACED time with that
+    much granularity; a stamp up to one interval OLDER than the raise still means seen.
+
+    ``False`` IS NOT "THE MIND IGNORED THE STOP" -- absence is four-way ambiguous: the
+    mind has made no Bash tool call since the raise (the common case, and exactly the gap
+    the hook exists to close), a worker Body (whose stop is its own per-session file), a
+    reader/assistant session, or the hook failing open. Every caller must report it as an
+    observation, never act on it as a verdict.
+    """
+    raised = sidecar_raise_time(workspace_root, agent)
+    if raised is None:
+        return None
+    seen = stop_surface_seen_at(workspace_root)
+    if seen is None:
+        return False
+    return seen + STOP_SURFACE_INTERVAL_S >= raised
 
 
 def retire_expired_sidecar_stop(
