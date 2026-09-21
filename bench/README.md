@@ -32,6 +32,8 @@ bench/
   served_coin.py         # ...finished-plan episodes, and the reading of a build that draws lots
   served_coin_build_proof.py  # offline proof of that build: real Agent + hook, scripted model
   served_coin_mutants.py # mutation proof of the two files above (every mutant dies by name)
+  served_ladder.py       # ...what the stuck ladder fired on: the product's own tracker replayed
+  served_ladder_mutants.py  # mutation proof of that reader (every mutant dies by name)
   served_builds/         # MEASUREMENT builds as patches on main; never merged into src/
   skill_chain/skills/    # the 3 relay skills (relay-start -> relay-middle -> relay-finish)
   skill_chain/branch/    # the triage-start + handle-urgent/handle-normal branch skills
@@ -384,6 +386,41 @@ label. The reader refuses a run whose requests contradict a draw, leaves out a r
 few pairs, and codes the registered rule (`RULE`, `verdict`, `reading`) so the reading can be
 re-run by anyone. The registration, the gates of a served run and the results are in
 `results/served-luna-preregistration.log` (sample 7).
+
+## What the stuck ladder fired on in a served loop (`served_ladder.py`)
+
+The ladder's repeated-outcome signal (ADR-0038) counts identical observations over a whole
+turn, and only a successful workspace-write call opens a new epoch. A served perpetual loop
+is one very long turn that changes its world through shell scripts, so whether the rungs it
+draws are the loop's own regular repeats or a model circling is a question about the logs,
+and since ADR-0206 the transcript holds every call and result.
+
+`served_ladder.py` answers it without a run: it feeds the **product's own**
+`StuckTracker` the transcript's calls the way the loop does (a fresh tracker per turn, the
+epoch read after the batch ran, reset where the loop resets it) and replays the same calls
+under candidate counting rules. Everything that could drift is asked of the product, not
+copied: the uncounted tools, the workspace-write tier, the refused-stop delivery's note, and
+the selftest's synthetic transcripts are rendered by the product's transcript writer.
+
+A replay is **believed only if it reproduces the product's own record**: the `stuck` notes
+on the decision trace (tool and repeat count, at least 80% in order, against the longer
+list) and the refused stops the trace noted as delivered (give or take one). A world that
+fails is left out by name; on a run whose transcript was a live window the reading is
+`REPLAY NOT TRUSTED`, as it must be. A **lap** is what the product itself can know: the
+skill a turn-end hook named at a refused stop (ADR-0187), delivered again by the harness or
+loaded again by the model with its body.
+
+```bash
+PY=./.venv/bin/python
+$PY bench/served_ladder.py --selftest                 # 65 known answers
+$PY bench/served_ladder_mutants.py                    # 51 mutants, each dies by name
+PYTHONPATH=<the build that served the run>/src $PY bench/served_ladder.py <world-dir> ...
+```
+
+It prints labels, counts and distances only. A replay under a candidate rule shows where
+that rule would have fired on the same calls; it cannot show what the model would have done
+without the rungs it really drew. The registered reading is in
+`results/served-luna-preregistration.log`.
 
 ## In CI
 
