@@ -102,6 +102,7 @@ from zakcode.session.framework_signal import (
 from zakcode.session.framework_stop import (
     abandon_framework_stop,
     framework_stop_complete,
+    framework_stop_seen,
     request_framework_stop,
     retire_expired_sidecar_stop,
 )
@@ -2534,10 +2535,44 @@ def create_app(
     def _retire_unconsumed_framework_stop() -> None:
         """Both overrun branches below mean the same thing: the grace is spent and the
         mind never consumed the stop. Retire the pair here rather than at either call
-        site so the two endings cannot drift (g-373-92)."""
-        abandon_framework_stop(
-            resolved_settings.workspace_root, resolved_settings.run_stop_agent or ""
-        )
+        site so the two endings cannot drift (g-373-92).
+
+        REPORT SEEN-vs-DONE BEFORE RETIRING (g-373-120). Until this, every overrun looked
+        identical in serve.log: the reserve was spent and nothing said whether the mind had
+        even been TOLD. `framework_stop_complete` answers DONE and is already the wait's
+        bound; `framework_stop_seen` answers SEEN, so an unacknowledged raise is REPORTED
+        instead of silently consuming the whole reserve.
+
+        REPORT ONLY -- deliberately NOT a new ending or a new number. A never-seen stamp is
+        four-way ambiguous (see `framework_stop_seen`), so acting on it would end paid runs
+        on an ambiguity; and the remedy for an overrun is never a bigger fixed reserve,
+        which is a bet against an unbounded tail and moves the raise earlier into /start's
+        own clear. Logged here, at the one chokepoint all three overrun paths already share.
+        """
+        agent = resolved_settings.run_stop_agent or ""
+        seen = framework_stop_seen(resolved_settings.workspace_root, agent)
+        if seen is True:
+            logger.warning(
+                "framework stop SEEN but NOT COMPLETED: the mind read the raise and was "
+                "still working when the grace ran out — the reserve went to a real ending "
+                "that needed longer, not to silence"
+            )
+        elif seen is False:
+            logger.warning(
+                "framework stop RAISED BUT NEVER SEEN: no stop-surface stamp at or after "
+                "the raise, so the whole grace was spent without the mind being reached. "
+                "ABSENCE IS AMBIGUOUS (no Bash tool call since the raise / a worker Body / "
+                "a reader session / the hook failing open) — this is a REPORT, not a "
+                "verdict that the mind ignored its stop"
+            )
+        else:
+            logger.warning(
+                "framework stop unconsumed and SEEN is UNKNOWABLE (no parseable signed "
+                "raise time for agent %r) — reporting the overrun without a seen-vs-done "
+                "verdict rather than guessing one",
+                agent,
+            )
+        abandon_framework_stop(resolved_settings.workspace_root, agent)
 
     async def _watch_turn_deadline() -> None:
         """Raise the workspace interrupt on a turn still running when the run's time is up.
