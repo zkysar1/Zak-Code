@@ -104,7 +104,7 @@ import random
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1337,21 +1337,41 @@ _COMMAND_FRAME_FULL_RE = re.compile(
 _ELIDED_SKILL_BODY = (
     '<command-body elided="true" chars="{chars}">this message held the skill instructions '
     "while their turn ran; that turn is over, so they were removed. Do not act on this "
-    "marker — if the skill is needed again, load it with Skill</command-body>"
+    "marker — {again}</command-body>"
+)
+#: How the marker ends: the one route by which THIS skill can run again. The sentence stays in
+#: the history for the rest of the session and a small model follows it to the letter, so it
+#: has to be true of the skill it stands on (ADR-0198: what the harness says must hold for
+#: the call it answers). Skill loads an ordinary skill again. It REFUSES a skill only the
+#: operator may run (ADR-0109), so telling the model to load one buys a refused call; for
+#: those the marker names the operator's typed command, which is the only route there is.
+_ELIDED_AGAIN_BY_SKILL = "if the skill is needed again, load it with Skill"
+_ELIDED_AGAIN_BY_OPERATOR = (
+    "only the operator can run /{name} again, by typing it; Skill refuses it, so do not "
+    "call Skill for it"
 )
 
 
-def _elide_skill_body(text: str) -> str | None:
+def _elide_skill_body(text: str, *, user_only: Collection[str] = ()) -> str | None:
     """The compact persisted form of a composed skill turn's user message (ADR-0045), or
     ``None`` when ``text`` is not one, carries no body, or is already compact — idempotent,
-    so a sweep may pass over the same history any number of times."""
+    so a sweep may pass over the same history any number of times.
+
+    ``user_only`` holds the lower-cased names of the skills the operator alone may run; the
+    marker's closing advice is chosen by whether the frame's skill is one of them."""
     match = _COMMAND_FRAME_FULL_RE.match(text)
     if match is None:
         return None
     body = text[match.end() :]
     if not body.strip() or body.startswith("<command-body "):
         return None
-    return text[: match.end()] + _ELIDED_SKILL_BODY.format(chars=len(body))
+    name = _composed_skill_name(text) or ""
+    again = (
+        _ELIDED_AGAIN_BY_OPERATOR.format(name=name)
+        if name.lower() in user_only
+        else _ELIDED_AGAIN_BY_SKILL
+    )
+    return text[: match.end()] + _ELIDED_SKILL_BODY.format(chars=len(body), again=again)
 
 
 def _composed_skill_body(text: str) -> str:
@@ -2467,13 +2487,14 @@ class AgentLoop:
         its provenance meaning, is preserved. Idempotent.
         """
         elided = 0
+        user_only = self._user_only_skills()  # the marker's advice depends on it
         for index, message in enumerate(self.session.messages):
             if message.role != "user" or len(message.blocks) != 1:
                 continue
             block = message.blocks[0]
             if not isinstance(block, TextBlock):
                 continue
-            compact = _elide_skill_body(block.text)
+            compact = _elide_skill_body(block.text, user_only=user_only)
             if compact is None:
                 continue
             self.session.messages[index] = Message.user(compact)
