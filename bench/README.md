@@ -387,6 +387,12 @@ few pairs, and codes the registered rule (`RULE`, `verdict`, `reading`) so the r
 re-run by anyone. The registration, the gates of a served run and the results are in
 `results/served-luna-preregistration.log` (sample 7).
 
+Sample 7 read **GAIN** over 13 pairs in three of its four runs: a finished plan whose
+"answer now" line was sent ended in a stop in words 12 times of 13, and one kept silent 5
+times of 13 (7 pairs differ, all the same way, p 0.0156, and no single pair undoes it).
+That licenses arm L as a product change (ADR-0208; the registration said 0207, a number
+another change took first) and nothing about a whole run.
+
 ## What the stuck ladder fired on in a served loop (`served_ladder.py`)
 
 The ladder's repeated-outcome signal (ADR-0038) counts identical observations over a whole
@@ -421,6 +427,12 @@ It prints labels, counts and distances only. A replay under a candidate rule sho
 that rule would have fired on the same calls; it cannot show what the model would have done
 without the rungs it really drew. The registered reading is in
 `results/served-luna-preregistration.log`.
+
+Its first reading, on sample 7's four worlds, was **LOOP REGULARITY** by a thin margin. The
+replay reproduced all 47 of the product's own repeated-outcome notes; the lap rule removes
+34 of them (72.3% against a threshold of 70%, and 64.7% with one world left out); every
+rung on a tool that looks at the world had a lap boundary between its repeats, and all 13
+the lap rule leaves are on `update_plan`'s own receipt.
 
 ## In CI
 
