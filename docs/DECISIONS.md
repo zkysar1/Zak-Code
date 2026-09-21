@@ -11912,3 +11912,77 @@ flagged and carries no body's hint. Proven to discriminate on a throwaway worktr
 commit with `PYTHONPATH` pinned to its `src` and the import path printed: all four fail there, each for
 its intended reason (the stray hint; the second page header; the quoted tag taken for a pointer; the
 missing flag), and all four pass here.
+
+## ADR-0204: the transcript is not the prompt — each request's trace event names what rode it, and a gate that speaks to the model says so
+
+Date: 2026-09-21. Observability only: no message to any model changes, and there is no setting.
+
+Context. A request is the stored history plus a TAIL the session never holds: fenced hook context
+(PRE_LLM_CALL), the turn's UserPromptSubmit context (ADR-0134), and last, at highest salience, the plan
+reminder. The reminder has two forms that say opposite things: the live checklist ("keep it current"),
+and, once every step is closed, one line in its place — plan complete, answer the original request now
+(ADR-0108). The tail is built in `_messages_for_call`, sent, and dropped; on a model whose cache reuses
+only whole prompts it is also withheld every other call (ADR-0193). Nothing recorded which of those
+happened for a given request.
+
+That gap cost real time. The served samples of the refused-stop stall were read from session files and
+traces, and from there the last thing the model had been told looked like the Stop hook's veto. It was
+not: the finished plan's "answer now" line rode after it on every request. It was seen only when the
+veto-door bench snapshotted a request on the wire (`bench/results/veto-door-preregistration.log`, the
+first block, and its pilot: reminder last in 10 of 10 fork requests). A hypothesis about what a small
+model does next is a hypothesis about the END of its prompt, and the end of the prompt was the one part
+no artefact kept.
+
+Walking every place the loop speaks to the model through the control rail (57 on this commit) found
+a second, smaller hole of the same kind. Three gates asked the model to keep going and left no trace
+event: the plan gate (open steps at a stop), the recipe gate (a written file not yet run) and the
+project-verifier gate (changed code not yet checked), in both twins — six sites. Their ENDINGS were
+noted (`plan_unresolved`, `recipe_stalled`, `verification_failed`), so a trace showed how such a turn
+could fail and never that the harness had been holding it open; read from the trace, a nudged
+continuation and a model carrying on by itself were the same turn. Every other site already noted
+itself, before or after the message, or inside the helper that built it.
+
+Decision.
+
+1. `_messages_for_call` records, per request, the KINDS that rode and in what order — `context`,
+   `prompt_context`, then `plan` or `plan_complete` — and whether the tail was withheld
+   (`_call_rails`, `_call_rails_rested`). Both per-request `usage` events carry them as `rails` and
+   `rails_rested`. The plan's form is read from the same `TaskNetwork.is_complete()` that chose it a
+   line earlier, not inferred from the text it produced.
+2. The two fields are ALWAYS written. `rails: []` with `rails_rested: false` means there was nothing
+   to send; `rails: []` with `rails_rested: true` means the tail was withheld for this call (the call
+   before it carried one; what this one would have held is not gathered, as ADR-0193 decided). A
+   missing key therefore has one meaning, an older build — never "no rails". (An absent field that
+   could also mean "empty" is how a reader turns a build difference into a finding.)
+3. Each of the three gates notes its nudge before it speaks: `intervention` with `kind="plan_gate"`
+   (plus `open_steps` and `nudge`, the count so far), `kind="recipe_gate"`, `kind="verify_gate"`. The
+   names follow the `<x>_gate` kinds the trace already uses for gates that speak.
+
+Why kinds and not the text. The question the samples could not answer was WHICH message ended the
+prompt, and a label answers it in a few bytes per request. The text is a pure function of state the
+trace and session already hold (the plan, the hooks' output), hook context can be long and is someone
+else's text, and a trace that grew by the tail on every call would cost more than the fault it explains.
+
+Why not persist the tail. It is ephemeral on purpose: persisting it would put a per-call-varying
+message inside the cached prefix (the thing ADR-0193 exists to protect) and leave a stale checklist in
+the on-disk history for every later turn to read as current.
+
+What is not claimed. Nothing here changes what a model is sent or does; the existing tail and cache
+tests are untouched and pass. It does not say the "answer now" line causes the refused-stop stall —
+that is the veto-door bench's second registration, which is unread as this is written. It makes the
+next such question answerable from a served run's trace instead of from a wire capture. If that bench
+ships its arm R (the line kept silent after a refused stop), that silence must be named on this field
+as its own state, so "no plan" and "withheld on purpose" stay distinguishable.
+
+Tests (`tests/test_request_rails_on_trace.py`, both twins driven by the same scripts): the sequence
+`[]` → `["plan"]` → `["plan_complete"]` across one planned turn; on a sparse-cache model the resting
+calls read `([], rested)` while the finished plan's line still rides; the plan gate notes each of its
+nudges with the open-step count before `plan_unresolved`; the recipe gate notes before
+`recipe_stalled`; the verifier gate notes each attempt before `verification_failed`. A label checked
+only against itself proves nothing about the prompt, so the scripted provider also keeps which
+reminder each request it was HANDED ended with (read from the message's own text), and the two rails
+tests require label and wire to agree request by request. Proven to discriminate twice: with the
+unfixed `loop.py` under the same tests all nine fail, each for its intended reason (`KeyError: 'rails'`
+three times; the gate's kind absent from the list six times); and with a mutant that labels
+`plan_complete` but does not send the line, the three rails tests fail on the wire comparison while
+the label comparison still passes. All nine pass here.
