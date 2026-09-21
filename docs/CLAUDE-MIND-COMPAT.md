@@ -48,6 +48,7 @@ clone the Mind repo, run `zakcode cli` inside it, answer the folder-trust prompt
 | PreToolUse deny / rewrite (the `MIND_SID` inject) | `permissionDecision:"deny"` + `updatedInput`; Claude-Code stdin shape (`session_id`, `tool_input`, `cwd`; `tool_response`, `transcript_path` and `hook_event_name` since ADR-0210, below); CC tool-name matchers (`Skill` → `use_skill`, …); the stdin names the tool as CC does (`write_file` → `Write`) with the file tools' `path` sent as workspace-resolved `file_path`, and an `updatedInput` `file_path` mapped back onto `path` (ADR-0071) | `test_claude_code_hook_contract.py` |
 | **Every hook's stdin carries what Claude Code hands a hook, and PostToolUse carries `tool_response`** (ADR-0210) | The Mind's PostToolUse[Bash] reminder (after a lap-closing script has REALLY finished, tell the model what to call next) reads the script's closing marker in `tool_response.stdout` and stays silent when the field is missing, by design. Zak Code sent `output` / `is_error` only, so under Zak Code that reminder never fired: measured 2026-09-21 with the product's own wire bytes put to the hook's own predicate (False; Claude Code's shape: True), and in sample 7's four served transcripts (the closing marker on 8, 6, 23 and 13 rows, the reminder on 0). This map had claimed the field since its first version and no test asked for it. Now a shell call that succeeded carries Claude Code's object (`stdout` cut where the tool says its `[exit code: N]` line begins, `stderr` always empty because the streams are combined, `interrupted`, `isImage`); every other result carries its text, as Claude Code's failed calls do. Every shell hook's stdin also names its event as Claude Code does (`hook_event_name`; the turn's end is `Stop`) and carries `transcript_path` (the tool gates, UserPromptSubmit and SessionEnd did not). Not sent: `permission_mode`, and Claude Code's per-tool objects other than the shell's. Not claimed: what the reminder, now delivered, does to a small model's loop; samples 1 to 8 all ran without it | `test_hook_stdin_carries_claude_codes_contract.py` |
 | **What a SessionStart hook says reaches the model** (ADR-0211) | The Mind's recovery chain after a compaction: its SessionStart(compact) hook prints the state its PreCompact hook saved (the call to make first, the goal in flight, the loop's state), and relies on the harness handing that to the model. Until ADR-0211 the event fired and the words were dropped, 19 times in one served 35-minute run. Now said ONCE, as one persisted `[hook]` message where the hook fired (after a compaction: the last thing the next request reads; at startup: right after the ask), unfenced, bounded at 16 KiB. PreCompact and SessionEnd stay observe-only, as in Claude Code | `test_session_start_hook_reaches_the_model.py` |
+| **`UserPromptSubmit` fires once at the user-message boundary** (ADR-0134) | The Mind's per-prompt retrieval hook reads `prompt` from stdin and answers with `hookSpecificOutput.additionalContext` (plain stdout is the fallback). The loop fires it ONCE per turn, on both turn paths, and folds what it returned into every request of that turn as an ephemeral `<injected_context>` tail: never persisted, prompt-cache safe, fenced as untrusted data because it is recalled content and not an instruction. Injection only: an exit 2 does not block the prompt, and the Mind's hook is written never to exit 2. This row was missing until 2026-09-21, and the gaps list below still called the event skipped | `test_user_prompt_submit.py`; `test_settings_loader.py` (the event registers; the docs' deferred lists equal `_SKIP_EVENTS`) |
 | `settings.json` + `settings.local.json` hooks | Both read (local over project, plus `.zakcode/settings.json`); `$CLAUDE_PROJECT_DIR` expanded; commands danger-scanned; provider keys scrubbed | `test_settings_loader.py` |
 | **Hooks actually load without env gymnastics** | **Always on (ADR-0025):** declared hooks load unconditionally — no flag, no prompt, no trust file. The silent-drop failure (hooks ignored, `MIND_SID` missing four layers later) is structurally gone | `test_settings_loader.py`, `test_cc_ecosystem.py` |
 | SessionStart `source` / PreCompact `trigger` (top-level) / PostToolUse `additionalContext` | All in the hook payloads | conformance lifecycle tests |
@@ -89,21 +90,22 @@ clone the Mind repo, run `zakcode cli` inside it, answer the folder-trust prompt
 
 ## 🟡 Real remaining gaps
 
-- **`StopFailure` + `UserPromptExpansion` + `UserPromptSubmit` events** — recognised and skipped
+- **`StopFailure` + `UserPromptExpansion` events** — recognised and skipped
   LOUDLY (`_SKIP_EVENTS` in `hooks/settings_loader.py`; the skip lands in the errors dict, never a
-  silent drop). Cost to a Mind: no crash breadcrumb on a provider-error turn end, no
-  human-typed-slash telemetry distinct from `ON_SKILL_SELECTED`, and no user-message-boundary seam
-  for injecting per-prompt context. Deferred until those firing points are designed — see the
+  silent drop). Cost to a Mind: no crash breadcrumb past the ADR-0181 cap on a provider-error turn
+  end (the `Stop` seam itself fires there since ADR-0181), and no human-typed-slash telemetry
+  distinct from `ON_SKILL_SELECTED`. Deferred until those firing points are designed — see the
   roadmap.
 
-  `UserPromptSubmit` was in NEITHER map until 2026-09-03, so a Mind that wired it read
-  `unknown event: UserPromptSubmit` — the exact string a TYPO produces. The two diagnoses need
-  opposite responses ("wait for the seam" vs "fix your spelling") and a shared message lets a Mind
-  author pick the wrong one; that is the ADR-0025 silent-drop failure wearing a warning. All three
-  events a live Mind wires now resolve to a deferral, and
-  `test_claude_mind_hooks_block_yields_no_unknown_events` loads claude-mind's whole 8-event hooks
-  block and pins that ZERO come back unknown — plus the exact deferral set, so shipping one of these
-  seams FAILS the test and forces the implementer to retire the row here.
+  `UserPromptSubmit` is NOT on this list: it has fired once at the user-message boundary since
+  ADR-0134 (the row above). Until 2026-09-21 this entry and the roadmap still called it skipped.
+  `test_claude_mind_hooks_block_yields_no_unknown_events` pins the exact deferral set, so shipping
+  the seam forced its implementer to update the TEST, and nothing forced the two docs: a claim
+  that no test reads is a claim nobody keeps, in either direction. Now
+  `test_the_docs_name_exactly_the_deferred_hook_events` reads this bullet's head and the
+  roadmap's and fails when either names a set other than `_SKIP_EVENTS`. What is still missing
+  from that seam is exit-2 prompt BLOCKING, which the Mind's one hook on the event is written
+  never to use.
 
 - ~~SessionStart hook stdout is NOT injected as context~~ **RETIRED by ADR-0211.** This entry called the
   divergence cheap and offered a workaround (register the same script on `PreLLMCall`). Neither held. The

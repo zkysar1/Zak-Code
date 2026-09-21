@@ -107,7 +107,8 @@ works on Zak Code.**
 
 **Shipped:** a Claude-Code-shaped `transcript_path` view, SessionStart `source`, PreCompact `trigger`
 at the payload top level, and PostToolUse `additionalContext` (StopFailure + UserPromptExpansion
-+ UserPromptSubmit events deferred — see below).
+events deferred — see below; UserPromptSubmit shipped later as ADR-0134, SessionStart's words as
+ADR-0211).
 
 Make the host *record and signal* like Claude Code, so the Mind's full machinery (recovery, resume,
 consolidation) works — and so do other CC tools that read transcripts/lifecycle.
@@ -119,7 +120,7 @@ consolidation) works — and so do other CC tools that read transcripts/lifecycl
 | **PreCompact `trigger`** | Surface `trigger` at the stdin top level, matching the contract. | omni | S |
 | **PostToolUse `additionalContext`** | Honor it (a hook injecting post-tool context). ~5 lines. | omni | S |
 | **`StopFailure` + `UserPromptExpansion` events** | Fire these generic events in the loop (crash-recovery + prompt telemetry). | omni | M |
-| **`UserPromptSubmit` event** | Fire at the user-message boundary with the CC stdin contract, and inject the hook's stdout as context for that turn. A real firing seam on turn ENTRY, not a mapping entry. Recognised-and-skipped today (2026-09-03) so a Mind that wires it degrades loudly. | omni | M |
+| **`UserPromptSubmit` event** ✅ shipped (ADR-0134) | Fires ONCE at the user-message boundary with the CC stdin contract (`prompt`), on both turn paths, and folds the hook's `additionalContext` (or plain stdout) into every request of that turn as an ephemeral tail. A real firing seam on turn ENTRY, not a mapping entry. Injection only: exit-2 prompt-blocking is a follow-up that the one known consumer never uses. | omni | M |
 | **Lifecycle hook stdout as context (SessionStart)** ✅ shipped (ADR-0211) | CC adds what a SessionStart hook prints to the context the model reads. `HookManager.fire()` now returns what its `SessionStart` shell hooks said on exit 0 (plain stdout, or the JSON `additionalContext`), and the loop hands it to the model ONCE as a `[hook]` user message where the hook fired: after the ask at startup and resume, after the summary at a compaction. Every other lifecycle event stays observe-only, as CC's own `PreCompact` is. Until 2026-09-21 this row was a documented divergence whose cost nobody had measured: one served run compacted 19 times in 35 minutes and the plug-in's restore text was dropped each time. | omni | M |
 
 ## Phase 3 — Settings, permissions & presentation (the parity subsystems) — ✅ DONE
@@ -152,11 +153,12 @@ Prove the *bonus*, then freeze the contract.
 These were scoped out of the shipped work *on purpose*. They are a small robustness/cosmetic tail —
 none is a loop-blocker, and each is recognised-and-handled today (never silently dropped):
 
-- **`StopFailure` + `UserPromptExpansion` + `UserPromptSubmit` hook events** — real CC events,
+- **`StopFailure` + `UserPromptExpansion` hook events** — real CC events,
   deferred for **scope**: a non-loop-blocking robustness tail, and firing `StopFailure` would thread
-  the critical turn-finalize path. All three are recognised and skipped **with a warning** today, not
-  silently dropped. `UserPromptSubmit` joined `_SKIP_EVENTS` on 2026-09-03; before that it was in
-  neither map and returned `unknown event`, the same string a TYPO produces, to a Mind that wires it.
+  the critical turn-finalize path. Both are recognised and skipped **with a warning** today, not
+  silently dropped. `UserPromptSubmit` left this list when ADR-0134 shipped its seam; this bullet
+  went on naming it until 2026-09-21, so its head is now read by a test
+  (`test_the_docs_name_exactly_the_deferred_hook_events`) against `_SKIP_EVENTS`.
 - **statusLine: cap the command's stdout read** — the status command's output is bounded only by the
   5s timeout today; add an explicit byte cap.
 - **statusLine: the status JSON's model id uses `default_model`** — cosmetic under zakpick/failover
