@@ -1448,3 +1448,178 @@ served small-model loop. Whether a small model FOLLOWS the new dispatch is the o
 campaign's own record says an instruction is not a control (0 of 3 with it, 3 of 3 when the engine
 binds it). That measurement needs a world that is running and never booted, and is not registered
 here. Nothing about effort, terra, the pod tier or azure. No run is licensed by this block.
+
+=== 01:32 UTC 2026-09-21 PRE-REGISTRATION -- SERVED LOOP ON LUNA, SAMPLE 6: did the rests go? Two builds that differ by ADR-0205 alone, one run each ===
+
+WHY THIS RUN. The veto-door bench's registration 2 read GAIN for arm R (veto-door-preregistration.log, the 00:45 UTC
+2026-09-21 block): with a finished plan's answer-now reminder kept silent after a refused stop, gpt-5.6-luna failed to
+resume on 0 of 116 rollouts, against 18 of 116 on the baseline build. Its registered consequence was that R ships --
+it did, as ADR-0205, PR #583, main c22b46f -- and that the next served sample reads whether the rests went. This is
+that sample. The bench's segment ended at the first resumed command, in a synthetic world, at the FIRST refused stop
+of a run. Whether a served loop then keeps running is the one thing it could not say, and the only thing asked here.
+
+THE RESTS, as the sample-5 control measured them (the 13:12 UTC 2026-09-19 block). A served turn that ends veto_stall
+is followed by a window with no model call, because the armed 600 s wake-up is the only re-entry left. On that run
+three of four turns ended veto_stall and the windows were 600.30 s, 600.29 s and 302.06 s (the third closed by the
+run-stop request): 1502.65 s of the 2054.25 s between launch and the run-stop request, 73.2%.
+
+WHAT BUILDING THE READER SHOWED, from two OLD runs, before either arm has run. It is not evidence about either arm; it
+changed what this block has to name. The fence that ends a turn veto_stall (ADR-0187) does not count work. It counts
+refusals that name a skill, and only a Skill call answered with a BODY sets it back to zero: a call answered with the
+already-loaded pointer does not, and a shell command does not. The bench's outcome was "a work call followed the
+door". Those are different events, and the old traces hold them apart:
+  sample-5 control  (effort none, build 60e0a8e)  11 doors: 7 stopped again in words, 2 resumed and loaded nothing,
+                                                  2 loaded a skill body. 3 turns ended veto_stall.
+  sample 5 attempt 3 (effort low, build 6b5a527)  17 doors: 0 stopped again in words, 9 resumed and loaded nothing,
+                                                  8 loaded. 1 turn ended veto_stall -- on three doors that ALL
+                                                  resumed.
+So a build on which every door resumes can still end its turns veto_stall. ADR-0205 shipped for what the bench
+measured, the model answering in words again. This sample can therefore show the rests staying for a reason the
+bench's outcome could not see, and the reading rule names that outcome NOW rather than discovering it afterwards. The
+reader checks its own reading of the fence: a turn the fence ended must show exactly three trailing doors with no body
+loaded. All four such turns in the two old runs do, and no earlier run of three exists in either.
+
+THE ARMS. Two builds of the product, one served run each, everything else the same.
+  T  main c22b46f (PR #583): ADR-0205 present.                                      src tree b0ca42e66e16
+  C  665e9ad, T's parent commit: ADR-0205 absent, everything else identical.         src tree 0f84ac1b4a2a
+The two trees differ under src/ in ONE file, src/zakcode/agent/loop.py (+55 -1), which is ADR-0205 and nothing else.
+Both carry ADR-0204, so both write each request's rails to the trace; only T writes rails_silenced. That asymmetry is
+the in-trace proof of which build ran, and the reading refuses an arm whose traces do not show it.
+C is the control and it is an arm of THIS batch. The sample-5 control is history, not a control for this: its build
+(60e0a8e) predates four product changes that both arms carry (#571, an idle-window stop whose knob is unset here and
+asserted unset; #574; ADR-0203; ADR-0204), it ran two days ago, and it did not select its build through PYTHONPATH.
+Its numbers are quoted for scale and decide nothing.
+
+THE ASSEMBLY is the sample-5 control's, rebuilt by the same script from the same seed: seed 2.12.76 (sha256 prefix
+71c88a26f3b953c0), the provisioning step and its assertions, the same sandbox, ceremony, caps (2400 s run, 350 s
+reserve, 2520 s supervisor wall clock, $6.00 supervisor budget per run), trace directory and claim-endpoint patch
+(sha256 prefix 74b5eca7c44d0189); no reasoning_effort configured, so the product's forced none applies (ADR-0200).
+run_served.sh, progress.py and served.env are byte-identical to the control world's copies, compared by hash today and
+asserted again by the launcher.
+  FOUND AND REPAIRED BEFORE THIS BLOCK WAS WRITTEN. The scratch world builder's header said the claim patch is
+  re-applied and its body never did it: the sample-5 worlds and the control each got the patched file from a separate
+  copy run by hand after the build. Both fresh worlds came up with the seed's UNPATCHED endpoint (prefix
+  50294cc7a8b53c72). The file the control carried was copied over both and the hash re-read; the builder now applies
+  and asserts it. Only the launcher's hash assertion caught this. Without it both arms would have run on an assembly
+  no earlier sample used, and would still have looked like a matched pair.
+  ONE THING DIFFERS FROM EVERY EARLIER SAMPLE, the same in both arms: the build is selected inside the sandbox by
+  PYTHONPATH=/srv/zc-builds/<arm>/src -- two git worktrees of the public repo at the registered commits -- ahead of
+  the editable install. It is gated from inside the sandbox (G3) and recorded again by the run's own first progress
+  line (G6). The gate was shown to FAIL in both wrong shapes before it was trusted: C's tree asked as T, and no
+  PYTHONPATH at all (the editable install, which is T's code) asked as C.
+  Worlds: zc-served6c-2ef7373f (arm C), zc-served6t-ce005e7b (arm T). Fresh, never run, 0 session files.
+  Order: C, then T, sequential. A coin flip made and written down before this block (Python's secrets.randbelow(2);
+  1 meant C first; it came up 1).
+  C FIRST IS ALSO THE SPEND GATE. The veto-door bench's lesson was to measure the baseline alone before paying for a
+  comparison against it. T is launched only once C is READ and V_C >= 1. If C is ARM NOT READ, its one licensed re-run
+  comes first and T waits. If C reads V_C = 0 the pair is NOT DISCRIMINATING already, whatever T would have shown, and
+  T is not run: its money is better kept for the second pair the rule licenses.
+
+THE GATES, asserted by the launcher before any spend, per arm. A failure is ARM NOT READ for that arm.
+  G1  the arm's worktree is at the registered commit, clean, and its src tree hash is the registered one.
+  G2  the world is provisioned and unrun: initialised, agent state IDLE, 0 session files, no serve.log, starting queue
+      7234 bytes, meta tier uninitialised, the patched claim endpoint, no reasoning_effort in served.env, the three
+      kit files identical to the control's, no leaked mount.
+  G3  INSIDE the sandbox, under the run's own environment: zakcode imports from the arm's tree; the arm's marker is
+      right (T's loop class has ADR-0205's method and C's does not; both have ADR-0204's rails; the rails_silenced
+      field is in T's source only); the five luna categories send reasoning_effort none WITH tools and no field
+      without, and classify sends none either way (W1a-C, as corrected on 2026-09-19); the idle-window stop is unset.
+  G4  this block is on origin/main. The launcher fetches and greps for it, and refused to launch until it was.
+  G5  the live Mind's daemon on this box answers health before and after each run, and no mount leaked.
+  After the run, from the artifacts:
+  G6  the run's first progress line names the arm's tree as the zakcode source.
+  G7  the traces carry the build's signature: every usage event has rails; T's carry rails_silenced and C's do not.
+
+WHAT IS READ, and from where. Two readers, committed WITH this block so the rule below can be re-run by anyone, and
+both checked against known answers before it (MANIFEST at the foot of this block).
+  rests  (serve.log, progress.log) A WINDOW opens at a turn-ended line and closes at the next turn's boot line or at
+         the run-stop request, whichever is first. Nothing after the run-stop request counts: that is teardown. Run
+         length is launch to the run-stop request. It reproduces the control block's figures exactly: 600.30 / 600.29
+         / 302.06 s, 1502.65 of 2054.25 s. It does NOT reproduce attempt 3's "733 s of 2194 s": that block measured to
+         a later end point by an older method. Attempt 3's one window, 600.16 s, is reproduced. Only the control
+         block's definition is used here.
+  doors  (per-turn traces) A DOOR is an honoured refusal, marked by the harness's delivery note. Its segment runs to
+         the next door or the end of the turn. It is a FINISHED-PLAN door (F) if the first request after it names
+         plan_complete in rails (the line was SENT) or in rails_silenced (the line was SILENT); otherwise an OTHER
+         door (o). The segment STOPPED AGAIN IN WORDS (-) if it holds no work call, by the product's own definition of
+         one (its three tool sets are imported from the product, not re-typed); it RESUMED (+) if it holds one; it
+         LOADED (*) if it holds a Skill call answered with a body. 10 known-answer checks pass. A delivery cannot
+         reopen the plan here: a skill body that fits the window seeds no plan steps (ADR-0192), and the control's
+         traces hold 0 seeding notes.
+  A stall turn's TRAILING DOORS are its last three: the ones the fence counted.
+
+THE READING RULE, over every outcome, fixed before launch. V_C and V_T are the turns that ended veto_stall before the
+run-stop request, in arm C and arm T.
+  ARM NOT READ        any gate fails for that arm, or its run never reaches a refused stop (no door at all: a crash, a
+                      failover, a provider outage, a budget stop). Nothing is concluded from that arm.
+  NOT DISCRIMINATING  C is read and V_C = 0. There were no rests to remove. T is not launched (the spend gate above).
+  RESTS GONE          both arms read, V_C >= 1 and V_T = 0.
+                      It is ATTRIBUTED to ADR-0205 only if C shows the mechanism live where it stalled -- at least one
+                      of C's trailing doors is an F door with the line SENT that stopped again in words -- and every F
+                      door in T shows the line SILENT. Otherwise it is RESTS GONE, UNATTRIBUTED.
+                      Either way it is one run. Six earlier served runs, on different builds and depths, ended 0, 1,
+                      2, 2, 3 and 3 turns veto_stall, so a single run with 0 is something the baseline has done
+                      itself.
+  RESTS REMAIN        both arms read, V_C >= 1 and V_T >= 1. Fewer stall turns in T than in C is RESTS REMAIN and is
+                      NOT read as a reduction: the baseline's own spread covers any such difference at one run per
+                      arm. What the fence counted in T is then reported as a partition of T's trailing doors, each of
+                      which is exactly one of:
+                        W  an F door, line silent, that stopped again in words: the bench's gain did not carry to
+                           these doors (a later delivery, a longer conversation);
+                        O  an o door that stopped again in words: a door the bench never captured;
+                        N  any door that RESUMED and loaded no skill body: the model went back to work and the fence
+                           still counted it, so the bench's outcome was the wrong proxy for a served stall;
+                        U  no request followed, or the door cannot be classified. An F door in T whose line was
+                           SENT belongs here too: ADR-0205 says it cannot happen, and it is reported as a fault.
+                      The largest class is named as what is left; a tie is reported as a tie. That describes WHICH
+                      doors the fence counted. It is not a cause: nothing here separates why a door went as it did.
+  Rule E stands: an outcome nobody named is reported as measured and never upgraded. NOTHING SHIPS OR UN-SHIPS from
+  this sample in any branch. ADR-0205 stands on the bench's registered rule and on its own argument -- a harness must
+  not talk over the hook that just refused the stop -- whatever this reads.
+
+WHAT EACH READING WOULD CHANGE, which is why it is worth its cost. RESTS GONE, after its one licensed replication: the
+veto door closes as a served blocker for luna, and the next served work is the iteration body, which has closed 0
+goals in six runs. RESTS REMAIN / W: the next door bench forks at a LATER delivery, not the first. RESTS REMAIN / O:
+the next door bench captures open-plan doors. RESTS REMAIN / N: the next bench's outcome becomes "a skill body loaded
+before the next stop", and the fence's own definition is re-read against what those segments actually did.
+
+ESTIMATES, recorded before launch so that each can be scored.
+  C is read                                              85%
+  V_C >= 1, given C is read                              80%
+  T is read, given it is launched                        85%
+  V_T = 0, given both read and V_C >= 1                  20%   I held about 35% before reading the old traces. A
+                                                               resumed door does not reset the fence, and at effort
+                                                               low 9 of 17 resumed doors loaded nothing.
+  share of C's doors that are F doors                    65%   I do not know this. No served trace has ever shown it.
+  F doors that stopped again in words                    C (line sent) 55%;  T (line silent) 20%
+  if RESTS REMAIN, the largest class in T                N 45%, W 35%, O 15%, a tie or U 5%
+
+SECONDARY MEASURES, reported for both arms and deciding nothing: idle seconds and idle share; the door table (F and o,
+by -, + and *); T's count of refusals taken on a finished plan (its own note) beside T's count of F doors, which must
+agree unless something reopened the plan between the refusal and the next request; turns, iterations, calls, cost and
+cached share; goals completed; plan share of the tool ledger.
+
+SECOND-SAMPLE RULE. ARM NOT READ licenses one re-run of THAT arm, in a fresh world at the same settings. RESTS GONE
+licenses ONE replication of T alone in a fresh world: two runs at 0 reads "RESTS GONE, replicated once", and otherwise
+RESTS REMAIN stands on the run that stalled. NOT DISCRIMINATING licenses one more pair, C first again so that the
+spend gate holds -- which leaves run order tied to the arm, a confound accepted here and named -- and a second NOT
+DISCRIMINATING ends the question as unanswerable at this price rather than buying a third. RESTS REMAIN licenses
+nothing: the partition is the result, and the next step is a bench, not another served run.
+
+WHAT THIS CANNOT SETTLE, whatever it reads. Anything about a model other than gpt-5.6-luna at effort none. Whether a
+loop that keeps running closes goals. WHY a door went the way it did: the doors of one run share a conversation, so
+they are not independent observations, the unit is the run, and n is 1 per arm. A test on the door table would be
+decoration and none will be reported. Whether the fence's definition is right.
+
+SPEND. The supervisor bounds each run at $6.00 and 2520 s, as in every earlier sample. Expected: about $1 for C (the
+control cost $0.83 with 73% of its wall clock idle) and $1 to $3.3 for T: a run with no rests calls the model for the
+whole window, and at the control's rate while active ($0.83 over 552 s) a fully active run is about $3.1. The bound is
+deliberately NOT lowered to cap the total. A budget stop in T would end its run early for a reason that is neither a
+rest nor a stall, in exactly the branch this sample exists to read. Campaign spend so far: about $9.59. No other model
+call is made while a run is in flight, and the arms' worktrees are not touched until both runs are read.
+
+MANIFEST  bench/served_doors.py  sha256 prefix 1a436d4c2d60a6c4
+          10 known-answer checks; control 11 doors = 7 in words / 2 resumed, no load / 2 loaded; attempt 3 17 doors =
+          0 / 9 / 8; the fence check holds on all 6 turns of the two runs.
+MANIFEST  bench/served_rests.py  sha256 prefix 28f80f34866e0791
+          control: windows 600.30 / 600.29 / 302.06 s, 1502.65 of 2054.25 s.
