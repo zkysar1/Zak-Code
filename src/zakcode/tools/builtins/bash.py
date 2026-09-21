@@ -11,6 +11,7 @@ from typing import Any
 from zakcode._subprocess import find_bash
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
+    STDOUT_CHARS,
     ConcurrencyClass,
     Tool,
     ToolContext,
@@ -1003,6 +1004,9 @@ class BashTool(Tool):
             "command": command,
             "exit_code": exit_code,
             "truncated": truncated,
+            # Where the command's own output ends and the exit-code line begins: the
+            # PostToolUse wire cuts Claude Code's ``tool_response.stdout`` here (ADR-0210).
+            STDOUT_CHARS: len(output),
         }
         if exit_code != 0:
             fix = (

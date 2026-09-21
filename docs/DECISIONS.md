@@ -12494,3 +12494,79 @@ are argued from what a receipt IS (a rail must be true of what it counted), and 
 measured. One model, one loop. Before anything is said about laps or goals this change needs its own
 registered served sample with a concurrent control, main before this commit against main with it in one
 batch, which is the next entry in the served-loop log.
+
+## ADR-0210: every shell hook's stdin carries what Claude Code hands a hook, and PostToolUse carries `tool_response`
+
+Date: 2026-09-21. Completes ADR-0071 (the tool gate's wire) and the hook rows of the compat map. One
+behaviour, no setting.
+
+Context. A framework written for Claude Code reads a hook's stdin by Claude Code's names, and the rule
+this product holds itself to is ONE contract: the framework must run on either harness without asking
+which one it is on. The tool gate's wire carried `tool_name`, `tool_input`, `session_id` and `cwd`, and
+on PostToolUse Zak Code's own `output` and `is_error`. It carried no `tool_response`, no
+`transcript_path` and no `hook_event_name`. The compat map has listed `tool_response` and
+`transcript_path` in that stdin shape since its first version; neither word had ever appeared in
+`src/`, and the contract test named beside the claim asked for neither. A claim nobody tests is a
+claim nobody keeps.
+
+What was measured. The Mind framework hangs a reminder on its PostToolUse[Bash] hook: when the script
+that closes a lap of its loop has REALLY finished, the hook tells the model what to call next. It
+decides "really finished" by finding the script's closing marker in `tool_response.stdout`, and when
+that field is missing or is not an object it says nothing, on purpose, because a false reminder pulls
+a model off live work. Three readings, all on this box. (1) The product's own PostToolUse bytes, built
+by `wire_payload`, put to that hook's own predicate: False. Claude Code's shape around the same
+stdout: True. (2) In the four served worlds of sample 7 the transcripts hold the closing marker on 8,
+6, 23 and 13 rows and the reminder's opening words on 0, and a PostToolUse hook's context is appended
+to the tool result, so it would have been there. Every served run to date ran without the framework's
+own re-entry reminder, and nothing anywhere said so. (3) Claude Code's result shapes, read from a
+Claude Code session's transcript, keys and types only: the shell tool's finished call is an object
+(`stdout`, `stderr`, `interrupted`, `isImage`, and a newer `noOutputExpected`), its failed call is a
+plain string, and `Read`, `Write`, `Edit`, `WebFetch` and `WebSearch` each have an object of their own.
+
+Decision.
+1. PostToolUse's stdin carries `tool_response` (`claude_code_tool_response`). A shell call that
+   SUCCEEDED carries Claude Code's object: `stdout`, `stderr`, `interrupted`, `isImage`. Every other
+   result, a failed shell call included, carries the result text as a string, which is the shape
+   Claude Code itself uses for a failed call and which a consumer that scans the response (for a URL,
+   for a marker) reads the same either way. `output` and `is_error` stay beside it as Zak Code's own
+   keys. PreToolUse carries no such key, as in Claude Code.
+2. `stdout` is the COMMAND'S output, not the text the model reads: the shell tool closes that text with
+   an `[exit code: N]` line of its own, and a hook that parses stdout (as JSON, say) must never meet
+   it. The tool says where its command's output ends (`ToolResult.data["stdout_chars"]`,
+   `tools.base.STDOUT_CHARS`) and the wire cuts there. A count, not a search for the footer's words,
+   for ADR-0203's reason: whoever builds a text says where its parts lie. No count, or one that is no
+   count, cuts nothing.
+3. EVERY shell hook's stdin names its event as Claude Code does (`hook_event_name`): the tool gates,
+   UserPromptSubmit, SessionStart, SessionEnd, PreCompact, and the turn's end as `Stop`, although the
+   event is `TurnEnd` here and `event` still says so. A script shared between events dispatches on
+   that field.
+4. `transcript_path` rides every one of those too. SessionStart, PreCompact and Stop had it; the tool
+   gates, UserPromptSubmit and SessionEnd now do. The file is append-only (ADR-0206), so handing it
+   over costs the messages not yet written, and at a tool gate it already holds the assistant message
+   that made the call, as Claude Code's does. This moves WHEN a row is appended (at the gate, not at
+   the next persist) and never what is written.
+
+Not done, and said so. `permission_mode`: the two products' modes do not map one to one and no
+consumer reads it. Claude Code's per-tool objects for `Read`, `Write`, `Edit` and the rest: a partial
+object would claim fields it does not hold. A `stderr` of its own: Zak Code runs a command with the
+two streams combined, so `stderr` is always empty rather than a guessed split. `noOutputExpected`.
+And one difference that stays: recent Claude Code does not fire PostToolUse for a failed call at all,
+and Zak Code does, with text.
+
+The proof. `tests/test_hook_stdin_carries_claude_codes_contract.py` (18 cases) does not inspect a
+dict the harness built. A real scripted agent runs the real shell tool and hook SCRIPTS read their
+own stdin the way a Claude Code hook does: a recorder, a parser that loads stdout as JSON, and a
+reminder in the consumer's own shape, which must fire on a finished command and must NOT fire on one
+that printed the marker and then failed. That second half is the control that may not flip. One test
+fires SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd in one turn and
+asks each stdin for the common fields, so a payload added later cannot leave them out unnoticed. 15
+mutants, the red set of each written down before it ran, every other test of five files (168 cases)
+required to stay green, against a copy of `src/` with a witness test that fails unless the mutated
+tree is the one imported: all 15 read as stated on the first run. The framework's real predicate,
+put to the new wire outside the repository: True for a finished close, False for a failed one.
+
+What is not claimed. That the reminder, now delivered, helps a small model. It tells the model to
+re-enter its loop at the moment a lap closes, which is where gpt-5.6-luna was measured stopping in
+words (ADR-0205, ADR-0208), so it may matter a great deal, in either direction. Served samples 1 to
+8 all ran without it, and none of their numbers describes a run with it. That needs its own
+registered served sample with a concurrent control, main before this commit against main with it.
