@@ -1777,6 +1777,75 @@ WHAT IS NOT CLAIMED. That the 27B cannot be brought back, or why it is not loade
 not touched and will not be: read-only probes of its health, its model list and one 1-token completion are the whole
 of what was done to it.
 
+CORRECTION TO THE AMENDMENT ABOVE (2026-09-22 05:13 UTC, g-353-123). THE WEIGHTS DID NOT CHANGE IN THE
+MAINTENANCE WINDOW. THEY CHANGED ON 2026-08-22, WHICH MEANS EVERY ARM THIS CAMPAIGN LABELLED "THE 27B"
+WAS SERVED BY THE 35B. NO RUN, NO SPEND
+═══════════════════════════════════════════════════════
+The amendment above reported two things about the pod's return and implied one event. The address half is
+right. The weights half is right about TODAY and wrong about WHEN, and the correction is worth far more than
+the error: the swap happened a month before this campaign began, so it is not news about the maintenance, it
+is news about every number above it.
+
+WHAT IS ACTUALLY TRUE, read first-hand from the pod's own engine configuration (`/etc/zds-inference/engines.d/`,
+over ssh) and corroborated by the fleet convention's model-swap row. All four engines have served
+Qwen3.6-35B-A3B-UD-Q4_K_S.gguf since about 23:00Z on 2026-08-22 (gpu0, gpu1, gpu3) and about 23:20Z (gpu2);
+each engine file now opens "SERVES Qwen3.6-35B-A3B since 2026-08-22". It was a decision, for roughly 4x decode
+speed, not a fault. The id `zds-qwen3.8-27b` was KEPT as a historical alias: the router refuses any id absent
+from its registry, so a caller that still names the retired id keeps working and is quietly handed the 35B
+instead of failing loudly. The pod's real 27B lane existed from 2026-08-15 to 2026-08-22 only.
+
+THE CONSEQUENCE FOR THIS LOG. Every batch recorded here ran on 2026-09-14 or 2026-09-15. That is a month after
+the swap. So in thrusts 22 through 35, every arm launched with ZBENCH_POD_MODEL=zds-qwen3.8-27b was served by
+Qwen3.6-35B-A3B, and so was every arm launched as zds-qwen3.5-35b: the two ids differ only in which engines
+they pool, never in weights. Wherever this log says "the 27B", read "the 35B, through the 27B alias".
+
+THE CAMPAIGN MEASURED THIS AND READ IT AS A RESULT. Thrust 22, "THE SMALLER-MODEL MAP", found the 27B matching
+the 35B cell for cell -- 12/12 against 12/12, 12/12 against 12/12, 0/12 against 0/12 -- and wrote that cell
+15's four misses "are all the microseconds isoformat default, the 35B's failure mode, no other". That is
+exactly what one model compared with itself produces. The finding was not weak evidence of model similarity; it
+was strong evidence of model IDENTITY, and it was read the other way.
+
+WHY NOTHING CAUGHT IT, stated plainly because it is fixable. The request dumps record what was ASKED, never
+what answered: each wire-NNNN.json carries `model`, and a census of the surviving thrust 34 and 35 dumps reads
+openai/zds-qwen3.8-27b in 909 of 909 calls across 120 run directories, with no other value present. No response
+echo is stored anywhere in the bench, so no artifact of any arm in this campaign can say what served it. The pod's
+`/v1/models` would have shown `canonical: zds-qwen3.6-35b` against every id on any day of the campaign, and
+nothing read it.
+
+WHAT SURVIVES, precisely. Every thrust here is an INTERLEAVED within-batch contrast: its baseline arms and its
+candidate arms ran minutes apart on the same engines, against the same weights, whatever those weights were.
+So the CONTRASTS stand as measured, and the ADR dispositions that rest on them stand. What does not stand is
+every sentence that names a MODEL: the cross-model claims (thrust 22's map above all), and every statement of
+the form "on the small model". These were measured on a 35B-A3B MoE, not on a 27B dense model.
+
+WHAT THIS DOES TO THRUST 36. The design survives and the premise does not. The design is internally controlled:
+a1 and a2 give 24 concurrent baseline runs against c1 and c2's 24 candidate runs, so it needs no historical
+number. The premise was "a baseline WITH HEADROOM", and the 60% it names (50/84 untreated on cell 17, six
+batches) is a 35B number. The real 27B's untreated rate on cell 17 is UNMEASURED. So is the sibling-read route
+of about 23%. The predicted A of 11-17 in 24 rests on the 60% and is therefore withdrawn, along with the reason
+cell 17 was chosen at all.
+
+THE SEQUENCE THAT REPLACES "LAUNCH WHEN THE 27B IS BACK", in order, each step gated on the one before:
+  1. Per-engine verification, not a single completion: one real completion to zds-qwen3.8-27b per engine,
+     attributed by the /status `served` counter moving on that engine, each echoing Qwen3.8-27B-UD-Q4_K_XL.gguf.
+  2. A pre-registered baseline probe: ONE untreated arm, N=12, shipped tools, ADR-0176 prompt, cell 17, on the
+     real 27B. It answers the only question that decides the thrust -- does this cell have headroom on this
+     model -- and it costs 12 runs against 48.
+  3. Re-registration of thrust 36 against the measured baseline: new predictions, and a fresh judgement about
+     whether cell 17 is still the right cell.
+  4. Only then the interleaved batch.
+
+COMPARABILITY OF A NEW 27B NUMBER TO THE PRE-08-22 27B NUMBERS: NONE, and this is measured, not assumed. The
+pre-swap engine file and today's agree on CTX 131072, NGL 99, REASONING on, the full sampling set (temp 1.0,
+top-p 0.95, top-k 20, min-p 0, presence-penalty 0), q8_0 KV on both sides and MAX_INFLIGHT 3. They differ on
+PARALLEL (3 to 1), on prompt caching (--ctx-checkpoints 0 to 4, --cache-ram 512 to 8192, --cache-reuse 256
+dropped, --metrics added) and on the llama.cpp build behind the same BIN path. So any pre-08-22 27B figure is a
+different instrument, and a new 27B figure is comparable only inside its own batch. That is an argument FOR the
+interleaved design, not against the model.
+
+WHAT IS NOT CLAIMED. That any thrust's within-batch contrast is wrong; nothing here re-reads those counts. That
+the 27B would behave like the 35B, or differently; it has never been measured on these cells. And no claim at
+all about why the swap was made beyond the reason its own configuration records.
 THE 27B IS SERVED AGAIN, VERIFIED PER ENGINE. BASELINE PROBE PRE-REGISTERED BEFORE ITS DATA
 (2026-09-22 05:18 UTC, g-353-123): ONE UNTREATED ARM ON CELL 17 TO FIND OUT WHETHER THE CELL HAS HEADROOM
 ON THE MODEL THIS THRUST NAMES. N=12, FREE LOCAL COMPUTE, NO PRODUCT CHANGE
