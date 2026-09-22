@@ -16,6 +16,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import socket
 import time
 import urllib.request
@@ -167,6 +168,11 @@ def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
 
+#: A Gemini model name's generation number: ``gemini-3.5-flash`` -> 3. Anchored at the start of
+#: the name (after any provider prefix), so only a numbered Gemini matches.
+_GEMINI_GENERATION = re.compile(r"^gemini-(\d+)")
+
+
 def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
     """Whether ``model`` is an OpenAI gpt-5 REASONING model that accepts ONLY the
     default ``temperature`` (1).
@@ -187,6 +193,34 @@ def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
     """
     name = model.split("/")[-1]
     return name.startswith("gpt-5") and not name.startswith("gpt-5-chat")
+
+
+def _is_gemini_sampling_deprecated_model(model: str) -> bool:
+    """Whether ``model`` is a Gemini generation for which Google deprecated the sampling
+    parameters ``temperature``, ``top_p`` and ``top_k``.
+
+    Google's guidance from Gemini 3 on is to steer sampling through the system instructions
+    instead. The parameters still function on Gemini 3 and are already IGNORED on the newest
+    3.x models, with an error promised for a later generation — so sending one buys nothing
+    today and breaks a call later. litellm warns once per request-mapping when a caller sends
+    any of the three to such a model ("DeprecationWarning: ... planned for removal in a future
+    release"), which is how this surfaced: a Mind served on ``gemini-3.5-flash`` drew that line
+    on every structured-output call, because the schema path REQUESTS ``temperature=0`` for
+    determinism (``providers/structured.py``, whose docstring already calls that a request and
+    not a guarantee).
+
+    Dropping them is not a loss of control. litellm supplies Gemini 3+ with ``temperature=1.0``
+    when a request carries none, which is the value Google recommends for these models and the
+    one its own transform warns you not to go below.
+
+    Matched on the GENERATION, not one model name: ``gemini-3.5-flash``, ``gemini-3-pro-preview``
+    and a future ``gemini-4`` all qualify, while ``gemini-2.5-pro`` and the un-numbered
+    ``gemini-pro`` keep their parameters. The provider prefix is stripped first, so
+    ``gemini/…``, ``vertex_ai/…`` and a bare name read the same.
+    """
+    name = model.split("/")[-1]
+    match = _GEMINI_GENERATION.match(name)
+    return match is not None and int(match.group(1)) >= 3
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
@@ -588,6 +622,10 @@ class LiteLLMProvider(Provider):
         # (and the Settings default of 0.0 before it) second-guessed every model's tuning,
         # and Gemini 2.5+ documents repetition loops below temperature 1.0.
         self.temperature: float | None = resolved_temperature
+        #: Whether this provider has already said it is dropping the deprecated Gemini sampling
+        #: parameters. Said ONCE per provider, so an operator who configured a temperature that
+        #: this model ignores learns why, without a line per call.
+        self._said_gemini_sampling_dropped: bool = False
         self.api_base: str | None = resolved_api_base
         self.api_key: str | None = resolved_api_key
         self.num_retries: int = num_retries if num_retries is not None else 0
@@ -1410,6 +1448,29 @@ class LiteLLMProvider(Provider):
             temperature = call_kwargs.get("temperature")
             if temperature is not None and temperature != 1:
                 call_kwargs.pop("temperature", None)
+        # Gemini 3+ : send no sampling parameters at all. Google deprecated temperature,
+        # top_p and top_k for these models (steer sampling from the system instructions
+        # instead); litellm forwards whatever it is given and logs a DeprecationWarning per
+        # request-mapping, so every structured-output call -- which requests temperature=0 for
+        # schema determinism -- printed that line into the operator's transcript. Dropped here,
+        # at the same chokepoint and for the same reason as the gpt-5 rule above: a backend's
+        # own parameter map cannot be relied on to strip what it still supports. litellm then
+        # supplies these models with temperature=1.0, the value Google recommends. Skipped when
+        # the call reaches a LOCAL OpenAI-compatible server, which has no such constraint.
+        if _is_gemini_sampling_deprecated_model(self.model) and not (
+            self.api_base is not None and _model_uses_generic_endpoint(self.model)
+        ):
+            dropped = [name for name in ("temperature", "top_p", "top_k") if name in call_kwargs]
+            for name in dropped:
+                call_kwargs.pop(name, None)
+            if dropped and not self._said_gemini_sampling_dropped:
+                self._said_gemini_sampling_dropped = True
+                logger.info(
+                    "%s: %s not sent -- deprecated for this Gemini generation; sampling is "
+                    "steered from the system instructions and the model applies its own default",
+                    self.model,
+                    ", ".join(dropped),
+                )
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
         # chat route; what the request needs is an EXPLICIT reasoning_effort, and the
         # value is free (ADR-0200). Any explicit level takes the call off that route:

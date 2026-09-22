@@ -12768,3 +12768,98 @@ should, including the clock pin, which changes the timestamps those scripts writ
 and it is still a behaviour change on the first run after this ships. And the coverage has an edge:
 this reaches what the SESSION starts. A variable that must reach a long-lived daemon started outside
 the session still belongs in that daemon's own environment.
+
+## ADR-0213: Gemini 3+ gets no sampling parameters — the deprecation warning was ours to stop
+
+Date: 2026-09-22. Sits beside the gpt-5 temperature rule (ADR-0018's chokepoint) and uses the same
+mechanism for the opposite family. One behaviour, no setting.
+
+Context. A Mind served on `gemini-3.5-flash` printed this into its operator's transcript, over and
+over, after a harness update that could not have changed it:
+
+```
+LiteLLM: DeprecationWarning: `temperature`, `top_p`, and `top_k` continue to function for
+Gemini 3+ (gemini-3.5-flash) but are planned for removal in a future release. Move sampling
+guidance into the `system` instructions instead.
+```
+
+What was read, on 2026-09-22, in litellm's current source and its own release note.
+
+1. The warning's trigger is the CALLER's parameters. It is emitted inside the Gemini transform's
+   loop over `non_default_params` — once per request-mapping, on the first of `temperature`,
+   `top_p` or `top_k` it meets. Nothing else raises it.
+2. The default litellm supplies for these models does NOT raise it. After that loop, a Gemini 3+
+   request carrying no temperature is given `temperature = 1.0` — the value Google recommends, and
+   the one litellm's own transform warns you not to go below. So a request that sends none is both
+   quiet and correctly sampled.
+3. Google's guidance, which litellm is relaying: from Gemini 3 on, steer sampling from the system
+   instructions. The parameters still function on Gemini 3, are already IGNORED on the newest 3.x
+   models, and are promised an error in a later generation.
+4. Who was sending one, in this product. The schema path: `providers/structured.py` REQUESTS
+   `temperature = 0` for determinism on every structured-output call — its own docstring already
+   calls that a request and not a guarantee, and names a model family that drops it. The quality
+   paths: the judge, the scorer and deep-think each pass an explicit temperature. The configured
+   `temperature` setting is unset by default (ADR-0018), so an operator who set nothing was still
+   sending one on every structured call.
+
+That is why updating the harness did not help: no release changed who was sending them.
+
+Decision. For a Gemini generation whose sampling parameters Google has deprecated, send none of
+them.
+
+1. `_is_gemini_sampling_deprecated_model(model)` matches on the GENERATION, not one model name:
+   the provider prefix is stripped, then a name of the form `gemini-<N>-…` with N at least 3
+   qualifies. So `gemini-3.5-flash`, `vertex_ai/gemini-3-pro-preview` and a future `gemini-4` are
+   covered, while `gemini-2.5-pro` and the un-numbered `gemini-pro` keep their parameters. The
+   deprecation is forward-looking by Google's own wording, and a predicate pinned to one generation
+   would leave the generation that ERRORS unprotected.
+2. `temperature`, `top_p` and `top_k` are dropped in `_build_kwargs` — the one chokepoint every
+   completion path funnels through — AFTER the per-call `kw` update, so it covers the configured
+   temperature, the structured path's forced zero and any per-call value alike. Exactly where and
+   why the gpt-5 rule sits: a backend's parameter map cannot be relied on to strip what it still
+   supports, and a per-call route that bypassed the chokepoint would be visible in a wire test.
+3. A LOCAL OpenAI-compatible server behind a custom `api_base` is excluded, the same exclusion the
+   gpt-5 rule makes: a self-hosted model named after a Gemini generation has no such constraint.
+4. Said ONCE per provider, at INFO, naming the parameters dropped — and only when something was
+   actually dropped. An operator who configured a temperature this model ignores learns why without
+   a line per call.
+
+What was considered and not done. Filtering litellm's log record: the product already filters one
+litellm record (its shutdown-time logging-worker traceback), so the door was open and it is the
+wrong door — the warning is TRUE, and silencing a true warning leaves the request wrong and the
+next generation's error unavoided. Pinning or upgrading litellm: the warning arrived in a release
+and would not be the fix either, since it is reporting our request faithfully. Keeping the
+structured path's `temperature = 0` for these models: Gemini 3 ignores it, and litellm's own
+transform says a value below 1.0 on Gemini 3 risks repetition loops — so the determinism it was
+asking for was not being granted anyway. Moving the sampling guidance into the system instructions,
+which is Google's positive advice: that is a prompt decision for whoever writes a workspace's
+system prompt, not something a harness should inject on a model's behalf.
+
+Proof. `tests/test_gemini3_sampling_params.py`, 11 tests: the predicate over both populations, the
+drop at the chokepoint for a configured temperature, the structured path's forced zero and an
+explicit `top_p`/`top_k`, an older Gemini keeping everything as the positive control, a local
+Gemini-named endpoint keeping everything, the explanation said once and not said when nothing was
+dropped, and two that drive the REAL structured seam and assert on what reached litellm — which is
+the input litellm's own deprecation check reads.
+
+A mutation proof, 9 mutants, each red set written down before it ran. RUN 1 READ NOT PROVEN and the
+reasons are worth keeping. Two of my statements were wrong in the same direction — I had not
+checked which tests could SEE each mutation. Dropping only `temperature` leaves the wire test
+green, because the structured path sends no `top_p`; and reading the whole model string instead of
+the name after the prefix turns the predicate False for every prefixed spelling at once, which is
+five more tests than I named. The third was a mis-designed mutant rather than a wrong statement: it
+ADDED a second copy of the drop before the per-call merge instead of MOVING it, so the net
+behaviour was unchanged and the only signal was the once-per-provider line firing twice. Moved
+properly, its stated red set holds. Run 2 read PROVEN on all 9, baseline 11 green.
+
+What this changes, and what is not claimed. On a model where these parameters are already IGNORED
+(the newest 3.x), the request that goes out is identical but for one fewer warning. On a model
+where they still FUNCTION — and `gemini-3.5-flash`, the one that reported this, is such a model by
+the warning's own words — the schema path moves from `temperature = 0` to the backend's `1.0`. That
+is the value Google recommends for this generation and the one litellm's transform warns you not to
+go below, naming infinite loops and degraded reasoning; and the determinism the schema path was
+asking for was never granted by that parameter anyway — its own docstring says so, and the
+validation-and-retry loop is what actually delivers it. So this IS a behaviour change on such
+models, in the direction the vendor documents. What is not claimed is a measured effect: nothing
+here was run against a live Gemini model. The evidence is upstream's source, its release note and
+this product's own call sites.
