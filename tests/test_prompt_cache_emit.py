@@ -115,7 +115,10 @@ def test_openai_leaves_system_a_plain_string() -> None:
 
 
 def test_groq_leaves_system_a_plain_string() -> None:
-    provider = LiteLLMProvider(model="groq/llama-3.3-70b-versatile", temperature=0.0)
+    # A retired model: its window is declared, so the test never asks litellm's live map.
+    provider = LiteLLMProvider(
+        model="groq/llama-3.3-70b-versatile", temperature=0.0, context_window=128000
+    )
     assert isinstance(_system_blocks(provider, _SYSTEM), str)
 
 

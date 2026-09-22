@@ -90,7 +90,12 @@ def test_sentinels_are_refused_not_guessed() -> None:
 
 def test_metered_call_is_refused_at_the_request_builder() -> None:
     provider = LiteLLMProvider(
-        Settings(default_model="groq/qwen/qwen3-32b", local_only=True, _env_file=None)
+        Settings(
+            default_model="groq/qwen/qwen3-32b",
+            context_window=131000,  # a retired model: declared, so no lookup in litellm's live map
+            local_only=True,
+            _env_file=None,
+        )
     )
     with pytest.raises(LocalOnlyViolation, match="metered"):
         provider._build_kwargs([{"role": "user", "content": "hi"}], None)
@@ -243,7 +248,13 @@ def test_local_only_defaults_off_and_changes_nothing(monkeypatch) -> None:
     monkeypatch.delenv("ZAKCODE_LOCAL_ONLY", raising=False)
     monkeypatch.delenv("ZAKCODE_API_BASE", raising=False)
     assert Settings(_env_file=None).local_only is False
-    provider = LiteLLMProvider(Settings(default_model="groq/qwen/qwen3-32b", _env_file=None))
+    provider = LiteLLMProvider(
+        Settings(
+            default_model="groq/qwen/qwen3-32b",
+            context_window=131000,  # a retired model: declared, so no lookup in litellm's live map
+            _env_file=None,
+        )
+    )
     assert provider.local_only is False
     assert provider._build_kwargs([{"role": "user", "content": "hi"}], None)["model"] == (
         "groq/qwen/qwen3-32b"
@@ -264,7 +275,13 @@ def test_extra_body_absent_by_default() -> None:
     """The default request shape must be byte-identical to before this feature. A named cloud
     is the witness: OpenAI's own API carries the retention default since ADR-0199, which
     ``tests/test_openai_store_default.py`` pins on its own."""
-    provider = LiteLLMProvider(Settings(default_model="groq/qwen/qwen3-32b", _env_file=None))
+    provider = LiteLLMProvider(
+        Settings(
+            default_model="groq/qwen/qwen3-32b",
+            context_window=131000,  # a retired model: declared, so no lookup in litellm's live map
+            _env_file=None,
+        )
+    )
     assert "extra_body" not in provider._build_kwargs([{"role": "user", "content": "hi"}], None)
 
 
