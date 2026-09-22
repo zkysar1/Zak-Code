@@ -271,7 +271,26 @@ def _build_agent(workspace: Path, spec: dict):
                 )
             except Exception as exc:  # a dump failure must never change the run it observes
                 (target / f"call-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
-            return await original_acomplete(self, messages, system=system, tools=tools, **kw)
+            result = await original_acomplete(self, messages, system=system, tools=tools, **kw)
+            # ...and the RESPONSE's own account of what served it (ADR-0214). The two dumps
+            # above record only what was SENT, so a whole campaign of runs could say which
+            # id it asked for and nothing at all about which weights replied -- which is the
+            # gap that let "the 27B" mean the 35B for a month here. The pod's access ledger
+            # is no help in the other direction either: it records the name it resolved to,
+            # never the one the caller sent, so neither side alone can pair them. One small
+            # file per call does, and it carries no prompt text, only the pairing.
+            try:
+                (target / f"echo-{idx:04d}.json").write_text(
+                    json.dumps({
+                        "requested_model": getattr(self, "model", None),
+                        "served_model": getattr(result, "served_model", None),
+                        "finish_reason": getattr(result, "finish_reason", None),
+                    }, indent=2, sort_keys=True, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                (target / f"echo-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+            return result
 
         LiteLLMProvider.acomplete = dumping_acomplete
 
