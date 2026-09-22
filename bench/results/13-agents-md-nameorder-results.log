@@ -1902,3 +1902,53 @@ WHAT NO OUTCOME LICENSES. Any comparison with a pre-2026-08-22 27B number: that 
 llama.cpp build with different caching and PARALLEL 3, so it is a different instrument (the delta is in the
 correction above). Any claim about the ADR-0181 candidate, which is not in this arm at all. And any statement
 about the 35B, which is not running.
+
+THRUST 36 BASELINE PROBE RESULT (2026-09-22 06:51 UTC, g-353-123): CEILING, 24 of 24 UNTREATED. CELL 17 CANNOT
+MEASURE THIS TREATMENT ON THE MODEL THE THRUST NAMES, AND THE FAILURE THE TREATMENT TARGETS DOES NOT
+OCCUR ON IT. THRUST 36 DOES NOT LAUNCH ON THIS CELL
+═══════════════════════════════════════════════════════
+Read exactly as registered in the block above, which was on origin/main before either arm started. Two arms of
+twelve, identical conditions, the second fired because the first landed on a boundary -- also as registered.
+
+  arm      window (UTC)          pass   turns min/med/max   elapsed/run          sibling opens
+  arm 1    05:30:18 - 06:08:58   12/12  6 / 6 / 10          168-317 s, mean 193  0/12
+  arm 2    06:09:42 - 06:50:06   12/12  6 / 6 / 14          166-533 s, mean 202  1/12
+  pooled                         24/24                                            1/24
+POOLED READING: 24 >= 22, so CEILING. The registered consequence follows without discretion: thrust 36 does not
+launch on cell 17, and the cell choice is reopened and must be re-registered.
+
+THE MECHANISM READING SAYS MORE THAN THE COUNT, and it was described in advance as a secondary. The treatment
+under test (ADR-0181, a rule line in the write tools' content descriptions) exists to break one specific route:
+the model opens the project's existing absolute-style test, copies its assertion form, and fails the guide's
+delta rule. Both halves of that route are absent here. The route: 1 of 24 runs opened tests/test_counters.py at
+all, against 7 of 24 on the model the campaign had been calling the 27B. The conversion: the single run that
+did open it passed anyway, against 15 of 15 sibling-readers copying the absolute form on that other model. A
+treatment cannot be measured against a failure the model does not commit.
+
+THE COMPARISON THAT MATTERS, now that both labels are correct. On this cell, untreated: the dense 27B scores
+24/24; the 35B-A3B MoE that this campaign called "the 27B" for two days scored 50/84 = 60% over six batches.
+The model actually deployed is not the weaker model the campaign designed around -- on this cell it is clearly
+the stronger one. Everything this log concluded about "the small model" was measured on the other one.
+
+THE COST, because it prices every future arm. Mean 193 and 202 s per run against roughly 40 s for the same cell
+on the 35B, so about 5x. One run in each arm ran long (317 s at 10 turns; 533 s at 14 turns) and both passed.
+A 48-run interleaved batch on this model is about 2.7 hours of wall time, not 32 minutes. Local compute, $0.
+
+NO PREDICTION WAS REGISTERED FOR THIS PROBE, deliberately -- it was a premise measurement, not a hypothesis
+test. The honest scoring note is the whole finding: the thrust was designed around a 60% baseline and the model
+it names scores 100%.
+
+WHAT THIS LICENSES. One pre-registered next step: an untreated SURVEY of the campaign's harder cells on the
+real 27B, one arm of twelve each, to find a cell whose untreated rate lands in the headroom band. The two
+candidates the log already marks as harder are 17w (the oversized-section variant, 6/12 and pooled 16/24 on the
+35B) and 15 (8/12). That survey is the model map thrust 22 believed it had produced and did not. Until a cell
+with headroom is measured on this model, fallback C has nowhere to be tested.
+
+WHAT NO OUTCOME HERE LICENSES. That ADR-0181's line is worthless: it has never been measured on this model on
+a cell where its route occurs. That the 27B is stronger in general: one cell, one task family, one prompt. That
+the 35B's numbers were wrong: they were right about the model that produced them and mislabelled. And nothing
+about any pre-2026-08-22 27B figure, which came off a different build with different caching.
+
+ARTIFACTS committed beside this block: determinism-zakcode-pinOFF-temp0-17-realguide-envserver-deltaassert-
+t36-probe-27b-1.json and -2.json, 12 redacted / 0 raw private sources in each. The request dumps stay on the
+cell (24 run directories) and are never copied off it.
