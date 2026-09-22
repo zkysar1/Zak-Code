@@ -187,6 +187,17 @@
     .tool .chev { color: var(--faint); transition: transform 120ms ease; }
     details[open] > summary .chev { transform: rotate(90deg); }
     .tool.nochev .chev { display: none; }
+    /* Phone width: the receipt drops beneath the call instead of truncating beside it
+       (its 45% cell cut "0.1s" to "0…" at 420px). A line of its own under the name is the
+       web's form of the terminal's └ receipt line, so there it may also wrap. */
+    @media (max-width: 560px) {
+      .tool summary { flex-wrap: wrap; row-gap: .1rem; }
+      .tool .chev { order: 1; }
+      .tool .receipt {
+        order: 2; flex-basis: 100%; max-width: none;
+        padding-left: calc(8px + .55rem); white-space: normal; overflow-wrap: anywhere;
+      }
+    }
     .tool .tool-out {
       margin: 0 .75rem .6rem; padding: .6rem .8rem; max-height: 40vh; overflow: auto;
       background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;

@@ -469,7 +469,9 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   language tag, hover-revealed Copy button ("Copied" for 2s).
 - **Tool cards** — one `<details>` per call, created on `tool_call`, kept in a `Map`
   by `ev.id`. Summary row: status dot + **bold name** + dim middle-truncated `(args)`;
-  right: dim receipt + rotating `▸` chevron. Pending: dot pulses, receipt shows `…`;
+  right: dim receipt + rotating `▸` chevron. At phone width (≤560px) the receipt drops
+  to its own line under the name, the web's form of the terminal's `└` receipt, and may
+  wrap there rather than truncate. Pending: dot pulses, receipt shows `…`;
   on result the receipt fills (`134 lines · 0.1s`, `performance.now()` deltas by id)
   and the body fills (`--inset` `pre`, `max-height: 40vh`). Diff lines = full-width
   painted band divs; error cards add a 2px `--err` left border and full-`--fg` output.
