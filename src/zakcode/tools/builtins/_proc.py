@@ -25,6 +25,7 @@ from zakcode._subprocess import (
     new_group_kwargs,
     terminate_process_tree,
 )
+from zakcode.workspace_env import settings_env
 
 __all__ = ["CommandTimeout", "run_capturing"]
 
@@ -66,10 +67,14 @@ def child_environment(
     """The environment a shell child gets — foreground (:func:`run_capturing`) or background
     (ADR-0191, :mod:`zakcode.background`) alike, so the two never drift.
 
-    Inherit the parent env; suppress child-emitted ANSI color (the output is fed to the
-    model, and raw escape codes are token-noise); overlay ``extra_env`` (e.g. ``HTTP(S)_PROXY``
-    for the egress sandbox); then REMOVE ``drop_env`` names (the provider-key scrub — applied
-    last so an overlay can never resurrect a scrubbed credential). Prefer the project's
+    Inherit the parent env; overlay the workspace's settings ``env`` block (ADR-0212: Claude
+    Code sets it for every subprocess, and the settings value beats an inherited one);
+    suppress child-emitted ANSI color (the output is fed to the model, and raw escape codes are
+    token-noise); overlay ``extra_env`` (e.g. ``HTTP(S)_PROXY`` for the egress sandbox); then
+    REMOVE ``drop_env`` names (the provider-key scrub — applied last so an overlay can never
+    resurrect a scrubbed credential). The order is the point: what the product sets for a
+    child comes AFTER the workspace's block, so a settings file cannot switch colour back on,
+    route a child around the egress proxy, or hand it a model credential. Prefer the project's
     virtualenv interpreter for the child (see :func:`_project_venv_bin`): an agent that runs
     ``python -m pytest`` / ``pip`` should hit the WORKSPACE's installed deps, not a bare
     system python — the venv's bin dir goes FIRST on PATH, mirroring an activated venv.
@@ -78,7 +83,13 @@ def child_environment(
     putting its scripts on PATH so bare script names in its playbooks resolve) without
     zakcode learning any domain layout; other shells ignore the variable.
     """
-    child_env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", **(extra_env or {})}
+    child_env = {
+        **os.environ,
+        **settings_env(cwd),
+        "NO_COLOR": "1",
+        "TERM": "dumb",
+        **(extra_env or {}),
+    }
     for name in drop_env or ():
         child_env.pop(name, None)
     venv_bin = _project_venv_bin(cwd)

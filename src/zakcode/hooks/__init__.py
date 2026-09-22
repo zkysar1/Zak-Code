@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 from zakcode._subprocess import new_group_kwargs, terminate_process_tree
 from zakcode.tool_names import PRE_0190_TOOL_NAMES
 from zakcode.wakeup import clamp_delay
+from zakcode.workspace_env import settings_env
 
 logger = logging.getLogger("zakcode.hooks")
 
@@ -40,20 +41,21 @@ logger = logging.getLogger("zakcode.hooks")
 DEFAULT_HOOK_TIMEOUT = 10.0
 
 
-def _scrubbed_env(drop: list[str]) -> dict[str, str]:
-    """Return a copy of ``os.environ`` with *drop* names removed."""
-    child_env = dict(os.environ)
-    for name in drop:
-        child_env.pop(name, None)
-    return child_env
-
-
 def _hook_env(drop: list[str], cwd: str) -> dict[str, str]:
-    """Child env for a shell hook: ``os.environ`` minus *drop*, plus ``CLAUDE_PROJECT_DIR`` set to
-    the workspace root (forward-slash form for Git Bash). That is Claude Code's hook env var —
-    Claude-Code hooks read it and reference scripts through it; Claude Code sets it, so we do too.
+    """Child env for a shell hook: ``os.environ``, then the workspace's settings ``env`` block
+    (ADR-0212), minus *drop*, plus ``CLAUDE_PROJECT_DIR`` set to the workspace root
+    (forward-slash form for Git Bash). That is Claude Code's hook env var — Claude-Code hooks
+    read it and reference scripts through it; Claude Code sets it, so we do too.
+
+    The scrub comes after the block and ``CLAUDE_PROJECT_DIR`` after both, so a settings file
+    can neither hand a hook a provider key nor tell it the project lives somewhere else. A
+    payload with no ``cwd`` names no workspace, so there is no block to read.
     """
-    env = _scrubbed_env(drop)
+    env = dict(os.environ)
+    if cwd:
+        env.update(settings_env(cwd))
+    for name in drop:
+        env.pop(name, None)
     if cwd:
         env["CLAUDE_PROJECT_DIR"] = cwd.replace("\\", "/")
     return env
