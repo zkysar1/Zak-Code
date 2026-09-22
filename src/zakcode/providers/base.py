@@ -51,6 +51,15 @@ class LLMResult(BaseModel):
     thinking: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str | None = None
+    #: The model id the BACKEND echoed on this response (ADR-0214), which is not always
+    #: the id the request named: an endpoint may publish several ids as aliases onto one
+    #: set of weights, and a router answers with its own canonical name. A run tagged only
+    #: by what it ASKED for cannot be reconstructed afterwards -- the server's access log
+    #: records the name it resolved to, not the one the caller sent, so the echo is the
+    #: only place the two are ever seen side by side. ``None`` when the backend echoed no
+    #: model at all. Buffered calls only: a STREAMED call has no such fact to carry, because
+    #: litellm stamps the requested model onto every chunk it builds (measured 2026-09-22).
+    served_model: str | None = None
     usage: Usage = Field(default_factory=Usage)
     raw: dict[str, Any] | None = None
 

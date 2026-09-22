@@ -565,6 +565,10 @@ class LiteLLMProvider(Provider):
         #: — measured 2026-08-28 (coach, zc-03): 622 tokens generated, no text, no
         #: reasoning, no tool call, and nothing recorded to tell which channel they took.
         self.last_stream_sample: dict[str, Any] | None = None
+        #: Served-model names already announced by :meth:`_record_served` (ADR-0214). The
+        #: echo is recorded on EVERY result; this set keeps the operator-facing log to one
+        #: line per distinct answerer instead of one line per call.
+        self._served_seen: set[str] = set()
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
@@ -1000,6 +1004,8 @@ class LiteLLMProvider(Provider):
                 thinking = reasoning
             tool_calls = cls._parse_tool_calls(_get(message, "tool_calls"))
 
+        served = _get(response, "model")
+
         raw: dict[str, Any] | None = None
         dump = getattr(response, "model_dump", None)
         if callable(dump):
@@ -1015,6 +1021,12 @@ class LiteLLMProvider(Provider):
             thinking=thinking,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            # What answered, as the backend named it (ADR-0214) -- read off the RESPONSE and
+            # never echoed back from ``self.model``, since the whole point of the field is
+            # the case where those two differ. Typed defensively: an absent, empty or
+            # non-string echo reads ``None``, because a provenance field that guesses is
+            # worse than one that admits it does not know.
+            served_model=served if isinstance(served, str) and served else None,
             usage=cls._extract_usage(response),
             raw=raw,
         )
@@ -1599,6 +1611,16 @@ class LiteLLMProvider(Provider):
                 raise self._map_error(again) from again
 
         result = self._normalize(response)
+        # Announce the answerer on the FIRST sighting of each distinct name (ADR-0214),
+        # rather than on a mismatch with ``self.model``. A mismatch rule would have to
+        # decide when two spellings are "the same model" -- ``openai/x`` against ``x`` is
+        # the ordinary shape of a correct call -- and every such rule is somewhere a
+        # substitution can hide. First-sighting needs no such judgement and still says the
+        # one thing worth saying: the answerer CHANGED. A steady process spends one line;
+        # one whose backend swapped underneath it spends two, and the second is the finding.
+        if result.served_model is not None and result.served_model not in self._served_seen:
+            self._served_seen.add(result.served_model)
+            logger.info("%s: served by %s", self.model, result.served_model)
         # Operator-facing call accounting (audit P1-5). Message contents are never
         # logged — model, latency, token counts, and litellm-computed cost only.
         logger.debug(
@@ -1779,6 +1801,14 @@ class LiteLLMProvider(Provider):
                     resp = await litellm.acompletion(**call_kwargs)
                     async for chunk in self._bounded_chunks(resp):
                         chunks += 1
+                        # No served-model capture here, deliberately (ADR-0214). A chunk's
+                        # ``model`` is NOT the server's: litellm's stream wrapper stamps every
+                        # chunk it constructs with the REQUESTED model. Measured against the
+                        # fleet's pod 2026-09-22 -- the raw SSE carried the weights file on all
+                        # 11 chunks and litellm handed back the requested id on all 11 -- so
+                        # reading it here would record the request as if it were the answer,
+                        # which is the exact defect ADR-0214 exists to prevent. The buffered
+                        # path keeps the server's own name; this one has no channel for it.
                         delta = _stream_delta(chunk)
                         if delta is not None:
                             (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)

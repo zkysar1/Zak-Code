@@ -12863,3 +12863,74 @@ validation-and-retry loop is what actually delivers it. So this IS a behaviour c
 models, in the direction the vendor documents. What is not claimed is a measured effect: nothing
 here was run against a live Gemini model. The evidence is upstream's source, its release note and
 this product's own call sites.
+
+## ADR-0214: every buffered call records the model the backend says answered it
+
+Date: 2026-09-22. One behaviour, no setting. Sits beside ADR-0066 (the context window is the one
+resolved at construction, never the server's listing) and extends the same principle from what a
+model IS to which model REPLIED.
+
+Context. Every run this product produces is tagged by the model id it ASKS for, and that id is not
+always the one that answers. Five things were read or measured on 2026-09-22, on the fleet's own
+inference pod and in this repository.
+
+1. The echo was already arriving and nothing kept it. litellm's response carries `model`, and
+   `_normalize` was already dumping the whole response object into `LLMResult.raw`. So the fact was
+   technically present on every result and had no name, no log line, and no path into anything that
+   outlives the process. A field nothing reads is not a record.
+2. The bench dumps recorded only what was SENT. Across the 120 surviving run directories of the
+   determinism campaign's thrusts 34 and 35, 909 of 909 provider calls wrote a `call-NNNN.json`
+   (the engine-level input) and a `wire-NNNN.json` (the body litellm builds), and no file anywhere
+   held a response. A whole campaign could say which id it asked for and nothing about what replied.
+3. The endpoint publishes ALIASES, and they are not cosmetic. `/v1/models` on the pod lists
+   `zds-qwen3.5-35b`, `zds-qwen3.6-35b` and `zds-qwen3.8-27b`; all three report
+   `canonical: zds-qwen3.8-27b` and `model_file: Qwen3.8-27B-UD-Q4_K_XL.gguf`. A request naming
+   either 35B id is answered, without error or warning, by the 27B's weights.
+4. The server cannot close the gap from its side. Its access ledger records the name it RESOLVED
+   to, never the one the caller sent — so neither end alone can pair "what was asked" with "what
+   answered". Only the echo, written down beside the request, pairs them.
+5. What that cost here is already in the public record — the 2026-09-22 correction block in
+   `bench/results/13-agents-md-nameorder-results.log`. A month of runs on this fleet carried a
+   label whose weights had been replaced under it, and no artifact of any run could have revealed
+   it, because no artifact of any run recorded a reply.
+
+Decision. The answerer travels with the answer, on every buffered call, with nothing to switch on.
+
+- `LLMResult.served_model` — the id the backend echoed, read off the RESPONSE and never filled in
+  from the requested id. `None` when the backend echoed no model, an empty one, or a non-string:
+  a provenance field that guesses is worse than one that admits it does not know.
+- One `INFO` line per distinct answerer per provider instance: `<requested>: served by <served>`.
+  The announcement fires on the FIRST SIGHTING of each name, not on a mismatch with the requested
+  id. A mismatch rule would have to decide when two spellings are the same model — `openai/x`
+  against `x` is the ordinary shape of a correct call — and every such rule is somewhere a
+  substitution can hide. First-sighting needs no such judgement and still says loudly the one thing
+  worth saying: the answerer CHANGED. A steady process spends one line; a process whose backend
+  swapped underneath it spends two, and the second line is the finding.
+- `bench/run_task.py` gains the matching artifact. Under `ZBENCH_DUMP_REQUESTS` it now writes an
+  `echo-NNNN.json` beside each call, holding the requested id, the served id and the finish reason
+  — and no prompt text, so the record of what answered is safe to keep where the prompts are not.
+
+Buffered ONLY, and that is a measured limit rather than an omission. A streamed call has no such
+fact to carry: litellm's stream wrapper stamps the REQUESTED model onto every chunk it constructs,
+so the server's own name never survives into `chunk.model`. Measured against the pod on 2026-09-22,
+asking for `zds-qwen3.5-35b`: the raw SSE read with curl named the 27B
+weights file (`Qwen3.8-27B-UD-Q4_K_XL.gguf`) in `model` on all 11 chunks, and litellm handed back
+`zds-qwen3.5-35b` on all 11. The first version of this change read `chunk.model` and
+recorded exactly that — a provenance record that can never disagree with the request, and so can
+never detect the substitution it exists to detect. The capture was removed before it shipped, the
+streaming loop carries a comment saying why, and a test goes red the moment anything reads that
+field again. The truthful value does reach the caller on that path, but only in the pod's own
+`x-zds-model` response header, which is this fleet's convention and not a thing a vendor-agnostic
+client may reach for.
+
+What this does NOT claim. The echo is the BACKEND's own account of itself. A server that
+misreports which weights answered is not caught by this; what is caught is a server telling the
+truth to a caller who was not writing it down. Verifying the weights themselves is a different
+instrument — the engine's own `/props`, or a file hash — and this changes nothing about how that is
+done.
+
+Proven, not just tested. Five mutants, each run through the two-way mutation proof (GREEN →
+sabotage → RED → restore → GREEN), with the red set stated before the run and read back from the
+JUnit XML after it: the result stops reading the response's model (2 red); the type guard stops
+rejecting a non-string echo (1); the announcement stops deduplicating (1); the announcement
+disappears (1); the streaming loop starts reading `chunk.model` again (1 — the fence, and only it).
