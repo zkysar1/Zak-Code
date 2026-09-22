@@ -332,9 +332,11 @@ _SHELL_ARG_KEYS = ("command", "cmd", "script")
 #: sensitive locations is NEVER auto-allowed: it escalates to a confirmation prompt — and a hard
 #: DENY in ``autonomous`` — even under ``allow``/``acceptEdits`` mode or a per-tool/session grant
 #: (the safety check runs *before* the allow rules). These are the locations an unattended agent
-#: must not silently modify: VCS internals (repo/hook corruption), the secrets file, the
-#: installed dependencies (supply-chain tampering), and the agent's OWN config (a
-#: self-permission-escalation vector). Matched against a write/edit tool's file-path arg;
+#: must not silently modify: VCS internals (repo/hook corruption), the secrets file, and the
+#: installed dependencies (supply-chain tampering). The agent's own config is NOT one of them --
+#: see the note at the end of the list; ADR-0029 deleted that class deliberately and the
+#: workspace's own settings are the sole authority over it.
+#: Matched against a write/edit tool's file-path arg;
 #: ``.env.example`` / ``.gitignore`` / ``.github/`` deliberately do NOT match. Tighten-only, like
 #: :data:`DANGEROUS_PATTERNS`. (Shell-driven writes are NOT scanned — a path in an arbitrary
 #: command is usually a read/execute; that residual is the Step 3 sandbox's job.)
