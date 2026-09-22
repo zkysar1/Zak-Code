@@ -213,7 +213,12 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.usage import Usage
-from zakcode.wakeup import DEFAULT_DELAY_SECONDS, LOOP_SENTINEL, WakeupSlot
+from zakcode.wakeup import (
+    DEFAULT_DELAY_SECONDS,
+    LOOP_SENTINEL,
+    WakeupSlot,
+    turn_fingerprint,
+)
 
 if TYPE_CHECKING:
     from zakcode.sandbox import EgressProxy
@@ -6507,6 +6512,28 @@ class AgentLoop:
             kind="wakeup",
         )
 
+    def _close_wake_repeat_guard(self, stop_reason: str, turn_assistant: list[Message]) -> None:
+        """Judge a turn a fired sentinel opened, at the one seam both twins share (ADR-0216).
+
+        A sentinel hands the session a line telling it to re-arm FIRST and re-enter after, so a
+        loop that turns out to be unable to run has already armed its own next firing by the time
+        it finds out. The pair then repeats with nothing between the two turns but the delay.
+        Neither existing guard can see this: the doom guard and the stuck ladder are both per-turn
+        state, built for a model flailing INSIDE one turn, and these repeats are one turn apart.
+
+        Called after ``last_stop_reason`` is set and before the persist, so whatever the turn armed
+        is on the session and one write carries the verdict with it.
+        """
+        if self.wakeup_slot.note_turn_end(
+            turn_fingerprint(stop_reason, _last_assistant_text(turn_assistant))
+        ):
+            self._note(
+                "intervention",
+                "this wake-up turn ended exactly as the last wake-up turn did, so it re-entered "
+                "nothing — cancelled the sentinel it re-armed rather than run the pair again",
+                kind="wake_repeat",
+            )
+
     def _busy_lease(self) -> BusyLease | None:
         """The busy marker for this turn (ADR-0060) — main loops only.
 
@@ -8233,6 +8260,7 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()
@@ -10136,6 +10164,7 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()

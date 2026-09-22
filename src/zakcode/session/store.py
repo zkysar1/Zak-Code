@@ -237,6 +237,23 @@ class Session(BaseModel):
     #: that resumes this session as much as for this one. Schema v1 stays append-only: an
     #: OLDER build drops it and the sentinel fires as prose (fails SAFE — ADR-0094's line).
     loop_skill: str = ""
+    #: Whether the turn now running was opened by a FIRED autonomous-loop sentinel (ADR-0216).
+    #: Set when the slot is consumed, cleared when that turn ends. It exists because a sentinel
+    #: turn is otherwise indistinguishable from a typed one once the line is in the transcript,
+    #: and only a sentinel turn is judged by the repeat guard. Persisted with everything else
+    #: here; a restart mid-turn loses the turn too, so the flag has nothing to be wrong about.
+    #: Schema v1 stays append-only: an OLDER build drops it and no turn is ever judged (fails
+    #: SAFE — the pre-ADR-0216 behavior, where a barren sentinel pair repeats unnoticed).
+    sentinel_turn_open: bool = False
+    #: How the last sentinel-opened turn ENDED, as :func:`zakcode.wakeup.turn_fingerprint`
+    #: (ADR-0216) — the one piece of state in this session that is meant to outlive a turn.
+    #: The next sentinel turn is compared against it, and an exact match cancels the sentinel
+    #: that turn re-armed instead of letting the pair run again. Persisted deliberately: the
+    #: ADR-0034 restart into a new build is precisely when a loop is being kept alive, and a
+    #: guard that forgot at every restart would never reach its second sighting.
+    #: Schema v1 stays append-only: an OLDER build drops it and the next sighting compares
+    #: against nothing, so the guard costs one more repeat (fails SAFE — never a false cancel).
+    last_sentinel_outcome: str = ""
     #: The background commands this session started (ADR-0191): id, command, output and exit
     #: files, pid, and whether the exit was reported. Status is never stored — it is derived
     #: from the files and the pid when read — so a record cannot call a dead task alive.

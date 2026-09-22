@@ -14,12 +14,31 @@ the held wake-up; ``stop`` cancels it), a delay clamped to [60, 3600] seconds, a
 at the next idle prompt on or after the due time — never mid-turn. Firing CONSUMES the slot.
 The slot is persisted on the session so it survives the ADR-0034 restart into a new build.
 Pure: no threads, no I/O — the REPL's idle wait asks :meth:`WakeupSlot.take_due`.
+
+ONE MORE RULE, AND IT IS THE ONLY THING HERE THAT SAYS NO (ADR-0216). A fired sentinel hands
+the session a line that opens "re-arm a wake-up FIRST, then re-enter the loop" — deliberately,
+because a net that fires while it is being replaced is a net with a hole. But the model obeys
+that instruction BEFORE it can discover whether there is anything to re-enter, so a loop that
+cannot run re-arms its own resurrection and the pair repeats until someone notices. Measured
+2026-09-22 on a served Mind: six turns, each ~3-5M tokens, each ending with the identical
+verdict that the agent was IDLE and the loop would not start. Nothing in the product could see
+it, because every repeat detector it has — the doom guard and the stuck ladder both — is scoped
+to ONE TURN, and these repeats are one turn apart.
+
+So :meth:`WakeupSlot.note_turn_end` carries the one piece of state that outlives a turn: the
+fingerprint of how the last SENTINEL-fired turn ended. A sentinel turn that ends exactly as the
+last sentinel turn did has resurrected nothing, and the sentinel it re-armed is cancelled rather
+than allowed to fire again. Narrow on purpose, three ways: only a turn a sentinel OPENED is
+judged, only the SENTINEL is ever cancelled (a hook's specific "come back and do X" is another
+instruction entirely and is left alone), and one repeat is the whole threshold — the second
+identical turn is already proof, and waiting for a third only spends more of them.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from hashlib import blake2b
 from typing import Any
 
 from pydantic import BaseModel
@@ -57,6 +76,23 @@ def clamp_delay(value: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_DELAY_SECONDS
     return max(MIN_DELAY_SECONDS, min(MAX_DELAY_SECONDS, delay))
+
+
+def turn_fingerprint(stop_reason: str, assistant_text: str) -> str:
+    """How a turn ENDED, as one short stable string (ADR-0216).
+
+    Two things and no more: why the turn stopped, and the last thing it said. Whitespace is
+    collapsed so a re-wrapped answer is still the same answer. Hashed rather than stored raw
+    because this value is PERSISTED on the session, and a session file should not grow a second
+    copy of the model's prose to answer a question that only ever needs equality.
+
+    Tool calls are deliberately NOT in it. A sentinel turn re-arms its wake-up as its first act
+    on instruction, so every such turn shares that call whatever else it does; and the turns this
+    exists to catch differ in nothing at all. What distinguishes a productive re-entry from a
+    barren one is what the turn CONCLUDED, which is exactly these two fields.
+    """
+    canonical = f"{stop_reason}\n{' '.join(assistant_text.split())}"
+    return blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def fired_line(prompt: str) -> str:
@@ -129,8 +165,45 @@ class WakeupSlot:
         if wakeup is None or not wakeup.is_due(self._clock() if now is None else now):
             return None
         self._session.pending_wakeup = None
+        if wakeup.prompt.strip() == LOOP_SENTINEL:
+            # The turn this line is about to open is a SENTINEL turn, and note_turn_end judges
+            # it when it ends (ADR-0216). Marked here because this is the only moment anything
+            # knows the sentinel fired: the slot is consumed on the next line and the turn that
+            # follows is otherwise indistinguishable from one a person typed.
+            self._session.sentinel_turn_open = True
         self._changed()
         return wakeup.prompt
+
+    def note_turn_end(self, fingerprint: str) -> bool:
+        """Judge a turn that a fired sentinel opened; ``True`` when it merely repeated (ADR-0216).
+
+        Called once at every turn end. It is a no-op for a turn a person opened, and for the
+        first sentinel turn after any different one — those only record how they ended.
+
+        When a sentinel turn ends exactly as the previous sentinel turn did, the wake-up re-armed
+        during it resurrected nothing, and it is cancelled so the pair cannot run again. ONLY the
+        sentinel is ever cancelled: a turn-end hook that armed its own prompt said something
+        specific about when to come back, and this has no standing to overrule it — the same
+        precedence ``_arm_stall_net`` already keeps, where the framework's net outranks the
+        harness's.
+
+        The recorded fingerprint is CLEARED on a cancel, so the next sentinel to fire starts
+        clean rather than being judged against a turn that is now two nets old.
+        """
+        if not getattr(self._session, "sentinel_turn_open", False):
+            return False
+        self._session.sentinel_turn_open = False
+        previous = getattr(self._session, "last_sentinel_outcome", "")
+        if previous and previous == fingerprint:
+            self._session.last_sentinel_outcome = ""
+            held = self.pending()
+            if held is not None and held.prompt.strip() == LOOP_SENTINEL:
+                self._session.pending_wakeup = None
+            self._changed()
+            return True
+        self._session.last_sentinel_outcome = fingerprint
+        self._changed()
+        return False
 
     def _changed(self) -> None:
         if self._on_change is not None:

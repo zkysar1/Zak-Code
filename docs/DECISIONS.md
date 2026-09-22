@@ -12984,3 +12984,92 @@ workspace decides.
 
 What this does NOT change. Whether a status line is a good idea, how it renders, or what a status
 command may do. This is a change about WHO decides, not about what happens once the decision is made.
+
+---
+
+## ADR-0216: a wake-up that repeats its last turn cancels itself
+
+Status: accepted. 2026-09-22.
+
+Context. A fired autonomous-loop sentinel hands the session a line that opens "re-arm a wake-up
+with ScheduleWakeup FIRST, then carry out these instructions." That ordering is deliberate: a net
+that fires while it is being replaced is a net with a hole. But it puts the re-arm BEFORE the model
+can discover whether there is anything to re-enter, and when there is not, the model has already
+armed its own next firing.
+
+Measured on a served Mind, 2026-09-22, reported by the user from their own terminal. The sentinel
+fired; the model re-armed it as instructed; it then ran `session-state-get.sh`, found the agent
+IDLE, correctly refused to start the loop, and wrote a verdict saying so. The wake-up it had armed
+fired again. The same turn ran roughly six times, each between 2.8M and 4.9M tokens and 49s to 105s,
+each ending with the identical verdict. Nothing stopped it; it stopped on its own.
+
+The reason nothing sensed it is structural, and it is the finding worth writing down. This repo has
+two repeat detectors and BOTH are scoped to one turn. `agent/stuck.py` says so in its own docstring
+("Pure per-turn state ... the loop creates one tracker per turn") and the doom guard's counter is a
+local reset at each turn start. They were built for a model flailing INSIDE a turn — the same tool
+with the same arguments three times, every result an error — and they are good at that. These
+repeats are one turn apart. No threshold could have been set low enough, because the state that
+would have noticed is destroyed at the turn boundary. The ladder is even handed the turn's
+assistant text, but it uses it in exactly one place and only to ask whether it is EMPTY; it has
+never compared what one turn said to what another said.
+
+So the gap is a SCOPE gap, not a sensitivity gap, and widening either existing detector would not
+have closed it: their input is sampled per turn and the loss happens between turns.
+
+Decision. `WakeupSlot` carries one piece of state that outlives a turn — the fingerprint of how the
+last SENTINEL-fired turn ended — and `WakeupSlot.note_turn_end` is called once at each of the two
+turn-end sites. When a sentinel-opened turn ends exactly as the previous sentinel-opened turn did,
+the sentinel re-armed during it is cancelled instead of being allowed to fire again. The fingerprint
+is a hash of two things: why the turn stopped, and the last thing it said.
+
+Narrow on purpose, in four ways, each of which is a test.
+
+1. Only a turn a SENTINEL opened is judged. A person asking the same question twice is a person.
+   The flag is set where the slot is consumed, which is the only moment anything knows the sentinel
+   fired — once the line is in the transcript a wake-up turn is indistinguishable from a typed one.
+2. Only the SENTINEL is ever cancelled. A turn-end hook that armed its own prompt said something
+   specific about when to come back, and this has no standing to overrule it. That is the same
+   precedence `_arm_stall_net` already keeps, where the framework's net outranks the harness's.
+3. One repeat is the whole threshold. The second identical turn is already the proof; waiting for a
+   third only spends another one of them. This is the user's question — "why can't we sense it after
+   the first time" — answered literally.
+4. The record is cleared on a cancel, so the next sentinel is judged against nothing rather than
+   against a turn that is now two nets old.
+
+Why the fingerprint holds no tool calls. A sentinel turn re-arms its wake-up as its first act, on
+instruction, so every such turn shares that call whatever else it does; and the turns this exists to
+catch differ in nothing at all. What separates a productive re-entry from a barren one is what the
+turn CONCLUDED. The value is hashed rather than stored raw because it is persisted on the session,
+and a session file should not grow a second copy of the model's prose to answer a question that only
+ever needs equality.
+
+Why the whole thing is not a feature flag. There is one behaviour and it is always on. A healthy
+loop never meets it: the loop replaces its own wake-up at every iteration, so the sentinel does not
+fire; when a broken Skill chain does let it fire and the loop resumes, the turn differs and the net
+is kept. The only case it acts on is a wake-up that has demonstrated, twice, that it re-enters
+nothing — and when it acts, the session goes quiet at its idle prompt, which is the correct resting
+state for a session nobody is at and a loop that cannot run.
+
+The proof, and what it changed. Eight mutants, each with its red set written down before it ran: the
+cancel removed, each of the two turn-end call sites removed separately, the sentinel-turn scope
+check dropped, the sentinel-only cancel widened to any wake-up, the stop reason dropped from the
+fingerprint, the record left standing after a cancel, and the flag left up. All eight read as
+stated, on 27 tests. Four of my eight predictions were wrong on the first run and are corrected in
+the driver with the mechanism reason rather than fitted to the output.
+
+One of those four was not a wrong prediction but a wrong TEST, and it is the reason this change has
+a positive control at all (guard-4166): a change whose whole effect is that something STOPS
+happening passes an absence-only suite just as well when the mechanism was never alive. The control
+here is a second wake-up turn that ends DIFFERENTLY and keeps its net — one character of difference
+from the cancelling test. It originally also asserted that the outcome had been RECORDED, and the
+mutation proof showed that removing either turn-end call site broke the recording, so the control
+went red alongside the tests it exists to stay green beside. A control that flips with everything
+else cannot tell a working guard from a dead wake-up. The recording is a separate claim and now has
+its own test; the control asserts one thing. It holds under all eight mutants.
+
+What this does NOT change. The fired line still says re-arm first, and it should: the alternative is
+a window with no net. Nothing about when a wake-up may be armed, by whom, or for how long. Nothing
+about the doom guard or the stuck ladder, which keep the within-turn case they were built for. And
+it knows nothing about any framework: it never asks what IDLE means or whether a loop exists, only
+whether this wake-up's last two turns ended the same way, so it behaves identically on a Mind and on
+a bare session.
