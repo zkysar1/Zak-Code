@@ -1733,3 +1733,46 @@ MECHANISM READINGS (secondary, from the dumps; never overriding the count rule):
 sibling-readers miss in ≤ 1/2 with at least 4 such runs; ROUTE-SHIFT if the candidate's sibling-read rate falls below
 half the baseline's; NON-READER EFFECT if the candidate's non-reader miss rate is below half the baseline's with ≥ 15
 non-reader runs in each arm; INERT otherwise. No HARM clause (read in thrust 35 on these tool files: NO-HARM).
+
+AMENDMENT TO THE THRUST 36 REGISTRATION (2026-09-22 04:00 UTC, g-353-123): THE POD IS BACK AND THE 27B IS NOT.
+THE LAUNCH STAYS HELD, FOR A DIFFERENT REASON THAN THE ONE THE BLOCK ABOVE NAMES. NO RUN, NO SPEND
+═══════════════════════════════════════════════════════
+The user reported zakpod1 back. It is: /health answers ok from the cell (pod zakpod1, build_sha
+286341cefe03a66a19d292baf6388608d5d2967c), four engines up (qwen35a-gpu2, qwen38-gpu0, qwen38-gpu1, qwen38-gpu3),
+twelve slots, nothing in flight, no arm running. Two things about it are NOT what this registration assumed, and both
+were measured before any arm ran.
+
+1. THE POD MOVED. Its old address 10.0.0.250 is gone from the network: 2 ICMP packets sent, 0 received, 100% loss, no
+   ARP entry, TCP 9090 "No route to host" (read per guard-4902 -- a reply from a DIFFERENT host would not have counted
+   as life either). The pod now answers /health on 10.0.0.248 and 10.0.0.249, and the name zakpod1 resolves for the
+   cell to its stable tailnet address. /root/zbench-run.py hard-coded the dead address, so every arm of this thrust
+   would have failed to connect. Repaired on the cell: the runner now names zakpod1 (backup
+   /root/zbench-run.py.bak-20260922; md5 3afde51a64ea -> 8ffba8bf45d4). The three routes time equal for the same
+   8-token completion (zakpod1 0.61 s, .248 0.58 s, .249 0.56 s), so the NAME is chosen for surviving another address
+   change, not for speed. Two sibling census scripts still carry the dead address (/root/cc-qwen-task-census.py,
+   bench/cc_on_pod_census.py); neither is in this thrust's path and neither was touched.
+
+2. THE 27B IS NOT SERVED. The pod lists three model ids and all three are the SAME model: zds-qwen3.8-27b reports
+   canonical zds-qwen3.6-35b, the same four engines, the same GPUs and the same model_file
+   (Qwen3.6-35B-A3B-UD-Q4_K_S.gguf). The catalog alone would not settle it -- a served id is not proof of what
+   answers -- so one real completion was sent to the 27B id and its own model echo came back
+   "/zaknocloud/GitHub/Models/Qwen3.6-35B-A3B-UD-Q4_K_S.gguf". A request for the 27B is answered by the 35B weights.
+
+WHY THIS HOLDS THE LAUNCH. Every number in the block above is a 27B number: the baseline with headroom that is this
+thrust's whole reason (untreated 27B 50/84 = 60% on cell 17, sibling-read route about 23%), the predicted A of 11-17
+in 24, and the ladder that measures the 35B only AFTER a 27B result SHIPS. Launching against the 35B under a 27B label
+would produce 48 runs that this registration's rule would read as if they were the 27B's. It would also very likely
+land back at the ceiling that voided thrust 35's second sample, which is the defect this thrust exists to escape.
+
+WHAT IS READY, so the launch is one command once the 27B is served. Nothing else is missing. The file set on the cell
+is byte-identical to what this block names: write_file.py candidate 79fccbe3548c, edit.py candidate d45086293d9e,
+shipped tools f858ee38e993 / e92a8bdfa39c (which are also what the live tree rests on), loop.py 07d461afa424, prompts
+adr0176 b57bdb96285b and the standing adr0180 302a7becd55b (the live tree's prompt), /root/t35_check.py 702a0bcd2e44,
+/root/t26_probe.py 3c6f7ae0be64, /root/t36_batch.sh 2d5b46d830a3, and the cell's task dir
+bench/tasks/17-realguide-envserver-deltaassert. The reading rule is unchanged and stays enumerated at 625/625 and
+2,401/2,401. Fallback D's candidate and its tests are built offline and held in scratch, as this registration said
+they would be while the pod was down.
+
+WHAT IS NOT CLAIMED. That the 27B cannot be brought back, or why it is not loaded. The pod's engine configuration was
+not touched and will not be: read-only probes of its health, its model list and one 1-token completion are the whole
+of what was done to it.
