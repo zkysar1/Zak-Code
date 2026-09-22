@@ -19,7 +19,9 @@ from zakcode.build_info import version_line
 from zakcode.cli import build_info_lines
 from zakcode.config import Settings
 
-POD = "http://10.0.0.250:9090/v1"
+# A TEST-NET-3 address (RFC 5737), deliberately not routable: this constant only has to be a
+# plausible local api_base string, and a real one invites a reader to copy an endpoint that moves.
+POD = "http://198.51.100.10:9090/v1"
 
 
 def _rows(settings: Settings) -> dict[str, str]:

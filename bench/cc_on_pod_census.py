@@ -23,13 +23,24 @@ ap.add_argument("--model", default="zds-qwen3.6-35b")
 ap.add_argument("--timeout", type=int, default=700)
 A = ap.parse_args()
 
+# The pod's address is NOT hard-coded here. It moved once already and every script that had
+# baked it in failed at launch with an error that read like the run's fault, so this refuses to
+# start rather than carry a default that can go stale. Set ZBENCH_POD_BASE_URL to the pod's
+# base URL (scheme and host, no /v1 suffix -- this runner speaks the native Anthropic endpoint).
+POD_BASE_URL = os.environ.get("ZBENCH_POD_BASE_URL", "")
+if not POD_BASE_URL.startswith(("http://", "https://")):
+    raise SystemExit(
+        f"ZBENCH_POD_BASE_URL must be set to the pod's base URL, "
+        f"e.g. http://<host>:9090 (got {POD_BASE_URL!r})"
+    )
+
 key = None
 for line in open("/etc/zakcode/.env"):
     if line.strip().startswith("ZAKCODE_API_KEY="):
         key = line.split("=", 1)[1].strip().strip('"').strip("'")
 env = dict(os.environ)
 env.update({
-    "ANTHROPIC_BASE_URL": "http://10.0.0.250:9090",
+    "ANTHROPIC_BASE_URL": POD_BASE_URL,
     "ANTHROPIC_API_KEY": key, "ANTHROPIC_AUTH_TOKEN": key,
     "ANTHROPIC_MODEL": A.model, "ANTHROPIC_SMALL_FAST_MODEL": A.model,
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": A.model, "ANTHROPIC_DEFAULT_SONNET_MODEL": A.model,
