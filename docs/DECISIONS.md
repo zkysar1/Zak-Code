@@ -12852,8 +12852,14 @@ ADDED a second copy of the drop before the per-call merge instead of MOVING it, 
 behaviour was unchanged and the only signal was the once-per-provider line firing twice. Moved
 properly, its stated red set holds. Run 2 read PROVEN on all 9, baseline 11 green.
 
-What is not claimed. That this changes a served run's outcome. Gemini 3 was already ignoring the
-temperature it was handed, so the request that goes out now differs only in carrying litellm's
-recommended default instead of a value the model discards — plus one fewer line in the operator's
-transcript per structured call. Nothing here was measured against a live Gemini run; the evidence
-is upstream's source, its release note and this product's own call sites.
+What this changes, and what is not claimed. On a model where these parameters are already IGNORED
+(the newest 3.x), the request that goes out is identical but for one fewer warning. On a model
+where they still FUNCTION — and `gemini-3.5-flash`, the one that reported this, is such a model by
+the warning's own words — the schema path moves from `temperature = 0` to the backend's `1.0`. That
+is the value Google recommends for this generation and the one litellm's transform warns you not to
+go below, naming infinite loops and degraded reasoning; and the determinism the schema path was
+asking for was never granted by that parameter anyway — its own docstring says so, and the
+validation-and-retry loop is what actually delivers it. So this IS a behaviour change on such
+models, in the direction the vendor documents. What is not claimed is a measured effect: nothing
+here was run against a live Gemini model. The evidence is upstream's source, its release note and
+this product's own call sites.
