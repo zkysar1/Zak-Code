@@ -12662,3 +12662,109 @@ half its compactions. Delivered 19 times a run it may steady the loop, or it may
 per compaction on a window that is already full every two minutes. Served samples 1 to 8 all ran
 without it. ADR-0210's reminder is in the same position. Both need a registered served sample with a
 concurrent control before anything is said about laps, goals or stops.
+
+## ADR-0212: the workspace's settings `env` block reaches every child a session starts
+
+Date: 2026-09-22. Builds on ADR-0025 (declared settings load unconditionally, no flag) and ADR-0079
+(a saved settings edit reaches the running session). One behaviour, no setting.
+
+Context. Claude Code's settings files carry an `env` object, and its contract is one sentence: those
+variables are set for every session and its subprocesses, the settings value beats one the shell
+exported, and a per-machine `settings.local.json` beats the shared file. A framework written for that
+harness keeps its own switches there, because that block is the one configuration that travels with
+the repository — a clone lands with it, a promotion carries it, and nothing has to be exported on the
+box. Zak Code read those same three files for hooks (ADR-0025), for `statusLine`, and for the
+permission gestures, and read past `env` every time. So in a hosted workspace every variable in that
+block was absent from every child the session started, and nothing said so: no divergence row, no
+gaps bullet, no test. A claim nobody writes down is not kept in either direction — the same lesson
+ADR-0211 drew from a stale "skipped" line, arriving this time as silence.
+
+What was measured, on this box on 2026-09-21.
+
+1. The Mind framework's repository settings file carries about a dozen such variables: a clock pin,
+   two encoding pins, and switches its own scripts branch on. Its own convention names that block as
+   the place such a setting travels in, so this is where a framework puts them by design.
+2. Who reads them. Almost every reader is one of the framework's shell scripts — which is to say a
+   CHILD of a tool call, a hook, or a status line. One is read by its daemon, which a served session
+   does not start, and that one is untouched by this change.
+3. What the deployment does instead. On the served vessel the product's own process environment is
+   loaded from a deployment-local env file, so a variable duplicated there reached every child and a
+   variable living only in the repository's block reached none. The duplication is exactly what a
+   travelling block exists to avoid, and it is per-box: a fresh clone gets the file and not the
+   duplicate.
+4. What a session actually spawns. Six sites: the shell tool's foreground child, its background child
+   (ADR-0191), every shell hook, the run-end command, the status-line command, and the framework's own
+   signal/mode scripts (the run-stop seam). All six now overlay the block. Out of scope, with reasons below:
+   MCP stdio servers, the operator's best-of verify command, and the CLI's own git and tmux calls.
+
+Decision.
+
+1. ONE reader, `zakcode.workspace_env.settings_env(workspace_root)`, over the same three files in the
+   same order the hook loader reads them — `.claude/settings.json`, `.claude/settings.local.json`,
+   `.zakcode/settings.json` — merged per NAME with later files winning, so a per-machine override
+   does not wipe the shared block. "Which settings files count" keeps one answer.
+2. Strings only. A key that is not a portable environment variable name, and a value that is not a
+   string, are SKIPPED and named in a warning: the schema is string to string, and guessing whether
+   `3` meant `"3"` is not a reader's job.
+3. Applied to CHILDREN, never to the product's own process environment. A served repository cannot
+   reconfigure the harness hosting it, and one process serving two workspaces never mixes them.
+4. Above what the child inherited, below everything the product sets for it. The order is: process
+   environment, then the block, then the no-colour pair, the egress overlay, `CLAUDE_PROJECT_DIR` and
+   the agent's name — then the provider-key scrub LAST. A settings file can switch a framework on; it
+   cannot turn ANSI escapes back on in what the model reads, route a child around the egress sandbox,
+   tell a hook the project lives elsewhere, rename the agent being stopped, or hand a child a model
+   credential.
+5. Fresh without a restart. The merged block is cached per workspace under the settings files'
+   `(path, mtime, size)` signature — the same three stats ADR-0079 already takes for hooks — so a
+   saved edit reaches the very next child. A file that stops parsing keeps the LAST GOOD block, as
+   ADR-0079 keeps the last good hooks: a half-saved file must not silently switch a framework's
+   configuration off mid-run. On a first read with nothing to fall back on, the files that do parse
+   still count.
+6. Names are logged, never values: a block may hold a token.
+7. No flag, no trust file, no prompt. Same shape as ADR-0025, and for the same reason — a switch here
+   would be one more thing that is off on the box where it matters.
+
+What was considered and not done.
+
+- **User-level `~/.claude/settings.json` is not read**, here or anywhere else in the product; the
+  compat map already calls that mirror advisory. Reading it would make a child's environment depend
+  on the operator's home directory, which is the opposite of travelling with the repository.
+- **MCP servers keep their own `env`.** Claude Code's MCP config carries a per-server `env` object and
+  the transport already merges it; a second, wider source for those children is a separate decision
+  with its own blast radius.
+- **The best-of verify command is left alone.** It runs in a temporary COPY of the workspace, not the
+  workspace, so "the workspace's block" is not unambiguous there. A case for it is a later change.
+- **No trust gate.** A workspace's settings file can already register commands that run
+  unconditionally (ADR-0025); a variable adds nothing a registered hook could not `export` for itself.
+  Who may WRITE that file is ADR-0029's question and not this one: the agent's own config is editable
+  by default, and a framework that wants any of it protected declares its own deny rules, which ingest
+  as always-on protected paths. The boundary this change owns is the order in decision 4, and every
+  clause of it is pinned by a test.
+- **No `${VAR}` expansion.** The block is taken literally. Nothing needs it today, and a reader that
+  expanded would be a second way for a settings file to read the host's environment into a child.
+
+Proof. `tests/test_settings_env_block_reaches_children.py`, 21 tests. They spawn REAL children of
+every kind — a shell command, a background task, a hook script, a status-line command, a framework
+script — and read back what the child actually saw, never what the builder returned. The precedence
+clauses are tested from both ends: the block beats a variable the host exported, and loses to the
+no-colour pair, the egress overlay, `CLAUDE_PROJECT_DIR`, the agent's name and the provider-key scrub.
+The controls are the things that must not change: a workspace with no settings file leaves its child
+exactly as it was, and what the host exported still arrives. A mutation proof carries the
+discriminating power (14 mutants, each red set written down BEFORE it ran, baseline 21 green): the
+proof is the asymmetry, since an additive change can be green against a dead reader. Two of its
+mutants report an honest limit — a shell child's block has ONE position in a dict literal, so it
+cannot be moved past the scrub without also passing the no-colour pair and the egress overlay; the
+DELTA between those two mutants is exactly the scrub claim, and that delta is one test. The harness
+itself cost one correction on the way: with the witness file outside the worktree, pytest picked a
+rootdir with no project config, lost `asyncio_mode = auto`, and read as 16 failures on an UNCHANGED
+copy. A mutation harness that cannot produce a green baseline proves nothing; the config is now
+pinned on the command line.
+
+What is not claimed. That delivering the block changes what a small model does in a served run —
+nothing here was measured against a run, and no served sample has carried it. One consequence is
+worth naming plainly: an existing served world moves from "every one of those variables off in its
+tool calls" to "on", so its scripts begin behaving the way its own settings file always said they
+should, including the clock pin, which changes the timestamps those scripts write. That is the fix,
+and it is still a behaviour change on the first run after this ships. And the coverage has an edge:
+this reaches what the SESSION starts. A variable that must reach a long-lived daemon started outside
+the session still belongs in that daemon's own environment.

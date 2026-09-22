@@ -35,6 +35,7 @@ import subprocess
 from pathlib import Path
 
 from zakcode._subprocess import find_bash
+from zakcode.workspace_env import settings_env
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,21 @@ def signal_setter_command(workspace_root: str | os.PathLike[str]) -> list[str] |
     return _script_command(workspace_root, SIGNAL_SET_SCRIPT)
 
 
+def _script_env(workspace_root: str | os.PathLike[str], agent: str) -> dict[str, str]:
+    """The environment a framework script is run in: ours, the workspace's settings ``env``
+    block (ADR-0212), and the agent's name under both spellings the framework reads.
+
+    These scripts are the framework's own, run in its own workspace, and under Claude Code
+    they would see that block like any other subprocess (a timestamp written under one time
+    zone and read under another is exactly the kind of fault such a block exists to prevent).
+    The agent names come last: a settings file does not get to say which agent is being stopped.
+    """
+    env = {**os.environ, **settings_env(workspace_root)}
+    env["AYOAI_AGENT"] = str(agent)
+    env["MIND_AGENT"] = str(agent)
+    return env
+
+
 def framework_agent_mode(workspace_root: str | os.PathLike[str], agent: str) -> str | None:
     """The agent's framework mode (``reader`` / ``assistant`` / ``autonomous``), or None.
 
@@ -110,9 +126,7 @@ def framework_agent_mode(workspace_root: str | os.PathLike[str], agent: str) -> 
     command = _script_command(workspace_root, MODE_GET_SCRIPT)
     if command is None:
         return None
-    env = dict(os.environ)
-    env["AYOAI_AGENT"] = str(agent)
-    env["MIND_AGENT"] = str(agent)
+    env = _script_env(workspace_root, agent)
     try:
         completed = subprocess.run(
             command,
@@ -140,9 +154,7 @@ def invoke_signal_setter(
     marker: str | os.PathLike[str],
 ) -> bool:
     """Run the framework's setter for ``signal`` and confirm ``marker`` reached disk."""
-    env = dict(os.environ)
-    env["AYOAI_AGENT"] = str(agent)
-    env["MIND_AGENT"] = str(agent)
+    env = _script_env(workspace_root, agent)
     try:
         completed = subprocess.run(
             [*command, signal],

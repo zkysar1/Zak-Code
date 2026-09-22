@@ -326,18 +326,16 @@ def _status_env(drop: list[str], cwd: str) -> dict[str, str]:
     """Child env for the status command: ``os.environ`` minus *drop*, plus
     ``CLAUDE_PROJECT_DIR`` set to the workspace root (forward-slash form for Git Bash).
 
-    Mirrors :func:`zakcode.hooks._hook_env` — a status script written for Claude Code
-    resolves its own paths through ``CLAUDE_PROJECT_DIR`` the same way a hook does, and
-    provider API keys are scrubbed so the cosmetic subprocess can't read model credentials.
+    It IS :func:`zakcode.hooks._hook_env` — a status script written for Claude Code resolves
+    its own paths through ``CLAUDE_PROJECT_DIR`` the same way a hook does, reads the
+    workspace's settings ``env`` block the same way (ADR-0212), and has provider API keys
+    scrubbed so the cosmetic subprocess can't read model credentials. One builder, so the
+    two can never drift. (Imported here: ``zakcode.hooks`` is heavy and this module is
+    imported by the CLI before any hook exists.)
     """
-    import os
+    from zakcode.hooks import _hook_env
 
-    env = dict(os.environ)
-    for name in drop:
-        env.pop(name, None)
-    if cwd:
-        env["CLAUDE_PROJECT_DIR"] = cwd.replace("\\", "/")
-    return env
+    return _hook_env(drop, cwd)
 
 
 __all__ = [
