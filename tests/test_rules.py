@@ -450,7 +450,7 @@ def test_explicit_parameter_still_wins_over_the_env_var(tmp_path: Path, monkeypa
     """An explicit False from the host overrides ZAKCODE_LEAN_RULES=true.
 
     The deferral is None-means-defer, not env-always-wins — same shape as
-    enable_status_line / enable_output_style.
+    enable_output_style.
     """
     from zakcode import Agent
     from zakcode.evals.harness import ScriptedProvider, reply

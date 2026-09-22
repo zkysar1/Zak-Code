@@ -17,9 +17,11 @@ This module is the GENERIC host side of that contract. It is deliberately:
   slow a turn. Every public entry point swallows its own errors and returns ``None``
   (no line) on a missing/dangerous command, a non-zero exit, a timeout, a spawn
   failure, or any exception. :func:`render_status_line` never raises.
-* **Off by default.** Gated by ``Settings.status_line`` (env ``ZAKCODE_STATUS_LINE``)
-  or a per-Agent override, mirroring ``settings_hooks`` — a workspace carrying
-  another runtime's ``statusLine`` does not silently run a subprocess here.
+* **Switched by the workspace, and by nothing else** (ADR-0215). A ``statusLine`` block
+  in the settings files asks for a status line; no block asks for none. There is no
+  setting and no per-Agent argument, so nothing can disagree with the workspace about
+  its own configuration — the same posture hooks (ADR-0025) and permission ingestion
+  (ADR-0029) already settled on.
 * **Secure like every other settings.json shell command.** The command is run as an
   argv array (never through a shell), scanned against the shared dangerous-pattern
   blocklist, and spawned with provider API keys scrubbed from its environment.

@@ -12934,3 +12934,53 @@ sabotage → RED → restore → GREEN), with the red set stated before the run 
 JUnit XML after it: the result stops reading the response's model (2 red); the type guard stops
 rejecting a non-string echo (1); the announcement stops deduplicating (1); the announcement
 disappears (1); the streaming loop starts reading `chunk.model` again (1 — the fence, and only it).
+
+## ADR-0215: the workspace's settings file is the only switch for its status line
+
+Date: 2026-09-22. The third and last member of a family: hooks (ADR-0025), permission ingestion
+(ADR-0029), and now the status line. One behaviour, no setting.
+
+Context. A Claude Code workspace asks for a status line by putting a `statusLine` block in its
+`.claude/settings.json`. This host read that block — and then required a SECOND, separate yes before
+it would act on it: `Settings.status_line` (env `ZAKCODE_STATUS_LINE`), defaulting to False, with a
+per-Agent `enable_status_line=` override layered on top. Three places to say yes for one cosmetic
+line, and two of them live somewhere the workspace author cannot see.
+
+1. The stated reason was real but is now answered. The comment said the gate existed so "a workspace
+   carrying another runtime's statusLine doesn't silently spawn a subprocess here." That is a
+   genuine concern about running a foreign workspace's command — and it is the SAME concern that
+   applies to its `hooks` and its `permissions` blocks, both of which this host decided to ingest
+   unconditionally (ADR-0025 removed the hooks tri-state; ADR-0029 made permission ingestion
+   unconditional and named the settings files "the single authority"). The status line was the last
+   member of that family still asking twice.
+2. The safety the gate was standing in for is elsewhere, and unchanged. The command is run as an
+   argv array and never through a shell, scanned against the shared dangerous-pattern blocklist and
+   hard-denied in `autonomous`, spawned with provider API keys scrubbed, bounded by a timeout, and
+   fail-safe end to end: any error, timeout, non-zero exit or spawn failure prints no line and never
+   touches the turn. A boolean in a different file adds nothing to that list.
+3. A second knob beside a declaration can only DISAGREE with it. `enable_status_line=False` on a
+   workspace that declares a status line is a host overruling a workspace about the workspace's own
+   configuration; `status_line=True` on a workspace that declares none does nothing at all. Neither
+   direction is a capability — one is a contradiction and the other is a no-op.
+4. It was also a fallback chain, and those are enumeration claims:
+   `enable_status_line if enable_status_line is not None else self.settings.status_line`, with the
+   settings block read only if that resolved true. Three sources for one fact.
+
+Decision. Delete `Settings.status_line`, its `ZAKCODE_STATUS_LINE` env var, the
+`Agent(enable_status_line=...)` parameter, and the derived `Agent.status_line_enabled`. The Agent
+loads the spec from the workspace's settings files unconditionally at construction. A `statusLine`
+block asks for a status line; no block asks for none; `Agent.status_line_spec` is `None` in the
+second case and the CLI renders nothing. Everything else — the danger scan, the key scrubbing, the
+timeout, the fail-safety, the local-over-shared override — is untouched.
+
+What changes for an existing caller, stated plainly because it is silent. A workspace that already
+declares a `statusLine` and never set `ZAKCODE_STATUS_LINE` now gets its status line rendered; that
+is the point of the change. An SDK host that was passing `enable_status_line=False` now gets one
+too, and is told nothing: `Agent.__init__` funnels unknown kwargs into `**setting_overrides` and
+`Settings` uses `extra="ignore"`, so the argument is DROPPED rather than refused. That is this
+repo's documented posture for a deleted setting ("update callers, don't re-add the field"), it is
+pinned by a test rather than assumed, and the behaviour that results is the intended one: the
+workspace decides.
+
+What this does NOT change. Whether a status line is a good idea, how it renders, or what a status
+command may do. This is a change about WHO decides, not about what happens once the decision is made.
