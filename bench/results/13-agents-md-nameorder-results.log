@@ -2062,3 +2062,70 @@ line is worthless: it has still never been measured on a cell where its route oc
 
 ARTIFACT committed beside this block: determinism-zakcode-pinOFF-temp0-17n-realguide-envserver-deltaassert-
 noguide-t36-survey-17n-27b.json. It carries no private guide field at all, because the cell has no guide.
+
+=== 2026-09-22 11:08 THE POD, RE-VERIFIED PER ENGINE, AND THE NO-GUIDE MAP PRE-REGISTERED BEFORE ITS DATA: FOUR UNTREATED ARMS OF TWELVE ON THE FOUR NO-GUIDE CELLS, TO FIND ONE THIS MODEL FAILS WITHOUT A GUIDE. ~101 MINUTES OF FREE LOCAL COMPUTE, NO PRODUCT CHANGE ===
+
+THE POD, AS MEASURED TODAY AND NOT AS INHERITED. All four GPUs serve Qwen3.8-27B-UD-Q4_K_XL.gguf. The router
+publishes three ids and every one of them reports the same canonical name and the same model file; a request
+naming either retired 35B id is answered by the 27B's weights without an error or a warning. Verified per
+engine, not per id: seven salted completions, each attributed to exactly one engine by the diff of that
+engine's own served counter, one discarded as ambiguous when two engines moved. All four answered, each
+echoing Qwen3.8-27B-UD-Q4_K_XL.gguf, at 7.0 to 8.8 tok/s end to end including the salted prefill.
+  qwen38-gpu0 8.8 | qwen38-gpu1 8.8 | qwen35a-gpu2 7.9 | qwen38-gpu3 7.0. The engine NAMED for the 35B serves
+  the 27B like the rest: an engine name is not a model, and this campaign has now been wrong about that once.
+  The prompts are SALTED and that is load-bearing, not hygiene. Prompt caching and session-affinity routing
+  are both on, so an unsalted probe returns to the engine that already holds the prompt and reprocesses a
+  handful of tokens -- it would have re-measured one engine four times and read as if three were unreachable.
+
+THE CONSEQUENCE FOR THIS CAMPAIGN'S OWN PLAN, stated plainly because it closes a route that is still written
+down above: no 35B serves anywhere on this pod. The ladder this campaign kept naming -- measure on the small
+model, then climb to the 35B -- is not available. It is not slow or expensive; there is nothing to climb to.
+Every earlier block that reads "the 35B" is a claim about weights that were replaced on 2026-08-22.
+
+A CAVEAT ON EVERY ELAPSED FIGURE IN THE TWO BLOCKS ABOVE. Caching and session affinity were on for the probe
+and the survey too. Per-run elapsed there is not a cold-prefill cost and no latency claim rests on it; the
+pass counts are unaffected, because a cached prefill returns the same prompt to the same weights. Any future
+latency measurement on this pod must salt its prompts or read timings.prompt_n, and this block's own timings
+are reported only as evidence that four distinct engines answered.
+
+THE NO-GUIDE MAP. The survey's finding was that a guide-following cell's discriminating power is a property of
+the MODEL's default. That makes the no-guide rate the acceptance test for every cell in the inventory, and
+four cells already have no-guide twins built: 15n (timestamp), 15in (belief id), 15sn (session binding) and
+16pn (aspiration keys). None has ever been run on this model. Running all four answers, for the price of one
+afternoon of free compute, whether ANY existing cell can measure a treatment on this model at all.
+
+THE DESIGN. Four arms, N=12, untreated baseline tool files, strictly sequential (the pod is shared), in this
+fixed order: 15n, 15in, 15sn, 16pn. Each arm is the SAME already-registered script /root/t36_survey.sh at
+md5 591975d70f9f, unmodified; only CELL, SUFFIX and DUMP differ between arms. Each run is scored by that
+cell's OWN verify.py, unchanged. No treatment is deployed and no product file is swapped in any arm.
+
+THE READING, enumerated over all thirteen outcomes of an arm BEFORE any arm runs:
+  0 to 7 of 12 -> DISCRIMINATING. The model's default violates the cell's rule often enough to leave headroom
+    a treatment could move.
+  8 to 10 of 12 -> WEAK. Headroom exists but twelve runs cannot separate it from noise.
+  11 or 12 of 12 -> INERT on this model, for the same reason cell 17 is: the model already does the right
+    thing with no guide present, so the cell cannot tell whether anything helped.
+
+THE MAP-LEVEL READING, also enumerated in advance:
+  at least one arm DISCRIMINATING -> the lowest-scoring such cell is the candidate, and the next registration
+    is an interleaved treated/untreated design on it. Ties are broken by the earlier position in the fixed
+    order above, decided here so no result can choose it.
+  no arm DISCRIMINATING but at least one WEAK -> ONE second sample of twelve on the lowest-scoring WEAK cell
+    only, read on the pooled 24 by the same bands scaled: 0 to 15 DISCRIMINATING, 16 to 21 WEAK, 22 to 24
+    INERT. This is the whole second-sample rule; no other arm gets one, whatever it reads.
+  all four INERT -> the inventory has no instrument for this treatment on this model. That is the result, not
+    a failure of it: the cells were built against a different model's defaults and do not transfer. The next
+    work is building a cell whose rule this model's default violates, with its own no-guide control as the
+    gate, and it is a build rather than an arm.
+
+THE INSTRUMENT BRACKET. The per-engine verification above is the OPENING reading. It is repeated after the
+last arm, and a difference in the served model file, the canonical id, or the healthy replica count between
+the two voids the map rather than being explained. This bracket is what stands in for a per-call record of
+what answered, which this bench tree cannot produce: the echo recording landed in the product today (ADR-0214)
+and reaches this tree only at its next build, and changing the tree's build between the survey and this map
+would confound the one comparison the map is for.
+
+WHAT NO OUTCOME OF THIS MAP LICENSES. Anything at all about whether ADR-0181's line helps: the map measures
+only whether a cell can TELL. Any statement about the other model, whose no-guide rates are not re-measured
+here. Any latency or throughput claim, for the caching reason above. And any claim about a cell not in the
+four: an untested twin is untested, not inert.
