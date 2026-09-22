@@ -1190,6 +1190,21 @@ _APOLOGY_RE = re.compile(
 )
 _APOLOGY_MARKERS = 3
 _MAX_APOLOGY_RETRIES = 1
+#: How long an assistant text has to be before it counts as an ANSWER rather than narration
+#: (ADR-0217). Narration this turn is a sentence -- "Let me check the state", "Reading the
+#: file" -- and an answer is a paragraph or more. Measured over the 48 bench runs of the
+#: 2026-09-22 no-guide map: of 28 non-empty assistant messages, the 15 at or above this
+#: length were the substantive ones. A line, not a rule; a narration this long is rare and
+#: costs only one extra line in the next request if it happens.
+_SUBSTANTIAL_ANSWER = 200
+#: Ridden by the call that exists ONLY to hand back a tool result, when the completion that
+#: asked for that tool had already delivered an answer (ADR-0217). See :data:`_ALREADY_ANSWERED`
+#: for why. Ephemeral, like every other tail member: never persisted, never in the cached prefix.
+_ALREADY_ANSWERED = (
+    "You already gave your answer in this turn, and then called a tool — this message only "
+    "hands back that tool's result. If the result CHANGES your answer, say only what changed. "
+    "If it does not, stop now. Do not repeat the answer you have already given."
+)
 _APOLOGY_NUDGE = (
     "Your response was an apology loop and was discarded. Apologies are not work. Reply with "
     "exactly ONE of: the tool call that re-measures or re-does the contested thing; the "
@@ -1778,6 +1793,23 @@ def _last_assistant_text(turn_assistant: list[Message]) -> str:
     return ""
 
 
+def _answered_then_called_a_tool(message: Message) -> bool:
+    """Whether this completion both ANSWERED and asked for a tool (ADR-0217).
+
+    That pair is what forces the next request to exist: a tool ran, so its result must go back,
+    so the model is asked again — with its answer already given and nothing to add. A model
+    with nothing to add says the thing it just said, and the user reads the same answer twice
+    and pays for it twice. Measured 2026-09-22 on a served Mind, where the tool in question was
+    a bare ``echo`` made to satisfy a framework rule that every turn end be a tool call.
+
+    Deliberately a LENGTH and not a similarity test. The cheap, certain reading is "there was an
+    answer here"; deciding whether the NEXT message repeats it would mean judging text the model
+    has not written yet, and by the time it has, it is already streaming onto the screen and
+    cannot be unsaid.
+    """
+    return bool(message.tool_uses) and len(message.text.strip()) >= _SUBSTANTIAL_ANSWER
+
+
 def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: str) -> Message:
     """Synthetic error results for tool_use blocks that will never execute.
 
@@ -2334,6 +2366,10 @@ class AgentLoop:
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
         # readings of it, and only ever within one skill turn.
         self._work_calls = 0
+        #: Whether the last completion both answered and called a tool (ADR-0217). Read by the
+        #: ephemeral tail of the very next call — the one that exists only to hand the tool
+        #: result back — and recomputed from each completion, so it is never stale by a turn.
+        self._answer_already_given = False
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -3171,6 +3207,12 @@ class AgentLoop:
         # fade-out) as an ephemeral tail message — never persisted, so the cached
         # system+history prefix and the on-disk session both stay clean (the plan lives
         # only in ``session.task_network``).
+        # ADR-0217: the previous completion answered AND called a tool, so this call exists
+        # only to hand the result back. One line telling the model its answer already stands —
+        # on this call and no other, so a turn that never did this never pays for the line.
+        if self._answer_already_given:
+            tail.append(Message.user(_control_rail(_ALREADY_ANSWERED)))
+            self._call_rails.append("already_answered")
         plan_msg = self._plan_reminder()
         if plan_msg is not None:
             tail.append(plan_msg)
@@ -6798,6 +6840,7 @@ class AgentLoop:
             self._register_skill_load(composed_skill)  # the turn text is page 1 (ADR-0067)
 
         turn_assistant: list[Message] = []
+        self._answer_already_given = False  # ADR-0217: a new turn has answered nothing yet
         turn_tool_results: list[ToolResultBlock] = []
         turn_usage = Usage()
         iterations = 0
@@ -7210,6 +7253,7 @@ class AgentLoop:
             assistant_msg = self._assistant_message(result)
             self.session.add_message(assistant_msg)
             turn_assistant.append(assistant_msg)
+            self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
             turn_saw_text = turn_saw_text or bool(result.text)
             if result.text or result.has_tool_calls:
                 empty_retries = 0  # visible output: the silence, if any, is over
@@ -8399,6 +8443,7 @@ class AgentLoop:
         # This turn's assistant messages — kept only for the TURN_END payload's
         # ``last_assistant_message`` (the buffered path reuses its result list).
         turn_assistant: list[Message] = []
+        self._answer_already_given = False  # ADR-0217: a new turn has answered nothing yet
 
         # Doom-loop tracking (identical semantics to the buffered path).
         last_signature: tuple[tuple[str, str], ...] | None = None
@@ -9036,6 +9081,7 @@ class AgentLoop:
                 assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
                 self.session.add_message(assistant_msg)
                 turn_assistant.append(assistant_msg)
+                self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
                 self._persist()
 
                 # Cost/token budget stop (parity #4), streaming twin. Usage was folded into
