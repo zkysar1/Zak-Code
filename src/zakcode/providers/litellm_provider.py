@@ -220,7 +220,7 @@ def _is_gemini_sampling_deprecated_model(model: str) -> bool:
     """
     name = model.split("/")[-1]
     match = _GEMINI_GENERATION.match(name)
-    return bool(match) and int(match.group(1)) >= 3
+    return match is not None and int(match.group(1)) >= 3
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
