@@ -2006,3 +2006,59 @@ one, and the single opener passed; whether 17w's oversized section changes that 
 behind the whole fallback-C line, and it is reported, not thresholded.
 
 EXPECTED COST: about 40 minutes per arm at this model's speed, twice, on free local compute.
+
+SURVEY ARM 1 RESULT (2026-09-22 07:35 UTC, g-353-123): THE CONTROL SCORED 12/12 WITH NO GUIDE AT ALL. THE
+REGISTERED INSTRUMENT-SUSPECT BRANCH FIRED, THE AUDIT RAN, AND IT EXONERATES THE VERIFIER AND
+CONDEMNS THE CELL: CELL 17'S RULE IS THIS MODEL'S DEFAULT. THE SURVEY STOPS AND 17w IS NOT RUN
+═══════════════════════════════════════════════════════
+ARM 1, cell 17n (cell 17's repository and verifier with the guide removed), 07:00-07:32 UTC: PASS 12/12, turns
+6/7/7, 105-157 s per run, mean 126, 25.3 min total, $0. The script recorded "no guide in the workspace" before
+the arm, so the guide really was absent. On the other model this same control measured 1/12.
+By the rule registered before the arm: 8 to 12 of 12 is INSTRUMENT SUSPECT. The survey stops, the probe's
+CEILING is quarantined, and the next work is an audit of the verifier rather than any further arm. That is what
+follows, and it is the whole of what was done.
+
+THE AUDIT, PART ONE: IS THE VERIFIER STILL ABLE TO SAY NO? Seven sources through the cell's own static_check
+(verify.py md5 4d8a7cbeafc1, the same file for cells 17, 17n and 17w):
+  PASS, as specified: a delta assertion capturing a before-value; a delta through a derived name.
+  FAIL, as specified: an absolute assertion against an integer literal; a reset followed by an absolute; a
+    unittest assertEqual against a literal; a file with no test function; a test with no assertion on the
+    counter.
+Seven of seven behaved as the cell specifies. The verifier discriminates. It is not the instrument.
+
+THE AUDIT, PART TWO: WHAT DID THE MODEL ACTUALLY WRITE WITHOUT A GUIDE? All twelve runs wrote the same
+assertion, and it is the one the guide exists to ask for:
+    assert Metrics.hits == before + 1
+Twelve of twelve, unprompted, with no guide in the workspace to ask for it.
+
+THE READING. The probe's CEILING stands, and it never meant what its number suggested. Cell 17 scores 100%
+with the guide (24/24) and 100% without it (12/12). A cell whose rate does not move when its guide is REMOVED
+measures nothing about guide-following on that model. Cell 17 is not a hard cell for this model; it is an
+INERT cell for this model, and the 24/24 was not the model following a rule well -- it was a model that never
+needed the rule.
+
+WHY 17w IS NOT RUN. The registered branch already stopped the survey, so this is the registered outcome and not
+a judgement call. The audit removes the reason to resume it as well: 17w carries the identical verifier (same
+md5 as 17 and 17n) and therefore the identical rule, and no arrangement of a guide can open headroom in a rate
+that is already 100% with no guide present.
+
+THE FINDING THAT OUTLIVES THIS THRUST, and it is a method, not a number. A GUIDE-FOLLOWING CELL'S
+DISCRIMINATING POWER IS A PROPERTY OF THE MODEL'S DEFAULT, NOT OF THE CELL. Cell 17 discriminates on a model
+that defaults to the absolute form (that model's no-guide control: 1/12) and discriminates on nothing at all
+for a model that defaults to the delta form (12/12). This campaign measured 17n ONCE, on the other model, and
+carried the result forward as though it were a property of the cell. So: before any treatment is measured on
+any model, that model's NO-GUIDE rate on the cell must be measured first. It costs one arm, it is the cheapest
+gate available, and here it would have saved the 48-run batch by itself.
+
+WHAT FALLBACK C NOW NEEDS. A cell where the model's own default VIOLATES the rule, and where the violating
+behaviour is reached by copying an existing file. Cell 17's family fails the first condition on this model. The
+next lever is a cell built for that, with its no-guide control as the acceptance test: a candidate cell is only
+admissible if the target model scores LOW on it without a guide. That is a build, not an arm, and nothing here
+licenses skipping the control on the cell that gets built.
+
+WHAT NO OUTCOME HERE LICENSES. That the other model's numbers were wrong: they are right about the model that
+produced them. That this model follows guides in general: one rule, one repository, one task. That ADR-0181's
+line is worthless: it has still never been measured on a cell where its route occurs on this model.
+
+ARTIFACT committed beside this block: determinism-zakcode-pinOFF-temp0-17n-realguide-envserver-deltaassert-
+noguide-t36-survey-17n-27b.json. It carries no private guide field at all, because the cell has no guide.
