@@ -827,22 +827,15 @@ class Settings(BaseSettings):
     # .zakcode/settings.json ALWAYS load (danger-scanned; provider keys scrubbed).
     # A framework whose protections ride on hooks must never silently run without them.
 
-    # ── Claude Code statusLine support (cosmetic; opt-in) ────────────────────
-    # Read the ``statusLine`` command from <workspace>/.claude/settings.json (+
-    # settings.local.json), run it after each turn with a status JSON on stdin (CC shape),
-    # and render its stdout's first line as a dim status line in the CLI. Off by default so
-    # a workspace carrying another runtime's statusLine doesn't silently spawn a subprocess
-    # here. PURELY COSMETIC and fully fail-safe: any error/timeout/non-zero exit just prints
-    # no line and NEVER affects the turn (the command runs in-process after the turn, env-
-    # scrubbed and danger-scanned like every settings.json shell command). Hosts can force
-    # the behavior per-Agent via Agent(enable_status_line=True/False). See zakcode.status_line.
-    status_line: bool = Field(
-        default=False,
-        description=(
-            "Render a Claude Code statusLine (from .claude/settings.json) after each turn "
-            "in the CLI (ZAKCODE_STATUS_LINE=true). Off by default; cosmetic and fail-safe."
-        ),
-    )
+    # ── Claude Code statusLine support (cosmetic) ────────────────────────────
+    # UNCONDITIONAL since ADR-0215 — no setting exists, for the same reason hooks have none.
+    # The ``statusLine`` command in <workspace>/.claude/settings.json (+ settings.local.json)
+    # runs after each turn with a status JSON on stdin (CC shape) and its first stdout line
+    # renders dimmed in the CLI. Declaring the block asks for a status line; declaring none
+    # asks for none. PURELY COSMETIC and fully fail-safe: any error/timeout/non-zero exit just
+    # prints no line and NEVER affects the turn (the command runs after the turn, env-scrubbed
+    # and danger-scanned like every settings.json shell command). A stale ZAKCODE_STATUS_LINE
+    # is inert via extra="ignore". See zakcode.status_line.
 
     # ── Workspace settings.json permission-rule ingestion (Phase 3; opt-in) ──
     # Read Claude Code's ``permissions.{allow,deny,ask}`` Tool(pattern) gestures from

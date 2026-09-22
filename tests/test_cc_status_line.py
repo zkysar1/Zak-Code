@@ -281,57 +281,65 @@ async def test_claude_project_dir_is_set_in_the_command_env(tmp_path: Path) -> N
     assert line == f"CPD={tmp_path.as_posix()}"
 
 
-# ── config / Agent wiring (off by default) ────────────────────────────────────
+# ── Agent wiring: the workspace is the switch (ADR-0215) ──────────────────────
 
 
-def test_status_line_off_by_default_in_config() -> None:
-    assert Settings().status_line is False
-
-
-def test_agent_does_not_load_status_line_when_off(tmp_path: Path) -> None:
-    # Off by default: even with a statusLine configured, an Agent that did not opt in never loads
-    # the spec — so the command can never run.
+def _agent_on(workspace: Path):
     from zakcode import Agent
 
-    _settings_with_status_line(tmp_path, "bash my-status.sh")
-    agent = Agent(
+    return Agent(
         settings=Settings(
-            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+            default_model="scripted/test", context_window=8192, workspace_root=workspace
         )
     )
-    assert agent.status_line_enabled is False
-    assert agent.status_line_spec is None
 
 
-def test_agent_loads_status_line_when_enabled(tmp_path: Path) -> None:
-    # With the per-Agent opt-in, the configured statusLine spec is loaded and stashed for a client
-    # to render (the env-var path, Settings.status_line, is the other way in).
-    from zakcode import Agent
+def test_a_workspace_that_declares_a_status_line_gets_one(tmp_path: Path) -> None:
+    """Declaring the block is the whole opt-in: no setting, no constructor argument.
 
+    Before ADR-0215 this same construction loaded nothing, because ``Settings.status_line``
+    defaulted to False and a workspace could not speak for itself.
+    """
     _settings_with_status_line(tmp_path, "bash my-status.sh")
-    agent = Agent(
-        settings=Settings(
-            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
-        ),
-        enable_status_line=True,
-    )
-    assert agent.status_line_enabled is True
+
+    agent = _agent_on(tmp_path)
+
     assert agent.status_line_spec is not None
     assert "my-status.sh" in " ".join(agent.status_line_spec.command)
 
 
-def test_agent_status_line_enabled_via_settings_flag(tmp_path: Path) -> None:
-    # The Settings.status_line flag (env ZAKCODE_STATUS_LINE) enables it without a per-Agent arg.
+def test_a_workspace_that_declares_none_gets_none(tmp_path: Path) -> None:
+    """The positive control for the test above: the loader really can come back empty.
+
+    Without this, "the spec is not None" would be satisfied by a loader that returned
+    something for every workspace, and the pair would prove nothing about the declaration.
+    """
+    agent = _agent_on(tmp_path)
+
+    assert agent.status_line_spec is None
+
+
+def test_the_retired_knobs_are_inert_and_the_workspace_still_decides(tmp_path: Path) -> None:
+    """Both knobs are gone, and an old caller passing either is DROPPED, not refused.
+
+    That is this repo's documented posture for a deleted setting (``extra="ignore"``:
+    "update callers, don't re-add the field"), and ``Agent.__init__`` funnels unknown
+    kwargs into ``**setting_overrides``, so it holds for the constructor argument too.
+    Worth pinning rather than assuming, because the consequence has a direction: a host
+    that used to pass ``enable_status_line=False`` now gets a status line whenever its
+    workspace declares one, silently. Under ADR-0215 that is the intended answer — the
+    workspace decides — but nothing tells the host, so it is written down here.
+    """
     from zakcode import Agent
+
+    assert not hasattr(Settings(), "status_line")
+    assert not hasattr(Settings(status_line=True), "status_line")
 
     _settings_with_status_line(tmp_path, "bash my-status.sh")
     agent = Agent(
         settings=Settings(
-            default_model="scripted/test",
-            context_window=8192,
-            workspace_root=tmp_path,
-            status_line=True,
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
         ),
+        enable_status_line=False,
     )
-    assert agent.status_line_enabled is True
     assert agent.status_line_spec is not None

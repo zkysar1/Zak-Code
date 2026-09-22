@@ -387,7 +387,6 @@ class Agent:
         context_signal_log: str | None = None,
         context_classifier_weights: str | None = None,
         context_signal_judge: bool = False,
-        enable_status_line: bool | None = None,
         enable_output_style: bool | None = None,
         agent_identity_dir: str | Path | None = None,
         **setting_overrides: Any,
@@ -630,25 +629,24 @@ class Agent:
             logger.warning("settings.json hook %s: %s", _key, _err)
         if _specs:
             self.hook_manager.shell_hooks.extend(_specs)
-        # Claude Code statusLine support (cosmetic; opt-in). When on, load the configured
-        # statusLine command from settings.json now (one read at construction, danger-scanned
-        # + provider-key-scrubbed like a hook) and stash it for a client (the CLI) to render
-        # after each turn. None defers to Settings.status_line; an explicit True/False wins.
-        # The spec is None when nothing is configured or it was denied — a client just renders
-        # no line. This NEVER touches the loop: a status line is decoration a client repaints.
-        self.status_line_enabled: bool = (
-            enable_status_line if enable_status_line is not None else self.settings.status_line
-        )
-        self.status_line_spec: StatusLineSpec | None = None
-        if self.status_line_enabled:
-            from zakcode.status_line import load_status_line_spec
+        # Claude Code statusLine support (cosmetic). The workspace's own settings.json IS the
+        # switch (ADR-0215): declaring a ``statusLine`` block asks for one, declaring none asks
+        # for none, and there is nothing else to turn on. Same posture the hooks (ADR-0025) and
+        # permission (ADR-0029) ingestion already settled on — the settings files are the
+        # authorization surface, and a second knob beside them can only disagree with them.
+        # One read at construction, danger-scanned + provider-key-scrubbed like a hook, stashed
+        # for a client (the CLI) to render after each turn. The spec is None when nothing is
+        # configured or the command was denied, and a client then renders no line. This NEVER
+        # touches the loop: a status line is decoration a client repaints.
+        from zakcode.status_line import load_status_line_spec
 
-            self.status_line_spec, _sl_err = load_status_line_spec(
-                self.settings.workspace_root,
-                permission_mode=str(self.settings.permission_mode),
-            )
-            if _sl_err:
-                logger.warning("statusLine: %s", _sl_err)
+        self.status_line_spec: StatusLineSpec | None
+        self.status_line_spec, _sl_err = load_status_line_spec(
+            self.settings.workspace_root,
+            permission_mode=str(self.settings.permission_mode),
+        )
+        if _sl_err:
+            logger.warning("statusLine: %s", _sl_err)
         # One-shot guard so aclose() (and its SESSION_END encode step) runs at most once.
         self._closed = False
         # Slash-command registry (M6) — plugins register commands here; clients
@@ -720,7 +718,7 @@ class Agent:
             self.rule_registry, self.rule_errors = discover_rules(self.settings.workspace_root)
             # ``None`` defers to Settings.lean_rules (ZAKCODE_LEAN_RULES); an explicit
             # True/False from the host wins — the same deferral shape as
-            # enable_status_line / enable_output_style above.
+            # enable_output_style above.
             # Before g-016-86 this was a hard ``False`` default, so the documented env
             # var reached the Agent through server/app.py ONLY: CLI, library and bench
             # constructions silently took the full render, and an A/B driven by the env
