@@ -1846,3 +1846,59 @@ interleaved design, not against the model.
 WHAT IS NOT CLAIMED. That any thrust's within-batch contrast is wrong; nothing here re-reads those counts. That
 the 27B would behave like the 35B, or differently; it has never been measured on these cells. And no claim at
 all about why the swap was made beyond the reason its own configuration records.
+THE 27B IS SERVED AGAIN, VERIFIED PER ENGINE. BASELINE PROBE PRE-REGISTERED BEFORE ITS DATA
+(2026-09-22 05:18 UTC, g-353-123): ONE UNTREATED ARM ON CELL 17 TO FIND OUT WHETHER THE CELL HAS HEADROOM
+ON THE MODEL THIS THRUST NAMES. N=12, FREE LOCAL COMPUTE, NO PRODUCT CHANGE
+═══════════════════════════════════════════════════════
+Step 1 of the sequence the correction above registered is DONE and is reported here before step 2 is launched.
+
+VERIFICATION, per engine, not per pod. The user loaded Qwen3.8-27B on all four engines. Each engine's own
+llama-server reports model_path Qwen3.8-27B-UD-Q4_K_XL.gguf on ports 18084, 18085, 18087 and 18089. Then four
+real completions to the id zds-qwen3.8-27b, each attributed to ONE engine by its /status served counter moving
+alone: qwen35a-gpu2, qwen38-gpu0, qwen38-gpu1 and qwen38-gpu3 each answered once, and every reply echoed
+Qwen3.8-27B-UD-Q4_K_XL.gguf. Four of four engines covered in four completions, none discarded as ambiguous.
+ONE THING WORTH CARRYING: during the rollout the router's /status carried a STALE per-engine model field --
+it still read Qwen3.6 while three engines had already loaded the 27B, and only the top-level engine field was
+live. It has since caught up. A router's inventory is not a reading of what is loaded; the engine's own /props
+and the completion's own echo are.
+
+THE PROBE, and why it is one arm and not the batch. The thrust's premise was "a baseline WITH HEADROOM", and
+the correction above withdrew it: the 60% it rested on was measured on the 35B through this id. The premise is
+now UNMEASURED on the real 27B, and it is the single fact that decides whether the 48-run batch is worth
+running on this cell. So it gets its own arm first, at a quarter of the cost.
+
+WHAT RUNS: one arm, N=12, cell 17-realguide-envserver-deltaassert, the SHIPPED tool files (write_file.py
+f858ee38e993, edit.py e92a8bdfa39c), the ADR-0176 prompt (b57bdb96285b) deployed for the arm and the standing
+ADR-0180 prompt (302a7becd55b) restored after it, the bench tree's own loop.py (07d461afa424), temperature 0,
+--no-pin, sequential, model id zds-qwen3.8-27b, requests dumped. This is the batch script's (a1) arm and its
+bookends, nothing else; the registered t36_batch.sh (2d5b46d830a3) is not modified and not used. The runner is
+repointed from the host NAME to the fleet's canonical tailnet address for the pod -- the literal lives in the
+fleet's own convention, not in this public log -- which is what every other fleet caller now uses, and it takes
+a name-resolution dependency out of a long run.
+
+THE READING RULE, enumerated over all thirteen possible outcomes of a 12-run arm, fixed before the arm runs.
+Let P be the number of runs that pass the cell's verifier.
+  P = 11 or 12  -> CEILING. Cell 17 cannot show an improvement on this model: a rule line has at most one run
+                  of room, which is the defect that voided thrust 35's second sample. Thrust 36 does not launch
+                  on this cell; the cell choice is reopened and re-registered.
+  P = 2 to 10   -> HEADROOM. The premise holds in the form the thrust needs. Thrust 36 is re-registered with P
+                  as its baseline, new predictions derived from P, and then the interleaved batch launches.
+  P = 0 or 1    -> FLOOR. The cell fails on this model for reasons a write-tool rule line does not address, so
+                  a treatment effect could not be separated from the noise of everything else failing. Thrust
+                  36 does not launch on this cell; the cell choice is reopened and re-registered.
+SECOND SAMPLE, fixed now so it cannot be chosen after seeing the number: if P lands within one of a boundary
+(P = 0, 1, 2, 10, 11 or 12) a SECOND arm of 12 runs under identical conditions and the pooled 24 is read on the
+same proportions -- pooled >= 22 CEILING, 4 to 21 HEADROOM, <= 3 FLOOR. Any other P is read on the first arm
+alone. A run that errors out counts as a MISS, as in every arm of this campaign.
+
+DESCRIBED, NEVER PART OF THE RULE: turns and elapsed per run, the pass pattern across the twelve, and from the
+dumps the number of runs that open the sibling test file (the registration's "about 23%" sibling-read route is
+a 35B number too and is not a prediction here). Decode speed is reported because it sets every future arm's
+wall time: the 27B is expected around 10.7 tok/s decode against the 35B's 43.66, so an arm that took about 7
+minutes will take substantially longer, and a slow FIRST turn after an engine restart is a cold prefill and not
+a hang.
+
+WHAT NO OUTCOME LICENSES. Any comparison with a pre-2026-08-22 27B number: that lane ran a different
+llama.cpp build with different caching and PARALLEL 3, so it is a different instrument (the delta is in the
+correction above). Any claim about the ADR-0181 candidate, which is not in this arm at all. And any statement
+about the 35B, which is not running.
