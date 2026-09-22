@@ -50,9 +50,10 @@ for display.
 - **The terminal carries the family in its one colour mark.** It cannot paint a
   background, so the family arrives as the brand: `color(80)` is the 256-colour index
   nearest the family accent, so the spark and the assistant's `●` wear the teal that
-  Vinheim's accent and the web client's brand wear. Chrome greys are already the family's muted ink by index
-  (`color(245)` sits nearest `ink-3` after `color(246)`), and the semantic states stay
-  ANSI names so each terminal's theme tunes them for its own background.
+  Vinheim's accent and the web client's brand wear. Chrome greys are already the
+  family's muted ink by index (`color(245)` sits nearest `ink-3` after `color(246)`),
+  and the semantic states stay ANSI names so each terminal's theme tunes them for its
+  own background.
 - **What stays Zak's own:** the transcript grammar (column grid, `●` / `└` / `│`,
   receipts) and the operator's orange — the human's line and chevron (ADR-0186). The
   family has no token for "the human", and it must stay the one warm run of text.
