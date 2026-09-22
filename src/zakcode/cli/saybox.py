@@ -212,11 +212,20 @@ class SayBoxEditor:
             multiline=True,
             history=history,
             auto_suggest=AutoSuggestFromHistory(),
-            prompt_continuation=lambda width, line_number, wrap_count: (
-                "· " if wrap_count == 0 else "  "
-            ),
+            prompt_continuation=lambda width, line_number, wrap_count: [
+                ("class:gutter", "· " if wrap_count == 0 else "  ")
+            ],
             bottom_toolbar=self._toolbar,
-            style=Style.from_dict({"bottom-toolbar": "noreverse fg:#8a8a8a"}),
+            # The ▸ is the human's mark, orange on every door (ADR-0186): #ffaf00 IS
+            # the chat pane's color(214), so the box and the echoed › above it are
+            # one colour. Chrome is the transcript's grey, color(245) = #8a8a8a.
+            style=Style.from_dict(
+                {
+                    "prompt": "fg:#ffaf00 bold",
+                    "gutter": "fg:#8a8a8a",
+                    "bottom-toolbar": "noreverse fg:#8a8a8a",
+                }
+            ),
             input=input,
             output=output,
         )
@@ -256,7 +265,9 @@ class SayBoxEditor:
         self._submitting = False
         try:
             text = self._session.prompt(
-                "▸ ", default=self.pastes.collapse(default), pre_run=self._prime_history
+                [("class:prompt", "▸ ")],
+                default=self.pastes.collapse(default),
+                pre_run=self._prime_history,
             )
         finally:
             self._submitting = False

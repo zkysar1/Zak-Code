@@ -5,35 +5,50 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Zak Code</title>
   <style>
-    /* ── The Zak look (docs/UX.md): the terminal grammar in proportional type.
-       Every hex lives in :root (dark default, light via prefers-color-scheme).
-       --brand paints only: the spark, the ›/● markers, focus rings, links, the
-       connection dot. Boxes are soft surfaces; motion is 120–150ms. ─────────── */
-    :root {                              /* dark (default) */
-      color-scheme: dark light;
-      --bg:        #14171d;  --surface: #1b2026;  --inset: #0f1217;
-      --line:      #2a313a;  --line-soft: #20262e;
-      --fg:        #e9ecef;  --muted:   #99a3ae;  --faint: #66707b;
-      --brand:     #38b6df;
-      --user:      #f2a53c;
-      --ok:        #5fc88a;  --err:     #e5646e;  --warn:  #d9a13f;
-      --add-bg:    #173321;  --add-fg:  #a9d8b4;
-      --del-bg:    #391d22;  --del-fg:  #e3a9b0;
-      --shadow:    0 8px 24px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.4);
-      --font-prose: system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-      --font-mono: ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    /* ── The Zak look (docs/UX.md): the terminal grammar in proportional type,
+       worn in the Vinheim family's colours (ADR-0218). Every colour lives in
+       :root; the family tokens are copied verbatim from the Vinheim design
+       system as shipped at vinheim.com, so a member moving between Vinheim and
+       this page never changes rooms. One look, dark, all the time — the family
+       has no light theme and neither does this page.
+       --brand paints only: the spark, the assistant's ● marker, links, the
+       connection dot, and the Send button (the family's primary action). Focus
+       rings are the family's gold. Boxes are soft surfaces; motion is 120–150ms. */
+    :root {
+      color-scheme: dark;
+      --bg:          oklch(17% .030 258);   /* family paper   */
+      --surface:     oklch(21% .032 258);   /* family paper-2 */
+      --inset:       oklch(25% .034 258);   /* family paper-3 */
+      --line:        oklch(34% .030 258);   /* family line    */
+      --line-strong: oklch(42% .034 258);   /* family line-2  */
+      --line-soft:   oklch(29% .032 258);   /* between paper-3 and line: insets inside cards */
+      --fg:          oklch(96% .010 90);    /* family ink     */
+      --muted:       oklch(66% .018 250);   /* family ink-3   */
+      --faint:       oklch(54% .018 250);   /* one step under ink-3: urls, tags, placeholders */
+      --brand:       oklch(80% .110 195);   /* family accent — Vinheim sea-teal */
+      --brand-press: oklch(72% .110 195);   /* family accent-press */
+      --on-brand:    oklch(20% .030 258);   /* family on-accent */
+      --focus:       oklch(86% .140 85);    /* family focus gold */
+      /* The operator's orange (ADR-0186) — deliberately NOT a family token: the
+         human's line stays the one warm run of text, as the operator asked. */
+      --user:        #f2a53c;
+      --ok:          oklch(78% .130 150);   /* family success */
+      --err:         oklch(70% .180 25);    /* family danger  */
+      --warn:        oklch(82% .140 75);    /* family warning */
+      /* diff bands mix the family states into the inset, never a separate hex */
+      --add-bg:      color-mix(in oklab, var(--ok) 18%, var(--inset));
+      --add-fg:      color-mix(in oklab, var(--ok) 40%, var(--fg));
+      --del-bg:      color-mix(in oklab, var(--err) 18%, var(--inset));
+      --del-fg:      color-mix(in oklab, var(--err) 40%, var(--fg));
+      --shadow:      0 8px 24px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.4);
+      /* the family's faces when installed, the system's otherwise — no webfont is
+         fetched (no CDN): Inter for prose, Fraunces for the two identity moments */
+      --font-prose:   Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --font-display: Fraunces, Georgia, "Times New Roman", serif;
+      --font-mono:    ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+      --radius:    14px;                    /* family radius: the dock's cards */
+      --radius-sm: 9px;                     /* family radius-sm: transcript cards */
     }
-    @media (prefers-color-scheme: light) { :root {
-      --bg:        #faf9f7;  --surface: #ffffff;  --inset: #f2f0ec;
-      --line:      #e2dfd9;  --line-soft: #eceae5;
-      --fg:        #33312d;  --muted:   #6e6b64;  --faint: #a3a09a;
-      --brand:     #117ba8;
-      --user:      #b45f0a;
-      --ok:        #2c8a55;  --err:     #c23d49;  --warn:  #9a6b1f;
-      --add-bg:    #e3f2e6;  --add-fg:  #1d5e35;
-      --del-bg:    #fae3e5;  --del-fg:  #8f303a;
-      --shadow:    0 8px 24px rgba(40,35,25,.08), 0 1px 2px rgba(40,35,25,.10);
-    }}
 
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -41,31 +56,40 @@
       margin: 0; background: var(--bg); color: var(--fg);
       font: 15px/1.65 var(--font-prose);
       display: flex; flex-direction: column;
+      -webkit-font-smoothing: antialiased;
     }
     /* one shared rule: streaming digits never jitter */
     .mono, .meta, .receipt, .chip, .tool-summary { font-variant-numeric: tabular-nums; }
-    :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
-    a { color: var(--brand); text-decoration: underline; }
+    :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
     @keyframes pulse { 50% { opacity: .35; } }
 
-    /* ── header: 48px surface bar ── */
+    /* ── header: 48px bar on the page's own paper, a rule beneath (the family nav) ── */
     header {
       flex: none; height: 48px; display: flex; align-items: center;
       justify-content: space-between; gap: 1rem; padding: 0 1rem;
-      background: var(--surface); border-bottom: 1px solid var(--line);
+      background: var(--bg); border-bottom: 1px solid var(--line);
     }
-    header .brand { display: flex; align-items: center; gap: .5rem; font-size: 15px; font-weight: 600; }
-    header .spark { color: var(--brand); }
+    header .brand {
+      display: flex; align-items: center; gap: .5rem;
+      font: 700 18px/1 var(--font-display); letter-spacing: -.01em;
+    }
+    header .spark { color: var(--brand); font-size: 15px; }
     header .right { display: flex; align-items: center; gap: .75rem; min-width: 0; }
     .chip {
       font: 12px/1.5 var(--font-mono); color: var(--muted);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    /* the connection state reads like the family's live-status label: a dot and a
+       small uppercase word, coloured by state */
     .conn { display: flex; align-items: center; gap: .4rem; flex: none; }
     .conn .cdot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
     .conn .cdot.connecting { background: var(--brand); animation: pulse 1.2s ease-in-out infinite; }
     .conn .cdot.open { background: var(--ok); }
-    .conn .clabel { color: var(--muted); font-size: 12px; }
+    .conn .clabel {
+      color: var(--muted); font-size: 11px; font-weight: 600;
+      letter-spacing: .06em; text-transform: uppercase;
+    }
 
     /* ── transcript: one centered 44rem column (spaciousness guard: do not widen) ── */
     main { flex: 1 1 auto; overflow-y: auto; }
@@ -104,7 +128,7 @@
     .codeblock { position: relative; margin: .55rem 0 0; }
     .codeblock pre {
       margin: 0; padding: .75rem 1rem; overflow-x: auto;
-      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
       font: 13px/1.5 var(--font-mono);
     }
     .codeblock .lang {
@@ -123,7 +147,7 @@
     /* ── tool cards: one <details> per call ── */
     details.tool {
       margin-top: .9rem; background: var(--surface);
-      border: 1px solid var(--line); border-radius: 8px;
+      border: 1px solid var(--line); border-radius: var(--radius-sm);
       font: 13px/1.5 var(--font-mono); overflow: hidden;
     }
     details.tool.err { border-left: 2px solid var(--err); }
@@ -132,7 +156,7 @@
        precedes — visible enough to prove the model is working, quiet enough to ignore. */
     details.thinking {
       margin-top: .9rem; background: var(--surface);
-      border: 1px solid var(--line); border-radius: 8px;
+      border: 1px solid var(--line); border-radius: var(--radius-sm);
       font: 13px/1.5 var(--font-mono); overflow: hidden; opacity: .75;
     }
     .thinking summary {
@@ -165,7 +189,7 @@
     .tool.nochev .chev { display: none; }
     .tool .tool-out {
       margin: 0 .75rem .6rem; padding: .6rem .8rem; max-height: 40vh; overflow: auto;
-      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;
       white-space: pre; color: var(--muted); font: 13px/1.5 var(--font-mono);
     }
     .tool.err .tool-out { color: var(--fg); }
@@ -197,23 +221,27 @@
     .errcard {
       margin-top: .9rem; padding: .6rem .75rem;
       background: var(--surface); border: 1px solid var(--line);
-      border-left: 2px solid var(--err); border-radius: 8px;
+      border-left: 2px solid var(--err); border-radius: var(--radius-sm);
       font: 13px/1.5 var(--font-mono); color: var(--fg); white-space: pre-wrap;
     }
 
     /* ── empty state ── */
     #empty { text-align: center; margin-top: 18vh; }
     #empty .spark { font-size: 28px; color: var(--brand); }
-    #empty .t { font-size: 20px; font-weight: 600; margin-top: .5rem; }
-    #empty .m { margin-top: .4rem; font: 12px/1.5 var(--font-mono); color: var(--muted); }
+    /* the name in the family's display face — one of the two identity moments */
+    #empty .t {
+      font: 600 30px/1.1 var(--font-display); letter-spacing: -.012em; margin-top: .6rem;
+    }
+    #empty .m { margin-top: .5rem; font: 12px/1.5 var(--font-mono); color: var(--muted); }
     #empty .h { margin-top: .6rem; color: var(--muted); }
     #empty .pills { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin-top: 1.25rem; }
     .pill {
       font: 12px/1.5 var(--font-mono); color: var(--muted);
-      background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
-      padding: .35rem .8rem; cursor: pointer; transition: color 120ms ease;
+      background: var(--surface); border: 1px solid var(--line-strong); border-radius: 999px;
+      padding: .35rem .8rem; cursor: pointer;
+      transition: color 120ms ease, border-color 120ms ease;
     }
-    .pill:hover { color: var(--fg); }
+    .pill:hover { color: var(--fg); border-color: var(--brand); }
 
     /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
     .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
@@ -227,35 +255,43 @@
     #jump {
       position: absolute; bottom: calc(100% + 2.2rem); left: 50%; transform: translateX(-50%);
       font: 12px/1.5 var(--font-mono); color: var(--fg);
-      background: var(--surface); border: 1px solid var(--line); border-radius: 999px;
+      background: var(--surface); border: 1px solid var(--line-strong); border-radius: 999px;
       padding: .3rem .8rem; box-shadow: var(--shadow); cursor: pointer;
       opacity: 0; visibility: hidden; transition: opacity 150ms ease, visibility 150ms;
     }
     #jump.show { opacity: 1; visibility: visible; }
 
     #approval {
-      margin: 0 1rem .75rem; padding: .75rem .9rem;
+      margin: 0 1rem .75rem; padding: .8rem .95rem;
       background: var(--surface); border: 1px solid var(--line);
-      border-left: 3px solid var(--warn); border-radius: 10px; box-shadow: var(--shadow);
+      border-left: 3px solid var(--warn); border-radius: var(--radius); box-shadow: var(--shadow);
     }
     #approval:not([hidden]) { animation: rise 150ms ease; }
     @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
-    .ap-title { font-weight: 600; }
-    .ap-title .ap-tool { margin-left: .5rem; font-weight: 600; font-family: var(--font-mono); font-size: 13px; }
+    .ap-title { display: flex; align-items: baseline; font-weight: 600; }
+    /* "Permission" is a label, not a heading: the family's small uppercase eyebrow,
+       in the warn colour the terminal's permission panel title wears */
+    .ap-title > span:first-child {
+      font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--warn);
+    }
+    .ap-title .ap-tool { margin-left: .6rem; font-weight: 600; font-family: var(--font-mono); font-size: 13px; }
     .ap-detail {
       margin-top: .5rem; padding: .5rem .7rem;
-      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 8px;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;
       font: 13px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
     }
     .ap-detail .ap-reason { color: var(--muted); }
-    .ap-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .65rem; }
+    .ap-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .7rem; }
+    /* the family's pill buttons; Allow once stays a neutral inversion, never brand —
+       a consent choice is not a call to action */
     .ap-actions button {
-      font: 13px/1.5 var(--font-prose); border-radius: 8px; padding: .35rem .8rem; cursor: pointer;
-      background: transparent; color: var(--fg); border: 1px solid var(--line);
+      font: 600 13px/1.4 var(--font-prose); border-radius: 999px; padding: .4rem .95rem; cursor: pointer;
+      background: transparent; color: var(--fg); border: 1px solid var(--line-strong);
       transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
     }
     .ap-actions button:active { transform: translateY(1px); }
     .ap-actions .solid { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+    .ap-actions #allow-session:hover { color: var(--brand); border-color: var(--brand); }
     .ap-actions #deny:hover { color: var(--err); border-color: var(--err); }
     .ap-actions kbd {
       font: 11px/1.5 var(--font-mono); color: var(--muted);
@@ -264,23 +300,24 @@
     }
     .ap-actions .solid kbd { background: transparent; color: var(--bg); border-color: var(--bg); opacity: .75; }
 
-    /* ── composer: a floating card; Send morphs in place into Stop ── */
+    /* ── composer: a floating card dressed as the family's input; Send morphs in
+       place into Stop ── */
     #composer {
       display: flex; align-items: flex-end; gap: .6rem;
       margin: 0 1rem 1rem; padding: .6rem .75rem;
-      background: var(--surface); border: 1px solid var(--line);
-      border-radius: 12px; box-shadow: var(--shadow);
+      background: var(--inset); border: 1px solid var(--line-strong);
+      border-radius: var(--radius); box-shadow: var(--shadow);
     }
-    #composer:focus-within {
-      box-shadow: var(--shadow), 0 0 0 2px color-mix(in srgb, var(--brand) 35%, transparent);
-    }
+    #composer:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+    /* the human's chevron is orange on every door (ADR-0186) — the terminal's
+       prompt.marker, the transcript's operator line, and this */
     #composer .pglyph {
-      color: var(--brand); font-family: var(--font-mono); font-weight: 600;
+      color: var(--user); font-family: var(--font-mono); font-weight: 700;
       padding-bottom: .25rem; user-select: none;
     }
     #attach {
-      flex: none; width: 34px; height: 34px; border-radius: 8px;
-      border: 1px solid var(--line); background: transparent; color: var(--muted);
+      flex: none; width: 34px; height: 34px; border-radius: var(--radius-sm);
+      border: 1px solid var(--line-strong); background: transparent; color: var(--muted);
       font: 18px/1 var(--font-prose); cursor: pointer;
       transition: color 120ms ease, border-color 120ms ease, transform 120ms ease;
     }
@@ -294,13 +331,16 @@
     }
     #input:focus-visible { outline: none; }   /* the card carries the ring */
     #input::placeholder { color: var(--faint); }
+    /* Send is the page's one primary action, so it wears the family's primary
+       button: accent fill, navy glyph, a deeper accent under the pointer */
     #send {
       flex: none; width: 34px; height: 34px; border: 0; border-radius: 50%;
-      background: var(--fg); color: var(--bg); font-size: 15px; line-height: 1; cursor: pointer;
-      transition: border-radius 150ms ease, transform 120ms ease;
+      background: var(--brand); color: var(--on-brand);
+      font-size: 15px; font-weight: 700; line-height: 1; cursor: pointer;
+      transition: border-radius 150ms ease, transform 120ms ease, background 120ms ease;
     }
-    #send:hover { transform: translateY(-1px); }
-    #send.stop { border-radius: 8px; }
+    #send:hover { background: var(--brand-press); transform: translateY(-1px); }
+    #send.stop { border-radius: var(--radius-sm); }
 
     @media (prefers-reduced-motion: reduce) {
       * { transition-duration: 0s !important; animation-duration: 0s !important; }

@@ -9,7 +9,8 @@ by some terminals and dropped by others (tmux forwards it only when the outer te
 advertises it), so chrome styled ``dim`` rendered at full contrast in the very cockpit
 it was meant to recede in; ``color(245)`` (#8a8a8a, the say box's own grey) renders the
 same on every 256-colour terminal, and status/log rows sit one step quieter at
-``color(242)``. The brand azure ``color(38)`` may only ever paint 1–2 character marks
+``color(242)``. The brand teal ``color(80)`` — the 256-colour index nearest the Vinheim
+family accent the web client wears (ADR-0218) — may only ever paint 1–2 character marks
 (``✦ ✧ ●`` and the spinner glyph) — never a run of text. Color is reserved for meaning
 (green ok / red err / yellow warn), every success receipt opens with a green ``✓`` and
 every failure with a red ``✗``, diffs are painted bands (explicit fg AND bg, bold so
@@ -25,9 +26,11 @@ from rich.theme import Theme
 
 ZAK_THEME = Theme(
     {
-        # brand marks (1–2 char glyphs only — never a run of text)
-        "brand": "color(38)",
-        "brand.soft": "color(38) dim",
+        # brand marks (1–2 char glyphs only — never a run of text). color(80) is the
+        # nearest index to the family accent; the soft mark is the family's pressed
+        # accent by index, never ``dim`` (tmux drops dim — ADR-0186).
+        "brand": "color(80)",
+        "brand.soft": "color(73)",
         # welcome banner
         "banner.border": "color(245)",
         "banner.title": "bold",
@@ -43,10 +46,12 @@ ZAK_THEME = Theme(
         "user.text": "bold color(214)",
         "user.meta": "not bold color(245)",
         # assistant prose
-        "assistant.marker": "color(38)",
+        "assistant.marker": "color(80)",
         "md.h": "bold",
-        # dark_cyan, not cyan: the 16-color downgrade of color(38) is cyan, so inline
-        # code must not collide with the brand marks (and stays legible on light bg).
+        # dark_cyan (index 36) downgrades to cyan on a 16-colour terminal while the
+        # brand's color(80) downgrades to bright cyan, so inline code never collides
+        # with the brand marks there (the old color(38) brand ALSO fell to cyan —
+        # ADR-0218), and it stays legible on a light background.
         "md.code": "dark_cyan",
         "md.bullet": "color(245)",
         "md.italic": "italic",
@@ -80,7 +85,7 @@ ZAK_THEME = Theme(
         # turn receipt
         "footer": "color(245)",
         "sep": "color(245)",
-        "spinner": "color(38)",
+        "spinner": "color(80)",
         # diffs (painted bands: explicit fg + bg, bold for the 16-color tier)
         "diff.meta": "color(245)",
         "diff.add": "bold grey93 on dark_green",

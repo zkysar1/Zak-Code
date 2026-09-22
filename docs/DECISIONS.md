@@ -13151,3 +13151,84 @@ should be: the alternative on some harnesses is a turn end nobody hears. Nothing
 ladder or the doom guard. Nothing about what the model is told on any other call. And it knows
 nothing about any framework — it reads only the shape of the previous completion — so it behaves
 identically on a Mind and on a bare session.
+
+---
+
+## ADR-0218: Zak wears the Vinheim family's colours, in both clients
+
+Status: accepted. 2026-09-22.
+
+Context. The user asked that the Vinheim web app, the Zak Code web client and the Zak Code
+terminal share one look and feel. Measured side by side on 2026-09-22, they shared almost none of
+it. Vinheim is a navy page (`oklch(17% .030 258)`), a sea-teal accent (`oklch(80% .110 195)`),
+Fraunces for display and Inter for body, and dark only. Those are the tokens vinheim.com ships in
+its public stylesheet, and Lodestar wears the same system with a gold accent, so "the family" is a
+set of tokens rather than one product's colours. The Zak web client was a charcoal page
+(`#14171d`), an azure brand (`#38b6df`, thirty degrees of hue from the family's teal), the system
+font, and a second, light theme behind `prefers-color-scheme`. The terminal's brand was
+`color(38)`.
+
+Two latent defects in the terminal theme surfaced on the way, both measured rather than read. On
+a 16-colour terminal rich downgrades `color(38)` to ANSI cyan, and inline code's `dark_cyan`
+(index 36) to the same cyan, so the brand marks and inline code were one colour there. And
+`brand.soft` was `dim`, which ADR-0186 forbids for exactly this cockpit: tmux drops the
+attribute, so the "soft" mark rendered at full intensity.
+
+Decision. Zak wears the family's colours and keeps its own grammar.
+
+- The web client copies the family's tokens VERBATIM, as `oklch()` literals: the three papers as
+  `--bg`, `--surface` and `--inset`; ink and ink-3 as `--fg` and `--muted`; both lines; the accent
+  with its pressed and on-accent colours as `--brand`, `--brand-press` and `--on-brand`; the gold
+  focus ring; and the family's success, danger and warning. Fraunces paints the two identity
+  moments (the wordmark and the empty state's name) and Inter the prose. Radii are the family's
+  14px and 9px, buttons are pills, and Send is the family's primary button. No font is fetched: a
+  machine without them falls through the stack to Georgia and system-ui.
+- The page has ONE look, dark, all the time. The light theme is removed, not restyled: the family
+  is dark only, and a second theme is a second set of tokens to drift out of step with the first.
+- The terminal carries the family in its brand INDEX. `color(80)` (`#5fd7d7`) is the xterm-256
+  index nearest the family accent (`#57d4d4`), at 0.011 in OKLab against 0.027 for the runner-up.
+  The ● assistant marker and the spinner are the same index. `brand.soft` is `color(73)`, the
+  index nearest the family's pressed accent: a colour, never `dim`. On a 16-colour terminal the
+  new brand falls to BRIGHT cyan, so it no longer collides with inline code.
+- Zak keeps what is its own. The transcript grammar (›, ●, the ✓ and ✗ receipts) and grey chrome
+  by index are unchanged. So is the operator's orange (ADR-0186): the family has no colour for
+  "the human's line", and orange stays the one warm colour in the transcript. The web composer's
+  chevron was brand-blue and is now the human's orange; the say box's ▸ is `#ffaf00`, which IS
+  the chat pane's `color(214)`. The human's mark is one colour on every door.
+- The terminal's semantic states stay ANSI names. The family's warning (`#f9b64f`) sits nearest
+  `color(215)` and then `color(214)`, the operator's orange; matched by index, every warning would
+  look like the human speaking.
+
+Why the family teal and not an azure of Zak's own. The old azure sat thirty degrees of hue off the
+teal. Beside Vinheim that reads as a mistake, not a variation, and it would be a second accent to
+keep in step by hand. If Zak should carry its own accent inside the family band, the azure at the
+family's lightness and chroma is `oklch(80% .11 225)` (`#65cdf3`, nearest index 81). That is a
+one-token change on each side, and the test below links the two sides either way.
+
+What was deliberately NOT changed. Vinheim itself: it is the reference, and the user's product.
+Its thread grammar ("You:", ⚙, ☑) differs from Zak's, and aligning it is a Vinheim decision. A
+failed receipt's summary line still renders bold red, where the discipline says the outcome mark
+is a receipt's only colour; that predates this change and wants its own decision. And the web
+warning still sits close to the operator's orange, 0.043 apart in OKLab. It sat exactly as close
+before this change (0.043), so the change neither caused nor worsened it.
+
+The proof. `tests/test_ux_family.py`: seven tests that read the shipped page as text and the theme
+objects directly, with no browser and no terminal. The web tokens are the family's, verbatim.
+Every `var()` the page reads is declared, since an undeclared custom property is valid CSS that
+silently paints nothing. The page has one look: no `prefers-color-scheme`, and no hex colour
+outside `:root`. The terminal brand is the index nearest the web accent, DERIVED through OKLab
+rather than restated, so the two sides cannot drift apart unnoticed. Brand and inline code
+downgrade to different colours on 16 colours. No style of the theme's own leans on `dim`. And the
+say box's ▸ is the chat pane's orange, bold.
+
+Six mutants, each green before, red under sabotage and green after a byte-exact restore, with the
+red tests measured rather than assumed: the brand reverted to `color(38)` (red: the nearest-index
+and the collision tests); the soft mark made `dim` again; the web accent drifted (red: the
+verbatim test AND the nearest-index test, which is the cross-renderer link doing its job); a token
+read but never declared; a second theme restored; and the say box's ▸ repainted. Two tests carry
+positive controls: the page must read its tokens through `var()` at all, and the `dim` filter must
+keep the theme's own styles.
+
+What this does NOT change. Nothing in the agent, the loop, the wire or the server. No dependency
+and no network fetch. The terminal's layout, glyphs and grammar are untouched: three marks and one
+soft mark changed index, and inline code kept its colour.
