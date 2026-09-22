@@ -3,8 +3,9 @@
 One visual language, rendered twice. The terminal client (`src/zakcode/cli/`) and the
 bundled web client (`src/zakcode/server/static/index.html`) are thin renderers of the
 same `AgentEvent` stream, drawn with the same grammar so an operator moves between them
-without relearning the screen. This document is the binding cross-client contract —
-either client can be re-derived from it; change it and both renderers in the same PR.
+without relearning the screen — and both wear the Vinheim family's colours (see **The
+family**). This document is the binding cross-client contract — either client can be
+re-derived from it; change it and both renderers in the same PR.
 
 | Piece | Terminal | Web |
 | --- | --- | --- |
@@ -14,14 +15,15 @@ either client can be re-derived from it; change it and both renderers in the sam
 | Layout primitives | `cli/_layout.py` (`block`, `rail`, `panel`) | CSS grid blocks |
 | Permission prompt | `ConsolePermissionPrompter` (`cli/__init__.py`) | approval card |
 | Tests | `tests/test_render.py`, `tests/test_cli_chat.py` | `tests/test_webclient_contract.py` |
+| Family contract (both) | `tests/test_ux_family.py` | `tests/test_ux_family.py` |
 
 ## Design thesis
 
 Calm, confident minimalism with an instrument-panel spine: terminal-default ink does
 the talking, chrome recedes to dim — except the two lines the eye must find first, the
 operator's own line and a tool's call line, which stay bright (ADR-0185) — and exactly
-one brand mark — the azure spark `✦` — carries identity through the banner, the wait
-line, and the prompt. Structure
+one brand mark — the teal spark `✦`, in the Vinheim family's accent (ADR-0218) — carries
+identity through the banner, the wait line, and the prompt. Structure
 comes from a two-level marker grammar (`●` block / `└` receipt) with true hanging
 indents, a continuous `│` rail binding every result body to its block, and a
 differentiated blank-line rhythm (one blank inside a turn, two at the turn seam), so
@@ -32,6 +34,34 @@ Color is reserved for meaning (green/red/yellow + painted diff bands), boxes are
 reserved for the two ceremonial moments (welcome, permission), and the web client
 speaks the identical grammar translated into proportional type, soft surfaces, and
 120ms motion.
+
+## The family (ADR-0218)
+
+The two clients also share one look with the Vinheim web app (vinheim.com, where agent
+worlds are built and watched as they learn), so a member moving between Vinheim, this web
+client and this terminal never changes rooms. The family's design system is Vinheim's:
+navy paper, warm ink, a sea-teal accent, a gold focus ring, Inter for prose and Fraunces
+for display.
+
+- **The web client copies the family tokens verbatim** (the Tokens table names each
+  one's family source), in the family's own `oklch()` notation, so a reader can diff them
+  against the shipped stylesheet. Radii, pill buttons, the gold focus ring, the display
+  face on the two identity moments and the uppercase live-status label come with them.
+- **The terminal carries the family in its one colour mark.** It cannot paint a
+  background, so the family arrives as the brand: `color(80)` is the 256-colour index
+  nearest the family accent, so the spark and the assistant's `●` wear the teal that
+  Vinheim's accent and the web client's brand wear. Chrome greys are already the family's muted ink by index
+  (`color(245)` sits nearest `ink-3` after `color(246)`), and the semantic states stay
+  ANSI names so each terminal's theme tunes them for its own background.
+- **What stays Zak's own:** the transcript grammar (column grid, `●` / `└` / `│`,
+  receipts) and the operator's orange — the human's line and chevron (ADR-0186). The
+  family has no token for "the human", and it must stay the one warm run of text.
+
+The contract is tested, not described: `tests/test_ux_family.py` asserts the web tokens
+equal the family values, that every `var(--…)` the page reads is declared (an undeclared
+custom property renders silently as nothing), that the page carries no second theme,
+and that the terminal brand is still the index nearest the web accent — computed from
+the colour values, so changing one side without the other fails.
 
 ## Terminal: the column grid
 
@@ -234,7 +264,7 @@ rebuilt per message. Its contract:
 | `Ctrl+C` | clears the input; a second press within 2s closes the box — never an instant exit (Ctrl+C-to-copy is a habit) |
 | `↑` / `↓` at the top/bottom line | recall from `~/.zakcode/say-history` (persists across sessions); ghost text from history, `→` accepts |
 | `Esc` | recall a still-pending message into the buffer, else stop the running agent (the half-typed text survives) |
-| continuation lines | `· ` gutter under the `▸ ` prompt |
+| continuation lines | grey `· ` gutter under the `▸ ` prompt — the `▸` bold in the human's orange (`#ffaf00`, the chat pane's `color(214)`) |
 
 The pane starts at 5 rows and **grows with the text** (wrapped rows + toolbar + one
 breath, capped at 16) then shrinks back after each send; a token keeps a paste at one
@@ -245,7 +275,7 @@ message echoes folded: the first 6 lines then `… (+N more lines)` (`fold_lines
 200-line paste never buries the turn it started.
 
 **Wait line (REPL layer, never the renderer):** a transient `rich.live.Live` line —
-spark frame (glyph-swap `· ✦ ✶ ✧`, brand azure; ASCII `- \ | /`) + gerund verb
+spark frame (glyph-swap `· ✦ ✶ ✧`, brand teal; ASCII `- \ | /`) + gerund verb
 (concrete `Running…` while a tool call is outstanding) + dim
 `(ctrl-c to interrupt · {N}s)`, elapsed in whole seconds. Auto-disabled on legacy
 conhost and off-tty, and force-disabled anywhere by `ZAKCODE_NO_SPINNER=1` — the
@@ -261,8 +291,8 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 
 | Style name | Rich style string | Used for |
 | --- | --- | --- |
-| `brand` | `color(38)` | the `✦` spark (banner, /help header) |
-| `brand.soft` | `color(38) dim` | the `✧` tip glyph |
+| `brand` | `color(80)` | the `✦` spark (banner, /help header) — the index nearest the family accent (ADR-0218) |
+| `brand.soft` | `color(73)` | the `✧` tip glyph — the family's pressed accent by index, never `dim` (ADR-0186) |
 | `banner.border` | `color(245)` | welcome box border |
 | `banner.title` | `bold` | "Zak Code" in the box; section headings |
 | `banner.label` | `color(245)` | kv labels (model, workspace…) |
@@ -273,9 +303,9 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 | `user.marker` | `bold color(214)` | the `›` at col 0 before the operator's line (ADR-0185/0186) |
 | `user.text` | `bold color(214)` | the operator's message — the one orange run of text in the transcript |
 | `user.meta` | `not bold color(245)` | its door + wall-clock stamp `(say · 14:22)` |
-| `assistant.marker` | `color(38)` | the `●` before assistant prose |
+| `assistant.marker` | `color(80)` | the `●` before assistant prose |
 | `md.h` | `bold` | headings (blank line forced above) |
-| `md.code` | `dark_cyan` | inline code spans — dark_cyan, not cyan, so the 16-color downgrade of `color(38)` (→ cyan) never collides with inline code |
+| `md.code` | `dark_cyan` | inline code spans — on a 16-color terminal `dark_cyan` falls to cyan while the brand's `color(80)` falls to bright cyan, so inline code never collides with the brand marks (the old `color(38)` brand fell to cyan too — ADR-0218) |
 | `md.bullet` | `color(245)` | list bullet glyph |
 | `md.italic` | `italic` | `*italic*` / `_italic_` spans |
 | `md.strike` | `strike` | `~~strike~~` spans |
@@ -300,7 +330,7 @@ downgrade (bold white on green/red) keeps contrast. No style assumes a dark back
 | `log` | `color(242)` | a log record rendered as a transcript line (ADR-0186) |
 | `footer` | `color(245)` | the turn receipt body |
 | `sep` | `color(245)` | `·` interpunct separators |
-| `spinner` | `color(38)` | wait-line glyph |
+| `spinner` | `color(80)` | wait-line glyph |
 | `diff.meta` | `color(245)` | `@@`, `---`, `+++` lines |
 | `diff.add` | `bold grey93 on dark_green` | `+` lines (painted band, text extent) |
 | `diff.del` | `bold grey93 on dark_red` | `-` lines (painted band, text extent) |
@@ -371,30 +401,40 @@ literal `case` arm per event/frame type plus the `default:` arms surfacing
 by `tests/test_webclient_contract.py`; forbidden vendor/internal strings stay out of
 the file, comments included.
 
-### Tokens (CSS custom properties; every hex lives in `:root`)
+### Tokens (CSS custom properties; every colour lives in `:root`)
 
-Dark is default; light via `prefers-color-scheme: light` (`color-scheme: dark light`).
+One look, dark, all the time (`color-scheme: dark`): the page wears the Vinheim family's
+tokens (see **The family** above), copied verbatim, so there is no light theme to keep in
+step — the family has none either.
 
-| Token | Dark | Light |
+| Token | Value | Family token |
 | --- | --- | --- |
-| `--bg` / `--surface` / `--inset` | `#14171d` / `#1b2026` / `#0f1217` | `#faf9f7` / `#ffffff` / `#f2f0ec` |
-| `--line` / `--line-soft` | `#2a313a` / `#20262e` | `#e2dfd9` / `#eceae5` |
-| `--fg` / `--muted` / `--faint` | `#e9ecef` / `#99a3ae` / `#66707b` | `#33312d` / `#6e6b64` / `#a3a09a` |
-| `--brand` | `#38b6df` | `#117ba8` |
-| `--user` | `#f2a53c` | `#b45f0a` |
-| `--ok` / `--err` / `--warn` | `#5fc88a` / `#e5646e` / `#d9a13f` | `#2c8a55` / `#c23d49` / `#9a6b1f` |
-| `--add-bg` / `--add-fg` | `#173321` / `#a9d8b4` | `#e3f2e6` / `#1d5e35` |
-| `--del-bg` / `--del-fg` | `#391d22` / `#e3a9b0` | `#fae3e5` / `#8f303a` |
-| `--shadow` | `0 8px 24px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.4)` | `0 8px 24px rgba(40,35,25,.08), 0 1px 2px rgba(40,35,25,.10)` |
+| `--bg` / `--surface` / `--inset` | `oklch(17% .030 258)` / `oklch(21% .032 258)` / `oklch(25% .034 258)` | paper / paper-2 / paper-3 |
+| `--line` / `--line-strong` | `oklch(34% .030 258)` / `oklch(42% .034 258)` | line / line-2 |
+| `--line-soft` | `oklch(29% .032 258)` | — (between paper-3 and line: insets inside cards) |
+| `--fg` / `--muted` | `oklch(96% .010 90)` / `oklch(66% .018 250)` | ink / ink-3 |
+| `--faint` | `oklch(54% .018 250)` | — (one step under ink-3: urls, tags, placeholders) |
+| `--brand` / `--brand-press` / `--on-brand` | `oklch(80% .110 195)` / `oklch(72% .110 195)` / `oklch(20% .030 258)` | accent / accent-press / on-accent |
+| `--focus` | `oklch(86% .140 85)` | focus (gold) |
+| `--ok` / `--err` / `--warn` | `oklch(78% .130 150)` / `oklch(70% .180 25)` / `oklch(82% .140 75)` | success / danger / warning |
+| `--user` | `#f2a53c` | — the operator's orange (ADR-0186), deliberately not a family token |
+| `--add-bg` / `--add-fg` | `color-mix(in oklab, var(--ok) 18%, var(--inset))` / `color-mix(in oklab, var(--ok) 40%, var(--fg))` | derived |
+| `--del-bg` / `--del-fg` | `color-mix(in oklab, var(--err) 18%, var(--inset))` / `color-mix(in oklab, var(--err) 40%, var(--fg))` | derived |
+| `--shadow` | `0 8px 24px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.4)` | — |
 
-`--brand` paints only: the spark, the `›`/`●` markers, focus rings, links, the
-connection dot. It is **not** a button color.
+`--brand` paints only: the spark, the assistant's `●` marker, links, the connection dot,
+and the page's one primary action — Send (the family's primary button: accent fill,
+`--on-brand` glyph, `--brand-press` under the pointer). Hover borders on pills and the
+attach button may borrow it as an affordance. It is never a run of text and never another
+button's fill: Allow once stays a neutral inversion, because a consent choice is not a call
+to action. Focus rings are `--focus` gold, as everywhere in the family.
 
 ### Type & metrics
 
 | Token / metric | Value |
 | --- | --- |
-| `--font-prose` | `system-ui, "Segoe UI", "Helvetica Neue", Arial, sans-serif` |
+| `--font-prose` | `Inter, system-ui, -apple-system, "Segoe UI", sans-serif` — the family's body face when installed; no webfont is fetched (no CDN) |
+| `--font-display` | `Fraunces, Georgia, "Times New Roman", serif` — the family's display face, for the two identity moments only: the header wordmark and the empty-state name |
 | `--font-mono` | `ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace` |
 | Prose / mono / meta | 15px/1.65 `--fg` · 13px/1.5 · 12px mono `--muted` |
 | Headings in model output | size-only scale, weight 600, normal color: h1 1.3em, h2 1.15em, h3 1.0em |
@@ -403,19 +443,22 @@ connection dot. It is **not** a button color.
 | Content column | `max-width: 44rem`, centered, `padding: 2rem 1.25rem 3rem` — do **not** widen |
 | Marker gutter | each block `display:grid; grid-template-columns: 1.75rem 1fr` (the web hanging indent) |
 | Gaps | turn `margin-top: 2.25rem` on user lines; block `.9rem`; paragraph `.55rem` |
-| Radii | 4px inline-code pill · 8px tool cards & code blocks · 10px approval card · 12px composer · 999px pills |
+| Radii | the family's two: `--radius-sm` 9px (tool/thinking/error cards, code blocks, the attach button) and `--radius` 14px (approval card, composer) · 6px insets nested in a card · 4px inline-code pill · 999px pills and buttons |
 | Borders / elevation | 1px `--line` (cards), 1px `--line-soft` (insets); `--shadow` on composer, approval card, jump pill only |
 | Motion | 120–150ms ease (chevron, buttons, approval slide-up, pill/overlay fades); `prefers-reduced-motion: reduce` zeroes durations and pauses the pending pulse |
-| Focus | global `:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }` |
+| Focus | global `:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }` — the family's gold ring |
 
 ### Components
 
-- **Header** — 48px `--surface` bar: `✦` + "Zak Code"; right: dim mono chips (model,
+- **Header** — 48px bar on the page's own `--bg` with a `--line` rule beneath (the
+  family's nav): `✦` + "Zak Code" in `--font-display` bold; right: dim mono chips (model,
   `sessionId.slice(0, 8)`), connection dot (`aria-hidden`; `--brand` pulsing /
-  `--ok` open / `--err` closed) + adjacent text state label (the accessible carrier).
+  `--ok` open / `--err` closed) + adjacent text state label (the accessible carrier) in
+  the family's live-status grammar — 11px, weight 600, uppercase, `.06em` tracking.
   Cost lives in per-turn receipts, never the header.
-- **Empty state** — centered `✦` + name + `{model} · session {id8}` + hint, plus three
-  sample-prompt pills that prefill the composer (never send); removed on first append.
+- **Empty state** — centered `✦` + name (`--font-display`, 30px) + `{model} · session
+  {id8}` + hint, plus three sample-prompt pills that prefill the composer (never send);
+  removed on first append.
 - **User line** — gutter `›` and text in `--user` (orange, weight 700 / 600, ADR-0186); no bubble — the
   bright short line *is* the turn separator.
 - **Assistant prose** — 8px `--brand` dot per prose group (re-anchors after tool
@@ -446,16 +489,21 @@ connection dot. It is **not** a button color.
   `performance.now()` since send. `error` control frames render as an error card and
   also end the turn.
 - **Approval card** — above the composer on `action_required`: 3px `--warn` left
-  border, slides up. Buttons: **Allow once** (solid `--fg`/`--bg` inversion —
-  deliberately not brand), **Allow for session** (outline), **Deny** (outline, `--err`
+  border, `--radius`, slides up; "Permission" is a label, not a heading — the family's
+  small uppercase eyebrow in `--warn`, beside the bold mono tool name. Buttons are the
+  family's pills: **Allow once** (solid `--fg`/`--bg` inversion — deliberately not
+  brand), **Allow for session** (outline, `--brand` on hover), **Deny** (outline, `--err`
   on hover), each with a `kbd` chip. The y/a/n `keydown` fires only while the card is
   visible **and** focus is not in the composer or any input/textarea/contenteditable.
   On decision the card collapses into a permanent consent receipt row: `{tool} —
   allowed once / allowed for session / denied` — the consent audit trail.
-- **Composer** — floating card: `›` in `--brand`, chromeless auto-growing `<textarea>`
-  (1–6 rows, Enter sends, Shift+Enter newline), 34px circular Send (`↑`) that morphs
-  in place into Stop while streaming (sends `{ type: "interrupt" }`); the textarea
-  stays enabled during turns, only submission is gated.
+- **Composer** — floating card dressed as the family's input (`--inset` fill,
+  `--line-strong` border, `--radius`, a 2px `--focus` gold ring while focused): `›` in
+  `--user` — the human's chevron is orange on every door (ADR-0186) — chromeless
+  auto-growing `<textarea>` (1–6 rows, Enter sends, Shift+Enter newline), 34px circular
+  Send (`↑`, the family's primary button) that morphs in place into Stop while streaming
+  (sends `{ type: "interrupt" }`); the textarea stays enabled during turns, only
+  submission is gated.
 - **Scroll** — stick-to-bottom only within 40px of the bottom; when detached during
   streaming, a "↓ latest" pill floats above the composer and re-attaches on click.
 
@@ -487,9 +535,10 @@ the model is no longer one slug — it is a model *per task category*. The displ
 
 ## Discipline (binding)
 
-- **Brand paints 1–2 character marks only** (`✦ ✧ › ●` and the spinner glyph; web:
-  spark, markers, focus rings, links, connection dot) — never a run of text, never a
-  button.
+- **Brand paints 1–2 character marks only** (`✦ ✧ ●` and the spinner glyph; web:
+  spark, the assistant dot, links, connection dot, and Send — the one primary action) —
+  never a run of text, never another button's fill. The human's `›`/`▸` is orange on every
+  door, in both clients.
 - **Model identity reads friendly, never as plumbing**: under zakpick the headline is
   `zakpick · picks a model per task` and the per-category table is `model (source)` with
   plain-English category labels — a raw litellm slug is never the headline, and `classify`
@@ -516,7 +565,7 @@ the model is no longer one slug — it is a model *per task category*. The displ
 | Terminal construct | Web construct |
 | --- | --- |
 | col-2 marker + col-4 hanging body (`block()` grid) | `1.75rem 1fr` gutter grid |
-| `●` assistant marker (azure) | 8px `--brand` dot per prose group |
+| `●` assistant marker (teal) | 8px `--brand` dot per prose group |
 | `●` tool line + `└ summary · dur` receipt | tool `<details>` card summary row + right receipt cell |
 | `│` rail region at col 4–6 (red on failure) | card inset `pre` / `--err` left border |
 | `·` status line | status row + pinned stream-status overlay |
