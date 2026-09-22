@@ -13073,3 +13073,81 @@ about the doom guard or the stuck ladder, which keep the within-turn case they w
 it knows nothing about any framework: it never asks what IDLE means or whether a loop exists, only
 whether this wake-up's last two turns ended the same way, so it behaves identically on a Mind and on
 a bare session.
+
+---
+
+## ADR-0217: the call that only hands back a tool result is told the answer already stands
+
+Status: accepted. 2026-09-22.
+
+Context. ADR-0216 fixed a wake-up that repeated a whole TURN. The same session's trace held the
+smaller sibling, inside a single turn. The model wrote a full verdict; called a tool; and then,
+asked again because a tool had run and its result must go back, wrote the same verdict a second
+time. The user read the same answer twice and paid for the call that produced it.
+
+The tool in question was a bare `echo`. It was there to satisfy a framework rule that a turn must
+end on a tool call rather than on text, and that rule exists for a real reason on the harness it
+was written for. The consequence here is mechanical and has nothing to do with the rule being
+wrong: a tool ran, so the loop must feed its result back, so the model is asked again — with its
+answer already given and nothing to add. A model with nothing to add says the thing it just said.
+
+Nothing could catch it afterwards, and the reason is worth stating because it is not a threshold.
+The repeat is the model's own prose. The stuck ladder compares tool OUTPUTS; it is handed each
+iteration's assistant text and uses it in exactly one place, only to ask whether it is empty. And
+even a detector that noticed would arrive too late: by the time the second answer can be
+recognised as a repeat it is already streaming onto the screen, where it cannot be unsaid.
+
+So the intervention has to come BEFORE, and it can only rest on what is certain at the time.
+
+Decision. When a completion carries BOTH substantial prose and a tool call, the very next request
+— the one that exists only to hand that tool's result back — carries one ephemeral line saying the
+answer already stands, and to stop unless the result changes it. On that call and on no other.
+
+The predicate is a LENGTH, deliberately. The cheap, certain reading is "there was an answer here";
+deciding whether the NEXT message repeats it would mean judging text the model has not written
+yet. `_SUBSTANTIAL_ANSWER` is 200 characters, the line between narration ("Reading the state file
+now") and an answer. It is a line, not a law: measured over the 48 bench runs of the 2026-09-22
+no-guide map, of 28 non-empty assistant messages the 15 at or above that length were the
+substantive ones, and a narration long enough to cross it costs one extra line in one request.
+
+Why a rail and not a detector, decided by measurement rather than taste. The same 48 runs were
+searched for within-turn restatement: 15 substantial assistant messages in total, one of them a
+repeat. That corpus cannot support a rate — it is far too thin, and it is a LOWER bound besides,
+since a request dump never contains the turn's final message and the final message is exactly
+where the defect showed. What it does settle is the cost question. A standing rail on every turn
+would be paid for by every turn on this evidence; a rail that rides only on the call that follows
+an answer is paid for only by the turns that create the risk. In the measured trace that was one
+call.
+
+What was deliberately NOT built. A stuck-ladder signal for a repeated assistant message. It would
+fire on the first restatement and the ladder acts only on a streak of multi-signal iterations, so
+in the case actually observed — one restatement, then the turn ends — it would have changed
+nothing at all. Adding a mechanism that cannot act on the only instance anyone has measured is a
+speculative feature, and the honest thing is to say so rather than ship it for symmetry.
+
+The proof. Seven mutants, each red set written down before it ran, all as stated on 9 tests: the
+line never rides; the line rides on every call; the tool-call half of the predicate dropped; each
+of the two completion sites separately stopped noticing; the per-turn reset removed; and the
+length threshold dropped to zero. Two of my predictions were wrong on the first run and are
+corrected in the driver with the mechanism reason. One of those two was a genuine hole: the
+buffered anchor string is a SUBSTRING of the streaming one, differing only by indentation, so an
+unanchored match would have mutated whichever came first and proved the wrong thing.
+
+The control is a turn that only NARRATED before its tool call, and so must carry the line on no
+call at all. It held under the five mutants that break the fix, and it CAUGHT the two that make
+the line ride when it should not — which is the half a control is usually never asked to do. A
+rail that rides unconditionally would otherwise pass every "does it ride?" test ever written
+while quietly costing tokens on every request of every turn.
+
+Two things are pinned that the wire alone cannot reach, and both are read as behaviour rather than
+source text. The tool-call half of the predicate is asserted on the predicate directly, because an
+answer with no tool call ENDS a turn and no call follows it where anything could observe the
+difference. And the per-turn reset is pinned by a turn cut off by its iteration budget, which is
+the only way a turn ends with an answer still standing; the test asserts the hazard is real before
+asserting the remedy.
+
+What this does NOT change. The framework rule that a turn end be a tool call is untouched, and
+should be: the alternative on some harnesses is a turn end nobody hears. Nothing about the stuck
+ladder or the doom guard. Nothing about what the model is told on any other call. And it knows
+nothing about any framework — it reads only the shape of the previous completion — so it behaves
+identically on a Mind and on a bare session.
