@@ -1952,3 +1952,57 @@ about any pre-2026-08-22 27B figure, which came off a different build with diffe
 ARTIFACTS committed beside this block: determinism-zakcode-pinOFF-temp0-17-realguide-envserver-deltaassert-
 t36-probe-27b-1.json and -2.json, 12 redacted / 0 raw private sources in each. The request dumps stay on the
 cell (24 run directories) and are never copied off it.
+
+THRUST 36 CELL SURVEY, PRE-REGISTERED BEFORE ITS DATA (2026-09-22 06:54 UTC, g-353-123): AN INSTRUMENT CONTROL
+FOR THE 24/24, THEN THE ONE REMAINING CELL WHOSE FAILURE ROUTE IS THE ONE THIS TREATMENT TARGETS.
+TWO ARMS OF TWELVE, SEQUENTIAL, FREE LOCAL COMPUTE, NO PRODUCT CHANGE
+═══════════════════════════════════════════════════════
+The probe above read CEILING at 24/24 and reopened the cell choice. Two questions follow, and they are asked in
+this order because the first can void the second.
+
+ARM 1 IS A CONTROL, NOT A CANDIDATE: cell 17n, the same repository and the same verifier as cell 17 with the
+guide removed. A perfect untreated score invites one obvious objection -- that the verifier stopped
+discriminating on this model -- and 17n answers it directly, because without the guide the model cannot know
+the delta rule the verifier enforces. On the other model this control measured 1/12. It runs FIRST so that a
+failure of the instrument costs one arm instead of three.
+  READING, enumerated over all thirteen outcomes: 0 to 7 of 12 -> DISCRIMINATES, the 24/24 stands as a property
+  of the model and the survey continues. 8 to 12 of 12 -> INSTRUMENT SUSPECT, the survey STOPS, the probe's
+  CEILING is quarantined, and the next work is an audit of cell 17's verifier against this model rather than
+  any further arm. No second sample on this arm: it is a gate, not a measurement of interest.
+
+ARM 2 IS THE CANDIDATE: cell 17w, cell 17's repository with the rule moved into an oversized section that the
+fold keeps whole. It is the only remaining cell whose failure route is the one ADR-0181's line addresses --
+open the project's existing absolute-style test, copy its form, violate the guide. On the other model it scored
+6/12 and pooled 16/24, the largest headroom in the inventory.
+  READING, the same bands as the probe: 11 or 12 -> CEILING; 2 to 10 -> HEADROOM; 0 or 1 -> FLOOR. A result
+  within one of a boundary (0, 1, 2, 10, 11, 12) triggers a second arm of twelve under identical conditions,
+  read on the pooled 24 at the same proportions: >= 22 CEILING, 4 to 21 HEADROOM, <= 3 FLOOR. Errors count as
+  misses, as in every arm of this campaign.
+
+WHY CELL 15 IS NOT IN THIS SURVEY, stated so the omission is a decision and not an oversight. Cell 15 has real
+headroom on the other model (8/12), but its failures are a DEFAULT -- the model writes the microseconds
+isoformat it would write anywhere -- not a copy of a sibling file. A line telling the write tools not to copy
+existing files against the guide has no purchase on a default. Measuring it there would produce a number that
+could not be attributed to the treatment either way.
+
+CONSEQUENCES, fixed now. If arm 2 reads HEADROOM, thrust 36 is re-registered on cell 17w against 17w's own
+measured baseline, with predictions derived from it, and then the interleaved batch launches there. If arm 2
+reads CEILING or FLOOR, the finding is that the current cell inventory contains NO cell on which this treatment
+can be measured on this model, and the next lever is a harder cell built for the route or the retirement of
+fallback C -- not another arm.
+
+CONDITIONS, identical to the probe. Shipped tool files (write_file.py f858ee38e993, edit.py e92a8bdfa39c), the
+ADR-0176 prompt (b57bdb96285b) deployed per arm and the standing ADR-0180 prompt (302a7becd55b) restored after,
+the bench tree's loop.py (07d461afa424), temperature 0, --no-pin, sequential, N=12, requests dumped, model id
+zds-qwen3.8-27b, which was verified per engine before the probe and is re-verified by a real completion's own
+model echo before each arm. The runner is /root/zbench-run.py at the fleet's canonical tailnet address. The arm
+is run by /root/t36_survey.sh (591975d70f9f), derived from the registered batch script by keeping every tree
+guard byte-for-byte and running its (a1) arm once on a named cell; the registered t36_batch.sh (2d5b46d830a3)
+is neither modified nor used. One arm at a time: the pod is shared.
+
+DESCRIBED, NEVER PART OF EITHER RULE: turns, elapsed, the pass pattern, and from the dumps the number of runs
+that open the sibling test. On cell 17 that route measured 1 of 24 on this model against 7 of 24 on the other
+one, and the single opener passed; whether 17w's oversized section changes that is the mechanism question
+behind the whole fallback-C line, and it is reported, not thresholded.
+
+EXPECTED COST: about 40 minutes per arm at this model's speed, twice, on free local compute.
