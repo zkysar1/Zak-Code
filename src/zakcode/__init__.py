@@ -108,10 +108,13 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
-    """Parse a claude-mind-style ``local-paths.conf`` and return the external paths.
+    """Parse a claude-mind-style ``local-paths.conf`` and return the directories it grants.
 
-    The file is a simple ``KEY=VALUE`` format (one per line, no quoting); this
-    function extracts ``WORLD_PATH`` and ``META_PATH`` values when present.
+    The file is ``KEY=VALUE``, one per line. A value may be quoted, since the file is also
+    sourced by a shell; the quotes are stripped. The Mind grants its agent three kinds of root
+    here, and its own write hook allows all three (ADR-0230): ``WORLD_PATH``, ``META_PATH``, and
+    ``AGENT_WRITE_PATH``, the product repositories the agent works on, several separated by
+    ``;``. Only existing absolute directories are returned.
     """
     paths: list[Path] = []
     if not conf_path.is_file():
@@ -125,10 +128,16 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
                 continue
             key, _, value = line.partition("=")
             key = key.strip()
-            value = value.strip()
-            if key in ("WORLD_PATH", "META_PATH") and value:
-                p = Path(value)
-                if p.is_absolute() and p.is_dir():
+            value = value.strip().strip('"').strip("'")
+            if key in ("WORLD_PATH", "META_PATH"):
+                values = [value]
+            elif key == "AGENT_WRITE_PATH":
+                values = [part.strip() for part in value.split(";")]
+            else:
+                continue
+            for v in values:
+                p = Path(v)
+                if v and p.is_absolute() and p.is_dir():
                     paths.append(p)
     except OSError:
         pass
@@ -136,7 +145,7 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
 
 
 def _mind_external_roots(repo_root: Path) -> list[Path]:
-    """External world/meta roots a Mind repo declares via ``agents/*/local-paths.conf``.
+    """The world, meta and product roots a Mind repo declares via ``agents/*/local-paths.conf``.
 
     Returns a deduplicated list of existing absolute directories.
     """
