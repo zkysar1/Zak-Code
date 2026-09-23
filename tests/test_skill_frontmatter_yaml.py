@@ -1,11 +1,12 @@
 """The skill frontmatter parser reads indentation as YAML does.
 
-Measured 2026-09-23 against PyYAML: of a live Mind's 146 skills, 36 reached the model's
+Measured 2026-09-23 against PyYAML: of a live Mind's 148 skills, 49 reached the model's
 catalogue with the wrong description. 11 were YAML block scalars (``description: >-`` then
 indented lines) listed as the indicator ``>-``, and a folded line with a colon in it became a
 key of its own. 25 had an ``arguments:`` list whose items carry a ``description:`` of their own,
 and the parser, which stripped every line's indentation, let the LAST ``description:`` win, so
-the skill was listed with one of its arguments' descriptions. Coach's deployment: 20 of 62. The
+the skill was listed with one of its arguments' descriptions. 13 were double-quoted with
+escapes, and the backslashes reached the model. Coach's deployment: 20 of 58. The
 bench's catalogue reader had been fixed for block scalars on 2026-09-12 (ADR-0158 second
 addendum, ``tests/test_bench_frontmatter.py``); the product parser that builds the real
 catalogue had not.
@@ -115,6 +116,32 @@ def test_an_indented_line_is_never_a_key_of_its_own() -> None:
     # the item instead of leaking to the top level.
     assert extras["arguments"] == ["name: path", "name: mode"]
     assert extras["triggers"] == ["/word-count"]
+
+
+def test_an_indented_line_after_a_comment_is_not_a_key() -> None:
+    """YAML rejects this frontmatter. Read tolerantly, as the parser always has, the indented
+    line still must not take over the skill's description."""
+    description, extras = _fm("description: real\n# a comment\n  description: not this")
+    assert description == "real"
+    assert extras == {}
+
+
+def test_a_mapping_indented_as_a_whole_still_parses() -> None:
+    """YAML lets a whole mapping sit indented when every key shares one column, and the
+    parser before this read such a skill. Keys are found at the mapping's own margin, and an
+    indentation digit counts from it."""
+    frontmatter = (
+        "  name: s\n"
+        "  description: >-\n    one\n    two\n"
+        "  notes: |2\n      two spaces kept\n"
+        "  triggers:\n  - /x\n"
+        "  mode: y"
+    )
+    fm, body = parse_frontmatter(f"---\n{frontmatter}\n---\nbody\n")
+    assert (fm.name, fm.description, body) == ("s", "one two", "body")
+    assert fm.extras == {"notes": "  two spaces kept\n", "triggers": ["/x"], "mode": "y"}
+    yaml = pytest.importorskip("yaml")
+    assert yaml.safe_load(frontmatter) == {"name": "s", "description": "one two", **fm.extras}
 
 
 def test_a_nested_mapping_stays_under_its_key() -> None:

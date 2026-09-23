@@ -78,10 +78,6 @@ def _is_blank(line: str) -> bool:
     return not line.strip()
 
 
-def _indented(line: str) -> bool:
-    return line[:1] in (" ", "\t")
-
-
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
@@ -101,20 +97,21 @@ def _unquote(value: str) -> str:
     return value.strip("\"'")
 
 
-def _block_scalar(header: re.Match[str], raw: list[str]) -> str:
+def _block_scalar(header: re.Match[str], raw: list[str], margin: int) -> str:
     """The value of a YAML block scalar, from its header and its content lines as written.
 
     Literal (``|``) keeps each line break. Folded (``>``) joins lines with a space, except
     that a blank line stands for a line break and a more-indented line keeps the breaks
     around it. Chomping then decides the ending: ``-`` none, the default one, ``+`` every
-    trailing blank line. PyYAML is the reference the tests hold this to.
+    trailing blank line. An indentation digit counts from ``margin``, the key's own column.
+    PyYAML is the reference the tests hold this to.
     """
     style = header.group(1)
     chomp = header.group(2) or header.group(5) or ""
     digit = header.group(3) or header.group(4)
     content = [ln for ln in raw if not _is_blank(ln)]
     if digit:
-        indent = int(digit)
+        indent = margin + int(digit)
     elif content:
         indent = len(content[0]) - len(content[0].lstrip(" "))
     else:
@@ -159,14 +156,14 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     ``- "/start"`` lines) — the block form is what real Claude-Mind skills
     overwhelmingly use (measured 2026-08-20: 60 of 78 skills in a live Mind), and
     before this it silently parsed as an empty string, so trigger routing and the
-    extras-preservation promise both quietly degraded. Only a line at the left margin opens
-    a key; indented lines belong to the key above them. A value may be a YAML block scalar
-    (``description: >-`` followed by indented lines, or ``|`` for literal text), a plain
-    value continued on indented lines, or a quoted value with escapes, and each is read as
-    YAML reads it. Measured 2026-09-23 against PyYAML on a live Mind's 146 skills, 36 were
-    listed with the wrong description before this: 11 as the indicator ``>-``, 25 as the
-    description of one of their own arguments. Raises :class:`SkillError` if the fence or
-    ``name`` is missing.
+    extras-preservation promise both quietly degraded. Only a line at the mapping's margin
+    opens a key; a more-indented line belongs to the key above it. A value may be a YAML
+    block scalar (``description: >-`` followed by indented lines, or ``|`` for literal
+    text), a plain value continued on indented lines, or a quoted value with escapes, and
+    each is read as YAML reads it. Measured 2026-09-23 against PyYAML on a live Mind's 148
+    skills, 49 were listed with the wrong description before this: 11 as the indicator
+    ``>-``, 25 as the description of one of their own arguments, 13 with their escapes
+    left in. Raises :class:`SkillError` if the fence or ``name`` is missing.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -182,25 +179,30 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     fields: dict[str, object] = {}
     extras: dict[str, str | list[str]] = {}
     fm = lines[1:end]
+    # The mapping's margin: the column of its first key. YAML lets a whole mapping sit
+    # indented as long as every key shares one column, and the parser before this read that.
+    margin = next((_indent(ln) for ln in fm if ln.strip() and not ln.lstrip().startswith("#")), 0)
     idx = 0
     while idx < len(fm):
         raw_line = fm[idx]
         line = raw_line.strip()
         idx += 1
-        # Only a line at the left margin opens a key. An indented line belongs to the key
+        # Only a line at the margin opens a key. A more-indented line belongs to the key
         # above it. Read as keys of their own, a nested `description:` under a skill's
-        # `arguments:` replaced the skill's own description (25 of a live Mind's 146 skills,
+        # `arguments:` replaced the skill's own description (25 of a live Mind's 148 skills,
         # measured 2026-09-23), and a folded line with a colon in it became a key.
-        if not line or line.startswith("#") or ":" not in line or _indented(raw_line):
+        if not line or line.startswith("#") or ":" not in line or _indent(raw_line) > margin:
             continue
         key, _, value = line.partition(":")
         key = key.strip().replace("-", "_")
         value = value.strip()
-        # The key's own lines: every following line that is blank or indented, and for a bare
-        # key, `- ` items at the left margin too (YAML lets a sequence sit level with its key).
+        # The key's own lines: every following line that is blank or more indented, and for a
+        # bare key, `- ` items at the margin too (YAML lets a sequence sit level with its key).
         nested: list[str] = []
         while idx < len(fm) and (
-            _is_blank(fm[idx]) or _indented(fm[idx]) or (not value and fm[idx].startswith("- "))
+            _is_blank(fm[idx])
+            or _indent(fm[idx]) > margin
+            or (not value and _indent(fm[idx]) == margin and fm[idx].lstrip().startswith("- "))
         ):
             nested.append(fm[idx])
             idx += 1
@@ -209,7 +211,7 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
         if header is not None:
             # A block scalar (`description: >-`, then indented lines), read as YAML reads it.
             # Before this the value was the header itself: ">-".
-            text = _block_scalar(header, nested)
+            text = _block_scalar(header, nested, margin)
         elif value:
             # A plain or quoted value; indented lines after it continue it, folded to one line.
             text = " ".join([value, *(ln.strip() for ln in nested if not _is_blank(ln))])
