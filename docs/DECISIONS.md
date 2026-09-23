@@ -13442,3 +13442,94 @@ declares no Reserved Font Name.
 
 What this does NOT change. The prose face (Inter when installed, the system's otherwise), the
 mono face and every colour. The terminal draws no display face and is untouched.
+
+## ADR-0222: the skill catalogue has Claude Code's listing budget, and over it the least-used skills are listed by name only
+
+Status: accepted. 2026-09-23.
+
+Context. The skill catalogue rides the cached prefix of every call, and nothing bounded it.
+Measured 2026-09-23 on the Ayoai-Mind checkout the fleet's alpha workers run (zc-01, v2.12.80):
+the system prompt without tool schemas was 147,258 characters, and the catalogue was 86,142 of
+them, 146 model-visible skills at about 590 characters each. The two workers' first calls that
+night carried 60,776 and 60,778 prompt tokens and took 438.5 s and 424.2 s, most of it prefill
+on a pod that prefilled about 100 to 150 tokens a second. ADR-0160 had already priced the
+catalogue on the 27B: no change in pass rate and 1.38x the wall time, from attending over the
+extra tokens on every step.
+
+Claude Code bounds the same listing. From its binary (v2.1.129 and later, per third-party
+analysis; the settings are not in its public changelog): the budget is 1% of the context window
+at 4 characters per token (`skillListingBudgetFraction`, 8,000 characters on a 200k window),
+each description is cut at 1,536 characters (`skillListingMaxDescChars`), and over budget the
+descriptions of the skills invoked least are dropped first. Names always stay.
+
+ADR-0155 measured what a shortened catalogue costs: first sentences lose 8.8 points of
+choosability and names alone 37.6, both on queries that name no skill. So the question was never
+whether a name-only entry is worse, it is. It was how often production chooses a skill from its
+description at all. Coach's transcripts on zc-03 answer it, once they are filtered: 1,000 of the
+1,175 files there are pytest sessions leaked before ADR-0159 (their first row's `cwd` is under
+`/tmp/pytest-*`), and one of them, a `greeter` fixture called 68 times, would have read as
+coach's most-chosen skill. The 108 sessions whose `cwd` is `/opt/coach-mind` made 104 `Skill`
+calls. 101 named a skill the conversation had already named, 65 of them in the row just before
+the call. Three were chosen cold, each a different skill.
+
+Decision.
+
+1. `SkillRegistry.render_catalog` takes a character budget and a usage map. A catalogue that
+   fits renders byte-for-byte as before, so a workspace with a few skills, and every bench arm
+   that seeds none, sees no change.
+2. Over budget, every model-visible skill keeps its line, in registration order. Descriptions go
+   to the most-used skills first (ties in registration order), each only while the whole block
+   still fits, and the first that does not fit ends the list. That is Claude Code's order: a
+   skill never keeps a description that a more-used skill lost. A note says how many entries are
+   names only and that a name is all a `Skill` call needs.
+3. The budget is Claude Code's formula against the smallest effective window (one catalogue rides
+   every model a session routes to), never below the 8,000 characters that formula gives its
+   standard 200k window. A 131,072-token window gets 8,000. A window nobody knows (an injected
+   provider) leaves the catalogue unbounded, as before.
+4. Descriptions are cut at 1,536 characters in every case, as Claude Code cuts them.
+5. `skills/usage.py` keeps the counts at `<zakcode home>/skill-usage.json`. A body delivered for
+   a model's `Skill` call or an operator's `/<name>` counts one. The harness re-entering its own
+   loop skill (ADR-0187) chooses nothing and does not count. The counts are read once when an
+   Agent is built, because the catalogue must not move inside a session. Under
+   `stable_prompt_identity` they are not read at all, so two runs of the same work still get a
+   byte-identical prompt (ADR-0157).
+
+Why lines stay in registration order. Ranking the lines would move every entry whenever two
+counts crossed, and the catalogue sits in the prefix a new session can reuse. Kept in place, a
+change of rank changes the prompt only where a description is gained or lost.
+
+Why names always stay. guard-4706's lesson from the rules render: a block cut to fit reads as
+complete, so the model cannot tell what it is missing. Every name stays and the note says how
+many lost their description.
+
+Why the floor. On a 131,072-token window the formula alone gives 5,242 characters, less than
+the 146 names take. A smaller window is no reason to describe fewer skills than Claude Code
+describes on its standard one.
+
+What it saves. At a 131,072-token window the Ayoai-Mind catalogue goes from 85,714 to 7,882
+characters on a box with no counts, about 18,000 tokens off every call, and three skills keep
+their descriptions. Coach's 61 model-visible skills go from 32,169 to 7,570 characters, with ten
+descriptions kept (measured on zc-03, only counts returned).
+
+What it risks, bounded. A cold choice of a skill whose description was dropped meets its name
+alone. In coach's real sessions that was at most 3 of 104 calls.
+
+Known limits. Two processes counting at the same instant can lose one increment; the file is a
+ranking, so there is no cross-process lock. Counts are totals with no decay. A new box has no
+counts, so registration order decides until it has some.
+
+The proof. `tests/test_skill_listing_budget.py`, 20 tests: the formula and floor, a catalogue that
+fits is unchanged, every line and its order over budget, most-used first with ties in
+registration order, the first misfit ends the list, names stay when names alone overflow, the
+1,536 cut, the note's count, the usage record's failure modes and its in-process concurrency,
+and the Agent's wiring (a known window budgets, an injected provider does not, the pinned
+identity ignores counts, a harness re-entry is not counted). Eight mutants were each caught by
+the test written for them, run with `mutation-proof-test.sh` on cc-14.
+
+How the live run is read. On the next worker that starts on this build, against the two that
+started without it the same night: the first call's prompt tokens should drop by at least 15,000
+from about 60,800. No `Skill` call may name a skill that does not exist. Every `Skill` call is
+checked against a catalogue line.
+
+What this does NOT change. Skill bodies and their paging (ADR-0192), the classify side-call's own
+100-character cap, the operator's `/skills` listing, the user-only line and the provenance line.

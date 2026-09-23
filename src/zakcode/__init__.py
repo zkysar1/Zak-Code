@@ -688,7 +688,19 @@ class Agent:
             self.skill_registry, self.skill_errors = discover_skills(
                 self.settings.workspace_root, extra_skill_dirs=extra_skill_dirs
             )
-            skills_catalog = self.skill_registry.render_catalog()
+            # The skill listing budget (ADR-0222): Claude Code's share of the context window,
+            # measured against the SMALLEST effective window, since one catalogue rides every
+            # model a session routes to. Over budget, descriptions go to the most-used skills
+            # (skills/usage.py). Under stable_prompt_identity the counts are ignored, so two runs
+            # of the same work still render a byte-identical catalogue (ADR-0157).
+            from zakcode.skills import listing_budget_chars
+            from zakcode.skills.usage import load_skill_usage
+
+            windows = [r.window for r in self.context_windows.values() if r.window]
+            skills_catalog = self.skill_registry.render_catalog(
+                budget_chars=listing_budget_chars(min(windows) if windows else None),
+                usage={} if self.settings.stable_prompt_identity else load_skill_usage(),
+            )
             # Model-driven skill authoring (persisted to the project skills dir; the
             # new skill is discovered next session). save_skill validates the name so
             # the write can never escape that directory.
@@ -1832,6 +1844,13 @@ class Agent:
                 self._skill_invocations_this_turn,
                 self._skill_invocations_total,
             )
+        if source in ("tool", "command"):
+            # A CHOICE of this skill, the model's or the operator's, ranks it for the skill
+            # listing budget's descriptions from the next session on (ADR-0222). The harness
+            # re-entering its own loop skill chooses nothing, so it is not counted.
+            from zakcode.skills.usage import record_skill_use
+
+            record_skill_use(skill.name)
         # Defang protocol/template sentinels so a file-authored body can't forge a frame in
         # text mode; the body is preserved verbatim otherwise (defang never deletes content).
         await self._emit_skill_selected(skill.name, query, source=source)
