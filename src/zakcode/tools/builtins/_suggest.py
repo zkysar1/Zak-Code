@@ -57,8 +57,9 @@ def suggest(
 ) -> tuple[list[str], list[str]]:
     """Return ``(by_name, by_content)`` for a path that does not exist.
 
-    ``by_name``: files/dirs whose basename contains the missing basename (exact, then
-    without extension, then every ≥3-char token). ``by_content``: ``path:line`` of text
+    ``by_name``: files/dirs whose basename contains the missing basename (the path asked for
+    under another prefix first, then the exact name contained, then without extension, then
+    every ≥3-char token). ``by_content``: ``path:line`` of text
     files mentioning the missing stem. Both are short, deterministic, and never raise —
     a suggestion that fails is an empty list, never a second error on top of the first.
     """
@@ -78,9 +79,11 @@ def _suggest(
     tokens = _tokens(stem)
     if len(stem) < 3 and not tokens:
         return [], []
+    # The path asked for, normalised to compare against a hit's displayed path: a hit ending
+    # with it is the same file under another prefix, the lead bash's ENOENT hint also ranks
+    # first (ADR-0097).
+    want = "/".join(p for p in missing.replace("\\", "/").lower().split("/") if p not in ("", "."))
 
-    ignore = load_ignore(workspace_root)
-    ignore_root = workspace_root.resolve()
     deadline = time.monotonic() + _TIME_BUDGET_S
     scored: list[tuple[int, int, str, Path]] = []
     text_candidates: list[Path] = []
@@ -89,6 +92,13 @@ def _suggest(
     for root in roots:
         if not root.is_dir():
             continue
+        # Each root is judged by its OWN ignore rules (ADR-0229). A declared extra root is
+        # wanted by definition, and a Mind's world sits under a directory the checkout's
+        # .gitignore excludes (`.mind-data/`). Judged by the primary root's rules, every file
+        # in it was ignored, so `world/program.md` was answered with six look-alikes and
+        # never with `.mind-data/world/program.md` itself.
+        ignore = load_ignore(root)
+        ignore_root = root.resolve()
         for current, dirnames, filenames in os.walk(root, followlinks=False):
             current_path = Path(current)
             dirnames[:] = [
@@ -118,6 +128,10 @@ def _suggest(
                     score = 1
                 if score:
                     rel = _display(leaf, workspace_root)
+                    if rel.lower() == want or rel.lower().endswith("/" + want):
+                        # `world/program.md` for `.mind-data/world/program.md`: the file the
+                        # model meant, above a shorter look-alike (ADR-0229).
+                        score = 4
                     scored.append((-score, len(rel), rel, leaf))
                 if not is_dir:
                     text_candidates.append(leaf)
