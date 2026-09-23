@@ -416,7 +416,7 @@ async def test_bash_empty_command_is_error(ctx):
 async def test_bash_output_size_cap(ctx, tmp_path, monkeypatch):
     import zakcode.tools.builtins.bash as bash_mod
 
-    monkeypatch.setattr(bash_mod, "_MAX_OUTPUT", 100)
+    monkeypatch.setattr(bash_mod, "_INLINE_CHARS", 100)
     # Run a script file so we avoid cross-shell nested-quoting differences and
     # reliably emit far more than 100 chars of output.
     script = tmp_path / "spew.py"
@@ -426,7 +426,7 @@ async def test_bash_output_size_cap(ctx, tmp_path, monkeypatch):
     res = await BashTool().execute({"command": cmd}, ctx)
     assert not res.is_error
     assert res.data["truncated"] is True
-    assert "output truncated" in res.output
+    assert "characters are shown" in res.output
 
 
 async def test_bash_runs_in_workspace_cwd(ctx, tmp_path):

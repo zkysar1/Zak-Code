@@ -13961,3 +13961,56 @@ through `compact_now`. The summary replaces the ask, the system prompt is unchan
 session restored from its JSON keeps the task. The positive control clears the pin and the
 prompt moves. Under `mutation-proof-test.sh` on cc-14, removing the pin turned exactly that
 test red.
+
+## ADR-0234: a command's output reaches the model within Claude Code's limits
+
+Status: accepted. 2026-09-23.
+
+The shell tool returned up to 64 KB of a command's output and cut the rest from the end, for a
+command that succeeded and one that failed alike. On a 131k window that is about a sixth of the
+context in one result. Measured on the 131k P40 pod over 16 hours of two worker Bodies
+(alpha@zc-01 and alpha@zc-02, on a build from before this change): five outputs hit the cap, a
+goal selector's JSON twice, an aspirations dump, and a `cat` twice, and three more ran 31,000 to
+54,000 characters. At four of the ten compactions in that window these outputs were most of what
+the compaction kept, 57 to 98 percent of its characters. The first call after a compaction reads
+nothing from the cache on that pod (ADR-0233), and those calls took a median of 511 and 536
+seconds on the two Bodies, most of it prefill, against 46 and 39 for their other calls.
+
+Claude Code's public tools reference states its limits. A command that succeeded is returned
+whole up to about 30,000 characters. Past that the model gets the path of a file in the session
+directory holding the output, and a preview of up to the first 2,000 characters, and reads or
+searches the file when it needs the rest. A command that failed is returned whole up to about
+10,000 characters, and past that as an excerpt from its start and its end.
+
+Decision. Those limits, in `bash.py`'s `_fit_output`. A success within 30,000 characters and a
+failure within 10,000 are returned whole, as before. Past its limit the whole output is written
+to the session's output directory, the one background commands already write to (ADR-0191).
+A success then shows its first 2,000 characters, cut back to a line end, and a line naming the
+file, its size in characters and lines, and how to read the rest. A failure shows its first two
+thirds and last third of 10,000 characters, the shape of the loop's seam clamp, with the same
+line. A failure also gets the path, which Claude Code does not give: saving costs one line in
+the result and spares running a failing command again to see its middle. "Failure" is what the
+tool already returns as an error, including the exit-0 pipe that hid an interpreter error
+(ADR-0093), and the fix hints now read the whole output rather than its first 64 KB.
+
+Outside a served workspace that directory is not under any workspace root, so Read refused the
+path, and it already refused the output file a background command names for the same reason.
+Read now opens an absolute path inside the session's own output directory. Nothing else outside
+the roots opens, and no other tool reaches that directory.
+
+With no session to save into (a bare tool context) a long success keeps its first two thirds and
+last third of 30,000 characters and tells the model to run the command again, narrower.
+
+What it risks. A model that needs more than a preview spends a call to read it. The Mind's goal
+selector puts its pick first, a listing and a report put what matters at the start, and the
+preview says where the rest is. `TaskOutput` still returns
+the last 64,000 characters of a background command, and the PowerShell tool still cuts at 64 KB;
+neither was measured here.
+
+The proof. `tests/test_bash_output_limits.py`: a 41,000-character success is saved whole and
+shown by its whole first lines and the path; Read opens a page of the saved file, and the
+positive control reads a file one directory up, and the same path from a context with no
+session, and is refused both times; a 41,000-character failure shows its first and last lines;
+outputs within their limits are whole and save nothing; with no session a long success keeps
+its start and end. Under `mutation-proof-test.sh` on cc-14, skipping the save turned the three
+tests that read the file red, and removing Read's allowance turned exactly the Read test red.

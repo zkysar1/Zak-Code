@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -10,11 +12,28 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._safety import PathEscapeError, resolve_in_workspace, resolve_path
 from zakcode.tools.builtins._suggest import not_found_fix, render, suggest
 
 # Maximum number of bytes we will read before truncating.
 _MAX_BYTES = 100 * 1024
+
+
+def _session_output_file(path: str, ctx: ToolContext) -> Path | None:
+    """``path`` resolved, when it is an absolute path into this session's own command-output
+    directory, else ``None`` (ADR-0234).
+
+    The one place outside the workspace roots Read may open. The shell tool saves a long
+    output there and hands the model the path; a background command writes its output file
+    there and says "Read that file" (ADR-0191). Outside a served workspace that directory is
+    under no root, so both pointers led to a refusal. Reading only: no other tool asks this.
+    """
+    if ctx.background_tasks is None or not Path(path).is_absolute():
+        return None
+    try:
+        return resolve_in_workspace(path, ctx.background_tasks.directory)
+    except PathEscapeError:
+        return None
 
 
 class ReadFileTool(Tool):
@@ -73,7 +92,10 @@ class ReadFileTool(Tool):
         try:
             resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)
         except PathEscapeError as exc:
-            return ToolResult.error(str(exc))
+            output_file = _session_output_file(path, ctx)
+            if output_file is None:
+                return ToolResult.error(str(exc))
+            resolved = output_file
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to resolve path {path!r}: {exc}")
 

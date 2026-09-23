@@ -55,7 +55,7 @@ from pydantic import BaseModel
 from zakcode._subprocess import find_bash, new_group_kwargs, terminate_process_tree
 from zakcode.config import zakcode_home
 
-#: The output tail ``TaskOutput`` returns — the foreground bash tool's own budget.
+#: The output tail ``TaskOutput`` returns. It was the foreground bash tool's budget until ADR-0234.
 MAX_OUTPUT_CHARS = 64_000
 #: ``TaskOutput(block=true)`` waits this long by default, and at most this long (ms).
 DEFAULT_BLOCK_MS = 30_000
@@ -353,6 +353,35 @@ class BackgroundTasks:
     def output(self, task: BackgroundTask, *, max_chars: int = MAX_OUTPUT_CHARS) -> str:
         return output_tail(task.output_file, max_chars=max_chars)
 
+    # ── the output directory ──────────────────────────────────────────────────────
+
+    @property
+    def directory(self) -> Path:
+        """Where this session's command output is written (:func:`tasks_dir_for`). Asking
+        creates nothing: Read asks whenever a path falls outside the workspace (ADR-0234)."""
+        if self._tasks_dir is not None:
+            return self._tasks_dir
+        return tasks_dir_for(None, str(getattr(self._session, "id", "session")))
+
+    def _prepared_directory(self) -> Path:
+        """:attr:`directory`, created, with an ignore-everything file beside it."""
+        tasks_dir = self.directory
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        ignore = tasks_dir.parent / ".gitignore"  # a served workspace may be a checkout
+        if not ignore.exists():
+            with contextlib.suppress(OSError):
+                ignore.write_text("*\n", encoding="utf-8")
+        return tasks_dir
+
+    def save_output(self, text: str) -> Path:
+        """Write a foreground command's whole output to a file of its own and return the
+        path (ADR-0234). The shell tool calls this when an output is too long to show
+        whole; the result then carries a preview and this path. Raises ``OSError``."""
+        path = self._prepared_directory() / f"output-{uuid.uuid4().hex[:9]}.txt"
+        # Bytes, not write_text: on Windows text mode would turn every "\n" into "\r\n".
+        path.write_bytes(text.encode("utf-8", errors="replace"))
+        return path
+
     # ── start / wait / stop ───────────────────────────────────────────────────────
 
     async def start(
@@ -367,14 +396,7 @@ class BackgroundTasks:
         """Spawn ``command`` detached and record it. Returns at once."""
         from zakcode.tools.builtins._proc import child_environment
 
-        tasks_dir = self._tasks_dir
-        if tasks_dir is None:
-            tasks_dir = tasks_dir_for(None, str(getattr(self._session, "id", "session")))
-        tasks_dir.mkdir(parents=True, exist_ok=True)
-        ignore = tasks_dir.parent / ".gitignore"  # a served workspace may be a checkout
-        if not ignore.exists():
-            with contextlib.suppress(OSError):
-                ignore.write_text("*\n", encoding="utf-8")
+        tasks_dir = self._prepared_directory()
         task_id = uuid.uuid4().hex[:9]
         output_file = tasks_dir / f"{task_id}.out"
         exit_file = tasks_dir / f"{task_id}.exit"
