@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode._subprocess import find_bash
+from zakcode.background import BackgroundTasks
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     STDOUT_CHARS,
@@ -29,8 +30,17 @@ from zakcode.tools.builtins._suggest import suggest
 # zc-02 was killed at 60s and the model spent a call retrying it with a longer timeout.
 _DEFAULT_TIMEOUT = 120
 _MAX_TIMEOUT = 600
-# Maximum number of characters of combined output to return.
-_MAX_OUTPUT = 64 * 1024
+# How much of a command's output reaches the model: Claude Code's limits, from its public tools
+# reference (ADR-0234). A command that succeeded is shown whole up to _INLINE_CHARS; past that,
+# the whole output is saved to a file in the session's output directory and the result is its
+# first _PREVIEW_CHARS plus the file's path. A command that failed is shown whole up to
+# _FAILURE_CHARS; past that, its start and end, and the path too. It was 64 KB here, cut at the
+# head for success and failure alike: measured 2026-09-23 on two worker Bodies over 16 hours,
+# five outputs hit that cap (a goal selector's JSON, an aspirations dump, a cat), each put about
+# 22k tokens into a 131k window, and four of the ten compactions kept mostly such outputs.
+_INLINE_CHARS = 30_000
+_PREVIEW_CHARS = 2_000
+_FAILURE_CHARS = 10_000
 
 
 def _windows_shell_fix(command: str, output: str) -> str | None:
@@ -440,6 +450,58 @@ def _strip_apport_noise(output: str) -> str:
         return "\n" + orig
 
     return _APPORT_BLOCK_RE.sub(cut, output)
+
+
+def _fit_output(
+    output: str, *, failed: bool, tasks: BackgroundTasks | None
+) -> tuple[str, Path | None]:
+    """``output`` as the model sees it, and the file holding all of it when it was too long
+    to show whole (ADR-0234).
+
+    Within the limit (_INLINE_CHARS for a success, _FAILURE_CHARS for a failure) it comes back
+    unchanged. Past it the whole output is saved to the session's output directory, and:
+
+    * a success shows its first _PREVIEW_CHARS, cut back to a line end, and the path — Claude
+      Code's shape. The start is where a listing, a report or a JSON document puts what
+      matters; the rest is one Read or grep away.
+    * a failure shows its start and end, 2/3 and 1/3 of _FAILURE_CHARS (the loop's seam-clamp
+      shape): the first error at one end, the verdict at the other, and the path.
+
+    With no session to save into (a bare tool context), or when the save fails, a long success
+    is shown the way a failure is, start and end, at _INLINE_CHARS: there is no path to give.
+    """
+    limit = _FAILURE_CHARS if failed else _INLINE_CHARS
+    if len(output) <= limit:
+        return output, None
+    saved: Path | None = None
+    if tasks is not None:
+        try:
+            saved = tasks.save_output(output)
+        except OSError:
+            saved = None
+    lines = output.count("\n") + (0 if output.endswith("\n") else 1)
+    size = f"{len(output):,} characters in {lines:,} lines"
+    where = (
+        f"The whole output is in {saved}: Read it with offset/limit, or grep it, for the rest."
+        if saved is not None
+        else "Run the command again, narrower (grep, head, tail), for the rest."
+    )
+    if failed or saved is None:
+        head = limit * 2 // 3
+        tail = limit - head
+        note = (
+            f"\n\n[... the output is {size}; its first {head:,} and last {tail:,} "
+            f"characters are shown. {where} ...]\n\n"
+        )
+        return output[:head] + note + output[-tail:], saved
+    preview = output[:_PREVIEW_CHARS]
+    line_end = preview.rfind("\n")
+    if line_end >= _PREVIEW_CHARS // 2:
+        preview = preview[: line_end + 1]
+    note = (
+        f"[... the output is {size}; its first {len(preview):,} characters are shown. {where} ...]"
+    )
+    return preview + ("" if preview.endswith("\n") else "\n") + note, saved
 
 
 def _interpreter_mismatch_fix(command: str) -> str | None:
@@ -865,7 +927,8 @@ class BashTool(Tool):
         description=(
             "Run a shell command with the workspace as the working directory. "
             "stdout and stderr are combined. Default 120s timeout (max 600). Returns a "
-            "non-zero exit code as an error."
+            "non-zero exit code as an error. Output past 30,000 characters (10,000 for a "
+            "failed command) is saved to a file: the result shows part of it and the path."
         ),
         parameters={
             "type": "object",
@@ -986,32 +1049,12 @@ class BashTool(Tool):
         )
 
     def _finish(self, command: str, output: str, exit_code: int, ctx: ToolContext) -> ToolResult:
-        """The foreground result: the combined output under the budget, the exit code, and
-        the fix a failure suggests."""
-        output = _strip_apport_noise(output)  # before the budget: the noise must not spend it
-        truncated = False
-        if len(output) > _MAX_OUTPUT:
-            hidden = len(output) - _MAX_OUTPUT
-            output = output[:_MAX_OUTPUT] + (
-                f"\n\n[... output truncated at 64KB; {hidden} more chars hidden — "
-                "narrow the command (grep/head/tail) to see the rest ...]"
-            )
-            truncated = True
-
-        combined = output
-        if combined and not combined.endswith("\n"):
-            combined += "\n"
-        combined += f"[exit code: {exit_code}]"
-
-        data = {
-            "command": command,
-            "exit_code": exit_code,
-            "truncated": truncated,
-            # Where the command's own output ends and the exit-code line begins: the
-            # PostToolUse wire cuts Claude Code's ``tool_response.stdout`` here (ADR-0210).
-            STDOUT_CHARS: len(output),
-        }
-        if exit_code != 0:
+        """The foreground result: the combined output within the limits, the exit code, and
+        the fix a failure suggests. The fix hints read the WHOLE output, before the limits."""
+        output = _strip_apport_noise(output)  # before the limits: the noise must not spend them
+        failed = exit_code != 0
+        fix: str | None = None
+        if failed:
             fix = (
                 _interpreter_mismatch_fix(command)
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
@@ -1023,17 +1066,34 @@ class BashTool(Tool):
                 or _json_first_line_fix(command, output)
                 or _windows_shell_fix(command, output)
             )
+        else:
+            # Exit 0 can be a trailing pipe's (`python3 x.sh … | tail -40`): the interpreter
+            # choked and `tail` reported success (ADR-0093, measured on the reducer the same
+            # day the hint shipped — the pipe hid the failure the hint was written for). The
+            # mismatched command plus the interpreter's own error text is the signal; the
+            # result is the failure it was.
+            mismatch = _interpreter_mismatch_fix(command)
+            if mismatch and _INTERPRETER_ERROR_RE.search(output):
+                failed = True
+                fix = f"{mismatch} (The exit code 0 is the pipe's, not the script's.)"
+
+        shown, saved = _fit_output(output, failed=failed, tasks=ctx.background_tasks)
+        combined = shown
+        if combined and not combined.endswith("\n"):
+            combined += "\n"
+        combined += f"[exit code: {exit_code}]"
+
+        data: dict[str, Any] = {
+            "command": command,
+            "exit_code": exit_code,
+            "truncated": shown != output,
+            # Where the command's own output ends and the exit-code line begins: the
+            # PostToolUse wire cuts Claude Code's ``tool_response.stdout`` here (ADR-0210).
+            STDOUT_CHARS: len(shown),
+        }
+        if saved is not None:
+            data["output_file"] = str(saved)
+            data["output_chars"] = len(output)
+        if failed:
             return ToolResult.error(combined, data=data, fix=fix)
-        # Exit 0 can be a trailing pipe's (`python3 x.sh … | tail -40`): the interpreter
-        # choked and `tail` reported success (ADR-0093, measured on the reducer the same day
-        # the hint shipped — the pipe hid the failure the hint was written for). The
-        # mismatched command plus the interpreter's own error text is the signal; the
-        # result is the failure it was.
-        mismatch = _interpreter_mismatch_fix(command)
-        if mismatch and _INTERPRETER_ERROR_RE.search(output):
-            return ToolResult.error(
-                combined,
-                data=data,
-                fix=f"{mismatch} (The exit code 0 is the pipe's, not the script's.)",
-            )
         return ToolResult.ok(combined, data=data)
