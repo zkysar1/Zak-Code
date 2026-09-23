@@ -858,7 +858,7 @@ class _ScriptedSummarizer(_SummarizerProvider):
 
 
 def test_the_transcript_ends_with_the_instruction(tmp_path: Path) -> None:
-    # Measured 2026-09-23 (a 27B model on the pod): 8 of 34 responses were the transcript's
+    # Measured 2026-09-23 (a 27B model on the pod): 9 of 34 responses were the transcript's
     # next turn, a plan or a status line, while the instruction sat only above the transcript.
     provider = _SummarizerProvider(["<summary>summary</summary>"], tokens=100_000)
     loop = _loop(provider, tmp_path)

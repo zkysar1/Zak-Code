@@ -338,7 +338,7 @@ _FOLD_PROMPT = "Fold these part-summaries of one conversation into a single cohe
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
 #: What closes every transcript the summarizer reads, whole or a part (ADR-0242): the
 #: instruction, where the model starts writing. Measured 2026-09-23 on a local pod (a 27B
-#: model, three Bodies, 34 compactions): 8 responses were not summaries but a status line, the
+#: model, three Bodies, 34 compactions): 9 responses were not summaries but a status line, the
 #: transcript's next turn, a first-person plan or a tool call, and each of those Bodies resumed
 #: on the harness note and its kept tail alone. The instruction sat only in the system prompt,
 #: above some 40,000 tokens of agent turns.
@@ -361,8 +361,10 @@ _SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)(?:</summary>|\Z)", re.S | re.I)
 #: before a real summary.
 _TRANSCRIPT_TURN_RE = re.compile(r"\W*\[(?:user|assistant|tool)\]", re.I)
 #: A response under :data:`_SUMMARY_FLOOR_CHARS` is not a summary of a request of at least
-#: :data:`_SUMMARY_FLOOR_SOURCE` characters (ADR-0242). Measured 2026-09-23: the 8 responses
-#: that were not summaries ran 56 to 442 characters, the other 26 ran 810 to 13,007.
+#: :data:`_SUMMARY_FLOOR_SOURCE` characters (ADR-0242). Measured 2026-09-23: 8 of the 9
+#: responses that were not summaries ran 56 to 442 characters, and the 25 summaries ran 810 to
+#: 13,007. The ninth was longer and opened with an ``[assistant]`` label, which the turn check
+#: catches.
 _SUMMARY_FLOOR_CHARS = 500
 _SUMMARY_FLOOR_SOURCE = 20_000
 #: How many times a response that is not a summary is asked for again, at the rejection-retry

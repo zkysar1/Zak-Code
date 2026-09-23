@@ -14467,12 +14467,14 @@ Status: accepted. 2026-09-23.
 
 ADR-0082 hands the summarizer the transcript as one user message of labeled text, so that a small
 model summarizes it instead of carrying it on. It still carries it on. Measured 2026-09-23 on the
-pod (a 27B model, three worker Bodies): of 34 compactions, 8 came back as something other than a
-summary, 56 to 442 characters long, where the other 26 ran 810 to 13,007. Read with every letter
-masked, they were a one-line status, the transcript's next turn opening with its own `[assistant]`
-label, a first-person plan for the next step, or a tool call written out as text. Each was
-installed as the summary, and those Bodies went on from the harness's position note and the kept
-messages alone. The instruction sat in the system prompt and in one line above the transcript,
+pod (a 27B model, three worker Bodies): of 34 compactions, 9 came back as something other than a
+summary. Eight were 56 to 442 characters long, where the 25 summaries ran 810 to 13,007. Read
+with every letter masked, they were a one-line status, the transcript's next turn opening with
+its own `[assistant]` label, a first-person plan for the next step, or a tool call written out as
+text. The ninth was longer, and it was the transcript's next turn, opening with `...` and an
+`[assistant]` label. This record first said 8 of 34; the length count had missed that one. Each
+was installed as the summary, and those Bodies went on from the harness's position note and the
+kept messages alone. The instruction sat in the system prompt and in one line above the transcript,
 some 40,000 tokens before the point where the model starts writing.
 
 Decision.
@@ -14486,8 +14488,9 @@ Decision.
   with the label of one of the conversation's turns (`[user]`, `[assistant]` or `[tool]`; a
   re-compaction's transcript opens with the previous summary under `[system]`, and a model may
   echo that label), or when it is under 500 characters for a request of 20,000 characters or
-  more. The field data sets the floor: every failure was under 443
-  characters and every other response over 809.
+  more. The field data sets the floor: eight of the nine failures were under 443 characters and
+  every summary was over 809. The ninth opened with an `[assistant]` label, which the turn check
+  catches.
 - A response that is not a summary is asked for again once, at the temperature the loop already
   resamples a rejected tool call at. If the second is not a summary either, the compaction fails
   the way a failed summarizer always has, and the old tool outputs are elided instead (ADR-0083).
@@ -14496,9 +14499,9 @@ Decision.
   ADR-0241), and their tokens are counted like any others', since they were spent. The status line
   says when the summarizer is asked again, and why.
 
-Why one resample. A summarizer call takes one to ten minutes on the pod. The loop's shared retry
-bound, three retries, is sized for a 429 that clears with time, not for a model that answered the
-wrong question.
+Why one resample. A summarizer call takes one to fifteen minutes on the pod. The loop's shared
+retry bound, three retries, is sized for a 429 that clears with time, not for a model that
+answered the wrong question.
 
 What it risks. A response without tags is still read whole, so a model that ignores the tags
 loses nothing. A summary under 500 characters of a long transcript is now asked for twice and
@@ -14525,6 +14528,13 @@ instruction on the whole transcript, a slice, a fold or the clamped fold; the ta
 role-label check; `[system]` counted as a turn; no floor; the floor without its source
 threshold; no empty reason; no resample; no raised temperature; only accepted responses counted;
 no rejection count; and no status line. The full suite passed, 4,723 tests.
+
+Replayed after the merge, on 2026-09-23. Two compactions that had failed live were rebuilt from
+their transcripts, and each was sent to the pod's summarizer twice, once through the old prompt
+and once through this one. All four came back as summaries, 3,609 to 5,624 characters, in 620 to
+859 seconds each. The failure is not deterministic, so four calls cannot tell the two prompts
+apart. The replay was stopped there, because each call held one of the pod's four engines for
+over ten minutes.
 
 ## ADR-0243: every side call's usage record says it is one
 
