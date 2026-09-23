@@ -21,10 +21,13 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 from zakcode.tools.builtins._suggest import suggest
 
-# Default and hard-cap timeouts, in seconds. The default stays short (most commands are quick),
-# but the cap is generous so a real build/test suite (often >60s) can finish with an explicit
-# ``timeout`` instead of always failing -- the prior 60s hard cap surfaced as a false stall.
-_DEFAULT_TIMEOUT = 60
+# Default and hard-cap timeouts, in seconds. The cap is generous so a real build/test suite
+# can finish with an explicit ``timeout`` instead of always failing -- the prior 60s hard cap
+# surfaced as a false stall. The default is Claude Code's: two minutes (its schema counts
+# milliseconds, default 120000, max 600000). It was 60s here, and a Mind's own scripts can
+# outlast that on a slow box: measured 2026-09-23, an alpha worker's goal-selector run on
+# zc-02 was killed at 60s and the model spent a call retrying it with a longer timeout.
+_DEFAULT_TIMEOUT = 120
 _MAX_TIMEOUT = 600
 # Maximum number of characters of combined output to return.
 _MAX_OUTPUT = 64 * 1024
@@ -861,7 +864,7 @@ class BashTool(Tool):
         name="Bash",
         description=(
             "Run a shell command with the workspace as the working directory. "
-            "stdout and stderr are combined. Default 60s timeout (max 600). Returns a "
+            "stdout and stderr are combined. Default 120s timeout (max 600). Returns a "
             "non-zero exit code as an error."
         ),
         parameters={
@@ -873,7 +876,7 @@ class BashTool(Tool):
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default 60, max 600).",
+                    "description": "Timeout in seconds (default 120, max 600).",
                     "minimum": 1,
                     "maximum": _MAX_TIMEOUT,
                 },

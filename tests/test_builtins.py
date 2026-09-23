@@ -139,9 +139,32 @@ async def test_grep_glob_filter_applies_to_single_file_path(ctx: ToolContext) ->
 
 
 def test_bash_timeout_cap_raised_above_60() -> None:
-    # TOOL-04: the bash timeout was a hard 60s cap (a >60s build always timed out). Default stays
-    # 60, but the cap is now generous so an explicit longer timeout is honored.
+    # TOOL-04: the bash timeout was a hard 60s cap (a >60s build always timed out). The cap is
+    # now generous so an explicit longer timeout is honored.
     assert BashTool.spec.parameters["properties"]["timeout"]["maximum"] == 600
+
+
+async def test_bash_default_timeout_is_claude_codes_two_minutes(
+    ctx: ToolContext, monkeypatch
+) -> None:
+    """With no ``timeout``, a command gets Claude Code's default of two minutes, not the 60s
+    that killed a Mind worker's goal-selector run on zc-02 (2026-09-23). An explicit value is
+    honored, and one above the cap is clamped to it."""
+    import zakcode.tools.builtins.bash as bash_module
+
+    seen: list[int] = []
+
+    async def fake_run(*, timeout: int, **_: object) -> tuple[str, int]:
+        seen.append(timeout)
+        return "ok", 0
+
+    monkeypatch.setattr(bash_module, "run_capturing", fake_run)
+    for args in ({}, {"timeout": 5}, {"timeout": 120_000}):
+        res = await BashTool().execute({"command": "true", **args}, ctx)
+        assert not res.is_error
+    assert seen == [120, 5, 600]
+    schema = BashTool.spec.parameters["properties"]["timeout"]["description"]
+    assert "default 120" in schema
 
 
 async def test_bash_echo_output_and_exit(ctx: ToolContext) -> None:
