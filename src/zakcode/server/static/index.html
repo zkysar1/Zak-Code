@@ -1183,13 +1183,23 @@
     endTurn();
   }
 
+  // A turn's end: done, the interrupted status, an error frame, a session restart.
   function endTurn() {
-    turnActive = false;
     // The turn's clock and meter stop with it. The next user_message restarts them; a
     // turn that opens without one (a /chat/stream turn) is not timed or metered from
     // this turn's start, so its footer leaves the duration out instead of spanning two.
     turnAt = null;
     turnUsage = emptyUsage();
+    resetTurnView();
+  }
+
+  // The view's per-turn state, reset when a turn ends AND when the watch connection
+  // drops. A dropped connection is not a turn end: the resume replays the same turn from
+  // its cursor, and that turn's done frame still needs the clock and meter above, so
+  // only the view resets here. (Resetting the clock on reconnect printed the footer of
+  // every turn that survived a reconnect without its duration.)
+  function resetTurnView() {
+    turnActive = false;
     hideStatus();
     setSendMode(false);
     approval.hidden = true;
@@ -1471,7 +1481,7 @@
         });
       } catch (e) { /* fall through to reconnect */ }
       setConn("connecting", "reconnecting");
-      endTurn();
+      resetTurnView();
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
