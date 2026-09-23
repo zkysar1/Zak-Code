@@ -24,6 +24,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.recipe import RecipeCursor, extract_acceptance, resolve_run_command
 from zakcode.events import AgentDone, AgentStatus, AgentToolCall, AgentToolResult
+from zakcode.hooks import TurnEndPayload, TurnEndResult
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -171,6 +172,27 @@ def test_cursor_nudge_cap_floored_at_default() -> None:
     c.nudge()
     c.nudge()
     assert c.can_nudge() is False
+
+
+def test_cursor_stand_down_releases_the_spent_targets() -> None:
+    # ADR-0244: a turn-end hook took on a turn the gate gave up on. The files the gate spent its
+    # attempts on stop holding the turn's end, a runnable written later arms the gate again with
+    # a fresh budget, and written_paths still reports every runnable the turn wrote.
+    c = RecipeCursor(enabled=True, attempt_cap=1)
+    for call_id in ("w1", "w2"):  # one file written twice is released once
+        c.observe([_c(call_id, "write_file", path="fetch.sh")], [_r(call_id, path="fetch.sh")])
+    c.nudge()
+    assert c.needs_verification() is True and c.can_nudge() is False
+    assert c.stand_down() == ["fetch.sh"]
+    assert c.needs_verification() is False
+    c.observe([_c("w3", "write_file", path="parse.py")], [_r("w3", path="parse.py")])
+    assert c.needs_verification() is True and c.can_nudge() is True  # a fresh budget
+    assert c.stand_down() == ["parse.py"]  # a second stand-down releases only what is new
+    # A file written after both is the only one holding the end: running it verifies the turn.
+    c.observe([_c("w4", "write_file", path="emit.py")], [_r("w4", path="emit.py")])
+    c.observe([_c("r", "bash", command="py emit.py")], [_r("r")])
+    assert c.needs_verification() is False
+    assert c.written_paths == ["fetch.sh", "parse.py", "emit.py"]
 
 
 def test_cursor_non_executing_commands_do_not_verify() -> None:
@@ -1316,3 +1338,106 @@ def test_resolve_run_command_routes_test_modules_to_the_runner(tmp_path: Path) -
 
     assert _runs_test_suite(cmd) is True
     assert _executed_targets(cmd, {"test_core.py"}) == {"test_core.py"}
+
+
+# ── ADR-0244: a turn-end hook may continue a turn the recipe gate gave up on ───────
+
+
+class _RefuseFirstEnd:
+    """TURN_END hook: refuses the first end it is asked about and allows every later one."""
+
+    def __init__(self) -> None:
+        self.reasons: list[str] = []
+
+    def __call__(self, payload: TurnEndPayload) -> TurnEndResult | None:
+        self.reasons.append(payload.stop_reason)
+        if len(self.reasons) > 1:
+            return None
+        return TurnEndResult(vetoed=True, continuation_prompt="Carry on with the task.")
+
+
+def _stalling_loop(provider: _ScriptedProvider, tmp_path: Path, hook: _RefuseFirstEnd) -> AgentLoop:
+    # acceptEdits lets the write through and makes a shell run prompt, so the harness cannot run
+    # the file itself; attempt_cap=1 spends one nudge on the model and then gives up.
+    loop = _loop(
+        provider,
+        tmp_path,
+        attempt_cap=1,
+        permission_policy=PermissionPolicy(PermissionMode.ACCEPT_EDITS),
+        turn_end_vetoable=True,
+    )
+    loop.hook_manager.register_turn_end(hook)
+    return loop
+
+
+def _recipe_events(loop: AgentLoop) -> list[str]:
+    return [
+        str(e.data.get("kind"))
+        for e in loop._trace.of_kind("intervention")
+        if str(e.data.get("kind")).startswith("recipe_")
+    ]
+
+
+def _write_py(call_id: str, name: str) -> LLMResult:
+    return LLMResult(tool_calls=[_c(call_id, "write_file", path=name, content="print('x')\n")])
+
+
+def _veto_script() -> list[LLMResult]:
+    # The model writes p.py and never runs it. After the hook's re-entry it reads the file and
+    # finishes, so the turn holds one text-only completion at the end, not a run of them: the
+    # cascade cap (ADR-0058) would otherwise mark the turn degraded by itself, and the
+    # degraded assertions below would not be measuring the stand-down.
+    done = LLMResult(text="done")
+    read = LLMResult(tool_calls=[_c("r1", "read_file", path="p.py")])
+    return [_write_py("w1", "p.py"), done, done, read, done]
+
+
+def test_a_turn_end_hook_can_continue_a_stalled_recipe_turn(tmp_path: Path) -> None:
+    hook = _RefuseFirstEnd()
+    loop = _stalling_loop(_ScriptedProvider(_veto_script()), tmp_path, hook)
+    result = asyncio.run(loop.arun_turn("make p.py"))
+    # The give-up reached the hook, and its refusal released p.py, so the last "done" ended the
+    # turn instead of stalling on the same file a second time.
+    assert hook.reasons == ["recipe_stalled", "completed"]
+    assert result.stop_reason == "completed"
+    assert result.degraded is True  # p.py never ran green, and the result says so
+    assert _recipe_events(loop) == ["recipe_gate", "recipe_stood_down"]
+    stood_down = [
+        e.data for e in loop._trace.of_kind("intervention") if e.data["kind"] == "recipe_stood_down"
+    ]
+    assert [Path(p).name for p in stood_down[0]["paths"]] == ["p.py"]
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "Carry on with the task." in transcript  # the hook's continuation re-entered
+
+
+def test_a_runnable_written_after_the_veto_arms_the_gate_again(tmp_path: Path) -> None:
+    hook = _RefuseFirstEnd()
+    done = LLMResult(text="done")
+    script = [_write_py("w1", "p.py"), done, done, _write_py("w2", "q.py"), done]
+    loop = _stalling_loop(_ScriptedProvider(script), tmp_path, hook)
+    result = asyncio.run(loop.arun_turn("make p.py and q.py"))
+    # q.py got an attempt budget of its own (one nudge), stayed unrun, and stalled the turn; the
+    # hook let that second give-up stand.
+    assert hook.reasons == ["recipe_stalled", "recipe_stalled"]
+    assert result.stop_reason == "recipe_stalled"
+    assert _recipe_events(loop) == [
+        "recipe_gate",
+        "recipe_stood_down",
+        "recipe_gate",
+        "recipe_stalled",
+    ]
+    nudges = [m.text for m in loop.session.messages if "not run it successfully" in (m.text or "")]
+    assert len(nudges) == 2 and "q.py" in nudges[-1]  # the new file, not the released one
+
+
+def test_the_streaming_twin_continues_a_stalled_recipe_turn(tmp_path: Path) -> None:
+    hook = _RefuseFirstEnd()
+    loop = _stalling_loop(_ScriptedProvider(_veto_script()), tmp_path, hook)
+    events = _drain_stream(loop, "make p.py")
+    done_ev = next(e for e in events if isinstance(e, AgentDone))
+    assert hook.reasons == ["recipe_stalled", "completed"]
+    assert done_ev.stop_reason == "completed" and done_ev.degraded
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert "turn_end hook vetoed stop; continuing" in statuses
+    assert not any("could not verify" in m for m in statuses)  # that line is for a real end
+    assert _recipe_events(loop) == ["recipe_gate", "recipe_stood_down"]

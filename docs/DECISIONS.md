@@ -14550,3 +14550,64 @@ quality gate, the difficulty classifier and `deep_think` each record a tagged us
 tests, and the facade's context classifier and context judge hand theirs to the session tagged.
 Under `mutation-proof-test.sh` on cc-14, seven mutants, one per site with its tag removed, each
 turned its test red. The full suite passed, 4,725 tests.
+
+## ADR-0244: a turn-end hook may continue a turn the recipe gate gave up on
+
+Status: accepted. 2026-09-23.
+
+The recipe gate holds a turn's end until every runnable file the turn wrote has run green, and
+after `max(attempt_cap, files written)` attempts it gives up: the turn ends `recipe_stalled`. That
+end was one of the few a TURN_END hook could not refuse. The reason given was that re-entering
+would stall the same way again. That was true only because the gate stayed armed on the same
+files.
+
+Measured 2026-09-23 on zc-01. Session `d61e3b21`, a served worker Body, ran one turn of 201
+iterations and two compactions. It wrote two shell scripts, and the harness ran them three
+times: one ran green, the other failed twice. The gate gave up and the turn ended
+`recipe_stalled`. The Body's stop hook, whose whole job is to keep that loop going, was never
+asked, and the session's trace holds no later turn. A census of the three zc boxes' traces over
+seven days finds that one end and no other. It is rare, and each one costs a Body its loop.
+ADR-0181 decided the same question for `provider_error`: an end that is a fact about the moment
+belongs to the hook that decides whether the loop goes on.
+
+Decision.
+
+- `recipe_stalled` joins `_VETOABLE_STOP_REASONS`. Both give-up sites, buffered and streaming,
+  ask the hook before they end the turn.
+- On a veto the cursor stands down (`RecipeCursor.stand_down`). The files it spent its attempts
+  on are released and no longer hold the turn's end, and the attempt count resets. A runnable
+  written after the veto arms the gate again with a budget of its own. `written_paths` still
+  lists every runnable the turn wrote.
+- The loop notes `recipe_stood_down` with the released paths, marks the turn degraded because
+  those files never ran green, and re-enters with the hook's continuation. The streaming twin
+  says so with the usual veto status line.
+- With no hook, on a sub-agent loop, or when the hook lets the end stand, nothing changes: the
+  turn ends `recipe_stalled` as before.
+
+Consequences. The veto is unbounded like the others, with the cost budget and the ADR-0187
+fence behind it. A second stall needs a new runnable and a new budget spent, so the hook cannot
+be asked about the same files twice. The completion critic and the quality gate key on the same
+armed flag, so they also leave the released files alone and arm again with the gate; before
+this they never ran on such a turn, which ended at the gate. Turn-end observers now see a
+`recipe_stalled` end, which they never did, because the gate broke out of the loop without
+passing the seam.
+
+Rejected: switching the gate off on skill turns. The stalled turn was a skill turn, but the gate
+keeps its promise there too, and the fault was the end, not the gate. Also rejected: bounding
+the veto the way ADR-0181 bounds `provider_error`. That bound exists because each of those vetoes
+re-issues a call against a provider that just failed; this veto re-issues nothing, and the files
+it releases cannot stall the turn again. Also rejected: keeping the gate armed after a veto. The
+next text-only answer would stall on the same files with the budget already spent, and the hook
+would be asked again at once, which is the spin the old comment warned about.
+
+Left open: `verification_failed`, the project-verifier gate's give-up, has the same shape. It is
+inert unless a verify command is configured, and the census found no such end.
+
+The proof. `tests/test_recipe.py` drives the gate to its give-up with a turn-end hook
+registered. The buffered and streaming loops re-enter, end `completed` and degraded, and note
+the stand-down with the released path, and a runnable written after the veto gets a nudge of
+its own before the turn stalls again. A cursor test walks two stand-downs and a verified run
+after them. Under `mutation-proof-test.sh` on cc-14, fourteen mutants each turned at least one
+of these tests red: the vetoable set; the hook consult, the stand-down call and the degraded
+mark at each of the two sites; each of the stand-down's five resets; the `written_paths` union;
+and the de-duplication of what the stand-down returns. The full suite passed, 4,729 tests.

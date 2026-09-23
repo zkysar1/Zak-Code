@@ -52,9 +52,8 @@ Stop conditions
   over and over, the documented low-temperature Gemini 2.5 / small-model attractor (field
   incident 2026-08-26, ADR-0018). The first such completion is discarded — before it
   reaches the transcript — and retried once behind a corrective rail; a second ends the
-  turn honestly instead of streaming garbage toward the output cap. Non-vetoable, like
-  ``recipe_stalled``: re-prompting a model that has twice collapsed produces more of the
-  same.
+  turn honestly instead of streaming garbage toward the output cap. Non-vetoable:
+  re-prompting a model that has twice collapsed produces more of the same.
 * ``"provider_error"`` — a provider failure survived the retry budget (audit P0-4) and,
   when a TURN_END hook is registered, its bounded veto allowance too (ADR-0181).
   A rate-limited call (:class:`~zakcode.providers.base.RateLimited`) is retried with
@@ -1981,10 +1980,17 @@ _DEGRADED_STOP_REASONS = {
 
 #: Stop reasons a TURN_END hook may veto (the Stop-hook seam, T2/T3). The others are
 #: deliberately NOT vetoable: ``max_iterations`` / ``budget_exhausted`` are hard bounds
-#: (iteration / spend — a hook must not override them), ``recipe_stalled`` is the recipe
-#: gate's own bounded give-up (re-entering would stall the same way again), and
-#: ``degenerated`` is the same shape — re-prompting a model that has twice collapsed into
-#: repetition produces more of the same (ADR-0018).
+#: (iteration / spend — a hook must not override them), and ``degenerated`` —
+#: re-prompting a model that has twice collapsed into repetition produces more of the same
+#: (ADR-0018).
+#:
+#: ``recipe_stalled`` was in that list until ADR-0244, as "the recipe gate's own bounded
+#: give-up (re-entering would stall the same way again)". That held only because the gate
+#: stayed armed on the same files. On a veto it now stands down for them
+#: (:meth:`RecipeCursor.stand_down`), so the turn the hook continues is not held by files
+#: whose attempts are already spent, and cannot stall on them a second time. A runnable
+#: written after the veto arms the gate again. Before this, a served Mind whose turn wrote a
+#: helper script it could not get to run lost the turn, and its stop hook was never asked.
 #:
 #: ``provider_error`` was in that list until ADR-0181, as "infrastructure — a hard bound".
 #: It is not one: a provider failure is a fact about the MOMENT, and the framework whose
@@ -1995,7 +2001,9 @@ _DEGRADED_STOP_REASONS = {
 #: until a human typed "continue". The veto is BOUNDED and PACED, unlike the others (see
 #: :data:`_MAX_PROVIDER_ERROR_VETOES`), because the retry it licenses is against a
 #: provider that just failed.
-_VETOABLE_STOP_REASONS = frozenset({"completed", "doom_loop", "stuck", "gave_up", "provider_error"})
+_VETOABLE_STOP_REASONS = frozenset(
+    {"completed", "doom_loop", "stuck", "gave_up", "provider_error", "recipe_stalled"}
+)
 
 #: How many CONSECUTIVE provider-error turn ends a TURN_END hook may veto before the next
 #: one ends the turn for real (ADR-0181). Consecutive: any completed model call resets the
@@ -2252,8 +2260,8 @@ class AgentLoop:
         # character count reveals). Called at most once per turn; its verdict feeds
         # classify_main_turn's ``difficulty_hint``. ``None`` (bare/legacy loop) keeps the heuristic.
         self.difficulty_classifier = difficulty_classifier
-        # TURN_END veto seam (T2/T3): at a vetoable break site (completed / doom_loop /
-        # stuck) the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
+        # TURN_END veto seam (T2/T3): at a vetoable break site (_VETOABLE_STOP_REASONS)
+        # the loop runs TURN_END hooks; a veto re-enters the loop with the hook's
         # continuation prompt. Structural, not a knob (2026-08-25 no-knobs ruling): the
         # MAIN Agent loop is always vetoable; sub-agent loops never are (their completions
         # return to the parent — a Stop hook must not resurrect them). A registered hook
@@ -7621,6 +7629,33 @@ class AgentLoop:
                 # gracefully (recipe_stalled) once the attempt cap is hit.
                 if cursor.needs_verification():
                     if not cursor.can_nudge():
+                        # ADR-0244: the give-up is a turn end like any other, so a TURN_END hook
+                        # decides whether it stands. On a veto the gate releases the files it
+                        # spent its attempts on, so the turn the hook continues cannot stall on
+                        # them again; a runnable written after this arms it afresh.
+                        prompt = await self._fire_turn_end(
+                            "recipe_stalled",
+                            iterations=iterations,
+                            veto_count=turn_end_vetoes,
+                            turn_assistant=turn_assistant,
+                            stuck_took_action=stuck.took_action,
+                        )
+                        if prompt is not None:
+                            turn_end_vetoes += 1
+                            turn_degraded = True  # the released files never ran green
+                            released = cursor.stand_down()
+                            self._note(
+                                "intervention",
+                                f"could not verify {len(released)} written file(s); a turn-end "
+                                "hook continued the turn, so the gate released them",
+                                kind="recipe_stood_down",
+                                paths=released,
+                            )
+                            self._persist()
+                            last_signature = None
+                            repeat_count = 0
+                            stuck.reset()
+                            continue
                         stop_reason = "recipe_stalled"
                         self._note(
                             "intervention",
@@ -9442,6 +9477,31 @@ class AgentLoop:
                         continue
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
+                            # ADR-0244 — see the buffered twin.
+                            prompt = await self._fire_turn_end(
+                                "recipe_stalled",
+                                iterations=iterations,
+                                veto_count=turn_end_vetoes,
+                                turn_assistant=turn_assistant,
+                                stuck_took_action=stuck.took_action,
+                            )
+                            if prompt is not None:
+                                turn_end_vetoes += 1
+                                turn_degraded = True  # the released files never ran green
+                                released = cursor.stand_down()
+                                self._note(
+                                    "intervention",
+                                    f"could not verify {len(released)} written file(s); a "
+                                    "turn-end hook continued the turn, so the gate released them",
+                                    kind="recipe_stood_down",
+                                    paths=released,
+                                )
+                                self._persist()
+                                last_signature = None
+                                repeat_count = 0
+                                stuck.reset()
+                                yield AgentStatus(message=self._veto_status())
+                                continue
                             stop_reason = "recipe_stalled"
                             self._note(
                                 "intervention",
