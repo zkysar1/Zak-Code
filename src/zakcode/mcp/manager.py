@@ -171,6 +171,10 @@ class ExtensionManager:
         reached the rest are registered **inactive** (``report.deferred``) so they are
         dispatchable and discoverable via ``tool_search`` but kept out of the prompt.
         ``budget=None`` exposes every discovered tool (the default).
+
+        Discovery counts EVERY active tool, so it is the conservative side: with a large
+        built-in set, MCP tools start hidden. ``tool_search`` counts only MCP tools, so it can
+        then surface up to ``budget`` of them on demand.
         """
         report = DiscoveryReport()
         for server, client in self._clients.items():
