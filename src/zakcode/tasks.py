@@ -27,6 +27,8 @@ Design rules (mirroring :mod:`zakcode.agent.recipe` / :mod:`zakcode.agent.stuck`
 * **Full-replace authoring.** The tool hands the whole tree each time (the proven TodoWrite
   pattern): robust for weak local models, and it lets the harness re-number ids and re-derive
   invariants from scratch every edit, so the stored network is always internally consistent.
+  The whole tree is every step's title and status; a note or outcome the resend leaves out is
+  kept from the step's record (ADR-0235), so the model does not re-type what did not change.
 """
 
 from __future__ import annotations
@@ -171,7 +173,39 @@ def clip_ends(text: str, limit: int) -> str:
     return flat[:head] + " … " + flat[-tail:] if tail else flat[:head] + " …"
 
 
-def author_signature(tasks: list[Task]) -> str:
+def _author_key(task: Task) -> str:
+    """How a submitted step is matched to the same step in the model's previous submission: its
+    title, and whether it is a parent — the carry-over's key, for the reason given in
+    :meth:`TaskNetwork.replace_from_author`."""
+    return ("parent:" if task.children else "leaf:") + " ".join(task.title.lower().split())
+
+
+def _meant(task: Task, sent: dict[str, list[str]]) -> tuple[str, str]:
+    """A submitted step's note and outcome as the model means them (ADR-0235): what it sent, or,
+    for a field it left out, what it last sent for that step."""
+    last_note, last_outcome = [*(sent.get(_author_key(task)) or []), "", ""][:2]
+    return task.note or last_note, task.outcome or last_outcome
+
+
+def author_fields(
+    tasks: list[Task], sent: dict[str, list[str]] | None = None
+) -> dict[str, list[str]]:
+    """Every submitted step's ``[note, outcome]`` as the model means them, by :func:`_author_key`:
+    the map a later submission's left-out fields are read through (ADR-0235). ``sent`` is this
+    function's result for the previous submission. Of two steps sharing a key the first wins, as
+    in the carry-over."""
+    fields: dict[str, list[str]] = {}
+
+    def visit(nodes: list[Task]) -> None:
+        for task in nodes:
+            fields.setdefault(_author_key(task), list(_meant(task, sent or {})))
+            visit(task.children)
+
+    visit(tasks)
+    return fields
+
+
+def author_signature(tasks: list[Task], sent: dict[str, list[str]] | None = None) -> str:
     """A stable snapshot of a model-SUBMITTED plan tree over the fields the author controls.
 
     The author sets title, status, note, outcome, dependencies and (by nesting) structure; ids are
@@ -181,15 +215,24 @@ def author_signature(tasks: list[Task]) -> str:
     immune to :meth:`TaskNetwork.replace_from_author`'s non-idempotent outcome carry-over — so the
     unchanged rail (ADR-0168) fires on the FIRST resend, not the second. Position-based (the model's
     submission has no ids yet); ``repr`` of nested tuples is only ever compared for equality.
+
+    ADR-0235: a note or outcome the model left out stands for the one it last sent for that step
+    (``sent``, the :func:`author_fields` of its previous submission). Leaving out what did not
+    change is therefore no edit, and neither is switching between the long and the short form of
+    one plan — without this a model alternating the two would never read "unchanged", and the
+    doom-loop rail would never fire. The model's own record is read, never the network's: the
+    network's outcomes are partly harness-written, and reading them is the non-idempotence above.
     """
+    sent = sent or {}
 
     def node(t: Task) -> tuple:
+        note, outcome = _meant(t, sent)
         return (
             t.kind,
             t.status,
             t.title,
-            t.note,
-            t.outcome,
+            note,
+            outcome,
             tuple(t.blocked_by),
             tuple(node(c) for c in t.children),
         )
@@ -340,6 +383,10 @@ class TaskNetwork(BaseModel):
     #: ``replace_from_author`` being idempotent (its outcome carry-over converges only on the second
     #: identical apply — arm M). Set after each replace; empty till the first plan lands.
     last_author_signature: str = ""
+    #: ADR-0235 — the note and outcome the model last SENT for each step (:func:`author_fields` of
+    #: that submission). A field it leaves out of its next one means "as I last sent it", and the
+    #: signature above reads the submission that way. Set and cleared with the signature.
+    last_author_fields: dict[str, list[str]] = Field(default_factory=dict)
 
     # ── authoring / normalization ───────────────────────────────────────────────
 
@@ -439,11 +486,11 @@ class TaskNetwork(BaseModel):
         ``update_plan`` hands a fresh tree by position, so without this every step's memory
         would vanish on each edit. A new node inherits from its predecessor of the same title
         (the one thing a model preserves across an edit; ids shift when steps are inserted):
-        ``evidence``, ``origin`` and ``anchor``, and — when the model left it blank — the prior
-        ``outcome``. A leaf that just reached a terminal status with no outcome gets one from
-        its last evidence line, so a closed step never reads as "done, no record". Every leaf's
-        start (``-> in_progress``) and close, and the (re)authoring itself when the set of
-        titles changed, are logged. Returns :meth:`normalize`'s advisories.
+        ``evidence``, ``origin`` and ``anchor``, and — when the model left them blank — the prior
+        ``note`` and ``outcome`` (ADR-0235). A leaf that just reached a terminal status with no
+        outcome gets one from its last evidence line, so a closed step never reads as "done, no
+        record". Every leaf's start (``-> in_progress``) and close, and the (re)authoring itself
+        when the set of titles changed, are logged. Returns :meth:`normalize`'s advisories.
         """
         # Keyed by (title, is-parent), not title alone: a weak model resends a plan that nests a
         # parent over a same-titled child (measured, arm N ON b3 r3: a 35B nested "Create
@@ -525,6 +572,10 @@ class TaskNetwork(BaseModel):
             task.anchor = prior.anchor
             task.challenged = prior.challenged
             task.harness_done = prior.harness_done
+            # ADR-0235: the done-condition stays when the resend leaves it out, as the outcome
+            # does — the model sends what changed, not the step's whole record again.
+            if not task.note:
+                task.note = prior.note
             if not task.outcome:
                 task.outcome = prior.outcome
             if task.harness_done and not task.children and task.status not in _TERMINAL:

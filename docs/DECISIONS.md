@@ -14014,3 +14014,69 @@ session, and is refused both times; a 41,000-character failure shows its first a
 outputs within their limits are whole and save nothing; with no session a long success keeps
 its start and end. Under `mutation-proof-test.sh` on cc-14, skipping the save turned the three
 tests that read the file red, and removing Read's allowance turned exactly the Read test red.
+
+## ADR-0235: a plan step keeps the note and outcome the model already gave it
+
+Status: accepted. 2026-09-23.
+
+`update_plan` told the model to send the whole plan on every call, and the model sent all of it:
+every step's title and status, and every note and outcome again. Measured over 24 hours of
+transcripts on the three Bodies on the 131k P40 pod (Qwen3.8-27B, thinking off on the two
+workers): alpha@zc-01 made 43 `update_plan` calls, alpha@zc-02 17 and coach@zc-03 15, averaging
+2,812, 2,272 and 2,399 characters of arguments over 14.6, 10.7 and 10.4 steps. A response that
+did nothing but update the plan took 27.3, 18.6 and 9.5 percent of each Body's model time; on
+zc-01 its median was 146 seconds and 805 completion tokens, against about 40 seconds for its
+other calls, because the pod decodes at 3 to 5 tokens a second at that context. Notes were 26.0,
+19.5 and 33.9 percent of the argument characters and outcomes 15.4, 28.0 and 23.1, titles 20 to
+29 and statuses under 3. Most of it was a repeat: on zc-01, 406 of 489 notes and 157 of 211
+outcomes were the same as that step's in the call before (37 of 79 and 59 of 98 on zc-02, 56 of
+101 and 43 of 78 on coach). A left-out outcome already carried over (ADR-0110), but the model was
+never told; a left-out note did not, so leaving one out lost the step's done-condition.
+
+Decision. A step keeps what it already says.
+
+1. `replace_from_author` keeps a step's note when the resend leaves it blank, as it keeps the
+   outcome, matched by title and leaf-or-parent like the rest of the carry-over.
+2. The tool says so. Its description reads "Always send the WHOLE plan each time: every step's
+   title and status. A step keeps the note and outcome you already gave it, so send those only
+   when they are new or changed", and the note and outcome fields end "Kept once given: leave it
+   out of later calls unless it changes." The whole plan is still every step, by position, with
+   its status: nothing is patched by id, which is the robustness ADR-0110 kept the full replace
+   for, and ADR-0184's folded rows work as before.
+3. The unchanged rail (ADR-0168) reads a submission as the model means it: a note or outcome it
+   left out stands for the one it last SENT for that step. `TaskNetwork.last_author_fields`
+   holds that, per step, saved with the network and cleared with the signature. Read literally,
+   the first short resend of an unchanged plan would differ from the long one and read "Plan
+   updated", putting lever N's advance off by a call, and a model that alternated the two forms
+   would never read "unchanged" at all. The map is the model's own record, taken from the
+   submission before the replace: the replace installs those very objects and writes its
+   carry-over into them, the network's outcomes are partly harness-written, and a map read after
+   the replace made the third resend of an advancing plan read as an edit (the existing
+   `test_it_walks_the_frontier_to_completion_then_hands_over_the_verdict` caught it).
+
+Why not a delta form. ADR-0110 rejected per-id patch operations for weak models and ADR-0192
+left a delta form of `update_plan` to its own measurement. The measurement says the repeat is
+the record, not the list: titles and statuses are a third of the characters and are what the
+full replace needs. Claude Code's TodoWrite carries no notes or outcomes at all: each call is the
+list of steps, each with its status and a present-tense form of its title.
+
+What it risks. The saving holds only as far as the model follows the description. The ceiling on
+zc-01 is about a third of the argument characters, the repeated notes and outcomes and their
+keys; it is measured live on coach and on a worker running this build, beside the Bodies still on
+the old one. A model can no longer clear a note by leaving it out, only replace it, and a step it
+renames starts with no note, as it already starts with no outcome or evidence. A done-condition
+given earlier now counts at the ADR-0116 null-close check when the closing call leaves it out:
+the step is trusted rather than reopened, which is what that check says a step with a
+done-condition gets.
+
+The proof. `tests/test_plan_keeps_fields.py`: a short resend keeps every note and outcome and the
+render still shows the done-condition; the short form, and switching between the forms, reads
+"unchanged" with no event; the short form walks lever N's advance to completion, and the map
+holds the model's blank where the harness wrote an outcome; a new note in the short form is an
+edit and then the note that stands; a kept done-condition spares a null close the challenge, with
+the positive control that a step never given one is still challenged; a parent and a same-titled
+child keep separate fields; the map survives a save and restore, an older session loads without
+it, and clearing the plan forgets it. Under `mutation-proof-test.sh` on cc-14, dropping the note
+carry-over turned five of these red, reading the submission literally in the signature turned
+five red, and reading the map after the replace turned two red, this file's walk and the
+existing one in `test_plan_autoadvance.py`.
