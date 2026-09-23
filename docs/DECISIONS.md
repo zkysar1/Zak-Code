@@ -13816,6 +13816,32 @@ hidden. Undeclared, the world stays hidden. Read's not-found output leads with t
 Three mutants each turned the test red under `mutation-proof-test.sh` on cc-14: judging every
 root by the checkout's rules, dropping the suffix tier, and turning soft ignore rules off.
 
+## ADR-0230: a Mind's product repositories are workspace roots
+
+Status: accepted. 2026-09-23.
+
+Context. A Mind's `agents/<name>/local-paths.conf` names the directories its agent works in:
+`WORLD_PATH`, `META_PATH`, and `AGENT_WRITE_PATH`, the product repositories the agent changes,
+several separated by `;`. The Mind's own write hook allows all three. zakcode added the first two
+as extra workspace roots and skipped the third. On 2026-09-23 two 27B workers, one on zc-01 and
+one on zc-02, each had a Read of a file in their product repository refused as outside all
+workspace roots. The parser also kept a value's quotes, which the Mind writes so a shell can
+source the file; a quoted `WORLD_PATH` then read as a relative path and was dropped.
+
+Decision. The parser follows the Mind's contract. It strips quotes, and each `;`-separated
+`AGENT_WRITE_PATH` entry that is an existing absolute directory becomes a root beside the world
+and meta. On zc-02 the real conf now yields both product directories after the world and meta.
+
+What it risks. The file tools can read and write in those repositories, which the Mind already
+grants its agent. A not-found search and bash's "No such file" hint walk them too, after the
+checkout, the world and the meta, within their existing budgets.
+
+The proof. tests/test_m3_multi_root_portability.py: a quoted `WORLD_PATH`, and a quoted
+`AGENT_WRITE_PATH` naming two repositories, a missing one and a trailing separator, parse to the
+three existing directories. On a Mind workspace, Read returns a file in the product repository.
+Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: ignoring the
+key, keeping the quotes, and not splitting on `;`.
+
 ## ADR-0231: a batch that lays out a plan before its first change runs whole
 
 Status: accepted. 2026-09-23.
