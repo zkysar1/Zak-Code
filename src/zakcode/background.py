@@ -29,9 +29,13 @@ The contract, matching Claude Code's:
   accepting the exit code") reads the same text here. Never mid-turn.
 * ``TaskOutput`` returns status, exit code and the latest output (a bounded tail);
   ``TaskStop`` kills the whole process group. A session's end kills what it started.
+* A FOREGROUND command runs here too (ADR-0236, :meth:`BackgroundTasks.run_foreground`): it
+  writes to an output file like a task, and the tool waits up to its timeout. One that exits
+  in time leaves nothing behind. One still running is NOT killed: it becomes a task, recorded
+  like one ``start`` made — Claude Code's "moved to the background".
 
 Pure where it can be: the record is a pydantic model on the session, the status a function
-of files and a pid; only ``start``/``stop``/``kill_all`` touch processes.
+of files and a pid; only ``start``/``run_foreground``/``stop``/``kill_all`` touch processes.
 """
 
 from __future__ import annotations
@@ -394,6 +398,79 @@ class BackgroundTasks:
         drop_env: list[str] | None = None,
     ) -> BackgroundTask:
         """Spawn ``command`` detached and record it. Returns at once."""
+        task, _proc, _watcher = await self._spawn(
+            command, cwd=cwd, description=description, extra_env=extra_env, drop_env=drop_env
+        )
+        self._record(task)
+        return task
+
+    async def run_foreground(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        timeout_seconds: float,
+        description: str = "",
+        extra_env: dict[str, str] | None = None,
+        drop_env: list[str] | None = None,
+    ) -> tuple[str, int] | BackgroundTask:
+        """Run the shell tool's FOREGROUND command for up to ``timeout_seconds`` (ADR-0236).
+
+        Exits in time: ``(output, exit_code)``, with its files removed and nothing recorded,
+        so a quick command leaves no trace. Still running at the timeout: it is NOT killed.
+        It is recorded as a background task, exactly as one :meth:`start` made, and returned;
+        the tool tells the model it was moved to the background — Claude Code's behavior,
+        where the old path killed it. A cancelled call (the turn was interrupted) kills the
+        command's whole process group and removes its files, as the old path did.
+
+        The wait is for the command's shell, not for its output to close, as in Claude Code:
+        ``server &`` returns once the shell exits and leaves the server running. Through a
+        pipe the call waited for the server too, until the timeout killed both.
+
+        It is spawned exactly as :meth:`start` spawns, so the wrapper shell writes the exit
+        code before it exits. A command moved to the background is then the same as one
+        started there: its code is recorded even if this process is gone by then, and a status
+        read never falls between the reap and the in-process watcher's write (a moved task
+        read ``lost`` there before it used the wrapper). The exit code is the shell's, so a
+        command killed by a signal reads 128+N, not asyncio's -N.
+        """
+        task, proc, watcher = await self._spawn(
+            command, cwd=cwd, description=description, extra_env=extra_env, drop_env=drop_env
+        )
+        try:
+            # shield: the timeout ends the WAIT, never the watcher that reaps the child.
+            await asyncio.wait_for(asyncio.shield(watcher), max(0.0, timeout_seconds))
+        except TimeoutError:
+            self._record(task)
+            return task
+        except asyncio.CancelledError:
+            await terminate_process_tree(proc)
+            # Let the watcher write the exit file BEFORE the files go, or it lands after.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(watcher), timeout=2.0)
+            self._remove_files(task)
+            raise
+        try:
+            data = Path(task.output_file).read_bytes()
+        except OSError:
+            data = b""
+        code = _read_exit_code(task.exit_file)  # the wrapper's record of the command's code
+        if code is None:  # no bash, so no wrapper: the watcher wrote nothing it could read
+            code = proc.returncode if proc.returncode is not None else -1
+        self._remove_files(task)
+        return data.decode("utf-8", errors="replace"), code
+
+    async def _spawn(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        description: str,
+        extra_env: dict[str, str] | None,
+        drop_env: list[str] | None,
+    ) -> tuple[BackgroundTask, asyncio.subprocess.Process, asyncio.Task[None]]:
+        """Spawn ``command`` in its own process group, stdout+stderr into its output file, with
+        an in-process watcher that reaps it. Records nothing: :meth:`_record` does."""
         from zakcode.tools.builtins._proc import child_environment
 
         tasks_dir = self._prepared_directory()
@@ -447,13 +524,22 @@ class BackgroundTasks:
         watcher = asyncio.create_task(_watch(task_id, proc, str(exit_file)))
         _WATCHERS[task_id] = watcher
         watcher.add_done_callback(lambda _t: _WATCHERS.pop(task_id, None))
+        return task, proc, watcher
+
+    def _record(self, task: BackgroundTask) -> None:
+        """Put ``task`` on the session's table, then persist the table."""
         tasks = getattr(self._session, "background_tasks", None)
         if isinstance(tasks, list):
             tasks.append(task)
         else:
             self._session.background_tasks = [task]
         self._changed()
-        return task
+
+    @staticmethod
+    def _remove_files(task: BackgroundTask) -> None:
+        for name in (task.output_file, task.exit_file):
+            with contextlib.suppress(OSError):
+                Path(name).unlink()
 
     async def wait(self, task: BackgroundTask, timeout_seconds: float) -> tuple[str, int | None]:
         """Block until the task is no longer running, or ``timeout_seconds`` pass; either way
