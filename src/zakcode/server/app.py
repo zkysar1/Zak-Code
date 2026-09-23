@@ -1201,7 +1201,10 @@ def create_app(
                 safe = safe_projection.project(event)
                 if safe is None:
                     continue  # dropped by the whitelist (usage/action_required/unknown type)
-                yield {"id": str(cursor), "data": json.dumps(safe.model_dump())}
+                # The same publish stamp as the full stream (ADR-0220): a clock reading says
+                # when, never what, so it is as safe on the public page as the frame it rides.
+                frame = {**safe.model_dump(), "at": round(at, 3)}
+                yield {"id": str(cursor), "data": json.dumps(frame)}
 
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.

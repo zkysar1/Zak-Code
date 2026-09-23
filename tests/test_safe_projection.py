@@ -11,8 +11,17 @@ the moment the SDK adds a field or event type.
 
 from __future__ import annotations
 
+import io
+import re
 from types import SimpleNamespace
 
+import pytest
+from pydantic import BaseModel
+from rich.console import Console
+
+from zakcode.agent.loop import AgentLoop
+from zakcode.cli._theme import ZAK_THEME
+from zakcode.cli.render import _STOP_LABEL, StreamRenderer, _display_name
 from zakcode.events import (
     AgentDone,
     AgentStatus,
@@ -34,6 +43,7 @@ from zakcode.server.safe_projection import (
     SafeUserMessage,
     redact_secrets_extended,
 )
+from zakcode.tasks import Task, TaskNetwork
 
 GSK = "gsk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"  # Groq-shaped
 VIN = "vin_" + "a1b2c3d4" * 6  # Vinheim-shaped (vin_ + 48 hex)
@@ -306,3 +316,246 @@ def test_placeholder_shell_cannot_smuggle_an_env_value() -> None:
     p = _proj(env={"SNEAKY_KEY": "UPPERCASEVALUE99"})
     out = p.redact("x {{secret:UPPERCASEVALUE99}} y")
     assert "UPPERCASEVALUE99" not in out
+
+
+# ── ADR-0220: the terminal's sentences, built from counts ────────────────────
+#
+# Each case below pins a frame against the terminal renderer's OWN function for the same event,
+# and plants _MARK in every output, title and note the frame must not carry. The positive
+# controls show the terminal does carry it, so a clean frame is a real result, not a blind test.
+
+#: Everything a watcher may be told about a finished tool: a fixed sentence around integers.
+#: A receipt outside this grammar is a leak by definition, whatever built it.
+_RECEIPT_GRAMMAR = re.compile(
+    r"Read \d+ lines?|Listed \d+ entr(?:y|ies)|Fetched (?:\d+ lines?|no output)"
+    r"|Ran · (?:\d+ lines?|no output)|Found \d+ (?:match|matches|files?)"
+    r"|Updated \+\d+ -\d+|Edited · \d+ lines?|Written|failed"
+    r"|Plan complete · \d+ steps?|Plan · (?:\d+/\d+ steps|\d+ steps?|\d+ items?)"
+    r"|[A-Z][A-Za-z0-9]* · \d+ lines?"
+)
+_MARK = "zebra-marmalade"
+
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> StreamRenderer:
+    monkeypatch.delenv("ZAKCODE_ASCII", raising=False)  # the stream carries the unicode glyphs
+    console = Console(
+        file=io.StringIO(), force_terminal=False, width=300, no_color=True, theme=ZAK_THEME
+    )
+    return StreamRenderer(console=console, clock=lambda: 0.0, wall=lambda: 0.0)
+
+
+def _marked(n: int) -> str:
+    return "\n".join(f"{_MARK} line {i}" for i in range(1, n + 1))
+
+
+_OUTPUTS = [
+    "",
+    _marked(1),
+    _marked(3),
+    _marked(13),
+    f"--- a/{_MARK}.py\n+++ b/{_MARK}.py\n@@ -1,2 +1,2 @@\n-{_MARK} old\n+{_MARK} new\n ctx",
+    f"- {_MARK} bullet\n+ {_MARK} not a diff",
+    f"Current plan (1/3 steps done):\n  [x] 1 {_MARK} — done\n"
+    f"  [~] 2 {_MARK} — note  <- current\n  [ ] 3 {_MARK}",
+    f"Current plan (2/2 steps done):\n  [x] 1 {_MARK}\n  [-] 2 {_MARK}",
+    f"Plan updated: 1/3 steps done · current: 2 {_MARK}",
+    f"[x] {_MARK}\n[ ] {_MARK}\n",
+]
+#: One canonical name per display name the terminal knows, and two it title-cases.
+_TOOLS = [
+    "Read",
+    "LS",
+    "WebFetch",
+    "Bash",
+    "Grep",
+    "Glob",
+    "Edit",
+    "Write",
+    "update_plan",
+    "Skill",
+    "mcp__srv__fetch_all",
+]
+
+
+def test_every_receipt_is_the_terminals_counted_never_copied(terminal: StreamRenderer) -> None:
+    p = _proj()
+    for tool in _TOOLS:
+        for output in _OUTPUTS:
+            frame = p.project(AgentToolResult(tool_use_id="t", name=tool, output=output))
+            assert isinstance(frame, SafeToolSummary) and frame.status == "completed"
+            summary, _ = terminal._synthesize_result(
+                _display_name(tool), output.splitlines(), is_error=False
+            )
+            assert summary.plain.startswith("✓ "), "positive control: a success opens with ✓"
+            # The terminal's sentence without its ✓, and for a checklist without the
+            # "current:" tail, which is the step's row read out of the output.
+            expected = summary.plain.removeprefix("✓ ").split(" · current: ")[0]
+            assert frame.receipt == expected, (tool, output)
+            assert _RECEIPT_GRAMMAR.fullmatch(frame.receipt), frame.receipt
+            assert _MARK not in frame.model_dump_json(), (tool, output)
+    # Positive control: the terminal's checklist receipt does carry the output's text.
+    plan = _OUTPUTS[6].splitlines()
+    assert _MARK in terminal._synthesize_result("Todo", plan, is_error=False)[0].plain
+
+
+def test_a_failed_result_says_failed_and_nothing_of_its_output(terminal: StreamRenderer) -> None:
+    for tool in ("Bash", "Edit", "mcp__srv__fetch_all"):
+        frame = _proj().project(
+            AgentToolResult(tool_use_id="t", name=tool, output=_marked(12), is_error=True)
+        )
+        assert isinstance(frame, SafeToolSummary)
+        assert (frame.status, frame.receipt) == ("failed", "failed")
+        assert _MARK not in frame.model_dump_json()
+        # Positive control: the terminal's failure receipt IS the output's first line.
+        lines = _marked(12).splitlines()
+        assert _MARK in terminal._synthesize_result(tool, lines, is_error=True)[0].plain
+
+
+def test_call_and_result_carry_the_terminals_display_name() -> None:
+    p = _proj()
+    cases = [
+        ("Bash", "Run"),
+        ("Grep", "Search"),
+        ("read_file", "Read"),
+        ("update_plan", "Todo"),
+        ("mcp__srv__fetch_all", "McpSrvFetchAll"),
+    ]
+    for tool, display in cases:
+        assert _display_name(tool) == display  # the terminal's own map, not a copy
+        call = p.project(AgentToolCall(id="c", name=tool, arguments={"command": _MARK}))
+        result = p.project(AgentToolResult(tool_use_id="c", name=tool, output=_MARK))
+        assert isinstance(call, SafeToolSummary) and isinstance(result, SafeToolSummary)
+        assert (call.name, call.display_name, call.receipt) == (tool, display, "")
+        assert (result.name, result.display_name) == (tool, display)
+        assert _MARK not in call.model_dump_json() + result.model_dump_json()
+
+
+def test_a_result_that_names_no_tool_is_receipted_as_the_terminal_does(
+    terminal: StreamRenderer,
+) -> None:
+    # A producer that predates AgentToolResult.name: the terminal calls it "Tool" too.
+    frame = _proj().project(AgentToolResult(tool_use_id="t", output=_marked(3)))
+    assert isinstance(frame, SafeToolSummary)
+    assert (frame.name, frame.display_name, frame.receipt) == ("", "", "Tool · 3 lines")
+    lines = _marked(3).splitlines()
+    assert terminal._synthesize_result("Tool", lines, is_error=False)[0].plain == (
+        "✓ Tool · 3 lines"
+    )
+
+
+def _plan_event(*steps: Task) -> AgentTaskUpdate:
+    """The loop's own ``task_update`` for a plan (``AgentLoop._task_update_event``): the bytes
+    a served session publishes, never a hand-written render (rb-11490)."""
+    network = TaskNetwork()
+    network.replace_from_author(list(steps))
+    holder = SimpleNamespace(session=SimpleNamespace(task_network=network))
+    event = AgentLoop._task_update_event(holder)  # type: ignore[arg-type]
+    assert event is not None
+    return event
+
+
+def test_the_plan_line_names_a_top_level_step_in_hand(terminal: StreamRenderer) -> None:
+    event = _plan_event(
+        Task(title="design", status="done", outcome=f"{_MARK} decided"),
+        Task(title="build the parser", status="in_progress", note=f"{_MARK} tests pass"),
+        Task(title="test", status="pending"),
+    )
+    frame = _proj().project(event)
+    assert isinstance(frame, SafeTaskUpdate)
+    assert (frame.finished, frame.total) == (1, 3)
+    assert frame.receipt == "Plan · 1/3 steps · current: 2 build the parser"
+    assert _MARK not in frame.model_dump_json()
+    # The terminal names the same step by its whole row, note included; the frame keeps
+    # its id and title, which ``tasks`` already carries.
+    summary = terminal._synthesize_result("Todo", event.plan.splitlines(), is_error=False)[0]
+    assert summary.plain == f"✓ Plan · 1/3 steps · current: 2 build the parser — {_MARK} tests pass"
+
+
+def test_the_plan_line_never_names_a_child_step(terminal: StreamRenderer) -> None:
+    event = _plan_event(
+        Task(title="design", status="done"),
+        Task(
+            title="build",
+            kind="compound",
+            children=[
+                Task(title=f"leak me {_MARK}", status="in_progress"),
+                Task(title="wire", status="pending"),
+            ],
+        ),
+    )
+    frame = _proj().project(event)
+    assert isinstance(frame, SafeTaskUpdate)
+    assert (frame.finished, frame.total, frame.receipt) == (1, 3, "Plan · 1/3 steps")
+    dumped = frame.model_dump_json()
+    assert _MARK not in dumped and "leak me" not in dumped
+    # Positive control: the terminal's line names the child, which this frame must not.
+    assert (
+        "leak me"
+        in terminal._synthesize_result("Todo", event.plan.splitlines(), is_error=False)[0].plain
+    )
+
+
+def test_a_finished_plan_reads_complete(terminal: StreamRenderer) -> None:
+    event = _plan_event(Task(title="a", status="done"), Task(title="b", status="cancelled"))
+    frame = _proj().project(event)
+    assert isinstance(frame, SafeTaskUpdate)
+    summary = terminal._synthesize_result("Todo", event.plan.splitlines(), is_error=False)[0]
+    assert frame.receipt == summary.plain.removeprefix("✓ ") == "Plan complete · 2 steps"
+    assert (frame.finished, frame.total) == (2, 2)
+
+
+def test_the_done_label_is_the_terminals_less_what_the_frame_withholds(
+    terminal: StreamRenderer,
+) -> None:
+    for reason in [*_STOP_LABEL, "some_new_reason"]:
+        for open_steps in (0, 3):
+            for degraded in (False, True):
+                event = AgentDone(
+                    stop_reason=reason,
+                    iterations=4,
+                    open_steps=open_steps,
+                    degraded=degraded,
+                    error=f"{_MARK} rate limited",
+                )
+                frame = _proj().project(event)
+                assert isinstance(frame, SafeDone) and frame.iterations == 4
+                # The terminal's label for the same stop with neither withheld field in play.
+                bare = AgentDone(stop_reason=reason, iterations=4, open_steps=open_steps)
+                assert frame.label == terminal._stop_label(bare)[0], event
+                assert _MARK not in frame.model_dump_json()
+    # Positive controls: with them in play the terminal's label says more, and this does not.
+    struggled = AgentDone(stop_reason="completed", iterations=1, degraded=True, open_steps=2)
+    assert terminal._stop_label(struggled)[0] == "done — struggled — 2 plan step(s) left open"
+    failed = AgentDone(stop_reason="provider_error", iterations=1, error=f"{_MARK} down")
+    assert _MARK in terminal._stop_label(failed)[0]
+
+
+def test_each_safe_frame_carries_exactly_its_allow_listed_fields() -> None:
+    # Widening a public frame is a decision with an ADR (ADR-0220 is the last). This pin makes
+    # the next one deliberate: a field added to a Safe model fails here until it is listed.
+    models: list[type[BaseModel]] = [
+        SafeText,
+        SafeStatus,
+        SafeToolSummary,
+        SafeTaskUpdate,
+        SafeDone,
+        SafeSessionRotated,
+        SafeUserMessage,
+    ]
+    assert {m.__name__: sorted(m.model_fields) for m in models} == {
+        "SafeText": ["event", "text"],
+        "SafeStatus": ["event", "message"],
+        "SafeToolSummary": [
+            "display_name",
+            "event",
+            "name",
+            "receipt",
+            "status",
+            "used_secrets",
+        ],
+        "SafeTaskUpdate": ["event", "finished", "receipt", "request", "tasks", "total"],
+        "SafeDone": ["event", "iterations", "label", "stop_reason"],
+        "SafeSessionRotated": ["event", "reason"],
+        "SafeUserMessage": ["event", "text"],
+    }

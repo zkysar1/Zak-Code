@@ -72,6 +72,11 @@ class AgentToolResult(BaseModel):
     is_error: bool = False
     data: dict[str, Any] | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    #: The tool this result answers: its call's name (ADR-0220). A client that pairs by
+    #: ``tool_use_id`` never needs it; a consumer that sees ONE event at a time does. The
+    #: safe watch projection is that consumer: it receipts a result ("Ran · 14 lines")
+    #: without holding any state across events. "" from a producer that predates it.
+    name: str = ""
 
 
 class AgentStatus(BaseModel):

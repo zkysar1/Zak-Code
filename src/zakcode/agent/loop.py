@@ -9210,6 +9210,7 @@ class AgentLoop:
                                 is_error=hblock.is_error,
                                 data=hblock.data,
                                 artifacts=hblock.artifacts,
+                                name=hcall.name,
                             )
                             cursor.consume_attempt()
                             yield AgentStatus(message="ran the file to verify it works")
@@ -9253,6 +9254,7 @@ class AgentLoop:
                                 is_error=vblock.is_error,
                                 data=vblock.data,
                                 artifacts=vblock.artifacts,
+                                name=vcall.name,
                             )
                             yield AgentStatus(message="ran the project checks to verify")
                         else:
@@ -10017,6 +10019,7 @@ class AgentLoop:
                             is_error=block.is_error,
                             data=block.data,
                             artifacts=block.artifacts,
+                            name=call.name,
                         )
                     yield AgentStatus(
                         message="update installed — restarting at the skill boundary; the "
@@ -10040,6 +10043,7 @@ class AgentLoop:
                         is_error=block.is_error,
                         data=block.data,
                         artifacts=block.artifacts,
+                        name=call.name,
                     )
                 self._harvest_skill_invocations(tool_calls, result_blocks, skills_invoked)
                 if self._batch_did_no_work(result_blocks):

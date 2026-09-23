@@ -57,6 +57,11 @@ for display.
 - **What stays Zak's own:** the transcript grammar (column grid, `●` / `└` / `│`,
   receipts) and the operator's orange — the human's line and chevron (ADR-0186). The
   family has no token for "the human", and it must stay the one warm run of text.
+- **The grammar's words reach Vinheim's watch pane (ADR-0220).** The pane reads the safe
+  watch stream, which carries each call's display name, a result's receipt, the plan
+  line, the footer label and every frame's publish stamp. All of it is built from names
+  and counts, so the pane can draw a turn at the terminal's length without an argument,
+  an output row, a token count or a cost, none of which the safe stream carries.
 
 The contract is tested, not described: `tests/test_ux_family.py` asserts the web tokens
 equal the family values, that every `var(--…)` the page reads is declared (an undeclared
@@ -585,7 +590,7 @@ the model is no longer one slug — it is a model *per task category*. The displ
 | --- | --- |
 | col-2 marker + col-4 hanging body (`block()` grid) | `1.75rem 1fr` gutter grid |
 | `●` assistant marker (teal) | 8px `--brand` dot per prose group |
-| `●` tool line + `└ summary · dur` receipt | tool `<details>` card summary row + right receipt cell |
+| `●` tool line + `└ summary · dur` receipt | tool card: call row, receipt line beneath it, then the terminal's rows; the whole output one click away (ADR-0219) |
 | `│` rail region at col 4–6 (red on failure) | card inset `pre` / `--err` left border |
 | `·` status line | status row + pinned stream-status overlay |
 | `● done ·` state-colored footer receipt | state-colored turn-receipt row |
