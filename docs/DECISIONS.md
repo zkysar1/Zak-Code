@@ -14146,6 +14146,23 @@ timeout turned the moved test and the moved exit code red; a cancel that skips t
 cancel test; keeping a quick command's files, the no-trace test; and reading the wrapper's own exit
 instead of its record of the command's, the failed-command test.
 
+**Amended 2026-09-23 (the Windows tree kill says when it missed, and ends the child itself).**
+Main's Windows job failed twice in the twelve runs after this ADR merged (12:49Z on 9b3e2db, whose
+log has expired, and 20:24Z on 3c0b430, in the cancel test): the cancelled shell's pid was still
+alive 5 s after the kill, and nothing said why, because `taskkill /T /F`'s exit code was never
+read and its stderr went to DEVNULL. Three changes. `terminate_process_tree` reads taskkill's exit
+and stderr and logs one WARNING naming both when the exit is non-zero (pytest prints it under a
+failing test; a session's log keeps it), then kills the direct child through the handle asyncio
+holds whatever taskkill reached, since `TerminateProcess` needs no tree walk. The cancel test
+takes the shell's start token beside its pid before the cancel and counts a pid that is alive
+under a different token as killed: Windows hands a freed pid to the next process at once, and
+`task_is_live` already draws that line for a task. Not found: the cause on the runner (no Windows
+box is reachable from this one); the next failure carries taskkill's reason. Proof:
+`tests/test_proc.py` runs the Windows branch on a real child with taskkill replaced by a stand-in,
+and a non-zero exit is logged once with its last stderr line while the child is dead; a zero exit
+logs nothing. Under `mutation-proof-test.sh` on cc-14, the warning removed, the fallback kill
+removed and the POSIX group kill removed each turned their test red, and green again on restore.
+
 ## ADR-0237: a plan update rides with the next step's first call
 
 Status: accepted. 2026-09-23.

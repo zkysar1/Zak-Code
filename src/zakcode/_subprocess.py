@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class CommandTimeout(Exception):
@@ -114,9 +117,26 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
                 "/T",
                 "/F",
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
-            await killer.wait()
+            _, err = await killer.communicate()
+            if killer.returncode != 0:
+                # taskkill walks the tree by parent pid and exits non-zero when it could not end
+                # a member. Measured 2026-09-23 on CI (windows-latest, main at 3c0b430): the
+                # shell of a cancelled call outlived this kill by more than 5 s, and nothing said
+                # why, because the exit and the reason both went to DEVNULL. Say both: pytest
+                # prints this line under a failing test, and a session's log keeps it.
+                reason = err.decode("utf-8", errors="replace").strip().splitlines()
+                logger.warning(
+                    "taskkill /T on pid %s exited %s: %s",
+                    proc.pid,
+                    killer.returncode,
+                    reason[-1][:200] if reason else "",
+                )
+            # Whatever taskkill reached, the direct child is ours to end: TerminateProcess on
+            # the handle asyncio holds needs no tree walk. A child already gone raises here.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):

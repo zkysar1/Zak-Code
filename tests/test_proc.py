@@ -7,9 +7,11 @@ These prove that a timeout and a turn cancellation both tear the child down prom
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import sys
 import time
+from typing import Any
 
 import pytest
 
@@ -101,6 +103,69 @@ async def test_terminate_tree_reaps_a_running_child() -> None:
     assert proc.returncode is None  # alive
     await terminate_process_tree(proc)
     assert proc.returncode is not None  # killed + reaped, not orphaned
+
+
+class _FakeTaskkill:
+    """What ``taskkill`` looks like to the teardown: an exit code and its stderr."""
+
+    def __init__(self, returncode: int, stderr: bytes) -> None:
+        self.returncode = returncode
+        self._stderr = stderr
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+
+async def _terminate_through_a_fake_taskkill(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stderr: bytes
+) -> asyncio.subprocess.Process:
+    """Run the Windows branch of ``terminate_process_tree`` on a real child, with taskkill
+    replaced by a stand-in that answers ``returncode`` and ``stderr``. The child is spawned
+    BEFORE the platform is faked, so it gets this platform's real process group."""
+    proc = await asyncio.create_subprocess_shell(
+        _sleep_cmd(30),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        **new_group_kwargs(),
+    )
+    assert proc.returncode is None  # alive
+
+    async def fake_exec(*argv: str, **_kwargs: Any) -> _FakeTaskkill:
+        assert argv[:2] == ("taskkill", "/PID") and argv[2] == str(proc.pid)
+        return _FakeTaskkill(returncode, stderr)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    await terminate_process_tree(proc)
+    return proc
+
+
+async def test_a_failed_taskkill_is_reported_and_the_child_is_still_killed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Measured 2026-09-23 on CI (windows-latest, twice in twelve runs): the shell of a
+    # cancelled call outlived the tree kill by more than 5 s and nothing said why, because
+    # taskkill's exit and stderr both went to DEVNULL. Now the exit and the reason are logged,
+    # and the direct child is killed through the handle asyncio holds, whatever taskkill did.
+    caplog.set_level(logging.WARNING, logger="zakcode._subprocess")
+    stderr = (
+        b"ERROR: The process with PID 7 could not be terminated.\r\nReason: Access is denied.\r\n"
+    )
+    proc = await _terminate_through_a_fake_taskkill(monkeypatch, 1, stderr)
+    assert proc.returncode is not None  # killed by the fallback and reaped, not left running
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings == [f"taskkill /T on pid {proc.pid} exited 1: Reason: Access is denied."]
+
+
+async def test_a_clean_taskkill_says_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Positive control for the warning: a taskkill that exited 0 logs nothing, and the child
+    # is dead either way.
+    caplog.set_level(logging.WARNING, logger="zakcode._subprocess")
+    proc = await _terminate_through_a_fake_taskkill(monkeypatch, 0, b"")
+    assert proc.returncode is not None
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid (util-linux)")
