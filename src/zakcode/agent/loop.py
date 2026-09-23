@@ -213,6 +213,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins.update_plan import authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
@@ -5681,12 +5682,24 @@ class AgentLoop:
         (or ``require_plan`` extends the gate to every turn), no plan of the MODEL's exists yet
         — the harness's request anchor alone does not count (ADR-0111): it gives the work a
         record, not a decomposition — and the batch contains a mutating call. Read-only
-        investigation is never gated."""
-        return (
-            (deep or self.settings.require_plan)
-            and self.session.task_network.is_anchor_only()
-            and any(self._is_mutating(c) for c in calls)
-        )
+        investigation is never gated.
+
+        A batch that lays out a plan BEFORE its first mutating call is not withheld (ADR-0231).
+        A batch holding a mutation runs one call at a time, in order, on both paths, so that
+        plan is on the board by the time the mutation runs. Withholding it refused the very
+        update_plan call the refusal asks for, and cost the model a round trip to resend it."""
+        if not (deep or self.settings.require_plan):
+            return False
+        if not self.session.task_network.is_anchor_only():
+            return False
+        for call in calls:
+            tool = self.registry.get(call.name)
+            if tool is not None and tool.spec.name == "update_plan":
+                if isinstance(call.arguments, dict) and authors_a_plan(call.arguments):
+                    return False
+            elif self._is_mutating(call):
+                return True
+        return False
 
     def _turn_is_deep(self, user_text: str, hint: str | None) -> bool:
         """Whether this turn is multi-step work, by the routing verdict (ADR-0110).
