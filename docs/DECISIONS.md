@@ -14205,6 +14205,13 @@ one test red: the sentence dropped from the tool description, the system prompt 
 message, the surfaces test; dropped from the receipt, the receipt test; and "alone" dropped from
 the page, the paged test.
 
+Measured live on 2026-09-23, from each session's traces on the three Bodies. Five sessions on
+builds without this change sent 128 of 915 responses with only `update_plan` in them, 8.8 to 52.6
+percent of each session's model time, and paired the update with work in 13, all of them coach's.
+Four sessions on builds with it, coach and three workers, sent 1 of 232 responses that way and
+paired the update with the next step's call in 77. The one plan-only response took 0.4 percent of
+its session's model time.
+
 ## ADR-0238: the summarizer reads a skill body by its head and tail, and the note says when it leaves
 
 Status: accepted. 2026-09-23.
@@ -14328,6 +14335,12 @@ tests read the transport rather than wait for the collector, because litellm's o
 holds a finished call's client for a while, so when the collector reaches it is not the test's to
 decide. Under `mutation-proof-test.sh` on cc-14, setting the switch back to False turned the first
 test red on the assertion naming `LiteLLMAiohttpTransport`, and the restore returned it to green.
+
+Measured live on 2026-09-23. Every Zak Code process on a box writes to one log, and on zc-03 the
+only one is coach. Its log recorded 8 `Unclosed client session` errors from 05:32 to 14:23, on a
+build without this change, about one an hour. Coach restarted at 14:29 on the build that merged
+this change, and logged none in the five hours to 19:27. Over the same day the worker Body on
+zc-02, whose builds all predate the change, logged 3, the last at 18:51.
 
 ## ADR-0240: the compaction threshold leaves room for one answer, not a fifth of the window
 
