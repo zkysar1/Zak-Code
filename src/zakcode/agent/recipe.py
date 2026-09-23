@@ -682,6 +682,7 @@ class RecipeCursor:
         self.nudges = 0  # verification attempts spent (nudges + harness runs) toward the cap
         self._targets: set[str] = set()  # basenames of runnable scripts written this turn
         self._abs_targets: list[str] = []  # their paths, in write order (for the harness run)
+        self._released: list[str] = []  # paths a turn-end hook took over (ADR-0244)
         self._verified: set[str] = set()  # basenames that have been run successfully
         self.harness_runs = 0  # how many harness-issued verification runs were issued
         # A green run of a recognized test runner (pytest/unittest/jest/...) verifies the
@@ -714,7 +715,7 @@ class RecipeCursor:
         The quality gate (seam A) reads these to score the ACTUAL work, not just the claimed text.
         """
         seen: dict[str, None] = {}
-        for path in self._abs_targets:
+        for path in [*self._released, *self._abs_targets]:
             seen.setdefault(path, None)
         return list(seen)
 
@@ -855,6 +856,24 @@ class RecipeCursor:
     def consume_attempt(self) -> None:
         """Count one verification attempt (e.g. a harness-issued run) toward the cap."""
         self.nudges += 1
+
+    def stand_down(self) -> list[str]:
+        """Release the runnables written so far from the finish gate; return their paths.
+
+        ADR-0244: called when a turn-end hook refused the ``recipe_stalled`` end. The gate spent
+        its attempts on these files and the hook has taken the turn on, so they no longer hold
+        the turn's end. A runnable written after this arms the gate again, with a fresh attempt
+        budget. :attr:`written_paths` still lists every runnable the turn wrote. The completion
+        critic and the quality gate key on :attr:`wrote_runnable` too, so they also leave the
+        released files alone until a new runnable is written.
+        """
+        released = list(dict.fromkeys(self._abs_targets))  # write order, each path once
+        self._released.extend(self._abs_targets)
+        self.wrote_runnable = False
+        self._targets.clear()
+        self._abs_targets.clear()
+        self.nudges = 0
+        return released
 
     @staticmethod
     def _run_hint(target: str | None) -> str:

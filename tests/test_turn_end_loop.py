@@ -2,7 +2,7 @@
 
 Covers the design acceptance matrix: budget-zero = byte-identical default (no hook
 fires), allow vs veto on "completed", per-turn budget exhaustion, the non-vetoable
-stop reasons (max_iterations / recipe_stalled), the BOUNDED, PACED veto of a
+stop reasons (max_iterations / degenerated), the BOUNDED, PACED veto of a
 provider_error (ADR-0181), doom-loop veto with the synthetic tool_result pairing fix +
 stall-state reset, payload contents, the streaming twin's AgentStatus announcement, and
 the Settings/Agent plumbing.
@@ -617,24 +617,25 @@ async def test_turn_end_provider_error_streaming_twin_recovers(
 @pytest.mark.asyncio
 async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> None:
     # Unit check on the gate itself: even with budget + hooks, the non-vetoable
-    # reasons (incl. recipe_stalled, whose full ladder is heavy to script) get None —
-    # while provider_error, vetoable since ADR-0181, reaches the hook.
+    # reasons get None — while provider_error (vetoable since ADR-0181) and recipe_stalled
+    # (since ADR-0244; its loop sites are covered in test_recipe.py) reach the hook.
     hook = RecordingHook([_veto(), _veto(), _veto()])
     loop = _make_loop(ScriptedProvider([]), tmp_path)
     loop.hook_manager.register_turn_end(hook)
-    for reason in ("recipe_stalled", "max_iterations", "budget_exhausted"):
+    for reason in ("max_iterations", "budget_exhausted", "degenerated"):
         prompt = await loop._fire_turn_end(
             reason, iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
         )
         assert prompt is None
     assert hook.payloads == []
-    prompt = await loop._fire_turn_end(
-        "provider_error", iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
-    )
-    # The seam returns the message to re-enter with, already framed (ADR-0187): the plain
-    # rail here, since this reason names no skill.
-    assert prompt == "[harness] Hint: Not done: verify your work."
-    assert [p.stop_reason for p in hook.payloads] == ["provider_error"]
+    for reason in ("provider_error", "recipe_stalled"):
+        prompt = await loop._fire_turn_end(
+            reason, iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
+        )
+        # The seam returns the message to re-enter with, already framed (ADR-0187): the
+        # plain rail here, since this reason names no skill.
+        assert prompt == "[harness] Hint: Not done: verify your work."
+    assert [p.stop_reason for p in hook.payloads] == ["provider_error", "recipe_stalled"]
 
 
 # ── doom-loop veto: pairing fix + stall-state reset ───────────────────────────
