@@ -52,6 +52,20 @@ def elision_note(chars: int) -> str:
     return f"{ELISION_MARKER} — {chars:,} characters dropped; re-run the tool if you need it]"
 
 
+#: ADR-0240 — the per-call count's worst error, as a share of the window. The count is the last
+#: call's MEASURED prompt plus a floored estimate of what arrived since (the loop's
+#: ``_count_tokens_anchored``), and the margin is sized for one tool result at the seam clamp:
+#: a quarter window counted at 3 chars/token that really runs ~2.5 (id-dense output) is
+#: 0.25 x (3/2.5 - 1) = 0.05 of the window over its count. Several oversized results in one
+#: step can exceed it; that is the in-turn overflow recovery's job, as it always was.
+ESTIMATE_MARGIN_FRACTION = 0.05
+#: ADR-0240 — the answer-room bound never pulls the threshold below this share of the window,
+#: the threshold every window had before (Cline keeps the same floor). Below ~27k tokens a
+#: 4,096-token answer reserve would move compaction down into the fixed floor (the system
+#: prompt and tool schemas alone measure 8,956 tokens in the bench) and summarize on nearly
+#: every call. A window that small needs its own fix; this one leaves it where it was.
+ANSWER_ROOM_FLOOR_FRACTION = 0.8
+
 #: A function that counts tokens for a list of messages (e.g. ``provider.count_tokens``).
 CountTokens = Callable[[list[Message]], int]
 #: An async function that summarizes a list of messages into prose.
@@ -61,8 +75,9 @@ Summarize = Callable[[list[Message]], Awaitable[str]]
 class CompactionConfig(BaseModel):
     """Tunables for when and how aggressively to compact."""
 
-    #: Compact once token usage exceeds this fraction of the context window.
-    threshold_fraction: float = 0.8
+    #: Compact once token usage exceeds this fraction of the context window — or earlier, where
+    #: the window must also leave the call room to answer (ADR-0240, :meth:`Compactor.threshold`).
+    threshold_fraction: float = 0.9
     #: Number of most-recent messages to always keep verbatim.
     preserve_recent: int = 6
     #: The kept tail may hold at most this fraction of the context window (ADR-0132); past
@@ -143,21 +158,39 @@ class Compactor:
     def __init__(self, config: CompactionConfig | None = None) -> None:
         self.config = config or CompactionConfig()
 
-    def should_compact(
-        self,
-        messages: list[Message],
-        *,
-        context_window: int | None,
-        count_tokens: CountTokens,
-    ) -> bool:
-        """True if ``messages`` exceed the configured fraction of the context window.
+    def threshold(self, context_window: int | None, *, answer_room: int = 0) -> int:
+        """The token count past which :meth:`should_compact` says compact (ADR-0240).
+
+        At most ``threshold_fraction`` of the window. Within that, low enough that the call
+        still has ``answer_room`` tokens to answer in after the count's worst error
+        (:data:`ESTIMATE_MARGIN_FRACTION`), but that bound never pulls the threshold below
+        :data:`ANSWER_ROOM_FLOOR_FRACTION`. A ``threshold_fraction`` under the floor still
+        wins outright: it is an explicit choice to compact early (the bench forces its
+        compaction arm this way).
 
         Raises when the window is unknown: there is no honest threshold without one, and a
         stand-in number is how a 131k pod once compacted against 8,192 (ADR-0066).
         """
         if not context_window or context_window <= 0:
             raise ValueError("compaction needs the model's context window, and none is known")
-        threshold = int(context_window * self.config.threshold_fraction)
+        cap = int(context_window * self.config.threshold_fraction)
+        room = context_window - int(context_window * ESTIMATE_MARGIN_FRACTION) - answer_room
+        floor = int(context_window * ANSWER_ROOM_FLOOR_FRACTION)
+        return min(cap, max(floor, room))
+
+    def should_compact(
+        self,
+        messages: list[Message],
+        *,
+        context_window: int | None,
+        count_tokens: CountTokens,
+        answer_room: int = 0,
+    ) -> bool:
+        """True if ``messages`` exceed :meth:`threshold` for this window and answer room.
+
+        Raises when the window is unknown (see :meth:`threshold`).
+        """
+        threshold = self.threshold(context_window, answer_room=answer_room)
         return count_tokens(messages) > threshold
 
     def _split_index(self, messages: list[Message], keep: int | None = None) -> int:
