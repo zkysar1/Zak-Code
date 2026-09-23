@@ -359,6 +359,91 @@ async def test_plan_first_is_off_by_default() -> None:
     assert write.runs == 1  # no gate -> the write runs immediately, no plan required
 
 
+# ── ADR-0231: a batch that plans before it changes anything is not withheld ───────
+
+
+def _batch(*calls: ToolCall) -> LLMResult:
+    return LLMResult(text="", tool_calls=list(calls), usage=Usage(total_tokens=1))
+
+
+def _plan(tasks: list[Any], name: str = "update_plan", key: str = "tasks") -> ToolCall:
+    return ToolCall(id="p1", name=name, arguments={key: tasks})
+
+
+def _write() -> ToolCall:
+    return ToolCall(id="w", name="write_file", arguments={"path": "a.txt"})
+
+
+def _plan_first_refusals(session: Session) -> int:
+    return sum(
+        1
+        for message in session.messages
+        for block in message.blocks
+        if str(getattr(block, "output", "") or "").startswith(
+            "Not executed: this is multi-step work"
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_batch_that_plans_before_its_first_change_runs_whole(streaming: bool) -> None:
+    """Field 2026-09-23: a 27B sent update_plan and its first command in one response, and
+    the gate refused both, telling it to call update_plan. The batch runs in order, so the
+    plan is on the board before the write runs."""
+    write = _FakeWrite()
+    provider = _Scripted(
+        [_batch(_plan([{"title": "a"}, {"title": "b"}]), _write()), _judge_ok(), _done()]
+    )
+    loop, session = _plan_first_loop(provider, write)
+    if streaming:
+        async for _event in loop.astream_turn("edit something"):
+            pass
+    else:
+        await loop.arun_turn("edit something")
+    assert write.runs == 1
+    assert _plan_first_refusals(session) == 0
+    assert [t.title for t in session.task_network.leaves()] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_the_todowrite_alias_plans_a_batch_too() -> None:
+    write = _FakeWrite()
+    reg = ToolRegistry()
+    reg.register(write)
+    reg.register(UpdatePlanTool(), aliases=["TodoWrite"])
+    session = Session(cwd="/tmp", model="t/m")
+    todos = [{"content": "a", "status": "pending"}, {"content": "b", "status": "pending"}]
+    provider = _Scripted(
+        [_batch(_plan(todos, "TodoWrite", "todos"), _write()), _judge_ok(), _done()]
+    )
+    loop = AgentLoop(
+        provider, reg, session, settings=Settings(require_plan=True), max_iterations=20
+    )
+    await loop.arun_turn("edit something")
+    assert write.runs == 1
+    assert _plan_first_refusals(session) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "batch",
+    [
+        pytest.param([_write(), _plan([{"title": "a"}])], id="the change comes before the plan"),
+        pytest.param([_plan([]), _write()], id="an empty plan clears the board"),
+        pytest.param([_plan(["a", "b"]), _write()], id="steps that are not objects"),
+    ],
+)
+async def test_a_batch_without_a_plan_ahead_of_its_change_is_still_withheld(
+    batch: list[ToolCall],
+) -> None:
+    write = _FakeWrite()
+    loop, session = _plan_first_loop(_Scripted([_batch(*batch), _done()]), write)
+    await loop.arun_turn("edit something")
+    assert write.runs == 0
+    assert _plan_first_refusals(session) == len(batch)
+
+
 # ── issue #32: bounded auto-clear of a stale / abandoned incomplete plan ───────
 
 

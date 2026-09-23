@@ -196,6 +196,23 @@ def _from_todos(todos: list[Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def plan_steps(args: dict[str, Any]) -> list[Any] | None:
+    """The step list a call's arguments carry: ``tasks``, else the ``TodoWrite`` alias's
+    ``todos`` (ADR-0190). ``None`` when neither is a list."""
+    tasks = args.get("tasks")
+    if tasks is None and isinstance(args.get("todos"), list):
+        tasks = _from_todos(args["todos"])
+    return tasks if isinstance(tasks, list) else None
+
+
+def authors_a_plan(args: dict[str, Any]) -> bool:
+    """Whether a call with these arguments leaves a plan of the model's on the board: at least
+    one step object. An empty list clears the board and a list with no objects is refused, so
+    neither counts. The loop's plan-first gate reads this before the call runs (ADR-0231)."""
+    steps = plan_steps(args)
+    return steps is not None and any(isinstance(step, dict) for step in steps)
+
+
 class UpdatePlanTool(Tool):
     """Lay out or update the hierarchical task plan for the current goal."""
 
@@ -236,10 +253,8 @@ class UpdatePlanTool(Tool):
             return ToolResult.error(
                 "planning is not available here (no task network on the context)"
             )
-        tasks = args.get("tasks")
-        if tasks is None and isinstance(args.get("todos"), list):
-            tasks = _from_todos(args["todos"])  # the TodoWrite alias (ADR-0190)
-        if not isinstance(tasks, list):
+        tasks = plan_steps(args)
+        if tasks is None:
             return ToolResult.error(
                 "'tasks' must be an array of step objects ({title, status?, note?, subtasks?})",
                 fix='Pass the full plan as an array, e.g. [{"title": "...", "status": "pending"}].',
