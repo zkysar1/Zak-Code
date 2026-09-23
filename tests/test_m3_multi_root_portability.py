@@ -68,6 +68,26 @@ def test_parse_local_paths_conf_missing_file(tmp_path):
     assert _parse_local_paths_conf(tmp_path / "nope.conf") == []
 
 
+def test_parse_local_paths_conf_grants_quoted_values_and_every_product_repo(tmp_path):
+    """ADR-0230. The Mind quotes values so a shell can source the file, and lists the product
+    repos its agent works on as AGENT_WRITE_PATH, separated by ';'. Its own write hook allows
+    all of them. The parser read neither, so a quoted WORLD_PATH was dropped and a product
+    repo was outside every root."""
+    world = tmp_path / "world"
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo b"
+    for d in (world, repo_a, repo_b):
+        d.mkdir()
+    conf = tmp_path / "local-paths.conf"
+    conf.write_text(
+        f'WORLD_PATH="{world}"\n'
+        f'AGENT_WRITE_PATH="{repo_a};{repo_b};{tmp_path / "gone"};"\n'
+        "OTHER_PATH=/tmp\n",
+        encoding="utf-8",
+    )
+    assert _parse_local_paths_conf(conf) == [world, repo_a, repo_b]
+
+
 # --------------------------------------------------------------------------- #
 # _infer_roots_from_skill_dir — full integration
 # --------------------------------------------------------------------------- #
@@ -222,6 +242,32 @@ def test_mind_workspace_gets_its_own_external_roots(mock_mind_repo):
     resolved = [r.resolve() for r in agent.loop.extra_workspace_roots]
     assert world.resolve() in resolved
     assert meta.resolve() in resolved
+
+
+async def test_mind_workspace_reads_a_file_in_its_product_repo(mock_mind_repo, tmp_path):
+    """ADR-0230. Field 2026-09-23: two 27B workers on a Mind workspace each had a Read of a
+    file in the product repo their Mind names in AGENT_WRITE_PATH refused as outside all
+    workspace roots."""
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    repo, world, meta, _skill_dir = mock_mind_repo
+    product = tmp_path / "Product"
+    (product / "src").mkdir(parents=True)
+    (product / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    conf = repo / "agents" / "omni" / "local-paths.conf"
+    conf.write_text(
+        f'WORLD_PATH={world}\nMETA_PATH={meta}\nAGENT_WRITE_PATH="{product}"\n', encoding="utf-8"
+    )
+    agent = Agent(
+        provider=ScriptedProvider([reply("hi")]),
+        default_model="scripted/mind-roots",
+        workspace_root=str(repo),
+    )
+    ctx = ToolContext(workspace_root=repo, extra_workspace_roots=agent.loop.extra_workspace_roots)
+    result = await ReadFileTool().execute({"path": str(product / "src" / "app.py")}, ctx)
+    assert not result.is_error, result.output
+    assert "print('hi')" in result.output
 
 
 def test_plain_workspace_gets_no_extra_roots(tmp_path):
