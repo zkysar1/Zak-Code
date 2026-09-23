@@ -50,7 +50,9 @@ async def test_a_long_success_is_saved_whole_and_its_start_shown(
 
     assert not res.is_error
     saved = Path(res.data["output_file"])
-    whole = saved.read_text(encoding="utf-8")
+    # Bytes, not read_text: on Windows the output's line ends are "\r\n", and text mode would
+    # read them back as "\n" and count a thousand characters fewer than were saved.
+    whole = saved.read_bytes().decode("utf-8")
     assert whole.count("\n") == 1000 and whole.startswith("line 000000 ")
     assert res.data["output_chars"] == len(whole) and res.data["truncated"] is True
     shown = res.output
