@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from zakcode.background import BackgroundTasks, pid_alive
+from zakcode.background import BackgroundTasks, pid_alive, process_start_token
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolContext
 from zakcode.tools.builtins.bash import BashTool
@@ -41,10 +41,10 @@ def _ctx(tmp_path: Path, tasks: BackgroundTasks) -> ToolContext:
     return ToolContext(workspace_root=tmp_path, background_tasks=tasks)
 
 
-async def _until(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
+async def _until(predicate: Callable[[], bool], timeout: float = 10.0, what: str = "") -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, f"not true after {timeout}s"
+        assert time.monotonic() < deadline, f"{what or 'not true'} after {timeout}s"
         await asyncio.sleep(0.05)
 
 
@@ -154,11 +154,20 @@ async def test_a_cancelled_call_still_kills_the_command_and_records_nothing(
     )
     await _until(lambda: pid_file.exists() and pid_file.read_text().strip() != "")
     pid = int(pid_file.read_text().strip())
+    # The shell's identity beside its pid. Windows hands a freed pid to the next process at
+    # once, so a pid that is alive but not our shell is a kill that worked, not one that
+    # missed; task_is_live draws the same line for a task. Alive with the SAME start token is
+    # the survivor this test exists to catch.
+    token = process_start_token(pid)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
 
-    await _until(lambda: not pid_alive(pid), timeout=5.0)
+    await _until(
+        lambda: not pid_alive(pid) or process_start_token(pid) != token,
+        timeout=5.0,
+        what=f"pid {pid} is still the shell we started (start token {token})",
+    )
     assert session.background_tasks == [] and changes == []
     assert list((tmp_path / "tasks").iterdir()) == []
 
