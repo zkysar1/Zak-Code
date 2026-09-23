@@ -13842,6 +13842,40 @@ three existing directories. On a Mind workspace, Read returns a file in the prod
 Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: ignoring the
 key, keeping the quotes, and not splitting on `;`.
 
+## ADR-0231: a batch that lays out a plan before its first change runs whole
+
+Status: accepted. 2026-09-23.
+
+The plan-first gate (ADR-0110) withholds a batch of deep work when no plan of the model's exists
+and the batch holds a mutating call. It looked at the board before the batch ran, so a batch that
+carried its own plan still found none. A model that sent `update_plan` and its first command in
+one response got both refused, and the refusal told it to call `update_plan`. In the zc fleet's
+transcripts over 30 days there were 13 plan-first refusals; 2 of them refused a batch whose first
+call was an `update_plan` with steps. Each refusal costs a model round trip, which is minutes on
+the P40 pod.
+
+Decision. The gate walks the batch in order. An `update_plan`, under any alias, whose steps hold
+at least one object clears the gate when it comes before the first mutating call. A mutating call
+reached first still withholds the batch. A batch holding a mutation runs one call at a time, in
+order, on both the buffered and the streaming path, so the plan is on the board by the time the
+mutation runs. `authors_a_plan` in the plan tool decides what counts, from the same step parsing
+the tool itself uses (`plan_steps`), so the gate and the tool cannot disagree about the TodoWrite
+alias.
+
+What it risks. The gate now trusts the batch order. A change that reordered calls within a batch
+would let a mutation run before the plan written ahead of it. Today the streaming path runs the
+calls as they arrived and the buffered path runs any batch that holds a mutation sequentially
+(`_execute_batch`). An `update_plan` the tool refuses for another reason would have cleared the
+gate; the only such reason is a missing task network, and both of the loop's tool contexts carry
+the session's.
+
+The proof. tests/test_loop_planning.py: on both paths, a batch of `update_plan` then a write runs
+whole, with no refusal, and leaves the plan on the board; the TodoWrite alias does the same; a
+write placed before the plan, an empty plan, and steps that are not objects are each still
+withheld. Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: the
+plan never clearing the gate, a plan anywhere in the batch clearing it, and an empty or malformed
+plan counting.
+
 ## ADR-0232: the compaction summarizer reads each tool output by its head and tail
 
 Status: accepted. 2026-09-23.
