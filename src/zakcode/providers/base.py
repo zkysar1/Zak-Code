@@ -252,6 +252,19 @@ class TimedOut(RateLimited):
     """
 
 
+class ProviderUnavailable(RateLimited):
+    """The provider could not be reached, or answered with a server error: a refused or
+    dropped connection, a 5xx.
+
+    Subclasses :class:`RateLimited` ONLY to ride its retry, under the same wall-clock
+    backoff horizon as a 429: an inference pod whose router or engine restarts is back
+    within a minute or two, and waiting is the remedy. The notice must say what happened,
+    as :class:`TimedOut`'s does. Measured 2026-09-23: zakpod1's router restarted at 06:27Z
+    and all three bodies on it reported "rate limited; retrying" for an outage no quota or
+    throttle caused.
+    """
+
+
 class ModelOutputRejected(RateLimited):
     """The provider rejected the model's own output (e.g. a malformed tool call).
 

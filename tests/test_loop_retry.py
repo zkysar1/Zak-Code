@@ -745,3 +745,50 @@ def test_the_same_text_as_a_rate_limit_still_burns_the_budget(
     assert provider.calls == 2  # retried an un-retryable condition
     assert fast_sleep == [0.0]  # and scheduled backoff to do it
     assert done.stop_reason == "provider_error"
+
+
+# ── an unreachable provider is named as one (ADR-0224) ───────────────────────
+
+
+def test_buffered_outage_is_ridden_out_and_named_as_one(fast_sleep: list[float], caplog) -> None:
+    """A pod whose router restarts refuses connections for about a minute. The loop waits it
+    out under the rate-limit horizon, not the fixed three-attempt bound, and the log says the
+    provider was unavailable. zakpod1, 2026-09-23 06:27Z: every body said "rate limited"."""
+    import logging
+
+    from zakcode.providers.base import ProviderUnavailable
+
+    provider = FlakyProvider([ProviderUnavailable("Connection error.")] * 6)
+    loop = _make_loop(provider)
+    with caplog.at_level(logging.WARNING, logger="zakcode.agent.loop"):
+        result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 7  # six refusals, then recovery
+    retry_logs = [r.getMessage() for r in caplog.records if "retrying" in r.getMessage()]
+    assert len(retry_logs) == 6
+    assert all(m.startswith("provider unavailable; retrying") for m in retry_logs), retry_logs
+
+
+def test_streaming_outage_is_ridden_out_and_named_as_one(fast_sleep: list[float]) -> None:
+    from zakcode.providers.base import ProviderUnavailable
+
+    provider = FlakyStreamProvider([ProviderUnavailable("Connection error.")] * 6)
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    assert events[-1].stop_reason == "completed"
+    assert provider.stream_calls == 7
+    notices = [
+        getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+    ]
+    assert len(notices) == 6
+    assert all(n.startswith("provider unavailable; retrying") for n in notices), notices
+
+
+def test_streaming_rate_limit_is_still_named_as_one(fast_sleep: list[float]) -> None:
+    provider = FlakyStreamProvider([RateLimited("429", retry_after=0.0)])
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    notices = [
+        getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+    ]
+    assert [n.split(";")[0] for n in notices] == ["rate limited"]
