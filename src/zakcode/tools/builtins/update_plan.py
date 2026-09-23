@@ -36,10 +36,26 @@ _MAX_DEPTH = 3
 
 _STATUS_VALUES = ["pending", "in_progress", "done", "blocked", "cancelled"]
 
+#: How the plan advances (ADR-0237): in the response that starts the next step, never in one of
+#: its own. Every model call is a round trip, and on a slow backend a response that only
+#: updates the plan is the most expensive kind: measured 2026-09-23 on the 131k P40 pod, it took
+#: 17.8 and 22.3 percent of the two worker Bodies' model time (median 104 and 146 seconds,
+#: against 38 and 35 for a work call), and on one Body 43 of 53 such calls in a day were
+#: followed by a response that only ran Bash, which they could have ridden with. The plan goes
+#: FIRST in the batch because a call's evidence belongs to the step current when it runs
+#: (ADR-0110), and the batch runs in order (update_plan is NEVER_PARALLEL). One sentence, said by
+#: the tool description, this tool's receipt, the system prompt and the plan the loop re-shows
+#: each call, so the model reads the same rule everywhere it looks. A paged skill's section is
+#: the exception, and its page says so: the next section arrives only in the reply to the update.
+PLAN_ADVANCE = (
+    "in the same response as the next step's first call, update_plan first: a response that "
+    "only updates the plan costs a whole model call"
+)
+
 #: Next-step rail: after planning, the model should act on the current step, not re-plan.
 _PLANNED_HINT = (
-    "Plan updated. Now do the step marked '<- current'; call update_plan again only to mark it "
-    "done and move on, or to refine the plan as you learn more."
+    "Plan updated. Now do the step marked '<- current'. When it is done, mark it done and the "
+    f"next in_progress {PLAN_ADVANCE}; refine the plan that way too as you learn more."
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
@@ -225,8 +241,8 @@ class UpdatePlanTool(Tool):
             "needs three or more distinct actions, or that asks for several separate things: "
             "decompose the goal into ordered, primitive steps — each with a clear done-condition "
             "and no hidden 'figure out how' (break a step into 'subtasks' when it is itself "
-            "several actions, and use 'blocked_by' when a step depends on earlier ones). Then "
-            "call it again to mark a step done and the next one in_progress as you go. Always "
+            "several actions, and use 'blocked_by' when a step depends on earlier ones). Then, as "
+            f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}. Always "
             "send the WHOLE plan each time: every step's title and status. A step keeps the note "
             "and outcome you already gave it, so send those only when they are new or changed. "
             "When you mark a step done, record what it produced in its 'outcome'. Skip it only "

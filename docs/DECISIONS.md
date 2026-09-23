@@ -14145,3 +14145,62 @@ list the output directory, which the kill path never creates. `run_foreground` k
 timeout turned the moved test and the moved exit code red; a cancel that skips the tree kill, the
 cancel test; keeping a quick command's files, the no-trace test; and reading the wrapper's own exit
 instead of its record of the command's, the failed-command test.
+
+## ADR-0237: a plan update rides with the next step's first call
+
+Status: accepted. 2026-09-23.
+
+A response that only updates the plan costs a whole model call, and on a slow backend it is the
+most expensive kind. Measured 2026-09-23 on the three Bodies on the 131k P40 pod (Qwen3.8-27B),
+from each session's traces: on the two worker Bodies still on the older build, responses that
+only called `update_plan` were 31 of 232 calls on zc-01 and 24 of 184 on zc-02, 22.3 and 17.8
+percent of their model time, with a median of 146 and 104 seconds against 35 and 38 for a work
+call. A worker running the build with ADR-0235 spent 8 of its 18 calls that way during `/start`,
+47.7 percent of its time. Coach on zc-03 paired the update with work in 10 responses and sent it
+alone in 9, so the model can do it. Over a day of transcripts, 43 of 53 solo plan calls on zc-01
+were followed by a response that only ran Bash, 19 of 24 on zc-02, and 3 of 9 on coach: work
+that the update could have ridden with. None of those calls carried a paged skill's next section
+(no page was delivered on any Body in three days), so the round trip bought nothing.
+
+Nothing told the model it could pair them. The system prompt, the tool description, the receipt
+of each update and the plan the loop re-shows every call all said to call `update_plan` to mark
+a step done and the next in_progress, which reads as a call of its own. The system prompt says
+nothing about several calls in one response. Anthropic's public tool-use guide recommends a
+system-prompt line asking the model to invoke independent tools together.
+
+Decision. One sentence, `PLAN_ADVANCE` in the plan tool: advance the plan "in the same response
+as the next step's first call, update_plan first: a response that only updates the plan costs a
+whole model call". The tool description, its "Plan updated" receipt, the system prompt's
+planning bullet and the `[plan]` message the loop re-shows each call all carry it, so the model
+reads the same rule wherever it looks. The system prompt adds that the first plan can go out with
+the first step's call the same way (ADR-0231 made that batch run whole).
+
+Why the plan goes first. A call's evidence belongs to the step current when it runs (ADR-0110),
+and a batch holding `update_plan` runs in order, since the tool is NEVER_PARALLEL. With the plan
+first, the step's first call is credited to the step it starts; with the work first, to the step
+the update closes.
+
+The exception is a paged skill's section: the next section arrives only in the reply to the
+update that closes this one, so its first call cannot be known yet. The page says so: "mark its
+step done with update_plan, alone in its response".
+
+Why not a general batching line. That is broader than the measurement. It would ask a small model
+to judge which calls are independent, and a batch of dependent calls runs on guessed arguments.
+This change names the one pairing the measurement shows is costly and whose order the harness
+already makes safe.
+
+What it risks. The saving holds only as far as the model follows the sentence. It is measured
+live: coach and a worker running this build, beside the Bodies still on the old one, counting
+plan-only responses and their share of model time. A model that pairs the update with the wrong
+call now credits that call to the next step, which it would have done one response later anyway.
+The `[plan]` message rides the uncached tail, so the sentence adds 133 characters of prefill to
+each call that carries a plan.
+
+The proof. `tests/test_plan_advance_rides_along.py`: the sentence is in the tool description, the
+receipt's rail, the system prompt and the `[plan]` message; on both the buffered and the streaming
+path, a response of `update_plan` then a write credits the write to the step the update starts,
+and the reverse order to the step it closes; a paged section says its update goes alone, and the
+last section does not. Under `mutation-proof-test.sh` on cc-14, five mutants each turned exactly
+one test red: the sentence dropped from the tool description, the system prompt or the `[plan]`
+message, the surfaces test; dropped from the receipt, the receipt test; and "alone" dropped from
+the page, the paged test.

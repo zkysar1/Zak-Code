@@ -37,6 +37,7 @@ from pathlib import Path
 from zakcode.config import PermissionTier, Settings
 from zakcode.tools.base import ToolSpec
 from zakcode.tools.builtins._ignore import load_ignore
+from zakcode.tools.builtins.update_plan import PLAN_ADVANCE
 
 #: Marker separating the stable (cacheable) prefix from the dynamic context suffix.
 #: A provider's cache breakpoint is positioned here; nothing above it may change mid-session.
@@ -183,8 +184,9 @@ _PLANNING = (
     "says what a hit looks like AND what proves the scope was visible — a null result never "
     "closes such a step by itself.\n"
     "- Keep exactly one step in_progress; as you finish each, call `update_plan` to mark it done "
-    "and the next in_progress. Decomposition can be just-in-time: if a step turns out to be "
-    "several actions once you reach it, break it down then.\n"
+    f"and the next in_progress {PLAN_ADVANCE}. The first plan can go out with the first step's "
+    "call the same way. Decomposition can be just-in-time: if a step turns out to be several "
+    "actions once you reach it, break it down then.\n"
     "- When a request asks for MORE THAN ONE thing — several actions, several skills, parts "
     "joined by 'and' or 'then' — record each part as its own plan step BEFORE starting, even "
     "when each part is small: a part held only in your head gets lost to interruptions and "
