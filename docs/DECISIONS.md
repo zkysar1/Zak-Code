@@ -13381,3 +13381,64 @@ Showing them in Vinheim would need a different stream for a different audience, 
 owner's decision, not this one. The terminal renderer is unchanged, and so is the full stream,
 except that a tool result now names its tool. Vinheim's watch pane draws these fields in the
 terminal's grammar in its own change.
+
+## ADR-0221: the family's display face is carried in the page
+
+Status: accepted. 2026-09-23.
+
+Context. ADR-0218 gave the web client the family's tokens and named Fraunces as the display face
+for its two identity moments: the header wordmark and the empty state's name. The page fetches
+nothing, so `--font-display` reached Fraunces only on a machine where it was installed. Everywhere
+else both moments drew in the next serif in the stack. On the box this was measured on that was
+DejaVu Serif: Fraunces, Georgia and Times New Roman were all absent. vinheim.com draws its display
+text in Fraunces, so the one place a member reads the product's name was the one place the family
+did not reach.
+
+Decision.
+
+1. The page carries Fraunces as a WOFF2 in a `data:` URI, in an `@font-face` under `:root`.
+   Nothing is fetched, so it works offline. The page's face also takes precedence over a Fraunces
+   the viewer installed, so every viewer sees the same one.
+2. The face is cut to the letters the two moments draw ("Zak Code") plus the letters FreeType's
+   auto-hinter measures: its Latin reference strings "THEZOCQS", "HEZLOCUS", "fijkdbh", "xzroesc"
+   and "pqgjy". It is 9,204 bytes.
+3. The weight axis stays whole, 100 to 900. `font-display: block`, because a `data:` URI never
+   waits on a network, and a swap would flash the fallback serif.
+4. It is cut from the Fraunces latin file Google Fonts serves. That is the file Vinheim's
+   next/font build downloads: compared on 2026-09-23, every table but `head` is byte-identical.
+   `scripts/build_display_font.py` makes the cut. The build and the tests never run it, so its
+   tools (fonttools, brotli) are not dependencies.
+
+Why the auto-hinter's letters. Fraunces carries no hinting, so FreeType, the rasteriser behind
+Chrome on Linux, auto-hints it, placing its alignment zones from those reference letters. A cut
+of "Zak Code" alone lost most of them, and the same outlines landed on a different pixel grid:
+906 differing greyscale pixels across seven isolated 96px letters, by up to 166 levels, against
+the full font at the same weight. The outlines, advances and bearings were identical when read
+back, so the difference was the rasteriser's alone. With the reference letters kept the cut
+matches the full font to the pixel. The weight axis stays whole for the same reason: limiting it
+to 600-700 re-rounds the outlines, and that cut differed in 1,562 pixels.
+
+Why not more. The whole latin file is 36,620 bytes for 222 characters, four times the size for
+letters nothing draws. A new use of the face, or new words in an old one, fails a test instead
+(below). Inter, the prose face, stays as it was: prose can draw any character a model writes, so
+its face cannot be cut this small, and that is a separate decision.
+
+Why a `data:` URI. The page is one file with no other assets. A served font would need a route
+and a packaged file, two more moving parts for 12 KB of base64.
+
+The proof. Headless Chromium on Linux rendered the embedded face and the full Google file at
+700/18px (the wordmark), 600/30px (the empty state's name), 700/64px and 600/64px: zero differing
+pixels. The page itself, opened once with each face, differed nowhere. `tests/test_ux_family.py` pins
+the face's SHA-256 and its character set beside the licence notice, and checks every letter the
+two moments draw against that set. It also lists the rules that use the display face, so a new
+one fails until its words are checked. `tests/test_webclient_contract.py` now holds every
+stylesheet `url()` to `data:`. Four mutants each turned the suite red: a new letter in the name,
+a fetched face, a new display-face rule, and one changed base64 character.
+
+Licence. Fraunces is under the SIL Open Font License 1.1, Copyright 2020 The Fraunces Project
+Authors. The cut keeps every name record, so the copyright and the licence link travel inside
+the font, and the page's comment carries the notice beside it. The font's copyright record
+declares no Reserved Font Name.
+
+What this does NOT change. The prose face (Inter when installed, the system's otherwise), the
+mono face and every colour. The terminal draws no display face and is untouched.

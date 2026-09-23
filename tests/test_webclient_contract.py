@@ -146,6 +146,12 @@ def test_client_is_self_contained() -> None:
     assert "<link" not in html
     assert "<script src" not in html
     assert "@import" not in html
+    # Every stylesheet url() is inline: the display face is a data: URI (ADR-0221), never
+    # a fetch. (The script's own url( calls, createObjectURL and friends, are not CSS.)
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
+    urls = re.findall(r"url\(\s*['\"]?([^'\")\s]+)", style)
+    assert urls, "positive control: the display face's src is a url()"
+    assert all(url.startswith("data:") for url in urls), urls
 
 
 def test_client_creates_session_via_rest() -> None:

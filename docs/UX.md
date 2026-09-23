@@ -47,6 +47,8 @@ for display.
   one's family source), in the family's own `oklch()` notation, so a reader can diff them
   against the shipped stylesheet. Radii, pill buttons, the gold focus ring, the display
   face on the two identity moments and the uppercase live-status label come with them.
+  The display face travels in the page itself (ADR-0221), so both moments draw in Fraunces
+  on every machine, offline.
 - **The terminal carries the family in its one colour mark.** It cannot paint a
   background, so the family arrives as the brand: `color(80)` is the 256-colour index
   nearest the family accent, so the spark and the assistant's `●` wear the teal that
@@ -442,7 +444,7 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
 | Token / metric | Value |
 | --- | --- |
 | `--font-prose` | `Inter, system-ui, -apple-system, "Segoe UI", sans-serif` — the family's body face when installed; no webfont is fetched (no CDN) |
-| `--font-display` | `Fraunces, Georgia, "Times New Roman", serif` — the family's display face, for the two identity moments only: the header wordmark and the empty-state name |
+| `--font-display` | `Fraunces, Georgia, "Times New Roman", serif` — the family's display face, for the two identity moments only: the header wordmark and the empty-state name. The page carries it as a 9 KB WOFF2 cut to their letters (ADR-0221); nothing is fetched |
 | `--font-mono` | `ui-monospace, "Cascadia Code", "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace` |
 | Prose / mono / meta | 15px/1.65 `--fg` · 13px/1.5 · 12px mono `--muted` |
 | Headings in model output | size-only scale, weight 600, normal color: h1 1.3em, h2 1.15em, h3 1.0em |
