@@ -13533,3 +13533,67 @@ checked against a catalogue line.
 
 What this does NOT change. Skill bodies and their paging (ADR-0192), the classify side-call's own
 100-character cap, the operator's `/skills` listing, the user-only line and the provenance line.
+
+## ADR-0223: skill frontmatter is read by indentation, as YAML reads it
+
+Status: accepted. 2026-09-23.
+
+Context. `parse_frontmatter` read a SKILL.md's frontmatter one line at a time with each line's
+indentation stripped, so any indented line with a colon in it became a top-level key. Held
+against PyYAML on 2026-09-23, 49 of the 148 skills in the Ayoai-Mind checkout reached the
+catalogue with the wrong description:
+
+- 11 were block scalars (`description: >-` then indented lines). The description was the
+  indicator `>-`, and a folded line with a colon in it became a key of its own.
+- 25 had an `arguments:` list whose items carry their own `description:`. The last one won, so
+  the skill was listed with one of its arguments' descriptions.
+- 13 were double-quoted with escapes, and the backslashes reached the model.
+
+55 of the 148 also leaked nested keys into `extras`, and one skill's `triggers` list was read as
+an empty string. On coach's deployment (zc-03, only counts returned) 20 of 58 descriptions were
+wrong: 1 block scalar, 9 argument descriptions and 10 escapes. 30 skills leaked keys.
+
+ADR-0158's second addendum fixed block scalars in the bench's catalogue reader
+(`bench/_frontmatter.py`) on 2026-09-12. The product parser, which builds the catalogue every
+session sees, never got the same fix. ADR-0158 found that description fidelity drives which skill
+a model chooses, so each wrong description was a wrong choice waiting to happen.
+
+Decision.
+
+1. Only a line at the mapping's margin opens a key. The margin is the column of the first key:
+   YAML lets a whole mapping sit indented as long as its keys share a column, and the old parser
+   read such a file.
+2. A key's value takes every following line that is blank or more indented. A bare key also
+   takes `- ` items at the margin, since YAML lets a sequence sit level with its key.
+3. A block scalar (`|` or `>`, with a chomping indicator and an indentation digit in either
+   order) is read as YAML reads it. Literal keeps its breaks. Folded joins lines with a space, a
+   blank line stands for a break, and a more-indented line keeps the breaks around it. Chomping
+   sets the ending. An indentation digit counts from the key's column.
+4. A plain value continued on indented lines is folded to one line. A double-quoted value's
+   escapes are decoded, and a single-quoted value's `''` is one quote. An escape JSON does not
+   know keeps the old reading.
+5. A bare key's `- ` items at one depth are its list, each kept as its text. A nested mapping, or
+   the rest of a list item's mapping, is not modelled, and it no longer leaks to the top level.
+
+Why not PyYAML. zakcode does not depend on it directly (it arrives with litellm), and a SKILL.md
+that is not valid YAML must still load: the old parser was tolerant, and skills in the wild were
+written against it. The parser stays hand-written and tolerant. PyYAML is the reference its tests
+are held to.
+
+What it changes. On both corpora the parser now matches PyYAML on every description, every name
+and every key zakcode acts on (`triggers`, `user_invocable`, `disable_model_invocation`), and no
+nested key leaks. Which skills the model can see does not change on either corpus. Only
+descriptions change, and real descriptions are longer: on the Ayoai-Mind checkout the unbudgeted
+catalogue grows from 85,714 to 112,732 characters. Under ADR-0222's budget at a 131,072-token
+window the listing stays at 7,882 characters with three skills described, so ADR-0222's measured
+saving was against a catalogue a quarter smaller than the real one.
+
+Known limits. Flow mappings (`{a: 1}`), anchors and aliases are still read the old way. A comment
+line inside a plain value that continues on indented lines is kept as text, where YAML would end
+the value. Neither occurs in either corpus. The bench reader is unchanged.
+
+The proof. `tests/test_skill_frontmatter_yaml.py`, 30 tests. Each description case is held to
+PyYAML as well as to its expected string, and so are the chomping cases and the indented mapping.
+Twelve mutants, one per mechanism, were each caught by the tests, run with
+`mutation-proof-test.sh` on cc-14. The corpus comparisons are one-off measurements, not tests:
+both corpora are private.

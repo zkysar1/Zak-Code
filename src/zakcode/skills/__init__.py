@@ -28,6 +28,7 @@ core takes on no YAML dependency.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
@@ -68,6 +69,81 @@ def _coerce_list(value: str) -> list[str]:
     return [item.strip().strip("\"'") for item in v.split(",") if item.strip()]
 
 
+#: A YAML block-scalar header: ``|`` (literal) or ``>`` (folded), then an optional chomping
+#: indicator (``-`` strip, ``+`` keep) and an optional indentation digit, in either order.
+_BLOCK_SCALAR_RE = re.compile(r"^([|>])(?:([-+])([1-9])?|([1-9])([-+])?)?$")
+
+
+def _is_blank(line: str) -> bool:
+    return not line.strip()
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _unquote(value: str) -> str:
+    """A scalar's text as YAML reads it: a double-quoted value's escapes decoded (YAML's
+    escapes include JSON's), and a single-quoted value's ``''`` read as one quote. Anything
+    else, or an escape JSON does not know, keeps the old reading: quote marks trimmed off."""
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value[1:-1]
+        return decoded if isinstance(decoded, str) else value[1:-1]
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value.strip("\"'")
+
+
+def _block_scalar(header: re.Match[str], raw: list[str], margin: int) -> str:
+    """The value of a YAML block scalar, from its header and its content lines as written.
+
+    Literal (``|``) keeps each line break. Folded (``>``) joins lines with a space, except
+    that a blank line stands for a line break and a more-indented line keeps the breaks
+    around it. Chomping then decides the ending: ``-`` none, the default one, ``+`` every
+    trailing blank line. An indentation digit counts from ``margin``, the key's own column.
+    PyYAML is the reference the tests hold this to.
+    """
+    style = header.group(1)
+    chomp = header.group(2) or header.group(5) or ""
+    digit = header.group(3) or header.group(4)
+    content = [ln for ln in raw if not _is_blank(ln)]
+    if digit:
+        indent = margin + int(digit)
+    elif content:
+        indent = len(content[0]) - len(content[0].lstrip(" "))
+    else:
+        indent = 0
+    lines = ["" if _is_blank(ln) else ln[indent:] for ln in raw]
+    last = max((i for i, ln in enumerate(lines) if ln), default=-1)
+    body, trailing = lines[: last + 1], len(lines) - (last + 1)
+    if style == "|":
+        text = "\n".join(body)
+    else:
+        text = ""
+        empties = 0
+        previous: str | None = None
+        for line in body:
+            if not line:
+                empties += 1
+                continue
+            if previous is None:
+                text += "\n" * empties
+            else:
+                spaced = line[:1] in (" ", "\t") or previous[:1] in (" ", "\t")
+                if empties:
+                    text += "\n" * (empties + (1 if spaced else 0))
+                else:
+                    text += "\n" if spaced else " "
+            text += line
+            previous, empties = line, 0
+    if last < 0 or chomp == "-":
+        return text
+    return text + "\n" + ("\n" * trailing if chomp == "+" else "")
+
+
 def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     """Split a ``SKILL.md`` into ``(frontmatter, body)``.
 
@@ -80,8 +156,14 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     ``- "/start"`` lines) — the block form is what real Claude-Mind skills
     overwhelmingly use (measured 2026-08-20: 60 of 78 skills in a live Mind), and
     before this it silently parsed as an empty string, so trigger routing and the
-    extras-preservation promise both quietly degraded. Raises :class:`SkillError`
-    if the fence or ``name`` is missing.
+    extras-preservation promise both quietly degraded. Only a line at the mapping's margin
+    opens a key; a more-indented line belongs to the key above it. A value may be a YAML
+    block scalar (``description: >-`` followed by indented lines, or ``|`` for literal
+    text), a plain value continued on indented lines, or a quoted value with escapes, and
+    each is read as YAML reads it. Measured 2026-09-23 against PyYAML on a live Mind's 148
+    skills, 49 were listed with the wrong description before this: 11 as the indicator
+    ``>-``, 25 as the description of one of their own arguments, 13 with their escapes
+    left in. Raises :class:`SkillError` if the fence or ``name`` is missing.
     """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -97,39 +179,62 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     fields: dict[str, object] = {}
     extras: dict[str, str | list[str]] = {}
     fm = lines[1:end]
+    # The mapping's margin: the column of its first key. YAML lets a whole mapping sit
+    # indented as long as every key shares one column, and the parser before this read that.
+    margin = next((_indent(ln) for ln in fm if ln.strip() and not ln.lstrip().startswith("#")), 0)
     idx = 0
     while idx < len(fm):
-        line = fm[idx].strip()
+        raw_line = fm[idx]
+        line = raw_line.strip()
         idx += 1
-        if not line or line.startswith("#") or ":" not in line:
+        # Only a line at the margin opens a key. A more-indented line belongs to the key
+        # above it. Read as keys of their own, a nested `description:` under a skill's
+        # `arguments:` replaced the skill's own description (25 of a live Mind's 148 skills,
+        # measured 2026-09-23), and a folded line with a colon in it became a key.
+        if not line or line.startswith("#") or ":" not in line or _indent(raw_line) > margin:
             continue
         key, _, value = line.partition(":")
         key = key.strip().replace("-", "_")
         value = value.strip()
-        block_items: list[str] | None = None
-        if not value:
-            # YAML block-sequence lookahead: a bare `key:` followed by `- item` lines is
-            # the list. Only dash lines are consumed (comments/blank/other lines end the
-            # block), so a bare `key:` with no items keeps its empty-string behavior, and
-            # a `- name: x` item survives as the string "name: x" rather than vanishing.
-            items: list[str] = []
-            while idx < len(fm):
-                cand = fm[idx].strip()
-                if not cand.startswith("- "):
-                    break
-                items.append(cand[2:].strip().strip("\"'"))
-                idx += 1
-            if items:
-                block_items = items
+        # The key's own lines: every following line that is blank or more indented, and for a
+        # bare key, `- ` items at the margin too (YAML lets a sequence sit level with its key).
+        nested: list[str] = []
+        while idx < len(fm) and (
+            _is_blank(fm[idx])
+            or _indent(fm[idx]) > margin
+            or (not value and _indent(fm[idx]) == margin and fm[idx].lstrip().startswith("- "))
+        ):
+            nested.append(fm[idx])
+            idx += 1
+        items: list[str] | None = None
+        header = _BLOCK_SCALAR_RE.match(value)
+        if header is not None:
+            # A block scalar (`description: >-`, then indented lines), read as YAML reads it.
+            # Before this the value was the header itself: ">-".
+            text = _block_scalar(header, nested, margin)
+        elif value:
+            # A plain or quoted value; indented lines after it continue it, folded to one line.
+            text = " ".join([value, *(ln.strip() for ln in nested if not _is_blank(ln))])
+        else:
+            # A bare key: a block sequence when it has `- ` items, each kept as its text, so a
+            # `- name: x` item of a list of maps survives as "name: x". The rest of such an
+            # item's mapping, and any other nested block, is not modelled.
+            text = ""
+            dashes = [ln for ln in nested if ln.strip().startswith("- ")]
+            if dashes:
+                depth = min(_indent(ln) for ln in dashes)
+                items = [_unquote(ln.strip()[2:].strip()) for ln in dashes if _indent(ln) == depth]
         if key in ("allowed_tools",):
-            fields[key] = block_items if block_items is not None else _coerce_list(value)
+            fields[key] = items if items is not None else _coerce_list(text)
         elif key in ("name", "description", "version"):
-            fields[key] = value.strip("\"'")
+            fields[key] = text.strip() if header is not None else _unquote(text)
         elif key:
-            if block_items is not None:
-                extras[key] = block_items
+            if items is not None:
+                extras[key] = items
+            elif header is not None:
+                extras[key] = text
             else:
-                extras[key] = _coerce_list(value) if value.startswith("[") else value.strip("\"'")
+                extras[key] = _coerce_list(text) if text.startswith("[") else _unquote(text)
 
     if "name" not in fields or not fields["name"]:
         raise SkillError("frontmatter is missing a 'name'")
