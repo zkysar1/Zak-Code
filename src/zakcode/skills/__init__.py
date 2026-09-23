@@ -249,6 +249,8 @@ class Skill:
         self.frontmatter = frontmatter
         self.path = path  # the SKILL.md file
         self._body: str | None = None
+        #: The file's ``(mtime_ns, size)`` when ``_body`` was read (ADR-0245).
+        self._body_stamp: tuple[int, int] | None = None
 
     @property
     def name(self) -> str:
@@ -275,10 +277,28 @@ class Skill:
         return self.path.parent
 
     def body(self) -> str:
-        """Load and cache the L1 markdown body (read on first call, not at discovery)."""
-        if self._body is None:
+        """The L1 markdown body: read on first call, not at discovery, and read again when
+        the file has changed since (ADR-0245).
+
+        Claude Code picks up an edited ``SKILL.md`` within the session. A Mind's Body runs for
+        hours while its loop merges framework updates into the workspace, and a body cached
+        for the life of the process kept serving the old text: measured 2026-09-23 on zc-02,
+        a worker Body delivered a skill at 84,073 characters three times, the last more than
+        four hours after the file on disk had become 62,682 characters. A stat per call is the
+        whole cost.
+        """
+        try:
+            st = self.path.stat()
+            stamp: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            stamp = None
+        if self._body is None or stamp != self._body_stamp:
+            # A file that cannot be stat'ed no longer matches its stamp and is read anyway, so
+            # a vanished skill raises here the way a first read would, instead of being served
+            # from the cache.
             text = self.path.read_text(encoding="utf-8")
             _, self._body = parse_frontmatter(text)
+            self._body_stamp = stamp
         return self._body
 
     @property

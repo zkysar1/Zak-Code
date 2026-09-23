@@ -2399,9 +2399,13 @@ class AgentLoop:
         self._skill_pages: dict[str, SkillPages | None] = {}
         # Whether a skill's whole body fits this model's window beside the system prompt
         # (ADR-0192), by lower-cased name: a body that fits is delivered whole and seeds no
-        # plan; only one that cannot is paged. Decided once per skill per loop, so the
-        # use_skill door, the typed door and the page-turning never disagree.
+        # plan; only one that cannot is paged. Decided once per version of a skill per loop,
+        # so the use_skill door, the typed door and the page-turning never disagree.
         self._skill_whole: dict[str, bool] = {}
+        # The body the two memos above were decided from, by lower-cased name (ADR-0245): a
+        # door that delivers the skill after its file changed decides both again, so a load
+        # fixes the version its pages are turned from and an edit reaches the next load.
+        self._skill_decided_on: dict[str, str] = {}
         #: ADR-0193: whether the call being assembled / the last completed main call carried
         #: an ephemeral tail; the current run of tailed calls whose cache read did not grow —
         #: ``(model, calls, first_prompt_tokens, last_prompt_tokens, cache_read_tokens)``; and
@@ -4153,8 +4157,8 @@ class AgentLoop:
     def _skill_fits_whole(self, name: str, body: str) -> bool:
         """Whether ``/<name>``'s whole body sits in this model's window beside the system
         prompt with room to answer (ADR-0192) — the ADR-0066 arithmetic, decided once per
-        skill per loop. A body that cannot be counted is taken to fit (never paged on a
-        guess, the same fail-open the fit check itself has)."""
+        version of the skill per loop (ADR-0245). A body that cannot be counted is taken to
+        fit (never paged on a guess, the same fail-open the fit check itself has)."""
         key = name.lower()
         verdict = self._skill_whole.get(key)
         if verdict is None:
@@ -4166,7 +4170,21 @@ class AgentLoop:
         """How ``/<name>`` is delivered (ADR-0192): its pages when the body cannot sit in
         this model's window whole, else ``None`` — the whole body, as Claude Code's Skill
         tool hands it over. Every door (``use_skill``, a typed ``/<name>``, the loop's own
-        re-entry) asks here, so a skill is never paged at one door and whole at another."""
+        re-entry) asks here, so a skill is never paged at one door and whole at another.
+
+        Every load passes here too, so this is where an edited skill is noticed (ADR-0245):
+        when the file no longer reads as it did when this skill was last decided, its fit
+        and its cached pages are decided again. The pages turned after a load are then that
+        load's, never an older version's behind a newer first page, and an edit made while
+        a load is being worked reaches the next load, as Claude Code's skills do. The file
+        is compared through the resolver, not as ``body``: a ``use_skill`` load puts its
+        arguments ahead of the body, so the text a door hands over is not the file's own."""
+        key = name.lower()
+        current = self._skill_body(name)
+        if current is not None and self._skill_decided_on.get(key) != current:
+            self._skill_pages.pop(key, None)
+            self._skill_whole.pop(key, None)
+            self._skill_decided_on[key] = current
         pages = skill_pages(body, skill=name)
         if pages is None or self._skill_fits_whole(name, body):
             return None

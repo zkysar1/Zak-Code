@@ -187,6 +187,40 @@ def test_the_decision_is_made_once_and_every_door_reads_it(
     assert loop._skill_pages_for_delivery("demo", body) is not None
 
 
+def test_an_edited_skill_is_decided_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-0245: the decision is made once per VERSION of a skill. One that fit, edited past
+    the window, is paged at its next load rather than sent whole on a verdict about text that
+    is gone; edited back, it is whole again."""
+    monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
+    small, big = _sectioned(400), _sectioned(40_000)  # ~2 KB fits; ~160 KB, 40k tokens, not
+    bodies = {"demo": small}
+    provider = _ScriptByCall(lambda n: LLMResult(text="done"), 32_768)
+    loop = _loop(provider, tmp_path, bodies)
+    assert loop._skill_pages_for_delivery("demo", small) is None
+    bodies["demo"] = big  # the file is edited
+    assert loop._skill_pages_for_delivery("demo", big) is not None
+    assert loop._skill_whole == {"demo": False}
+    bodies["demo"] = small
+    assert loop._skill_pages_for_delivery("demo", small) is None
+
+
+def test_a_load_with_arguments_is_not_an_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0245: a ``use_skill`` load puts its arguments ahead of the body, so the text a door
+    hands over is not the file's own. The file is what is compared: an unchanged skill keeps
+    its decision however it is loaded."""
+    monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
+    body = _sectioned(400)
+    provider = _ScriptByCall(lambda n: LLMResult(text="done"), 32_768)
+    loop = _loop(provider, tmp_path, {"demo": body})
+    assert loop._skill_pages_for_delivery("demo", body) is None
+    loop._skill_whole["demo"] = False  # the memo is the decision
+    framed = f"[arguments: loop]\n\n{body}"  # a Skill(demo, args="loop") load
+    assert loop._skill_pages_for_delivery("demo", framed) is not None
+    assert loop._skill_whole == {"demo": False}
+
+
 # ── the answer room ───────────────────────────────────────────
 
 
