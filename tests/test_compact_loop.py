@@ -20,12 +20,16 @@ import pytest
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import (
+    _FOLD_CLOSE,
+    _FOLD_PROMPT,
     _MAX_FOLD_PASSES,
     _MAX_SUMMARY_SLICES,
+    _SUMMARY_CLOSE,
     _SUMMARY_OUTPUT_CHARS,
     AgentLoop,
     _clamp_middle,
     _pack_parts,
+    _summary_of,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
@@ -265,8 +269,9 @@ def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:
 
 #: One slice at an 8192-token window: max(4096, int(8192 * 0.5) * 2) characters.
 _SLICE = 8192
-#: Prompt overhead a slice-sized call may add ("Part i of N …", the fold instruction).
-_OVERHEAD = 128
+#: Prompt overhead a slice-sized call may add ("Part i of N …", the fold instruction, and
+#: since ADR-0242 the closing instruction after the transcript).
+_OVERHEAD = 384
 
 
 class _StrictWindowProvider(_SummarizerProvider):
@@ -831,3 +836,163 @@ def test_each_compaction_row_counts_only_its_own_calls(tmp_path: Path) -> None:
     assert asyncio.run(loop.compact_now(trigger="auto")) is True
 
     assert [row["summarizer_calls"] for row in _compaction_rows(loop)] == [1, 1]
+
+
+# ── ADR-0242: a summary, or asked for again ──────────────────────────────────────────
+
+
+class _ScriptedSummarizer(_SummarizerProvider):
+    """Answers with ``texts`` in order (the last repeats), each with a usage, and records
+    each call's keyword arguments."""
+
+    def __init__(self, texts: list[str], *, tokens: int, window: int = 8192) -> None:
+        super().__init__(texts, tokens=tokens, window=window)
+        self.kwargs: list[dict[str, Any]] = []
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        self.kwargs.append(kw)
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        return result.model_copy(update={"usage": _SUMMARY_USAGE})
+
+
+def test_the_transcript_ends_with_the_instruction(tmp_path: Path) -> None:
+    # Measured 2026-09-23 (a 27B model on the pod): 8 of 34 responses were the transcript's
+    # next turn, a plan or a status line, while the instruction sat only above the transcript.
+    provider = _SummarizerProvider(["<summary>summary</summary>"], tokens=100_000)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    (call,) = provider.seen
+    text = call[0].text
+    assert text.startswith("Conversation transcript to summarize")
+    assert text.endswith(_SUMMARY_CLOSE)
+    assert text.index("answer 2") < text.index("[end of transcript]")
+
+
+def test_slices_and_folds_end_with_their_instruction(tmp_path: Path) -> None:
+    provider = _SummarizerProvider(["x" * 5000], tokens=100_000)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(40)))
+
+    slices = [c[0].text for c in provider.seen if c[0].text.startswith("Part ")]
+    folds = [c[0].text for c in provider.seen if c[0].text.startswith(_FOLD_PROMPT)]
+    assert len(slices) >= 2 and folds
+    assert all(text.endswith(_SUMMARY_CLOSE) for text in slices)
+    assert all(text.endswith(_FOLD_CLOSE) for text in folds)
+
+
+def test_the_summary_is_read_from_its_tags(tmp_path: Path) -> None:
+    provider = _SummarizerProvider(
+        ["Let me think.\n<summary>The user asked for X; Y is done.</summary>\nSomething else."],
+        tokens=100_000,
+    )
+    loop = _loop(provider, tmp_path)
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert text.startswith("The user asked for X; Y is done.")
+    assert "Let me think." not in text and "Something else." not in text
+
+
+def test_a_transcript_turn_is_asked_for_again(tmp_path: Path) -> None:
+    # The field shape: the response opened with the renderer's own role label and went on
+    # as the agent. It is thrown away, and the model is asked again at the rejection-retry
+    # temperature; both responses' tokens were spent, so both are counted.
+    provider = _ScriptedSummarizer(
+        ["[assistant]\nI will now run the tests.", "<summary>The tests were fixed.</summary>"],
+        tokens=100_000,
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert "temperature" not in provider.kwargs[0]
+    assert provider.kwargs[1]["temperature"] == pytest.approx(0.5)
+    summary = loop.session.messages[0].text
+    assert "The tests were fixed." in summary and "I will now run" not in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_calls"] == 1
+    assert row["summarizer_rejected"] == 1
+    assert row["summarizer_prompt_tokens"] == 1800
+    assert any("opened as the transcript's next turn" in line for line in said)
+
+
+def test_a_short_response_to_a_long_transcript_is_asked_for_again(tmp_path: Path) -> None:
+    provider = _ScriptedSummarizer(
+        [
+            "Phase 0.5: pre-selection.",
+            "<summary>" + "The session did real work. " * 30 + "</summary>",
+        ],
+        tokens=100_000,
+        window=131_072,
+    )
+    loop = _loop(provider, tmp_path)
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(40)))
+
+    assert len(provider.seen) == 2
+    assert len(provider.seen[0][0].text) >= 20_000  # the premise: one call, over the floor
+    assert text.startswith("The session did real work.")
+    assert loop._compaction_cost["summarizer_rejected"] == 1
+
+
+def test_a_short_summary_of_a_short_transcript_stands(tmp_path: Path) -> None:
+    provider = _ScriptedSummarizer(["Fine."], tokens=100_000, window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert text.startswith("Fine.")
+    assert len(provider.seen) == 1
+
+
+def test_an_empty_response_is_not_a_summary(tmp_path: Path) -> None:
+    # A thinking model that spent its answer thinking leaves nothing once the markup goes.
+    provider = _ScriptedSummarizer(
+        ["<think>just thinking</think>", "<summary>A real summary.</summary>"], tokens=100_000
+    )
+    loop = _loop(provider, tmp_path)
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert text.startswith("A real summary.")
+    assert loop._compaction_cost["summarizer_rejected"] == 1
+    assert any("(it was empty)" in line for line in said)
+
+
+def test_two_non_summaries_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> None:
+    # One resample, then the ADR-0083 fallback: the old tool outputs are elided and the
+    # conversation's own text stays, which keeps more than a non-summary would.
+    provider = _ScriptedSummarizer(["[assistant] carrying on with the work"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend([*_history(2), *_tool_pair("t1", "x" * 6000), *_history(4)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert "SummaryNotWritten" in loop.last_compaction
+    assert "opened as the transcript's next turn" in loop.last_compaction
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_calls"] == 1
+    assert row["summarizer_rejected"] == 2
+
+
+def test_a_summary_may_open_with_the_previous_summary_s_label() -> None:
+    # On a re-compaction the transcript opens with the previous summary under [system]; a
+    # model that echoes the label before its summary has still written one.
+    summary, why = _summary_of("[system]\n[Conversation summary]\nThe merged summary.", 900)
+    assert summary.endswith("The merged summary.") and why == ""
+    assert _summary_of("[assistant]\nI will carry on.", 900) == (
+        "",
+        "it opened as the transcript's next turn",
+    )
