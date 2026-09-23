@@ -161,6 +161,7 @@ from zakcode.providers.base import (
     ModelOutputRejected,
     Provider,
     ProviderError,
+    ProviderUnavailable,
     RateLimited,
     StreamDone,
     StreamTextDelta,
@@ -4873,7 +4874,11 @@ class AgentLoop:
                     elapsed = time.monotonic() - rate_limit_started
                     # Clamp so the waiting never overshoots the horizon by a full delay.
                     delay = max(0.0, min(delay, _RATE_LIMIT_RETRY_HORIZON - elapsed))
-                    reason = "provider rate-limited"
+                    reason = (
+                        "provider unavailable"
+                        if isinstance(exc, ProviderUnavailable)
+                        else "provider rate-limited"
+                    )
                     budget = (
                         f"{elapsed:.0f}s into the {_RATE_LIMIT_RETRY_HORIZON:.0f}s backoff budget"
                     )
@@ -8823,7 +8828,11 @@ class AgentLoop:
                                     0.0,
                                     min(delay, _RATE_LIMIT_RETRY_HORIZON - elapsed),
                                 )
-                                reason = "rate limited"
+                                reason = (
+                                    "provider unavailable"
+                                    if isinstance(exc, ProviderUnavailable)
+                                    else "rate limited"
+                                )
                                 budget = (
                                     f"{elapsed:.0f}s into the "
                                     f"{_RATE_LIMIT_RETRY_HORIZON:.0f}s backoff budget"

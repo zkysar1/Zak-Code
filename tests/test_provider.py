@@ -367,7 +367,32 @@ def test_map_error_names_timeouts_truthfully() -> None:
     for name in ("APIConnectionError", "ServiceUnavailableError", "InternalServerError"):
         exc = type(name, (Exception,), {})("boom")
         mapped = lp.LiteLLMProvider._map_error(exc)
-        assert not isinstance(mapped, TimedOut), f"{name} must stay a plain RateLimited"
+        assert not isinstance(mapped, TimedOut), f"{name} is an outage, not a timeout"
+
+
+def test_map_error_names_an_outage_as_one() -> None:
+    # ADR-0224: a refused or dropped connection, or any 5xx, is retried like a rate limit but
+    # named as what it is. zakpod1's router restarted on 2026-09-23 and every body on it said
+    # "rate limited", which points the operator at quota instead of at the pod.
+    from zakcode.providers.base import ProviderUnavailable
+
+    for name in (
+        "APIConnectionError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+        "BadGatewayError",
+    ):
+        mapped = lp.LiteLLMProvider._map_error(type(name, (Exception,), {})("boom"))
+        assert isinstance(mapped, ProviderUnavailable), f"{name} -> {type(mapped).__name__}"
+    for name, code in (("SomeFutureVendorError", 504), ("APIError", 500)):
+        exc = type(name, (Exception,), {"status_code": code})("upstream_unavailable")
+        mapped = lp.LiteLLMProvider._map_error(exc)
+        assert isinstance(mapped, ProviderUnavailable), f"{name}({code}) -> {type(mapped).__name__}"
+    # A real 429 stays a plain rate limit, and a timeout keeps its own name.
+    throttle = type("RateLimitError", (Exception,), {"status_code": 429})("slow down")
+    assert type(lp.LiteLLMProvider._map_error(throttle)) is RateLimited
+    timeout = lp.LiteLLMProvider._map_error(type("Timeout", (Exception,), {})("boom"))
+    assert not isinstance(timeout, ProviderUnavailable)
 
 
 # ---------------------------------------------------------------------------

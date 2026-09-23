@@ -13597,3 +13597,36 @@ PyYAML as well as to its expected string, and so are the chomping cases and the 
 Twelve mutants, one per mechanism, were each caught by the tests, run with
 `mutation-proof-test.sh` on cc-14. The corpus comparisons are one-off measurements, not tests:
 both corpora are private.
+
+## ADR-0224: an unreachable provider is named as one, not as a rate limit
+
+Status: accepted. 2026-09-23.
+
+Context. ADR-0076 retries a dropped or refused connection and any 5xx under the rate-limit
+horizon by returning them as `RateLimited`, so the loop's one retry path handles them. The loop
+then labels every such retry by that class: "provider rate-limited" on a buffered call, "rate
+limited" on a streamed one. At 06:27Z on 2026-09-23 zakpod1's router restarted and refused
+connections for under a minute. All three bodies on it (coach on zc-03, the alpha workers on
+zc-01 and zc-02) recovered on the next attempt, and all three reported "rate limited; retrying".
+Nothing had rate-limited them. A 429 sends an operator to quota and concurrency; an outage sends
+them to the pod. `TimedOut` already has its own subclass for exactly this reason (its
+docstring: the zc-03 coach boot wedges of 2026-08-25). The label is the operator's first
+diagnostic.
+
+Decision. `_map_error` returns `ProviderUnavailable`, a `RateLimited` subclass, for the
+transport and 5xx cases of ADR-0076. It retries exactly as before, under the same wall-clock
+horizon: an engine or router restart takes a minute or two, which is longer than the three
+fixed attempts `TimedOut` gets. Both retry sites say "provider unavailable" for it. A real 429
+keeps its old label and stays a plain `RateLimited`.
+
+What it does NOT change. Which errors retry, for how long, and with what delay. Every other
+check is an `isinstance(..., RateLimited)`, and a subclass passes all of them. That includes the
+runtime failover's exclusion: an outage that outlasts the horizon still ends the turn rather than
+switching models, as before. Whether it should switch is a separate decision.
+
+The proof. tests/test_provider.py: the four transport class names and a 5xx status map to
+`ProviderUnavailable`, a 429 maps to exactly `RateLimited`, and a timeout stays a `TimedOut`.
+tests/test_loop_retry.py: six refusals, twice the fixed bound, are ridden out on both paths,
+and every notice says "provider unavailable"; a streamed 429 still says "rate limited". Five
+mutants, one per branch and label direction, were each caught, run with
+`mutation-proof-test.sh` on cc-14.

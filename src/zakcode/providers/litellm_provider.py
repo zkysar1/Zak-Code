@@ -43,6 +43,7 @@ from zakcode.providers.base import (
     Provider,
     ProviderError,
     ProviderStreamEvent,
+    ProviderUnavailable,
     QuotaExhausted,
     RateLimited,
     RequestFailed,
@@ -1273,8 +1274,10 @@ class LiteLLMProvider(Provider):
         ) or cls._is_server_error(exc):
             # Transient infrastructure errors (dropped connection, 503/500/502 — and any other
             # 5xx status litellm surfaces under a class of its own): the remedy is a bounded
-            # backoff-retry, not a dead turn. Surfaced as RateLimited so the loop's existing
-            # retry path handles it (no retry_after -> default backoff).
+            # backoff-retry, not a dead turn. Surfaced as ProviderUnavailable, a RateLimited
+            # subclass, so the loop's existing retry path handles it (no retry_after ->
+            # default backoff) and its notice says the provider was unavailable, not that it
+            # rate-limited us.
             #
             # ``BadGatewayError`` is listed by NAME because it does not subclass
             # ServiceUnavailableError (litellm 1.86: BadGatewayError -> APIStatusError), so the
@@ -1283,7 +1286,7 @@ class LiteLLMProvider(Provider):
             # upstream_unavailable``, and the turn ended as ``provider_error`` — the one stop a
             # Stop hook cannot veto — while the pod was healthy again within the minute. The
             # status-code rule is the catch-all for the same shape under a future name.
-            return RateLimited(message, retry_after=retry_after)
+            return ProviderUnavailable(message, retry_after=retry_after)
         return RequestFailed(message)
 
     # ------------------------------------------------------------------
