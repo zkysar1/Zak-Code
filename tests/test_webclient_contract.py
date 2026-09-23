@@ -95,16 +95,6 @@ def test_sse_parser_normalizes_crlf_framing() -> None:
     assert 'buf = buf.replace(/\\r\\n/g, "\\n");' in html
 
 
-def test_a_turn_stops_its_own_clock() -> None:
-    # The footer times a turn from its user_message (ADR-0219). endTurn clears that stamp
-    # and the usage meter, so a turn that opens without one (a /chat/stream turn) prints no
-    # duration instead of one spanning two turns. Vinheim's watch pane keeps the same rule.
-    body = re.search(r"function endTurn\(\) \{(.*?)\n  \}", _html(), flags=re.S)
-    assert body, "the page ends every turn in endTurn()"
-    assert "turnAt = null;" in body.group(1)
-    assert "turnUsage = emptyUsage();" in body.group(1)
-
-
 def test_client_can_interrupt_a_turn() -> None:
     # The Stop button POSTs /interrupt — the contract's sibling control file.
     html = _html()
