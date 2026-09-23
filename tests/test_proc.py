@@ -7,6 +7,7 @@ These prove that a timeout and a turn cancellation both tear the child down prom
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
 import time
 
@@ -73,6 +74,17 @@ async def test_run_capturing_cancel_propagates_promptly() -> None:
     assert time.monotonic() - start < 15
 
 
+@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid (util-linux)")
+async def test_a_timeout_is_not_held_open_by_a_descendant_that_left_the_group() -> None:
+    # `setsid` puts the sleep in a new session, out of reach of the group kill, and it keeps
+    # the command's output pipe open. The timeout must still end the call: measured
+    # 2026-09-23, a 2-second timeout returned after 12 seconds (OpenCode issue #49169).
+    start = time.monotonic()
+    with pytest.raises(CommandTimeout):
+        await run_capturing(shell_command="setsid sleep 10 & sleep 60", cwd=".", timeout=1)
+    assert time.monotonic() - start < 7  # timeout + the bounded reap, never the sleep's 10s
+
+
 async def test_terminate_tree_reaps_a_running_child() -> None:
     # Spawn the child the way EVERY production spawner does -- in its own process
     # group/session via new_group_kwargs(). terminate_process_tree's POSIX path is
@@ -89,6 +101,28 @@ async def test_terminate_tree_reaps_a_running_child() -> None:
     assert proc.returncode is None  # alive
     await terminate_process_tree(proc)
     assert proc.returncode is not None  # killed + reaped, not orphaned
+
+
+@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid (util-linux)")
+async def test_terminate_tree_lets_go_of_pipes_a_stray_descendant_holds() -> None:
+    # The escaped sleep outlives the group kill and keeps our pipes open. Returning on time
+    # is half the fix; the other half is closing our ends, or a long-lived server leaks two
+    # descriptors per stray until it runs out. Closed ends read as EOF at once.
+    proc = await asyncio.create_subprocess_shell(
+        "setsid sh -c 'echo escaped; exec sleep 10' & sleep 60",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        **new_group_kwargs(),
+    )
+    assert proc.stdout is not None
+    # Kill only once the sleep has left the group. Killed sooner, it dies with the group and
+    # this test passes without ever meeting a stray.
+    assert await asyncio.wait_for(proc.stdout.readline(), timeout=5) == b"escaped\n"
+    start = time.monotonic()
+    await terminate_process_tree(proc)
+    assert time.monotonic() - start < 6  # the bounded reap, never the sleep's 10s
+    assert proc.returncode is not None
+    assert await asyncio.wait_for(proc.stdout.read(), timeout=1) == b""
 
 
 async def test_shell_commands_run_under_real_bash(tmp_path) -> None:
