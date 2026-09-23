@@ -13875,3 +13875,43 @@ write placed before the plan, an empty plan, and steps that are not objects are 
 withheld. Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: the
 plan never clearing the gate, a plan anywhere in the batch clearing it, and an empty or malformed
 plan counting.
+
+## ADR-0232: the compaction summarizer reads each tool output by its head and tail
+
+Status: accepted. 2026-09-23.
+
+A compaction on the 131k P40 pod costs two long waits. The summarizer is a separate request with
+its own prompt, so it shares no prefix with the conversation and prefills everything it is
+handed. Then the first call after the compaction reads 0 cached tokens: it did after each of the
+7 compactions checked on two bodies. On 2026-09-23, over 11 compactions on three bodies, the
+summarizer took 204 to 462 seconds (once 1,108) and the first call after it 166 to 680 seconds.
+alpha@zc-01 compacted five times in about two hours.
+
+Tool outputs were 85 to 95 percent of the characters the summarizer re-read. The regions it was
+handed ran from 104,000 to 315,000 characters, so most compactions took two summarizer calls, one
+per 131,072-character slice.
+
+Decision. `_render_for_summary` holds each tool output to 2,000 characters: the first two thirds
+and the end, with a line saying how many characters were left out. Openings carry structure, like
+a file's imports or a listing's first entries, and endings carry verdicts, like a test run's
+summary line. Only the summarizer's copy is clipped. The conversation, the kept tail and the
+transcript file keep every output whole, and the model's own words and its tool calls reach the
+summarizer as before. On the same 11 regions, clipping at 2,000 characters leaves at most 17 to 47
+percent of the summarizer's input, and every region fits one slice.
+
+What it risks. A fact that appears only in the middle of a long output no longer reaches the
+summary. The summary was already a short digest of a region the model no longer sees, and the
+model re-runs a tool when it needs an output again; ADR-0148 measured that re-work as the price
+of every compaction. At 4,000 characters the input kept 25 to 50 percent and one region needed two
+slices again.
+
+This leaves the second wait alone. Why the first call after a compaction reads nothing from the
+cache, whether the summarizer taking the engine's only slot or the engine's cache design, is not
+measured here, and the engine is not the harness's to change.
+
+The proof. tests/test_compact_loop.py: a 40,008-character output reaches the summarizer as its
+head, a note that 38,008 characters were left out, and its tail, while a short output arrives
+whole; three 20,000-character outputs that overflowed an 8,192-character slice now take one
+summarizer call, and the messages it was handed keep every character. Three mutants each turned
+the tests red under `mutation-proof-test.sh` on cc-14: no clipping, keeping only the head, and
+writing the clipped copy back into the conversation.
