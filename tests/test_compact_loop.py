@@ -21,6 +21,7 @@ from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import (
     _MAX_FOLD_PASSES,
     _MAX_SUMMARY_SLICES,
+    _SUMMARY_OUTPUT_CHARS,
     AgentLoop,
     _clamp_middle,
     _pack_parts,
@@ -476,6 +477,39 @@ def _output(message: Message) -> str:
     block = message.blocks[0]
     assert isinstance(block, ToolResultBlock)
     return block.output
+
+
+def test_the_summarizer_reads_a_long_tool_output_by_its_head_and_tail(tmp_path: Path) -> None:
+    """ADR-0232. Field 2026-09-23 (three 131k P40 bodies, 11 compactions): tool outputs were
+    85-95% of what the summarizer re-read, and each summarizer run took 3-8 minutes."""
+    output = "HEAD" + "m" * 40_000 + "TAIL"
+    history = [Message.user("start"), *_tool_pair("t1", output), *_tool_pair("t2", "short one")]
+    rendered = AgentLoop._render_for_summary(history)
+    assert "HEAD" in rendered and "TAIL" in rendered
+    assert "m" * (_SUMMARY_OUTPUT_CHARS * 2 // 3) not in rendered
+    assert "[... 38,008 characters of this output left out ...]" in rendered
+    assert "short one" in rendered
+    assert len(rendered) < _SUMMARY_OUTPUT_CHARS + 300
+
+
+def test_clipping_the_summarizer_s_copy_leaves_the_conversation_whole(tmp_path: Path) -> None:
+    """Three 20,000-character outputs overflowed one 8,192-character slice, so the summarizer
+    ran once per slice; clipped, the transcript fits one call. The messages it was handed
+    keep every character."""
+    provider = _StrictWindowProvider(
+        ["the summary"], tokens=100_000, window=8192, limit=_SLICE + _OVERHEAD
+    )
+    loop = _loop(provider, tmp_path)
+    history = [
+        Message.user("read three files"),
+        *_tool_pair("t1", "a" * 20_000),
+        *_tool_pair("t2", "b" * 20_000),
+        *_tool_pair("t3", "c" * 20_000),
+    ]
+    text = asyncio.run(loop._summarize_for_compaction(history))
+    assert text == "the summary"
+    assert len(provider.seen) == 1
+    assert [_output(history[i]) for i in (2, 4, 6)] == ["a" * 20_000, "b" * 20_000, "c" * 20_000]
 
 
 def test_compact_now_elides_old_tool_outputs_when_the_summarizer_fails(tmp_path: Path) -> None:

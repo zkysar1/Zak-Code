@@ -336,6 +336,12 @@ _FOLD_PROMPT = "Fold these part-summaries of one conversation into a single cohe
 #: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
 #: plain text, so the model summarizes a document instead of continuing a dialogue.
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
+#: What the summarizer reads of one tool output, head and tail (ADR-0232). Tool outputs were
+#: 85-95% of the characters it re-read, and the summarizer shares no prefix with the
+#: conversation, so every one of them is prefilled fresh. On a 131k local pod each
+#: compaction's summarizer took 3-8 minutes, and a transcript over one slice took two calls.
+#: The conversation keeps its outputs whole; only the summarizer's copy is clipped.
+_SUMMARY_OUTPUT_CHARS = 2000
 #: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
 #: call, or thinking tags — which must never survive into a compaction summary.
 _MODEL_MARKUP_RE = re.compile(
@@ -2641,8 +2647,13 @@ class AgentLoop:
 
         Tool calls are rendered as one compact line (name + clipped input) and tool
         results by their output text, so a slice never carries an orphan structured
-        tool block a provider API would reject.
+        tool block a provider API would reject. A long output is held to
+        :data:`_SUMMARY_OUTPUT_CHARS`, its first two thirds and its end, with a line saying
+        how much was left out (ADR-0232): openings carry structure and endings carry
+        verdicts, like a test run's summary line.
         """
+        head = _SUMMARY_OUTPUT_CHARS * 2 // 3
+        tail = _SUMMARY_OUTPUT_CHARS - head
         parts: list[str] = []
         for message in messages:
             lines: list[str] = []
@@ -2654,7 +2665,14 @@ class AgentLoop:
                 lines.append(f"(called {use.name} with {args[:200]})")
             for block in message.blocks:
                 if isinstance(block, ToolResultBlock) and block.output:
-                    lines.append(block.output)
+                    output = block.output
+                    if len(output) > _SUMMARY_OUTPUT_CHARS:
+                        left_out = len(output) - head - tail
+                        output = (
+                            f"{output[:head]}\n[... {left_out:,} characters of this output "
+                            f"left out ...]\n{output[-tail:]}"
+                        )
+                    lines.append(output)
             if lines:
                 parts.append(f"[{message.role}]\n" + "\n".join(lines))
         return "\n\n".join(parts)
