@@ -512,6 +512,108 @@ def test_clipping_the_summarizer_s_copy_leaves_the_conversation_whole(tmp_path: 
     assert [_output(history[i]) for i in (2, 4, 6)] == ["a" * 20_000, "b" * 20_000, "c" * 20_000]
 
 
+def _skill_turn(name: str, body: str) -> Message:
+    """A turn composed from ``/<name>``, typed or delivered by the harness: frame, then body."""
+    return Message.user(
+        f"<command-message>{name} is running</command-message>\n"
+        f"<command-name>/{name}</command-name>\n\n{body}"
+    )
+
+
+def test_the_summarizer_reads_a_skill_turn_by_its_head_and_tail() -> None:
+    """ADR-0238. Field 2026-09-23 (three 131k P40 bodies, 22 compactions): with tool outputs
+    held (ADR-0232), a whole skill body was 67 to 81 percent of what the summarizer read
+    wherever one sat in the summarized part, the 84,476-character loop skill three times on
+    one worker. The same body loaded through use_skill is a tool output and was already held."""
+    body = "RULES " + "s" * 40_000 + " RETURN"
+    asked = "fix the parser " + "q" * 5_000
+    history = [
+        _skill_turn("worker-loop", body),
+        Message.assistant_text("on it"),
+        Message.user(asked),
+    ]
+    rendered = AgentLoop._render_for_summary(history)
+    assert "<command-name>/worker-loop</command-name>" in rendered and " RETURN" in rendered
+    assert "s" * (_SUMMARY_OUTPUT_CHARS * 2 // 3) not in rendered
+    assert "characters of this skill's instructions left out ...]" in rendered
+    assert asked in rendered  # what the operator wrote is never held
+    assert history[0].text.endswith(body)  # only the summarizer's copy is clipped
+
+
+def test_the_note_says_when_the_turn_s_skill_was_summarized_away(tmp_path: Path) -> None:
+    """ADR-0238. On a worker Body the loop skill's only copy was summarized mid-lap at three
+    compactions of three, and each time the Body ended its turn 7 to 19 rows later."""
+    provider = _SummarizerProvider(["the summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop._skill_pages["worker-loop"] = None  # a whole skill is listed without pages (ADR-0192)
+    loop.session.messages.extend([_skill_turn("worker-loop", "step " * 6_000), *_history(5)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    (prompt,) = provider.seen[0]
+    assert "step " * 1_000 not in prompt.text  # the body's middle never reached the summarizer
+    assert (
+        "- /worker-loop: its instructions (30,000 characters) were in the part summarized "
+        "above, so they are no longer in your context; if the skill is needed again, load it "
+        "with Skill"
+    ) in loop.session.messages[0].text
+
+
+def test_the_note_is_silent_while_the_newest_copy_is_kept(tmp_path: Path) -> None:
+    # The loop's next lap delivered the skill again, and that copy is in the kept tail.
+    provider = _SummarizerProvider(["the summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    lap_two = _skill_turn("worker-loop", "lap two " * 3_000)
+    loop.session.messages.extend(
+        [_skill_turn("worker-loop", "lap one " * 3_000), *_history(5), lap_two]
+    )
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert "its instructions" not in loop.session.messages[0].text
+    assert loop.session.messages[-1] is lap_two
+
+
+def test_an_operator_only_skill_is_named_with_the_operator_s_route_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _SummarizerProvider(["the summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    monkeypatch.setattr(loop, "_user_only_skills", lambda: {"start"})
+    loop.session.messages.extend([_skill_turn("start", "boot " * 4_000), *_history(5)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert (
+        "- /start: its instructions (20,000 characters) were in the part summarized above, so "
+        "they are no longer in your context; only the operator can run /start again, by typing "
+        "it; Skill refuses it, so do not call Skill for it"
+    ) in loop.session.messages[0].text
+
+
+def test_a_paged_skill_keeps_its_section_line_and_gets_no_second_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from zakcode import tasks
+    from zakcode.tasks import skill_pages, skill_skeleton
+
+    monkeypatch.setattr(tasks, "PAGE_BUDGET_CHARS", 100)
+    alpha, beta = "alpha " * 10, "beta " * 12
+    body = f"# Boot\n\nintro\n\n## Step 1: Alpha\n\n{alpha}\n\n## Step 2: Beta\n\n{beta}\n"
+    provider = _SummarizerProvider(["the summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+    loop._skill_pages["boot"] = skill_pages(body, skill="boot")
+    loop._skill_pages_delivered["boot"] = {1}
+    loop.session.messages.extend([_skill_turn("boot", body), *_history(5)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    note = loop.session.messages[0].text
+    assert "- /boot: on section 1 of 2" in note
+    assert "/boot: its instructions" not in note
+
+
 def test_compact_now_elides_old_tool_outputs_when_the_summarizer_fails(tmp_path: Path) -> None:
     # ADR-0083: the summarizer is a model call and can fail (a busy pod, a provider error,
     # an overflow of its own); the transcript still shrinks, and the failure is named.
