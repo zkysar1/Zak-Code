@@ -14080,3 +14080,68 @@ it, and clearing the plan forgets it. Under `mutation-proof-test.sh` on cc-14, d
 carry-over turned five of these red, reading the submission literally in the signature turned
 five red, and reading the map after the replace turned two red, this file's walk and the
 existing one in `test_plan_autoadvance.py`.
+
+## ADR-0236: a foreground command still running at its timeout is moved to the background, not killed
+
+Status: accepted. 2026-09-23.
+
+The shell tool killed a foreground command at its timeout, the two-minute default or the model's
+own up to ten minutes, and answered "Command timed out". Claude Code does not: probed 2026-09-23,
+a foreground call past its timeout, the default or an explicit 3 seconds, kept running as a
+background task, and the session was told when it ended. The difference cost real work. Measured
+2026-09-23 on the two worker Bodies on the P40 pod (zc-01 and zc-02, Qwen3.8-27B), a Mind's
+closing step runs 12 to 15 minutes when its test gate fires, longer than any timeout the tool
+accepts. The models' calls to it were killed 8 times; then both wrote the step's result
+themselves instead of waiting for it. `run_in_background` (ADR-0191) was there, but a model has
+to know before it starts a command that the command will be long, and nothing told them.
+
+Decision. A foreground command that outlives its timeout keeps running.
+
+1. With a session to hold it, which the loop always gives, a foreground command runs through
+   `BackgroundTasks.run_foreground`: spawned exactly as `run_in_background` spawns (its own
+   process group, a wrapper shell that writes the output file and the exit code) and waited for
+   up to its timeout.
+2. A command that exits in time answers as before: its output within ADR-0234's limits, its exit
+   code, a non-zero exit as an error. Its output and exit files are removed and nothing is
+   recorded, so a quick command leaves no trace.
+3. A command still running at its timeout is recorded on the session's task table exactly as a
+   `run_in_background` task. The result says it was moved, names its id and its output file, and
+   says how to wait: `TaskOutput(task_id=..., timeout=600000)`, which returns at the exit or
+   after ten minutes, called again while it still runs. Its exit is reported once at the next
+   idle prompt like any task's; `TaskStop` kills it, and so does the session's end.
+4. A cancelled turn still kills the command's whole process group and leaves nothing behind. A
+   bare `ToolContext`, with no session, still kills at the timeout through `run_capturing`.
+
+Why the result names TaskOutput. Claude Code tells the session mid-turn when a background task
+ends. Zak Code tells it at an idle prompt (ADR-0191), and a served worker's night is one long turn
+that may never reach one. A model told only that it would be notified would wait for a notice
+that does not come. For the same reason the `run_in_background` result now names that call too.
+
+What else changes. Output goes to a file, not a pipe, and the wait is for the command's shell,
+not for its output to close. So `server &` returns as soon as its shell exits and leaves the
+server running, as Claude Code does (probed 2026-09-23: a call ending in `(sleep 20; ...) &`
+returned at once and the job ran on). Through the pipe the call waited until the job closed its
+output or the timeout killed both. The exit code is the wrapper shell's `$?`, so a command killed
+by a signal reads 128+N where asyncio reported -N; nothing in the tools reads a negative code.
+Each foreground command costs one more shell process. The Bash description gained one clause.
+PowerShell still kills at its timeout.
+
+Why the wrapper. The first cut spawned the command without it, straight into the output file,
+with only the in-process watcher to write the exit code. The new test caught the gap on its first
+run: the child is reaped before the watcher writes, and a TaskOutput poll in between read the
+moved task as `lost`. The wrapper writes the code before it exits, so there is no gap, a moved
+task's code survives a restart, and a synchronous `run_turn`, whose event loop ends with the turn
+and takes the watcher with it, loses nothing. One spawn serves both paths.
+
+The proof. `tests/test_bash_timeout_background.py`: a quick command leaves no record, no file and
+no notification; a failed one is still an error with its exit code; a command past a one-second
+timeout returns at once, recorded and persisted and still running, with its output so far in its
+file, then finishes into that file, completes under TaskOutput and is reported once; a
+`run_in_background` result names the same wait; a moved command keeps its own exit code; a
+cancelled call kills the command and records nothing; a command ending in `&` returns while its job
+runs on. Under `mutation-proof-test.sh` on cc-14, five mutants each turned red the tests that guard
+them. The tool killing at the timeout turned the moved test and the `&` test red, and the two that
+list the output directory, which the kill path never creates. `run_foreground` killing at the
+timeout turned the moved test and the moved exit code red; a cancel that skips the tree kill, the
+cancel test; keeping a quick command's files, the no-trace test; and reading the wrapper's own exit
+instead of its record of the command's, the failed-command test.

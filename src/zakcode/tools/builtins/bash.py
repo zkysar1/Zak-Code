@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zakcode._subprocess import find_bash
-from zakcode.background import BackgroundTasks
+from zakcode.background import BackgroundTask, BackgroundTasks
 from zakcode.config import PermissionTier
 from zakcode.tools.base import (
     STDOUT_CHARS,
@@ -928,9 +928,11 @@ class BashTool(Tool):
         name="Bash",
         description=(
             "Run a shell command with the workspace as the working directory. "
-            "stdout and stderr are combined. Default 120s timeout (max 600). Returns a "
-            "non-zero exit code as an error. Output past 30,000 characters (10,000 for a "
-            "failed command) is saved to a file: the result shows part of it and the path."
+            "stdout and stderr are combined. Default 120s timeout (max 600): a command still "
+            "running then is moved to the background, not killed, and the result says how to "
+            "wait for it. Returns a non-zero exit code as an error. Output past 30,000 "
+            "characters (10,000 for a failed command) is saved to a file: the result shows "
+            "part of it and the path."
         ),
         parameters={
             "type": "object",
@@ -993,17 +995,53 @@ class BashTool(Tool):
             timeout = _DEFAULT_TIMEOUT
         timeout = min(timeout, _MAX_TIMEOUT)
 
-        # run_capturing spawns the child in its own process group so a timeout OR a turn
-        # cancellation kills the whole tree (no orphaned grandchildren); CancelledError is
-        # NOT caught here (it is BaseException) so a cancel propagates after teardown.
+        # A command still running at its timeout is moved to the background, not killed
+        # (ADR-0236): the session's task table takes it and the result says how to wait. With
+        # no session to hold it, run_capturing kills it at the timeout. Either way the child
+        # runs in its own process group, so a turn cancellation kills the whole tree (no
+        # orphaned grandchildren); CancelledError is NOT caught here (it is BaseException) so a
+        # cancel propagates after teardown.
+        tasks = ctx.background_tasks
         try:
-            output, exit_code = await run_capturing(
-                shell_command=command,
-                cwd=str(ctx.workspace_root),
-                timeout=timeout,
-                extra_env=ctx.egress_env,
-                drop_env=ctx.scrub_env,
-            )
+            if tasks is None:
+                output, exit_code = await run_capturing(
+                    shell_command=command,
+                    cwd=str(ctx.workspace_root),
+                    timeout=timeout,
+                    extra_env=ctx.egress_env,
+                    drop_env=ctx.scrub_env,
+                )
+            else:
+                description = args.get("description")
+                ran = await tasks.run_foreground(
+                    command,
+                    cwd=str(ctx.workspace_root),
+                    timeout_seconds=timeout,
+                    description=description if isinstance(description, str) else "",
+                    extra_env=ctx.egress_env,
+                    drop_env=list(ctx.scrub_env),
+                )
+                if isinstance(ran, BackgroundTask):
+                    # TaskOutput is the way to wait: the exit notification arrives only at an
+                    # idle prompt, and a worker's one long turn may never reach one.
+                    return ToolResult.ok(
+                        f"Command did not finish within its {timeout}s timeout and was moved "
+                        f"to the background, still running, with ID: {ran.id}. Output is being "
+                        f"written to: {ran.output_file}. To wait for it, call "
+                        f'TaskOutput(task_id="{ran.id}", timeout=600000): it returns when the '
+                        "command exits or after 10 minutes; call it again if it is still "
+                        f'running. TaskOutput(task_id="{ran.id}", block=false) or a Read of '
+                        "that file shows the output so far; TaskStop kills it.",
+                        data={
+                            "command": command,
+                            "background": True,
+                            "moved_to_background": True,
+                            "timeout": timeout,
+                            "task_id": ran.id,
+                            "output_file": ran.output_file,
+                        },
+                    )
+                output, exit_code = ran
         except CommandTimeout:
             return ToolResult.error(
                 f"Command timed out after {timeout}s: {command}",
@@ -1038,10 +1076,14 @@ class BashTool(Tool):
             return ToolResult.error(
                 f"Failed to start command in the background: {exc}", data={"command": command}
             )
+        # The notification comes at an idle prompt, so the result also names the call that
+        # waits: a worker's one long turn may never reach that prompt (ADR-0236).
         return ToolResult.ok(
             f"Command running in background with ID: {task.id}. Output is being written to: "
-            f"{task.output_file}. You will be notified when it completes. To check interim "
-            f'output, call TaskOutput(task_id="{task.id}", block=false) or Read that file.',
+            f"{task.output_file}. You will be notified when it completes, at the session's next "
+            f'idle prompt; to wait for it now, call TaskOutput(task_id="{task.id}", '
+            f'timeout=600000). To check interim output, call TaskOutput(task_id="{task.id}", '
+            "block=false) or Read that file.",
             data={
                 "command": command,
                 "background": True,
