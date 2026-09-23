@@ -14634,3 +14634,67 @@ after them. Under `mutation-proof-test.sh` on cc-14, fourteen mutants each turne
 of these tests red: the vetoable set; the hook consult, the stand-down call and the degraded
 mark at each of the two sites; each of the stand-down's five resets; the `written_paths` union;
 and the de-duplication of what the stand-down returns. The full suite passed, 4,729 tests.
+
+## ADR-0245: an edited skill is read again at its next load
+
+Status: accepted. 2026-09-23.
+
+A skill's catalog entry, its name and description, is read at startup and goes into the system
+prompt. Its body was read at its first load and then kept for the life of the process:
+`Skill.body()` cached the text and never looked at the file again. Claude Code's documentation
+says a change to a skill's `SKILL.md` is detected within the current session. A zakcode process
+that runs for hours, as a Mind's Body does while its loop merges framework updates into the
+workspace, kept serving the text it read first.
+
+Measured 2026-09-23 on zc-02. The worker Body's process started at 13:13:51Z. At 14:36:33Z its
+workspace merged an edit that took the loop skill's `SKILL.md` from 84,571 characters to 62,682,
+front matter included. Session `0794bdc9` loaded the skill three more times, at 15:47:26Z,
+18:17:45Z and 18:44:18Z, and each load delivered 84,073 characters. None of the three can have
+come from the file on disk, and the last came more than four hours after the edit.
+
+Decision.
+
+- `Skill.body()` records the file's `(mtime_ns, size)` when it reads it, stats the file on every
+  call, and reads it again when the stamp differs. The settings cache already keys on the same
+  kind of stamp (ADR-0212). A file that can no longer be stat'ed is read anyway, so a skill whose
+  file vanished fails to load as it would on a first read instead of being served from the cache.
+- The loop decides a skill's fit (ADR-0192) and caches its pages (ADR-0067) once per version, not
+  once per name. Every door's delivery passes `_skill_pages_for_delivery`, which compares the
+  file, read through the resolver, with the body it last decided on, and drops both memos when
+  they differ. A load therefore fixes the version its later pages are turned from, and an edit
+  made while a load is being worked reaches the next load. The file is compared, not the text a
+  door hands over, because a `use_skill` load puts its arguments ahead of the body.
+- The catalog stays as it was read at startup.
+
+Consequences. A stat per `body()` call and one read through the resolver per delivery are the
+whole cost. The per-turn reload dedup (ADR-0063, ADR-0198) compares digests of the body. That
+digest could not change within a process before; now a skill edited mid-turn gets its new body
+at the model's next load instead of the pointer, which the dedup's own comments already allow
+for. A paged skill's plan keeps the skeleton seeded from the version it first read, because a
+skeleton is seeded once per plan. When an edit changes the section count, pages find their
+steps by title and marker, the path a plan the model rewrote already takes.
+
+Rejected: re-reading at every page turn. The pages of one load would mix two versions, the new
+text's section after the old text's, under a plan seeded from the old. Also rejected: reloading
+the catalog. It is part of the system prompt, and a changed prompt starts a provider's prompt
+cache over, on the pod from nothing (ADR-0233). Also rejected: a file watcher. A stat per call
+gives the same answer with no thread and no platform API. Also rejected: hashing the file on
+every call, a full read to learn what a stat says. The stamp misses only an edit that keeps both
+the size and the mtime to the nanosecond.
+
+Left open: a skill added or renamed while a process runs is not discovered until it restarts,
+because its catalog entry is the same system-prompt question.
+
+The proof. `tests/test_skills.py` reads a skill again after an edit that changes its size at the
+same mtime and after one that keeps its size under a new mtime, reads an unchanged skill once
+over three calls, and raises for a vanished file instead of serving the cache.
+`tests/test_skills_facade.py` runs a typed `/<skill>` twice with an edit between and gets the new
+text. `tests/test_skill_paging.py` delivers page 2 of a second load from the edited text, and
+page 2 of a load whose file changed while page 1 was worked from the loaded text.
+`tests/test_whole_when_fits.py` pages a skill edited past the window at its next load, delivers
+it whole once edited back, and keeps an unchanged skill's decision when it is loaded with
+arguments. Under `mutation-proof-test.sh` on cc-14, eleven mutants each turned their intended
+tests red: six in `Skill.body()` (no stamp check; no first-read guard; size or mtime left out of
+the stamp; the stamp not saved; a vanished file served from the cache) and five in the loop (a
+decision made once per name; the pages kept; the fit kept; the door's text compared instead of
+the file; the decision taken again at a page turn). The full suite passed, 4,738 tests.

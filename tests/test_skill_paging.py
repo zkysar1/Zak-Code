@@ -523,6 +523,66 @@ def test_a_restart_reads_how_far_it_was_paged_from_the_transcript(tmp_path: Path
     assert second._skill_pages_delivered["demo"] == {1, 2}
 
 
+# ADR-0245: a skill's file can change while a loop runs (a Mind's Body merges framework updates
+# for hours). A load fixes the version its pages are turned from; the next load reads the file
+# again. These scripts answer from the conversation, not the call count: the loop's side calls
+# share the provider.
+EDITED = DEMO.replace("Do the second thing.", "Do the revised second thing.")
+
+
+def _result_ids(messages: list[Message]) -> set[str]:
+    return {b.tool_use_id for m in messages for b in m.blocks if isinstance(b, ToolResultBlock)}
+
+
+def test_an_edit_between_loads_reaches_every_page_of_the_next_load(tmp_path: Path) -> None:
+    bodies = {"demo": DEMO}
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        ids, texts = _result_ids(messages), _user_texts(messages)
+        if "run /demo again" in texts:
+            if "t2" not in ids:
+                return _use("t2")
+            if "p2" not in ids:
+                return _plan(_seeded("done", "in_progress", "pending"), call_id="p2")
+        elif "run /demo" in texts and "t1" not in ids:
+            return _use("t1")
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path, bodies=bodies)
+    asyncio.run(loop.arun_turn("run /demo"))
+    assert "Do the second thing." in loop._ensure_skill_pages("demo").render(2)
+    bodies["demo"] = EDITED  # the file is edited between the two loads
+    asyncio.run(loop.arun_turn("run /demo again"))
+    # Page 2 of the second load is the edited text: never the first load's cached section
+    # behind a first page read from the new file.
+    page, _ = _page_after_plan(provider, "[/demo — page 2 of 3: Step 2: Second]")
+    assert "Do the revised second thing." in page
+
+
+def test_an_edit_while_a_load_is_worked_waits_for_the_next_load(tmp_path: Path) -> None:
+    bodies = {"demo": DEMO}
+
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        ids = _result_ids(messages)
+        if "run /demo" not in _user_texts(messages):
+            return LLMResult(text="done")
+        if "t1" not in ids:
+            return _use("t1")
+        if "p1" not in ids:
+            bodies["demo"] = EDITED  # the file changes while section 1 is being worked
+            return _plan(_seeded("done", "in_progress", "pending"))
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path, bodies=bodies)
+    asyncio.run(loop.arun_turn("run /demo"))
+    # The page turned after the edit is still the loaded version's: a load's sections are
+    # one document, and the edit is the next load's to deliver.
+    page, _ = _page_after_plan(provider, "[/demo — page 2 of 3: Step 2: Second]")
+    assert "Do the second thing." in page and "revised" not in page
+
+
 def test_streaming_twin_announces_the_page(tmp_path: Path) -> None:
     def script(n: int, messages: list[Message]) -> LLMResult:
         if n == 1:

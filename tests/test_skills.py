@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,67 @@ def test_body_is_lazy(tmp_path: Path) -> None:
     body = skill.body()
     assert "conventional-commit" in body
     assert skill.body_loaded is True  # now cached
+
+
+# ADR-0245: an edited SKILL.md is read again, as Claude Code does within a session. A Mind's
+# Body runs for hours while its loop merges framework updates, and a body cached for the
+# life of the process kept serving it the old text.
+
+
+def _rewrite(path: Path, text: str, *, mtime_ns: int) -> None:
+    """Replace a SKILL.md's text and set its mtime, so each test controls which half of the
+    file's (mtime, size) stamp moves."""
+    path.write_text(text, encoding="utf-8")
+    os.utime(path, ns=(mtime_ns, mtime_ns))
+
+
+def test_a_skill_edited_to_a_new_size_is_read_again(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "s")
+    skill = discover_skill_dir(tmp_path)[0][0]
+    path = tmp_path / "s" / "SKILL.md"
+    assert "conventional-commit" in skill.body()
+    # Same mtime, different size: only the size half of the stamp moves.
+    _rewrite(path, _SKILL.replace("+ body", "only"), mtime_ns=path.stat().st_mtime_ns)
+    body = skill.body()
+    assert "subject only" in body
+    assert "+ body" not in body
+
+
+def test_a_skill_edited_to_the_same_size_is_read_again(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "s")
+    skill = discover_skill_dir(tmp_path)[0][0]
+    path = tmp_path / "s" / "SKILL.md"
+    assert "Read the diff" in skill.body()
+    edited = _SKILL.replace("Read the diff", "Load the diff")
+    assert len(edited) == len(_SKILL)  # the size half of the stamp cannot see this edit
+    _rewrite(path, edited, mtime_ns=path.stat().st_mtime_ns + 1_000_000_000)
+    assert "Load the diff" in skill.body()
+
+
+def test_an_unchanged_skill_is_read_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_skill(tmp_path, "s")
+    skill = discover_skill_dir(tmp_path)[0][0]
+    reads: list[Path] = []
+    real_read = Path.read_text
+
+    def counting_read(self: Path, *args: object, **kwargs: object) -> str:
+        reads.append(self)
+        return real_read(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", counting_read)
+    first = skill.body()
+    assert skill.body() == first
+    assert skill.body() == first
+    assert len(reads) == 1
+
+
+def test_a_skill_whose_file_vanished_is_not_served_from_the_cache(tmp_path: Path) -> None:
+    _write_skill(tmp_path, "s")
+    skill = discover_skill_dir(tmp_path)[0][0]
+    assert "conventional-commit" in skill.body()
+    (tmp_path / "s" / "SKILL.md").unlink()
+    with pytest.raises(OSError):
+        skill.body()
 
 
 def test_directory_points_at_skill_dir(tmp_path: Path) -> None:

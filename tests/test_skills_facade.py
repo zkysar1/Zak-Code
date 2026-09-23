@@ -121,6 +121,19 @@ def test_slash_skill_body_unreadable_is_handled(tmp_path: Path) -> None:
     assert "could not load skill" in buf.getvalue()
 
 
+def test_slash_skill_edited_between_runs_runs_the_new_text(tmp_path: Path) -> None:
+    # ADR-0245: a skill edited on disk runs as it now reads, not as it read at its first run.
+    _write_skill(tmp_path, "g")
+    agent = _agent(tmp_path, enable_skills=True)
+    console, _ = _console()
+    first = _skill_command_turn(console, agent, "greeter")
+    assert "greet the user by name" in (first.turn_text or "").lower()
+    skill_file = tmp_path / ".zakcode" / "skills" / "g" / "SKILL.md"
+    skill_file.write_text(_SKILL.replace("by name", "by their first name"), encoding="utf-8")
+    second = _skill_command_turn(console, agent, "greeter")
+    assert "greet the user by their first name" in (second.turn_text or "").lower()
+
+
 def test_slash_unknown_skill_falls_through(tmp_path: Path) -> None:
     agent = _agent(tmp_path, enable_skills=True)
     console, _ = _console()
