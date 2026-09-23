@@ -58,8 +58,9 @@ class ToolSearchTool(Tool):
         name="tool_search",
         description=(
             "Search for additional tools by name or keyword and make them available. "
-            "Some tools (documents, PDFs and images, and tools from connected MCP servers) "
-            "are hidden to keep the toolset small; call this with a tool's name or a query "
+            "Some tools (those that create documents, spreadsheets, PDFs and images, and tools "
+            "from connected MCP servers) are hidden to keep the toolset small; call this with "
+            "a tool's name or a query "
             "describing what you need (e.g. 'create_docx' or 'github issues') to surface and "
             "activate matching tools. They become callable on the next step."
         ),

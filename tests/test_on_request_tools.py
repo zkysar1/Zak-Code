@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from zakcode import Agent
+from zakcode.artifacts import artifact_from_path
 from zakcode.config import Settings
+from zakcode.server.app import _reader_tool_for_artifact
 from zakcode.tools.base import ToolContext
 from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
 
@@ -59,7 +63,7 @@ def test_the_prompt_names_them_until_one_is_loaded(tmp_path: Path) -> None:
     assert all(name in line for name in ON_REQUEST_TOOLS)
     agent.registry.activate("create_docx")
     line = _on_request_line(agent)
-    assert line is not None and "create_docx" not in line and "read_docx" in line
+    assert line is not None and "create_docx" not in line and "create_xlsx" in line
 
 
 def test_the_prompt_lists_none_when_nothing_can_load_them(tmp_path: Path) -> None:
@@ -67,3 +71,16 @@ def test_the_prompt_lists_none_when_nothing_can_load_them(tmp_path: Path) -> Non
     agent = _agent(tmp_path)
     agent.registry.deactivate("tool_search")
     assert _on_request_line(agent) is None
+
+
+@pytest.mark.parametrize(
+    "filename", ["report.docx", "sheet.xlsx", "book.xlsm", "photo.png", "notes.txt"]
+)
+def test_the_reader_an_upload_names_is_exposed(tmp_path: Path, filename: str) -> None:
+    # The server's upload prompt tells the model to inspect the file with this tool by name. A
+    # file arrives unannounced, so its reader must already be in the list, not on request.
+    upload = tmp_path / filename
+    upload.write_bytes(b"x")
+    reader = _reader_tool_for_artifact(artifact_from_path(upload, workspace_root=tmp_path))
+    assert reader
+    assert reader in _exposed(_agent(tmp_path))
