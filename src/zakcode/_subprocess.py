@@ -80,6 +80,11 @@ def new_group_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+#: How long the teardown waits to reap a killed child before it stops waiting on the child's
+#: pipes. See :func:`terminate_process_tree`.
+_REAP_GRACE_S = 2.0
+
+
 async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     """Forcibly kill ``proc`` AND its descendants (best-effort), then reap it.
 
@@ -87,6 +92,15 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     ``sh -c '... &'``, ``npx``/``uvx`` launchers, or a dev server — so this kills the tree:
     ``taskkill /PID <pid> /T /F`` on Windows, ``os.killpg(getpgid, SIGKILL)`` on POSIX (the
     child must have been spawned with :func:`new_group_kwargs`). No-op if already exited.
+
+    The reap is BOUNDED. asyncio's ``Process.wait()`` settles only once every pipe to the
+    child has closed, and a descendant that left the child's group (``setsid``, a server that
+    daemonizes itself) survives the group kill with those pipes still open. An unbounded reap
+    therefore lasted as long as that descendant: measured 2026-09-23, a command that started
+    ``setsid sleep 12`` under a 2-second timeout returned after 12 seconds, and a daemon would
+    have held the turn indefinitely (OpenCode issue #49169 is the same defect). Past
+    :data:`_REAP_GRACE_S` the transport is closed, which closes our ends of the pipes, and the
+    caller gets on with its timeout. The stray descendant is not killed: it left the group.
     """
     if proc.returncode is not None:
         return
@@ -106,5 +120,15 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass  # already gone / race
-    with contextlib.suppress(Exception):
-        await proc.wait()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
+    except TimeoutError:
+        # Our child is dead and something outside its group holds its pipes. asyncio exposes
+        # no public way to let go of them, so close the process's own transport.
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            transport.close()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
+    except Exception:  # noqa: BLE001 - the reap is best-effort, as it always was
+        pass
