@@ -93,14 +93,15 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     ``taskkill /PID <pid> /T /F`` on Windows, ``os.killpg(getpgid, SIGKILL)`` on POSIX (the
     child must have been spawned with :func:`new_group_kwargs`). No-op if already exited.
 
-    The reap is BOUNDED. asyncio's ``Process.wait()`` settles only once every pipe to the
-    child has closed, and a descendant that left the child's group (``setsid``, a server that
-    daemonizes itself) survives the group kill with those pipes still open. An unbounded reap
-    therefore lasted as long as that descendant: measured 2026-09-23, a command that started
-    ``setsid sleep 12`` under a 2-second timeout returned after 12 seconds, and a daemon would
-    have held the turn indefinitely (OpenCode issue #49169 is the same defect). Past
-    :data:`_REAP_GRACE_S` the transport is closed, which closes our ends of the pipes, and the
-    caller gets on with its timeout. The stray descendant is not killed: it left the group.
+    The reap is BOUNDED, and it lets go of the child's pipes. A descendant that left the
+    child's group (``setsid``, a server that daemonizes itself) survives the group kill with
+    those pipes still open. Before Python 3.13, asyncio's ``Process.wait()`` settles only once
+    every pipe has closed, so an unbounded reap lasted as long as that descendant: measured
+    2026-09-23 on 3.11, a command that started ``setsid sleep 12`` under a 2-second timeout
+    returned after 12 seconds, and a daemon would have held the turn indefinitely (OpenCode
+    issue #49169 is the same defect). 3.13 returns at the exit (gh-119710), but our ends of the
+    pipes stay open until the stray exits. So the wait is bounded by :data:`_REAP_GRACE_S`, and
+    then the transport is closed on every version. The stray is not killed: it left the group.
     """
     if proc.returncode is not None:
         return
@@ -120,15 +121,10 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass  # already gone / race
-    try:
+    with contextlib.suppress(Exception):  # TimeoutError: a stray holds the pipes (see above)
         await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
-    except TimeoutError:
-        # Our child is dead and something outside its group holds its pipes. asyncio exposes
-        # no public way to let go of them, so close the process's own transport.
-        transport = getattr(proc, "_transport", None)
-        if transport is not None:
-            transport.close()
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
-    except Exception:  # noqa: BLE001 - the reap is best-effort, as it always was
-        pass
+    # asyncio exposes no public way to let go of a child's pipes, so close its transport. After
+    # a normal exit this is a no-op; with a stray it closes our ends.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
