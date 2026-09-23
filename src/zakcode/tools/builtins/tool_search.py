@@ -26,12 +26,20 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 
-#: Default ceiling on how many tools are exposed (active) to the model at once.
+#: Default ceiling on how many MCP tools are exposed to the model at once. Built-in tools do
+#: not count against it. They used to: the budget capped EVERY exposed tool, and once the
+#: built-ins alone reached 25 (2026-09-10) there was never room, so the model was told a match
+#: could not be surfaced "because the tool budget is full" and no MCP tool could ever be used.
 DEFAULT_TOOL_BUDGET = 25
 
 
 def _first_line(text: str) -> str:
     return text.strip().splitlines()[0] if text.strip() else ""
+
+
+def _is_mcp(name: str) -> bool:
+    """Whether ``name`` is an MCP tool's registry name (``mcp__<server>__<tool>``)."""
+    return name.startswith("mcp__")
 
 
 def _matches(query: str, name: str, description: str) -> bool:
@@ -100,14 +108,15 @@ class ToolSearchTool(Tool):
                 f"{len(active)} tool(s) are already available."
             )
 
-        available = max(0, self._budget - len(active))
+        # The budget counts the MCP tools already exposed; built-ins never use it up.
+        available = max(0, self._budget - sum(1 for n in active if _is_mcp(n)))
         # If the budget is full, make room by evicting previously-surfaced MCP tools
         # that aren't part of this match — so the model is never wedged, unable to
         # reach a needed tool. Builtins (no ``mcp__`` prefix) are never evicted.
         evicted: list[str] = []
         need = len(matched) - available
         if need > 0:
-            evictable = [n for n in active if n.startswith("mcp__") and n not in matched]
+            evictable = [n for n in active if _is_mcp(n) and n not in matched]
             for name in evictable[:need]:
                 self._registry.deactivate(name)
                 evicted.append(name)
@@ -132,8 +141,8 @@ class ToolSearchTool(Tool):
             )
         if deferred:
             lines.append(
-                f"{len(deferred)} more matched but the tool budget ({self._budget}) is full of "
-                "built-in / in-use tools; finish with the active tools or refine your query."
+                f"{len(deferred)} more matched, but at most {self._budget} MCP tools can be "
+                "available at once; finish with the active tools or refine your query."
             )
         return ToolResult.ok(
             "\n".join(lines),

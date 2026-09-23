@@ -91,13 +91,14 @@ async def test_tool_search_requires_query(tmp_path: Path) -> None:
 
 async def test_tool_search_respects_budget(tmp_path: Path) -> None:
     reg = ToolRegistry()
-    # 1 active builtin already; budget of 2 leaves room for exactly one activation.
+    # The budget counts MCP tools only: a budget of 1 surfaces exactly one of the two matches,
+    # and the active builtin does not use any of it.
     reg.register(_Tool("builtin"))
     reg.register(_Tool("mcp__a__search_one", "search one"), active=False)
     reg.register(_Tool("mcp__a__search_two", "search two"), active=False)
-    result = await ToolSearchTool(reg, budget=2).execute({"query": "search"}, _ctx(tmp_path))
+    result = await ToolSearchTool(reg, budget=1).execute({"query": "search"}, _ctx(tmp_path))
     assert len(reg.active_names()) == 2  # builtin + exactly one activated
-    assert "budget" in result.output  # told the model one was deferred
+    assert "at most 1 MCP tools" in result.output  # told the model one was deferred
     assert result.data is not None and len(result.data["activated"]) == 1
 
 
@@ -108,24 +109,26 @@ async def test_tool_search_evicts_mcp_to_make_room(tmp_path: Path) -> None:
     reg.register(_Tool("builtin"))  # never evictable
     reg.register(_Tool("mcp__a__old", "old capability"))  # active MCP, not a match
     reg.register(_Tool("mcp__a__needed", "database query"), active=False)
-    result = await ToolSearchTool(reg, budget=2).execute({"query": "database"}, _ctx(tmp_path))
+    result = await ToolSearchTool(reg, budget=1).execute({"query": "database"}, _ctx(tmp_path))
     assert reg.is_active("mcp__a__needed") is True  # surfaced despite a full budget
     assert reg.is_active("mcp__a__old") is False  # evicted to make room
     assert reg.is_active("builtin") is True  # builtins are never evicted
     assert result.data is not None and result.data["evicted"] == ["mcp__a__old"]
 
 
-async def test_tool_search_does_not_evict_when_only_builtins_active(tmp_path: Path) -> None:
-    # If the budget is full of builtins (nothing evictable), degrade gracefully:
-    # activate what fits, defer the rest — never evict a builtin.
+async def test_builtins_never_use_up_the_budget(tmp_path: Path) -> None:
+    # As many builtins as the budget allows MCP tools must still leave room for every MCP
+    # tool. When the budget counted builtins, the 25th builtin (2026-09-10) left none, and
+    # every match was deferred as "the tool budget is full".
     reg = ToolRegistry()
     reg.register(_Tool("b1"))
     reg.register(_Tool("b2"))
     reg.register(_Tool("mcp__a__needed", "database query"), active=False)
     result = await ToolSearchTool(reg, budget=2).execute({"query": "database"}, _ctx(tmp_path))
     assert reg.is_active("b1") and reg.is_active("b2")  # builtins untouched
-    assert reg.is_active("mcp__a__needed") is False  # deferred (no room)
-    assert result.data is not None and result.data["deferred"] == ["mcp__a__needed"]
+    assert reg.is_active("mcp__a__needed") is True
+    assert result.data is not None
+    assert (result.data["activated"], result.data["deferred"]) == (["mcp__a__needed"], [])
 
 
 async def search_result(reg: ToolRegistry, query: str, tmp_path: Path) -> ToolResult:
@@ -167,18 +170,20 @@ async def test_discover_no_budget_exposes_all() -> None:
 
 
 async def test_facade_mcp_budget_hides_overflow_then_tool_search_surfaces(tmp_path: Path) -> None:
+    # The production shape: the real built-in set and the default budget, which the built-ins
+    # alone exceed. Discovery counts every active tool, so the MCP tools start hidden; the
+    # model must then be able to surface one. This test used to activate the tool by hand
+    # instead of searching, and so never saw that tool_search could not.
     agent = Agent(
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
         ),
         enable_mcp=True,
-        mcp_tool_budget=DEFAULT_TOOL_BUDGET,
     )
     # tool_search is registered and active.
     assert "tool_search" in agent.registry.active_names()
+    assert len(agent.registry.active_names()) >= DEFAULT_TOOL_BUDGET  # the premise
 
-    # Inject a manager with more tools than a tiny budget, then connect.
-    agent._mcp_tool_budget = 1  # force the cap low for the test
     manager = ExtensionManager()
     manager.add_client(
         "web", _FakeClient([{"name": "alpha", "description": "alpha search"}, {"name": "beta"}])
@@ -186,17 +191,12 @@ async def test_facade_mcp_budget_hides_overflow_then_tool_search_surfaces(tmp_pa
     agent.extension_manager = manager
     report = await agent.connect_mcp()
     assert report is not None
-    # Budget of 1 is already consumed by an active builtin set, so MCP tools defer.
-    assert report.deferred  # at least one hidden
-    hidden = report.deferred[0]
-    assert agent.registry.is_active(hidden) is False
+    assert report.registered == [] and len(report.deferred) == 2  # both start hidden
 
-    # The model uses tool_search to surface a hidden tool by keyword.
     search = agent.registry.get("tool_search")
     assert search is not None
-    # Raise the budget so activation has room, then search.
-    found = [n for n in agent.registry.names() if "alpha" in n]
-    if found:
-        agent.registry.activate(found[0])
-        assert agent.registry.is_active(found[0]) is True
+    result = await search.execute({"query": "alpha"}, _ctx(tmp_path))
+    assert result.data is not None and result.data["activated"] == ["mcp__web__alpha"]
+    exposed = [d["function"]["name"] for d in agent.registry.definitions()]
+    assert "mcp__web__alpha" in exposed and "mcp__web__beta" not in exposed
     await agent.aclose_mcp()
