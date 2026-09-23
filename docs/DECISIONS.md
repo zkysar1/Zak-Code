@@ -13723,3 +13723,46 @@ built-in set, the default budget, and a `tool_search` call, which must surface t
 tool and leave the other hidden. `test_builtins_never_use_up_the_budget` replaces a test that
 asserted the old behavior. Two mutants were caught with `mutation-proof-test.sh` on cc-14:
 counting every active tool again (three tests) and removing eviction (the eviction test).
+
+## ADR-0228: document, PDF and image tools load on request
+
+Status: accepted. 2026-09-23.
+
+Context. Every model call carries the schema of every exposed tool. On 2026-09-23 the 27
+built-ins came to 26,968 JSON characters on every call. Nine of them work
+on documents, PDFs and images: `read_docx`, `read_xlsx`, `create_docx`, `create_xlsx`,
+`read_pdf`, `create_pdf`, `inspect_image`, `save_image` and `create_chart_image`. Together they
+were 7,389 of those characters. None of them had been called in coach's CLI log (17 MB) or in
+the three alpha workers' logs; they appear there only on two lines that list tool names. Claude
+Code keeps rarely used tools out of the list until a search loads them. OpenDev's lazy
+discovery cut the startup context cost of MCP schemas from 40% to under 5% (arXiv 2603.05344,
+section 3.5), and Tool Attention pairs compact tool summaries with schemas loaded on demand
+(arXiv 2604.21816).
+
+Decision. The main agent registers those nine tools hidden. The prompt's tool summary names
+them on one line, "Loaded on request", and `tool_search` loads one by name or keyword; it is
+callable from the next step, with its full schema. A hidden built-in loads whatever the MCP
+budget, which is 0 in a session without MCP and limits MCP tools only. `tool_search` is now
+registered in every session, not only with MCP, so the served path can load them too. The line
+is left out when `tool_search` is not exposed, because then nothing could load the tools it
+names. The factory is unchanged: a sub-agent's registry has no `tool_search`, so it keeps all 27
+exposed. A model that calls a hidden tool by name without loading it still reaches the tool:
+dispatch looks a tool up by name whether or not it is exposed, as it always has for lazy MCP
+tools.
+
+What it risks. A task that needs one of the nine takes one more step, the search. A small model
+may not think to search; the named line is what tells it the tool exists. With 19 tools
+exposed instead of 28, discovery again exposes a few MCP tools at startup before hiding the
+rest, since it counts every active tool against its budget of 25 (ADR-0227).
+
+Measured on the facade. With MCP, as the CLI runs, exposed schemas go from 28 tools and 27,538
+characters to 19 tools and 20,193, a quarter less on every call. Without MCP, as the served
+path runs, from 27 tools and 26,970 characters to the same 19 and 20,193.
+
+The proof. tests/test_on_request_tools.py: the nine start hidden while the working set stays
+exposed; a sub-agent's registry keeps them; `tool_search` loads one by name in a session
+without MCP; the prompt names them until one is loaded; and it names none when nothing can load
+them. Four mutants each turned the suite red under `mutation-proof-test.sh` on cc-14: leaving
+the nine exposed, letting the MCP budget limit built-ins, dropping the prompt line, and showing
+the line without `tool_search`. The MCP facade test in tests/test_tool_search.py now derives how much room
+discovery has instead of assuming the built-ins fill the budget.
