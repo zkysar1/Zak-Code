@@ -6204,7 +6204,9 @@ class AgentLoop:
             request = f"{request}\n\n{_handed_off_clause(self._turn_handed_off)}"
         verdict, usage = await binary_judge(self.provider, criteria=request, artifact=artifact)
         with contextlib.suppress(Exception):  # accounting must never break the gate
-            self.session.add_usage(usage, model=self.provider.model_id())
+            # ADR-0243: a side call's record is tagged, like the summarizer's (ADR-0241): it has
+            # no reply, and untagged it would move each reply before it onto a neighbour's record.
+            self.session.add_usage(usage, model=self.provider.model_id(), side_call="critic")
             if self.budget is not None:
                 self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         return verdict.approved, verdict.issues
@@ -6244,7 +6246,9 @@ class AgentLoop:
             logger.warning("judged plan critique failed; skipping", exc_info=True)
             return ""
         with contextlib.suppress(Exception):  # accounting must never break the tool result
-            self.session.add_usage(usage, model=self._judge_provider().model_id())
+            self.session.add_usage(
+                usage, model=self._judge_provider().model_id(), side_call="plan_critique"
+            )
             if self.budget is not None:
                 self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         if not card.scores or card.overall >= _PLAN_JUDGE_SILENCE:
@@ -6279,7 +6283,9 @@ class AgentLoop:
             self._judge_provider(), artifact=artifact, dimensions=dimensions
         )
         with contextlib.suppress(Exception):  # accounting must never break the gate
-            self.session.add_usage(usage, model=self._judge_provider().model_id())
+            self.session.add_usage(
+                usage, model=self._judge_provider().model_id(), side_call="quality_gate"
+            )
             if self.budget is not None:
                 self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
         if not card.scores or card.overall >= threshold:  # empty => fail-OPEN (couldn't judge)

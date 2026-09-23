@@ -157,8 +157,9 @@ def _paired(session: Session) -> list[tuple[int, Usage]]:
     lives; the oldest ``|len(a) - len(b)|`` records are dropped rather than mis-paired.
     """
     assistant = [i for i, m in enumerate(session.messages) if m.role == "assistant"]
-    # A side call (a compaction's summarizer, ADR-0241) has no reply to pair with: counted, it
-    # would move each reply before it onto a neighbour's record.
+    # A side call (a compaction's summarizer, ADR-0241; a judge, a classifier or deep_think,
+    # ADR-0243) has no reply to pair with: counted, it would move each reply before it onto a
+    # neighbour's record.
     usages = [usage for usage in session.usages if not usage.side_call]
     n = min(len(assistant), len(usages))
     if n == 0:
