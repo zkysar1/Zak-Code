@@ -85,6 +85,17 @@ class TestSessionTurns:
         assert [t.latency_s for t in turns] == [60.0, 20.0]
         assert [t.completion_tokens for t in turns] == [300, 100]
 
+    def test_a_side_call_is_not_paired_with_a_reply(self) -> None:
+        # ADR-0241: a compaction's summarizer calls are recorded on the session too. They have
+        # no reply, so counted they would move the older reply onto the summarizer's record.
+        s = _session("ccdd", [(-120, -60, 60000, 58000, 300)])
+        s.add_usage(Usage(prompt_tokens=45000, completion_tokens=2500), side_call="summarizer")
+        s.add_message(Message(role="user", blocks=[], created_at=_stamp(-30)))
+        s.add_message(Message(role="assistant", blocks=[], created_at=_stamp(-10)))
+        s.add_usage(Usage(prompt_tokens=61000, completion_tokens=100, cache_read_tokens=60500))
+        turns = tp.session_turns(s, since=NOW - timedelta(hours=1))
+        assert [t.completion_tokens for t in turns] == [300, 100]
+
     def test_turns_before_the_window_are_left_out(self) -> None:
         s = _session("dddd", [(-7200, -7150, 1, 0, 1), (-30, -10, 61000, 60500, 100)])
         turns = tp.session_turns(s, since=NOW - timedelta(hours=1))

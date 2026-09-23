@@ -409,6 +409,19 @@ def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
     return groups
 
 
+def _zero_compaction_cost() -> dict[str, float]:
+    """A compaction's cost record before anything ran (ADR-0241): the PreCompact hooks'
+    seconds, then the summarizer's calls, tokens and seconds (every slice and fold)."""
+    return {
+        "pre_compact_s": 0.0,
+        "summarizer_calls": 0,
+        "summarizer_prompt_tokens": 0,
+        "summarizer_cache_read_tokens": 0,
+        "summarizer_completion_tokens": 0,
+        "summarizer_s": 0.0,
+    }
+
+
 def _strip_model_markup(text: str) -> str:
     """``text`` without thinking / text-format tool-call markup (ADR-0082)."""
     cleaned = _MODEL_MARKUP_RE.sub("", text)
@@ -2433,6 +2446,9 @@ class AgentLoop:
         #: What the last compaction did, in words (ADR-0083) — the overflow recovery and
         #: the ``/compact`` command surface it, so a failed summarizer is never silent.
         self.last_compaction = ""
+        #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
+        #: and its summarizer calls, noted on the compaction's intervention row.
+        self._compaction_cost = _zero_compaction_cost()
         #: The transcript file whose directory this loop has already made ready (ADR-0206):
         #: the mkdir / ignore-file / chmod run once per file, not at every persist.
         self._transcript_ready_for = ""
@@ -2723,14 +2739,22 @@ class AgentLoop:
         async def ask(prompt: str) -> str:
             # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out here
             # exactly as it is on the main call, instead of failing the compaction.
-            result = await self._complete_with_retry(
-                lambda call_kw: summarizer.acomplete(
-                    [Message.user(prompt)],
-                    system=instruction,
-                    prompt_cache_key=self._prompt_cache_key(),
-                    **call_kw,
+            started = time.monotonic()
+            usage: Usage | None = None
+            try:
+                result = await self._complete_with_retry(
+                    lambda call_kw: summarizer.acomplete(
+                        [Message.user(prompt)],
+                        system=instruction,
+                        prompt_cache_key=self._prompt_cache_key(),
+                        **call_kw,
+                    )
                 )
-            )
+                usage = result.usage
+            finally:
+                # ADR-0241: a call that raised still spent its seconds, and a timed-out
+                # summarizer is the costliest compaction there is.
+                self._account_summarizer_call(usage, summarizer, time.monotonic() - started)
             return result.text
 
         if len(rendered) <= chunk_chars:
@@ -2773,6 +2797,33 @@ class AgentLoop:
             text = await ask(_FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"))
             combined = text.strip()
         return self._finish_summary(combined, messages)
+
+    def _account_summarizer_call(
+        self, usage: Usage | None, provider: Provider, seconds: float
+    ) -> None:
+        """Count one summarizer call like every other side call (ADR-0241).
+
+        The plan judge and the quality gate already add their usage to the session and the
+        budget; the summarizer returned only its text, so a compaction's calls reached
+        neither ``/cost`` nor a ``--max-budget-usd`` cap, and no trace row said what they
+        took. They are the biggest side calls a session makes: the older history, re-read in
+        full. Measured 2026-09-23 (a 27B worker Body on a 131k window): 355 s from the last
+        row before a compaction to its boundary, none of it attributable.
+
+        ``usage`` is None when the call raised: it still counts as a call, with its seconds.
+        """
+        cost = self._compaction_cost
+        cost["summarizer_calls"] += 1
+        cost["summarizer_s"] = round(cost["summarizer_s"] + seconds, 3)
+        if usage is None:
+            return
+        with contextlib.suppress(Exception):  # accounting must never break a compaction
+            self.session.add_usage(usage, model=provider.model_id(), side_call="summarizer")
+            if self.budget is not None:
+                self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
+        cost["summarizer_prompt_tokens"] += usage.prompt_tokens
+        cost["summarizer_cache_read_tokens"] += usage.cache_read_tokens
+        cost["summarizer_completion_tokens"] += usage.completion_tokens
 
     def _finish_summary(self, text: str, summarized: Sequence[Message] = ()) -> str:
         """A model's summary, made safe to resume from (ADR-0082): its tool-call and
@@ -3130,6 +3181,10 @@ class AgentLoop:
         return True, outcome
 
     async def _fire_pre_compact(self, trigger: str) -> None:
+        # Every compaction path starts here (auto, /compact, both overflow rungs), so its cost
+        # record does too (ADR-0241): the hooks' seconds now, the summarizer's as it runs.
+        self._compaction_cost = _zero_compaction_cost()
+        started = time.monotonic()
         await self._fire_lifecycle(
             HookEvent.PRE_COMPACT,
             {
@@ -3140,6 +3195,7 @@ class AgentLoop:
             },
             trigger=trigger,
         )
+        self._compaction_cost["pre_compact_s"] = round(time.monotonic() - started, 3)
 
     async def _install_compaction(
         self,
@@ -3160,7 +3216,11 @@ class AgentLoop:
 
     def _record_compaction(self, outcome: str, *, compacted: bool) -> None:
         self.last_compaction = outcome
-        self._note("intervention", outcome, kind="compaction", compacted=compacted)
+        # ADR-0241: what this compaction cost, always present (zeros for a model-free
+        # elision), so a missing key means an older build.
+        self._note(
+            "intervention", outcome, kind="compaction", compacted=compacted, **self._compaction_cost
+        )
 
     async def _recover_context(self, attempt: int) -> bool:
         """One rung of the overflow-recovery ladder (ADR-0083), by attempt number: the
