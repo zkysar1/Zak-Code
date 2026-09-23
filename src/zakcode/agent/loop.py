@@ -2919,11 +2919,14 @@ class AgentLoop:
         """
         if self.compactor is None:
             return None
-        window = self.provider.capabilities().context_window
+        caps = self.provider.capabilities()
         if not self.compactor.should_compact(
             self.session.messages,
-            context_window=window,
+            context_window=caps.context_window,
             count_tokens=self._count_tokens_anchored,
+            # ADR-0240: the threshold leaves this call the room the skill-fit check reserves
+            # for an answer, instead of a fixed fifth of the window.
+            answer_room=_answer_room(caps),
         ):
             return None
         # Let a host serialize learning/state before the transcript is compacted.
@@ -2995,12 +2998,17 @@ class AgentLoop:
         the last main call — system prompt and tools included — plus the estimate of only
         the messages appended since; the delta is small, so its error is small. Whichever
         is larger wins: the anchor can only pull the check EARLIER, never later.
+
+        The delta is counted like the compaction tail (:meth:`_tail_tokens`, ADR-0240): the
+        threshold's estimate margin is sized for one clamped tool result counted at 3
+        chars/token, and a bare estimate of the same result sits ~0.11 of the window under
+        the truth, more than twice the margin.
         """
         estimate = self.provider.count_tokens(messages)
         tokens = self.session.prompt_anchor_tokens
         index = self.session.prompt_anchor_index
         if tokens > 0 and 0 < index <= len(messages):
-            estimate = max(estimate, tokens + self.provider.count_tokens(messages[index:]))
+            estimate = max(estimate, tokens + self._tail_tokens(messages[index:]))
         return estimate
 
     def _tail_tokens(self, messages: list[Message]) -> int:

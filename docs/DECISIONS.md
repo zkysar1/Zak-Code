@@ -14328,3 +14328,64 @@ tests read the transport rather than wait for the collector, because litellm's o
 holds a finished call's client for a while, so when the collector reaches it is not the test's to
 decide. Under `mutation-proof-test.sh` on cc-14, setting the switch back to False turned the first
 test red on the assertion naming `LiteLLMAiohttpTransport`, and the restore returned it to green.
+
+## ADR-0240: the compaction threshold leaves room for one answer, not a fifth of the window
+
+Status: accepted. 2026-09-23.
+
+The per-call check compacted once the count passed 0.8 of the window. On the pod's 131,072 tokens
+that is 104,857, which keeps 26,215 tokens above the threshold for the one call the check guards.
+That call needs room for its answer and for the count's own error, and nothing else. Measured
+2026-09-23 over the 945 main calls the three Bodies made since 2026-09-21, the largest completion
+was 4,468 tokens (p99 1,448 to 3,607 per Body), and none reached 6,553.
+
+A compaction is the most expensive thing a Body does on this pod. Of the 29 compactions on the
+three Bodies on 2026-09-23, 26 were followed by a call that read no cached tokens: 28,881 to 77,648
+uncached tokens in 169 to 716 seconds, median 450, against medians of 35 to 150 seconds for the
+same sessions' other calls. The summarizer call comes on top of that (ADR-0232, ADR-0238).
+
+Decision. `Compactor.threshold` is the one place the threshold is computed, and the loop's check
+passes it the answer reserve.
+
+- The threshold is the window, less 5 percent for the count's error, less the reserve the
+  skill-fit check already keeps for an answer (`_answer_room`: the model's declared output cap,
+  held to 4,096 to 16,384). It is capped at `threshold_fraction`, now 0.9, and never falls below
+  0.8, the old threshold. On the pod that is 117,964. On a 200k model with a large output cap it is
+  173,616, and on a 32k window 27,034. At 16k and below the floor holds 0.8.
+- The count the check compares now floors what arrived since the last measured prompt at 3
+  characters a token, as the compaction tail already does (ADR-0132). The 5 percent is sized for
+  one tool result at the seam clamp counted that way: a quarter window counted at 3 characters a
+  token that really runs 2.5 is 0.05 of the window over its count. A bare estimate of the same
+  result sat 0.11 of the window under, more than twice the margin.
+
+Why the floor. Below about 27,000 tokens the reserve alone would compact under 0.8, into the fixed
+floor: the system prompt and the tool schemas measure 8,956 tokens in the bench, so a 16k window
+with a 4,096 reserve would compact at 11,469 and summarize on nearly every call. A window that
+small needs its own fix, and this decision leaves it where it was. Other harnesses split the same
+way: Cline compacts at the larger of the window less 40,000 and 0.8 of it, and OpenCode at the
+window less the model's output reserve, with no fraction.
+
+Replayed on the six sessions that compacted on 2026-09-23, each with its own measured growth
+between calls and restarting at its own post-compaction sizes: 26 compactions at 0.8, 20 at 0.9.
+
+What it risks. At 117,964 a call's worst case is a count 6,553 under the truth, which leaves 6,555
+tokens to answer in, while the per-call output cap is 8,192. A completion that outgrows that room
+reaches the window, the overflow the in-turn recovery already handles (ADR-0022, ADR-0083). The
+first compaction of a session also summarizes a little more history, since it comes later.
+
+Rejected: raising the fraction alone. On a 16k window 0.9 leaves 1,639 tokens to answer in, before
+the count's error. Also rejected: no cap, compacting at the window less the margin and the reserve
+(120,423 on the pod). Its worst case leaves exactly the 4,096 reserve, under the 4,468 already
+measured.
+
+The proof. `tests/test_compact_threshold.py` pins the threshold on the pod, on a large output
+cap, on a 32k window, on the floor at 16k and on the eval probe's toy window, and checks that a
+fraction set under the floor still wins, as the bench's forced compaction needs. Through the loop,
+a count between the reserve's threshold and the 0.9 cap compacts only because the reserve is
+passed, and a model's output cap moves its threshold. The anchored count floors what arrived since
+its anchor at 3 characters a token. A last test reads `bench/run_task.py` and checks that its
+recording probe accepts every keyword `should_compact` takes, since a probe missing one raises on
+the loop's first check. Under `mutation-proof-test.sh` on cc-14, seven mutants each turned the
+tests red: the reserve dropped from the formula, the floor dropped, the cap dropped, the loop
+passing no reserve, the bare estimate for the anchored delta, the probe without the new keyword,
+and the old 0.8 default. The full suite passed, 4,706 tests.

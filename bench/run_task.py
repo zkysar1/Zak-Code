@@ -194,7 +194,7 @@ def _build_agent(workspace: Path, spec: dict):
     # output rather than compaction, and the failure would be unattributable -- the same
     # confound that wrecked two prior attempts to separate engine behaviour from model
     # behaviour. Moving threshold_fraction on the FULL window changes ONE variable.
-    # Unset (the default) leaves the shipped 0.8 byte-unchanged.
+    # Unset (the default) leaves the shipped threshold byte-unchanged.
     # ZBENCH_TOOL_DENY narrows the ADVERTISED tool surface via the registry's own
     # set_exposure_filter -- documented least-privilege, already shipped, operator-set. Measured
     # across 22 recorded runs: the agent called EIGHT distinct tools; the other 17 cost 3,907 tok
@@ -602,10 +602,11 @@ def _instrument_compaction() -> dict:
 
     ``enable_compaction=True`` is set honestly, a ``Compactor`` is attached honestly, and
     ``_maybe_compact()`` runs before every provider call honestly -- and none of that is
-    evidence the compaction path ever EXECUTED. ``should_compact`` fires at
-    ``threshold_fraction`` (0.8) of the window, and every ``_podenv*.sh`` slot declares
-    ``context_window: 131072``, so the threshold is 104,857 tokens on all three pod variants
-    (baseline 3.6-35b, weak 3.8-27b, older 3.5-35b alike). The hardest task in this suite
+    evidence the compaction path ever EXECUTED. ``should_compact`` fired at
+    ``threshold_fraction`` (0.8) of the window when these passes ran, and every ``_podenv*.sh``
+    slot declares ``context_window: 131072``, so the threshold was 104,857 tokens on all three
+    pod variants (baseline 3.6-35b, weak 3.8-27b, older 3.5-35b alike); since ADR-0240 it is
+    117,964. The hardest task in this suite
     (``05-ledger``) peaks near 52k -- HALF the threshold. So every pass measured so far
     returned False on every call, and a compaction path that never runs reports
     byte-identically to one that works perfectly.
@@ -616,7 +617,8 @@ def _instrument_compaction() -> dict:
     so no per-call context size exists for any prior run; that is what this probe adds).
 
     That matters most for exactly the models this bench exists to compare. The threshold is a
-    FRACTION of the window, so a 32,768-window model compacts at 26,214 -- which
+    FRACTION of the window, so a 32,768-window model with a 4,096-token answer reserve compacts
+    at 27,034 (26,214 before ADR-0240) -- which
     ``04-todo-cli`` (23-33k) and ``05-ledger`` (32-52k) both cross. ``trim_tail``, ``_split_index``,
     ``_adopt_compacted`` and the summarizer call would first execute on the smallest models,
     having never been exercised by a single benchmark run.
@@ -641,14 +643,19 @@ def _instrument_compaction() -> dict:
     }
     original = Compactor.should_compact
 
-    def probe(self, messages, *, context_window, count_tokens):
+    def probe(self, messages, *, context_window, count_tokens, answer_room=0):
         verdict = original(
-            self, messages, context_window=context_window, count_tokens=count_tokens
+            self,
+            messages,
+            context_window=context_window,
+            count_tokens=count_tokens,
+            answer_room=answer_room,
         )
         stats["checks"] += 1
         stats["context_window"] = context_window
         if context_window:
-            stats["threshold_tokens"] = int(context_window * self.config.threshold_fraction)
+            # The engine's own threshold (ADR-0240), never a re-derived copy of its formula.
+            stats["threshold_tokens"] = self.threshold(context_window, answer_room=answer_room)
         stats["peak_context_tokens"] = max(stats["peak_context_tokens"], count_tokens(messages))
         if verdict:
             stats["fired"] += 1
