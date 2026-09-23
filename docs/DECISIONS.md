@@ -13630,3 +13630,26 @@ tests/test_loop_retry.py: six refusals, twice the fixed bound, are ridden out on
 and every notice says "provider unavailable"; a streamed 429 still says "rate limited". Five
 mutants, one per branch and label direction, were each caught, run with
 `mutation-proof-test.sh` on cc-14.
+
+## ADR-0225: a shell command's default timeout is Claude Code's two minutes
+
+Status: accepted. 2026-09-23.
+
+Context. `Bash` ran a command for 60 seconds unless the model asked for longer. Claude Code's
+default is 120 seconds, with the same 600-second ceiling (its schema counts milliseconds:
+default 120000, max 600000). A Mind's own scripts can outlast 60 seconds on a slow box. On
+2026-09-23 an alpha worker on zc-02 ran the framework's goal-selector, the run was killed at 60
+seconds, and the model spent a call retrying it with a longer timeout. It is not frequent: in
+coach's whole CLI log on zc-03, about 6,900 commands, a 60-second limit fired twice (the log
+cannot say whether the model asked for it). Most of that log's timeouts were shorter limits the
+model chose itself.
+
+Decision. The default is 120 seconds, as in Claude Code. The ceiling stays 600 and the unit
+stays seconds. The schema and the tool description say 120.
+
+What it risks. A command that hangs holds the turn for two minutes instead of one before it is
+killed, which is what Claude Code does.
+
+The proof. tests/test_builtins.py: with no `timeout` a command gets 120, an explicit 5 is
+honored, 120000 is clamped to 600, and the schema says "default 120". A mutant restoring 60 was
+caught by it, run with `mutation-proof-test.sh` on cc-14.
