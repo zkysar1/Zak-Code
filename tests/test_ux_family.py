@@ -1,13 +1,16 @@
 """The Zak look wears the Vinheim family's colours, in both clients (ADR-0218).
 
 docs/UX.md "The family" is the contract: the web client copies the family's tokens
-verbatim, the terminal carries the family in its brand index, and the operator's orange
-is the same colour on every door. These tests hold that contract without a browser or a
-terminal — string inspection of the shipped page plus the theme objects themselves.
+verbatim, carries the family's display face in the page (ADR-0221), the terminal carries
+the family in its brand index, and the operator's orange is the same colour on every door.
+These tests hold that contract without a browser or a terminal — string inspection of the
+shipped page plus the theme objects themselves.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import math
 import re
 from pathlib import Path
@@ -141,6 +144,60 @@ def _root_block(html: str) -> str:
     block = re.search(r":root\s*\{.*?\n\s*\}", html, flags=re.S)
     assert block
     return block.group(0)
+
+
+#: The display face the page carries (ADR-0221), as scripts/build_display_font.py reports
+#: it: the SHA-256 of the embedded WOFF2 and every character it maps. A recut changes both.
+DISPLAY_FACE_SHA256 = "e05237865a992802918e8c8f768eef1f80bf267b489a8d1105a17068bf7c2a8b"
+DISPLAY_FACE_CHARS = " CEHLOQSTUZabcdefghijkopqrsxyz"
+
+
+def _display_face(html: str) -> bytes:
+    rule = re.search(r"@font-face\s*\{(.*?)\}", html, flags=re.S)
+    assert rule, "the page carries the family's display face"
+    assert re.search(r"font-family:\s*Fraunces;", rule.group(1))
+    src = re.search(
+        r'src: url\(data:font/woff2;base64,([A-Za-z0-9+/=]+)\) format\("woff2"\)', rule.group(1)
+    )
+    assert src, "the face is inline, a data: URI, never a fetch"
+    return base64.b64decode(src.group(1))
+
+
+def test_the_display_face_is_carried_in_the_page() -> None:
+    html = _html()
+    face = _display_face(html)
+    assert face[:4] == b"wOF2"
+    assert hashlib.sha256(face).hexdigest() == DISPLAY_FACE_SHA256, (
+        "the embedded face changed: copy DISPLAY_FACE_SHA256 and DISPLAY_FACE_CHARS from "
+        "scripts/build_display_font.py's report"
+    )
+    # OFL 1.1 condition 2: the notice goes with the font (it is in its name table too).
+    prose = " ".join(html.split())
+    assert "SIL Open Font License 1.1, Copyright 2020 The Fraunces Project Authors" in prose
+
+
+def test_every_letter_drawn_in_the_display_face_is_in_it() -> None:
+    # A letter the face lacks falls back to Georgia on its own, mid-word. The face holds
+    # exactly what the two identity moments draw (plus the auto-hinter's reference
+    # letters), so a new use of it, or new words in an old one, must fail here first.
+    html = _html()
+    style = re.sub(
+        r"/\*.*?\*/", "", html.split("<style>", 1)[1].split("</style>", 1)[0], flags=re.S
+    )
+    uses = [
+        " ".join(sel.split())
+        for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", style)
+        if "var(--font-display)" in body
+    ]
+    assert uses == ["header .brand", "#empty .t"]
+    # The ✦ beside the wordmark is not in the latin file the face is cut from (its last
+    # character is U+2215), so a symbol font draws it. The words are what the face holds.
+    wordmark = re.search(r'<div class="brand">.*?</span><span>([^<]*)</span></div>', html)
+    name = re.search(r'<div class="t">([^<]*)</div>', html)
+    assert wordmark and name
+    for words in (wordmark.group(1), name.group(1)):
+        missing = set(words) - set(DISPLAY_FACE_CHARS)
+        assert not missing, f"{words!r} draws {sorted(missing)}, which the face lacks: recut it"
 
 
 # ── the terminal ────────────────────────────────────────────────────────────
