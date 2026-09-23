@@ -3136,12 +3136,25 @@ class AgentLoop:
                 specs.append(tool.spec)
         return specs
 
+    def _on_request_names(self) -> list[str]:
+        """Hidden tools the model could load with ``tool_search`` (ADR-0228), in registration
+        order. Empty when ``tool_search`` is not exposed: without it the list would name tools
+        the model has no way to load."""
+        registry = self.registry
+        if not (registry.is_active("tool_search") and registry.exposure_allows("tool_search")):
+            return []
+        return [
+            n for n in registry.names() if not registry.is_active(n) and registry.exposure_allows(n)
+        ]
+
     def _build_system(self, restrict_to: set[str] | None = None) -> str:
         return self.prompt_builder.build(
             self.settings,
             tools=self._tool_specs(restrict_to),
             session_id=self.session.id,
             task=self._session_task(),
+            # A stuck NARROW step (restrict_to) withholds tools; it does not advertise more.
+            on_request=self._on_request_names() if restrict_to is None else None,
         )
 
     def _session_task(self) -> str | None:

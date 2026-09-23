@@ -57,11 +57,11 @@ class ToolSearchTool(Tool):
     spec = ToolSpec(
         name="tool_search",
         description=(
-            "Search for additional tools by keyword and make them available. Many "
-            "tools (e.g. from connected MCP servers) are hidden by default to keep the "
-            "toolset small; call this with a query describing what you need (e.g. "
-            "'github issues' or 'database query') to surface and activate matching "
-            "tools. They become callable on the next step."
+            "Search for additional tools by name or keyword and make them available. "
+            "Some tools (documents, PDFs and images, and tools from connected MCP servers) "
+            "are hidden to keep the toolset small; call this with a tool's name or a query "
+            "describing what you need (e.g. 'create_docx' or 'github issues') to surface and "
+            "activate matching tools. They become callable on the next step."
         ),
         parameters={
             "type": "object",
@@ -108,13 +108,17 @@ class ToolSearchTool(Tool):
                 f"{len(active)} tool(s) are already available."
             )
 
+        # The budget is for MCP tools only. A hidden built-in (ADR-0228) loads whatever the
+        # budget, which is 0 in a session without MCP; there are only a handful of them.
+        builtin = [n for n in matched if not _is_mcp(n)]
+        mcp = [n for n in matched if _is_mcp(n)]
         # The budget counts the MCP tools already exposed; built-ins never use it up.
         available = max(0, self._budget - sum(1 for n in active if _is_mcp(n)))
         # If the budget is full, make room by evicting previously-surfaced MCP tools
         # that aren't part of this match — so the model is never wedged, unable to
         # reach a needed tool. Builtins (no ``mcp__`` prefix) are never evicted.
         evicted: list[str] = []
-        need = len(matched) - available
+        need = len(mcp) - available
         if need > 0:
             evictable = [n for n in active if _is_mcp(n) and n not in matched]
             for name in evictable[:need]:
@@ -122,8 +126,8 @@ class ToolSearchTool(Tool):
                 evicted.append(name)
             available += len(evicted)
 
-        activated = matched[:available]
-        deferred = matched[available:]
+        activated = builtin + mcp[:available]
+        deferred = mcp[available:]
         for name in activated:
             self._registry.activate(name)
 

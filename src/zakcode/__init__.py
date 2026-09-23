@@ -38,7 +38,7 @@ from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SkillLoad, SkillResolver
-from zakcode.tools.builtins.default_registry import default_registry
+from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
 
 __version__: str = _pkg_version("zakcode")
 
@@ -959,7 +959,7 @@ class Agent:
         if enable_mcp:
             from zakcode.mcp.config import discover_config
             from zakcode.mcp.manager import build_extension_manager
-            from zakcode.tools.builtins.tool_search import DEFAULT_TOOL_BUDGET, ToolSearchTool
+            from zakcode.tools.builtins.tool_search import DEFAULT_TOOL_BUDGET
 
             self._mcp_tool_budget = (
                 mcp_tool_budget if mcp_tool_budget is not None else DEFAULT_TOOL_BUDGET
@@ -972,9 +972,16 @@ class Agent:
             self.extension_manager, self.mcp_config_errors = build_extension_manager(
                 servers, allowlist=mcp_command_allowlist
             )
-            # tool_search lets the model surface MCP tools that the budget kept hidden;
-            # it holds the live registry so activations are visible to the next turn.
-            self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
+
+        # tool_search lets the model surface tools kept out of its list: the rarely-used
+        # built-ins, hidden from the start (ADR-0228), and MCP tools the budget hid. It holds
+        # the live registry so activations are visible to the next turn. Without MCP its budget
+        # is 0, which limits MCP tools only; a hidden built-in always loads.
+        from zakcode.tools.builtins.tool_search import ToolSearchTool
+
+        for name in ON_REQUEST_TOOLS:
+            self.registry.deactivate(name)
+        self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
 
         # Plugins (M6), opt-in. Discover plugins (project + user dirs + entry points)
         # and run each trusted+enabled one's register(ctx) against the live
