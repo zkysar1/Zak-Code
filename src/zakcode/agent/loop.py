@@ -3184,10 +3184,18 @@ class AgentLoop:
         every later turn and after a resume, so the fold (like the survey) does not move within
         a session and the cached prefix holds. A session that changes subject keeps the fold of
         its first ask.
+
+        The text is pinned on the session the first time it is read (ADR-0233). A compaction
+        summarizes that message away, so a task read from the history afterwards was some later
+        message, or none, and the system prompt changed at every compaction.
         """
+        if self.session.task:
+            return self.session.task
         for message in self.session.messages:
             if message.role == "user":
                 text = message.text.strip()
+                if text:
+                    self.session.task = text
                 return text or None
         return None
 

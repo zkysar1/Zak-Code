@@ -176,6 +176,14 @@ class Session(BaseModel):
     #: append-only: an older build drops both fields and simply keeps the every-call tail.
     tail_sparse_models: list[str] = Field(default_factory=list)
     tail_probe_misses: dict[str, int] = Field(default_factory=dict)
+    #: ADR-0233: what this session is for, its first user message's text, pinned the first
+    #: time the system prompt is built after one exists. The guide fold is keyed on it
+    #: (ADR-0173). Read from the history instead, it changed at the first compaction, which
+    #: summarizes that message away. The system prompt then moved about 51,600 characters in,
+    #: and everything after that point was prefilled again. Schema v1 stays append-only: an
+    #: older build drops the field and reads the first user message still in the history
+    #: (fails SAFE: the pre-ADR-0233 behavior, where a compaction can move the fold).
+    task: str = ""
     #: Skill paging (ADR-0067 / ADR-0086): per lower-cased skill name, the pages of that skill
     #: the model has HELD — page 1 at the load, later pages as the plan reached them. A section
     #: is finished only once its page was held, so the record must outlive a restart (ADR-0034

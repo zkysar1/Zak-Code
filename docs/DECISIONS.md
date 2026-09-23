@@ -13915,3 +13915,49 @@ whole; three 20,000-character outputs that overflowed an 8,192-character slice n
 summarizer call, and the messages it was handed keep every character. Three mutants each turned
 the tests red under `mutation-proof-test.sh` on cc-14: no clipping, keeping only the head, and
 writing the clipped copy back into the conversation.
+
+## ADR-0233: a compaction does not move the system prompt, because the session's task is pinned
+
+Status: accepted. 2026-09-23.
+
+The guide fold (ADR-0173) is keyed on the session's task: the text of its first user message.
+`_session_task` read that from the history on every call, and a compaction summarizes the message
+away. After a compaction the task was the first user message the compaction kept, or none, and
+the fold kept different sections of the guide. Measured on a Mind's workspace (149 skills, a
+47,709-byte CLAUDE.md): the system prompt built with the `/start` turn as the task, and the one
+built with no task or with a short hook message as the task, share their first 51,617 of about
+61,200 characters and differ after that. So at every compaction the model saw a different part
+of the project guide, and the system prompt changed about 51,600 characters in. A prefix cache
+cannot reuse anything past that point.
+
+Decision. The task is pinned on the session the first time it is read, as `Session.task`, a
+schema v1 field that an older build drops. `_session_task` returns the pinned text once it is
+set. Before that it reads the first user message as it always did, and pins it when it is not
+empty. A compaction, a resume and every later turn build the fold from the same text.
+
+What it risks. A session that changes subject keeps the fold of its first ask. It already did
+until its first compaction. The pin only stops the fold from changing at one.
+
+Measured alongside, and rejected: a summarizer that shares the conversation's prefix. On the 131k
+P40 pod the first call after a compaction reads 0 cached tokens, and ADR-0232 left the cause
+open. The pod's model is a recurrent hybrid (its GGUF header names architecture `qwen35`, with
+`ssm` keys), so llama.cpp reuses a prompt only from a saved checkpoint. Probed on an idle engine
+with synthetic prompts, a checkpoint is saved at the start of each request's last message. A
+request whose one message began right after the system prompt left that prompt reusable by the
+next request with a different message: 16,174 of 17,061 tokens cached. The summarizer's own
+system prompt differs from the first token, so it leaves nothing the next call can reuse.
+
+So the summarizer could have been sent the conversation's own system prompt and tools, with the
+instruction in its one user message and `tool_choice` "none". Tried on the pod on a real
+19-message region of a worker's session, the model answered with a text-format tool call instead
+of a summary. That is the ADR-0082 failure again, now with the workspace's rules in the prompt
+steering it toward tool calls. And a summary installed as a second system message changes the
+rendered system block itself: the next call read 0 of 22,299 tokens from the cache. The same
+region through today's summarizer took 89 seconds for 5,896 prompt tokens and a
+2,102-character summary.
+
+The proof. `tests/test_loop_prompt_session.py`: a session whose first ask keys the fold compacts
+through `compact_now`. The summary replaces the ask, the system prompt is unchanged, and a
+session restored from its JSON keeps the task. The positive control clears the pin and the
+prompt moves. Under `mutation-proof-test.sh` on cc-14, removing the pin turned exactly that
+test red.
