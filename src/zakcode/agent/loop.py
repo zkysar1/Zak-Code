@@ -337,11 +337,13 @@ _FOLD_PROMPT = "Fold these part-summaries of one conversation into a single cohe
 #: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
 #: plain text, so the model summarizes a document instead of continuing a dialogue.
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
-#: What the summarizer reads of one tool output, head and tail (ADR-0232). Tool outputs were
-#: 85-95% of the characters it re-read, and the summarizer shares no prefix with the
-#: conversation, so every one of them is prefilled fresh. On a 131k local pod each
-#: compaction's summarizer took 3-8 minutes, and a transcript over one slice took two calls.
-#: The conversation keeps its outputs whole; only the summarizer's copy is clipped.
+#: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
+#: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
+#: re-read, and the summarizer shares no prefix with the conversation, so every one of them
+#: is prefilled fresh. On a 131k local pod each compaction's summarizer took 3-8 minutes, and
+#: a transcript over one slice took two calls. With the outputs held, a whole skill body was
+#: most of what was left wherever one sat in the summarized part. The conversation keeps
+#: both whole; only the summarizer's copy is clipped.
 _SUMMARY_OUTPUT_CHARS = 2000
 #: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
 #: call, or thinking tags — which must never survive into a compaction summary.
@@ -350,6 +352,19 @@ _MODEL_MARKUP_RE = re.compile(
     re.S,
 )
 _MODEL_MARKUP_LINE_RE = re.compile(r"^\s*</?(?:tool_call|function|parameter)[^>\n]*>\s*$", re.M)
+
+
+def _held_for_summary(text: str, what: str) -> str:
+    """``text`` as the compaction summarizer reads it (ADR-0232, ADR-0238): whole up to
+    :data:`_SUMMARY_OUTPUT_CHARS`, past that its first two thirds and its end, with a line
+    saying how many characters of ``what`` were left out. Openings carry structure and
+    endings carry verdicts, like a test run's summary line."""
+    if len(text) <= _SUMMARY_OUTPUT_CHARS:
+        return text
+    head = _SUMMARY_OUTPUT_CHARS * 2 // 3
+    tail = _SUMMARY_OUTPUT_CHARS - head
+    left_out = len(text) - head - tail
+    return f"{text[:head]}\n[... {left_out:,} characters of {what} left out ...]\n{text[-tail:]}"
 
 
 def _clamp_middle(text: str, budget: int, what: str) -> str:
@@ -2650,15 +2665,17 @@ class AgentLoop:
         results by their output text, so a slice never carries an orphan structured
         tool block a provider API would reject. A long output is held to
         :data:`_SUMMARY_OUTPUT_CHARS`, its first two thirds and its end, with a line saying
-        how much was left out (ADR-0232): openings carry structure and endings carry
-        verdicts, like a test run's summary line.
+        how much was left out (ADR-0232). A turn composed from a skill (its command frame
+        and the body) is held the same way (ADR-0238): the body is instructions the harness
+        can hand back, not conversation, and the same body loaded through ``use_skill`` is a
+        tool output that was already held. Any other user text arrives whole.
         """
-        head = _SUMMARY_OUTPUT_CHARS * 2 // 3
-        tail = _SUMMARY_OUTPUT_CHARS - head
         parts: list[str] = []
         for message in messages:
             lines: list[str] = []
             text = message.text.strip()
+            if message.role == "user" and _composed_skill_body(text):
+                text = _held_for_summary(text, "this skill's instructions")
             if text:
                 lines.append(text)
             for use in message.tool_uses:
@@ -2666,14 +2683,7 @@ class AgentLoop:
                 lines.append(f"(called {use.name} with {args[:200]})")
             for block in message.blocks:
                 if isinstance(block, ToolResultBlock) and block.output:
-                    output = block.output
-                    if len(output) > _SUMMARY_OUTPUT_CHARS:
-                        left_out = len(output) - head - tail
-                        output = (
-                            f"{output[:head]}\n[... {left_out:,} characters of this output "
-                            f"left out ...]\n{output[-tail:]}"
-                        )
-                    lines.append(output)
+                    lines.append(_held_for_summary(block.output, "this output"))
             if lines:
                 parts.append(f"[{message.role}]\n" + "\n".join(lines))
         return "\n\n".join(parts)
@@ -2724,7 +2734,7 @@ class AgentLoop:
             return result.text
 
         if len(rendered) <= chunk_chars:
-            return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered))
+            return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered), messages)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -2762,21 +2772,24 @@ class AgentLoop:
             )
             text = await ask(_FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"))
             combined = text.strip()
-        return self._finish_summary(combined)
+        return self._finish_summary(combined, messages)
 
-    def _finish_summary(self, text: str) -> str:
+    def _finish_summary(self, text: str, summarized: Sequence[Message] = ()) -> str:
         """A model's summary, made safe to resume from (ADR-0082): its tool-call and
-        thinking markup stripped, and the harness's own position note appended."""
+        thinking markup stripped, and the harness's own position note appended.
+        ``summarized`` is the part of the history the summary replaces (ADR-0238)."""
         summary = _strip_model_markup(text)
-        note = self._compaction_position_note()
+        note = self._compaction_position_note(summarized)
         return f"{summary}\n\n{note}" if note else summary
 
-    def _compaction_position_note(self) -> str:
+    def _compaction_position_note(self, summarized: Sequence[Message] = ()) -> str:
         """Where the session IS, from the harness's own state — the plan's current step and
-        each paged skill's current section (ADR-0082). Generated, never summarized: a
-        model's summary can misplace the session, and the kept tail may still show an
-        older page's hint; this line is the one a resumed model can trust. Empty when
-        there is no plan and no paged skill. A courtesy — never raises into compaction.
+        each paged skill's current section (ADR-0082), and a whole skill whose instructions
+        the compaction is removing (ADR-0238; ``summarized`` is the part being replaced).
+        Generated, never summarized: a model's summary can misplace the session, and the
+        kept tail may still show an older page's hint; this line is the one a resumed model
+        can trust. Empty when there is nothing to say. A courtesy — never raises into
+        compaction.
         """
         lines: list[str] = []
         try:
@@ -2801,10 +2814,12 @@ class AgentLoop:
                     lines.append(f"- closed: {step.id} {clip(step.title, 60)}{tail}")
                 if current is not None and current.evidence:
                     lines.append("- current step so far: " + "; ".join(current.evidence[-3:]))
+            paged: set[str] = set()
             for name in self._paged_skills_in_plan():
                 pages = self._ensure_skill_pages(name)
                 if pages is None:
-                    continue
+                    continue  # delivered whole (ADR-0192), though it is listed
+                paged.add(name.lower())
                 index = self._current_page(name)
                 if index is None:
                     lines.append(
@@ -2817,12 +2832,38 @@ class AgentLoop:
                         "section arrives when that plan step is marked done — do not re-load "
                         "the skill"
                     )
+            # ADR-0238: the skill this turn was composed from (typed, or the harness's re-entry)
+            # leaves the context when its newest copy is in the part being summarized, and the
+            # summary does not carry it: the summarizer read its head and tail only. A small
+            # model does not notice an absence, so the note says it, with the route back that
+            # the turn-end elision marker gives (ADR-0045). A paged skill has its line above.
+            composed = next(
+                (
+                    m
+                    for m in reversed(self.session.messages)
+                    if m.role == "user" and _composed_skill_body(m.text)
+                ),
+                None,
+            )
+            if composed is not None and any(m is composed for m in summarized):
+                name = _composed_skill_name(composed.text) or ""
+                if name.lower() not in paged:
+                    again = (
+                        _ELIDED_AGAIN_BY_OPERATOR.format(name=name)
+                        if name.lower() in self._user_only_skills()
+                        else _ELIDED_AGAIN_BY_SKILL
+                    )
+                    chars = len(_composed_skill_body(composed.text))
+                    lines.append(
+                        f"- /{name}: its instructions ({chars:,} characters) were in the part "
+                        f"summarized above, so they are no longer in your context; {again}"
+                    )
         except Exception:  # noqa: BLE001 — the note is a courtesy; compaction must not fail on it
             return ""
         if not lines:
             return ""
         return (
-            "Harness position (authoritative — generated from the plan, not summarized):\n"
+            "Harness position (authoritative — generated by the harness, not summarized):\n"
             + "\n".join(lines)
         )
 
