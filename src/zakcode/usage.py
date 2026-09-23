@@ -56,13 +56,19 @@ class Usage(BaseModel):
     #: an unenforceable ceiling from an unspent one and no reader mistakes the 0.0 for a
     #: measurement.
     cost_unpriced: bool = False
+    #: The side call this record came from (``"summarizer"``: a compaction's calls, ADR-0241),
+    #: or empty for a call of the main conversation. A side call has no reply of its own, so
+    #: the per-turn pairing of ``zakcode throughput`` (ADR-0104) leaves it out. Empty for
+    #: older persisted records and for aggregate totals.
+    side_call: str = ""
 
     def __add__(self, other: Usage) -> Usage:
         """Combine two usage records (for accumulating a session total).
 
         ``model`` survives only when both operands share it — a sum across different models is a
-        mixed total with no single model, so it collapses to empty. ``cost_unpriced`` is sticky
-        under addition: a total containing one unpriceable call is itself an underestimate, so
+        mixed total with no single model, so it collapses to empty; ``side_call`` follows the same
+        rule. ``cost_unpriced`` is sticky under addition: a total containing one unpriceable call
+        is itself an underestimate, so
         the flag must survive into the aggregate or the session total silently launders it back
         into a clean-looking number (the rb-7829 shape — a missingness flag that sibling fields
         and aggregates do not consult).
@@ -77,6 +83,7 @@ class Usage(BaseModel):
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             model=self.model if self.model == other.model else "",
             cost_unpriced=self.cost_unpriced or other.cost_unpriced,
+            side_call=self.side_call if self.side_call == other.side_call else "",
         )
 
 

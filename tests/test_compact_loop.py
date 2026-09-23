@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
 from zakcode.agent.loop import (
     _MAX_FOLD_PASSES,
@@ -37,6 +38,7 @@ from zakcode.providers.base import (
 )
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
+from zakcode.usage import Usage
 
 
 class _SummarizerProvider(Provider):
@@ -690,3 +692,142 @@ def test_auto_compact_holds_the_kept_tail_to_its_budget(tmp_path: Path) -> None:
     assert _output(loop.session.messages[2]).startswith(ELISION_MARKER)
     assert _output(loop.session.messages[4]).startswith(ELISION_MARKER)
     assert _output(loop.session.messages[-1]) == "z" * 5000
+
+
+# ── ADR-0241: what a compaction cost ─────────────────────────────────────────────────
+
+#: What every call of the priced summarizer below reports.
+_SUMMARY_USAGE = Usage(
+    prompt_tokens=900,
+    completion_tokens=100,
+    total_tokens=1000,
+    cost_usd=0.01,
+    cache_read_tokens=300,
+)
+
+
+class _PricedSummarizerProvider(_SummarizerProvider):
+    """A summarizer whose every call reports its usage, as a real provider's does, and
+    takes ``delay`` seconds."""
+
+    delay = 0.0
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        await asyncio.sleep(self.delay)
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        return result.model_copy(update={"usage": _SUMMARY_USAGE})
+
+
+def _compaction_rows(loop: AgentLoop) -> list[dict[str, Any]]:
+    return [
+        e.data for e in loop._trace.of_kind("intervention") if e.data.get("kind") == "compaction"
+    ]
+
+
+def test_summarizer_calls_reach_the_session_and_the_budget(tmp_path: Path) -> None:
+    # The plan judge and the quality gate always added their usage; the summarizer returned
+    # only its text, so a compaction's calls reached neither /cost nor a cost cap.
+    provider = _PricedSummarizerProvider(["summary"], tokens=100_000)
+    budget = IterationBudget(100, max_cost_usd=5.0)
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        compactor=Compactor(CompactionConfig()),
+        budget=budget,
+    )
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    assert len(provider.seen) == 1
+    assert loop.session.cumulative_usage().total_tokens == 1000
+    assert [usage.side_call for usage in loop.session.usages] == ["summarizer"]
+    assert budget.tokens_spent == 1000
+    assert budget.cost_spent == pytest.approx(0.01)
+
+
+def test_the_compaction_row_says_what_it_cost(tmp_path: Path) -> None:
+    # Measured 2026-09-23 (a 27B worker Body): 355 s between the last trace row and a
+    # compaction's boundary, with nothing saying whether the PreCompact hooks or the
+    # summarizer took it. The row now carries both.
+    provider = _PricedSummarizerProvider(["summary"], tokens=100_000)
+    provider.delay = 0.05
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    async def serialize_state(payload: LifecyclePayload) -> None:
+        await asyncio.sleep(0.05)  # a host's PreCompact hook, writing its checkpoint
+
+    loop.hook_manager.register_lifecycle(HookEvent.PRE_COMPACT, serialize_state)
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    (row,) = _compaction_rows(loop)
+    assert row["compacted"] is True
+    assert row["summarizer_calls"] == 1
+    assert row["summarizer_prompt_tokens"] == 900
+    assert row["summarizer_cache_read_tokens"] == 300
+    assert row["summarizer_completion_tokens"] == 100
+    assert row["summarizer_s"] >= 0.04
+    assert row["pre_compact_s"] >= 0.04
+
+
+def test_every_slice_and_fold_is_counted(tmp_path: Path) -> None:
+    # An oversized history is summarized in slices, then folded: every one of those calls
+    # is the compaction's, and every one reaches the session.
+    provider = _PricedSummarizerProvider(["part summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(28)))
+
+    calls = len(provider.seen)
+    assert calls >= 2
+    assert loop._compaction_cost["summarizer_calls"] == calls
+    assert loop._compaction_cost["summarizer_prompt_tokens"] == 900 * calls
+    assert len(loop.session.usages) == calls
+
+
+def test_a_failed_summarizer_call_still_counts_its_seconds(tmp_path: Path) -> None:
+    # A summarizer that raised reported no usage, but it spent the time; a timed-out one
+    # is the costliest compaction there is.
+    provider = _ExplodingProvider([], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is False
+    (row,) = _compaction_rows(loop)
+    assert row["compacted"] is False
+    assert row["summarizer_calls"] == 1
+    assert row["summarizer_prompt_tokens"] == 0
+    assert "summarizer_s" in row
+    assert loop.session.usages == []
+
+
+def test_a_model_free_elision_row_shows_no_summarizer(tmp_path: Path) -> None:
+    # The keys are always present, so a missing key means an older build, never "free".
+    provider = _PricedSummarizerProvider(["summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(
+        [Message.user("load the skill"), *_tool_pair("t1", "body " * 20_000)]
+    )
+
+    assert asyncio.run(loop.elide_now(trigger="auto")) is True
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_calls"] == 0
+    assert row["summarizer_s"] == 0.0
+    assert provider.seen == []
+
+
+def test_each_compaction_row_counts_only_its_own_calls(tmp_path: Path) -> None:
+    # The record starts over at every PreCompact, so a second compaction in the same turn
+    # does not inherit the first one's calls.
+    provider = _PricedSummarizerProvider(["summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    loop.session.messages.extend(_history(4))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert [row["summarizer_calls"] for row in _compaction_rows(loop)] == [1, 1]

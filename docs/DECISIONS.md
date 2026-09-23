@@ -14389,3 +14389,61 @@ the loop's first check. Under `mutation-proof-test.sh` on cc-14, seven mutants e
 tests red: the reserve dropped from the formula, the floor dropped, the cap dropped, the loop
 passing no reserve, the bare estimate for the anchored delta, the probe without the new keyword,
 and the old 0.8 default. The full suite passed, 4,706 tests.
+
+## ADR-0241: a compaction's summarizer calls count, and its trace row says what it cost
+
+Status: accepted. 2026-09-23.
+
+The compaction summarizer is the biggest side call a session makes. It reads the older history in
+full, as one rendered message under its own instruction (ADR-0082), so it shares no prefix with
+the loop and runs cold. The plan critique, the completion critic and the quality gate each add
+their usage to the session and to the shared budget. The summarizer returned only its text: its
+calls reached neither `/cost` nor a `max_cost_usd` or `max_tokens` ceiling, and no trace row said
+what they took.
+
+Measured 2026-09-23 on a worker Body (a 27B model on a 131,072-token window): 355 seconds passed
+between the last trace row before a compaction and its boundary in the transcript. The PreCompact
+hooks and the summarizer both ran in that window, and nothing split it. The first main call after
+the compaction then read 49,236 prompt tokens, none from the cache, in 513 seconds.
+
+Decision.
+
+- Every summarizer call, each slice and each fold, goes to the session and to the budget the way
+  the judges' calls do. Its record carries `side_call="summarizer"`, a new `Usage` field that is
+  empty for a call of the main conversation. A sum keeps the tag only when both sides share it,
+  the rule `model` already follows.
+- A compaction starts a cost record at its PreCompact event, the one step every compaction path
+  takes (auto, `/compact`, and both overflow rungs). The record holds the hooks' seconds, then the
+  summarizer's calls, prompt, cached and completion tokens, and seconds. The compaction's
+  intervention row carries it. The keys are always there, zeros for a model-free elision, so a
+  missing key means an older build.
+- A call that raises still counts as a call, with its seconds and no tokens. A summarizer that
+  times out is the costliest compaction there is.
+- `zakcode throughput` (ADR-0104) pairs each reply with a usage record, from the tail. A
+  summarizer record has no reply, and counted it would move each reply before it onto its
+  neighbour's record. The pairing now reads only records without a `side_call`.
+
+What it changes for an operator. A session with a token or cost ceiling reaches it sooner when it
+compacts, since the summarizer's tokens now count. That is the ceiling doing its job.
+
+What it leaves. The critic, the plan critique, the quality gate, and the facade's classifier and
+judge calls still record untagged usage, so they shift the throughput pairing as they did before.
+Tagging them is a separate change. The `/cost` per-model view folds the summarizer's calls into
+its model's line.
+
+Rejected: counting the summarizer in the budget only. `/cost` would leave out the largest side
+call while it shows the small ones. Also rejected: one trace row per summarizer call. The question
+at a compaction is what the whole compaction cost, and a sliced summary is a dozen calls or more.
+
+The proof. `tests/test_compact_loop.py` checks that a compaction's summarizer usage reaches the
+session, tagged, and the budget's tokens and cost; that the row carries the calls, the three token
+counts and the seconds of a slow summarizer and a slow PreCompact hook; that every slice and fold
+of an oversized history is counted; that a failed call counts with no tokens and no session
+record; that an elision's row shows zeros; and that a second compaction's row counts only its own
+calls. `tests/test_cli_throughput.py` pairs replies around a summarizer record, and
+`tests/test_contracts.py` checks the tag's sum rule. Under `mutation-proof-test.sh` on cc-14,
+twelve mutants each turned the tests red: no session record, no budget record, no reset at
+PreCompact, no hook seconds, a failed call not counted, the row without the record, no prompt
+tokens, no call seconds, the throughput pairing reading side calls, the loop's record untagged,
+the tag surviving a mixed sum, and the session dropping the tag. The full suite passed,
+4,714 tests.

@@ -80,6 +80,13 @@ def test_usage_addition_and_tracker() -> None:
     assert total.cost_usd == pytest.approx(0.012)
 
 
+def test_usage_side_call_survives_only_a_shared_sum() -> None:
+    # ADR-0241: like ``model``, a sum keeps the tag only when both records carry the same one.
+    summarizer = Usage(total_tokens=5, side_call="summarizer")
+    assert (summarizer + summarizer).side_call == "summarizer"
+    assert (summarizer + Usage(total_tokens=5)).side_call == ""
+
+
 # ── provider value objects ───────────────────────────────────────────────────
 
 

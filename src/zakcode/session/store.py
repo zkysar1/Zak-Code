@@ -298,13 +298,17 @@ class Session(BaseModel):
             )
         return None
 
-    def add_usage(self, usage: Usage, model: str = "") -> None:
+    def add_usage(self, usage: Usage, model: str = "", side_call: str = "") -> None:
         """Record a single LLM-call ``usage`` entry, tagged with the ``model`` that produced it.
 
         ``model`` enables the per-model ``/cost`` breakdown (under zakpick a session spans several
         models). Empty (the default) preserves the legacy untagged behavior exactly.
+        ``side_call`` names a call outside the main conversation (``"summarizer"``, ADR-0241).
         """
-        self.usages.append(usage.model_copy(update={"model": model}) if model else usage)
+        update = {
+            key: value for key, value in (("model", model), ("side_call", side_call)) if value
+        }
+        self.usages.append(usage.model_copy(update=update) if update else usage)
 
     def cumulative_usage(self) -> Usage:
         """Return the sum of all recorded usage entries."""
