@@ -80,6 +80,11 @@ def new_group_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+#: How long the teardown waits to reap a killed child before it stops waiting on the child's
+#: pipes. See :func:`terminate_process_tree`.
+_REAP_GRACE_S = 2.0
+
+
 async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     """Forcibly kill ``proc`` AND its descendants (best-effort), then reap it.
 
@@ -87,6 +92,16 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
     ``sh -c '... &'``, ``npx``/``uvx`` launchers, or a dev server — so this kills the tree:
     ``taskkill /PID <pid> /T /F`` on Windows, ``os.killpg(getpgid, SIGKILL)`` on POSIX (the
     child must have been spawned with :func:`new_group_kwargs`). No-op if already exited.
+
+    The reap is BOUNDED, and it lets go of the child's pipes. A descendant that left the
+    child's group (``setsid``, a server that daemonizes itself) survives the group kill with
+    those pipes still open. Before Python 3.13, asyncio's ``Process.wait()`` settles only once
+    every pipe has closed, so an unbounded reap lasted as long as that descendant: measured
+    2026-09-23 on 3.11, a command that started ``setsid sleep 12`` under a 2-second timeout
+    returned after 12 seconds, and a daemon would have held the turn indefinitely (OpenCode
+    issue #49169 is the same defect). 3.13 returns at the exit (gh-119710), but our ends of the
+    pipes stay open until the stray exits. So the wait is bounded by :data:`_REAP_GRACE_S`, and
+    then the transport is closed on every version. The stray is not killed: it left the group.
     """
     if proc.returncode is not None:
         return
@@ -106,5 +121,10 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass  # already gone / race
-    with contextlib.suppress(Exception):
-        await proc.wait()
+    with contextlib.suppress(Exception):  # TimeoutError: a stray holds the pipes (see above)
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_GRACE_S)
+    # asyncio exposes no public way to let go of a child's pipes, so close its transport. After
+    # a normal exit this is a no-op; with a stray it closes our ends.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        transport.close()
