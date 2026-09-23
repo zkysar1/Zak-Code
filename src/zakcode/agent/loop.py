@@ -213,7 +213,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins.update_plan import authors_a_plan
+from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
@@ -3493,9 +3493,9 @@ class AgentLoop:
             )
         body = (
             "[plan] Harness-tracked plan for the current goal. Keep it current with the "
-            "update_plan tool: mark a step done (with its outcome) and the next in_progress "
-            "as you finish each, and decompose any step that turns out to be several "
-            "actions.\n\n"
+            "update_plan tool: as you finish each step, mark it done (with its outcome) and "
+            f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
+            "several actions.\n\n"
         )
         if request:
             body += f"Goal: {request}\n\n"

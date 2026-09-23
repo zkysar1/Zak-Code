@@ -1778,10 +1778,12 @@ class SkillPages:
         after = (
             "This is the last section."
             if index == self.count
+            # ADR-0237: everywhere else the plan advance rides with the next step's first
+            # call, but that call is in the section this update fetches, so it goes alone.
             else (
-                f"When this section is done, mark its step done with update_plan (send the "
-                f"whole plan); section {index + 1} of {self.count} arrives in the reply to that "
-                "call — nothing arrives on its own."
+                f"When this section is done, mark its step done with update_plan, alone in its "
+                f"response (send the whole plan); section {index + 1} of {self.count} arrives "
+                "in the reply to that call — nothing arrives on its own."
             )
         )
         return f"{self.header(index)}\n{page.text.rstrip()}\n\n{after}"
