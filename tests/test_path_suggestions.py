@@ -95,6 +95,39 @@ def test_suggest_skips_ignored_dirs_and_never_raises(tmp_path: Path) -> None:
     assert suggest("google-drive-list", tmp_path / "does-not-exist") == ([], [])
 
 
+def test_an_extra_root_under_an_ignored_dir_is_searched_by_its_own_rules(tmp_path: Path) -> None:
+    """ADR-0229. A Mind keeps its world under ``.mind-data/``, which the checkout's
+    .gitignore excludes, and declares it as an extra root. Field 2026-09-23 (a 27B worker):
+    ``Read world/program.md`` came back with six look-alike names from the checkout and never
+    the file itself, because the extra root was judged by the primary root's ignore rules."""
+    (tmp_path / ".gitignore").write_text(".mind-data/\nbuild/\n")
+    world = tmp_path / ".mind-data" / "world"
+    world.mkdir(parents=True)
+    (world / "program.md").write_text("# The Program\n")
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "old-program.md").write_text("x\n")
+    # Positive control (guard-4166): what the PRIMARY root ignores stays hidden.
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "program.md").write_text("generated\n")
+
+    by_name, _ = suggest("world/program.md", tmp_path, [world])
+    assert by_name[0] == ".mind-data/world/program.md"
+    assert "notes/old-program.md" in by_name
+    assert "build/program.md" not in by_name
+    # Undeclared, the ignored directory stays ignored.
+    by_name, _ = suggest("world/program.md", tmp_path)
+    assert by_name == ["notes/old-program.md"]
+
+    ctx = ToolContext(workspace_root=tmp_path, extra_workspace_roots=[world])
+    result = _run(ReadFileTool(), {"path": "world/program.md"}, ctx)
+    assert result.is_error
+    assert result.output.splitlines()[:3] == [
+        "File not found: world/program.md",
+        "Closest paths by name:",
+        "  .mind-data/world/program.md",
+    ]
+
+
 def test_literal_stem() -> None:
     assert literal_stem("**/google-drive-list*") == "google-drive-list"
     assert literal_stem("src/**/test_*.py") == "test_"

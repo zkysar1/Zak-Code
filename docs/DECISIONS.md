@@ -13776,3 +13776,42 @@ under `mutation-proof-test.sh` on cc-14: leaving the five exposed, letting the M
 built-ins, dropping the prompt line, showing the line without `tool_search`, and hiding
 `read_docx`. The MCP facade test in tests/test_tool_search.py now derives how much room
 discovery has instead of assuming the built-ins fill the budget.
+
+## ADR-0229: a not-found answer searches each workspace root under its own ignore rules
+
+Status: accepted. 2026-09-23.
+
+Context. A Mind keeps its world and meta under `.mind-data/`, a directory the checkout's
+.gitignore excludes, and zakcode adds both as extra workspace roots from the Mind's
+local-paths.conf. On 2026-09-23 a worker on a 27B model read `world/program.md`, the path the
+Mind's guide writes with its virtual `world/` prefix. The file is `.mind-data/world/program.md`.
+The not-found answer (ADR-0040) listed six look-alikes from the checkout whose names contain
+`program.md`, and not the file itself. `suggest` judged every root by the checkout's ignore
+rules. A root nested in the checkout is relative to it, so the checkout's `.mind-data/` rule hid
+the whole root. The ignore module already says a root's .gitignore must not hide another root's
+files, but that held only for a root outside the checkout.
+
+Decision. `suggest` loads each root's ignore rules from that root. The checkout's rules still
+apply to the checkout; a declared extra root is searched under its own, since declaring it says
+it is wanted. A hit whose path ends with the path asked for (`world/program.md` for
+`.mind-data/world/program.md`) now ranks above every other name. Bash's "No such file" hint
+already ranks that lead first (ADR-0097). Without the tier, a shorter look-alike
+(`notes/old-program.md`) sorted first by length.
+
+What it risks. A declared root is now walked in full, so a not-found costs more time. The
+file-count and two-second budgets still bound the walk, and the checkout is walked first. The
+tier also puts an exact name found elsewhere above a longer name that only contains it; for a
+bare name, that is the file the model meant.
+
+Measured on zc-02's Mind layout with the patched module beside the installed build. Before,
+`world/program.md` and `world/forged-skills.yaml` each got a look-alike under agents/ first,
+and `meta/reflection-strategy.yaml` got nothing. After, each got its real file first:
+`.mind-data/world/program.md`, `.mind-data/world/forged-skills.yaml` and
+`.mind-data/meta/reflection-strategy.yaml`. A not-found took about 1.15 seconds instead of 0.65.
+
+The proof. tests/test_path_suggestions.py: in a checkout that ignores `.mind-data/` and
+`build/`, with the world declared as a root, the first suggestion for `world/program.md` is
+`.mind-data/world/program.md`, the look-alike is still listed and `build/program.md` stays
+hidden. Undeclared, the world stays hidden. Read's not-found output leads with the real file.
+Three mutants each turned the test red under `mutation-proof-test.sh` on cc-14: judging every
+root by the checkout's rules, dropping the suffix tier, and turning soft ignore rules off.
