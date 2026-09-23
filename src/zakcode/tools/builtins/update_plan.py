@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tasks import Task, TaskNetwork, TaskStatus, author_signature, clip
+from zakcode.tasks import Task, TaskNetwork, TaskStatus, author_fields, author_signature, clip
 from zakcode.tools.base import (
     RECEIPT_OF_CHANGE,
     ConcurrencyClass,
@@ -107,7 +107,8 @@ def _task_schema(depth: int) -> dict[str, Any]:
                 "searches, lists, or looks something up, say what a hit looks like AND what "
                 "proves the scope was visible — a null result never closes such a step on its "
                 "own. For a blocked step, say why instead. Recommended on every primitive step; "
-                "omit only if truly none applies."
+                "omit only if truly none applies. Kept once given: leave it out of later calls "
+                "unless it changes."
             ),
         },
         "blocked_by": {
@@ -124,7 +125,8 @@ def _task_schema(depth: int) -> dict[str, Any]:
             "description": (
                 "What the step PRODUCED or found, one line — set it when you mark the step done "
                 "('the flake is a stale cache', 'route added in app/users.py'). This is the "
-                "record a later step, a resumed session, or the user reads back."
+                "record a later step, a resumed session, or the user reads back. Kept once given: "
+                "leave it out of later calls unless it changes."
             ),
         },
     }
@@ -225,9 +227,10 @@ class UpdatePlanTool(Tool):
             "and no hidden 'figure out how' (break a step into 'subtasks' when it is itself "
             "several actions, and use 'blocked_by' when a step depends on earlier ones). Then "
             "call it again to mark a step done and the next one in_progress as you go. Always "
-            "send the WHOLE plan each time, with every step's status. When you mark a step done, "
-            "record what it produced in its 'outcome'. Skip it only for a request that asks one "
-            "thing needing one or two actions."
+            "send the WHOLE plan each time: every step's title and status. A step keeps the note "
+            "and outcome you already gave it, so send those only when they are new or changed. "
+            "When you mark a step done, record what it produced in its 'outcome'. Skip it only "
+            "for a request that asks one thing needing one or two actions."
         ),
         parameters={
             "type": "object",
@@ -271,6 +274,7 @@ class UpdatePlanTool(Tool):
                 )
             network.tasks = []
             network.last_author_signature = ""
+            network.last_author_fields = {}
             network.normalize()
             return ToolResult.ok("Plan cleared.", data={"task_count": 0})
 
@@ -284,11 +288,19 @@ class UpdatePlanTool(Tool):
             )
         # Full-replace, but the steps' MEMORY (evidence, outcome, origin) carries over by title
         # and every transition is logged (ADR-0110) — the model resends the plan, not its record.
-        submitted = author_signature(built)
+        # A note or outcome it leaves out is one it did not change (ADR-0235): the signature reads
+        # the submission through what it last sent, and the network keeps the field itself.
+        sent = network.last_author_fields
+        submitted = author_signature(built, sent)
+        # Read before the replace: it installs these very objects and writes the harness's
+        # carry-over into them, and a "last sent" map holding a harness-filled outcome makes
+        # the next identical resend read as an edit.
+        fields = author_fields(built, sent)
         prior_author = network.last_author_signature
         events = network.log_folded + len(network.log)
         advisories = network.replace_from_author(built)
         network.last_author_signature = submitted
+        network.last_author_fields = fields
 
         finished, total = network.progress()
         if submitted == prior_author and network.log_folded + len(network.log) == events:
