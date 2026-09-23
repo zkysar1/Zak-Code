@@ -493,7 +493,7 @@
   let lastCursor = null;
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
-  let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send
+  let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send and at turn end
   let lastPlanKey = "";      // checklist rows of the last plan drawn (ADR-0112 dedup)
   let assistantBody = null;  // current prose group (re-anchors after tool cards/status)
   let assistantText = "";    // its accumulated raw text (re-rendered on each delta)
@@ -1170,6 +1170,11 @@
 
   function endTurn() {
     turnActive = false;
+    // The turn's clock and meter stop with it. The next user_message restarts them; a
+    // turn that opens without one (a /chat/stream turn) is not timed or metered from
+    // this turn's start, so its footer leaves the duration out instead of spanning two.
+    turnAt = null;
+    turnUsage = emptyUsage();
     hideStatus();
     setSendMode(false);
     approval.hidden = true;
