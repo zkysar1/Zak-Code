@@ -303,7 +303,8 @@ class Session(BaseModel):
 
         ``model`` enables the per-model ``/cost`` breakdown (under zakpick a session spans several
         models). Empty (the default) preserves the legacy untagged behavior exactly.
-        ``side_call`` names a call outside the main conversation (``"summarizer"``, ADR-0241).
+        ``side_call`` names a call outside the main conversation (``"summarizer"``, ADR-0241;
+        the judges, classifiers and ``deep_think``, ADR-0243).
         """
         update = {
             key: value for key, value in (("model", model), ("side_call", side_call)) if value

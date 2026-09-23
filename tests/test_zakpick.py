@@ -554,6 +554,8 @@ async def test_agent_classify_difficulty_judges_scope(
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (deep, "classify/m"))
     assert (await agent._classify_difficulty("add pdf support", 0.0)).category == "deep_code"
     assert deep.calls == 1  # the cheap classify model was consulted exactly once
+    # ADR-0243: its record is a side call's; no reply of the conversation pairs with it
+    assert [u.side_call for u in agent.session.usages] == ["difficulty_classifier"]
 
     quick = _classify_stub('{"difficulty": "quick"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (quick, "classify/m"))

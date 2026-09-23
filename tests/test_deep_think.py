@@ -197,6 +197,8 @@ def test_agent_wires_sampler_and_records_usage(tmp_path: Path) -> None:
     by_model = agent.session.usage_by_model()
     assert "test/model" in by_model
     assert by_model["test/model"].cost_usd == pytest.approx(0.005)
+    # ADR-0243: a deliberation is a side call; no reply of the conversation pairs with it
+    assert {u.side_call for u in agent.session.usages} == {"deep_think"}
 
 
 def test_full_turn_invokes_deep_think(tmp_path: Path) -> None:

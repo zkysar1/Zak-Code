@@ -14512,3 +14512,41 @@ instruction on the whole transcript, a slice, a fold or the clamped fold; the ta
 role-label check; `[system]` counted as a turn; no floor; the floor without its source
 threshold; no empty reason; no resample; no raised temperature; only accepted responses counted;
 no rejection count; and no status line. The full suite passed, 4,723 tests.
+
+## ADR-0243: every side call's usage record says it is one
+
+Status: accepted. 2026-09-23.
+
+ADR-0241 tagged the compaction summarizer's usage records `side_call="summarizer"` and left the
+other side calls for a separate change. Seven more calls record usage on the session and have no
+reply of their own: the completion critic, the plan critique and the quality gate in the loop,
+and the facade's difficulty classifier, `deep_think` sampler, context classifier and context
+judge. `zakcode throughput` (ADR-0104) pairs replies with usage records from the tail, so each
+untagged record moved every reply before it onto its neighbour's record.
+
+Measured 2026-09-23 on the three zc boxes, nine sessions from the last day, 1,110 usage records.
+A session's records less its trace's usage rows, which are written for main calls only, leaves
+the side calls. Three records had no main call behind them, one in one session and two in
+another. The worker Bodies rarely meet this: a skill turn skips the plan critique, and the critic
+runs once, when a finished plan ends the turn. An interactive session with a plan meets it at
+every turn that finishes one.
+
+Decision.
+
+- Each of the seven sites passes its name: `critic`, `plan_critique`, `quality_gate`,
+  `difficulty_classifier`, `deep_think`, `context_classifier`, `context_judge`. The `Usage`
+  field's comment lists every name.
+- Nothing else reads the tag. `/cost`, the per-model view and the budget sum every record as
+  before.
+
+Rejected: one generic tag for every side call. The name costs nothing, and it says which call
+spent the tokens when someone reads a session's records. Also rejected: pairing throughput with
+the trace's usage rows instead. A trace is written only when `trace_dir` is set; the session's
+records always are.
+
+The proof. A planning turn in `tests/test_loop_planning.py` records its plan critique and its
+plan review tagged, and `throughput`'s pairing gives each reply its own call's record. The
+quality gate, the difficulty classifier and `deep_think` each record a tagged usage in their
+tests, and the facade's context classifier and context judge hand theirs to the session tagged.
+Under `mutation-proof-test.sh` on cc-14, seven mutants, one per site with its tag removed, each
+turned its test red. The full suite passed, 4,725 tests.

@@ -610,6 +610,32 @@ async def test_strong_plan_judge_stays_silent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_judges_records_are_tagged_so_each_reply_pairs_with_its_own() -> None:
+    # ADR-0243: the plan judge and the plan review have no reply of their own. Tagged, their
+    # records stay out of `zakcode throughput`'s pairing; untagged, the plan reply was paired
+    # with the done call's record and the done reply with the review's.
+    from zakcode.cli.throughput import _paired
+
+    plan = LLMResult(
+        text="",
+        tool_calls=[
+            ToolCall(
+                id="p1",
+                name="update_plan",
+                arguments={"tasks": [{"title": "A", "status": "done", "note": "x"}]},
+            )
+        ],
+        usage=Usage(prompt_tokens=100, total_tokens=101),
+    )
+    done = LLMResult(text="all done", usage=Usage(prompt_tokens=200, total_tokens=201))
+    provider = _Scripted([plan, _judge(_JUDGE_STRONG), done, _review_ok()])
+    loop, session = _loop(provider)
+    await loop.arun_turn("small thing")
+    assert [u.side_call for u in session.usages] == ["", "plan_critique", "", "critic"]
+    assert [u.prompt_tokens for _, u in _paired(session)] == [100, 200]
+
+
+@pytest.mark.asyncio
 async def test_judge_runs_once_per_turn_even_across_structural_edits() -> None:
     provider = _Scripted(
         [

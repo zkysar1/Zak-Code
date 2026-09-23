@@ -1065,7 +1065,10 @@ class Agent:
                 gatherer = default_gatherer(
                     SmallModelClassifier(
                         clf_provider,
-                        on_usage=lambda u: self.session.add_usage(u, model=clf_provider.model_id()),
+                        # ADR-0243: a side call's record is tagged; it has no reply to pair with.
+                        on_usage=lambda u: self.session.add_usage(
+                            u, model=clf_provider.model_id(), side_call="context_classifier"
+                        ),
                     )
                 )
             else:
@@ -1087,7 +1090,10 @@ class Agent:
                         self.session,
                         context_signal_log,
                         used_detector=ModelUsedDetector(
-                            jp, on_usage=lambda u: self.session.add_usage(u, model=jp.model_id())
+                            jp,
+                            on_usage=lambda u: self.session.add_usage(
+                                u, model=jp.model_id(), side_call="context_judge"
+                            ),
                         ),
                     )
                 else:
@@ -1682,7 +1688,7 @@ class Agent:
         except ProviderError:
             return DifficultyVerdict("deep_code")  # classifier unavailable -> fail UP
         with contextlib.suppress(Exception):  # accounting must never break routing
-            self.session.add_usage(result.usage, model=model)
+            self.session.add_usage(result.usage, model=model, side_call="difficulty_classifier")
             if self._shared_budget is not None:
                 self._shared_budget.add_usage(
                     result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced
@@ -1719,7 +1725,7 @@ class Agent:
             [Message.user(prompt)], system=system, temperature=temperature
         )
         with contextlib.suppress(Exception):  # accounting must never break the deliberation
-            self.session.add_usage(result.usage, model=provider.model_id())
+            self.session.add_usage(result.usage, model=provider.model_id(), side_call="deep_think")
             if self._shared_budget is not None:
                 self._shared_budget.add_usage(
                     result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced

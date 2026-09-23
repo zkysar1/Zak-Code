@@ -273,6 +273,9 @@ def test_agent_model_classifier_flag(tmp_path) -> None:
     )
     agent = Agent(settings=settings, enable_context_gathering=True, context_classifier="model")
     assert len(agent.hook_manager.context_hooks) == 1
+    # ADR-0243: the classifier's spend reaches the session tagged as the side call it is
+    agent.hook_manager.context_hooks[0]._classify._on_usage(Usage(total_tokens=3))
+    assert [u.side_call for u in agent.session.usages] == ["context_classifier"]
 
 
 # --- signal logging (step 3) -----------------------------------------------
@@ -491,3 +494,7 @@ def test_agent_signal_judge_wires_observer(tmp_path) -> None:
         context_signal_judge=True,
     )
     assert len(agent.hook_manager.turn_end_observers) == 1
+    # ADR-0243: the judge's spend reaches the session tagged as the side call it is
+    signal = agent.hook_manager.turn_end_observers[0].__self__
+    signal._used_detector._on_usage(Usage(total_tokens=3))
+    assert [u.side_call for u in agent.session.usages] == ["context_judge"]

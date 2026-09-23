@@ -56,10 +56,12 @@ class Usage(BaseModel):
     #: an unenforceable ceiling from an unspent one and no reader mistakes the 0.0 for a
     #: measurement.
     cost_unpriced: bool = False
-    #: The side call this record came from (``"summarizer"``: a compaction's calls, ADR-0241),
-    #: or empty for a call of the main conversation. A side call has no reply of its own, so
-    #: the per-turn pairing of ``zakcode throughput`` (ADR-0104) leaves it out. Empty for
-    #: older persisted records and for aggregate totals.
+    #: The side call this record came from, or empty for a call of the main conversation:
+    #: ``"summarizer"`` (a compaction's calls, ADR-0241), ``"critic"``, ``"plan_critique"``,
+    #: ``"quality_gate"``, ``"difficulty_classifier"``, ``"deep_think"``,
+    #: ``"context_classifier"`` and ``"context_judge"`` (ADR-0243). A side call has no reply of
+    #: its own, so the per-turn pairing of ``zakcode throughput`` (ADR-0104) leaves it out.
+    #: Empty for older persisted records and for aggregate totals.
     side_call: str = ""
 
     def __add__(self, other: Usage) -> Usage:

@@ -61,6 +61,15 @@ async def test_quality_gate_iterates_on_low_score(tmp_path: Path) -> None:
     assert ship is False and "q" in weak  # the brief names the failing dimension
 
 
+async def test_quality_gate_record_is_tagged(tmp_path: Path) -> None:
+    # ADR-0243: the scorer's call has no reply of its own, so its record says it is a side call.
+    loop = _loop(
+        tmp_path, _ScoreProvider(json.dumps({"scores": {"q": 1.0}})), quality_gate_threshold=0.8
+    )
+    await loop._quality_gate("req", "the result", [])
+    assert [u.side_call for u in loop.session.usages] == ["quality_gate"]
+
+
 async def test_quality_gate_ships_on_scorer_failure(tmp_path: Path) -> None:
     loop = _loop(tmp_path, _ScoreProvider("not json at all"), quality_gate_threshold=0.8)
     ship, weak = await loop._quality_gate("req", "the result", [])
