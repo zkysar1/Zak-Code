@@ -62,7 +62,9 @@ class _FakeAgent:
             AgentTextDelta(text=CANNED),
             AgentToolCall(id="c1", name="write_file", arguments={"path": SECRET_ARG_PATH}),
             AgentUsage(usage=Usage(total_tokens=10)),  # unsafe → MUST be dropped by /watch
-            AgentToolResult(tool_use_id="c1", output=TOOL_OUTPUT, is_error=False),
+            AgentToolResult(
+                tool_use_id="c1", output=TOOL_OUTPUT, is_error=False, name="write_file"
+            ),
             AgentDone(stop_reason="completed", iterations=2, usage=Usage(total_tokens=10)),
         ]
         for event in events:
@@ -168,25 +170,44 @@ async def _watch_frames(
     return frames
 
 
+def _unstamped(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pop every frame's publish stamp (ADR-0220), after pinning it: epoch seconds, in order."""
+    stamps = [frame.pop("at") for frame in frames]
+    assert all(isinstance(at, float) for at in stamps), stamps
+    assert stamps == sorted(stamps), stamps
+    return frames
+
+
 async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) -> None:
     sid = await _run_turn(live_url)
     # 5 raw events emitted; the AgentUsage one is dropped → 4 SafeEvent frames.
-    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4)
+    frames = _unstamped(await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4))
     assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
     assert frames[0] == {"event": "text", "text": CANNED}
+    # The terminal's call and receipt lines, from the name and a COUNT (ADR-0220): the
+    # output ("wrote n.txt") and the argument ("n.txt") never cross, as the next test pins.
     assert frames[1] == {
         "event": "tool_summary",
         "name": "write_file",
         "status": "running",
         "used_secrets": [],
+        "display_name": "Write",
+        "receipt": "",
     }
     assert frames[2] == {
         "event": "tool_summary",
-        "name": "",
+        "name": "write_file",
         "status": "completed",
         "used_secrets": [],
+        "display_name": "Write",
+        "receipt": "Written",
     }
-    assert frames[3] == {"event": "done", "stop_reason": "completed"}
+    assert frames[3] == {
+        "event": "done",
+        "stop_reason": "completed",
+        "iterations": 2,
+        "label": "done",
+    }
 
 
 async def test_watch_whitelist_never_leaks_tool_args_or_output(live_url: str) -> None:
@@ -226,7 +247,7 @@ async def test_watch_current_alias_resolves_active_session(live_url: str, tmp_pa
     sid = await _run_turn(live_url)
     (tmp_path / ".current-session").write_text(sid, encoding="utf-8")
     # Same buffered frames as watching the concrete id — the alias is transparent.
-    frames = await _watch_frames(live_url, "/watch/current?since=0", count=4)
+    frames = _unstamped(await _watch_frames(live_url, "/watch/current?since=0", count=4))
     assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
     assert frames[0] == {"event": "text", "text": CANNED}
 

@@ -13300,3 +13300,84 @@ items; `test_server_consumer` pins `at` on every full frame, in publish order.
 What this does NOT change. The terminal renderer, and the `AgentEvent` models. The projected watch
 stream (`/watch/{sid}` without `full`), which Vinheim reads: widening what that audited surface
 carries is its own decision. The web still draws no ✓, because the card's dot is its outcome mark.
+
+## ADR-0220: the safe watch stream carries the terminal's words, built from names and counts
+
+Status: accepted. 2026-09-23.
+
+Context. The user asked that the Vinheim web app match the terminal's output verbosity:
+"vinheim was not long enough or did not give enough detail. I actually liked the way the zakcode
+cli looked, verbosity wise." Vinheim reads the safe watch stream (`/watch/{sid}` without `full`),
+and that stream could not say more than Vinheim drew. Measured on its frames, per turn:
+
+- A tool result named nothing. A result's `SafeToolSummary` carried `name=""` and a status, so
+  Vinheim drew "⚙  ✓" under "⚙ Bash …": no tool, no count, no duration. The terminal draws
+  "└ ✓ Ran · 14 lines · 2.3s".
+- The plan read "Plan: 0/3 done" whatever the progress. Vinheim reads `finished` and `total` from
+  the frame, and `SafeTaskUpdate` never carried them: a contract the consumer read and the
+  producer never wrote (rb-11490).
+- A turn ended without a line. `SafeDone` carried the stop reason alone, where the terminal draws
+  "● done · 6 iterations · … · 1m 15s · 14:03".
+- No frame carried a time, so no duration or stamp could be drawn at all.
+
+ADR-0186 named this follow-up: the projection may carry the display name and the receipt
+sentence, never arguments or output. This ADR makes it, and adds the plan line, the footer label
+and the publish stamp.
+
+Decision.
+
+1. `AgentToolResult` gains `name`, its call's name, set at the loop's four result sites, so a
+   consumer that sees one event at a time can receipt a result. Consumers that pair by
+   `tool_use_id` (the terminal, the web client) are unchanged.
+2. `SafeToolSummary` gains `display_name` (the terminal's, on the call and its result) and
+   `receipt` (a result's: the terminal's sentence without its ✓). A result frame now carries
+   the tool's `name` too.
+3. `SafeTaskUpdate` gains `finished`, `total` and `receipt`, the line the terminal draws for
+   the plan: "Plan · 1/3 steps · current: 2 build the parser", or "Plan complete · 3 steps".
+4. `SafeDone` gains `iterations` and `label`, the terminal's stop label.
+5. Every safe frame carries `at`, the bus's publish stamp (ADR-0219), as full frames do.
+
+What stays withheld, and how. This frame is the public boundary: the `/w/<token>` page renders
+it to anyone holding the link. So every new field is safe by what it is made of, never by who
+reads it (guard-6806).
+
+- A receipt is a fixed sentence around integers counted from the output. It is rebuilt in the
+  projection (`_safe_receipt`), not taken from the renderer. The renderer's receipts can carry
+  text: a failure's receipt IS its first output line. A call to the renderer would carry any
+  future one onto the public page with no change in the projection. A failed result's receipt
+  is the one word "failed".
+- A checklist's receipt stops before the terminal's "· current: <step>", whose text is a row of
+  the output: the step's title and its note.
+- The plan line names the step in hand only when it is a TOP-LEVEL task, by its id and title,
+  which `tasks` already carries. A child step's title stays off the stream (the existing
+  "leak me" pin), and so does every note.
+- The stop label is built without `degraded` and without `error`. A struggled or recovered
+  completion reads "done"; a provider error reads "provider error". Usage and cost stay dropped.
+- `at` is a clock reading. It says when, never what.
+
+Why the receipt is copied and the rest imported. Display names, stop labels, plural forms and the
+plan patterns come from the renderer: fixed text and pure helpers that format only what they are
+given. The receipt is the one sentence that reads the output, so it is the one rebuilt from
+counts. A whitelist that called the renderer would no longer be a whitelist.
+
+The proof. `tests/test_safe_projection.py` runs the projection against the renderer's own
+functions. Receipts cover one tool for each of the terminal's receipt branches (Read, List, Fetch,
+Run, Search, Glob, Edit, Write, Todo) and two that fall to its generic "Name · N lines", across
+ten outputs: diffs, checklists, an `update_plan` receipt. Each receipt equals the terminal's
+without its ✓ (and a checklist's "current:" tail). Each matches a closed grammar of count
+sentences. None carries a marker planted in every output, where positive controls show the
+terminal's own sentences do. Plans are built by the loop's own `_task_update_event` over a real
+`TaskNetwork`, so the tested frames are the bytes a served session publishes. The stop label
+matches the terminal's for every stop reason, crossed with open steps and with both withheld
+fields in play. A pin lists every field of every safe frame, so the next widening is deliberate.
+`tests/test_server_watch.py` pins the new frames end to end on a live server, stamps included.
+Eight mutants each turned the suite red, each restore byte-exact: a failure receipt copying its
+first line, a checklist keeping its current tail, the plan line naming its step from the render
+row, the degraded roll-up in the label, a drifted Run receipt, a new field on `SafeDone`, an
+unstamped frame, and an unnamed result.
+
+What this does NOT change. Arguments, output rows, tokens and cost never reach the safe stream.
+Showing them in Vinheim would need a different stream for a different audience, and that is the
+owner's decision, not this one. The terminal renderer is unchanged, and so is the full stream,
+except that a tool result now names its tool. Vinheim's watch pane draws these fields in the
+terminal's grammar in its own change.

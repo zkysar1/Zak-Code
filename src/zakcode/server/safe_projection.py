@@ -36,6 +36,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+# The terminal's grammar, for the sentences a watcher draws (ADR-0220). Only fixed text and
+# pure helpers are taken from it: display names, stop labels, plural forms and the plan
+# patterns. Receipts are rebuilt below from counts, never taken from the renderer.
+from zakcode.cli.render import (
+    _GLYPH_ROW_RE,
+    _PLAN_HEADER_RE,
+    _STOP_LABEL,
+    _diff_preview,
+    _display_name,
+    _plural,
+)
 from zakcode.secrets import redact_secrets
 from zakcode.tools.builtins._secrets import SECRET_PLACEHOLDER_RE, SecretsProvider
 
@@ -78,28 +89,55 @@ class SafeToolSummary(BaseModel):
     construction: the values live outside the model and outside this process's event text
     (substitution happens inside the tool at request-build time), and the placeholder regex
     charset (``[A-Z][A-Z0-9_]{0,63}``) cannot match secret material.
+
+    ``display_name`` and ``receipt`` let a watcher draw the terminal's call and receipt lines
+    (ADR-0220). This frame is the PUBLIC boundary (the ``/w/<token>`` page renders it), so both
+    are safe by what they are made of, never by who reads them: ``display_name`` is derived
+    from the tool name this frame already carries, and ``receipt`` is a fixed sentence around
+    integers COUNTED from the output (:func:`_safe_receipt`), never a character of it.
     """
 
     event: Literal["tool_summary"] = "tool_summary"
     name: str = ""
     status: str = ""  # "running" | "completed" | "failed"
     used_secrets: list[str] = []
+    #: The terminal's name for the tool ("Run", "Read", "Search"), on the call and its result.
+    display_name: str = ""
+    #: A result's receipt, the terminal's without its ✓ mark ("Ran · 14 lines"); "failed" for
+    #: a failed result, whose terminal receipt IS its first output line; "" on a call.
+    receipt: str = ""
 
 
 class SafeTaskUpdate(BaseModel):
     """The plan checklist reduced to per-task {description, status} plus the redacted request
-    the plan serves (ADR-0113). Notes/children/evidence/outcomes dropped."""
+    the plan serves (ADR-0113). Notes/children/evidence/outcomes dropped.
+
+    ``finished``/``total`` are the plan's leaf counts and ``receipt`` the line the terminal
+    draws for this plan (ADR-0220): "Plan · 1/3 steps · current: 2 build the parser". The step
+    in hand is named only when it is a TOP-LEVEL task, whose title ``tasks`` already carries;
+    a child step's title, and every step's note, stay dropped.
+    """
 
     event: Literal["task_update"] = "task_update"
     tasks: list[dict[str, str]] = []
     request: str = ""
+    finished: int = 0
+    total: int = 0
+    receipt: str = ""
 
 
 class SafeDone(BaseModel):
-    """Terminal event reduced to its stop reason. error/trace/usage/degraded dropped."""
+    """Terminal event reduced to its stop reason. error/trace/usage/degraded dropped.
+
+    ``iterations`` and ``label`` let a watcher draw the terminal's footer (ADR-0220): the
+    label is the terminal's stop label, with a plan left open counted, but never the error
+    detail and never the degraded roll-up ("struggled"/"recovered") the terminal adds.
+    """
 
     event: Literal["done"] = "done"
     stop_reason: str
+    iterations: int = 0
+    label: str = ""
 
 
 class SafeSessionRotated(BaseModel):
@@ -253,6 +291,79 @@ def _placeholder_names(arguments: Any) -> list[str]:
     return sorted(names)
 
 
+# ── The terminal's sentences, rebuilt from counts (ADR-0220) ─────────────────
+
+
+def _count(value: Any) -> int:
+    """A non-negative event count, or 0 for anything that is not one (never raises)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _plan_fraction(plan: str, rows: int) -> str:
+    """The terminal's plan progress: the render header's "F/T steps", else its row count."""
+    head = _PLAN_HEADER_RE.search(plan)
+    return f"{head.group(1)}/{head.group(2)} steps" if head else _plural(rows, "step")
+
+
+def _safe_receipt(display: str, output: str) -> str:
+    """A completed result's receipt: the terminal's (``StreamRenderer._result_body``) without
+    its ✓ mark, rebuilt HERE from counts of the output.
+
+    Every branch formats integers into a fixed sentence, so no character of the output can
+    reach the frame. That is why this is a copy and not a call: the terminal's receipts may
+    grow a path or a first line tomorrow (its failure receipt already IS one), and a call would
+    carry that onto the public page with no change in this module. The copy is held to the
+    terminal by ``tests/test_safe_projection.py``, which runs both over one corpus.
+
+    One sentence is shorter than the terminal's. A plan checklist's receipt stops before the
+    terminal's "· current: <step>", whose text is the step's row (its title AND its note),
+    parsed out of the output; the plan line on ``task_update`` names the step from fields.
+    """
+    lines = output.splitlines()
+    n = len(lines)
+    if display in ("Run", "Fetch"):
+        label = _plural(n, "line") if n else "no output"
+        return f"Fetched {label}" if display == "Fetch" else f"Ran · {label}"
+    if display == "Search":
+        return f"Found {_plural(n, 'match', 'matches')}"
+    if display == "Glob":
+        return f"Found {_plural(n, 'file')}"
+    if display == "Edit":
+        # Only the gate's verdict is read here; the preview rows it builds never leave this call.
+        if _diff_preview(output) is not None:
+            adds = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+            dels = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+            return f"Updated +{adds} -{dels}"
+        return f"Edited · {_plural(n, 'line')}"
+    if display == "Write":
+        return "Written"
+    if display == "Todo":
+        steps = [ln.strip() for ln in lines if _GLYPH_ROW_RE.match(ln.strip())]
+        if steps and all(s.startswith(("[x] ", "[-] ")) for s in steps):
+            return f"Plan complete · {_plural(len(steps), 'step')}"
+        if steps:
+            return "Plan · " + _plan_fraction("\n".join(lines), len(steps))
+        return f"Plan · {_plural(sum(1 for ln in lines if ln.strip()), 'item')}"
+    if display == "Read":
+        return f"Read {_plural(n, 'line')}"
+    if display == "List":
+        return f"Listed {_plural(n, 'entry', 'entries')}"
+    return f"{display} · {_plural(n, 'line')}"
+
+
+def _done_label(event: Any) -> str:
+    """The terminal's footer label (``StreamRenderer._stop_label``) for this stop, less what a
+    ``SafeDone`` withholds: the degraded roll-up, so a struggled or recovered completion reads
+    "done", and a provider error's detail, so it reads "provider error"."""
+    reason = str(getattr(event, "stop_reason", ""))
+    template = _STOP_LABEL.get(reason)
+    label = template.format(dash="—") if template is not None else reason.replace("_", " ")
+    open_steps = _count(getattr(event, "open_steps", 0))
+    if open_steps:
+        label += f" — {open_steps} plan step(s) left open"
+    return label
+
+
 # ── The projection ────────────────────────────────────────────────────────────
 
 
@@ -310,6 +421,41 @@ class SafeEventProjection:
             out = out.replace(f"\x00{i}\x00", span)
         return out
 
+    def _plan_receipt(self, plan: str, tasks: list[Mapping[str, Any]]) -> str:
+        """The line the terminal draws for this plan (its Todo receipt over the render), from
+        the render's glyph rows and header: "Plan · 1/3 steps · current: 2 build the parser".
+
+        The terminal labels the step in hand with its whole render row: title, note and
+        dependencies. This line names it by id and title from ``tasks``, and only when the
+        step is TOP-LEVEL, because a child step's title is not on this stream. "" when the
+        render carries no checklist.
+        """
+        lines = plan.splitlines()
+        steps = [ln.strip() for ln in lines if _GLYPH_ROW_RE.match(ln.strip())]
+        if not steps:
+            return ""
+        if all(s.startswith(("[x] ", "[-] ")) for s in steps):
+            return f"Plan complete · {_plural(len(steps), 'step')}"
+        label = "Plan · " + _plan_fraction("\n".join(lines), len(steps))
+        # The step in hand is the row the render marks `<- current`, else the first one in
+        # progress: the terminal's rule. Its id is the row's first word ("2", or "2.1").
+        current = next((row for row in steps if "<- current" in row), None)
+        if current is None:
+            current = next((row for row in steps if row.startswith("[~] ")), None)
+        if current is not None:
+            step_id = current[4:].split(" ", 1)[0]
+            title = next(
+                (
+                    str(t.get("title", t.get("description", "")))
+                    for t in tasks
+                    if str(t.get("id", "")) == step_id
+                ),
+                "",
+            )
+            if title:
+                label += f" · current: {self.redact(f'{step_id} {title}')[:80]}"
+        return label
+
     def project(self, event: Any) -> SafeEvent | None:
         """Return a fresh allow-listed SafeEvent, or ``None`` to DROP the event.
 
@@ -326,19 +472,36 @@ class SafeEventProjection:
             # name only; arguments stripped entirely — EXCEPT the {{secret:NAME}} placeholder
             # NAMES they carry (pre-substitution form), surfaced so watchers see which vault
             # secrets the agent is using. Names, never values, by regex construction.
+            name = str(getattr(event, "name", "") or "")
             return SafeToolSummary(
-                name=self.redact(str(getattr(event, "name", ""))),
+                name=self.redact(name),
                 status="running",
                 used_secrets=_placeholder_names(getattr(event, "arguments", None)),
+                display_name=self.redact(_display_name(name)) if name else "",
             )
         if kind == "tool_result":
-            # output/data/artifacts stripped entirely; status derived from is_error.
-            status = "failed" if getattr(event, "is_error", False) else "completed"
-            return SafeToolSummary(name="", status=status)
+            # output/data/artifacts stripped entirely; status derived from is_error. The
+            # receipt is COUNTED from the output (_safe_receipt), never copied from it, and a
+            # failure's receipt is the one word: the terminal's is its first output line.
+            name = str(getattr(event, "name", "") or "")
+            display = _display_name(name) if name else ""
+            if getattr(event, "is_error", False):
+                status, receipt = "failed", "failed"
+            else:
+                output = str(getattr(event, "output", "") or "")
+                status, receipt = "completed", _safe_receipt(display or "Tool", output)
+            return SafeToolSummary(
+                name=self.redact(name),
+                status=status,
+                display_name=self.redact(display),
+                receipt=self.redact(receipt),
+            )
         if kind == "task_update":
             safe_tasks: list[dict[str, str]] = []
+            raw_tasks: list[Mapping[str, Any]] = []
             for t in getattr(event, "tasks", []) or []:
                 if isinstance(t, Mapping):
+                    raw_tasks.append(t)
                     safe_tasks.append(
                         {
                             "description": self.redact(
@@ -348,10 +511,21 @@ class SafeEventProjection:
                         }
                     )
             request = self.redact(str(getattr(event, "request", "") or ""))
-            return SafeTaskUpdate(tasks=safe_tasks, request=request)
+            return SafeTaskUpdate(
+                tasks=safe_tasks,
+                request=request,
+                finished=_count(getattr(event, "finished", 0)),
+                total=_count(getattr(event, "total", 0)),
+                receipt=self._plan_receipt(str(getattr(event, "plan", "") or ""), raw_tasks),
+            )
         if kind == "done":
-            # stop_reason only; error/trace/usage/degraded dropped.
-            return SafeDone(stop_reason=str(getattr(event, "stop_reason", "")))
+            # stop_reason, the iteration count and the terminal's label; error/trace/usage/
+            # degraded dropped, and the label is built without them (_done_label).
+            return SafeDone(
+                stop_reason=str(getattr(event, "stop_reason", "")),
+                iterations=_count(getattr(event, "iterations", 0)),
+                label=_done_label(event),
+            )
         if kind == "session_rotated":
             # A watch meta-event (not an AgentEvent): the driver rotated the watched session.
             # Only the redacted reason escapes — no session ids or internals.
