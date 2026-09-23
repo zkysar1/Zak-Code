@@ -14278,3 +14278,53 @@ tests), holding every user message (the render test), no note line (the note and
 tests), a note that ignores what was summarized (the kept-tail test), a whole skill counted as
 paged (the note test), no paged skip (the paged test), and the operator's wording lost (the
 operator test).
+
+## ADR-0239: the provider talks httpx, so a client litellm lets go of is reclaimed without an ERROR line
+
+Status: accepted. 2026-09-23.
+
+litellm caches one HTTP client per endpoint and event loop for an hour, then drops it without
+closing it. That is deliberate: a request handed the client just before it expired may still be
+using it. What happens next depends on the transport. Under litellm's default, aiohttp, the
+collector reclaiming the session makes aiohttp report "Unclosed client session", often with
+"Unclosed connector", through the event loop's exception handler, which logs at ERROR. A CLI
+prints that in its own output, between the model's replies.
+
+Measured 2026-09-23 on the fleet's CLI logs, counting lines only. Coach on zc-03 runs litellm
+1.91.1. Its CLI log holds 83 of these lines across 17 launches: 74 inside one long session and 7
+in the 8.6 hours of the current one. None sat next to an exit, and every one was followed by more
+of the session: they come while it runs, not at shutdown, at about the rate of the hourly expiry.
+The worker Bodies on zc-01 and zc-02 run 1.102.1 and logged 2 each. litellm 1.97.0 added a closer
+for evicted clients; in 1.102.1 it shuts one after a 900-second grace, but it holds the client
+weakly, so a collection inside the grace still reclaims it unclosed and the line still prints.
+
+The mechanism was reproduced against a loopback endpoint: one call, then the cached clients
+dropped the way the expiry drops them, then a collection. With keep-alive connections open,
+aiohttp logged 2 unclosed sessions and 3 unclosed connectors on litellm 1.86.2 and on 1.102.1
+alike. httpx logged nothing on either. Under `-W default` it raises three ResourceWarnings as the
+collector closes the sockets, and Python ignores those by default.
+
+Decision. `litellm.disable_aiohttp_transport = True`, set once at import beside `drop_params` and
+`suppress_debug_info`. It is litellm's own switch ("Set this to true to use httpx instead"). A
+dropped client's sockets are still closed, by litellm's closer from 1.97.0 or by the collector.
+What changes is that nothing reports it at ERROR.
+
+Why not close the clients ourselves. litellm drops them unclosed so that it never closes one
+under a request still using it, and a harness closing them on its own schedule would trade a log
+line for that failure. Closing them at shutdown would cover exit only, and the lines were not at
+exit. Raising the floor to 1.97.0 narrows the window but, measured, does not close it.
+
+What it risks. aiohttp is litellm's default for its throughput under many concurrent requests.
+Zak Code sends a few at a time, and each waits seconds to minutes on the model. Proxy handling
+does not change on the fleet's version: in 1.102.1 both transports honor `HTTP(S)_PROXY` from the
+environment, and the egress proxy's variables go only to child processes, never into Zak Code's
+own environment. A difference between the transports that the suite does not exercise
+would surface as a provider error through the existing taxonomy.
+
+The proof. `tests/test_litellm_http_transport.py`: one real call through `LiteLLMProvider` to a
+loopback stub caches a client whose transport is httpx's. The control restores litellm's default
+and must find aiohttp's, which also fails the day litellm stops honoring the switch's name. The
+tests read the transport rather than wait for the collector, because litellm's own logging queue
+holds a finished call's client for a while, so when the collector reaches it is not the test's to
+decide. Under `mutation-proof-test.sh` on cc-14, setting the switch back to False turned the first
+test red on the assertion naming `LiteLLMAiohttpTransport`, and the restore returned it to green.
