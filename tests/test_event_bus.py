@@ -2,9 +2,10 @@
 
 The bus is the fan-out that lets a read-only watcher (GET /watch/{session_id}, P0-3) observe a
 session's events without disturbing the turn-driver. These tests pin its contract: strictly
-monotonic cursors, cursor-addressed replay + live tail with exactly-once delivery, bounded
-memory (oldest evicted → cursor gap), per-subscriber backpressure that never blocks the
-publisher, clean close (a parked live-tailer is woken), and registry lifecycle.
+monotonic cursors, cursor-addressed replay + live tail with exactly-once delivery, a publish
+stamp on every item, bounded memory (oldest evicted → cursor gap), per-subscriber backpressure
+that never blocks the publisher, clean close (a parked live-tailer is woken), and registry
+lifecycle.
 
 Async-test note: a subscribe() generator registers its queue and replays the buffer synchronously
 up to its first ``yield``; only requesting an item that is not yet buffered parks it at
@@ -26,11 +27,15 @@ import pytest
 from zakcode.server.event_bus import EventBusRegistry, SessionEventBus, _offer
 
 Pair = tuple[int, Any]
+Item = tuple[int, Any, float]
 
 
-async def _take(agen: AsyncGenerator[Pair, None], n: int, timeout: float = 1.0) -> list[Pair]:
-    """Pull the next ``n`` items from the iterator, failing fast instead of hanging."""
-    return [await asyncio.wait_for(agen.__anext__(), timeout) for _ in range(n)]
+async def _take(agen: AsyncGenerator[Item, None], n: int, timeout: float = 1.0) -> list[Pair]:
+    """Pull the next ``n`` items as ``(cursor, event)``, failing fast instead of hanging.
+
+    The publish stamp is dropped here; the one test about stamps reads them whole."""
+    items = [await asyncio.wait_for(agen.__anext__(), timeout) for _ in range(n)]
+    return [(cursor, event) for cursor, event, _at in items]
 
 
 async def _await_registered(bus: SessionEventBus, count: int = 1) -> None:
@@ -78,6 +83,22 @@ async def test_late_subscriber_sees_events_published_after_it_started() -> None:
     bus.publish("b")  # cursor 2 (live — lands in the now-registered queue)
     bus.publish("c")  # cursor 3 (live)
     assert await _take(agen, 2) == [(2, "b"), (3, "c")]
+    await agen.aclose()
+
+
+async def test_every_item_carries_its_publish_stamp_replayed_or_live() -> None:
+    """A late or reconnecting watcher replays the buffer in one burst, so the time an item
+    ARRIVES says nothing about when it happened. The stamp taken at publish is what lets a
+    page time a tool call and stamp a turn truly (ADR-0219) — on replay and live alike."""
+    stamps = iter([100.0, 101.5, 107.25])
+    bus = SessionEventBus(clock=lambda: next(stamps))
+    bus.publish("a")
+    bus.publish("b")
+    agen = bus.subscribe(since=None)
+    replayed = [await asyncio.wait_for(agen.__anext__(), 1.0) for _ in range(2)]
+    assert replayed == [(1, "a", 100.0), (2, "b", 101.5)]
+    bus.publish("c")  # live: lands in the now-registered queue with its own stamp
+    assert await asyncio.wait_for(agen.__anext__(), 1.0) == (3, "c", 107.25)
     await agen.aclose()
 
 
@@ -158,7 +179,7 @@ async def test_full_subscriber_never_blocks_publisher() -> None:
 
 async def test_close_wakes_a_live_tailing_subscriber() -> None:
     bus = SessionEventBus()
-    out: list[Pair] = []
+    out: list[Item] = []
 
     async def consume() -> None:
         async for item in bus.subscribe(since=None):

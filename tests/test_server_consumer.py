@@ -274,6 +274,11 @@ async def test_web_page_path_say_to_full_watch(tmp_path: Path) -> None:
                         if any(f.get("event") == "done" for f in frames):
                             break
 
+    # Every frame carries the moment it was published (ADR-0219), in publish order: the
+    # page times calls and stamps turns from these, so a replay keeps the turn's own time.
+    stamps = [f.pop("at") for f in frames]
+    assert all(isinstance(at, float) for at in stamps)
+    assert stamps == sorted(stamps)
     assert frames[0]["event"] == "user_message"
     assert frames[0]["text"] == "hello there"
     # Exactly once: the say produces ONE user row on the bus (the double-publish

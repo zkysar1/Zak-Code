@@ -14,6 +14,10 @@ Guarantees:
 * **Cursor-addressed replay.** Every published event gets a strictly increasing cursor (starting
   at 1). ``subscribe(since=c)`` replays every retained event with cursor > c, then tails live.
   ``since=None``/``0`` replays the whole retained buffer.
+* **Stamped at publish.** Every event also carries the wall clock (epoch seconds) of the moment it
+  was published, and every subscriber receives it. A watcher that joins late or reconnects then
+  replays the buffer in a burst; without the stamp it could only time events by when THEY
+  arrived, and every duration it drew over a replay read as zero (ADR-0219).
 * **Per-subscriber backpressure.** Each subscriber has its own bounded queue; a stuck watcher
   drops ITS OWN oldest queued events (recoverable via the ring buffer + cursor gap) and never
   blocks the publisher or other subscribers.
@@ -26,8 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Final
 
 _DEFAULT_MAXLEN: Final = 1000
@@ -44,9 +49,13 @@ _CLOSE: Final = object()
 class SessionEventBus:
     """A bounded, cursor-addressed pub/sub buffer for one session's events."""
 
-    def __init__(self, maxlen: int = _DEFAULT_MAXLEN) -> None:
-        self._buffer: deque[tuple[int, Any]] = deque(maxlen=maxlen)
+    def __init__(
+        self, maxlen: int = _DEFAULT_MAXLEN, clock: Callable[[], float] = time.time
+    ) -> None:
+        self._buffer: deque[tuple[int, Any, float]] = deque(maxlen=maxlen)
         self._cursor = 0
+        #: The publish stamp's clock (epoch seconds); injectable so tests never read the time.
+        self._clock = clock
         self._subscribers: set[asyncio.Queue[Any]] = set()
         self._closed = False
 
@@ -73,14 +82,18 @@ class SessionEventBus:
         if self._closed:
             raise RuntimeError("publish on a closed SessionEventBus")
         self._cursor += 1
-        item = (self._cursor, event)
+        item = (self._cursor, event, self._clock())
         self._buffer.append(item)
         for queue in list(self._subscribers):
             _offer(queue, item)
         return self._cursor
 
-    async def subscribe(self, since: int | None = None) -> AsyncGenerator[tuple[int, Any], None]:
-        """Yield ``(cursor, event)`` pairs: replay retained events after ``since``, then live.
+    async def subscribe(
+        self, since: int | None = None
+    ) -> AsyncGenerator[tuple[int, Any, float], None]:
+        """Yield ``(cursor, event, at)``: replay retained events after ``since``, then live.
+
+        ``at`` is the event's publish stamp — replayed or live, the moment it happened.
 
         Registers a live queue BEFORE snapshotting the buffer so no event is lost in the gap
         between replay and tail; any overlap between the snapshot and the live queue is
@@ -94,10 +107,10 @@ class SessionEventBus:
         try:
             # Snapshot AFTER registering (both are synchronous, so atomic): anything published
             # from here on also lands in `queue`, and the `cursor <= last` guard drops any overlap.
-            replay = [pair for pair in list(self._buffer) if pair[0] > floor]
+            replay = [item for item in list(self._buffer) if item[0] > floor]
             last = floor
-            for cursor, event in replay:
-                yield cursor, event
+            for cursor, event, at in replay:
+                yield cursor, event, at
                 last = cursor
             if self._closed:
                 return
@@ -105,10 +118,10 @@ class SessionEventBus:
                 item = await queue.get()
                 if item is _CLOSE:
                     return
-                cursor, event = item
+                cursor, event, at = item
                 if cursor <= last:
                     continue  # already delivered via replay (defensive: snapshot/live overlap)
-                yield cursor, event
+                yield cursor, event, at
                 last = cursor
         finally:
             self._subscribers.discard(queue)

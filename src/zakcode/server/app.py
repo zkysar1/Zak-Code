@@ -1177,7 +1177,7 @@ def create_app(
         bus = event_bus_registry.get_or_create(session_id)
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
-            async for cursor, event in bus.subscribe(since=since):
+            async for cursor, event, at in bus.subscribe(since=since):
                 if full:
                     # Operator-fidelity stream (the served web chat): raw AgentEvents plus
                     # the control frames the bus carries (action_required announcements are
@@ -1192,7 +1192,11 @@ def create_app(
                             payload = event_to_dict(event)
                         except Exception:  # noqa: BLE001 — never break the stream on one frame
                             continue
-                    yield {"id": str(cursor), "data": json.dumps(payload)}
+                    # `at`: when the event was PUBLISHED (epoch seconds, ms precision), so a
+                    # page that replays the buffer times tool calls and stamps turns by when
+                    # they happened, not by when the replay reached it (ADR-0219). A copy: a
+                    # dict event is shared by every subscriber.
+                    yield {"id": str(cursor), "data": json.dumps({**payload, "at": round(at, 3)})}
                     continue
                 safe = safe_projection.project(event)
                 if safe is None:
