@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -354,15 +354,25 @@ class SkillRegistry:
         """
         return [(s.name, s.description) for s in self._skills.values() if not s.model_invocable]
 
-    def render_catalog(self) -> str:
+    def render_catalog(
+        self, *, budget_chars: int | None = None, usage: Mapping[str, int] | None = None
+    ) -> str:
         """Render the L0 catalog as a compact prompt block (empty string if none).
 
         This is static per session (discovery runs once), so it is cache-safe to
         place in the stable system-prompt tier.
+
+        ``budget_chars`` is the skill listing budget (ADR-0222, see
+        :func:`listing_budget_chars`); ``None`` means unbounded. A catalogue that fits is
+        rendered exactly as an unbounded one. One that does not keeps EVERY skill's line,
+        and keeps descriptions for the skills ``usage`` counts most (ties in registration
+        order), dropping them from the least used first until the whole block fits. The
+        lines stay in registration order, so a change of rank moves the prompt only where
+        a description is gained or lost. A note says how many entries are names only.
         """
         if not self._skills:
             return ""
-        lines = [
+        head = [
             "Available skills (these are NOT tools — never emit a skill name as a tool "
             "call). To run a skill, call the `Skill` tool with the skill's name; that "
             "loads its full instructions, which you then follow. A skill's steps may tell "
@@ -370,15 +380,14 @@ class SkillRegistry:
             "`Skill(<name>) with args='<args>'` means exactly this call — make it; never "
             "answer it with text. Each entry shows the exact call to make:",
         ]
-        for name, desc in self.model_catalog():
-            call = f'Skill(skill="{name}")'
-            lines.append(f"- {call} — {desc}" if desc else f"- {call}")
+        entries = [(name, _listing_desc(desc)) for name, desc in self.model_catalog()]
+        tail: list[str] = []
         user_only = self.user_only_names()
         if user_only:
             # ADR-0109: named so the model can point the operator at them, never offered as
             # a use_skill call — the tool refuses them and a plan step for one only holds the
             # turn open (field 2026-09-05: "lets start from scratch" ran a Mind's /start).
-            lines.append(
+            tail.append(
                 "User-only commands ("
                 + ", ".join(f"/{n}" for n in user_only)
                 + "): the operator types these in their terminal. Skill refuses them, so "
@@ -390,14 +399,89 @@ class SkillRegistry:
         # is what lets a skill that forbids model self-invocation run when the USER asks.
         # Without it, a rule-following model refuses the operator's own keystroke (live
         # 2026-08-19: a Mind's /start — "user-invocable only" — was declined as self-invocation).
-        lines.append(
+        tail.append(
             "When a user message BEGINS with a <command-name> block, the human operator "
             "typed that slash command in their terminal: the skill was invoked BY THE USER, "
             "not by you. Any rule limiting a skill to user/human invocation is satisfied in "
             "that case — do not refuse or defer; carry out the instructions in that message "
             "as the current turn's task."
         )
-        return "\n".join(lines)
+        full = "\n".join([*head, *(_entry(name, desc) for name, desc in entries), *tail])
+        if budget_chars is None or len(full) <= budget_chars:
+            return full
+
+        # Over budget (ADR-0222). Descriptions go to the most-used skills first, each only
+        # while the WHOLE block still fits, and the first that does not fit ends the list:
+        # Claude Code's order, least used dropped first, so a skill never keeps a description
+        # that a more-used skill lost. Room for the note is taken at its longest (every entry
+        # a name), so the count it ends up printing can only make the block shorter.
+        counts = usage or {}
+        rank = sorted(range(len(entries)), key=lambda i: (-counts.get(entries[i][0], 0), i))
+        names_only = [*head, *(_entry(name, "") for name, _ in entries)]
+        size = len("\n".join([*names_only, _names_only_note(len(entries), len(entries)), *tail]))
+        described: set[int] = set()
+        for i in rank:
+            desc = entries[i][1]
+            grows = len(_entry(entries[i][0], desc)) - len(_entry(entries[i][0], ""))
+            if size + grows > budget_chars:
+                break
+            size += grows
+            described.add(i)
+        lines = [*head]
+        for i, (name, desc) in enumerate(entries):
+            lines.append(_entry(name, desc if i in described else ""))
+        # A skill with no description is a bare name at any budget, so it is not counted.
+        hidden = sum(1 for i, (_, desc) in enumerate(entries) if desc and i not in described)
+        lines.append(_names_only_note(hidden, len(entries)))
+        return "\n".join([*lines, *tail])
+
+
+#: Claude Code's per-entry cap on a skill's listed description (``skillListingMaxDescChars``):
+#: a description past it is cut before the listing budget is applied (ADR-0222).
+MAX_LISTING_DESC_CHARS = 1_536
+
+#: Claude Code's skill listing budget (``skillListingBudgetFraction``): this share of the
+#: context window, at 4 characters per token (ADR-0222).
+LISTING_BUDGET_FRACTION = 0.01
+LISTING_CHARS_PER_TOKEN = 4
+
+#: The budget never drops below what that formula gives Claude Code's standard 200k window
+#: (200,000 x 4 x 0.01 = 8,000 characters): a smaller window is no reason to show the model
+#: fewer descriptions than Claude Code does (ADR-0222).
+MIN_LISTING_BUDGET_CHARS = 8_000
+
+
+def listing_budget_chars(context_window: int | None) -> int | None:
+    """The skill listing budget, in characters, for a ``context_window`` in tokens.
+
+    ``None`` (no window known, e.g. an injected provider) means unbounded.
+    """
+    if not context_window:
+        return None
+    by_window = int(context_window * LISTING_CHARS_PER_TOKEN * LISTING_BUDGET_FRACTION)
+    return max(by_window, MIN_LISTING_BUDGET_CHARS)
+
+
+def _listing_desc(desc: str) -> str:
+    """``desc`` cut to :data:`MAX_LISTING_DESC_CHARS`, marked with an ellipsis when cut."""
+    if len(desc) <= MAX_LISTING_DESC_CHARS:
+        return desc
+    return desc[: MAX_LISTING_DESC_CHARS - 1].rstrip() + "…"
+
+
+def _entry(name: str, desc: str) -> str:
+    """One catalogue line: the exact call, then the description when there is one."""
+    call = f'Skill(skill="{name}")'
+    return f"- {call} — {desc}" if desc else f"- {call}"
+
+
+def _names_only_note(names_only: int, total: int) -> str:
+    """The line that says how many entries a listing budget left as names (ADR-0222)."""
+    return (
+        f"{names_only} of these {total} skills are listed by name only, to keep this list "
+        "within its budget. The name is all a Skill call needs: the call loads the skill's "
+        "full instructions."
+    )
 
 
 def _within(path: Path, root: Path) -> bool:
