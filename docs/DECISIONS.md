@@ -13653,3 +13653,73 @@ killed, which is what Claude Code does.
 The proof. tests/test_builtins.py: with no `timeout` a command gets 120, an explicit 5 is
 honored, 120000 is clamped to 600, and the schema says "default 120". A mutant restoring 60 was
 caught by it, run with `mutation-proof-test.sh` on cc-14.
+
+## ADR-0226: a timeout ends the call even when a descendant escaped the kill
+
+Status: accepted. 2026-09-23.
+
+Context. When a command times out, or its turn is cancelled, zakcode kills the command's whole
+process group and then waits to reap it. A descendant that left the group keeps the command's
+pipes open: a command run under `setsid`, or a server that daemonizes itself. The group kill
+cannot reach it. Before Python 3.13, asyncio settles that wait only once every pipe has closed,
+so the wait lasted as long as the descendant did. Measured on cc-14 under 3.11: `setsid sleep
+12 & sleep 60` under a 2-second timeout returned after 12 seconds. With a daemon in place of the
+sleep the call would never have returned, and neither would the turn. Python 3.13 returns at
+the exit (gh-119710), but our ends of the pipes stay open there until the descendant exits.
+Hooks, MCP servers, background tasks, the status line and the run-end command share this
+teardown, so each could hang or leak the same way. OpenCode issue #49169 reports the same
+defect: a timeout that does not abandon the read.
+
+Decision. The reap waits at most two seconds for the killed process. Then it closes the
+process's transport, on every Python version, which closes our ends of the pipes. After a
+normal exit that is a no-op. The stray descendant keeps running: it left the group, and the
+group kill was never meant to reach it. Closing our ends matters as much as returning on time:
+a served process that kept them would leak descriptors for every stray.
+
+What it risks. Nothing the caller used is lost: a timed-out command returns no output, and a
+background task writes to a file, not a pipe. A stray that writes to the output it inherited
+now gets a broken pipe. Before, it blocked for good once the unread pipe filled. On 3.11 and
+3.12 a timed-out call that meets a stray takes up to two seconds longer than its timeout, where
+before it took as long as the stray lived. The close goes through the process's private
+`_transport`, because asyncio offers no public way to let go of a child's pipes. If a later
+Python drops that attribute, the wait stays bounded and only the descriptors leak.
+
+The proof. tests/test_proc.py has two tests; they need `setsid`, so they run on Linux. A command
+that starts `setsid sleep 10` under a 1-second timeout raises CommandTimeout within 7 seconds
+(3 on 3.11, 1 on 3.13). A direct teardown of such a command returns within 6 seconds and leaves
+its output at EOF. The first version of this fix closed the transport only after a timed-out
+wait; CI's 3.13 job failed the EOF test on it, because there the wait had already returned.
+Four mutants were each caught with `mutation-proof-test.sh` on cc-14: under 3.11, restoring the
+unbounded wait (both tests) and dropping the close (the EOF test); under 3.13, dropping the
+close and closing only after a timeout (the EOF test).
+
+## ADR-0227: tool_search can surface an MCP tool again; its budget counts MCP tools
+
+Status: accepted. 2026-09-23.
+
+Context. MCP tools are discovered lazily (M5-4b, 2026-05-31). Discovery exposes an MCP tool
+only while the registry holds fewer than 25 active tools, and `tool_search` surfaces a hidden
+one on demand. Both counted every active tool against that budget of 25, built-ins included.
+The built-in set has grown since: `default_registry` registered 25 tools on 2026-09-10 and 27
+on 2026-09-18, and `tool_search` itself is one more. So every MCP tool starts hidden, and
+`tool_search` can surface none of them. It answers "1 more matched but the tool budget (25) is
+full of built-in / in-use tools", activates nothing, and the model cannot use any MCP tool.
+Reproduced on cc-14 with the real built-in set and a fake MCP server. The facade test for this
+path activated the hidden tool by hand instead of searching, so it passed throughout. The
+facade's parameter is named `mcp_tool_budget`; only the counting disagreed with the name.
+
+Decision. `tool_search` counts only MCP tools against its budget, so at most 25 MCP tools are
+exposed at once, however many built-ins there are. Built-ins are still never evicted.
+Discovery is unchanged: it still counts every active tool. With today's built-ins, MCP tools
+therefore start hidden and wait for `tool_search`.
+
+What it risks. A session can now hold up to 25 MCP schemas on top of the built-ins, where
+before it could hold none. That is the cap the budget was named for. The docs' wish for a small
+exposed set (about 25 tools in all) is out of reach through this budget: the built-ins alone
+exceed it. Shrinking the always-exposed built-ins is a separate change.
+
+The proof. tests/test_tool_search.py. The facade test now uses the production shape: the real
+built-in set, the default budget, and a `tool_search` call, which must surface the matching
+tool and leave the other hidden. `test_builtins_never_use_up_the_budget` replaces a test that
+asserted the old behavior. Two mutants were caught with `mutation-proof-test.sh` on cc-14:
+counting every active tool again (three tests) and removing eviction (the eviction test).
