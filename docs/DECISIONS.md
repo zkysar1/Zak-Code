@@ -13232,3 +13232,71 @@ keep the theme's own styles.
 What this does NOT change. Nothing in the agent, the loop, the wire or the server. No dependency
 and no network fetch. The terminal's layout, glyphs and grammar are untouched: three marks and one
 soft mark changed index, and inline code kept its colour.
+
+## ADR-0219: the web client draws a turn at the terminal's length, and every event says when it happened
+
+Status: accepted. 2026-09-23.
+
+Context. The user asked that the web clients match the terminal's output verbosity: "I actually
+liked the way the zakcode cli looked, verbosity wise." Measured side by side on 2026-09-23, the web
+client said less than the terminal in four places, more in one, and was wrong in two.
+
+- Less. Tool output: the terminal draws rows under each receipt (a Run's head and tail, five search
+  hits, a diff's first twelve lines, a failure's eight detail rows), while every web card started
+  collapsed and showed its receipt alone until clicked. The call line's argument: 64 characters,
+  cut to one line by CSS, where the terminal shows 160 of a command and 96 of anything else. The
+  footer: no cached share, no "struggled" or "recovered", no "plan step(s) left open", and five
+  of the terminal's eleven stop labels missing. The operator's line: no stamp, where the terminal
+  stamps it (ADR-0185).
+- More. Every `task_update` drew the whole checklist again, where the terminal draws one line for a
+  changed plan and nothing for a repeat (ADR-0112, ADR-0124).
+- Wrong. ADR-0190 put Claude Code's tool names on the stream and the page's name map never learned
+  them, so a `Bash` call was titled "Bash" and receipted "Bash · 5 lines" where the terminal says
+  Run and "Ran · 5 lines"; `Grep`, `LS` and `WebFetch` fell through the same way. And the page timed
+  everything by its own clock as frames ARRIVED. A page opened on a running session, or reloaded,
+  replays the retained buffer in one burst, so every call read 0.0s and every stamp read the
+  reload's minute.
+
+Decision.
+
+1. The page carries a `terminal-grammar` block, a line-for-line port of the terminal renderer's
+   receipts, preview rows with their caps and "more" wording, plan collapse, call-line argument,
+   stop labels and footer numbers. A tool card shows the terminal's rows by default. The whole
+   output stays one click away, as the web's addition: the card's summary toggles it, and a
+   `… +N lines` row opens it in the preview's place.
+2. One card layout at every width: the call line, wrapping and never truncated; the receipt on its
+   own line beneath it, the terminal's └ line; then the rows. The phone-only rule that put the
+   receipt under the call at narrow widths is gone, because every width now does it.
+3. A plan the harness changed draws the terminal's one line (progress and the step in hand, or
+   "Plan complete"), silent when its checklist repeats the last plan drawn by either path. Its
+   checklist opens beneath the line, headed by the request it serves (ADR-0113).
+4. The footer carries every stop label, the degraded and open-step suffixes and the cached share;
+   the operator's line carries its stamp and folds after six lines (ADR-0119). Two of Python's
+   rounding ties are ported with it: `format()` and `round()` send an exact binary .5 to the even
+   side where JavaScript rounds it up, which moved 1,250 tokens from the terminal's "1.2k" to "1.3k".
+5. The event bus stamps every event with the wall clock when it is PUBLISHED, and each `?full=1`
+   frame carries that as `at` (epoch seconds, millisecond precision). The page times a call from its
+   call frame's `at` to its result's and stamps a turn from `at`, so a replay keeps the turn's own
+   times; a frame without one gets no duration, as the terminal omits one for an unknown id.
+
+Why a port, and not receipts rendered by the server. The `?full=1` stream IS the event contract,
+the same events the terminal renders; putting rendered text in it would give it a second shape to
+keep in step. The port costs a copy, and the test below makes the copy checked rather than kept by
+hand. The block is pure (no DOM, no clock), which is what makes it testable at all.
+
+The proof. `tests/test_webclient_parity.py` cuts the block out of the shipped page, never a
+copy, and runs it under node against the terminal renderer's own functions. Receipts and rows: ten
+display names across eighteen outputs, and ten failures. Sixteen call-line arguments, including a
+path of astral characters (lengths count characters, not UTF-16 halves, as Python's do). Stop
+label and marker state for thirteen reasons, each crossed with degraded, open steps and an error.
+The footer numbers, the whole footer line, and plan identity. The module is skipped only where no
+node is on PATH, and CI's runners carry one. Seven mutants each turned it red and a byte-exact
+restore turned it green: Run's head at 5, the token tie port removed, the argument squeeze's head
+rounded up, the `gave_up` label dropped, the cached share by `Math.round`, the diff gate removed,
+and the plan's current step cut at 79. `test_webclient_contract` now requires every display name
+the terminal knows, with the same display. `test_event_bus` pins the stamp on replayed and live
+items; `test_server_consumer` pins `at` on every full frame, in publish order.
+
+What this does NOT change. The terminal renderer, and the `AgentEvent` models. The projected watch
+stream (`/watch/{sid}` without `full`), which Vinheim reads: widening what that audited surface
+carries is its own decision. The web still draws no ✓, because the card's dot is its outcome mark.

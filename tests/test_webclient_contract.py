@@ -14,6 +14,7 @@ import json
 import re
 from pathlib import Path
 
+from zakcode.cli.render import _DISPLAY_NAME
 from zakcode.server.wire import event_type_names
 
 _STATIC = Path(__file__).resolve().parents[1] / "src" / "zakcode" / "server" / "static"
@@ -173,4 +174,17 @@ def test_client_shares_the_terminal_inline_grammar_and_operator_accent() -> None
     assert 'el("div", "quote")' in html  # > quote lines
     assert "-{3,}" in html  # a lone rule is a paragraph break
     assert "--user:" in html and ".row.user > .body { font-weight: 600; color: var(--user)" in html
-    assert "function hhmm(" in html and '" · " + hhmm()' in html
+    # the footer is stamped with the turn's own end, the done frame's publish time (ADR-0219)
+    assert "function hhmm(" in html and '" · " + hhmm(ev.at)' in html
+
+
+def test_client_display_names_cover_the_terminal() -> None:
+    """Every tool name the terminal renderer displays, the page displays the same way
+    (ADR-0219). The stream carries Claude Code's names since ADR-0190, and a page without
+    them titled a Bash call "Bash" and receipted it "Bash · 5 lines" where the terminal says
+    Run and "Ran · 5 lines". The page may add names of its own; it may not lack one."""
+    block = re.search(r"const DISPLAY_NAMES = \{(.*?)\};", _html(), flags=re.S)
+    assert block, "web client must declare DISPLAY_NAMES"
+    names = dict(re.findall(r'(\w+): "([^"]+)"', block.group(1)))
+    assert names, "positive control: the map parses"
+    assert {name: names.get(name) for name in _DISPLAY_NAME} == _DISPLAY_NAME

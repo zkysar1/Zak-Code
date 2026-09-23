@@ -144,13 +144,18 @@
     }
     .codeblock:hover .copy, .codeblock .copy:focus-visible { opacity: 1; }
 
-    /* ── tool cards: one <details> per call ── */
-    details.tool {
+    /* ── tool cards: the terminal's tool block on a soft surface (docs/UX.md) ──
+       The call line, the receipt on a line of its own beneath it (the terminal's └
+       receipt), then the rows the terminal draws behind its rail, at its caps. The
+       summary is a <details> toggle for the WHOLE output: opening it swaps the preview
+       for the full text, so nothing the terminal shows is hidden and nothing more is
+       shown until asked for. */
+    .tool {
       margin-top: .9rem; background: var(--surface);
       border: 1px solid var(--line); border-radius: var(--radius-sm);
       font: 13px/1.5 var(--font-mono); overflow: hidden;
     }
-    details.tool.err { border-left: 2px solid var(--err); }
+    .tool.err { border-left: 2px solid var(--err); }
     /* Reasoning: its own collapsed region, never the assistant prose group. Dim and
        collapsed by default so a multi-minute scratchpad cannot bury the answer it
        precedes — visible enough to prove the model is working, quiet enough to ignore. */
@@ -168,47 +173,55 @@
       padding: 0 .75rem .6rem; color: var(--muted);
       white-space: pre-wrap; max-height: 18rem; overflow-y: auto;
     }
-    .tool summary {
-      display: flex; align-items: center; gap: .55rem;
-      padding: .5rem .75rem; cursor: pointer; list-style: none;
-    }
+    .tool summary { display: block; padding: .5rem .75rem; list-style: none; cursor: default; }
     .tool summary::-webkit-details-marker { display: none; }
-    .tool.empty summary { cursor: default; }
-    .tool .tdot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .tool.expandable summary { cursor: pointer; }
+    /* The call line wraps rather than truncates: the terminal shows a command's first 160
+       characters and any other argument's first 96, and so does this. */
+    .tool .call { display: flex; align-items: flex-start; gap: .55rem; }
+    .tool .tdot {
+      flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+      margin-top: .45em;   /* centred on the first line, however many the call wraps to */
+    }
     .tool .tdot.pending { animation: pulse 1.2s ease-in-out infinite; }
     .tool .tdot.fail { background: var(--err); }
-    .tool .tname { font-weight: 600; }
+    .tool .tname { flex: none; font-weight: 600; }
+    /* a leaf text cell, never a container: `anywhere` shrinks min-content to one
+       character, which is right for a path and wrong for a control (rb-10523) */
     .tool .targs {
-      color: var(--muted); flex: 1 1 auto; min-width: 0;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      flex: 1 1 0; min-width: 0; color: var(--muted);
+      white-space: pre-wrap; overflow-wrap: anywhere;
     }
-    .tool .receipt { color: var(--muted); font-size: 12px; white-space: nowrap;
-                   overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 45%; }
-    .tool .chev { color: var(--faint); transition: transform 120ms ease; }
-    details[open] > summary .chev { transform: rotate(90deg); }
-    .tool.nochev .chev { display: none; }
-    /* Phone width: the receipt drops beneath the call instead of truncating beside it
-       (its 45% cell cut "0.1s" to "0…" at 420px). A line of its own under the name is the
-       web's form of the terminal's └ receipt line, so there it may also wrap. */
-    @media (max-width: 560px) {
-      .tool summary { flex-wrap: wrap; row-gap: .1rem; }
-      .tool .chev { order: 1; }
-      .tool .receipt {
-        order: 2; flex-basis: 100%; max-width: none;
-        padding-left: calc(8px + .55rem); white-space: normal; overflow-wrap: anywhere;
-      }
+    .tool .chev { display: none; flex: none; color: var(--faint); transition: transform 120ms ease; }
+    .tool.expandable .chev { display: block; }
+    .tool details[open] .chev { transform: rotate(90deg); }
+    .tool .receipt {
+      display: block; padding-left: calc(8px + .55rem); color: var(--muted); font-size: 12px;
+      white-space: pre-wrap; overflow-wrap: anywhere;
     }
     .tool .tool-out {
-      margin: 0 .75rem .6rem; padding: .6rem .8rem; max-height: 40vh; overflow: auto;
+      margin: 0 .75rem .6rem; padding: .5rem .8rem; max-height: 40vh; overflow: auto;
       background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;
       white-space: pre; color: var(--muted); font: 13px/1.5 var(--font-mono);
     }
+    /* the preview is the terminal's rail; an open card shows the whole output in its place */
+    .tool details[open] ~ .preview { display: none; }
+    /* a failure's rows are shown, not dimmed: the terminal's err.body is the default fg */
     .tool.err .tool-out { color: var(--fg); }
     .tool-out div { min-height: 1.5em; }
     /* diff bands bleed across the inset's padding: full-width painted lines */
     .tool-out .add { background: var(--add-bg); color: var(--add-fg); margin: 0 -.8rem; padding: 0 .8rem; }
     .tool-out .del { background: var(--del-bg); color: var(--del-fg); margin: 0 -.8rem; padding: 0 .8rem; }
     .tool-out .dmeta { color: var(--faint); }
+    .tool-out .todo-done > span { color: var(--ok); }
+    /* The terminal's result.more row: what the preview left out, said out loud. Here it is
+       also the way in — a button that opens the card on the whole output. */
+    .tool-out button.more {
+      all: unset; display: block; min-height: 1.5em; cursor: pointer;
+      color: var(--faint); font-style: italic;
+    }
+    .tool-out button.more:hover { color: var(--muted); }
+    .tool-out button.more:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     .tool .artifacts {
       margin: 0 .75rem .65rem; display: flex; flex-wrap: wrap; gap: .45rem;
     }
@@ -223,6 +236,25 @@
     /* ── status / consent / turn-receipt rows ── */
     .row.status > .g, .row.consent > .g { color: var(--muted); font-family: var(--font-mono); }
     .row.status > .body { font: italic 12px/1.5 var(--font-mono); color: var(--muted); }
+    /* A plan the harness changed (ADR-0112): the terminal's one line, progress and the step
+       in hand; the checklist, headed by the request it serves, opens beneath it. */
+    .row.plan > .g { color: var(--muted); font-family: var(--font-mono); }
+    .row.plan summary {
+      list-style: none; cursor: pointer; font: 12px/1.5 var(--font-mono); color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+    .row.plan summary::-webkit-details-marker { display: none; }
+    .row.plan .checklist {
+      margin-top: .35rem; padding: .5rem .8rem; overflow-x: auto;
+      background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;
+      font: 12px/1.5 var(--font-mono); color: var(--muted); white-space: pre;
+    }
+    /* the operator line's stamp and fold, grey like the terminal's user.meta */
+    .row.user .umeta { color: var(--muted); font-weight: 400; }
+    .row.user button.ufold {
+      all: unset; cursor: pointer; color: var(--muted); font-weight: 400; font-style: italic;
+    }
+    .row.user button.ufold:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
     .row.consent > .body { font: 12px/1.5 var(--font-mono); color: var(--muted); }
     .row.turnend { margin-top: 1rem; }
     .row.turnend > .body { font: 12px/1.5 var(--font-mono); color: var(--muted); }
@@ -420,25 +452,20 @@
   // with the server's GET /schema/events (the contract test asserts they match).
   const EVENT_TYPES = ["done", "status", "task_update", "text", "thinking", "tool_call", "tool_result", "usage"];
 
-  // Mirrors the terminal renderer's display names: one short name per known tool.
+  // The terminal renderer's display names (render.py _DISPLAY_NAME — the contract test holds
+  // every one of its rows here), then the office tools only this page draws. The first row
+  // is the canonical Claude Code names (ADR-0190): the loop canonicalizes every call, so
+  // these are what the stream carries; the snake_case rows keep an older transcript's names.
   const DISPLAY_NAMES = {
+    Read: "Read", Write: "Write", Edit: "Edit", LS: "List", Glob: "Glob", Grep: "Search",
+    Bash: "Run", WebFetch: "Fetch", WebSearch: "WebSearch", ScheduleWakeup: "WakeUp",
     read_file: "Read", write_file: "Write", edit_file: "Edit", list_dir: "List",
     glob: "Glob", grep: "Search", bash: "Run", powershell: "Run",
+    web_fetch: "Fetch", web_search: "WebSearch", todo_write: "Todo",
+    update_plan: "Todo", task: "Task", schedule_wakeup: "WakeUp",
     read_docx: "Read Word", read_xlsx: "Read Excel", inspect_image: "Inspect Image",
     create_docx: "Word", create_xlsx: "Excel", save_image: "Image",
     create_chart_image: "Chart",
-    web_fetch: "Fetch", web_search: "WebSearch", todo_write: "Todo",
-    update_plan: "Todo", task: "Task",
-  };
-
-  // Mirrors the terminal footer's stop-reason label map (docs/UX.md).
-  const STOP_LABELS = {
-    completed: "done",
-    max_iterations: "stopped early — max iterations",
-    provider_error: "provider error",
-    doom_loop: "stopped — repeating itself",
-    stuck: "stopped — no progress",
-    recipe_stalled: "stopped — recipe stalled",
   };
 
   const CONSENT_LABELS = {
@@ -465,8 +492,9 @@
   let sessionId = null;
   let lastCursor = null;
   let turnActive = false;
-  let turnStart = 0;                            // performance.now() at input send
-  let turnUsage = { total_tokens: 0, cost_usd: 0 };  // per-turn accumulator, reset on send
+  let turnAt = null;                            // the turn's user_message publish stamp
+  let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send
+  let lastPlanKey = "";      // checklist rows of the last plan drawn (ADR-0112 dedup)
   let assistantBody = null;  // current prose group (re-anchors after tool cards/status)
   let assistantText = "";    // its accumulated raw text (re-rendered on each delta)
   const toolCards = new Map();  // pending tool cards keyed by tool_call id
@@ -506,6 +534,28 @@
 
   function errCard(text) { return el("div", "errcard mono", text); }
 
+  // The operator's line as the terminal draws it (ADR-0185, ADR-0119): the text, the wall
+  // clock grey at the end of its first line, and a long message folded after six lines,
+  // the rest one click away rather than a paste burying the turn.
+  const USER_FOLD_LINES = 6;
+  function userBody(text, at) {
+    const body = el("div", "");
+    const lines = text.split("\n");
+    body.appendChild(document.createTextNode(lines[0]));
+    body.appendChild(el("span", "umeta", "  (" + hhmm(at) + ")"));
+    const shown = lines.slice(1, USER_FOLD_LINES);
+    if (shown.length) body.appendChild(document.createTextNode("\n" + shown.join("\n")));
+    const hidden = lines.length - USER_FOLD_LINES;
+    if (hidden > 0) {
+      const fold = el("button", "ufold", "… (+" + hidden + " more line" + (hidden === 1 ? "" : "s") + ")");
+      fold.type = "button";
+      fold.onclick = () => fold.replaceWith(document.createTextNode(lines.slice(USER_FOLD_LINES).join("\n")));
+      body.appendChild(document.createTextNode("\n"));
+      body.appendChild(fold);
+    }
+    return body;
+  }
+
   // ── scroll: follow only near the bottom; detached + streaming → jump pill ──
   main.addEventListener("scroll", () => {
     stick = main.scrollHeight - main.scrollTop - main.clientHeight < 40;
@@ -518,55 +568,242 @@
   function setStatus(label) { statusText.textContent = label; statusEl.classList.add("show"); }
   function hideStatus() { statusEl.classList.remove("show"); }
 
-  // ── formatting (mirrors the terminal receipt formats) ──
-  function firstLine(text) { return String(text).split("\n")[0]; }
-  // The wall clock when a turn ended, as the terminal's footer stamps it (ADR-0185).
-  function hhmm() {
-    const d = new Date();
-    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  // ── the terminal's grammar, ported line for line ────────────────────────────────
+  // One contract, two renderers (docs/UX.md rules 8-13, ADR-0219): every constant and branch
+  // in this block mirrors src/zakcode/cli/render.py, so a turn reads the same, at the same
+  // length, here and in the terminal — the call line, the receipt, the rows under it, the
+  // plan line and the footer. PURE (strings in, strings and rows out; no DOM, no clock) so
+  // tests/test_webclient_parity.py runs it under node and compares it, case by case, with
+  // the terminal renderer's own output.
+  // BEGIN terminal-grammar
+  const RUN_CAP = 12, RUN_HEAD = 6, RUN_TAIL = 4;   // Run/Fetch: every line, or head + tail
+  const DIFF_PREVIEW_LINES = 12;                    // an Edit's diff rows, then a count
+  const LIST_PREVIEW_LINES = 5;                     // Search/Glob rows, then "… +N more"
+  const ERROR_DETAIL_LINES = 8;                     // a failure's detail rows
+  const ARG_LIMIT = 96, COMMAND_LIMIT = 160;        // the call line's argument (ADR-0185)
+  const PLAN_ROW = /^\[[ x~!-]\] \d/;               // a checklist ROW, not any bracketed line
+  const PLAN_HEADER = /Current plan \((\d+)\/(\d+) steps done\)/;
+  const STOP_LABELS = {
+    completed: "done",
+    max_iterations: "stopped early — max iterations",
+    provider_error: "provider error",
+    doom_loop: "stopped — repeating itself",
+    stuck: "stopped — no progress",
+    gave_up: "stopped — gave up (no output)",
+    recipe_stalled: "stopped — recipe stalled",
+    skill_too_large: "stopped — skill too large for this model's window",
+    veto_stall: "stopped — re-entry stalled: the stop hook kept asking for a skill that never ran",
+    awaiting_user: "waiting for you — answer to continue",
+    restart: "restarting — a newer build is installed; this session resumes there",
+  };
+
+  // Python's str.splitlines(): every boundary it knows, and no empty line after the last.
+  function splitLines(text) {
+    const lines = String(text).split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/);
+    if (lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  }
+  function firstLine(text) {
+    const s = String(text);
+    return s.includes("\n") ? splitLines(s)[0] : s;
+  }
+  function plural(n, noun, many) { return n + " " + (n === 1 ? noun : (many || noun + "s")); }
+  // Lengths count characters, not UTF-16 halves, as Python's do.
+  // Middle-truncate: a command or a query keeps its head AND its tail.
+  function squeezeMiddle(text, limit) {
+    const chars = Array.from(text);
+    if (chars.length <= limit) return text;
+    const head = Math.floor((limit - 1) / 2);
+    return chars.slice(0, head).join("") + "…" + chars.slice(chars.length - (limit - 1 - head)).join("");
+  }
+  // Left-truncate: a path keeps its filename.
+  function squeezePath(path, limit) {
+    const chars = Array.from(path);
+    return chars.length <= limit ? path : "…" + chars.slice(chars.length - (limit - 1)).join("");
   }
 
-  function squeezeMiddle(text, limit) {
-    const s = firstLine(text);
-    if (s.length <= limit) return s;
-    const keep = limit - 1;
-    const head = Math.ceil(keep / 2);
-    return s.slice(0, head) + "…" + s.slice(s.length - (keep - head));
+  // The call line's argument, condensed as the terminal condenses it: a command (after "$ ")
+  // keeps 160 characters and anything else 96; a search reads "pattern in scope".
+  function condenseArgs(args) {
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      return args === undefined || args === null ? "" : squeezeMiddle(firstLine(String(args)), ARG_LIMIT);
+    }
+    const str = (v) => typeof v === "string" && v !== "";
+    if (str(args.command)) return "$ " + squeezeMiddle(firstLine(args.command), COMMAND_LIMIT);
+    if (str(args.pattern)) {
+      const scope = ["glob", "path"].map((k) => args[k]).find(str);
+      return squeezeMiddle(firstLine(scope ? args.pattern + " in " + scope : args.pattern), ARG_LIMIT);
+    }
+    const path = ["path", "file_path"].map((k) => args[k]).find(str);
+    if (path) return squeezePath(path, ARG_LIMIT);
+    const named = ["query", "url", "name"].map((k) => args[k]).find(str);
+    if (named) return squeezeMiddle(firstLine(named), ARG_LIMIT);
+    const any = Object.values(args).find(str);
+    return any ? squeezeMiddle(firstLine(any), ARG_LIMIT) : "";
   }
+
+  function planRows(lines) { return lines.map((l) => l.trim()).filter((l) => PLAN_ROW.test(l)); }
+  // The identity of a drawn plan (ADR-0112): its checklist rows. An update_plan card and a
+  // task_update share it, so the same plan is never drawn twice.
+  function planKey(lines) { return planRows(lines).join("\n"); }
+  function stepLabel(row) { return row.replace(/^\[.\]\s*/, "").split("<- current").join("").trim(); }
+
+  // An Edit's diff rows, only for a real unified diff (an @@ hunk, or a ---/+++ header pair):
+  // output whose lines merely START with + or - is never painted as one.
+  function diffPreview(lines) {
+    const hunk = lines.some((l) => l.startsWith("@@"));
+    const headers = lines.some((l) => l.startsWith("--- ")) && lines.some((l) => l.startsWith("+++ "));
+    if (!(hunk || headers)) return null;
+    if (lines.filter((l) => ["+", "-", "@"].includes(l.charAt(0))).length < 2) return null;
+    const rows = lines.slice(0, DIFF_PREVIEW_LINES).map((l) => ({
+      cls: l.startsWith("@@") || l.startsWith("---") || l.startsWith("+++") ? "dmeta"
+        : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "ctx",
+      text: l,
+    }));
+    if (lines.length > DIFF_PREVIEW_LINES) {
+      rows.push({ cls: "more", text: "… +" + plural(lines.length - DIFF_PREVIEW_LINES, "line") });
+    }
+    return rows;
+  }
+
+  // The plan collapse (ADR-0108, ADR-0124): a finished plan is one line, a partial one its
+  // progress and the step in hand; a list without checklist rows draws every row.
+  function planView(lines) {
+    const steps = planRows(lines);
+    if (steps.length && steps.every((s) => s.startsWith("[x] ") || s.startsWith("[-] "))) {
+      return { receipt: "Plan complete · " + plural(steps.length, "step"), rows: [], whole: false };
+    }
+    if (steps.length) {
+      const head = PLAN_HEADER.exec(lines.join("\n"));
+      let receipt = "Plan · " + (head ? head[1] + "/" + head[2] + " steps" : plural(steps.length, "step"));
+      const current = steps.find((s) => s.includes("<- current")) || steps.find((s) => s.startsWith("[~] "));
+      if (current) receipt += " · current: " + Array.from(stepLabel(current)).slice(0, 80).join("");
+      return { receipt, rows: [], whole: false };
+    }
+    const items = lines.filter((l) => l.trim()).length;
+    return { receipt: "Plan · " + plural(items, "item"), rows: lines.map(todoRow), whole: true };
+  }
+  function todoRow(line) {
+    if (line.startsWith("[x] ")) return { cls: "todo-done", text: "✓ " + line.slice(4) };
+    if (line.startsWith("[ ] ")) return { cls: "todo-open", text: "○ " + line.slice(4) };
+    return { cls: "out", text: line };
+  }
+
+  // A finished call as the terminal draws it: the receipt (without the outcome mark — the
+  // card's dot is the mark) and the rows under it, [{cls, text}] with cls one of out, more,
+  // err, add, del, dmeta, ctx, todo-done, todo-open. `whole` says the receipt and rows show
+  // every line of the output, so the card has nothing more to open onto.
+  function toolView(name, output, isError) {
+    const lines = splitLines(output);
+    const n = lines.length;
+    const out = (list) => list.map((text) => ({ cls: "out", text }));
+    if (isError) {
+      // Errors restructure, not just recolor: the first line is the receipt, detail follows.
+      const rows = lines.slice(1, 1 + ERROR_DETAIL_LINES).map((text) => ({ cls: "err", text }));
+      const hidden = n - 1 - ERROR_DETAIL_LINES;
+      if (hidden > 0) rows.push({ cls: "more", text: "… +" + plural(hidden, "line") });
+      return { receipt: "✗ " + (n ? lines[0] : "error"), rows, whole: hidden <= 0 };
+    }
+    switch (name) {
+      case "Run": case "Fetch": {
+        const size = n ? plural(n, "line") : "no output";
+        const receipt = name === "Fetch" ? "Fetched " + size : "Ran · " + size;
+        if (n <= RUN_CAP) return { receipt, rows: out(lines), whole: true };
+        // head + tail, so a closing summary like "42 passed" always survives
+        const more = { cls: "more", text: "… +" + plural(n - RUN_HEAD - RUN_TAIL, "line") + " …" };
+        return { receipt, rows: [...out(lines.slice(0, RUN_HEAD)), more, ...out(lines.slice(n - RUN_TAIL))], whole: false };
+      }
+      case "Search": case "Glob": {
+        const receipt = "Found " + (name === "Search" ? plural(n, "match", "matches") : plural(n, "file"));
+        const rows = out(lines.slice(0, LIST_PREVIEW_LINES));
+        if (n > LIST_PREVIEW_LINES) rows.push({ cls: "more", text: "… +" + (n - LIST_PREVIEW_LINES) + " more" });
+        return { receipt, rows, whole: n <= LIST_PREVIEW_LINES };
+      }
+      case "Edit": {
+        const diff = diffPreview(lines);
+        if (diff) {
+          const adds = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
+          const dels = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
+          return { receipt: "Updated +" + adds + " -" + dels, rows: diff, whole: n <= DIFF_PREVIEW_LINES };
+        }
+        return { receipt: "Edited · " + plural(n, "line"), rows: [], whole: n === 0 };
+      }
+      case "Write": return { receipt: "Written", rows: [], whole: n === 0 };
+      case "Todo": return planView(lines);
+      // Read / List: a verb and a count, no preview. Any other tool: its name and a count.
+      case "Read": return { receipt: "Read " + plural(n, "line"), rows: [], whole: n === 0 };
+      case "List": return { receipt: "Listed " + plural(n, "entry", "entries"), rows: [], whole: n === 0 };
+      default: return { receipt: (name ? name + " · " : "") + plural(n, "line"), rows: [], whole: n === 0 };
+    }
+  }
+
+  // The footer's outcome words and its marker's state (rule 13, ADR-0115, ADR-0122).
+  function stopLabel(reason, degraded, openSteps, error) {
+    const known = Object.prototype.hasOwnProperty.call(STOP_LABELS, reason);
+    let label = known ? STOP_LABELS[reason] : String(reason).split("_").join(" ");
+    let tone = "warn";
+    if (reason === "completed") {
+      if (degraded) label = "done — " + (openSteps ? "struggled" : "recovered");
+      else tone = "ok";
+    } else if (reason === "provider_error" || reason === "skill_too_large") {
+      tone = "err";
+      if (error) label += " — " + splitLines(error)[0];
+    }
+    if (openSteps) label += " — " + openSteps + " plan step(s) left open";
+    return { label, tone };
+  }
+
+  function fmtDur(seconds) {
+    if (seconds < 60) return seconds.toFixed(1) + "s";
+    return Math.floor(seconds / 60) + "m " + Math.floor(seconds % 60) + "s";
+  }
+  // Python rounds an exact binary tie to even, where toFixed rounds it up. For n / 1000 the
+  // only exact ties are x.25 and x.75, and only x.25 rounds differently: 1250 is "1.2k".
+  function fmtTokens(n) {
+    if (n < 1000) return n + " tokens";
+    return ((n % 1000 === 250 ? n - 50 : n) / 1000).toFixed(1) + "k tokens";
+  }
+  // Four places, trailing zeros stripped to two: 0.0230 is $0.023, 0.0004 is $0.0004.
+  function fmtCost(c) {
+    const [whole, frac] = (c || 0).toFixed(4).split(".");
+    return "$" + whole + "." + frac.replace(/0+$/, "").padEnd(2, "0");
+  }
+  // The prompt's cached share (ADR-0021), with Python's round(): an exact .5 goes to even.
+  function cachePercent(cached, prompt) {
+    const x = 100 * cached / prompt;
+    const f = Math.floor(x);
+    return x - f === 0.5 ? f + (f % 2) : Math.round(x);
+  }
+  // The footer before its wall-clock stamp: outcome, iterations, tokens (and the cached share
+  // when the backend reports one), cost, elapsed — the last left out when it is not known.
+  function footerText(label, iterations, usage, seconds) {
+    let tokens = fmtTokens(usage.total_tokens || 0);
+    if (usage.cache_read_tokens && usage.prompt_tokens) {
+      tokens += " (" + cachePercent(usage.cache_read_tokens, usage.prompt_tokens) + "% cached)";
+    }
+    const parts = [label, iterations + " iterations", tokens, fmtCost(usage.cost_usd || 0)];
+    if (seconds !== null) parts.push(fmtDur(seconds));
+    return parts.join(" · ");
+  }
+  // END terminal-grammar
+
+  // HH:MM on the viewer's clock, of `at` — the server's publish stamp (epoch seconds) — so a
+  // replayed turn keeps its own time; a frame without one is stamped as it arrives.
+  function hhmm(at) {
+    const d = typeof at === "number" ? new Date(at * 1000) : new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  }
+  // Seconds between two publish stamps, or null when either frame lacks one.
+  function between(from, to) {
+    return typeof from === "number" && typeof to === "number" ? Math.max(0, to - from) : null;
+  }
+  function emptyUsage() { return { total_tokens: 0, cost_usd: 0, prompt_tokens: 0, cache_read_tokens: 0 }; }
 
   function titleCase(name) {
     return String(name).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   function displayName(name) { return DISPLAY_NAMES[name] || titleCase(name); }
-
-  function condenseArgs(args) {
-    if (!args || typeof args !== "object") return args === undefined || args === null ? "" : squeezeMiddle(String(args), 64);
-    if (typeof args.command === "string" && args.command) return "$ " + squeezeMiddle(args.command, 62);
-    for (const key of ["path", "file_path", "pattern", "query", "url", "name"]) {
-      if (typeof args[key] === "string" && args[key]) return squeezeMiddle(args[key], 64);
-    }
-    for (const v of Object.values(args)) {
-      if (typeof v === "string" && v) return squeezeMiddle(v, 64);
-    }
-    return squeezeMiddle(JSON.stringify(args), 64);
-  }
-
-  function fmtDur(ms) {
-    const s = ms / 1000;
-    if (s < 60) return s.toFixed(1) + "s";
-    return Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
-  }
-
-  function fmtTokens(n) {
-    return n >= 1000 ? (n / 1000).toFixed(1) + "k tokens" : n + " tokens";
-  }
-
-  function fmtCost(c) {
-    let s = (c || 0).toFixed(4);
-    while (s.endsWith("0") && s.split(".")[1].length > 2) s = s.slice(0, -1);
-    return "$" + s;
-  }
 
   function fmtBytes(n) {
     n = Number(n || 0);
@@ -808,51 +1045,50 @@
   function onToolCall(ev) {
     assistantBody = null;
     const name = displayName(ev.name);
-    const card = el("details", "tool empty");
+    const card = el("div", "tool");
+    const details = el("details", "");
     const sum = el("summary", "tool-summary");
+    const call = el("span", "call");
     const dot = el("span", "tdot pending");
     const receipt = el("span", "receipt", "…");
-    sum.appendChild(dot);
-    sum.appendChild(el("span", "tname", name));
-    sum.appendChild(el("span", "targs", "(" + condenseArgs(ev.arguments) + ")"));
+    call.appendChild(dot);
+    call.appendChild(el("span", "tname", name));
+    call.appendChild(el("span", "targs", "(" + condenseArgs(ev.arguments) + ")"));
+    call.appendChild(el("span", "chev", "▸"));
+    sum.appendChild(call);
     sum.appendChild(receipt);
-    sum.appendChild(el("span", "chev", "▸"));
-    sum.addEventListener("click", (e) => { if (card.classList.contains("empty")) e.preventDefault(); });
-    card.appendChild(sum);
+    // Only a card with more output than it shows opens; a click on any other is a no-op.
+    sum.addEventListener("click", (e) => { if (!card.classList.contains("expandable")) e.preventDefault(); });
+    details.appendChild(sum);
+    card.appendChild(details);
     add(card);
-    toolCards.set(ev.id, { card, dot, receipt, name, started: performance.now() });
+    toolCards.set(ev.id, { card, details, dot, receipt, name, at: ev.at });
     setStatus("using tools…");
   }
 
-  // Synthesized receipts per display name (docs/UX.md), never raw first lines. Each one
-  // reads as a sentence that names the tool (ADR-0185); the card's dot carries the outcome
-  // mark the terminal spells as ✓.
-  function receiptText(name, ev, output) {
-    if (ev.is_error) return "✗ " + squeezeMiddle(firstLine(output.trim()), 64);
-    const n = output.trim() ? output.trim().split("\n").length : 0;
-    const lines_ = n + (n === 1 ? " line" : " lines");
-    switch (name) {
-      case "Read": return "Read " + lines_;
-      case "List": return "Listed " + n + (n === 1 ? " entry" : " entries");
-      case "Fetch": return "Fetched " + (n ? lines_ : "no output");
-      case "Run": return "Ran · " + (n ? lines_ : "no output");
-      case "Search": return "Found " + n + (n === 1 ? " match" : " matches");
-      case "Glob": return "Found " + n + (n === 1 ? " file" : " files");
-      case "Edit": {
-        const lines = output.split("\n");
-        if (lines.some((l) => l.startsWith("@@"))) {
-          const a = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
-          const d = lines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
-          return "Updated +" + a + " -" + d;
-        }
-        return "Edited · " + lines_;
+  // The rows under a receipt, as the terminal's rail draws them. A "more" row says what the
+  // preview left out, and opens the card on the whole output.
+  function previewBox(rows, details) {
+    const box = el("div", "tool-out preview mono");
+    for (const r of rows) {
+      if (r.cls === "more") {
+        const more = el("button", "more", r.text);
+        more.type = "button";
+        more.onclick = () => { details.open = true; };
+        box.appendChild(more);
+      } else if (r.cls === "todo-done" || r.cls === "todo-open") {
+        const line = el("div", r.cls);
+        line.appendChild(el("span", "", r.text.slice(0, 1)));   // the glyph, in its state colour
+        line.appendChild(document.createTextNode(r.text.slice(1)));
+        box.appendChild(line);
+      } else {
+        box.appendChild(el("div", r.cls === "out" || r.cls === "ctx" ? "" : r.cls, r.text));
       }
-      case "Write": return "Written";
-      case "Todo": return "Plan · " + n + (n === 1 ? " item" : " items");
-      default: return (name ? name + " · " : "") + lines_;
     }
+    return box;
   }
 
+  // The whole output, for an opened card: diff lines painted as bands, anything else as text.
   function fillOutput(body, output) {
     const lines = output.replace(/\n$/, "").split("\n");
     const isDiff = lines.some((l) => l.startsWith("@@")) ||
@@ -886,28 +1122,29 @@
     const artifacts = Array.isArray(ev.artifacts) ? ev.artifacts : [];
     if (!entry) {
       // Reconnect/replay can deliver a result with no card: render it standalone, never throw.
-      const body = el("div", "meta", "tool result · " + receiptText("", ev, output));
+      const body = el("div", "meta", "tool result · " + toolView("", output, ev.is_error).receipt);
       add(row("consent", el("span", "", "·"), body));
       if (artifacts.length) add(row("consent", el("span", "", "."), artifactList(artifacts)));
       return;
     }
     toolCards.delete(ev.tool_use_id);
-    const dur = fmtDur(performance.now() - entry.started);
+    const view = toolView(entry.name, output, ev.is_error);
+    if (entry.name === "Todo" && !ev.is_error) lastPlanKey = planKey(splitLines(output));
     entry.dot.classList.remove("pending");
     if (ev.is_error) { entry.card.classList.add("err"); entry.dot.classList.add("fail"); }
-    entry.receipt.textContent = receiptText(entry.name, ev, output) + " · " + dur;
-    if (output.trim() || artifacts.length) {
-      entry.card.classList.remove("empty");
-      if (output.trim()) {
-        const body = el("div", "tool-out mono");
-        fillOutput(body, output);
-        entry.card.appendChild(body);
-      }
-      if (artifacts.length) entry.card.appendChild(artifactList(artifacts));
-      if (ev.is_error) entry.card.open = true;
-    } else {
-      entry.card.classList.add("nochev");
+    // `· dur` between the call's and the result's publish stamps, as the terminal times a
+    // call; left off when either stamp is missing, as the terminal leaves it off an unknown id.
+    const took = between(entry.at, ev.at);
+    entry.receipt.textContent = view.receipt + (took === null ? "" : " · " + fmtDur(took));
+    if (!view.whole) {
+      entry.card.classList.add("expandable");
+      const full = el("div", "tool-out mono");
+      fillOutput(full, output);
+      entry.details.appendChild(full);
     }
+    if (view.rows.length) entry.card.appendChild(previewBox(view.rows, entry.details));
+    // Downloads stay in view: a file the agent made is never behind the toggle.
+    if (artifacts.length) entry.card.appendChild(artifactList(artifacts));
     setStatus(toolCards.size ? "using tools…" : "thinking…");
     follow();
   }
@@ -917,7 +1154,6 @@
     for (const entry of toolCards.values()) {
       entry.dot.classList.remove("pending");
       entry.receipt.textContent = "interrupted";
-      entry.card.classList.add("nochev");
     }
     toolCards.clear();
   }
@@ -925,16 +1161,9 @@
   // ── turn receipt: state-colored dot + the terminal's footer line ──
   function finishTurn(ev) {
     const usage = (ev.usage && ev.usage.total_tokens) ? ev.usage : turnUsage;
-    let tone = "warn";
-    if (ev.stop_reason === "completed") tone = "ok";
-    else if (ev.stop_reason === "provider_error") tone = "err";
-    let label = STOP_LABELS[ev.stop_reason] || String(ev.stop_reason || "").replace(/_/g, " ");
-    if (ev.stop_reason === "provider_error" && ev.error) label += " — " + firstLine(ev.error);
-    const elapsed = ((performance.now() - turnStart) / 1000).toFixed(1);
-    const body = el("div", "receipt",
-      label + " · " + (ev.iterations || 0) + " iterations · " +
-      fmtTokens(usage.total_tokens || 0) + " · " + fmtCost(usage.cost_usd || 0) + " · " + elapsed + "s" +
-      " · " + hhmm());
+    const { label, tone } = stopLabel(ev.stop_reason || "", ev.degraded, ev.open_steps, ev.error);
+    const text = footerText(label, ev.iterations || 0, usage, between(turnAt, ev.at));
+    const body = el("div", "receipt", text + " · " + hhmm(ev.at));
     add(row("turnend", el("span", "rdot " + tone), body));
     endTurn();
   }
@@ -979,38 +1208,38 @@
         assistantBody = null;
         add(row("status", el("span", "", "·"), el("div", "meta", ev.message)));
         // The server sends no done frame after a cancel; this status ends the turn.
-        if (ev.message === "interrupted") finishTurn({ stop_reason: "interrupted", iterations: 0, usage: turnUsage });
+        if (ev.message === "interrupted") finishTurn({ stop_reason: "interrupted", iterations: 0, usage: turnUsage, at: ev.at });
         return;
-      case "task_update":
-        // The live plan (Zak Code's task list). Render each line as its own row so
-        // newlines survive using textContent only (no markup injection). A COMPLETE plan
-        // collapses to one line so the finished checklist does not linger under the
-        // answer (ADR-0108).
+      case "task_update": {
+        // A plan the HARNESS changed (ADR-0112), drawn as the terminal draws it: one line —
+        // progress and the step in hand, or "Plan complete" (ADR-0108, ADR-0124) — and
+        // silent when its checklist repeats the last plan drawn, here or by an update_plan
+        // card. The checklist opens beneath the line, headed by the request it serves
+        // (ADR-0113) so a reader sees what the steps are FOR. textContent only, row by row.
+        const lines = splitLines(ev.plan || "");
+        const key = planKey(lines);
+        if (!key || key === lastPlanKey) return;
+        lastPlanKey = key;
         assistantBody = null;
-        {
-          const box = el("div", "meta");
-          if (ev.complete) {
-            const done = (ev.finished || 0) + "/" + (ev.total || 0);
-            box.appendChild(el("div", "", "✓ plan complete — " + done + " steps"));
-          } else {
-            // The request the plan serves rides above the checklist (ADR-0113), the way
-            // the loop's own re-injected plan is headed — a reader sees what the steps are FOR.
-            if (ev.request) box.appendChild(el("div", "", "Goal: " + ev.request));
-            (ev.plan || "").split("\n").forEach((line) => box.appendChild(el("div", "", line)));
-          }
-          add(row("plan", el("span", "", "☰"), box));
-        }
+        const card = el("details", "");
+        card.appendChild(el("summary", "", toolView("Todo", ev.plan || "", false).receipt));
+        const box = el("div", "checklist");
+        if (ev.request) box.appendChild(el("div", "", "Goal: " + ev.request));
+        for (const line of lines) box.appendChild(el("div", "", line));
+        card.appendChild(box);
+        add(row("plan", el("span", "", "☰"), card));
         return;
+      }
       case "user_message":
         // Every surface's says arrive here — the page's own sends included (the
         // bus is the one source of truth, so a remote `zakcode say` renders
         // identically to a typed message).
         assistantBody = null;
         thinkingBody = null;
-        add(row("user", el("span", "", "›"), el("div", "", ev.text || "")));
+        add(row("user", el("span", "", "›"), userBody(ev.text || "", ev.at)));
         turnActive = true;
-        turnStart = performance.now();
-        turnUsage = { total_tokens: 0, cost_usd: 0 };
+        turnAt = ev.at;
+        turnUsage = emptyUsage();
         setSendMode(true);
         setStatus("thinking…");
         stick = true;
@@ -1022,10 +1251,7 @@
         return;
       case "usage":
         if (ev.usage) {
-          turnUsage = {
-            total_tokens: turnUsage.total_tokens + (ev.usage.total_tokens || 0),
-            cost_usd: turnUsage.cost_usd + (ev.usage.cost_usd || 0),
-          };
+          for (const key of Object.keys(turnUsage)) turnUsage[key] += ev.usage[key] || 0;
         }
         return;
       case "done":

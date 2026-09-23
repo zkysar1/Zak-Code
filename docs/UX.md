@@ -153,27 +153,29 @@ All content sits on this grid; nothing else exists:
    | unknown tool | `✓ {Name} · N lines` |
    | any error | `✗ {first line of error}`; detached (not directly under its own call line) `✗ {Name} · {first line}` — a success needs no such prefix, its verb names the tool |
 
-   The web client's `receiptText` carries the same words; its card dot is the outcome mark.
+   The web client's `toolView` carries the same words and the same rows beneath them, from its
+   `terminal-grammar` block (ADR-0219); its card dot is the outcome mark.
 
 9. **Truncation is head+tail and direction-aware.** Run output > 12 lines shows the
    first `_RUN_HEAD = 6` + `… +N lines …` (`result.more`, as a rail row) + the last
    `_RUN_TAIL = 4` — terminal summaries like `42 passed` always survive. Diff previews
-   cap at 12 lines + `… +N lines`. Tool args middle-truncate at 64 chars with `…`
-   (`_squeeze_middle`); paths truncate from the **left** with a leading `…` so the
-   filename survives (`_squeeze_path`).
+   cap at 12 lines + `… +N lines`. Tool args middle-truncate at 96 chars with `…`, a
+   command at 160 (ADR-0185; `_squeeze_middle`); paths truncate from the **left** with a
+   leading `…` so the filename survives (`_squeeze_path`).
 10. **Errors restructure, not just recolor.** `└ ✗ summary · dur` (glyph in `err`) +
     up to 8 detail rail rows at col 6 in `err.body` (default fg — errors are shown,
     not dimmed) behind a red rail, then `… +N lines` (`result.more`) when detail was
-    cut — truncation is never silent. (Web: the error receipt's first line is
-    middle-squeezed at 64 chars; the full text is in the auto-opened card body.)
+    cut — truncation is never silent. (Web: the same first line and the same rows; the
+    whole output is one click away.)
 11. **Todo results glyph-map.** Lines beginning `[x] ` render as `✓ ` (`todo.done`) +
     text, lines beginning `[ ] ` as `○ ` (`todo.open`) + text; all other lines pass
     through untouched. **Harness plan changes draw too (ADR-0112):** a `task_update`
     event whose checklist rows differ from the last Todo drawn (from an `update_plan`
-    result or a prior update) renders as a detached `└ Plan · N items` receipt with the
-    same glyph-mapped rows — a request anchor, a skill skeleton or an investigation splice
-    is visible without a tool call. A `task_update` that repeats the plan just drawn stays
-    silent, so a model-authored plan is never shown twice. (Web: the plan row is headed
+    result or a prior update) renders as a detached `└` Todo receipt, collapsed as rule 8's
+    table says (`Plan · F/T steps · current: …`, or `Plan complete · N steps`) — a request
+    anchor, a skill skeleton or an investigation splice is visible without a tool call. A
+    `task_update` that repeats the plan just drawn stays silent, so a model-authored plan is
+    never shown twice. (Web: the same line; the checklist opens beneath it, headed
     `Goal: <request>` when the update carries the request the plan serves — ADR-0113.)
 12. **Boxes only twice.** Welcome box and permission panel, both `ROUNDED`, width
     `max(24, min(terminal_width − 4, 60))`, padding `(1, 2)`, indented to col 2.
@@ -461,35 +463,49 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   {id8}` + hint, plus three sample-prompt pills that prefill the composer (never send);
   removed on first append.
 - **User line** — gutter `›` and text in `--user` (orange, weight 700 / 600, ADR-0186); no bubble — the
-  bright short line *is* the turn separator.
+  bright short line *is* the turn separator. As in the terminal, the first line ends with the
+  grey wall-clock stamp `(HH:MM)` of the frame's `at`, and a message past six lines folds to a
+  `… (+N more lines)` button that unfolds it in place (ADR-0119, ADR-0219).
 - **Assistant prose** — 8px `--brand` dot per prose group (re-anchors after tool
   cards, mirroring the terminal `_assistant_marked` reset); inline code = mono pill
   on `--inset`; links `--brand` underlined.
 - **Code blocks** — `--inset`, radius 8, mono 13, `overflow-x:auto`, dim uppercase
   language tag, hover-revealed Copy button ("Copied" for 2s).
-- **Tool cards** — one `<details>` per call, created on `tool_call`, kept in a `Map`
-  by `ev.id`. Summary row: status dot + **bold name** + dim middle-truncated `(args)`;
-  right: dim receipt + rotating `▸` chevron. At phone width (≤560px) the receipt drops
-  to its own line under the name, the web's form of the terminal's `└` receipt, and may
-  wrap there rather than truncate. Pending: dot pulses, receipt shows `…`;
-  on result the receipt fills (`134 lines · 0.1s`, `performance.now()` deltas by id)
-  and the body fills (`--inset` `pre`, `max-height: 40vh`). Diff lines = full-width
-  painted band divs; error cards add a 2px `--err` left border and full-`--fg` output.
-  Orphan results (no card for the id) render as a standalone muted row, never throw;
-  on `done`/`error` any still-pending card finalizes as `interrupted`. No-output
-  results render without chevron, not clickable.
+- **Tool cards** — the terminal's tool block at the terminal's length (ADR-0219): one card
+  per call, created on `tool_call`, kept in a `Map` by `ev.id`. The call line: status dot +
+  **bold name** + dim `(args)`, condensed as the terminal condenses them (rule 9) and
+  wrapping, never cut by CSS. Beneath it, on its own line at every width, the receipt: the
+  web's form of the terminal's `└` line. Beneath that, the terminal's rows at its caps
+  (rules 8–11) on an `--inset` `pre`, with each `… +N` row a button. Pending: dot pulses,
+  receipt shows `…`; on result the receipt fills with rule 8's words and `· {dur}`, timed
+  between the call's and the result's `at` stamps (left off when either frame has none).
+  The summary is a `<details>` toggle for the WHOLE output, and only a card whose output
+  runs past its rows has one (a `▸` chevron, rotating): opening it, or clicking a `… +N`
+  row, shows the full text in the preview's place (`max-height: 40vh`). Diff lines =
+  full-width painted band divs; error cards add a 2px `--err` left border and full-`--fg`
+  rows. Downloads (artifact links) stay below the rows, never behind the toggle. Orphan
+  results (no card for the id) render as a standalone muted row, never throw; on
+  `done`/`error` any still-pending card finalizes as `interrupted`. The receipts, rows,
+  argument condensing and footer live in the page's pure `terminal-grammar` block, which
+  `tests/test_webclient_parity.py` runs under node against the terminal renderer.
+- **Plan line** — a `task_update` renders as rule 11 says: the one collapsed line in a `☰`
+  row, silent when its checklist repeats the last plan drawn (by an update or an
+  `update_plan` card); a click opens the checklist, headed `Goal: <request>`.
 - **Status events** — gutter `·`, 12px mono italic `--muted`.
 - **Stream-status overlay** — one pinned element above the composer,
   `pointer-events: none`, `aria-hidden`, never reflows. States: send → `✦ thinking…`;
   first delta → `✦ writing…`; outstanding tool_call → `✦ using tools…`; last
   tool_result, no new delta → `✦ thinking…`; `action_required` → `✦ waiting on you`;
   decision → `✦ thinking…`; `done`/`error`/close → hidden.
-- **Turn receipt** — outcome-colored gutter dot (`--ok` completed / `--err`
-  provider_error / `--warn` otherwise), 12px mono: `{label} · {n} iterations ·
-  {tokens} · {cost} · {elapsed}s`; labels mirror the terminal (rule 13) via
-  `STOP_LABELS`. The usage accumulator resets on every send; on `done`,
-  `ev.usage.total_tokens ? ev.usage : accumulated` wins; elapsed =
-  `performance.now()` since send. `error` control frames render as an error card and
+- **Turn receipt** — rule 13's footer, word for word (ADR-0219): the outcome-colored gutter
+  dot (`--ok` for an un-degraded completion, `--err` for provider_error and
+  skill_too_large, `--warn` otherwise), then 12px mono `{label} · {n} iterations · {tokens}
+  · {cost} · {elapsed} · {HH:MM}` with the same labels, the same `— struggled` /
+  `— recovered` / `— N plan step(s) left open` suffixes and the same `(N% cached)` share.
+  The usage accumulator resets on every send; on `done`, `ev.usage.total_tokens ? ev.usage :
+  accumulated` wins. Elapsed runs from the turn's `user_message` `at` to the `done` frame's
+  `at`, and HH:MM is the `done` frame's, so a replayed turn keeps its own times; elapsed is
+  left off when either stamp is missing. `error` control frames render as an error card and
   also end the turn.
 - **Approval card** — above the composer on `action_required`: 3px `--warn` left
   border, `--radius`, slides up; "Permission" is a label, not a heading — the family's
