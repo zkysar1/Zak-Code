@@ -84,6 +84,14 @@ setattr(litellm, "drop_params", True)  # noqa: B010
 # provider exception — errors reach the operator through the ProviderError taxonomy,
 # not via a library writing directly to stdout mid-conversation.
 setattr(litellm, "suppress_debug_info", True)  # noqa: B010
+# Reach providers over httpx, not litellm's default aiohttp transport (ADR-0239). litellm
+# caches one HTTP client per endpoint and event loop for an hour, then drops it unclosed on
+# purpose, since a request may still hold it. When the collector reclaims an aiohttp session
+# that way, aiohttp reports "Unclosed client session" through asyncio at ERROR, and a CLI
+# prints it in its own output: about once an hour on a long session. An httpx client is
+# reclaimed without a word. Nothing here needs aiohttp's throughput: calls go out a few at
+# a time, and each one waits seconds to minutes on the model.
+setattr(litellm, "disable_aiohttp_transport", True)  # noqa: B010
 
 logger = logging.getLogger("zakcode.providers")
 
