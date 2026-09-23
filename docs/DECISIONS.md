@@ -13692,3 +13692,34 @@ wait; CI's 3.13 job failed the EOF test on it, because there the wait had alread
 Four mutants were each caught with `mutation-proof-test.sh` on cc-14: under 3.11, restoring the
 unbounded wait (both tests) and dropping the close (the EOF test); under 3.13, dropping the
 close and closing only after a timeout (the EOF test).
+
+## ADR-0227: tool_search can surface an MCP tool again; its budget counts MCP tools
+
+Status: accepted. 2026-09-23.
+
+Context. MCP tools are discovered lazily (M5-4b, 2026-05-31). Discovery exposes an MCP tool
+only while the registry holds fewer than 25 active tools, and `tool_search` surfaces a hidden
+one on demand. Both counted every active tool against that budget of 25, built-ins included.
+The built-in set has grown since: `default_registry` registered 25 tools on 2026-09-10 and 27
+on 2026-09-18, and `tool_search` itself is one more. So every MCP tool starts hidden, and
+`tool_search` can surface none of them. It answers "1 more matched but the tool budget (25) is
+full of built-in / in-use tools", activates nothing, and the model cannot use any MCP tool.
+Reproduced on cc-14 with the real built-in set and a fake MCP server. The facade test for this
+path activated the hidden tool by hand instead of searching, so it passed throughout. The
+facade's parameter is named `mcp_tool_budget`; only the counting disagreed with the name.
+
+Decision. `tool_search` counts only MCP tools against its budget, so at most 25 MCP tools are
+exposed at once, however many built-ins there are. Built-ins are still never evicted.
+Discovery is unchanged: it still counts every active tool. With today's built-ins, MCP tools
+therefore start hidden and wait for `tool_search`.
+
+What it risks. A session can now hold up to 25 MCP schemas on top of the built-ins, where
+before it could hold none. That is the cap the budget was named for. The docs' wish for a small
+exposed set (about 25 tools in all) is out of reach through this budget: the built-ins alone
+exceed it. Shrinking the always-exposed built-ins is a separate change.
+
+The proof. tests/test_tool_search.py. The facade test now uses the production shape: the real
+built-in set, the default budget, and a `tool_search` call, which must surface the matching
+tool and leave the other hidden. `test_builtins_never_use_up_the_budget` replaces a test that
+asserted the old behavior. Two mutants were caught with `mutation-proof-test.sh` on cc-14:
+counting every active tool again (three tests) and removing eviction (the eviction test).
