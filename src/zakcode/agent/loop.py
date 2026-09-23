@@ -337,6 +337,39 @@ _FOLD_PROMPT = "Fold these part-summaries of one conversation into a single cohe
 #: How the transcript is handed to the summarizer (ADR-0082): one user message of labeled
 #: plain text, so the model summarizes a document instead of continuing a dialogue.
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
+#: What closes every transcript the summarizer reads, whole or a part (ADR-0242): the
+#: instruction, where the model starts writing. Measured 2026-09-23 on a local pod (a 27B
+#: model, three Bodies, 34 compactions): 8 responses were not summaries but a status line, the
+#: transcript's next turn, a first-person plan or a tool call, and each of those Bodies resumed
+#: on the harness note and its kept tail alone. The instruction sat only in the system prompt,
+#: above some 40,000 tokens of agent turns.
+_SUMMARY_CLOSE = (
+    "\n\n[end of transcript]\n\nThe transcript stops here. You are not in it: do not continue "
+    "it, reply to anyone in it, or call a tool. Summarize it now, in the third person, inside "
+    "<summary></summary>."
+)
+#: What closes the part-summaries a fold reads (ADR-0242).
+_FOLD_CLOSE = (
+    "\n\n[end of part-summaries]\n\nFold them now into one summary, in the third person, inside "
+    "<summary></summary>."
+)
+#: The summary inside a response's tags (ADR-0242); a response cut off before its closing tag
+#: keeps what it wrote.
+_SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)(?:</summary>|\Z)", re.S | re.I)
+#: A response that opens as a turn of the transcript it was handed, under the renderer's own
+#: label for a turn of the conversation (ADR-0242). ``[system]`` is left out: on a re-compaction
+#: the transcript opens with the previous summary under it, and a model may echo that label
+#: before a real summary.
+_TRANSCRIPT_TURN_RE = re.compile(r"\W*\[(?:user|assistant|tool)\]", re.I)
+#: A response under :data:`_SUMMARY_FLOOR_CHARS` is not a summary of a request of at least
+#: :data:`_SUMMARY_FLOOR_SOURCE` characters (ADR-0242). Measured 2026-09-23: the 8 responses
+#: that were not summaries ran 56 to 442 characters, the other 26 ran 810 to 13,007.
+_SUMMARY_FLOOR_CHARS = 500
+_SUMMARY_FLOOR_SOURCE = 20_000
+#: How many times a response that is not a summary is asked for again, at the rejection-retry
+#: temperature, before the compaction falls back to eliding tool outputs (ADR-0242). Every ask
+#: costs minutes on a local pod.
+_SUMMARY_RESAMPLES = 1
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -411,7 +444,8 @@ def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
 
 def _zero_compaction_cost() -> dict[str, float]:
     """A compaction's cost record before anything ran (ADR-0241): the PreCompact hooks'
-    seconds, then the summarizer's calls, tokens and seconds (every slice and fold)."""
+    seconds, then the summarizer's calls, tokens and seconds (every slice and fold), and how
+    many of its responses were not summaries (ADR-0242)."""
     return {
         "pre_compact_s": 0.0,
         "summarizer_calls": 0,
@@ -419,6 +453,7 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_cache_read_tokens": 0,
         "summarizer_completion_tokens": 0,
         "summarizer_s": 0.0,
+        "summarizer_rejected": 0,
     }
 
 
@@ -427,6 +462,32 @@ def _strip_model_markup(text: str) -> str:
     cleaned = _MODEL_MARKUP_RE.sub("", text)
     cleaned = _MODEL_MARKUP_LINE_RE.sub("", cleaned)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+class SummaryNotWritten(Exception):
+    """The summarizer answered with something other than a summary, every time it was asked
+    (ADR-0242). The compaction falls back to eliding tool outputs, as for any failed summary."""
+
+
+def _summary_of(text: str, source_chars: int) -> tuple[str, str]:
+    """The summary in a summarizer's response, or ``""`` and why it has none (ADR-0242).
+
+    The summary is what the response puts inside its ``<summary>`` tags, else the whole
+    response, with thinking and tool-call markup stripped. It is not a summary when it is
+    empty, when it opens as a turn of the transcript it was handed, or when it is shorter than
+    :data:`_SUMMARY_FLOOR_CHARS` for a request of :data:`_SUMMARY_FLOOR_SOURCE` characters or
+    more. ``source_chars`` is the length of that request.
+    """
+    cleaned = _strip_model_markup(text)
+    tagged = _SUMMARY_TAG_RE.search(cleaned)
+    summary = (tagged.group(1) if tagged else cleaned).strip()
+    if not summary:
+        return "", "it was empty"
+    if _TRANSCRIPT_TURN_RE.match(summary):
+        return "", "it opened as the transcript's next turn"
+    if source_chars >= _SUMMARY_FLOOR_SOURCE and len(summary) < _SUMMARY_FLOOR_CHARS:
+        return "", f"{len(summary)} characters for {source_chars:,} of transcript"
+    return summary, ""
 
 
 #: Context-proportional ceiling on a SINGLE tool result's model-facing text. Tool-level
@@ -2724,7 +2785,7 @@ class AgentLoop:
             "You are compacting a long conversation to fit a context window. Summarize "
             "the exchange below, preserving goals, decisions, key facts, file paths, and "
             "any unfinished work. Be concise but complete; omit pleasantries. Output only "
-            "the summary."
+            "the summary, inside <summary></summary>."
         )
         summarizer = self._summarizer_provider or self.provider
         window = summarizer.capabilities().context_window or self._window()
@@ -2737,28 +2798,51 @@ class AgentLoop:
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
         async def ask(prompt: str) -> str:
-            # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out here
-            # exactly as it is on the main call, instead of failing the compaction.
-            started = time.monotonic()
-            usage: Usage | None = None
-            try:
-                result = await self._complete_with_retry(
-                    lambda call_kw: summarizer.acomplete(
-                        [Message.user(prompt)],
-                        system=instruction,
-                        prompt_cache_key=self._prompt_cache_key(),
-                        **call_kw,
-                    )
+            raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
+
+            def request(call_kw: dict[str, Any]) -> Awaitable[LLMResult]:
+                return summarizer.acomplete(
+                    [Message.user(prompt)],
+                    system=instruction,
+                    prompt_cache_key=self._prompt_cache_key(),
+                    **{**raised, **call_kw},
                 )
-                usage = result.usage
+
+            started = time.monotonic()
+            try:
+                why = ""
+                for resample in range(_SUMMARY_RESAMPLES + 1):
+                    # ADR-0242: a response that is not a summary is asked for again at the
+                    # rejection-retry temperature, so a deterministic model does not re-emit it.
+                    if resample:
+                        raised = {"temperature": self._rejection_retry_temperature(resample)}
+                    # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out
+                    # here exactly as it is on the main call, instead of failing the compaction.
+                    result = await self._complete_with_retry(request)
+                    self._account_summarizer_usage(result.usage, summarizer)
+                    summary, why = _summary_of(result.text, len(prompt))
+                    if summary:
+                        return summary
+                    self._compaction_cost["summarizer_rejected"] += 1
+                    if resample < _SUMMARY_RESAMPLES:
+                        said = f"the summarizer's response was not a summary ({why}); asking again"
+                        logger.warning("compaction: %s", said)
+                        sink = self._status_sink
+                        if sink is not None:
+                            sink(f"compaction: {said}")
+                raise SummaryNotWritten(f"the summarizer's response was not a summary ({why})")
             finally:
-                # ADR-0241: a call that raised still spent its seconds, and a timed-out
-                # summarizer is the costliest compaction there is.
-                self._account_summarizer_call(usage, summarizer, time.monotonic() - started)
-            return result.text
+                # ADR-0241: every ask counts, with its seconds (its retries and resamples
+                # included), a failed one too: a timed-out summarizer is the costliest
+                # compaction there is.
+                cost = self._compaction_cost
+                cost["summarizer_calls"] += 1
+                cost["summarizer_s"] = round(cost["summarizer_s"] + time.monotonic() - started, 3)
 
         if len(rendered) <= chunk_chars:
-            return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered), messages)
+            return self._finish_summary(
+                await ask(_SUMMARY_PROMPT + rendered + _SUMMARY_CLOSE), messages
+            )
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -2775,14 +2859,16 @@ class AgentLoop:
         slices = [capped[i : i + chunk_chars] for i in range(0, len(capped), chunk_chars)]
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
-            text = await ask(f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}")
+            text = await ask(
+                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}{_SUMMARY_CLOSE}"
+            )
             parts.append(text.strip())
         for _ in range(_MAX_FOLD_PASSES):
             if len(parts) == 1 or len("\n\n".join(parts)) <= chunk_chars:
                 break
             folded: list[str] = []
             for group in _pack_parts(parts, chunk_chars):
-                text = await ask(_FOLD_PROMPT + "\n\n".join(group))
+                text = await ask(_FOLD_PROMPT + "\n\n".join(group) + _FOLD_CLOSE)
                 folded.append(text.strip())
             parts = folded
         combined = "\n\n".join(parts)
@@ -2794,14 +2880,15 @@ class AgentLoop:
                 _MAX_FOLD_PASSES,
                 chunk_chars,
             )
-            text = await ask(_FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"))
+            text = await ask(
+                _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries") + _FOLD_CLOSE
+            )
             combined = text.strip()
         return self._finish_summary(combined, messages)
 
-    def _account_summarizer_call(
-        self, usage: Usage | None, provider: Provider, seconds: float
-    ) -> None:
-        """Count one summarizer call like every other side call (ADR-0241).
+    def _account_summarizer_usage(self, usage: Usage, provider: Provider) -> None:
+        """Count one summarizer response like every other side call (ADR-0241), a rejected
+        one too (ADR-0242): its tokens were spent.
 
         The plan judge and the quality gate already add their usage to the session and the
         budget; the summarizer returned only its text, so a compaction's calls reached
@@ -2809,18 +2896,12 @@ class AgentLoop:
         took. They are the biggest side calls a session makes: the older history, re-read in
         full. Measured 2026-09-23 (a 27B worker Body on a 131k window): 355 s from the last
         row before a compaction to its boundary, none of it attributable.
-
-        ``usage`` is None when the call raised: it still counts as a call, with its seconds.
         """
-        cost = self._compaction_cost
-        cost["summarizer_calls"] += 1
-        cost["summarizer_s"] = round(cost["summarizer_s"] + seconds, 3)
-        if usage is None:
-            return
         with contextlib.suppress(Exception):  # accounting must never break a compaction
             self.session.add_usage(usage, model=provider.model_id(), side_call="summarizer")
             if self.budget is not None:
                 self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
+        cost = self._compaction_cost
         cost["summarizer_prompt_tokens"] += usage.prompt_tokens
         cost["summarizer_cache_read_tokens"] += usage.cache_read_tokens
         cost["summarizer_completion_tokens"] += usage.completion_tokens

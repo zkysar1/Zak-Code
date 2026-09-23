@@ -14447,3 +14447,68 @@ PreCompact, no hook seconds, a failed call not counted, the row without the reco
 tokens, no call seconds, the throughput pairing reading side calls, the loop's record untagged,
 the tag surviving a mixed sum, and the session dropping the tag. The full suite passed,
 4,714 tests.
+
+## ADR-0242: the summarizer is asked where it starts writing, and a response that is not a summary is asked for again
+
+Status: accepted. 2026-09-23.
+
+ADR-0082 hands the summarizer the transcript as one user message of labeled text, so that a small
+model summarizes it instead of carrying it on. It still carries it on. Measured 2026-09-23 on the
+pod (a 27B model, three worker Bodies): of 34 compactions, 8 came back as something other than a
+summary, 56 to 442 characters long, where the other 26 ran 810 to 13,007. Read with every letter
+masked, they were a one-line status, the transcript's next turn opening with its own `[assistant]`
+label, a first-person plan for the next step, or a tool call written out as text. Each was
+installed as the summary, and those Bodies went on from the harness's position note and the kept
+messages alone. The instruction sat in the system prompt and in one line above the transcript,
+some 40,000 tokens before the point where the model starts writing.
+
+Decision.
+
+- Every transcript the summarizer reads, whole or a slice, ends with `[end of transcript]` and
+  the instruction: the model is not in the transcript, does not continue it, reply to anyone in it
+  or call a tool, and writes the summary now, in the third person, inside `<summary></summary>`.
+  The part-summaries a fold reads end the same way, and the system prompt asks for the tags too.
+- A response's summary is what it puts inside the tags, else the whole response, with thinking
+  and tool-call markup stripped as before. It is not a summary when it is empty, when it opens
+  with the label of one of the conversation's turns (`[user]`, `[assistant]` or `[tool]`; a
+  re-compaction's transcript opens with the previous summary under `[system]`, and a model may
+  echo that label), or when it is under 500 characters for a request of 20,000 characters or
+  more. The field data sets the floor: every failure was under 443
+  characters and every other response over 809.
+- A response that is not a summary is asked for again once, at the temperature the loop already
+  resamples a rejected tool call at. If the second is not a summary either, the compaction fails
+  the way a failed summarizer always has, and the old tool outputs are elided instead (ADR-0083).
+  That keeps the conversation's own text, which is more than a non-summary kept.
+- The compaction's intervention row counts the responses thrown away (`summarizer_rejected`,
+  ADR-0241), and their tokens are counted like any others', since they were spent. The status line
+  says when the summarizer is asked again, and why.
+
+Why one resample. A summarizer call takes one to ten minutes on the pod. The loop's shared retry
+bound, three retries, is sized for a 429 that clears with time, not for a model that answered the
+wrong question.
+
+What it risks. A response without tags is still read whole, so a model that ignores the tags
+loses nothing. A summary under 500 characters of a long transcript is now asked for twice and
+then replaced by an elision; a real summary that short cannot carry what 20,000 characters held.
+The closing text adds about 230 characters to every call, well inside the half of the window a
+slice leaves free.
+
+Rejected: requiring the tags. A model that writes a good summary without them would pay a
+resample and an elision at every compaction. Also rejected: binding the output with a grammar
+(`response_format`), which on a reasoning model turns thinking off for the summarizer, a trade
+this change does not make. Also rejected: a longer prompt with named sections, like Claude Code's.
+The failure is where the instruction sits, not what it asks for, and a longer summary costs
+decode time, which is most of a compaction on this pod.
+
+The proof. `tests/test_compact_loop.py` checks that a whole transcript, every slice and every
+fold end with their instruction; that the summary is read from its tags; that a response opening
+as a transcript turn is asked for again at the raised temperature, with both responses' tokens
+counted, the rejection on the row and the reason on the status line; that a short response to a
+long transcript is asked for again while a short summary of a short one stands; that an empty
+response is not a summary; that a summary may open with the previous summary's `[system]` label;
+and that two non-summaries fall back to eliding the old tool outputs. Under
+`mutation-proof-test.sh` on cc-14, fifteen mutants each turned the tests red: no closing
+instruction on the whole transcript, a slice, a fold or the clamped fold; the tags not read; no
+role-label check; `[system]` counted as a turn; no floor; the floor without its source
+threshold; no empty reason; no resample; no raised temperature; only accepted responses counted;
+no rejection count; and no status line. The full suite passed, 4,723 tests.
