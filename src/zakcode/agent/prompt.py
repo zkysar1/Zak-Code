@@ -278,6 +278,7 @@ class SystemPromptBuilder:
         *,
         session_id: str | None = None,
         task: str | None = None,
+        on_request: list[str] | None = None,
     ) -> str:
         """Render the full system prompt.
 
@@ -296,23 +297,28 @@ class SystemPromptBuilder:
                 a guide past the per-file cap the fold keeps (ADR-0173). Constant per session,
                 like the survey, so the context tier does not move between turns. ``None``
                 folds without a task tier.
+            on_request: Names of hidden tools the model can load with ``tool_search``
+                (ADR-0228), listed after the tool summary so it knows they exist. ``None``
+                or empty omits the line.
 
         Returns:
             The complete system prompt with the stable tier first, then
             :data:`DYNAMIC_BOUNDARY`, then the dynamic context tier.
         """
-        stable = self._build_stable(tools)
+        stable = self._build_stable(tools, on_request)
         context = self._build_context(settings, extra_context, session_id=session_id, task=task)
         return f"{stable}\n\n{DYNAMIC_BOUNDARY}\n\n{context}"
 
     # ── stable tier ────────────────────────────────────────────────────────────
 
-    def _build_stable(self, tools: list[ToolSpec] | None) -> str:
+    def _build_stable(
+        self, tools: list[ToolSpec] | None, on_request: list[str] | None = None
+    ) -> str:
         # The operator identity (self.md) REPLACES the default line when set, staying first
         # in the cacheable tier (highest framing precedence). Falls back to _IDENTITY.
         identity = self.identity.strip() if self.identity and self.identity.strip() else _IDENTITY
         sections = [identity, _BEHAVIOR, _TOOL_GUIDANCE, _EVIDENCE, _PLANNING, _SKILLS, _SAFETY]
-        tool_section = self._summarize_tools(tools)
+        tool_section = self._summarize_tools(tools, on_request)
         if tool_section:
             sections.append(tool_section)
         # Always-on rules sit in the cacheable tier (constant per session), after the
@@ -337,8 +343,12 @@ class SystemPromptBuilder:
         (PermissionTier.DANGER_FULL_ACCESS, "Run (shell / system)"),
     )
 
+    #: How many hidden tool names the on-request line spells out. An MCP server can hide
+    #: hundreds; past this the line says how many more there are.
+    _ON_REQUEST_SHOWN = 30
+
     @staticmethod
-    def _summarize_tools(tools: list[ToolSpec] | None) -> str:
+    def _summarize_tools(tools: list[ToolSpec] | None, on_request: list[str] | None = None) -> str:
         """A terse, grouped cheat-sheet of the active tools for the cacheable prefix.
 
         One line per tool — ``name(required, args): one-line purpose`` — grouped by what the
@@ -374,6 +384,15 @@ class SystemPromptBuilder:
             if lines:
                 out.append(f"\n{label}:")
                 out.extend(lines)
+        if on_request:
+            # Names only: the point is that the model knows the tool exists, and loading it
+            # sends the full schema (ADR-0228).
+            shown = on_request[: SystemPromptBuilder._ON_REQUEST_SHOWN]
+            more = len(on_request) - len(shown)
+            out.append(
+                "\nLoaded on request (call tool_search with a name; the tool is callable from "
+                "the next step): " + ", ".join(shown) + (f", and {more} more" if more else "")
+            )
         return "\n".join(out)
 
     # ── dynamic tier ───────────────────────────────────────────────────────────

@@ -170,10 +170,11 @@ async def test_discover_no_budget_exposes_all() -> None:
 
 
 async def test_facade_mcp_budget_hides_overflow_then_tool_search_surfaces(tmp_path: Path) -> None:
-    # The production shape: the real built-in set and the default budget, which the built-ins
-    # alone exceed. Discovery counts every active tool, so the MCP tools start hidden; the
-    # model must then be able to surface one. This test used to activate the tool by hand
-    # instead of searching, and so never saw that tool_search could not.
+    # The production shape: the real built-in set and the default budget. Discovery counts
+    # every active tool, so it exposes MCP tools only while the whole list is under the
+    # budget and hides the rest; the model must then be able to surface a hidden one. This
+    # test used to activate the tool by hand instead of searching, and so never saw that
+    # tool_search could not.
     agent = Agent(
         settings=Settings(
             default_model="scripted/test", context_window=8192, workspace_root=tmp_path
@@ -182,21 +183,25 @@ async def test_facade_mcp_budget_hides_overflow_then_tool_search_surfaces(tmp_pa
     )
     # tool_search is registered and active.
     assert "tool_search" in agent.registry.active_names()
-    assert len(agent.registry.active_names()) >= DEFAULT_TOOL_BUDGET  # the premise
 
+    # One more filler tool than discovery has room for, then the one we want: it is hidden.
+    room = max(0, DEFAULT_TOOL_BUDGET - len(agent.registry.active_names()))
+    fillers: list[dict[str, Any]] = [{"name": f"t{i}"} for i in range(room + 1)]
     manager = ExtensionManager()
     manager.add_client(
-        "web", _FakeClient([{"name": "alpha", "description": "alpha search"}, {"name": "beta"}])
+        "web", _FakeClient([*fillers, {"name": "alpha", "description": "alpha search"}])
     )
     agent.extension_manager = manager
     report = await agent.connect_mcp()
     assert report is not None
-    assert report.registered == [] and len(report.deferred) == 2  # both start hidden
+    assert len(report.registered) == room
+    assert "mcp__web__alpha" in report.deferred
 
     search = agent.registry.get("tool_search")
     assert search is not None
     result = await search.execute({"query": "alpha"}, _ctx(tmp_path))
     assert result.data is not None and result.data["activated"] == ["mcp__web__alpha"]
     exposed = [d["function"]["name"] for d in agent.registry.definitions()]
-    assert "mcp__web__alpha" in exposed and "mcp__web__beta" not in exposed
+    assert "mcp__web__alpha" in exposed
+    assert f"mcp__web__t{room}" not in exposed  # the other hidden one stays hidden
     await agent.aclose_mcp()

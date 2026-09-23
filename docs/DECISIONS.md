@@ -13723,3 +13723,56 @@ built-in set, the default budget, and a `tool_search` call, which must surface t
 tool and leave the other hidden. `test_builtins_never_use_up_the_budget` replaces a test that
 asserted the old behavior. Two mutants were caught with `mutation-proof-test.sh` on cc-14:
 counting every active tool again (three tests) and removing eviction (the eviction test).
+
+## ADR-0228: the tools that create documents and images load on request
+
+Status: accepted. 2026-09-23.
+
+Context. Every model call carries the schema of every exposed tool. On 2026-09-23 the 27
+built-ins came to 26,970 JSON characters on every call. Nine of them work on documents, PDFs and
+images, and none of the nine had been called in coach's CLI log (17 MB) or in the three alpha
+workers' logs; they appear there only on two lines that list tool names. Claude Code keeps
+rarely used tools out of the list until a search loads them. OpenDev's lazy discovery cut the
+startup context cost of MCP schemas from 40% to under 5% (arXiv 2603.05344, section 3.5), and
+Tool Attention pairs compact tool summaries with schemas loaded on demand (arXiv 2604.21816).
+
+Decision. The main agent registers five of the nine hidden: `create_docx`, `create_xlsx`,
+`create_pdf`, `save_image` and `create_chart_image`. The prompt's tool summary names them on one
+line, "Loaded on request", and `tool_search` loads one by name or keyword; it is callable from
+the next step, with its full schema. A hidden built-in loads whatever the MCP budget, which is 0
+in a session without MCP and limits MCP tools only. `tool_search` is now registered in every
+session, not only with MCP, so the served path can load them too. The line is left out when
+`tool_search` is not exposed, because then nothing could load the tools it names. The factory is
+unchanged: a sub-agent's registry has no `tool_search`, so it keeps all 27 exposed. A model that
+calls a hidden tool by name without loading it still reaches the tool: dispatch looks a tool up
+by name whether or not it is exposed, as it always has for lazy MCP tools.
+
+Why the readers stay. A file arrives unannounced, and the web app's upload prompt names the
+reader to use: `read_docx`, `read_xlsx` or `inspect_image` (`_reader_tool_for_artifact` in
+server/app.py). An instruction to go and fetch something is not a control on a small model:
+ADR-0170 measured one, "read the file for the rest", moving a 35B 0 times in 12. So `read_docx`,
+`read_xlsx`, `read_pdf` and `inspect_image` stay in the list, and a test fails if a reader an
+upload names is hidden. A new document, sheet or chart is asked for in the user's own words, and
+the line puts the matching name in front of the model.
+
+What it risks. A task that creates one of these takes one more step, the search, and a small
+model may skip it; it can still call the tool by the name on the line, or write the file some
+other way. Loading a tool changes the prompt's tool summary, which sits ahead of the rules, the
+context and the conversation, so the next call reuses the cached prefix only up to that point:
+close to a full prefill, once per load. With 23 tools exposed instead of 28, discovery again
+exposes up to two MCP tools at startup before hiding the rest, since it counts every active tool
+against its budget of 25 (ADR-0227).
+
+Measured on the facade, against main at 189f3bd. With MCP, as the CLI runs, exposed schemas go
+from 28 tools and 27,538 characters to 23 tools and 22,551, 18% less on every call. Without MCP,
+as the served path runs, from 27 tools and 26,970 characters to the same 23 and 22,551, 16% less;
+the served shape also gains the `tool_search` schema.
+
+The proof. tests/test_on_request_tools.py: the five start hidden while the working set stays
+exposed; a sub-agent's registry keeps them; `tool_search` loads one by name in a session
+without MCP; the prompt names them until one is loaded, and names none when nothing can load
+them; and the reader each kind of upload names is exposed. Five mutants each turned the suite red
+under `mutation-proof-test.sh` on cc-14: leaving the five exposed, letting the MCP budget limit
+built-ins, dropping the prompt line, showing the line without `tool_search`, and hiding
+`read_docx`. The MCP facade test in tests/test_tool_search.py now derives how much room
+discovery has instead of assuming the built-ins fill the budget.

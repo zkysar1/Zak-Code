@@ -31,6 +31,23 @@ from zakcode.tools.builtins.write_file import WriteFileTool
 if TYPE_CHECKING:
     from zakcode.config import Settings
 
+#: Built-ins a session rarely needs. The main agent keeps them out of the model's tool list
+#: until it loads one with ``tool_search`` (ADR-0228). On 2026-09-23 their schemas were 5,063
+#: of the built-ins' 26,970 JSON characters, sent on every model call, and none of them had
+#: been called in coach's CLI log (17 MB) or in the alpha workers' logs: they appeared only on
+#: two lines listing tool names. Only the creators are here. The document and image readers
+#: stay exposed: a file can arrive unannounced, and the server's upload prompt names its
+#: reader (``_reader_tool_for_artifact``), while a new document is asked for in the user's own
+#: words. This factory still registers them active, so a sub-agent's registry, which has no
+#: ``tool_search``, keeps them.
+ON_REQUEST_TOOLS: tuple[str, ...] = (
+    "create_docx",
+    "create_xlsx",
+    "create_pdf",
+    "save_image",
+    "create_chart_image",
+)
+
 
 def default_registry(settings: Settings | None = None) -> ToolRegistry:
     """Build a :class:`ToolRegistry` populated with every built-in tool.
