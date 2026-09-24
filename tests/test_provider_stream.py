@@ -707,8 +707,15 @@ async def test_a_slow_first_chunk_that_arrived_is_measured_for_the_next_call(
     monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
     events = await _collect(provider.astream(_LONG_MSGS))
     assert isinstance(events[-1], StreamDone)
-    bound = provider._first_chunk_bound(_estimate(_LONG_MSGS))
-    assert 0.2 <= bound < 0.4  # 2 x (0.1s + scheduling), never below the floor
+    est = _estimate(_LONG_MSGS)
+    measured = provider._prefill_seconds_per_token * est  # the wait the call charged itself
+    # The 0.1s gap, less one clock tick: on Windows py3.11 time.monotonic() ticks every
+    # 15.6ms and asyncio fires a timer up to one tick EARLY (measured on main CI 2026-09-24:
+    # 0.094s for a 0.1s sleep), so a hard 0.2 floor on the bound was a coarse-clock flake.
+    assert 0.07 <= measured < 1.0
+    bound = provider._first_chunk_bound(est)
+    assert bound == pytest.approx(2 * measured)  # the margin over the measured wait
+    assert bound > 0.15  # and above the floor, which is the point
 
 
 async def test_the_cache_share_the_backend_reports_sharpens_the_rate(
