@@ -772,6 +772,13 @@ class RecipeCursor:
                 for written in _shell_write_targets(command):
                     if not _is_runnable_target(written):
                         continue
+                    # A target that still holds a shell expansion (`"$S/x.sh"`, `$(pwd)/x.py`, a
+                    # backtick) names a path only the MODEL's shell resolved. The harness re-runs
+                    # a pending target in a fresh shell where `S` is unset, gets `/x.sh`, and
+                    # reports a failure the model never caused (ADR-0246). Arming nothing here is
+                    # ADR-0140's own safe direction for a write it cannot follow.
+                    if "$" in written or "`" in written:
+                        continue
                     self.wrote_runnable = True
                     base = os.path.basename(written)
                     self._targets.add(base)

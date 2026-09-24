@@ -6100,7 +6100,8 @@ file; the gate's job is to notice it, not to forbid it.
 **Consequences.** Detection is a token scan, so it is deliberately incomplete: a write performed
 inside an interpreter string (``python -c "open(p,'w')…"``), through ``patch``, or by a script the
 model invokes is not seen, and the gate then behaves exactly as it did before. Incomplete in the
-safe direction — every shape it does recognize is one that used to escape entirely.
+safe direction — every shape it does recognize is one that used to escape entirely. (Amended by
+ADR-0246: a target spelled through a shell expansion, such as `"$S/x.sh"`, is one it declines.)
 
 The real risk is the opposite one: arming the gate more often can produce false stalls, which is
 precisely the cost ADR-0136 exists to prevent. Two protections already in place make that
@@ -14715,3 +14716,53 @@ tests red: six in `Skill.body()` (no stamp check; no first-read guard; size or m
 the stamp; the stamp not saved; a vanished file served from the cache) and five in the loop (a
 decision made once per name; the pages kept; the fit kept; the door's text compared instead of
 the file; the decision taken again at a page turn). The full suite passed, 4,738 tests.
+
+## ADR-0246: a shell write the harness cannot follow does not arm the recipe gate
+
+Status: accepted. 2026-09-24.
+
+ADR-0140 arms the verify-before-finish gate on a shell write and keeps the redirect target as the
+raw token the command spelled. When the turn ends with that file unverified, the harness runs it
+itself (ADR-0110) through `resolve_run_command`, in a shell of its own. A target spelled through
+the model's shell state is a different path there. After `S=/work/scratch`, `cat > "$S/stub.sh"`
+is `/work/scratch/stub.sh` to the model's shell and `/stub.sh` to the harness's, where `S` was
+never set.
+
+Measured 2026-09-24 on zc-01, zakcode 69f771e, model Qwen3.8-27B. Each of the worker Body's calls
+runs in a fresh shell, so every call that touches its scratch directory opens with `S=<scratch>`
+and writes through `"$S/..."`. At 18:35Z it wrote a fixture that fails by design,
+`cat > "$S/fake-aws-exec-fail.sh"`, whose body ends `exit 254`. The turn was still open when the
+model finished at 01:14Z. The harness then ran the pending target and injected, as a user message,
+`[harness] I ran the file to verify it: bash: /fake-aws-exec-fail.sh: No such file or directory
+[exit code: 127]`. The model spent the next twelve minutes proving that no deliverable names that
+path and rewrote its verdict. The attempts ran out and the turn ended `recipe_stalled` after 630
+minutes. Nothing the model wrote was broken.
+
+Decision. `RecipeCursor.observe` does not arm the gate for a shell write target that still holds
+a shell expansion: a `$` (a variable, `${...}`, a command substitution) or a backtick. That is the
+direction ADR-0140 already names for a write the token scan cannot follow: the gate behaves as it
+did before the write.
+
+Consequences. A runnable file written only through a variable path is not held by this gate. The
+model can still run it, and a green test run still clears the gate (ADR-0136). A write through a
+literal path arms exactly as before, so a file written once through a variable and once literally
+arms from the literal write.
+
+Rejected: resolving the variable from an assignment earlier in the same command. It would have
+fixed the path here and then run the fixture, which exits 254 by design, and injected that as a
+failed verification. A pending target can be a fixture that is meant to fail, and a variable path
+is where a Body keeps its fixtures. Resolution also needs a shell's rules for quoting, prefix
+assignments and heredoc bodies, and an assignment the scan misreads would run the wrong file.
+Also rejected: expanding through the harness process's environment. The Bash tool's children
+also get the workspace settings env, so the process environment is not the one either shell saw.
+
+Left open: a harness run of a fixture written through a LITERAL path, if it fails by design, still
+reads as a failed verification. Nothing in the call log separates a fixture from a deliverable.
+
+The proof. `tests/test_recipe.py::test_a_shell_write_through_a_variable_path_arms_nothing` feeds
+the cursor the measured command and the braced, command-substitution and backtick spellings. None
+arms, and the same write through a literal path does.
+`test_harness_never_runs_a_file_the_model_reached_through_a_variable` runs the loop end to end. The
+model writes `"$S/stub.sh"` through a real shell and finishes, the turn completes, and no
+`[harness] I ran` message appears. Both failed before the change, the second with
+`recipe_stalled`, as on zc-01.
