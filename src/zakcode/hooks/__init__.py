@@ -617,11 +617,24 @@ class HookManager:
             if decision is HookDecision.BLOCK:
                 return self._result(decision, messages, arguments, mutated, extras)
 
+        # One tool call runs one distinct shell command once. A Claude Code settings.json
+        # lists the same hook under separate ``Edit`` and ``MultiEdit`` matcher blocks, and
+        # zakcode's one edit tool answers to both spellings (``_CLAUDE_CODE_TOOL_NAMES``), so
+        # both specs match one Edit -- and every hook in those blocks ran twice per edit.
+        # Measured 2026-09-24 on three Mind worker Bodies: two 15 s timeouts of ONE hook per
+        # Edit (32.4 s edits) and two pushes of each edited file. The matcher keeps its alias
+        # reach (a settings file written for Claude Code must keep firing); the dispatch
+        # dedupes on the argv it would run, first registration winning.
+        dispatched: set[tuple[str, ...]] = set()
         for spec in self.shell_hooks:
             if spec.event is not payload.event or not spec.matches(
                 payload.tool_name, payload.tool_aliases
             ):
                 continue
+            argv = tuple(spec.command)
+            if argv in dispatched:
+                continue
+            dispatched.add(argv)
             current = payload.model_copy(update={"arguments": arguments})
             one = await self._run_shell(spec, current)
             decision, messages, arguments, mutated = self._fold(
