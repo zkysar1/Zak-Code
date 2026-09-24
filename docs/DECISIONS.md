@@ -14808,3 +14808,71 @@ The proof. `tests/test_loop_planning.py::test_a_withheld_batch_still_runs_its_wa
 a wake-up, then sends a write and the cancel in one batch under `require_plan`: the write's
 result is the refusal and the write runs only after the plan, the cancel's result is real and the
 slot is empty. Before the change the cancel came back refused and the slot still held the wake-up.
+
+## ADR-0248: the first chunk's wait is sized to the prompt
+
+Status: accepted. 2026-09-24.
+
+ADR-0120 bounds every gap of a streaming call at `stream_stall_timeout` (600s), because a
+per-gap bound is what catches a backend that sent headers and then nothing. The first gap is
+different in kind: it covers the prefill, and a prefill is as long as its prompt. On a hosted
+API that is seconds. On the fleet's pod (Tesla P40s, llama.cpp, 68-92 tok/s cold — measured
+from `/slots` deltas 2026-09-24) a full-context prompt is 20-25 minutes, and a Mind session
+runs at full context for most of its life.
+
+Measured 2026-09-24 on zc-03, coach (Mind session 4be0f443), zakcode 5ded437, zakpod1: a
+streaming call issued at 18:40:09Z with a 112,249-token prompt, its slot cache just evicted by
+another session's request on the same engine, was cut off at 18:50:18Z — 609s, the stall
+default — with zero chunks received. The retry resumed against the half-built cache (the pod
+reports the prompt as cached on the retry), which is why every retry looks quick and the
+first attempt looks wedged. On 2026-09-23 the same pod aborted eleven Body calls with zero
+chunks, seven of them at exactly the 600s default (#661 measured the notices). Each expiry
+costs the whole 600s, one of the call's three interrupt retries, and the operator a wrong
+diagnosis: the backend was not stuck, it was working. A call whose cold prefill outlasts the
+whole retry budget ends the turn.
+
+Decision.
+
+- The FIRST chunk of a streaming call waits `max(stall floor, min(prompt × rate × 2,
+  ceiling))`. The floor is `stream_stall_timeout`, ADR-0120's bound, so nothing changes until
+  the backend has shown it needs more. The rate is the slowest prefill this provider instance
+  has measured, in seconds per estimated uncached prompt token. The margin of 2 is the
+  topology — one cold prefill queued ahead on a one-slot engine doubles the wait — and it
+  doubles as the growth step. The ceiling is `request_timeout`, the operator's own answer to
+  how long any model call may go without producing anything, the limit the buffered path has
+  always run under. Every later gap keeps `stream_stall_timeout`.
+- Every call teaches the rate: the wait to its first chunk over the uncached share of its
+  prompt, or, when the first chunk never comes, the bound it outlasted. The pod reports its
+  cache reads (138 of coach's last 143 calls carried one), so a retry that resumes from a
+  half-built cache still measures the COLD rate. An observation is charged at least one
+  prefill batch (512 tokens), so a fully cached call's scheduling overhead never reads as a
+  rate. The rate only rises: the bound must cover the worst this backend has shown.
+- The expiry names the limit that set the bound — the stall floor, the learned rate, or the
+  whole-call ceiling — because that word is all the loop's retry notice prints (#661), and it
+  says what the next attempt will wait. At the ceiling it names the knob.
+- No knob was added. The prompt estimate is the provider's own rough count, the same unit the
+  rate is learned in, so the estimator's bias cancels.
+
+Consequences. On a default install (both bounds 600s) nothing moves: the ceiling is the
+floor. On the pod (`request_timeout` 3600) the first cold full-context call of a process
+still expires at 600s — that expiry is the first measurement — and its retry waits 1200s and
+completes; that success measures the cold rate, and the next such call waits ~2800s from its
+first attempt. A backend that genuinely wedges after its headers now costs up to the ceiling
+per attempt instead of 600s, on exactly the boxes whose operator raised that ceiling because
+their backend is slow. That is the trade, and it is the operator's own number.
+
+Rejected: recommending `ZAKCODE_STREAM_STALL_TIMEOUT=2400` on the pod boxes. It covers the
+pod's largest prompts, weakens the stall bound for every later gap fourfold, needs every CLI
+restarted, and is one more number to carry per box. Also rejected: counting the prompt with
+the tokenizer — the rough count is free and its bias cancels against a rate learned in the
+same unit. Also rejected: a fixed-plus-proportional model of the wait. Queue time is not
+proportional to the requester's prompt, but a client has no queue-position signal, and the
+learned rate already absorbs a queued observation in the safe direction.
+
+The proof. `tests/test_provider_stream.py`:
+`test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry` drives four expiries on
+one provider — 0.05 → 0.1 → 0.2 → 0.25s, floor to ceiling, labelled floor / learned /
+learned / ceiling; `test_a_slow_first_chunk_that_arrived_is_measured_for_the_next_call`,
+`test_the_cache_share_the_backend_reports_sharpens_the_rate`,
+`test_the_rate_is_charged_at_least_one_batch_and_only_rises` and
+`test_later_gaps_keep_the_per_gap_bound_whatever_the_first_learned` pin the other clauses.

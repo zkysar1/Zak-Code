@@ -257,6 +257,11 @@ class TimedOut(RateLimited):
     zakpod1 2026-09-23, eleven Body calls aborted with zero chunks received, seven
     of them at the 600s stall default, and every notice read
     ``request timed out (ZAKCODE_REQUEST_TIMEOUT)``.
+
+    A first-chunk expiry under a LEARNED bound (ADR-0248: the prompt-scaled wait
+    between the stall floor and the whole-call ceiling) carries a descriptive
+    ``bound`` instead of a knob name, because no knob set it; its message says
+    what the next attempt will wait.
     """
 
     def __init__(

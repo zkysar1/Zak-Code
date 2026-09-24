@@ -17,6 +17,7 @@ tests assert that:
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +38,7 @@ from zakcode.providers.base import (
     TimedOut,
 )
 from zakcode.providers.litellm_provider import LiteLLMProvider
+from zakcode.usage import Usage
 
 # ── Fake chunk builders ───────────────────────────────────────────────────────
 
@@ -522,7 +524,7 @@ async def test_a_stream_that_never_sends_a_chunk_is_timed_out(
     with pytest.raises(TimedOut) as excinfo:
         await _collect(_fast_provider().astream(_MSGS))
     message = str(excinfo.value)
-    assert "no stream data at all" in message
+    assert "the first chunk never did" in message
     assert "ZAKCODE_STREAM_STALL_TIMEOUT" in message
     # The loop's retry notice reads this, not the message (g-375-17).
     assert excinfo.value.bound == "ZAKCODE_STREAM_STALL_TIMEOUT"
@@ -604,3 +606,162 @@ def test_stream_stall_timeout_resolution_prefers_the_explicit_value() -> None:
     )
     assert both.request_timeout == 3600.0
     assert both.stream_stall_timeout == 600.0
+
+
+# ── the first chunk's bound is sized to the prompt (ADR-0248) ─────────────────
+# The first gap covers the prefill, and a prefill is as long as its prompt: on zakpod1
+# (70-90 tok/s) a cold full-context prefill is 20-25 minutes, so the fixed 600s bound cut
+# every such call off with zero chunks. The first chunk's bound starts at the stall floor,
+# grows with the prompt at the slowest prefill this provider has measured, and never
+# exceeds the whole-call ceiling. Every later gap keeps the per-gap bound.
+
+_LONG_MSGS = [Message.user("x" * 4_000)]  # ~1,004 estimated tokens: above the batch floor
+
+
+def _learning_provider(stall: float, ceiling: float) -> LiteLLMProvider:
+    from zakcode.config import Settings
+
+    return LiteLLMProvider(
+        model="gpt-4o-mini",
+        api_key="sk-test",
+        settings=Settings(stream_stall_timeout=stall, request_timeout=ceiling),
+    )
+
+
+def _estimate(messages: list[Message]) -> int:
+    return LiteLLMProvider._rough_token_estimate(
+        LiteLLMProvider._translate_messages(messages, None)
+    )
+
+
+def test_the_first_chunk_bound_is_the_stall_floor_until_the_backend_teaches_it() -> None:
+    provider = _learning_provider(stall=0.05, ceiling=10.0)
+    assert provider._first_chunk_bound(1) == 0.05
+    assert provider._first_chunk_bound(200_000) == 0.05  # size alone proves nothing
+    # A floor above the ceiling is the floor: ADR-0120's bound, unchanged.
+    inverted = _learning_provider(stall=0.3, ceiling=0.1)
+    inverted._note_prefill(1_000, 5.0)
+    assert inverted._first_chunk_bound(1_000) == 0.3
+
+
+async def test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _learning_provider(stall=0.05, ceiling=0.25)
+    monkeypatch.setattr(provider_mod, "_MIN_REQUEST_INTERVAL_S", 0.0)  # pacing is not the bound
+    est = _estimate(_LONG_MSGS)
+    labels: list[str] = []
+    waits: list[float] = []
+    for _ in range(4):
+        stream = _StallingStream([])
+        monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+        before = time.monotonic()
+        with pytest.raises(TimedOut) as excinfo:
+            await _collect(provider.astream(_LONG_MSGS))
+        waits.append(time.monotonic() - before)
+        labels.append(excinfo.value.bound)
+        assert stream.closed  # the socket is released each time
+    # 0.05 → 0.1 → 0.2 → 0.25: each expiry is a measurement, the bound doubles on it (the
+    # margin is the growth step), and the ceiling caps it. The retry that the loop issues
+    # against the backend's half-built cache therefore gets the time it needs.
+    assert waits[0] < waits[1] < waits[2]
+    assert waits[3] < 0.5
+    assert provider._first_chunk_bound(est) == 0.25
+    assert labels[0] == "ZAKCODE_STREAM_STALL_TIMEOUT"
+    assert labels[1].startswith("first-chunk bound 0.1s, learned")
+    assert labels[2].startswith("first-chunk bound 0.2s, learned")
+    assert labels[3] == "ZAKCODE_REQUEST_TIMEOUT"
+
+
+async def test_a_first_gap_expiry_says_what_the_next_attempt_will_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _learning_provider(stall=0.05, ceiling=0.25)
+    stream = _StallingStream([])
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    with pytest.raises(TimedOut) as excinfo:
+        await _collect(provider.astream(_LONG_MSGS))
+    message = str(excinfo.value)
+    assert "the first chunk never did" in message
+    assert "the ZAKCODE_STREAM_STALL_TIMEOUT floor (0.05s)" in message
+    assert "The next attempt waits up to 0.1s." in message
+    # At the ceiling there is nothing left to learn, and the one knob that helps is named.
+    provider._note_prefill(_estimate(_LONG_MSGS), 100.0)
+    stream = _StallingStream([])
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    with pytest.raises(TimedOut) as excinfo:
+        await _collect(provider.astream(_LONG_MSGS))
+    assert excinfo.value.bound == "ZAKCODE_REQUEST_TIMEOUT"
+    assert "the ZAKCODE_REQUEST_TIMEOUT ceiling (0.25s)" in str(excinfo.value)
+    assert "raise it if this backend" in str(excinfo.value)
+
+
+async def test_a_slow_first_chunk_that_arrived_is_measured_for_the_next_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 0.1s to the first chunk under a 0.15s floor: within bound, so the call succeeds —
+    # and the next call's first-chunk bound is 2x the wait it measured, above the floor.
+    provider = _learning_provider(stall=0.15, ceiling=10.0)
+    chunks = [_chunk(content="ok"), _chunk(content="", finish_reason="stop")]
+    stream = _StallingStream(chunks, gap=0.1, hang=False)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    events = await _collect(provider.astream(_LONG_MSGS))
+    assert isinstance(events[-1], StreamDone)
+    bound = provider._first_chunk_bound(_estimate(_LONG_MSGS))
+    assert 0.2 <= bound < 0.4  # 2 x (0.1s + scheduling), never below the floor
+
+
+async def test_the_cache_share_the_backend_reports_sharpens_the_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Half the prompt came from the backend's cache: the wait is charged to the other
+    # half, so the measured rate is twice as slow as charging the whole prompt would say.
+    # That is how a retry resuming from a half-built cache still teaches the COLD rate.
+    provider = _learning_provider(stall=0.15, ceiling=10.0)
+    noted: list[tuple[int, float, float]] = []
+    monkeypatch.setattr(provider, "_note_prefill", lambda est, s, f=1.0: noted.append((est, s, f)))
+    usage = SimpleNamespace(
+        prompt_tokens=1_000, completion_tokens=2, total_tokens=1_002, cache_read_input_tokens=500
+    )
+    chunks = [_chunk(content="ok"), _usage_only_chunk(usage)]
+    stream = _StallingStream(chunks, gap=0.01, hang=False)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    await _collect(provider.astream(_LONG_MSGS))
+    assert len(noted) == 1
+    est, seconds, fraction = noted[0]
+    assert est == _estimate(_LONG_MSGS)
+    assert seconds >= 0.01
+    assert fraction == 0.5
+
+
+def test_the_rate_is_charged_at_least_one_batch_and_only_rises() -> None:
+    provider = _learning_provider(stall=0.05, ceiling=10.0)
+    # A fully cached call: 2s for 0 uncached tokens is one batch of overhead, not a rate.
+    provider._note_prefill(100_000, 2.0, uncached_fraction=0.0)
+    assert provider._prefill_seconds_per_token == 2.0 / 512
+    provider._note_prefill(100_000, 1_250.0)  # a cold prefill: 12.5ms per token
+    assert provider._prefill_seconds_per_token == pytest.approx(0.0125)
+    provider._note_prefill(100_000, 3.0, uncached_fraction=0.01)  # cached again: no drop
+    assert provider._prefill_seconds_per_token == pytest.approx(0.0125)
+    assert LiteLLMProvider._uncached_fraction(None) == 1.0
+    assert LiteLLMProvider._uncached_fraction(Usage(prompt_tokens=0)) == 1.0
+    # zakpod1 reports its cache reads (coach's session 2026-09-24: 138 of 143 calls).
+    reported = Usage(prompt_tokens=112_249, cache_read_tokens=111_195)
+    assert LiteLLMProvider._uncached_fraction(reported) == pytest.approx(1_054 / 112_249)
+
+
+async def test_later_gaps_keep_the_per_gap_bound_whatever_the_first_learned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _learning_provider(stall=0.05, ceiling=5.0)
+    est = _estimate(_LONG_MSGS)
+    provider._note_prefill(est, 5.0)  # the first chunk may now take the whole ceiling
+    assert provider._first_chunk_bound(est) == 5.0
+    stream = _StallingStream([_chunk(content="one")])  # one chunk, then the wedge
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    before = time.monotonic()
+    with pytest.raises(TimedOut) as excinfo:
+        await _collect(provider.astream(_LONG_MSGS))
+    assert time.monotonic() - before < 2.0  # the 0.05s per-gap bound, not the 5s first
+    assert "stalled after 1 chunk(s)" in str(excinfo.value)
+    assert excinfo.value.bound == "ZAKCODE_STREAM_STALL_TIMEOUT"

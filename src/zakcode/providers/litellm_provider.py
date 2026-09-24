@@ -541,6 +541,20 @@ _MAX_COMPLETION_TOKENS = 8_192
 #: burst edge. Fixed, not a knob (no-knobs ruling).
 _MIN_REQUEST_INTERVAL_S = 1.0
 
+#: The first chunk of a streaming call waits out the prefill, and a prefill is as long as
+#: its prompt (ADR-0248). That chunk's bound is the prompt's estimated size times the
+#: slowest prefill this provider has seen, with this much headroom: on a one-slot engine a
+#: cold prefill queued ahead of ours doubles the wait, so 2 is the topology, not a tuning.
+#: It is also the step the bound grows by when a first gap expires before a rate has been
+#: measured (the expiry itself is the measurement). Fixed, not a knob (no-knobs ruling).
+_FIRST_CHUNK_MARGIN = 2.0
+#: A prefill runs in batches, so a wait shorter than one batch's worth of tokens says
+#: nothing about the per-token rate: a fully cached call's first chunk is scheduling plus
+#: one decode step, and charging that to its handful of uncached tokens would teach a
+#: rate a hundred times slower than the backend's. Every observation is charged at least
+#: this many tokens (llama.cpp's default micro-batch; servers batch at this scale or above).
+_PREFILL_BATCH_TOKENS = 512
+
 
 class LiteLLMProvider(Provider):
     """A :class:`Provider` backed by litellm.
@@ -728,6 +742,12 @@ class LiteLLMProvider(Provider):
         self.stream_stall_timeout: float = (
             resolved_stream_stall if resolved_stream_stall is not None else 600.0
         )
+        #: The slowest prefill this instance has seen, in seconds per ESTIMATED uncached
+        #: prompt token (ADR-0248): 0.0 until a first chunk, or a first gap's expiry, has
+        #: taught it. It only ever grows — the first-chunk bound must cover the worst this
+        #: backend has shown — and it belongs to the instance because it describes the
+        #: backend, which every session and sub-agent on this provider shares.
+        self._prefill_seconds_per_token = 0.0
 
         # litellm reads OLLAMA_API_BASE from the environment for ollama_chat/*.
         if _is_ollama_model(self.model) and self.ollama_base_url:
@@ -1722,7 +1742,83 @@ class LiteLLMProvider(Provider):
 
         return events, finish_reason
 
-    async def _bounded_chunks(self, resp: Any) -> AsyncIterator[Any]:
+    def _first_chunk_bound(self, prompt_estimate: int) -> float:
+        """Seconds the FIRST chunk of a streaming call may take (ADR-0248).
+
+        The floor is the per-gap stall bound, so nothing changes until this backend has
+        shown it needs more. Above it the wait grows with the prompt, at the slowest
+        prefill rate measured here and with headroom for one call queued ahead. The
+        ceiling is ``request_timeout``: the operator's own answer to how long ANY model
+        call may go without producing anything, the limit the buffered path has always
+        run under. A floor above the ceiling is the floor — an operator who set them that
+        way gets ADR-0120's bound unchanged.
+        """
+        learned = prompt_estimate * self._prefill_seconds_per_token * _FIRST_CHUNK_MARGIN
+        return max(self.stream_stall_timeout, min(learned, self.request_timeout))
+
+    def _note_prefill(
+        self, prompt_estimate: int, seconds: float, uncached_fraction: float = 1.0
+    ) -> None:
+        """Record that a prompt of ``prompt_estimate`` tokens, ``uncached_fraction`` of
+        them not served from the backend's cache, kept its first chunk waiting
+        ``seconds`` — or, for an expiry, at least that long.
+
+        The estimate is the same rough count the bound is later sized with, so the
+        estimator's bias cancels; only the cache share, which the backend reports in
+        real tokens, needs to be a ratio. The rate only ever rises.
+        """
+        tokens = max(prompt_estimate * uncached_fraction, float(_PREFILL_BATCH_TOKENS))
+        self._prefill_seconds_per_token = max(self._prefill_seconds_per_token, seconds / tokens)
+
+    @staticmethod
+    def _uncached_fraction(usage: Usage | None) -> float:
+        """The share of the prompt the backend had to compute, per its usage; 1.0 when it
+        did not say, so an unreported cache never makes a measured wait look faster."""
+        if usage is None or usage.prompt_tokens <= 0:
+            return 1.0
+        share = (usage.prompt_tokens - usage.cache_read_tokens) / usage.prompt_tokens
+        return min(1.0, max(0.0, share))
+
+    def _first_chunk_expiry(self, prompt_estimate: int, bound: float) -> TimedOut:
+        """The :class:`TimedOut` for a first chunk that never came within ``bound``.
+
+        Names the limit that set the bound — the stall floor, the learned rate, or the
+        whole-call ceiling — because that is the only word the loop's retry notice
+        prints, then records the expiry as a prefill observation so the retry's bound
+        grows, and says what the next attempt will wait. An expiry AT the ceiling is
+        the one case a knob is the remedy, and the message says which.
+        """
+        floor, ceiling = self.stream_stall_timeout, self.request_timeout
+        if bound <= floor:  # nothing learned yet, or the floor outranks what was learned
+            label = "ZAKCODE_STREAM_STALL_TIMEOUT"
+            source = f"the ZAKCODE_STREAM_STALL_TIMEOUT floor ({floor:g}s)"
+        elif bound >= ceiling:
+            label = "ZAKCODE_REQUEST_TIMEOUT"
+            source = f"the ZAKCODE_REQUEST_TIMEOUT ceiling ({ceiling:g}s)"
+        else:
+            label = f"first-chunk bound {bound:g}s, learned from this backend"
+            source = (
+                f"{_FIRST_CHUNK_MARGIN:g}x that prompt at the slowest prefill seen here "
+                f"({1.0 / self._prefill_seconds_per_token:.0f} tok/s)"
+            )
+        self._note_prefill(prompt_estimate, bound)
+        next_bound = self._first_chunk_bound(prompt_estimate)
+        outlook = (
+            f"The next attempt waits up to {next_bound:g}s."
+            if next_bound > bound
+            else "That is the ZAKCODE_REQUEST_TIMEOUT ceiling; raise it if this backend's "
+            "prefill for a prompt this size legitimately takes longer."
+        )
+        return TimedOut(
+            f"streaming call sent no data within {bound:g}s (its headers arrived, the first "
+            f"chunk never did) for an estimated {prompt_estimate}-token prompt; the bound "
+            f"was {source}. {outlook}",
+            bound=label,
+        )
+
+    async def _bounded_chunks(
+        self, resp: Any, *, prompt_estimate: int, started: float
+    ) -> AsyncIterator[Any]:
         """Yield the stream's chunks, bounding the WAIT for each one (ADR-0120, #176).
 
         litellm's scalar ``timeout`` does not bound a streaming READ. Measured on the
@@ -1739,31 +1835,53 @@ class LiteLLMProvider(Provider):
         :class:`TimedOut`, which rides the loop's bounded retry and then ends the turn
         loudly; the message says whether anything ever arrived, because zero chunks is a
         wedged prefill while a stall after N chunks is a mid-stream death.
+
+        The FIRST gap is sized to the prompt (ADR-0248). One fixed bound cannot serve a
+        5k-token prompt and a 112k-token one on a backend that prefills at 70-90 tok/s:
+        measured on zakpod1 2026-09-23/24, a full-context cold prefill takes 20-25
+        minutes, and under the 600s default every such call was cut off with zero chunks
+        and retried against its half-built cache. So the first wait is
+        :meth:`_first_chunk_bound` — the stall floor, grown with the prompt at the slowest
+        prefill this backend has shown, under the ``request_timeout`` ceiling — and every
+        later gap keeps the per-gap bound. Each call teaches the rate: the wait to its
+        first chunk over the uncached share of its prompt, or, for an expiry, the bound it
+        outlasted.
         """
         iterator = resp.__aiter__()
         seen = 0
-        while True:
-            try:
-                chunk = await asyncio.wait_for(iterator.__anext__(), self.stream_stall_timeout)
-            except StopAsyncIteration:
-                return
-            except TimeoutError as exc:
-                with contextlib.suppress(Exception):  # release the socket; never mask the timeout
-                    await resp.aclose()
-                where = (
-                    "the backend sent no stream data at all (its headers arrived, the "
-                    "stream never did)"
-                    if seen == 0
-                    else f"the stream stalled after {seen} chunk(s)"
-                )
-                raise TimedOut(
-                    f"streaming call exceeded ZAKCODE_STREAM_STALL_TIMEOUT "
-                    f"({self.stream_stall_timeout:g}s): {where}. If this backend's prefill "
-                    f"for a full-context prompt legitimately takes longer, raise that value.",
-                    bound="ZAKCODE_STREAM_STALL_TIMEOUT",
-                ) from exc
-            seen += 1
-            yield chunk
+        first_wait: float | None = None  # request start → first chunk, once it arrives
+        usage: Usage | None = None  # the final chunk's usage, for the cache-read share
+        first_bound = self._first_chunk_bound(prompt_estimate)
+        try:
+            while True:
+                bound = first_bound if seen == 0 else self.stream_stall_timeout
+                try:
+                    chunk = await asyncio.wait_for(iterator.__anext__(), bound)
+                except StopAsyncIteration:
+                    return
+                except TimeoutError as exc:
+                    with contextlib.suppress(Exception):  # release the socket; never mask it
+                        await resp.aclose()
+                    if seen == 0:
+                        raise self._first_chunk_expiry(prompt_estimate, bound) from exc
+                    raise TimedOut(
+                        f"streaming call exceeded ZAKCODE_STREAM_STALL_TIMEOUT "
+                        f"({self.stream_stall_timeout:g}s): the stream stalled after {seen} "
+                        f"chunk(s).",
+                        bound="ZAKCODE_STREAM_STALL_TIMEOUT",
+                    ) from exc
+                if seen == 0:
+                    first_wait = time.monotonic() - started
+                if _get(chunk, "usage") is not None:
+                    usage = self._extract_usage(chunk)
+                seen += 1
+                yield chunk
+        finally:
+            # A first chunk that arrived is a measurement however the stream ended; the
+            # cache share is known only if the usage chunk came, else the whole prompt is
+            # charged, which can only make the backend look faster, never slower.
+            if first_wait is not None:
+                self._note_prefill(prompt_estimate, first_wait, self._uncached_fraction(usage))
 
     async def astream(
         self,
@@ -1787,6 +1905,9 @@ class LiteLLMProvider(Provider):
         through the error taxonomy; a raw vendor exception never escapes.
         """
         wire_messages = self._translate_messages(messages, system)
+        # The first chunk waits out the prefill, so its bound is sized to the prompt
+        # (ADR-0248). The rough count is the same one the rate was learned against.
+        prompt_estimate = max(self._rough_token_estimate(wire_messages), 1)
 
         def build() -> dict[str, Any]:
             call_kwargs = self._build_kwargs(
@@ -1810,8 +1931,11 @@ class LiteLLMProvider(Provider):
         try:
             while True:
                 try:
+                    started = time.monotonic()  # the first-chunk wait counts from here
                     resp = await litellm.acompletion(**call_kwargs)
-                    async for chunk in self._bounded_chunks(resp):
+                    async for chunk in self._bounded_chunks(
+                        resp, prompt_estimate=prompt_estimate, started=started
+                    ):
                         chunks += 1
                         # No served-model capture here, deliberately (ADR-0214). A chunk's
                         # ``model`` is NOT the server's: litellm's stream wrapper stamps every
