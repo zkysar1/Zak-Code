@@ -451,6 +451,63 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     assert answered["s1"].is_error and answered["s1"].data == {"restart": True}
 
 
+class WakeupStub(Tool):
+    """Stands in for the wake-up arm (``ScheduleWakeup``): counts executions, never errors."""
+
+    spec = ToolSpec(name="ScheduleWakeup", description="Arm a wake-up.")
+
+    def __init__(self) -> None:
+        self.executed = 0
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        self.executed += 1
+        return ToolResult.ok(output="Wake-up armed.")
+
+
+@pytest.mark.asyncio
+async def test_a_skill_boundary_restart_runs_the_deadman_wakeup_arm_first(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A perpetual loop's healthy unit close is the pair ScheduleWakeup then use_skill (its
+    deadman net), so that pair must be a skill boundary too. Measured 2026-09-24 on three
+    Mind worker Bodies: 9 re-entries after two installs, 0 restarts -- every close was the
+    pair, and the deploys sat unused. The arm EXECUTES here (the slot is persisted on the
+    session and survives the restart, zakcode.wakeup) and the turn still ends in a restart
+    carrying the skill call. A batch with real work beside the skill call still runs it
+    (test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call)."""
+    import zakcode.agent.loop as loop_module
+
+    monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
+    skill, wakeup = UseSkillStub(), WakeupStub()
+    paired = LLMResult(
+        tool_calls=[
+            ToolCall(
+                id="w1",
+                name="ScheduleWakeup",
+                arguments={"prompt": "re-enter", "delaySeconds": 600},
+            ),
+            ToolCall(id="s1", name="Skill", arguments={"name": "worker-loop"}),
+        ]
+    )
+    provider = ScriptedProvider([paired, LLMResult(text="never reached")])
+    loop = _make_loop(provider, tmp_path, registry=_registry(skill, wakeup))
+    result = await loop.arun_turn("hi")
+    assert result.stop_reason == "restart"
+    assert wakeup.executed == 1 and skill.executed == 0
+    assert loop.restart_boundary == "skill"
+    assert loop.restart_continuation is not None
+    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop") now.')
+    answered = {
+        b.tool_use_id: b
+        for m in loop.session.messages
+        for b in m.blocks
+        if getattr(b, "type", "") == "tool_result"
+    }
+    assert set(answered) == {"w1", "s1"}
+    assert not answered["w1"].is_error and "armed" in answered["w1"].output
+    assert answered["s1"].is_error and answered["s1"].data == {"restart": True}
+
+
 @pytest.mark.asyncio
 async def test_turn_end_vetoes_are_unbounded(tmp_path: Path) -> None:
     """No per-turn veto cap (no-knobs ruling): the hook is consulted at EVERY vetoable
