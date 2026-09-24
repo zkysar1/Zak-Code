@@ -792,3 +792,47 @@ def test_streaming_rate_limit_is_still_named_as_one(fast_sleep: list[float]) -> 
         getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
     ]
     assert [n.split(";")[0] for n in notices] == ["rate limited"]
+
+
+def test_buffered_timeout_notice_names_the_bound_that_fired(
+    fast_sleep: list[float], caplog
+) -> None:
+    """A TimedOut names WHICH bound expired. A stream-stall expiry logged as
+    ZAKCODE_REQUEST_TIMEOUT sends the operator to the wrong knob: zakpod1
+    2026-09-23, eleven Body calls aborted with zero chunks, seven at the 600s
+    stall default, and every notice said 'request timed out
+    (ZAKCODE_REQUEST_TIMEOUT)' (g-375-17)."""
+    import logging
+
+    from zakcode.providers.base import TimedOut
+
+    provider = FlakyProvider(
+        [
+            TimedOut("stalled", bound="ZAKCODE_STREAM_STALL_TIMEOUT"),
+            TimedOut("whole call"),
+        ]
+    )
+    loop = _make_loop(provider)
+    with caplog.at_level(logging.WARNING, logger="zakcode.agent.loop"):
+        result = asyncio.run(loop.arun_turn("hi"))
+    assert result.stop_reason == "completed"
+    retry_logs = [r.getMessage() for r in caplog.records if "retrying" in r.getMessage()]
+    assert [m.split(";")[0] for m in retry_logs] == [
+        "request timed out (ZAKCODE_STREAM_STALL_TIMEOUT)",
+        "request timed out (ZAKCODE_REQUEST_TIMEOUT)",
+    ], retry_logs
+
+
+def test_streaming_timeout_notice_names_the_bound_that_fired(fast_sleep: list[float]) -> None:
+    from zakcode.providers.base import TimedOut
+
+    provider = FlakyStreamProvider([TimedOut("stalled", bound="ZAKCODE_STREAM_STALL_TIMEOUT")])
+    loop = _make_loop(provider)
+    events = asyncio.run(_collect(loop, "hi"))
+    assert events[-1].stop_reason == "completed"
+    notices = [
+        getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+    ]
+    assert [n.split(";")[0] for n in notices] == [
+        "request timed out (ZAKCODE_STREAM_STALL_TIMEOUT)"
+    ], notices

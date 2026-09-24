@@ -524,6 +524,8 @@ async def test_a_stream_that_never_sends_a_chunk_is_timed_out(
     message = str(excinfo.value)
     assert "no stream data at all" in message
     assert "ZAKCODE_STREAM_STALL_TIMEOUT" in message
+    # The loop's retry notice reads this, not the message (g-375-17).
+    assert excinfo.value.bound == "ZAKCODE_STREAM_STALL_TIMEOUT"
     assert stream.closed  # the socket is released, not leaked
 
 

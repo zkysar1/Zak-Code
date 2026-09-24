@@ -241,7 +241,9 @@ class RateLimited(ProviderError):
 
 
 class TimedOut(RateLimited):
-    """The request exceeded the client-side timeout (``ZAKCODE_REQUEST_TIMEOUT``).
+    """The request exceeded a client-side timeout: the whole-call ceiling
+    (``ZAKCODE_REQUEST_TIMEOUT``, the default ``bound``) or the streaming per-gap
+    stall bound (``ZAKCODE_STREAM_STALL_TIMEOUT``).
 
     Subclasses :class:`RateLimited` ONLY for its bounded-retry semantics. The
     operator-facing notice must name the timeout, not a rate limit: on an
@@ -249,7 +251,23 @@ class TimedOut(RateLimited):
     configured timeout, and every retry pays the full prefill again — so the
     remedy is the timeout knob (or a smaller call), and a "rate limited" label
     sends the operator to the wrong one (zc-03 coach boot wedges, 2026-08-25).
+
+    ``bound`` names WHICH knob, and the loop's retry notice prints it. Naming the
+    whole-call ceiling for every expiry sent operators to the wrong knob again:
+    zakpod1 2026-09-23, eleven Body calls aborted with zero chunks received, seven
+    of them at the 600s stall default, and every notice read
+    ``request timed out (ZAKCODE_REQUEST_TIMEOUT)``.
     """
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: float | None = None,
+        *,
+        bound: str = "ZAKCODE_REQUEST_TIMEOUT",
+    ) -> None:
+        super().__init__(message, retry_after=retry_after)
+        self.bound = bound
 
 
 class ProviderUnavailable(RateLimited):

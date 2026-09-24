@@ -5123,7 +5123,7 @@ class AgentLoop:
                     reason = "provider rejected a malformed tool call"
                     budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 elif isinstance(exc, TimedOut):
-                    reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                    reason = f"request timed out ({exc.bound})"
                     budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 else:
                     # A pure 429 reaching here always set the clock above (mypy cannot
@@ -9157,7 +9157,7 @@ class AgentLoop:
                                 budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                             elif isinstance(exc, TimedOut):
                                 interrupt_attempts += 1
-                                reason = "request timed out (ZAKCODE_REQUEST_TIMEOUT)"
+                                reason = f"request timed out ({exc.bound})"
                                 budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                             else:
                                 if rate_limit_started is None:

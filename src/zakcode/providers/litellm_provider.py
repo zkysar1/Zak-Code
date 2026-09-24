@@ -1759,7 +1759,8 @@ class LiteLLMProvider(Provider):
                 raise TimedOut(
                     f"streaming call exceeded ZAKCODE_STREAM_STALL_TIMEOUT "
                     f"({self.stream_stall_timeout:g}s): {where}. If this backend's prefill "
-                    f"for a full-context prompt legitimately takes longer, raise that value."
+                    f"for a full-context prompt legitimately takes longer, raise that value.",
+                    bound="ZAKCODE_STREAM_STALL_TIMEOUT",
                 ) from exc
             seen += 1
             yield chunk

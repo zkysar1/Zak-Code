@@ -364,6 +364,7 @@ def test_map_error_names_timeouts_truthfully() -> None:
         exc = type(name, (Exception,), {})("boom")
         mapped = lp.LiteLLMProvider._map_error(exc)
         assert isinstance(mapped, TimedOut), f"{name} -> {type(mapped).__name__}"
+        assert mapped.bound == "ZAKCODE_REQUEST_TIMEOUT"  # the whole-call ceiling
     for name in ("APIConnectionError", "ServiceUnavailableError", "InternalServerError"):
         exc = type(name, (Exception,), {})("boom")
         mapped = lp.LiteLLMProvider._map_error(exc)
