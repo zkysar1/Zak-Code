@@ -565,6 +565,44 @@ def test_the_cursor_arms_on_a_shell_write_and_a_suite_run_still_clears_it() -> N
     assert quiet.needs_verification() is False
 
 
+def test_a_shell_write_through_a_variable_path_arms_nothing() -> None:
+    """ADR-0246: the harness re-runs a pending target in a FRESH shell. So a path the model's
+    shell reached through a variable is one the harness cannot reach.
+
+    Measured on a zc Qwen Body, 2026-09-24: `S=<scratch>` then `cat > "$S/fake-aws-exec-fail.sh"`
+    armed the gate with the raw token. At turn end the harness ran it with `S` unset, and the
+    model got "[harness] I ran the file to verify it: bash: /fake-aws-exec-fail.sh: No such file
+    or directory" -- a failure it never caused, in the harness's trusted voice. The model spent
+    12 minutes proving that, and the turn then ended recipe_stalled.
+    """
+    from zakcode.messages import ToolResultBlock
+    from zakcode.providers.base import ToolCall
+
+    def run(command: str) -> RecipeCursor:
+        cursor = RecipeCursor(enabled=True)
+        cursor.observe(
+            [ToolCall(id="0", name="bash", arguments={"command": command})],
+            [ToolResultBlock(tool_use_id="0", output="", is_error=False)],
+        )
+        return cursor
+
+    measured = "S=/w/scratch\ncat > \"$S/fake-aws-exec-fail.sh\" <<'EOF'\nexit 254\nEOF"
+    for command in (
+        measured,
+        "cat > ${OUT}/gen.py << 'PYEOF'",  # the braced form
+        'cp /tmp/a.py "$(pwd)/b.py"',  # a command substitution
+        "echo x > `pwd`/c.sh",  # and its backtick spelling
+    ):
+        cursor = run(command)
+        assert cursor.wrote_runnable is False, command
+        assert cursor.needs_verification() is False, command
+        assert cursor.pending_target() is None, command
+
+    # The same write through a literal path still arms: only the unreachable form is dropped.
+    literal = run("cat > /w/scratch/fake-aws-exec-fail.sh <<'EOF'\nexit 254\nEOF")
+    assert literal.pending_target() == "/w/scratch/fake-aws-exec-fail.sh"
+
+
 # ── loop integration ──────────────────────────────────────────────────────────
 
 
@@ -947,6 +985,31 @@ def test_harness_run_verifies_without_the_model(tmp_path: Path) -> None:
     assert result.stop_reason == "completed"  # the HARNESS ran it
     transcript = "\n".join(m.text or "" for m in loop.session.messages)
     assert "[harness]" in transcript
+
+
+def test_harness_never_runs_a_file_the_model_reached_through_a_variable(tmp_path: Path) -> None:
+    # ADR-0246, end to end: the model writes a stub through `$S`, as a zc Body does in every
+    # call, and finishes. Before the fix the harness re-ran "$S/stub.sh" in its own shell, where
+    # S is unset, and injected the resulting exit 127 as "[harness] I ran the file to verify it".
+    if resolve_run_command("x.sh") is None:
+        pytest.skip("no shell interpreter available")
+    scratch = (tmp_path / "scratch").as_posix()
+    write = LLMResult(
+        tool_calls=[
+            _c(
+                "w1",
+                "bash",
+                command=f'S={scratch} && mkdir -p "$S" && printf "exit 254\\n" > "$S/stub.sh"',
+            )
+        ]
+    )
+    done = LLMResult(text="done")
+    loop = _loop(_ScriptedProvider([write, done]), tmp_path)
+    result = asyncio.run(loop.arun_turn("write a failing stub transport"))
+    assert (tmp_path / "scratch" / "stub.sh").is_file()  # the write itself really happened
+    assert result.stop_reason == "completed"
+    transcript = "\n".join(m.text or "" for m in loop.session.messages)
+    assert "[harness] I ran" not in transcript
 
 
 # ── issue #33: the harness-issued run is shell-aware (bash, else powershell) ───
