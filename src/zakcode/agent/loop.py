@@ -5945,6 +5945,42 @@ class AgentLoop:
                 return True
         return False
 
+    def _is_wakeup_call(self, call: ToolCall) -> bool:
+        """Whether ``call`` is the session's ``ScheduleWakeup`` — resolved through the
+        registry, so an alias (``schedule_wakeup``, ``wakeup``) counts too."""
+        tool = self.registry.get(call.name)
+        return tool is not None and tool.spec.name == "ScheduleWakeup"
+
+    async def _withheld_batch_results(
+        self, calls: list[ToolCall], ctx: ToolContext, reason: str
+    ) -> Message:
+        """The results of a batch the plan-first gate withholds (ADR-0247).
+
+        Every workspace call is answered with ``reason`` as an error result, exactly as
+        :func:`_unexecuted_tool_results` would answer the whole batch. A ``ScheduleWakeup``
+        call RUNS: it touches only the session's wake-up slot (READ_ONLY tier, never a
+        workspace change, which is all the gate is for) and it is time-critical. Measured
+        2026-09-24 (coach, zc-03): a stale loop sentinel fired into a session whose stop had
+        just completed, the model cancelled it in the same batch as one Bash call, and the
+        whole batch came back "Not executed" — the cancel included — so the model spent the
+        next half hour planning a loop re-entry the sentinel should never have asked for.
+        Results keep call order, so the pairing contract the refusal message maintains holds.
+        """
+        blocks: list[ToolResultBlock] = []
+        for call in calls:
+            if self._is_wakeup_call(call):
+                blocks.append(await self._execute_tool_call(call, ctx))
+            else:
+                blocks.append(
+                    ToolResultBlock(
+                        tool_use_id=call.id,
+                        output=reason,
+                        is_error=True,
+                        data={"plan_first": True},
+                    )
+                )
+        return Message.tool_results(blocks)
+
     def _turn_is_deep(self, user_text: str, hint: str | None) -> bool:
         """Whether this turn is multi-step work, by the routing verdict (ADR-0110).
 
@@ -8418,11 +8454,11 @@ class AgentLoop:
                     plan_first_nudges += 1
                     self._note("intervention", "plan the task before editing", kind="plan_first")
                     self.session.add_message(
-                        _unexecuted_tool_results(
+                        await self._withheld_batch_results(
                             result.tool_calls,
+                            ctx,
                             "Not executed: this is multi-step work — lay out a plan with "
                             "update_plan before making changes.",
-                            "plan_first",
                         )
                     )
                     self.session.add_message(
@@ -10307,11 +10343,11 @@ class AgentLoop:
                             "intervention", "plan the task before editing", kind="plan_first"
                         )
                         self.session.add_message(
-                            _unexecuted_tool_results(
+                            await self._withheld_batch_results(
                                 tool_calls,
+                                ctx,
                                 "Not executed: this is multi-step work — lay out a plan with "
                                 "update_plan before making changes.",
-                                "plan_first",
                             )
                         )
                         self.session.add_message(
