@@ -14766,3 +14766,45 @@ arms, and the same write through a literal path does.
 model writes `"$S/stub.sh"` through a real shell and finishes, the turn completes, and no
 `[harness] I ran` message appears. Both failed before the change, the second with
 `recipe_stalled`, as on zc-01.
+
+## ADR-0247: a batch the plan-first gate withholds still runs its wake-up call
+
+Status: accepted. 2026-09-24.
+
+ADR-0110 withholds a deep turn's first mutating batch until the model has a plan, and answers
+every call in that batch with the same "Not executed" result. `ScheduleWakeup` is READ_ONLY tier
+(ADR-0094: it touches only the session's own record), so a batch holding it alone is never gated;
+a batch holding it beside one Bash call is, and the wake-up call is refused with the Bash.
+
+Measured 2026-09-24 on zc-03, zakcode 17b3de8, model Qwen3.8-27B, coach's Mind session
+d15fe395. The loop had re-armed its autonomous-loop sentinel at 17:45:43Z and never reached a
+prompt again while running; a `/stop` typed at 21:23Z completed at 06:38:40Z, its turn-end hook
+allowing the end. At that instant the harness fired the 13-hour-old wake-up ("re-enter the loop ...
+Do not stop to wait for instructions") into a session whose Mind now read IDLE, mode assistant.
+At 06:43:41Z the model answered correctly: `ScheduleWakeup(stop=true)`, batched with one Bash call. The plan-first gate withheld the batch,
+both results read `Not executed: this is multi-step work — lay out a plan with update_plan before
+making changes.`, and the model spent the next half hour planning a loop re-entry it must not
+perform, at five to six minutes per call, until an operator note ended the turn.
+
+Decision.
+
+- A withheld batch is answered call by call. A workspace call gets the refusal it got before. A
+  `ScheduleWakeup` call runs, through the same single-call gate every call runs through, and its
+  real result takes the refusal's place. Results keep the batch's order, so the pairing contract
+  the refusal message exists for still holds. Both twins.
+- The iteration is still refunded: a wake-up is bookkeeping, not work.
+
+Consequences. The rb-4345 shape the Mind prescribes — re-arm the net FIRST when a sentinel
+fires — no longer depends on the model sending that call alone. A plan is still required before
+the workspace changes; nothing about that moved.
+
+Rejected: running every READ_ONLY-tier call in a withheld batch. A `use_skill` load seeds a
+plan skeleton and turns pages, and a plan tool authors the very plan the gate is waiting for;
+those side effects belong to the executing path, and the measured defect needed none of them.
+Also rejected: leaving it to the Mind's stop to cancel the net (it now does, at its D7.05). The
+harness owes a correct answer to a correct call whatever the framework above it does.
+
+The proof. `tests/test_loop_planning.py::test_a_withheld_batch_still_runs_its_wakeup_call` arms
+a wake-up, then sends a write and the cancel in one batch under `require_plan`: the write's
+result is the refusal and the write runs only after the plan, the cancel's result is real and the
+slot is empty. Before the change the cancel came back refused and the slot still held the wake-up.

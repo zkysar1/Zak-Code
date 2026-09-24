@@ -17,6 +17,7 @@ import pytest
 from zakcode.agent.loop import _MAX_PLAN_IDLE_TURNS, AgentLoop
 from zakcode.config import PermissionTier, Settings
 from zakcode.events import AgentTaskUpdate
+from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tasks import Task, TaskNetwork
@@ -29,6 +30,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins.default_registry import default_registry
+from zakcode.tools.builtins.schedule_wakeup import ScheduleWakeupTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.usage import Usage
 
@@ -804,3 +806,63 @@ async def test_empty_completion_mid_plan_ends_gave_up_not_done() -> None:
     assert result.stop_reason == "gave_up"
     assert result.degraded is True
     assert result.open_steps == 1
+
+
+@pytest.mark.asyncio
+async def test_a_withheld_batch_still_runs_its_wakeup_call() -> None:
+    """ADR-0247: the plan-first gate refuses the write, and the ScheduleWakeup beside it runs.
+
+    Measured 2026-09-24 (coach, zc-03): a stale loop sentinel fired into a session whose stop
+    had just completed, the model batched its cancel with one Bash call, and the whole batch
+    came back "Not executed" — the cancel included. The wake-up slot is session state, not
+    the workspace, and a cancel that waits a round trip is a net that fires meanwhile."""
+    write = _FakeWrite()
+    reg = ToolRegistry()
+    reg.register(write)
+    reg.register(UpdatePlanTool())
+    reg.register(ScheduleWakeupTool())
+    session = Session(cwd="/tmp", model="t/m")
+    provider = _Scripted(
+        [
+            # Arm alone first: a batch with no mutation is never gated.
+            LLMResult(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        id="a",
+                        name="ScheduleWakeup",
+                        arguments={"prompt": "check the build later", "delaySeconds": 60},
+                    )
+                ],
+                usage=Usage(total_tokens=1),
+            ),
+            # A write and the cancel in ONE batch: the write is withheld, the cancel runs.
+            LLMResult(
+                text="",
+                tool_calls=[
+                    ToolCall(id="w0", name="write_file", arguments={"path": "a.txt"}),
+                    ToolCall(id="c", name="ScheduleWakeup", arguments={"stop": True}),
+                ],
+                usage=Usage(total_tokens=1),
+            ),
+            _plan_call([{"title": "a"}, {"title": "b"}]),
+            _judge_ok(),
+            _write_call(),
+            _done(),
+        ]
+    )
+    loop = AgentLoop(
+        provider, reg, session, settings=Settings(require_plan=True), max_iterations=20
+    )
+    result = await loop.arun_turn("edit something")
+    assert result.stop_reason == "completed"
+    assert write.runs == 1  # the write ran only AFTER a plan existed
+    assert loop.wakeup_slot.pending() is None  # the cancel inside the withheld batch RAN
+    results = {
+        b.tool_use_id: b
+        for m in session.messages
+        for b in m.blocks
+        if isinstance(b, ToolResultBlock)
+    }
+    assert results["w0"].is_error and (results["w0"].data or {}).get("plan_first")
+    assert not results["c"].is_error and "cancelled" in str(results["c"].output).lower()
