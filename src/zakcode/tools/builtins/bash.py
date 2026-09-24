@@ -482,9 +482,11 @@ def _fit_output(
     lines = output.count("\n") + (0 if output.endswith("\n") else 1)
     size = f"{len(output):,} characters in {lines:,} lines"
     where = (
-        # The Grep tool is held to the workspace roots, so the shell's grep is the one named.
-        f"The whole output is in {saved}: Read it with offset/limit, or search it with grep "
-        "in the shell, for the rest."
+        # Named by tool, not by verb: "search it with grep in the shell" sent a lesser model
+        # to the Grep tool, which ADR-0234 keeps out of this directory (Ayoai-Mind g-375-12).
+        # Read opens the file, grep reaches it through the Bash tool, the Grep tool does not.
+        f"The whole output is in {saved}: use the Read tool on it (offset/limit), or run grep "
+        "on it through the Bash tool. The Grep tool cannot open this directory."
         if saved is not None
         else "Run the command again, narrower (grep, head, tail), for the rest."
     )

@@ -65,6 +65,20 @@ async def test_a_long_success_is_saved_whole_and_its_start_shown(
     assert shown.endswith("[exit code: 0]")
 
 
+async def test_the_saved_output_notice_names_the_tools_that_reach_the_file(
+    session_ctx: ToolContext, tmp_path: Path
+) -> None:
+    # "search it with grep in the shell" sent a lesser model to the Grep tool, which ADR-0234
+    # keeps out of this directory (Ayoai-Mind g-375-12, zc-02, 2026-09-23). The notice names
+    # the tool that opens the file and the tool that runs grep, and says which one cannot.
+    res = await BashTool().execute({"command": _spew(tmp_path, 1000)}, session_ctx)
+
+    shown = res.output
+    assert "Read tool" in shown and "Bash tool" in shown
+    assert "The Grep tool cannot open this directory" in shown
+    assert "in the shell" not in shown
+
+
 async def test_read_opens_the_saved_output_and_nothing_else_outside_the_roots(
     session_ctx: ToolContext, tmp_path: Path
 ) -> None:
