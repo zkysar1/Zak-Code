@@ -2033,8 +2033,13 @@ def _provider_error_veto_delay(veto: int) -> float:
 #: be a skill boundary for a build restart (ADR-0101). Plan bookkeeping mutates only the
 #: session's own plan state and costs no model call, so it runs before the restart and is
 #: persisted at the same message boundary; anything else is work in flight, which a restart
-#: must never abandon.
-_SKILL_BOUNDARY_COMPANIONS = frozenset({"update_plan"})
+#: must never abandon. The wake-up arm is the same kind of bookkeeping: the slot lives on
+#: the session and survives the restart (``zakcode.wakeup``), and the arm runs before the
+#: restart like the plan update. It has to be here because a perpetual loop's healthy unit
+#: close IS the pair ``ScheduleWakeup`` then ``use_skill`` (the loop's deadman net), so
+#: without it a working Body crossed no boundary at all: measured 2026-09-24 on three Mind
+#: worker Bodies, 9 re-entries after two installs, 0 restarts — the deploys sat unused.
+_SKILL_BOUNDARY_COMPANIONS = frozenset({"update_plan"}) | _WAKEUP_TOOLS
 
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
 #: turn tries to finish, ``AgentLoop._completion_critic`` runs a SEPARATE, fresh-context judge
