@@ -737,7 +737,10 @@ async def test_the_cache_share_the_backend_reports_sharpens_the_rate(
     assert len(noted) == 1
     est, seconds, fraction = noted[0]
     assert est == _estimate(_LONG_MSGS)
-    assert seconds >= 0.01
+    # Not `>= 0.01`: a 10ms gap can measure 0.0 on Windows py3.11, whose monotonic clock
+    # ticks every 15.6ms (the same coarse clock that flaked the sibling test on main CI).
+    # The wait's magnitude is that test's business; this one is about the cache share.
+    assert seconds >= 0.0
     assert fraction == 0.5
 
 
