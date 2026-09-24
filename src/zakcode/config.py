@@ -439,7 +439,14 @@ class Settings(BaseSettings):
     # millisecond gaps, so only the prefill gap ever approaches it. It is deliberately NOT
     # `request_timeout` — that one is a whole-call ceiling operators raise for long calls
     # (the pod runs 3600), and a per-gap bound that large would not have caught the 45
-    # minutes it exists to catch.
+    # minutes it exists to catch. The prefill gap is the exception (ADR-0248): one fixed
+    # bound cannot serve a 5k-token prompt and a full-context one on a backend that
+    # prefills at 70-90 tok/s (zakpod1 2026-09-23: a cold full-context prefill is 20-25
+    # minutes, and every such call was cut off here at 600s with zero chunks). The FIRST
+    # chunk's wait starts at this floor, grows with the prompt at the slowest prefill the
+    # provider has measured on that backend, and `request_timeout` is its ceiling — the
+    # limit the buffered path has always run under. Every later gap keeps this bound. No
+    # knob was added: the backend teaches the rate, one call at a time.
     stream_stall_timeout: float = Field(
         default=600.0,
         gt=0,
