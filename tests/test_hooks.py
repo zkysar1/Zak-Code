@@ -38,6 +38,47 @@ def _script(tmp_path: Path, name: str, body: str) -> list[str]:
     return [sys.executable, str(path)]
 
 
+# ── one hook, one call (settings.json Edit + MultiEdit blocks) ────────────────────────
+
+
+async def test_a_hook_registered_under_two_spellings_of_one_tool_runs_once(
+    tmp_path: Path,
+) -> None:
+    """A Claude Code settings.json lists the same hook under separate ``Edit`` and
+    ``MultiEdit`` matcher blocks. zakcode's one edit tool answers to both spellings
+    (``_CLAUDE_CODE_TOOL_NAMES``), so both specs match one Edit call -- and the hook
+    ran twice per edit. Measured 2026-09-24 on three Mind worker Bodies: every hook
+    in those blocks fired twice per Edit (two 15 s timeouts of ONE hook, 32.4 s
+    edits, two pushes of one file). One tool call runs one distinct command once."""
+    out = tmp_path / "fires.txt"
+    cmd = _script(tmp_path, "record.py", f"open({str(out)!r}, 'a').write('fired' + chr(10))")
+    mgr = HookManager(
+        [
+            HookSpec(event=HookEvent.POST_TOOL_USE, command=cmd, matcher="Edit"),
+            HookSpec(event=HookEvent.POST_TOOL_USE, command=cmd, matcher="MultiEdit"),
+        ]
+    )
+    result = await mgr.run(_payload(HookEvent.POST_TOOL_USE, tool_name="Edit"))
+    assert not result.blocked
+    assert out.read_text(encoding="utf-8").count("fired") == 1
+
+
+async def test_two_different_hooks_matching_one_call_both_run(tmp_path: Path) -> None:
+    """The dedupe keys on the COMMAND, never on the matcher: two distinct hooks that
+    both match one call still both run (positive control for the test above)."""
+    out = tmp_path / "fires.txt"
+    cmd_a = _script(tmp_path, "a.py", f"open({str(out)!r}, 'a').write('a' + chr(10))")
+    cmd_b = _script(tmp_path, "b.py", f"open({str(out)!r}, 'a').write('b' + chr(10))")
+    mgr = HookManager(
+        [
+            HookSpec(event=HookEvent.POST_TOOL_USE, command=cmd_a, matcher="Edit"),
+            HookSpec(event=HookEvent.POST_TOOL_USE, command=cmd_b, matcher="MultiEdit"),
+        ]
+    )
+    await mgr.run(_payload(HookEvent.POST_TOOL_USE, tool_name="Edit"))
+    assert sorted(out.read_text(encoding="utf-8").split()) == ["a", "b"]
+
+
 # ── in-process hooks ──────────────────────────────────────────────────────────
 
 
