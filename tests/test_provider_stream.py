@@ -651,10 +651,12 @@ async def test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry(
     monkeypatch.setattr(provider_mod, "_MIN_REQUEST_INTERVAL_S", 0.0)  # pacing is not the bound
     est = _estimate(_LONG_MSGS)
     labels: list[str] = []
+    bounds: list[float] = []  # what each attempt is about to wait for, read before it runs
     waits: list[float] = []
     for _ in range(4):
         stream = _StallingStream([])
         monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+        bounds.append(provider._first_chunk_bound(est))
         before = time.monotonic()
         with pytest.raises(TimedOut) as excinfo:
             await _collect(provider.astream(_LONG_MSGS))
@@ -663,9 +665,12 @@ async def test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry(
         assert stream.closed  # the socket is released each time
     # 0.05 → 0.1 → 0.2 → 0.25: each expiry is a measurement, the bound doubles on it (the
     # margin is the growth step), and the ceiling caps it. The retry that the loop issues
-    # against the backend's half-built cache therefore gets the time it needs.
-    assert waits[0] < waits[1] < waits[2]
-    assert waits[3] < 0.5
+    # against the backend's half-built cache therefore gets the time it needs. The bounds
+    # are asserted, not the elapsed times: a loaded CI runner charged the FIRST attempt
+    # 0.46s against its 0.05s bound (main, 2026-09-25) and the elapsed order inverted while
+    # every bound was right — so the clock only has to show that each timer fired at all.
+    assert bounds == [0.05, 0.1, 0.2, 0.25]
+    assert max(waits) < 5.0  # each expiry fired; 20x the ceiling leaves room for a busy runner
     assert provider._first_chunk_bound(est) == 0.25
     assert labels[0] == "ZAKCODE_STREAM_STALL_TIMEOUT"
     assert labels[1].startswith("first-chunk bound 0.1s, learned")
