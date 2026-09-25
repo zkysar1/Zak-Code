@@ -147,6 +147,9 @@ class Session(BaseModel):
     uploaded_artifacts: list[ArtifactRef] = Field(default_factory=list)
     created_at: str = Field(default_factory=_now_iso)
     usages: list[Usage] = Field(default_factory=list)
+    #: The envelope id of the last perception delivered into this session. Every usage
+    #: recorded after it carries it (``add_usage``), so spend joins to that perception.
+    last_envelope: str = ""
     #: Operator permission grants persisted across restarts (audit P0-2d / D12 / Q5).
     #: Record shape: {kind, tool, args_scope, mode_at_grant, timestamp} — see
     #: ``PermissionPolicy.export_grants``. Schema v1 stays append-only: an OLDER build
@@ -315,7 +318,13 @@ class Session(BaseModel):
         the judges, classifiers and ``deep_think``, ADR-0243).
         """
         update = {
-            key: value for key, value in (("model", model), ("side_call", side_call)) if value
+            key: value
+            for key, value in (
+                ("model", model),
+                ("side_call", side_call),
+                ("envelope", self.last_envelope),
+            )
+            if value
         }
         self.usages.append(usage.model_copy(update=update) if update else usage)
 
