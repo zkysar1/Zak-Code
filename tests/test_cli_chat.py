@@ -650,8 +650,15 @@ def test_print_banner_welcome_panel_off_tty() -> None:
     _print_banner(console, FakeAgent())
     out = buf.getvalue()
     assert "✦ Zak Code" in out
-    for label in ("model", "workspace", "permissions", "session"):
+    for label in ("model", "build", "workspace", "permissions", "session"):
         assert label in out
+    # The build row is the one line a fresh session's log carries about the code it runs
+    # (a restart prints its build; a launch printed nothing, and a log-reading monitor
+    # kept reporting the previous session's build).
+    from zakcode import __version__
+    from zakcode.build_info import version_line
+
+    assert version_line(__version__) in out
     assert "/help for commands" in out
     assert "/exit to quit" in out
     assert "tip:" not in out  # off-tty: hermetic output never carries the daily tip
