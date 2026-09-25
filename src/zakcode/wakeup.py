@@ -32,6 +32,22 @@ than allowed to fire again. Narrow on purpose, three ways: only a turn a sentine
 judged, only the SENTINEL is ever cancelled (a hook's specific "come back and do X" is another
 instruction entirely and is left alone), and one repeat is the whole threshold — the second
 identical turn is already proof, and waiting for a third only spends more of them.
+
+AND ONE EXCEPTION TO THAT RULE, WHICH IS NOT A LOOPHOLE BUT ITS OWN CASE (ADR-0250). A sentinel
+turn the PROVIDER failed — every model call refused, no answer at all — proves nothing about
+the loop, because the model never got to act; and a provider outage produces identical endings
+by construction, two of them in a row on the second cycle. Measured 2026-09-25 on three worker
+Bodies during a 12-hour pod outage: each cycle was a fired sentinel, a compaction whose
+summarizer call failed, four 900-second retry budgets, a ``veto_stall`` and a fresh 600-second
+net; on the second identical cycle the repeat guard cancelled that net, and all three Bodies sat
+at their prompts for four and a half hours after the pod came back, until an operator typed
+``/start``. A cancel converts a temporary outage into a permanent park. So a provider-failed
+sentinel turn HOLDS its net instead: the sentinel is re-armed at a delay that doubles per
+consecutive provider failure up to the clamp (600, 1200, 2400, 3600 s), the record is kept, and
+the streak resets the moment a sentinel turn actually runs. The REPL door applies the same hold
+BEFORE opening the turn when the provider does not answer a cheap probe, so an outage costs one
+probe per cycle rather than a compaction and an hour of retries. An outage may delay the loop; it
+must never end it.
 """
 
 from __future__ import annotations
@@ -76,6 +92,14 @@ def clamp_delay(value: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_DELAY_SECONDS
     return max(MIN_DELAY_SECONDS, min(MAX_DELAY_SECONDS, delay))
+
+
+def provider_hold_delay(streak: int) -> int:
+    """Seconds before the sentinel re-fires after ``streak`` consecutive provider failures
+    (ADR-0250): the default delay doubled per failure, never past the clamp — 600, 1200, 2400,
+    3600, 3600 … A loop that cannot reach its provider is retried at most hourly, and the
+    moment it can the next firing runs it."""
+    return clamp_delay(DEFAULT_DELAY_SECONDS * 2 ** max(0, streak - 1))
 
 
 def turn_fingerprint(stop_reason: str, assistant_text: str) -> str:
@@ -174,7 +198,7 @@ class WakeupSlot:
         self._changed()
         return wakeup.prompt
 
-    def note_turn_end(self, fingerprint: str) -> bool:
+    def note_turn_end(self, fingerprint: str, *, provider_failed: bool = False) -> bool:
         """Judge a turn that a fired sentinel opened; ``True`` when it merely repeated (ADR-0216).
 
         Called once at every turn end. It is a no-op for a turn a person opened, and for the
@@ -189,12 +213,25 @@ class WakeupSlot:
 
         The recorded fingerprint is CLEARED on a cancel, so the next sentinel to fire starts
         clean rather than being judged against a turn that is now two nets old.
+
+        ``provider_failed`` names the one ending that is never a verdict on the loop (ADR-0250):
+        the provider refused every call and the model never acted. Such a turn is still judged
+        (the return value still says whether it repeated) but its net is HELD, not cancelled —
+        :meth:`hold_for_provider` re-arms the sentinel at a backoff and keeps the record — because
+        an outage produces identical endings by construction and a cancel would park the loop
+        for good. Any sentinel turn that actually ran resets that backoff.
         """
         if not getattr(self._session, "sentinel_turn_open", False):
             return False
         self._session.sentinel_turn_open = False
         previous = getattr(self._session, "last_sentinel_outcome", "")
-        if previous and previous == fingerprint:
+        repeated = bool(previous) and previous == fingerprint
+        if provider_failed:
+            self._session.last_sentinel_outcome = fingerprint
+            self.hold_for_provider()  # persists
+            return repeated
+        self._session.sentinel_provider_repeats = 0
+        if repeated:
             self._session.last_sentinel_outcome = ""
             held = self.pending()
             if held is not None and held.prompt.strip() == LOOP_SENTINEL:
@@ -204,6 +241,34 @@ class WakeupSlot:
         self._session.last_sentinel_outcome = fingerprint
         self._changed()
         return False
+
+    def hold_for_provider(self) -> Wakeup:
+        """Keep the loop's net through a provider failure, backing off (ADR-0250).
+
+        One more consecutive provider failure is counted on the session, and the sentinel is
+        re-armed at :data:`DEFAULT_DELAY_SECONDS` doubled per failure, clamped — 600, 1200, 2400,
+        3600 s — replacing a held SENTINEL (the 600 s a turn-end hook or the stall fence just
+        armed, sized for a loop that can run) or an empty slot. A hook's OWN prompt is left in
+        place, the precedence :meth:`note_turn_end` already keeps; the count still advances so the
+        next hold after it is sized right. Returns the wake-up now held. Called by
+        :meth:`note_turn_end` for a provider-failed sentinel turn and by the REPL door for a
+        sentinel the provider probe says would fail, so both count on one streak.
+        """
+        streak = int(getattr(self._session, "sentinel_provider_repeats", 0) or 0) + 1
+        self._session.sentinel_provider_repeats = streak
+        held = self.pending()
+        if held is not None and held.prompt.strip() != LOOP_SENTINEL:
+            self._changed()
+            return held
+        return self.arm(LOOP_SENTINEL, provider_hold_delay(streak))
+
+    def hold_unfired_sentinel(self) -> Wakeup:
+        """The REPL door took the sentinel but will not open its turn — the provider does not
+        answer — so put it back at the provider backoff (ADR-0250). :meth:`take_due_prompt`
+        marked the turn it was about to open as a sentinel turn; no turn opens, so the mark is
+        lifted here, or the next turn a person types would be judged as one."""
+        self._session.sentinel_turn_open = False
+        return self.hold_for_provider()
 
     def _changed(self) -> None:
         if self._on_change is not None:

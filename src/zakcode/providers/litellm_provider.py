@@ -353,6 +353,10 @@ _MODELS_WINDOW_PATHS: tuple[tuple[str, ...], ...] = (
 )
 #: One probe, off the request path; a slow server costs at most this once per provider.
 _WINDOW_PROBE_TIMEOUT = 3.0
+#: Seconds the REPL door gives a base to answer ``GET /models`` before a due sentinel is held
+#: rather than fired (ADR-0250). A live server answers this in milliseconds however busy its
+#: model is; a powered-off one never does, and the door should not wait long to learn that.
+_REACHABILITY_PROBE_TIMEOUT = 5.0
 
 
 def _litellm_supports_reasoning(model: str) -> bool:
@@ -2056,6 +2060,30 @@ class LiteLLMProvider(Provider):
 
     def model_id(self) -> str:
         return self.model
+
+    def unreachable(self, timeout: float = _REACHABILITY_PROBE_TIMEOUT) -> str | None:
+        """Why a call would not reach the configured ``api_base`` right now, or ``None``
+        (ADR-0250) — the REPL door asks before it fires a due autonomous-loop sentinel.
+
+        One ``GET /models`` against the base, the listing every OpenAI-compatible server
+        answers and the same request :func:`probe_served_window` makes, with a short timeout.
+        ``None`` when it answers — and ``None`` when there is nothing to ask: no ``api_base``,
+        a model that does not use the generic endpoint (its host may have no such listing), or
+        a base the request path would refuse under ``local_only`` (never contacted, by the same
+        destination rule). A reachable server whose model then fails is the loop's own concern;
+        this only tells a powered-off backend from one that is there. Never raises.
+        """
+        if not self.api_base or not _model_uses_generic_endpoint(self.model):
+            return None
+        if self.local_only:
+            ok, _reason = classify_destination(self.model, self.api_base, self.local_api_bases)
+            if not ok:
+                return None
+        try:
+            _fetch_models(self.api_base, self.api_key, timeout)
+        except Exception as exc:  # noqa: BLE001 — a probe must never take the process down
+            return f"{self.api_base} did not answer GET /models ({type(exc).__name__})"
+        return None
 
     def capabilities(self) -> Capabilities:
         caps = get_capabilities(self.model)

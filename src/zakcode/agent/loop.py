@@ -2477,6 +2477,10 @@ class AgentLoop:
         # and the skill the last veto delivered (the streaming status line). Per turn.
         self._vetoes_without_skill = 0
         self._veto_stall = False
+        # The stop reason the fence tripped ON (ADR-0250): ``provider_error`` when every vetoed
+        # ending was the provider refusing — the model never acted — so the repeat guard holds
+        # the net instead of cancelling it. Per turn, like the fence.
+        self._veto_stall_cause = ""
         self._veto_delivered: str | None = None
         # Work calls this loop has run (ADR-0196): successful calls to anything but the
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
@@ -6698,6 +6702,10 @@ class AgentLoop:
             # behind it, so the loop re-enters later with fresh context instead of never.
             name, args = reentry
             self._veto_stall = True
+            # What the fence tripped on. Every vetoed ending this turn was the same kind (a
+            # skill call resets the count), so the one in hand names them all: a provider that
+            # refused every call is a fact about the provider, not the loop (ADR-0250).
+            self._veto_stall_cause = stop_reason
             self._note(
                 "intervention",
                 f"turn-end hook vetoed {self._vetoes_without_skill} times running, asking for "
@@ -6887,10 +6895,37 @@ class AgentLoop:
 
         Called after ``last_stop_reason`` is set and before the persist, so whatever the turn armed
         is on the session and one write carries the verdict with it.
+
+        A turn the PROVIDER failed is the one ending this guard does not read as a verdict
+        (ADR-0250): ``provider_error`` outright, or a ``veto_stall`` whose vetoed endings were
+        provider errors — either way the model never acted, and an outage repeats that ending
+        by construction. The slot holds the net at a backoff instead of cancelling it.
         """
-        if self.wakeup_slot.note_turn_end(
-            turn_fingerprint(stop_reason, _last_assistant_text(turn_assistant))
-        ):
+        provider_failed = stop_reason == "provider_error" or (
+            stop_reason == "veto_stall" and self._veto_stall_cause == "provider_error"
+        )
+        was_sentinel_turn = bool(self.session.sentinel_turn_open)  # note_turn_end clears it
+        repeated = self.wakeup_slot.note_turn_end(
+            turn_fingerprint(stop_reason, _last_assistant_text(turn_assistant)),
+            provider_failed=provider_failed,
+        )
+        if provider_failed:
+            if was_sentinel_turn:
+                held = self.wakeup_slot.pending()
+                sentinel_held = held is not None and held.prompt.strip() == LOOP_SENTINEL
+                self._note(
+                    "intervention",
+                    f"this wake-up turn was failed by the provider before the model could act "
+                    f"({stop_reason}); held the net rather than judge the loop — "
+                    f"{'the sentinel' if sentinel_held else 'a hook prompt'} re-fires in "
+                    f"{held.delay_seconds if held is not None else 0}s "
+                    f"(provider failure {self.session.sentinel_provider_repeats} running)",
+                    kind="wake_held",
+                    repeated=repeated,
+                    streak=self.session.sentinel_provider_repeats,
+                )
+            return
+        if repeated:
             self._note(
                 "intervention",
                 "this wake-up turn ended exactly as the last wake-up turn did, so it re-entered "
@@ -7173,6 +7208,7 @@ class AgentLoop:
         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
         self._hook_governs_turn_end = False  # ADR-0208: every turn starts ungoverned
         self._veto_stall = False
+        self._veto_stall_cause = ""
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
@@ -8776,6 +8812,7 @@ class AgentLoop:
         self._vetoes_without_skill = 0  # the ADR-0187 fence's count; a skill call resets it
         self._hook_governs_turn_end = False  # ADR-0208: every turn starts ungoverned
         self._veto_stall = False
+        self._veto_stall_cause = ""
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
