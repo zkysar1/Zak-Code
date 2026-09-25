@@ -37,6 +37,11 @@ from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
 MIN_AVAIL_MB = 800  # the box has 4 GB; a prior pass OOM-killed a 57-minute run (ADR-0156).
+# Seconds one run may take before the arm kills the child (rc 124, no report, an INSTRUMENT
+# FAILURE in the verdict). One per arm, because the two children are driven differently.
+# ZBENCH_RUN_TIMEOUT_S replaces either for a campaign (see _wall_cap).
+ZAKCODE_WALL_CAP_S = 1800
+CLAUDE_CODE_WALL_CAP_S = 900
 
 
 def _avail_mb() -> int:
@@ -44,6 +49,19 @@ def _avail_mb() -> int:
         if line.startswith("MemAvailable:"):
             return int(line.split()[1]) // 1024
     return -1
+
+
+def _wall_cap(default_s: int) -> int:
+    """The per-run wall cap: ``ZBENCH_RUN_TIMEOUT_S`` when set and non-empty, else the arm's own.
+
+    The cap was a literal until 2026-09-25, when a ten-engine pod with five lanes in flight sent
+    12 of 42 runs into the 1800 s cap with the child still working -- every one a multi-file
+    task, and every one reported as the agent's failure. Under load the cap measures the pod,
+    not the loop, so a campaign sets it to what its load calls for. A bad value raises: a silent
+    fall-back to the default would re-cap a campaign meant to run longer, and the timeouts would
+    read exactly like the finding above."""
+    raw = os.environ.get("ZBENCH_RUN_TIMEOUT_S", "").strip()
+    return int(raw) if raw else default_s
 
 
 def _digest_tree(ws: Path) -> dict[str, str]:
@@ -97,7 +115,7 @@ def _private(spec: dict) -> tuple[str, ...]:
 _RUN_COUNTER = itertools.count(1)  # per-process run index, for per-run request dumps
 
 
-def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool = True) -> dict:
+def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CAP_S, pin: bool = True) -> dict:
     """zakcode arm, WITH ZBENCH_PIN_IDENTITY -- its determinism feature switched ON.
 
     run_task.py under the pin uses a CONSTANT workspace path (/tmp/zbench-pinned-<id>), wiped
@@ -175,7 +193,7 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = 1800, pin: bool
     }
 
 
-def one_run(task_dir: Path, spec: dict, timeout_s: int = 900) -> dict:
+def one_run(task_dir: Path, spec: dict, timeout_s: int = CLAUDE_CODE_WALL_CAP_S) -> dict:
     ws = Path(tempfile.mkdtemp(prefix=f"zbench-det-{spec['id']}-"))
     seed = task_dir / "workspace"
     if seed.is_dir():
@@ -244,13 +262,15 @@ def main(argv: list[str]) -> int:
         argv = argv[:i] + argv[i + 2:]
     task_dir = Path(argv[0]).resolve()
     n = int(argv[1]) if len(argv) > 1 else 3
-    runner = ((lambda td, sp: one_run_zakcode(td, sp, pin=pin)) if arm == "zakcode" else one_run)
+    cap = _wall_cap(ZAKCODE_WALL_CAP_S if arm == "zakcode" else CLAUDE_CODE_WALL_CAP_S)
+    runner = ((lambda td, sp: one_run_zakcode(td, sp, timeout_s=cap, pin=pin)) if arm == "zakcode"
+              else (lambda td, sp: one_run(td, sp, timeout_s=cap)))
     cell = (f"pin{(os.environ.get('ZBENCH_PIN_MODE','1') if pin else 'OFF')}-temp{os.environ.get('ZAKCODE_TEMPERATURE','default')}"
             if arm == "zakcode" else "asships")
     spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
     print(f"determinism arm: {spec['id']} x{n} through {arm}"
           + (f" (pin={'ON' if pin else 'OFF'}, ZAKCODE_TEMPERATURE={os.environ.get('ZAKCODE_TEMPERATURE','unset')})"
-             if arm == "zakcode" else " (as it ships)") + "\n")
+             if arm == "zakcode" else " (as it ships)") + f", wall cap {cap}s per run\n")
 
     runs = []
     for i in range(n):
@@ -304,7 +324,7 @@ def main(argv: list[str]) -> int:
                 print(f"    run {i}: {runs[i - 1].get('stderr_tail', '').strip().splitlines()[-1:] or ['(no stderr)']}")
         out = BENCH / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n,
+        out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n, "wall_cap_s": cap,
                                    "instrument_failure": (f"runs {empty} captured zero files; " if empty else "")
                                    + (f"runs {noreport} produced no report" if noreport else ""),
                                    "runs": runs}, indent=2), encoding="utf-8")
@@ -323,7 +343,9 @@ def main(argv: list[str]) -> int:
 
     out = BENCH / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n, "runs": runs}, indent=2), encoding="utf-8")
+    # wall_cap_s travels with the runs: a timeout count means nothing without the cap it hit.
+    out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n, "wall_cap_s": cap, "runs": runs},
+                              indent=2), encoding="utf-8")
     print(f"\nwrote {out}")
     return 0
 
