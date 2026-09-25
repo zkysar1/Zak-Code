@@ -65,15 +65,28 @@ def _task(tmp_path: Path) -> Path:
 
 def _completed_run() -> dict:
     """The smallest run record the verdict renderer accepts: one file, a report, no timeout."""
-    return {"verify_rc": 0, "num_turns": 1, "total_cost_usd": 0.0, "elapsed_s": 1.0,
-            "digests": {"a.py": "0" * 64}, "py_digests": {"a.py": "0" * 64}}
+    return {
+        "verify_rc": 0,
+        "num_turns": 1,
+        "total_cost_usd": 0.0,
+        "elapsed_s": 1.0,
+        "digests": {"a.py": "0" * 64},
+        "py_digests": {"a.py": "0" * 64},
+    }
 
 
 def _timed_out_run(timeout_s: int) -> dict:
     """What one_run_zakcode returns when the child outlives the cap: no report, no files."""
-    return {"verify_rc": None, "num_turns": None, "total_cost_usd": None,
-            "elapsed_s": float(timeout_s), "digests": {}, "py_digests": {},
-            "no_report": True, "stderr_tail": f"exceeded {timeout_s}s"}
+    return {
+        "verify_rc": None,
+        "num_turns": None,
+        "total_cost_usd": None,
+        "elapsed_s": float(timeout_s),
+        "digests": {},
+        "py_digests": {},
+        "no_report": True,
+        "stderr_tail": f"exceeded {timeout_s}s",
+    }
 
 
 def _bench_in(tmp_path: Path, arm, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,7 +104,9 @@ ZAKCODE_RESULT = "determinism-zakcode-pinOFF-tempdefault-cap-probe.json"
 
 
 def test_main_hands_the_cap_to_the_zakcode_arm_and_records_it(
-    arm, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    arm,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End to end through ``main``: the env cap reaches the child's timeout and the result JSON."""
     seen: list[dict] = []
@@ -109,7 +124,9 @@ def test_main_hands_the_cap_to_the_zakcode_arm_and_records_it(
 
 
 def test_main_hands_the_reference_arm_its_own_default_when_unset(
-    arm, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    arm,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[int] = []
 
@@ -126,11 +143,14 @@ def test_main_hands_the_reference_arm_its_own_default_when_unset(
 
 
 def test_an_instrument_failure_verdict_records_the_cap_as_well(
-    arm, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    arm,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A timed-out child is exactly the run whose cap the reader needs beside the timeout."""
-    monkeypatch.setattr(arm, "one_run_zakcode",
-                        lambda td, sp, timeout_s, pin: _timed_out_run(timeout_s))
+    monkeypatch.setattr(
+        arm, "one_run_zakcode", lambda td, sp, timeout_s, pin: _timed_out_run(timeout_s)
+    )
     _bench_in(tmp_path, arm, monkeypatch)
     monkeypatch.setenv("ZBENCH_RUN_TIMEOUT_S", "7")
     assert arm.main(["--arm", "zakcode", "--no-pin", str(_task(tmp_path)), "1"]) == 4

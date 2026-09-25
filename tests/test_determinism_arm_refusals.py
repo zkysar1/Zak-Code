@@ -85,7 +85,8 @@ def test_runs_without_a_report_are_refused(monkeypatch, tmp_path, capsys):
 def test_empty_digests_are_still_refused_with_rc4(monkeypatch, tmp_path, capsys):
     mod, task = _load(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        mod, "one_run_zakcode",
+        mod,
+        "one_run_zakcode",
         lambda td, sp, pin=True, timeout_s=None: _run(digests={}, py_digests={}),
     )
     rc = mod.main(["--arm", "zakcode", str(task), "2"])
