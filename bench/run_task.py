@@ -73,6 +73,124 @@ def _cost_ceiling(spec: dict) -> float | None:
     return float(raw)
 
 
+def _install_request_dumps(target: Path) -> None:
+    """Dump every provider request under ``target`` (``ZBENCH_DUMP_REQUESTS=<dir>``).
+
+    Writes the canonical INPUT of every provider call (system + the full message list + the
+    tool schemas) as one JSON file per call. It exists to answer a question the whole
+    determinism lane had been ANSWERING BY INFERENCE: when two runs of an identical
+    configuration diverge, was the ENGINE non-deterministic, or were the two runs never given
+    the same input? Those are opposite verdicts with opposite remedies, and nothing here could
+    tell them apart -- ADR-0150 partitioned variance into `sampler + engine` and attributed the
+    residual to the engine without ever checking that the inputs matched.
+    `bench/probe_provider_determinism.py` established the other half: this pod reproduces 4,000
+    greedy tokens byte-for-byte five times, so a divergence downstream of identical input would
+    be the engine's -- and a divergence from NON-identical input is not evidence about the engine
+    at all.
+    Messages are pydantic models: dump with model_dump(mode="json"), never `default=str`, which
+    would stamp `<object at 0x7f...>` memory addresses into the payload and manufacture a
+    guaranteed difference between any two runs -- an instrument that always reports "different"
+    is exactly as useless as one that always reports "same".
+
+    Three kinds of file: ``call-N`` (what the engine handed ``acomplete``), ``echo-N`` (what
+    served it) and ``wire-N`` (what litellm was handed). ``call`` and ``echo`` exist only for
+    the buffered path; ``wire`` for every request, on its own counter -- the comment at the
+    wire dump says why the two counters are separate.
+    """
+    from zakcode.providers.litellm_provider import LiteLLMProvider
+
+    target.mkdir(parents=True, exist_ok=True)
+    counter = {"n": 0}
+    original_acomplete = LiteLLMProvider.acomplete
+
+    async def dumping_acomplete(self, messages, *, system=None, tools=None, **kw):
+        counter["n"] += 1
+        idx = counter["n"]
+        try:
+            payload = {
+                "system": system,
+                "messages": [m.model_dump(mode="json") for m in messages],
+                "tools": tools,
+                # EVERY other kwarg too, and the instance-level sampling state. The first
+                # version of this dump recorded only system/messages/tools, and that gap read
+                # as a positive result: two runs whose dumps were byte-identical produced
+                # different completions, which looked like provider non-determinism until the
+                # same payload replayed 5/5 identical. What a dump omits, it silently
+                # exonerates.
+                "kwargs": {k: repr(v) for k, v in sorted(kw.items())},
+                "provider_state": {
+                    "temperature": repr(getattr(self, "temperature", None)),
+                    "extra_body": repr(getattr(self, "extra_body", None)),
+                    "model": repr(getattr(self, "model", None)),
+                },
+            }
+            (target / f"call-{idx:04d}.json").write_text(
+                json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # a dump failure must never change the run it observes
+            (target / f"call-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+        result = await original_acomplete(self, messages, system=system, tools=tools, **kw)
+        # ...and the RESPONSE's own account of what served it (ADR-0214). The two dumps
+        # above record only what was SENT, so a whole campaign of runs could say which
+        # id it asked for and nothing at all about which weights replied -- which is the
+        # gap that let "the 27B" mean the 35B for a month here. The pod's access ledger
+        # is no help in the other direction either: it records the name it resolved to,
+        # never the one the caller sent, so neither side alone can pair them. One small
+        # file per call does, and it carries no prompt text, only the pairing.
+        try:
+            (target / f"echo-{idx:04d}.json").write_text(
+                json.dumps({
+                    "requested_model": getattr(self, "model", None),
+                    "served_model": getattr(result, "served_model", None),
+                    "finish_reason": getattr(result, "finish_reason", None),
+                }, indent=2, sort_keys=True, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            (target / f"echo-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+        return result
+
+    LiteLLMProvider.acomplete = dumping_acomplete
+
+    # ...and the ACTUAL wire body. The layer above records what the ENGINE passes; litellm then
+    # builds the request, and everything it adds, renames or drops is invisible there. That gap
+    # is not theoretical: a replay reconstructed from the engine-level dump reproduced 5/5 with
+    # itself and matched NEITHER run (3,757 chars against the real call's 5,085), so it was
+    # measuring a request zakcode never sends -- while looking like a clean result. Dumping the
+    # body litellm is handed is the only payload a replay can honestly claim to re-send.
+    import litellm as _litellm  # noqa: PLC0415
+
+    original_acompletion = _litellm.acompletion
+    # The wire files count on their OWN counter. They used to be named by the buffered-call
+    # counter above, which only `acomplete` bumps -- and the streaming main loop never calls
+    # `acomplete`, so under the stream driver every request of a turn overwrote the same
+    # `wire-<n>.json` until the next buffered call (the facade classifier) moved n. Measured
+    # 2026-09-25, campaign c2, 01-wordfreq run-1: eight turns, three wire files -- and every
+    # consumer of these dumps globs `wire-*.json` expecting one file per request, so each read a
+    # fraction of the run and reported it as the whole. Under the buffered driver every request
+    # passes through `acomplete`, so the two counters agree and `call-N` pairs with `wire-N`
+    # (campaign c1b: calls = wires = 11 per run); any second litellm call inside one `acomplete`
+    # now leaves its own wire file instead of overwriting the first.
+    wires = {"n": 0}
+
+    async def dumping_acompletion(**call_kwargs):
+        wires["n"] += 1
+        idx = wires["n"]
+        try:
+            (target / f"wire-{idx:04d}.json").write_text(
+                json.dumps({k: v for k, v in sorted(call_kwargs.items()) if k != "api_key"},
+                           indent=2, sort_keys=True, ensure_ascii=False, default=repr),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            (target / f"wire-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
+        return await original_acompletion(**call_kwargs)
+
+    _litellm.acompletion = dumping_acompletion
+    print(f"[bench] dumping provider requests to {target}", file=sys.stderr)
+
+
 def _build_agent(workspace: Path, spec: dict):
     """Mirror the CLI's canonical construction, adapted for headless reproducible runs."""
     from zakcode import Agent
@@ -243,103 +361,9 @@ def _build_agent(workspace: Path, spec: dict):
     # `_MAX_COMPLETION_TOKENS` is declared once in litellm_provider and read at exactly one call
     # site. Patched on the MODULE (the name is resolved per call), so it reaches every provider
     # instance including ones built later by routing.
-    # ZBENCH_DUMP_REQUESTS=<dir> writes the canonical INPUT of every provider call (system + the
-    # full message list + the tool schemas) as one JSON file per call. It exists to answer a
-    # question the whole determinism lane had been ANSWERING BY INFERENCE: when two runs of an
-    # identical configuration diverge, was the ENGINE non-deterministic, or were the two runs never
-    # given the same input? Those are opposite verdicts with opposite remedies, and nothing here
-    # could tell them apart -- ADR-0150 partitioned variance into `sampler + engine` and attributed
-    # the residual to the engine without ever checking that the inputs matched.
-    # `bench/probe_provider_determinism.py` established the other half: this pod reproduces 4,000
-    # greedy tokens byte-for-byte five times, so a divergence downstream of identical input would
-    # be the engine's -- and a divergence from NON-identical input is not evidence about the engine
-    # at all.
-    # Messages are pydantic models: dump with model_dump(mode="json"), never `default=str`, which
-    # would stamp `<object at 0x7f...>` memory addresses into the payload and manufacture a
-    # guaranteed difference between any two runs -- an instrument that always reports "different"
-    # is exactly as useless as one that always reports "same".
     dump_dir = os.environ.get("ZBENCH_DUMP_REQUESTS")
     if dump_dir:
-        from zakcode.providers.litellm_provider import LiteLLMProvider
-
-        target = Path(dump_dir)
-        target.mkdir(parents=True, exist_ok=True)
-        counter = {"n": 0}
-        original_acomplete = LiteLLMProvider.acomplete
-
-        async def dumping_acomplete(self, messages, *, system=None, tools=None, **kw):
-            counter["n"] += 1
-            idx = counter["n"]
-            try:
-                payload = {
-                    "system": system,
-                    "messages": [m.model_dump(mode="json") for m in messages],
-                    "tools": tools,
-                    # EVERY other kwarg too, and the instance-level sampling state. The first
-                    # version of this dump recorded only system/messages/tools, and that gap read
-                    # as a positive result: two runs whose dumps were byte-identical produced
-                    # different completions, which looked like provider non-determinism until the
-                    # same payload replayed 5/5 identical. What a dump omits, it silently
-                    # exonerates.
-                    "kwargs": {k: repr(v) for k, v in sorted(kw.items())},
-                    "provider_state": {
-                        "temperature": repr(getattr(self, "temperature", None)),
-                        "extra_body": repr(getattr(self, "extra_body", None)),
-                        "model": repr(getattr(self, "model", None)),
-                    },
-                }
-                (target / f"call-{idx:04d}.json").write_text(
-                    json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except Exception as exc:  # a dump failure must never change the run it observes
-                (target / f"call-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
-            result = await original_acomplete(self, messages, system=system, tools=tools, **kw)
-            # ...and the RESPONSE's own account of what served it (ADR-0214). The two dumps
-            # above record only what was SENT, so a whole campaign of runs could say which
-            # id it asked for and nothing at all about which weights replied -- which is the
-            # gap that let "the 27B" mean the 35B for a month here. The pod's access ledger
-            # is no help in the other direction either: it records the name it resolved to,
-            # never the one the caller sent, so neither side alone can pair them. One small
-            # file per call does, and it carries no prompt text, only the pairing.
-            try:
-                (target / f"echo-{idx:04d}.json").write_text(
-                    json.dumps({
-                        "requested_model": getattr(self, "model", None),
-                        "served_model": getattr(result, "served_model", None),
-                        "finish_reason": getattr(result, "finish_reason", None),
-                    }, indent=2, sort_keys=True, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except Exception as exc:
-                (target / f"echo-{idx:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
-            return result
-
-        LiteLLMProvider.acomplete = dumping_acomplete
-
-        # ...and the ACTUAL wire body. The layer above records what the ENGINE passes; litellm then
-        # builds the request, and everything it adds, renames or drops is invisible there. That gap
-        # is not theoretical: a replay reconstructed from the engine-level dump reproduced 5/5 with
-        # itself and matched NEITHER run (3,757 chars against the real call's 5,085), so it was
-        # measuring a request zakcode never sends -- while looking like a clean result. Dumping the
-        # body litellm is handed is the only payload a replay can honestly claim to re-send.
-        import litellm as _litellm  # noqa: PLC0415
-
-        original_acompletion = _litellm.acompletion
-
-        async def dumping_acompletion(**call_kwargs):
-            try:
-                (target / f"wire-{counter['n']:04d}.json").write_text(
-                    json.dumps({k: v for k, v in sorted(call_kwargs.items()) if k != "api_key"},
-                               indent=2, sort_keys=True, ensure_ascii=False, default=repr),
-                    encoding="utf-8",
-                )
-            except Exception as exc:
-                (target / f"wire-{counter['n']:04d}.DUMPFAIL").write_text(repr(exc), encoding="utf-8")
-            return await original_acompletion(**call_kwargs)
-
-        _litellm.acompletion = dumping_acompletion
-        print(f"[bench] dumping provider requests to {target}", file=sys.stderr)
+        _install_request_dumps(Path(dump_dir))
     mt = os.environ.get("ZBENCH_MAX_TOKENS")
     if mt:
         from zakcode.providers import litellm_provider as _lp
