@@ -23,6 +23,7 @@ Usage:  ./.venv/bin/python bench/determinism_cc.py bench/tasks/02-median-bug [N]
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import hashlib
 import itertools
@@ -72,6 +73,28 @@ def _digest_tree(ws: Path) -> dict[str, str]:
         if p.is_file() and "__pycache__" not in p.parts:
             out[str(p.relative_to(ws))] = hashlib.sha256(p.read_bytes()).hexdigest()
     return out
+
+
+def _trace_interventions(trace_dir: Path) -> dict[str, int]:
+    """The intervention tally run_task.py puts in its report, re-derived from the trace files the
+    engine checkpointed under ``trace_dir`` -- for a run that never printed a report. Same key as
+    the report's (``data.kind``, else the first 40 chars of ``detail``) and the same most-common
+    order, so a row filled from the file reads exactly like a row filled from the report; the one
+    difference is that a checkpoint can trail the kill by one tool batch. Root turns only
+    (``turn_N.jsonl``), which is all the report counts too."""
+    counts: collections.Counter[str] = collections.Counter()
+    for path in sorted(trace_dir.glob("*/turn_*.jsonl")):
+        with contextlib.suppress(OSError):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("kind") != "intervention":
+                    continue
+                data = rec.get("data") or {}
+                counts[data.get("kind") or (rec.get("detail") or "?")[:40]] += 1
+    return dict(counts.most_common())
 
 
 _SOURCE_SUFFIXES = (".py", ".md", ".txt", ".csv", ".json", ".toml", ".yaml", ".yml", ".cfg", ".ini")
@@ -138,6 +161,16 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
     k = next(_RUN_COUNTER)
     if os.environ.get("ZBENCH_DUMP_REQUESTS"):
         env["ZBENCH_DUMP_REQUESTS"] = str(Path(os.environ["ZBENCH_DUMP_REQUESTS"]) / f"run-{k}")
+    # The engine checkpoints its decision trace (every usage row, every gate or recovery
+    # intervention, the stop -- TurnTrace) to ZAKCODE_TRACE_DIR after every tool batch. Until
+    # now the arm read that trace only through the child's REPORT, which a run that outlives
+    # the cap never prints: the kill discarded exactly the evidence that would say why it
+    # outlived it (measured 2026-09-25: a 3600 s death on a multi-file cell left a row with no
+    # turn count, no latency and no intervention -- it could say "timeout" and nothing else).
+    # One directory per run, outside the workspace so the digests never see it, kept afterwards
+    # the way a failed run's workspace is kept; the row names it.
+    trace_dir = Path(tempfile.mkdtemp(prefix=f"zbench-trace-{spec['id']}-run{k}-"))
+    env["ZAKCODE_TRACE_DIR"] = str(trace_dir)
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -166,6 +199,13 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
     sources = _capture_sources(ws, _private(spec)) if ws.is_dir() else {}
     if not pin:
         shutil.rmtree(ws, ignore_errors=True)  # unpinned runs leave a fresh dir each time
+    # A run that printed no report (the cap, a crash) is tallied from the checkpointed trace
+    # files instead, so a timeout row can say which gates fired before the kill. A report's own
+    # tally -- even an empty one, a clean run -- is never second-guessed by the file.
+    from_report = "trace_interventions" in rep
+    interventions = (
+        (rep.get("trace_interventions") or {}) if from_report else _trace_interventions(trace_dir)
+    )
     return {
         "cli_rc": rc,
         "workspace": str(ws),
@@ -182,7 +222,9 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
         "stop_reason": str(rep.get("stop_reason")),
         # The census (intervention_coverage.py) tallies this per row; until 2026-09-13 only
         # run_task's single-run report carried it, so no arm cell could show a kind as recorded.
-        "trace_interventions": rep.get("trace_interventions") or {},
+        "trace_interventions": interventions,
+        "trace_source": "report" if from_report else "trace-file",
+        "trace_dir": str(trace_dir),
         # A report has a `success` key even when the task failed; its absence means the child
         # never got as far as running the agent (crash, config refusal, import error).
         "no_report": "success" not in rep,
