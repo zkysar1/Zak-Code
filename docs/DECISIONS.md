@@ -14499,6 +14499,21 @@ tokens, no call seconds, the throughput pairing reading side calls, the loop's r
 the tag surviving a mixed sum, and the session dropping the tag. The full suite passed,
 4,714 tests.
 
+**Amendment (2026-09-25) — the row carries the summary's size, because the completion is mostly
+thinking.** Measured over the trace rows this ADR added, on three worker Bodies driving a 27B
+reasoning model through llama.cpp: 17 completed compactions billed 2,000-9,749 completion tokens
+each (median about 6,500) and took 345-1,541 seconds, generating at 5.7-9.3 tokens per second — a
+median compaction spends about fifteen minutes on the summarizer's output alone. But the summary
+those compactions installed was 4,560-16,800 characters, 576-2,157 words: about 35-45% of the
+billed completion. The rest was the model's thinking, which llama.cpp counts in
+`completion_tokens`, and the row could not tell the two apart, so a decision about summary length
+and a decision about the summarizer's reasoning budget had to share one number. The row now also
+carries `summary_chars` (exact) and `summary_tokens_estimate` (the tail budget's own counter,
+ADR-0132, so it is comparable with the tail it sits beside); both are zero for a model-free
+elision, like every other key here. The proof adds a row check for both fields and the elision
+zeros to `tests/test_compact_loop.py`. What this does not decide: whether to shorten the summary
+or the thinking. It makes each measurable on every compaction the fleet runs.
+
 ## ADR-0242: the summarizer is asked where it starts writing, and a response that is not a summary is asked for again
 
 Status: accepted. 2026-09-23.

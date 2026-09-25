@@ -822,7 +822,28 @@ def test_a_model_free_elision_row_shows_no_summarizer(tmp_path: Path) -> None:
     (row,) = _compaction_rows(loop)
     assert row["summarizer_calls"] == 0
     assert row["summarizer_s"] == 0.0
+    assert row["summary_chars"] == 0
+    assert row["summary_tokens_estimate"] == 0
     assert provider.seen == []
+
+
+def test_the_compaction_row_says_how_big_the_summary_is(tmp_path: Path) -> None:
+    # Measured 2026-09-25 on three worker Bodies (a 27B reasoning model): a compaction's
+    # summarizer billed 3,256-9,442 completion tokens, of which the installed summary was
+    # 35-45%; the rest was the model's thinking. The row now carries the summary's size, in
+    # characters and in the tail budget's own token estimate, so the two are separable.
+    summary = "The user asked for a word counter; the assistant wrote it and ran the tests."
+    provider = _PricedSummarizerProvider([summary], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    (row,) = _compaction_rows(loop)
+    assert row["summary_chars"] == len(summary)
+    # The double's counter is a constant, so equality with the loop's own counter is the
+    # check; the real counter's ratio to characters is the provider's business.
+    assert row["summary_tokens_estimate"] == loop._tail_tokens([Message.system(summary)]) > 0
+    assert row["summarizer_completion_tokens"] == 100  # the billed side, still separate
 
 
 def test_each_compaction_row_counts_only_its_own_calls(tmp_path: Path) -> None:
