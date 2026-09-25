@@ -544,15 +544,17 @@ async def test_a_stall_midway_reports_how_far_the_stream_got(
 async def test_the_deadline_is_per_gap_so_a_long_stream_is_never_punished_for_its_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Six 20ms gaps = 120ms of streaming under a 60ms bound: a whole-call ceiling would
+    # Six 250ms gaps = 1.5s of streaming under a 0.8s bound: a whole-call ceiling would
     # kill this healthy generation, a per-gap one must not. This is the property that
-    # makes request_timeout the wrong knob for the job.
+    # makes request_timeout the wrong knob for the job. The 0.55s of slack per gap is for
+    # a loaded runner: main's py3.13 job (2026-09-25) stalled a 10ms gap past a 150ms
+    # bound in a sibling test, so a margin measured in tens of milliseconds is a flake.
     chunks = [_chunk(content=str(i)) for i in range(5)]
     chunks.append(_chunk(content="", finish_reason="stop"))
-    stream = _StallingStream(chunks, gap=0.02, hang=False)
+    stream = _StallingStream(chunks, gap=0.25, hang=False)
     monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
     events = await _collect(
-        LiteLLMProvider(model="gpt-4o-mini", api_key="sk-test", stream_stall_timeout=0.06).astream(
+        LiteLLMProvider(model="gpt-4o-mini", api_key="sk-test", stream_stall_timeout=0.8).astream(
             _MSGS
         )
     )
@@ -651,10 +653,12 @@ async def test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry(
     monkeypatch.setattr(provider_mod, "_MIN_REQUEST_INTERVAL_S", 0.0)  # pacing is not the bound
     est = _estimate(_LONG_MSGS)
     labels: list[str] = []
+    bounds: list[float] = []  # what each attempt is about to wait for, read before it runs
     waits: list[float] = []
     for _ in range(4):
         stream = _StallingStream([])
         monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+        bounds.append(provider._first_chunk_bound(est))
         before = time.monotonic()
         with pytest.raises(TimedOut) as excinfo:
             await _collect(provider.astream(_LONG_MSGS))
@@ -663,9 +667,12 @@ async def test_a_first_gap_expiry_teaches_the_bound_to_grow_for_the_retry(
         assert stream.closed  # the socket is released each time
     # 0.05 → 0.1 → 0.2 → 0.25: each expiry is a measurement, the bound doubles on it (the
     # margin is the growth step), and the ceiling caps it. The retry that the loop issues
-    # against the backend's half-built cache therefore gets the time it needs.
-    assert waits[0] < waits[1] < waits[2]
-    assert waits[3] < 0.5
+    # against the backend's half-built cache therefore gets the time it needs. The bounds
+    # are asserted, not the elapsed times: a loaded CI runner charged the FIRST attempt
+    # 0.46s against its 0.05s bound (main, 2026-09-25) and the elapsed order inverted while
+    # every bound was right — so the clock only has to show that each timer fired at all.
+    assert bounds == [0.05, 0.1, 0.2, 0.25]
+    assert max(waits) < 5.0  # each expiry fired; 20x the ceiling leaves room for a busy runner
     assert provider._first_chunk_bound(est) == 0.25
     assert labels[0] == "ZAKCODE_STREAM_STALL_TIMEOUT"
     assert labels[1].startswith("first-chunk bound 0.1s, learned")
@@ -699,23 +706,27 @@ async def test_a_first_gap_expiry_says_what_the_next_attempt_will_wait(
 async def test_a_slow_first_chunk_that_arrived_is_measured_for_the_next_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # 0.1s to the first chunk under a 0.15s floor: within bound, so the call succeeds —
+    # 1.0s to the first chunk under a 1.6s floor: within bound, so the call succeeds —
     # and the next call's first-chunk bound is 2x the wait it measured, above the floor.
-    provider = _learning_provider(stall=0.15, ceiling=10.0)
+    # The floor sits inside (gap, 2*gap) by construction, so the slack the stall timer
+    # gets is at most one gap; a 0.1s gap under a 0.15s floor gave a loaded runner 50ms
+    # and main's py3.13 job (2026-09-25) overran margins that size. One second is paid
+    # for 0.6s of slack, and jitter can only INFLATE the measured wait, never shrink it.
+    provider = _learning_provider(stall=1.6, ceiling=10.0)
     chunks = [_chunk(content="ok"), _chunk(content="", finish_reason="stop")]
-    stream = _StallingStream(chunks, gap=0.1, hang=False)
+    stream = _StallingStream(chunks, gap=1.0, hang=False)
     monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
     events = await _collect(provider.astream(_LONG_MSGS))
     assert isinstance(events[-1], StreamDone)
     est = _estimate(_LONG_MSGS)
     measured = provider._prefill_seconds_per_token * est  # the wait the call charged itself
-    # The 0.1s gap, less one clock tick: on Windows py3.11 time.monotonic() ticks every
+    # The 1.0s gap, less one clock tick: on Windows py3.11 time.monotonic() ticks every
     # 15.6ms and asyncio fires a timer up to one tick EARLY (measured on main CI 2026-09-24:
-    # 0.094s for a 0.1s sleep), so a hard 0.2 floor on the bound was a coarse-clock flake.
-    assert 0.07 <= measured < 1.0
+    # 0.094s for a 0.1s sleep), so the lower edge sits a full tenth under the gap.
+    assert 0.9 <= measured < 10.0
     bound = provider._first_chunk_bound(est)
     assert bound == pytest.approx(2 * measured)  # the margin over the measured wait
-    assert bound > 0.15  # and above the floor, which is the point
+    assert bound > 1.6  # and above the floor, which is the point
 
 
 async def test_the_cache_share_the_backend_reports_sharpens_the_rate(
@@ -724,7 +735,9 @@ async def test_the_cache_share_the_backend_reports_sharpens_the_rate(
     # Half the prompt came from the backend's cache: the wait is charged to the other
     # half, so the measured rate is twice as slow as charging the whole prompt would say.
     # That is how a retry resuming from a half-built cache still teaches the COLD rate.
-    provider = _learning_provider(stall=0.15, ceiling=10.0)
+    # The stall floor is 5s because nothing here is about time: main's py3.13 job
+    # (2026-09-25) stalled the 10ms gap below past a 0.15s floor and timed the call out.
+    provider = _learning_provider(stall=5.0, ceiling=10.0)
     noted: list[tuple[int, float, float]] = []
     monkeypatch.setattr(provider, "_note_prefill", lambda est, s, f=1.0: noted.append((est, s, f)))
     usage = SimpleNamespace(
