@@ -14876,3 +14876,66 @@ learned / ceiling; `test_a_slow_first_chunk_that_arrived_is_measured_for_the_nex
 `test_the_cache_share_the_backend_reports_sharpens_the_rate`,
 `test_the_rate_is_charged_at_least_one_batch_and_only_rises` and
 `test_later_gaps_keep_the_per_gap_bound_whatever_the_first_learned` pin the other clauses.
+
+## ADR-0249: the provider's sockets keep alive, so a backend that vanishes is noticed in minutes
+
+Status: accepted. 2026-09-24.
+
+A buffered (non-streaming) call has exactly one bound: `request_timeout`
+(`ZAKCODE_REQUEST_TIMEOUT`, 3600s on the fleet). ADR-0120 and ADR-0248 bound the gaps of a
+STREAMING call; a buffered call has no gaps — nothing arrives until the whole answer does, by
+design. The cost shows when the backend is not slow but gone.
+
+Measured 2026-09-24 on the fleet's pod (llama.cpp behind a proxy on the pod itself; three
+worker sessions in LXD containers on zakcode 432d2c3): the pod was powered off for a
+maintenance window at 23:06:56Z and booted again at 23:27:09Z. Each worker had sent a
+streaming request between 22:53Z and 22:57Z and was receiving chunks when the pod went. At
+23:35Z every worker still held one ESTABLISHED socket to the proxy with no timer running
+(`ss -tnoi`: last send 2272-2530s ago; last receive and last ack 1685s ago on all three,
+within half a second of each other — the moment the pod went away), and the proxy on the
+rebooted pod held no connection from any of them. Nothing in the kernel probes an idle
+established socket unless SO_KEEPALIVE is set, and nothing in the application can tell a dead
+peer from a working backend that has simply not sent the next byte yet (ADR-0248's point).
+What ended the wait was ADR-0120's per-gap stall bound, 1800s on the fleet: all three retried
+at 23:36:58Z, the same second, 1800s after their last chunk — thirty minutes lost per worker to
+a ten-minute outage, and twenty of them with the pod already back. A buffered call has no
+per-gap bound at all and waits the whole `request_timeout` (3600s) from its last byte.
+
+The kernel already knows how to ask. With SO_KEEPALIVE on, an idle socket sends a probe after
+TCP_KEEPIDLE seconds and gives up after TCP_KEEPCNT unanswered probes TCP_KEEPINTVL apart. A
+rebooted peer answers the first probe with a reset; a powered-off one answers nothing. Either
+way the pending read fails with a connection error, which the provider already maps to the
+retry-with-backoff path — the path an interactive session took the same night ("provider
+unavailable; retrying in 47.1s (525s into the 900s backoff budget)") until the pod answered
+again. A live backend answers probes from the kernel however busy the model is, so a slow
+prefill or a long generation cannot trip it: there is no false positive to size against,
+which is why this is a socket option and not another timeout.
+
+Where the option has to go. litellm ships a keepalive socket factory, but only for its
+aiohttp transport, which ADR-0239 turned off; on the httpx path every client litellm caches
+(one per endpoint and event loop) gets its transport from one static builder,
+`AsyncHTTPHandler._create_httpx_transport`, and that builder takes no socket options. A
+process-wide `litellm.aclient_session` would carry them but binds one client to one event
+loop, which is the hazard litellm's per-loop cache exists to avoid. The first draft of this
+ADR turned on litellm's aiohttp switch from the environment and proved nothing: the test that
+read the transport litellm actually builds found no aiohttp transport at all. The test that
+reads the socket is the one that counts.
+
+Decision.
+
+- `zakcode.providers.litellm_provider` replaces `AsyncHTTPHandler._create_httpx_transport`
+  with a builder that returns httpx's transport carrying SO_KEEPALIVE and the probe schedule
+  (60s idle, then up to five probes 30s apart — litellm's own aiohttp numbers), and keeps
+  litellm's `force_ipv4` choice. Set once at import, beside the ADR-0239 setting, before any
+  client is built. One behaviour, no setting: a dead peer is noticed within 210s, against
+  3600s before.
+- Only the dead-peer case changes. A backend that answered and whose answer never reached the
+  client keeps its socket alive and is not touched here; that case stays open.
+
+Tests, `tests/test_provider_keepalive.py`: `test_the_transport_litellm_builds_carries_the_keepalive_options`
+(the builder litellm calls yields a transport whose pool carries the options),
+`test_the_schedule_names_the_idle_interval_and_count_this_platform_has`,
+`test_a_provider_call_opens_keepalive_sockets` (one real call through `LiteLLMProvider` to a
+loopback stub; SO_KEEPALIVE read off the live socket behind the client litellm cached) and
+`test_control_litellms_plain_transport_opens_sockets_without_keepalive` (litellm's plain
+builder restored; the same reading must be 0, so the instrument tells the two apart).

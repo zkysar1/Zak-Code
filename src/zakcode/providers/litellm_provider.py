@@ -24,7 +24,9 @@ from collections import deque
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import litellm
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
 from zakcode.config import Settings
 from zakcode.messages import (
@@ -92,6 +94,47 @@ setattr(litellm, "suppress_debug_info", True)  # noqa: B010
 # reclaimed without a word. Nothing here needs aiohttp's throughput: calls go out a few at
 # a time, and each one waits seconds to minutes on the model.
 setattr(litellm, "disable_aiohttp_transport", True)  # noqa: B010
+
+
+def _keepalive_socket_options() -> list[tuple[int, int, int]]:
+    """SO_KEEPALIVE plus its probe schedule, spelled with the constants this platform has.
+
+    60s idle before the first probe, then up to five probes 30s apart — the schedule litellm
+    applies on the aiohttp transport ADR-0239 turned off, so a dead peer is noticed within
+    210s. macOS names the idle option ``TCP_KEEPALIVE``; a platform missing a constant keeps
+    the kernel's default for that one and still gets SO_KEEPALIVE.
+    """
+    options = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    for name, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPALIVE", 60)):
+        if hasattr(socket, name):
+            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
+            break
+    for name, value in (("TCP_KEEPINTVL", 30), ("TCP_KEEPCNT", 5)):
+        if hasattr(socket, name):
+            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
+    return options
+
+
+def _httpx_transport_with_keepalive() -> httpx.AsyncHTTPTransport:
+    """The transport litellm builds for its httpx clients, with TCP keepalive on every socket.
+
+    Replaces ``AsyncHTTPHandler._create_httpx_transport`` (ADR-0249). A buffered call's only
+    bound is ``request_timeout``, and nothing probes an idle ESTABLISHED socket unless the
+    kernel is told to: a backend that reboots mid-request otherwise holds the call for the
+    whole timeout — three workers, an hour each, for a ten-minute outage, measured
+    2026-09-24. litellm exposes no socket-option hook on its httpx path (its keepalive
+    factory serves only the aiohttp transport), so the one builder every per-loop client goes
+    through carries the options instead. litellm's own ``force_ipv4`` choice is kept. A live
+    backend answers probes from the kernel however busy the model is, so a slow prefill or a
+    long generation cannot trip it. Pinned by ``tests/test_provider_keepalive.py``.
+    """
+    local_address = "0.0.0.0" if getattr(litellm, "force_ipv4", False) else None
+    return httpx.AsyncHTTPTransport(
+        local_address=local_address, socket_options=_keepalive_socket_options()
+    )
+
+
+setattr(AsyncHTTPHandler, "_create_httpx_transport", staticmethod(_httpx_transport_with_keepalive))  # noqa: B010
 
 logger = logging.getLogger("zakcode.providers")
 
