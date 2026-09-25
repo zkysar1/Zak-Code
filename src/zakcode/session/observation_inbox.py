@@ -38,6 +38,7 @@ Semantics:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,30 @@ def _parse_envelope(raw: str) -> dict[str, Any] | None:
     if envelope.get("envelopeVersion") != OBSERVATION_ENVELOPE_VERSION:
         return None
     return envelope
+
+
+#: The prefix of a DERIVED envelope id — one this reader computed because the producer sent none.
+ENVELOPE_ID_PREFIX = "env-"
+
+
+def envelope_id(envelope: dict[str, Any] | None) -> str | None:
+    """A stable id for one envelope: the key that joins a delivered perception to what followed.
+
+    The mind cites it in its reaction line, and from there it reaches the aspiration the
+    reaction filed or fed and the model spend of that work (the One Body flywheel's linked
+    ids). A producer-supplied ``envelopeId`` wins, so a vessel that mints its own ids joins on
+    them verbatim. Otherwise the id is derived from the envelope's CONTENT, which anyone
+    holding the same envelope can recompute. Deliberately not a counter or a clock: a counter
+    restarts with the process, and a clock cannot be recomputed from the envelope.
+    Returns ``None`` only when there is no envelope at all.
+    """
+    if not isinstance(envelope, dict):
+        return None
+    supplied = envelope.get("envelopeId")
+    if isinstance(supplied, str) and supplied.strip():
+        return supplied.strip()
+    canonical = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return ENVELOPE_ID_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def peek_observation(path: Path) -> dict[str, Any] | None:

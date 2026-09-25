@@ -178,6 +178,7 @@ from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensi
 from zakcode.secrets import redact_credential_tokens
 from zakcode.session.discovery_ledger import discovery_path, fold_observation
 from zakcode.session.observation_inbox import (
+    envelope_id,
     observation_path,
     read_observation,
     render_observation,
@@ -1284,7 +1285,12 @@ _SAY_PATIENCE = 3
 #: arrives as a user-role message, and a field model once misattributed one to the human.
 #: A perception is the WORLD reporting itself, never a person speaking, and never the
 #: turn's message.
-_OBSERVATION_FRAME = "[perception — from your vessel, not from a person]\n{text}"
+#: Line 1 is the provenance tag and stays byte-identical: the Mind's perception-reaction rule
+#: and its checker key on it. Line 2 is the envelope id, which the mind cites in its reaction
+#: line so the delivery can be joined to what the mind did about it.
+_OBSERVATION_FRAME = (
+    "[perception — from your vessel, not from a person]\nenvelope={envelope_id}\n{text}"
+)
 
 #: What a SessionStart hook said, handed to the model ONCE, where the hook fired (ADR-0211).
 #: ``[hook]``-tagged: it arrives as a user-role message that no person wrote, and the system
@@ -7102,10 +7108,13 @@ class AgentLoop:
             more = len(newly) - len(shown)
             tail = f", and {more} more" if more else ""
             rendered += f"\n\n(Newly discovered by exploring: {', '.join(shown)}{tail})"
-        self.session.add_message(Message.user(_OBSERVATION_FRAME.format(text=rendered)))
+        eid = envelope_id(envelope)
+        self.session.add_message(
+            Message.user(_OBSERVATION_FRAME.format(envelope_id=eid, text=rendered))
+        )
         self._persist()
-        self._note("intervention", "perception delivered mid-turn", kind="observation")
-        logger.info("observation inbox: delivered a perception (%d chars)", len(rendered))
+        self._note("intervention", f"perception {eid} delivered mid-turn", kind="observation")
+        logger.info("observation inbox: delivered perception %s (%d chars)", eid, len(rendered))
         return True
 
     def inject_user_line(self, text: str) -> None:

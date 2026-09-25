@@ -28,6 +28,7 @@ from zakcode.session import Session
 from zakcode.session.discovery_ledger import discovery_path, read_ledger
 from zakcode.session.observation_inbox import (
     OBSERVATION_ENVELOPE_VERSION,
+    envelope_id,
     observation_path,
 )
 from zakcode.session.say_inbox import say_path
@@ -335,3 +336,22 @@ async def test_a_failing_fold_never_costs_the_perception(tmp_path: Path, monkeyp
     delivered = _all_text(provider.seen[-1])
     assert "fountain" in delivered, "a ledger fault swallowed the perception"
     assert "Newly discovered by exploring" not in delivered
+
+
+@pytest.mark.asyncio
+async def test_the_delivered_perception_carries_its_envelope_id(tmp_path: Path) -> None:
+    """Line 2 of the delivered frame names the envelope, so the mind can cite it in its
+    reaction line. It is in the SESSION, not only in a log line, so the join survives the turn.
+    Line 1 stays the exact provenance tag the Mind's reaction rule keys on."""
+    observation = {"nearby": ["a lantern"]}
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, session = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, observation)]
+    )
+
+    await loop.arun_turn("begin")
+
+    expected = envelope_id(json.loads(_envelope(observation)))
+    head = f"[perception — from your vessel, not from a person]\nenvelope={expected}\n"
+    assert head in _all_text(provider.seen[-1]), "the model never saw the envelope id"
+    assert any(m.text.startswith(head) for m in session.messages), "the id was not persisted"
