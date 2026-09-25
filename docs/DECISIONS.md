@@ -14888,15 +14888,18 @@ design. The cost shows when the backend is not slow but gone.
 
 Measured 2026-09-24 on the fleet's pod (llama.cpp behind a proxy on the pod itself; three
 worker sessions in LXD containers on zakcode 432d2c3): the pod was powered off for a
-maintenance window at about 23:07Z and booted again at 23:27:09Z. Each worker had sent a
-buffered request between 22:53Z and 22:56Z. At 23:35Z every worker still held one
-ESTABLISHED socket to the proxy with no timer running (`ss -tnoi`: last send 2272-2530s ago;
-last receive and last ack 1685s ago on all three, within half a second of each other — the
-moment the pod went away), and the proxy on the rebooted pod held no connection from any of
-them. Their logs had not moved since the request line. Nothing in the kernel probes an idle
+maintenance window at 23:06:56Z and booted again at 23:27:09Z. Each worker had sent a
+streaming request between 22:53Z and 22:57Z and was receiving chunks when the pod went. At
+23:35Z every worker still held one ESTABLISHED socket to the proxy with no timer running
+(`ss -tnoi`: last send 2272-2530s ago; last receive and last ack 1685s ago on all three,
+within half a second of each other — the moment the pod went away), and the proxy on the
+rebooted pod held no connection from any of them. Nothing in the kernel probes an idle
 established socket unless SO_KEEPALIVE is set, and nothing in the application can tell a dead
-peer from a 25-minute prefill (ADR-0248's point), so each worker was going to sit until 3600s
-and then retry: a ten-minute outage costing three workers an hour each.
+peer from a working backend that has simply not sent the next byte yet (ADR-0248's point).
+What ended the wait was ADR-0120's per-gap stall bound, 1800s on the fleet: all three retried
+at 23:36:58Z, the same second, 1800s after their last chunk — thirty minutes lost per worker to
+a ten-minute outage, and twenty of them with the pod already back. A buffered call has no
+per-gap bound at all and waits the whole `request_timeout` (3600s) from its last byte.
 
 The kernel already knows how to ask. With SO_KEEPALIVE on, an idle socket sends a probe after
 TCP_KEEPIDLE seconds and gives up after TCP_KEEPCNT unanswered probes TCP_KEEPINTVL apart. A
