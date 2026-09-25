@@ -7109,6 +7109,7 @@ class AgentLoop:
             tail = f", and {more} more" if more else ""
             rendered += f"\n\n(Newly discovered by exploring: {', '.join(shown)}{tail})"
         eid = envelope_id(envelope)
+        self.session.last_envelope = eid or ""
         self.session.add_message(
             Message.user(_OBSERVATION_FRAME.format(envelope_id=eid, text=rendered))
         )

@@ -353,3 +353,27 @@ async def test_the_delivered_perception_carries_its_envelope_id(tmp_path: Path) 
     head = f"[perception — from your vessel, not from a person]\nenvelope={expected}\n"
     assert head in _all_text(provider.seen[-1]), "the model never saw the envelope id"
     assert any(m.text.startswith(head) for m in session.messages), "the id was not persisted"
+
+
+def test_spend_after_a_perception_carries_its_envelope_id(tmp_path: Path) -> None:
+    """Usage recorded after a delivery is tagged with that envelope, so spend joins to the
+    perception being reacted to. Before any delivery nothing is tagged."""
+    from zakcode.usage import Usage
+
+    session = Session(cwd=str(tmp_path), model="test/model")
+    session.add_usage(Usage(prompt_tokens=1), model="m")
+    session.last_envelope = "env-1a2b3c4d5e6f"
+    session.add_usage(Usage(prompt_tokens=2), model="m", side_call="critic")
+    assert [u.envelope for u in session.usages] == ["", "env-1a2b3c4d5e6f"]
+    assert session.usages[1].side_call == "critic", "the tag must not displace the others"
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_perception_becomes_the_sessions_last_envelope(tmp_path: Path) -> None:
+    observation = {"nearby": ["a well"]}
+    provider = _Recording([_tool_call("perceive"), _DONE])
+    loop, session = _loop(provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, observation)])
+
+    await loop.arun_turn("begin")
+
+    assert session.last_envelope == envelope_id(json.loads(_envelope(observation)))

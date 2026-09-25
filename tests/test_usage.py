@@ -63,3 +63,9 @@ def test_reasoning_tokens_survive_a_round_trip() -> None:
     # reaches a trace row if it round-trips through the model dump.
     u = Usage(completion_tokens=40, reasoning_tokens=12)
     assert Usage.model_validate(u.model_dump()).reasoning_tokens == 12
+
+
+def test_envelope_survives_addition_only_when_shared() -> None:
+    a = Usage(prompt_tokens=1, envelope="env-aaaaaaaaaaaa")
+    assert (a + Usage(prompt_tokens=2, envelope="env-aaaaaaaaaaaa")).envelope == "env-aaaaaaaaaaaa"
+    assert (a + Usage(prompt_tokens=2, envelope="env-bbbbbbbbbbbb")).envelope == ""

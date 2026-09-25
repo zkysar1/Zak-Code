@@ -63,6 +63,11 @@ class Usage(BaseModel):
     #: its own, so the per-turn pairing of ``zakcode throughput`` (ADR-0104) leaves it out.
     #: Empty for older persisted records and for aggregate totals.
     side_call: str = ""
+    #: The envelope id of the last perception delivered before this call, or empty when none
+    #: had been. It joins spend to the perception the mind was reacting to, and through the
+    #: mind's reaction line to the aspiration that reaction filed or fed (the One Body
+    #: flywheel's linked ids). Empty for older persisted records and for mixed totals.
+    envelope: str = ""
 
     def __add__(self, other: Usage) -> Usage:
         """Combine two usage records (for accumulating a session total).
@@ -86,6 +91,7 @@ class Usage(BaseModel):
             model=self.model if self.model == other.model else "",
             cost_unpriced=self.cost_unpriced or other.cost_unpriced,
             side_call=self.side_call if self.side_call == other.side_call else "",
+            envelope=self.envelope if self.envelope == other.envelope else "",
         )
 
 
