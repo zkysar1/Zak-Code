@@ -3834,6 +3834,26 @@ standing back under the same marker as the positive control). Lesson for the nex
 resource: a stand-back rule written for a slot ONE process can own must not be copied onto
 a thing each process owns for itself — ask who else could take it before yielding.
 
+**Amendment (2026-09-25) — the schema carries Claude Code's `noop`, because a gate reads
+the wire.** Claude Code 2.1.280 refuses a `ScheduleWakeup` arm that omits `noop` unless
+`stop` is true, and a Mind's PreToolUse gate now mirrors that refusal so a net it believes
+armed is armed. This tool declared `prompt`, `delaySeconds`, `stop` and `reason` — no
+`noop` — and a model driven by a tool schema emits no property the schema does not
+declare, however plainly a refusal asks for one. Measured on a parked worker Body (zc-04,
+2026-09-25 18:32–18:54 UTC): five arms of its 3600 s re-poll in one park turn, every one
+carrying prompt/delaySeconds/reason only, every one refused by the gate with the fix
+spelled out (`noop=false`), the Body narrating "including the noop field directly" and
+still not emitting it, the re-poll never armed, and the turn burning provider calls on the
+same refusal. A gate that requires an undeclared field is a wedge with no exit. The schema
+now declares `noop` with Claude Code's meaning (true for a quiet hold, false when the turn
+did something); the arm records it on the held wake-up and echoes it in the result, and
+an arm without it still lands — which gate to enforce is the Mind's, not the harness's.
+Pinned in `tests/test_schedule_wakeup.py` (`test_the_schema_declares_claude_codes_noop_field`,
+`test_the_arm_records_noop_on_the_held_wakeup_and_echoes_it`, which also pins that the
+field reaches the hook payload as sent). Lesson: a harness that answers to a Claude Code
+tool's name must carry that tool's whole argument contract, because the gates written
+against Claude Code read the wire, not this harness's docs.
+
 ## ADR-0095: A page without a marker finds its step by the words they share
 
 **Context.** ADR-0092 keyed a rewritten step to its page by the seeded title verbatim or by

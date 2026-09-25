@@ -52,6 +52,18 @@ class ScheduleWakeupTool(Tool):
                         f"{MAX_DELAY_SECONDS}] (default {DEFAULT_DELAY_SECONDS})."
                     ),
                 },
+                # Claude Code's field, carried whole: a gate written against Claude Code reads
+                # the wire and may refuse an arm without it, and a model driven by this schema
+                # emits no property the schema does not declare — however plainly the refusal
+                # asks for one (ADR-0094 amendment, 2026-09-25).
+                "noop": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether nothing changed since the last wake-up: true for a quiet "
+                        "hold, false when this turn did something (edited a file, posted, "
+                        "advanced state). Recorded on the held wake-up."
+                    ),
+                },
                 "stop": {
                     "type": "boolean",
                     "description": "true cancels the held wake-up instead of arming one.",
@@ -86,8 +98,9 @@ class ScheduleWakeupTool(Tool):
                 fix='e.g. {"prompt": "<<autonomous-loop-dynamic>>", "delaySeconds": 600}',
             )
         delay_arg = args.get("delaySeconds", args.get("delay_seconds"))
+        noop = args.get("noop")
         replaced = slot.pending() is not None
-        wakeup = slot.arm(prompt, delay_arg)
+        wakeup = slot.arm(prompt, delay_arg, noop=noop if isinstance(noop, bool) else None)
         due = datetime.fromtimestamp(wakeup.due_at, tz=UTC).strftime("%H:%M:%S UTC")
         return ToolResult.ok(
             f"Wake-up armed: in {wakeup.delay_seconds}s (at {due}) this session receives "
@@ -99,5 +112,6 @@ class ScheduleWakeupTool(Tool):
                 "delay_seconds": wakeup.delay_seconds,
                 "due_at": wakeup.due_at,
                 "replaced": replaced,
+                "noop": wakeup.noop,
             },
         )
