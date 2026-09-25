@@ -125,8 +125,14 @@ def test_the_held_wakeup_survives_a_session_round_trip(tmp_path: Path) -> None:
     assert loaded.pending_wakeup is not None
     assert loaded.pending_wakeup.prompt == LOOP_SENTINEL
     assert loaded.pending_wakeup.due_at == 1_600.0
+    assert loaded.pending_wakeup.noop is None  # armed without a verdict, loads as none
     # The resumed process's slot fires it: due time is epoch seconds, not process-relative.
     assert WakeupSlot(loaded, clock=_Clock(1_600.0)).take_due() == LOOP_LINE
+
+    slot.arm(LOOP_SENTINEL, 600, noop=False)
+    store.save(session)
+    reloaded = store.load(session.id)
+    assert reloaded.pending_wakeup is not None and reloaded.pending_wakeup.noop is False
 
 
 # ── the tool ─────────────────────────────────────────────────────────────────
@@ -148,6 +154,7 @@ async def test_tool_arms_replaces_and_cancels(tmp_path: Path) -> None:
         "delay_seconds": DEFAULT_DELAY_SECONDS,
         "due_at": 1_600.0,
         "replaced": False,
+        "noop": None,
     }
     assert "600s" in res.output and "one is held at a time" in res.output
 
@@ -188,6 +195,45 @@ async def test_tool_without_a_prompt_or_without_a_session_errors_cleanly(tmp_pat
 
     res = await tool.execute({"prompt": "x"}, _ctx(tmp_path, None))
     assert res.is_error and "not available" in res.output
+
+
+def test_the_schema_declares_claude_codes_noop_field() -> None:
+    """A Mind's PreToolUse gate refuses an arm without ``noop`` (Claude Code 2.1.280 does),
+    and a model driven by this schema emits no property the schema does not declare — so an
+    undeclared ``noop`` left a parked Body re-issuing the same refused arm (zc-04,
+    2026-09-25: five arms, each with prompt/delaySeconds/reason only, the re-poll never
+    armed). The field is part of the tool's contract, as Claude Code's name is."""
+    props = ScheduleWakeupTool.spec.parameters["properties"]
+    assert props["noop"]["type"] == "boolean"
+    assert "nothing changed" in props["noop"]["description"]
+    # Positive control for the schema's shape: the fields that were always there.
+    assert {"prompt", "delaySeconds", "stop", "reason"} <= set(props)
+
+
+async def test_the_arm_records_noop_on_the_held_wakeup_and_echoes_it(tmp_path: Path) -> None:
+    session, slot = _slot(_Clock(1_000.0))
+    tool = ScheduleWakeupTool()
+
+    res = await tool.execute({"prompt": "p", "noop": False}, _ctx(tmp_path, slot))
+    assert not res.is_error and res.data is not None and res.data["noop"] is False
+    assert session.pending_wakeup is not None and session.pending_wakeup.noop is False
+
+    res = await tool.execute({"prompt": "p", "noop": True}, _ctx(tmp_path, slot))
+    assert not res.is_error and res.data is not None and res.data["noop"] is True
+    assert session.pending_wakeup is not None and session.pending_wakeup.noop is True
+
+    # A non-boolean is not a verdict: the arm still lands, with nothing recorded.
+    res = await tool.execute({"prompt": "p", "noop": "yes"}, _ctx(tmp_path, slot))
+    assert not res.is_error and res.data is not None and res.data["noop"] is None
+    assert session.pending_wakeup is not None and session.pending_wakeup.noop is None
+
+    # It reaches the gate that asks for it: the hook payload carries the field as sent.
+    payload = HookPayload(
+        event=HookEvent.PRE_TOOL_USE,
+        tool_name="schedule_wakeup",
+        arguments={"prompt": "p", "delaySeconds": 600, "noop": False},
+    )
+    assert b'"noop": false' in wire_payload(payload)
 
 
 def test_the_tool_answers_to_claude_codes_name_and_its_hooks_fire_on_it() -> None:

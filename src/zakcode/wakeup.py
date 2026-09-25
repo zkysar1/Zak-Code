@@ -134,6 +134,11 @@ class Wakeup(BaseModel):
     due_at: float
     armed_at: float
     delay_seconds: int
+    #: The arming turn's own word on whether anything changed since the last wake-up
+    #: (Claude Code's ``noop``): ``True`` for a quiet hold, ``False`` when it did something,
+    #: ``None`` when the arm did not say. Recorded, never acted on; a wake-up armed before
+    #: the field existed loads as ``None``.
+    noop: bool | None = None
 
     def is_due(self, now: float | None = None) -> bool:
         return (time.time() if now is None else now) >= self.due_at
@@ -158,11 +163,13 @@ class WakeupSlot:
     def pending(self) -> Wakeup | None:
         return getattr(self._session, "pending_wakeup", None)
 
-    def arm(self, prompt: str, delay_seconds: Any) -> Wakeup:
+    def arm(self, prompt: str, delay_seconds: Any, *, noop: bool | None = None) -> Wakeup:
         """Hold ``prompt`` for delivery ``delay_seconds`` from now, replacing any held one."""
         now = self._clock()
         delay = clamp_delay(delay_seconds)
-        wakeup = Wakeup(prompt=prompt, due_at=now + delay, armed_at=now, delay_seconds=delay)
+        wakeup = Wakeup(
+            prompt=prompt, due_at=now + delay, armed_at=now, delay_seconds=delay, noop=noop
+        )
         self._session.pending_wakeup = wakeup
         self._changed()
         return wakeup
