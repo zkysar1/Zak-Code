@@ -160,6 +160,7 @@ from zakcode.providers.base import (
     ModelOutputRejected,
     Provider,
     ProviderError,
+    ProviderStreamEvent,
     ProviderUnavailable,
     RateLimited,
     StreamDone,
@@ -489,6 +490,39 @@ def _summary_of(text: str, source_chars: int) -> tuple[str, str]:
     if source_chars >= _SUMMARY_FLOOR_SOURCE and len(summary) < _SUMMARY_FLOOR_CHARS:
         return "", f"{len(summary)} characters for {source_chars:,} of transcript"
     return summary, ""
+
+
+async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResult:
+    """Fold a provider stream into the :class:`LLMResult` a buffered call would have returned.
+
+    The inverse of ``Provider.astream``'s default (which wraps ``acomplete``): text and
+    reasoning deltas concatenate, the usage event is the usage, the done event's finish
+    reason is the finish reason. Tool-call deltas are dropped: the callers here offer no
+    tools, and a text-mode wrapper's synthetic calls are not an answer. The stream is
+    closed on the way out whatever ended it, so a stall that the provider's per-gap bound
+    cut short releases its socket before the retry opens another (ADR-0251).
+    """
+    text: list[str] = []
+    thinking: list[str] = []
+    usage = Usage()
+    finish_reason: str | None = None
+    try:
+        async for event in events:
+            if isinstance(event, StreamTextDelta):
+                text.append(event.text)
+            elif isinstance(event, StreamThinkingDelta):
+                thinking.append(event.text)
+            elif isinstance(event, StreamUsage):
+                usage = event.usage
+            elif isinstance(event, StreamDone):
+                finish_reason = event.finish_reason
+    finally:
+        aclose = getattr(events, "aclose", None)
+        if aclose is not None:
+            await aclose()
+    return LLMResult(
+        text="".join(text), thinking="".join(thinking), usage=usage, finish_reason=finish_reason
+    )
 
 
 #: Context-proportional ceiling on a SINGLE tool result's model-facing text. Tool-level
@@ -2824,11 +2858,18 @@ class AgentLoop:
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
 
             def request(call_kw: dict[str, Any]) -> Awaitable[LLMResult]:
-                return summarizer.acomplete(
-                    [Message.user(prompt)],
-                    system=instruction,
-                    prompt_cache_key=self._prompt_cache_key(),
-                    **{**raised, **call_kw},
+                # ADR-0251: streamed and collected, never buffered. A buffered answer can
+                # be lost between the proxy's 200 and this client, and the loss costs the
+                # whole request timeout before a retry; every lost answer measured on the
+                # pod ledger was a summarizer-sized buffered call, and no streamed call in
+                # the same windows was lost. Streamed, this rides the per-gap stall bound.
+                return _collect_stream(
+                    summarizer.astream(
+                        [Message.user(prompt)],
+                        system=instruction,
+                        prompt_cache_key=self._prompt_cache_key(),
+                        **{**raised, **call_kw},
+                    )
                 )
 
             started = time.monotonic()
@@ -5085,12 +5126,13 @@ class AgentLoop:
     async def _complete_with_retry(
         self, complete: Callable[[dict[str, Any]], Awaitable[LLMResult]]
     ) -> LLMResult:
-        """Run one buffered completion under the loop's ONE retry policy (audit P0-4).
+        """Run one collected completion under the loop's ONE retry policy (audit P0-4).
 
         ``complete(call_kw)`` performs the request; ``call_kw`` carries the raised
-        temperature of a rejection retry (empty otherwise). Every buffered model call
-        the loop makes goes through here — the main conversation call and the
-        compaction summarizer alike (ADR-0083): the summarizer used to call the provider
+        temperature of a rejection retry (empty otherwise). Every model call the loop
+        awaits as one result goes through here — the buffered conversation call and the
+        compaction summarizer (streamed, then collected: ADR-0251) alike (ADR-0083): the
+        summarizer used to call the provider
         directly, so the first 429 of a busy pod failed the compaction outright while the
         very same 429 on the main call would have been waited out. Measured 2026-08-29
         (coach, five agents on four engines): "summarizer failed (RateLimited: …)".

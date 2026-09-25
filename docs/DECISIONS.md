@@ -15026,3 +15026,57 @@ lifts the turn mark) and `test_wakeup_provider_door.py` (the door holds on a rea
 `None`, fires for a provider with no probe, backs off across held firings; `unreachable()`
 reads a closed loopback port as unreachable and a live loopback listing as reachable, and says
 nothing for no base, a named-provider model or a `local_only`-refused base).
+
+## ADR-0251: the compaction summarizer streams, so a lost buffered answer cannot cost it an hour
+
+Status: accepted. 2026-09-25.
+
+A buffered completion has one bound: the whole-call ceiling (`ZAKCODE_REQUEST_TIMEOUT`, 3600 s
+on the pod, because a cold full-context prefill there is 20-25 minutes). A streamed one has a
+bound per gap between chunks (`ZAKCODE_STREAM_STALL_TIMEOUT`, ADR-0120) and a prompt-sized bound
+on the first chunk (ADR-0248). The two paths also fail differently, and the difference has been
+measured for two weeks on the pod's request ledger, which writes one row per request with the
+client, the prompt size, whether it streamed, the proxy's status and the seconds it took.
+
+The lost answer. Since 2026-09-15 the ledger shows fourteen chains of the same shape: a
+non-streamed request from a worker, the proxy's `200` after 2 s to 17 minutes, and the SAME
+request — same client, same prompt size — sent again exactly one request timeout later, then
+again. A client that had received the answer would not ask again; each repeat is an answer
+that reached the proxy's log and not the client, and each cost the client the whole ceiling
+before it asked. The seven chains on 2026-09-24 (three workers and the coach) were all
+summarizer-sized, 11,942 to 37,158 prompt tokens with answers of 4 to 17 minutes: the
+compaction summarizer, re-reading the older history in full, is the largest buffered call a
+session makes and the one that pays the ceiling three times over (the loop's fixed interrupt
+retries) — three hours frozen on one compaction, twice on one day. The streamed requests from the
+same workers in the same windows completed, every one; no streamed call has ever shown the
+chain. The keepalive that ADR-0249 added closes the dead-peer half of that goal (a peer that
+vanished is noticed in minutes); it does nothing for an answer lost on a connection that stays
+open, which is this case, and the split — did the bytes reach the client's kernel and never
+surface, or never arrive — is still unmeasured, with detectors armed on both ends.
+
+Decision: the summarizer's request streams and is collected. `_summarize_for_compaction` asks
+through `summarizer.astream(...)` and folds the events with `_collect_stream` into the same
+`LLMResult` the buffered call returned — text and reasoning deltas concatenated, the usage
+event as the usage, the done event's finish reason — so `_complete_with_retry`, the resample
+loop and the usage accounting (ADR-0241) are untouched. The stream is closed on the way out
+whatever ended it, so a stall the per-gap bound cut short releases its socket before the retry
+opens another. Nothing else changes: a provider without true streaming still answers through
+`Provider.astream`'s default, which wraps `acomplete`; the session-affinity key rides the stream
+as it rode the buffered call; tool-call deltas are dropped, because the summarizer offers no
+tools and a text-mode wrapper's synthetic calls are not a summary.
+
+Why this and not a fix to the loss itself: the loss is intermittent (about one buffered call
+in fifty), unreproduced on demand, and its side is unknown; the change that is available now
+moves the call the loss costs the most onto the path the loss has never touched, with a bound
+that ends a silent wait in the per-gap time rather than the hour. When the split is measured,
+the client-side cause, if it is one, is fixed where it lives; this decision stands either way,
+because a per-gap bound is the right bound for a call whose answer arrives over minutes. The
+other buffered calls (the turn's buffered path, classification, the used-context probe) are
+smaller and are left as they are until the ledger shows them in a chain.
+
+Tests, `test_summarizer_streams.py`: the summarizer streams and never takes the buffered path (a
+provider whose buffered answer never arrives; the test fails on the previous code by timing
+out), a dedicated summarizer provider streams too, `_collect_stream` folds the events into the
+buffered result shape and drops tool-call deltas, a stream that fails midway is closed, and a
+summarizer that never sends a byte through a real `LiteLLMProvider` ends on the stall bound
+with the loop's three interrupt retries and every attempt's stream closed.
