@@ -1926,7 +1926,7 @@ def _window_notice_lines(agent: Agent) -> list[str]:
 
 
 def _print_banner(console: Console, agent: Agent) -> None:
-    """Print the one-shot welcome box (model, workspace, perms, session) + tip."""
+    """Print the one-shot welcome box (model, build, workspace, perms, session) + tip."""
     settings = agent.settings
     g = resolve_glyphs(console)
     # "claude-sonnet-4-5 · anthropic", not "anthropic/claude-… · anthropic": the
@@ -1939,6 +1939,10 @@ def _print_banner(console: Console, agent: Agent) -> None:
         model_cell = f"{model_id} {g['dot']} {settings.provider}"
     rows = [
         ("model", model_cell),
+        # The code this session runs, in the log from its first line: a restart announces
+        # its build (ADR-0034), but a launch said nothing, so a monitor reading the log
+        # kept reporting the previous session's build for a session on a newer install.
+        ("build", version_line(__version__)),
         ("workspace", str(settings.workspace_root)),
         ("permissions", settings.permission_mode),
         ("session", agent.session.id),
