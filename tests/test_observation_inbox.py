@@ -21,6 +21,7 @@ from pathlib import Path
 from zakcode.session.observation_inbox import (
     NARRATION_MAX_LINES,
     OBSERVATION_ENVELOPE_VERSION,
+    envelope_id,
     merge_changes,
     narrate_observation,
     observation_path,
@@ -375,3 +376,31 @@ def test_merge_changes_keeps_a_row_it_cannot_widen() -> None:
     would invent a perception, which is worse than reporting a narrower true one."""
     merged = merge_changes({"brief.md": {"note": "touched"}}, {"brief.md": {"bytes": 900}})
     assert merged == {"brief.md": {"bytes": 900}}
+
+
+def test_envelope_id_is_recomputable_from_the_same_envelope() -> None:
+    """The id is derived from content, so anyone holding the envelope can recompute it.
+    Key order must not matter, or the vessel and the mind would disagree on one envelope."""
+    a = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "observation": {"nearby": ["a door"]}}
+    b = {"observation": {"nearby": ["a door"]}, "envelopeVersion": OBSERVATION_ENVELOPE_VERSION}
+    assert envelope_id(a) == envelope_id(b)
+    assert envelope_id(a).startswith("env-") and len(envelope_id(a)) == len("env-") + 12
+
+
+def test_envelope_id_differs_when_the_perception_differs() -> None:
+    a = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "observation": {"nearby": ["a door"]}}
+    b = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "observation": {"nearby": ["a gate"]}}
+    assert envelope_id(a) != envelope_id(b)
+
+
+def test_a_producer_supplied_envelope_id_wins() -> None:
+    """A vessel that mints its own ids must be joinable on them verbatim."""
+    env = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "envelopeId": " vessel-42 "}
+    assert envelope_id(env) == "vessel-42"
+    blank = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "envelopeId": "  "}
+    assert envelope_id(blank).startswith("env-"), "a blank supplied id is no id"
+
+
+def test_no_envelope_has_no_id() -> None:
+    assert envelope_id(None) is None
+    assert envelope_id([]) is None  # type: ignore[arg-type]
