@@ -345,9 +345,7 @@ async def test_the_delivered_perception_carries_its_envelope_id(tmp_path: Path) 
     Line 1 stays the exact provenance tag the Mind's reaction rule keys on."""
     observation = {"nearby": ["a lantern"]}
     provider = _Recording([_tool_call("perceive"), _DONE])
-    loop, session = _loop(
-        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, observation)]
-    )
+    loop, session = _loop(provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, observation)])
 
     await loop.arun_turn("begin")
 
