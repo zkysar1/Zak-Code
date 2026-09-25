@@ -446,8 +446,10 @@ def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
 
 def _zero_compaction_cost() -> dict[str, float]:
     """A compaction's cost record before anything ran (ADR-0241): the PreCompact hooks'
-    seconds, then the summarizer's calls, tokens and seconds (every slice and fold), and how
-    many of its responses were not summaries (ADR-0242)."""
+    seconds, then the summarizer's calls, tokens and seconds (every slice and fold), how
+    many of its responses were not summaries (ADR-0242), and the size of the summary that
+    was installed (ADR-0241 amendment) — the completion tokens the summarizer billed are
+    mostly a reasoning model's thinking, and only the summary's own size tells the two apart."""
     return {
         "pre_compact_s": 0.0,
         "summarizer_calls": 0,
@@ -456,6 +458,8 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_completion_tokens": 0,
         "summarizer_s": 0.0,
         "summarizer_rejected": 0,
+        "summary_chars": 0,
+        "summary_tokens_estimate": 0,
     }
 
 
@@ -3351,6 +3355,17 @@ class AgentLoop:
         trigger: str = "",
     ) -> None:
         self._adopt_compacted(messages, summary=summary, trigger=trigger)
+        if summary is not None:
+            # ADR-0241 amendment: the summary's size rides on the cost record. The summarizer's
+            # completion tokens include a reasoning model's thinking (llama.cpp bills it there),
+            # and measured on three worker Bodies the summary text was 35-45% of them; without
+            # its size on the row, nothing in the trace could say which part of a 15-minute
+            # compaction was the summary and which the thinking. The estimate is the tail
+            # budget's own counter (ADR-0132), so the two sizes are comparable.
+            self._compaction_cost["summary_chars"] = len(summary)
+            self._compaction_cost["summary_tokens_estimate"] = self._tail_tokens(
+                [Message.system(summary)]
+            )
         # Claude Code parity: SessionStart(source="compact") right after each compaction —
         # the seam a framework's post-compact state-restore automation plugs into. What the
         # hook SAYS is the restore itself (ADR-0211): until it reached the model, a framework's
