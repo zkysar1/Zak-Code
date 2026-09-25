@@ -50,6 +50,29 @@ def _ensure_interpreter_on_path() -> None:
         os.environ["PATH"] = scripts_dir + os.pathsep + path
 
 
+def _cost_ceiling(spec: dict) -> float | None:
+    """The run's ``max_cost_usd``: the task's own ($1.00 by default) unless ``ZBENCH_MAX_COST_USD``
+    says otherwise — a number replaces it, and EMPTY means no ceiling at all.
+
+    Why a way to run uncapped exists: a ceiling the meter cannot enforce now stops the run.
+    A self-hosted model is absent from litellm's price map, so every call on it is unpriced,
+    and since 2026-09-19 (#574) the loop ends such a turn with ``budget_unpriced`` rather than
+    run blind under a ceiling that reads $0.00 — the honest choice for a paid lane, and a
+    dead instrument for this one. Measured 2026-09-25 on the ZDS pod (nine ``zds-qwen3.8-27b``
+    engines): every run of a five-lane campaign ended after ONE turn at $0.00, ``turns=1``,
+    ``stop_reason=budget_unpriced``, across every cell — the campaign was aborted, not scored.
+    A pod run costs nothing, so it runs with no ceiling; ``max_iterations`` still bounds it.
+    The pod wrapper sets the variable empty; a hosted-provider run never sets it and keeps the
+    task's ceiling byte-for-byte.
+    """
+    raw = os.environ.get("ZBENCH_MAX_COST_USD")
+    if raw is None:
+        return spec.get("max_cost_usd", 1.0)
+    if not raw.strip():
+        return None
+    return float(raw)
+
+
 def _build_agent(workspace: Path, spec: dict):
     """Mirror the CLI's canonical construction, adapted for headless reproducible runs."""
     from zakcode import Agent
@@ -71,7 +94,7 @@ def _build_agent(workspace: Path, spec: dict):
         "workspace_root": workspace,
         "default_model": "zakpick",        # per-category routing
         "permission_mode": "autonomous",   # headless: never prompts, dangerous=hard-DENY
-        "max_cost_usd": spec.get("max_cost_usd", 1.0),
+        "max_cost_usd": _cost_ceiling(spec),   # None = uncapped (self-hosted, unpriced models)
         "max_iterations": spec.get("max_iterations", 50),
         "api_base": None,                  # belt-and-suspenders: never a local base
     }
