@@ -262,6 +262,14 @@ class Session(BaseModel):
     #: Schema v1 stays append-only: an OLDER build drops it and the next sighting compares
     #: against nothing, so the guard costs one more repeat (fails SAFE — never a false cancel).
     last_sentinel_outcome: str = ""
+    #: Consecutive sentinel firings the PROVIDER failed (ADR-0250): a sentinel turn that ended
+    #: ``provider_error`` (or a ``veto_stall`` whose vetoed endings were), or a sentinel the REPL
+    #: door held because the provider did not answer its probe. Sizes the next hold's delay
+    #: (600 s doubled per failure, clamped at 3600 s); reset to 0 by any sentinel turn that
+    #: actually ran. Persisted so the backoff survives the ADR-0034 restart mid-outage. Schema v1
+    #: stays append-only: an OLDER build drops it and the next hold starts at 600 s again (fails
+    #: SAFE — a shorter wait, never a lost net).
+    sentinel_provider_repeats: int = 0
     #: The background commands this session started (ADR-0191): id, command, output and exit
     #: files, pid, and whether the exit was reported. Status is never stored — it is derived
     #: from the files and the pid when read — so a record cannot call a dead task alive.

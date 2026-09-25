@@ -31,11 +31,11 @@ import pytest
 
 from zakcode.agent.loop import AgentLoop
 from zakcode.messages import Message
-from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
+from zakcode.providers.base import Capabilities, LLMResult, Provider, ProviderError, ToolCall
 from zakcode.session.store import Session
 from zakcode.tools import default_registry
 from zakcode.usage import Usage
-from zakcode.wakeup import LOOP_SENTINEL, WakeupSlot, turn_fingerprint
+from zakcode.wakeup import LOOP_SENTINEL, WakeupSlot, provider_hold_delay, turn_fingerprint
 
 MODEL = "fake/scripted"
 #: The verdict sera repeated, shortened. Any fixed string does; that it is FIXED is the point.
@@ -260,6 +260,181 @@ def test_the_flag_is_cleared_even_when_the_turn_did_not_repeat() -> None:
     slot.note_turn_end(turn_fingerprint("completed", VERDICT))
     assert session.sentinel_turn_open is False
     assert slot.note_turn_end(turn_fingerprint("completed", VERDICT)) is False
+
+
+# ── the exception: a turn the PROVIDER failed is not a verdict on the loop (ADR-0250) ────
+#
+# Measured 2026-09-25 on three worker Bodies during a 12-hour pod outage: every sentinel turn
+# ended identically -- the provider refused every call, the model never acted -- and on the
+# second such turn the guard above cancelled the net, exactly as designed, and the Bodies sat
+# at their prompts for four and a half hours after the pod came back. The tests below are the
+# twins of the cancelling test at the top of this file; each differs in one thing only -- WHY
+# the two turns ended identically -- and asserts the net survives and backs off.
+
+
+class _Refusing(Provider):
+    """A provider that is not there: every call is refused before any model work happens."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def acomplete(self, messages: Any, *, system: Any = None, tools: Any = None, **kw: Any):  # type: ignore[override]
+        self.calls += 1
+        raise ProviderError("connection refused")
+
+    def model_id(self) -> str:
+        return MODEL
+
+    def count_tokens(self, messages: Any, *, system: Any = None) -> int:
+        return 0
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=8192)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_a_wake_up_turn_the_provider_failed_keeps_its_net_and_backs_off(
+    tmp_path: Path, streamed: bool
+) -> None:
+    """The twin of ``test_a_second_identical_wake_up_turn_cancels_the_net_it_armed``: two
+    identical endings again, but the model never acted, so nothing was proved about the loop.
+    Nothing else armed a net here (no hook, no re-arm call) -- the guard must arm it itself."""
+    loop = _loop(_Refusing(), tmp_path)
+
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "provider_error"
+    held = loop.wakeup_slot.pending()
+    assert held is not None and held.prompt == LOOP_SENTINEL and held.delay_seconds == 600
+    assert loop.session.sentinel_provider_repeats == 1
+
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "provider_error"
+    held = loop.wakeup_slot.pending()
+    assert held is not None and held.prompt == LOOP_SENTINEL and held.delay_seconds == 1200
+    assert loop.session.sentinel_provider_repeats == 2
+    # The record is KEPT, not cleared: the streak is what sizes the next hold.
+    assert loop.session.last_sentinel_outcome == turn_fingerprint("provider_error", "")
+
+
+@pytest.mark.asyncio
+async def test_a_wake_up_turn_that_ran_again_resets_the_provider_backoff(tmp_path: Path) -> None:
+    """When the provider is back, the first sentinel turn that actually runs ends the streak;
+    the net it holds is the model's own re-arm, at the model's delay."""
+    loop = _loop(_Refusing(), tmp_path)
+    for _ in range(2):
+        _fire_sentinel(loop)
+        assert await _run(loop, "[harness] wake-up", streamed=False) == "provider_error"
+    assert loop.session.sentinel_provider_repeats == 2
+
+    loop.provider = _Scripted([_rearm("w1"), _say(OTHER)])
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=False) == "completed"
+    assert loop.session.sentinel_provider_repeats == 0
+    assert _held(loop) == LOOP_SENTINEL
+    assert loop.session.last_sentinel_outcome == turn_fingerprint("completed", OTHER)
+
+
+def test_a_veto_stall_over_provider_errors_holds_the_net_and_one_over_prose_cancels_it(
+    tmp_path: Path,
+) -> None:
+    """The fence (ADR-0187) ends a turn ``veto_stall`` whichever ending the hook kept vetoing.
+    Vetoed provider errors are the provider's failure and hold the net; vetoed prose is the
+    model's -- ADR-0187's own case -- and the second identical one still cancels. Same
+    stop reason, same empty text, same fingerprint; the cause is the only difference."""
+    loop = _loop(_Scripted([_say(VERDICT)]), tmp_path)
+    for expected_delay in (600, 1200):
+        loop.wakeup_slot.arm(LOOP_SENTINEL, 600)  # what the stall fence armed
+        loop.session.sentinel_turn_open = True
+        loop._veto_stall_cause = "provider_error"
+        loop._close_wake_repeat_guard("veto_stall", [])
+        held = loop.wakeup_slot.pending()
+        assert held is not None and held.prompt == LOOP_SENTINEL
+        assert held.delay_seconds == expected_delay
+
+    control = _loop(_Scripted([_say(VERDICT)]), tmp_path)
+    for _ in range(2):
+        control.wakeup_slot.arm(LOOP_SENTINEL, 600)
+        control.session.sentinel_turn_open = True
+        control._veto_stall_cause = "completed"
+        control._close_wake_repeat_guard("veto_stall", [])
+    assert control.wakeup_slot.pending() is None
+    assert control.session.sentinel_provider_repeats == 0
+
+
+def test_a_provider_failed_sentinel_turn_holds_the_net_at_a_growing_delay() -> None:
+    """600, 1200, 2400, then the clamp -- a loop that cannot reach its provider is retried at
+    most hourly, and the record is kept so the streak keeps counting."""
+    session = Session(cwd=".", model=MODEL)
+    slot = _slot(session)
+    fingerprint = turn_fingerprint("provider_error", "")
+    for expected in (600, 1200, 2400, 3600, 3600):
+        slot.arm(LOOP_SENTINEL, 600)  # what a turn-end hook or the fence just armed
+        session.sentinel_turn_open = True
+        slot.note_turn_end(fingerprint, provider_failed=True)
+        held = slot.pending()
+        assert held is not None and held.prompt == LOOP_SENTINEL
+        assert held.delay_seconds == expected
+    assert session.last_sentinel_outcome == fingerprint
+    assert session.sentinel_provider_repeats == 5
+    assert session.sentinel_turn_open is False
+
+
+def test_a_provider_failed_sentinel_turn_with_nothing_held_arms_a_net() -> None:
+    """No hook, no fence, no model re-arm: the guard is the last party that can leave a net."""
+    session = Session(cwd=".", model=MODEL)
+    slot = _slot(session)
+    session.sentinel_turn_open = True
+    assert slot.pending() is None
+    assert slot.note_turn_end(turn_fingerprint("provider_error", ""), provider_failed=True) is False
+    held = slot.pending()
+    assert held is not None and held.prompt == LOOP_SENTINEL and held.delay_seconds == 600
+
+
+def test_a_hooks_own_wake_up_outranks_the_provider_hold() -> None:
+    """The precedence ADR-0216 keeps holds here too: a hook that said when to come back is
+    not overruled by the backoff, but the streak still counts for the next hold."""
+    session = Session(cwd=".", model=MODEL)
+    slot = _slot(session)
+    slot.arm("re-poll the reducer's claim", 3600)
+    session.sentinel_turn_open = True
+    slot.note_turn_end(turn_fingerprint("provider_error", ""), provider_failed=True)
+    held = slot.pending()
+    assert held is not None and held.prompt == "re-poll the reducer's claim"
+    assert held.delay_seconds == 3600
+    assert session.sentinel_provider_repeats == 1
+
+
+def test_a_sentinel_turn_that_ran_resets_the_provider_streak_at_the_slot() -> None:
+    session = Session(cwd=".", model=MODEL)
+    slot = _slot(session)
+    for _ in range(2):
+        session.sentinel_turn_open = True
+        slot.note_turn_end(turn_fingerprint("provider_error", ""), provider_failed=True)
+    assert session.sentinel_provider_repeats == 2
+    session.sentinel_turn_open = True
+    assert slot.note_turn_end(turn_fingerprint("completed", OTHER)) is False
+    assert session.sentinel_provider_repeats == 0
+    assert session.last_sentinel_outcome == turn_fingerprint("completed", OTHER)
+
+
+def test_the_door_puts_an_unfired_sentinel_back_and_lifts_the_turn_mark() -> None:
+    """Taking the sentinel marks the turn it opens; when the door holds it instead, no turn
+    opens, and the mark must go too -- or the next turn a person types is judged as one."""
+    session = Session(cwd=".", model=MODEL)
+    slot = _slot(session)
+    slot.arm(LOOP_SENTINEL, 60)
+    assert slot.take_due_prompt(now=time.time() + 120) == LOOP_SENTINEL
+    assert session.sentinel_turn_open is True
+    held = slot.hold_unfired_sentinel()
+    assert session.sentinel_turn_open is False
+    assert held.prompt == LOOP_SENTINEL and held.delay_seconds == 600
+    assert slot.pending() is held
+    assert session.sentinel_provider_repeats == 1
+
+
+def test_the_provider_hold_schedule_doubles_to_the_clamp() -> None:
+    assert [provider_hold_delay(n) for n in range(1, 7)] == [600, 1200, 2400, 3600, 3600, 3600]
 
 
 def _unused(message: Message) -> None:  # pragma: no cover - import anchor for the type only

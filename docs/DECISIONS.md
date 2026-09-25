@@ -14939,3 +14939,90 @@ Tests, `tests/test_provider_keepalive.py`: `test_the_transport_litellm_builds_ca
 loopback stub; SO_KEEPALIVE read off the live socket behind the client litellm cached) and
 `test_control_litellms_plain_transport_opens_sockets_without_keepalive` (litellm's plain
 builder restored; the same reading must be 0, so the instrument tells the two apart).
+
+## ADR-0250: a wake-up turn the provider failed holds its net instead of being judged
+
+Status: accepted. 2026-09-25.
+
+ADR-0216 cancels the autonomous-loop sentinel when two sentinel-opened turns in a row end
+identically: a wake-up that has demonstrated, twice, that it re-enters nothing has proved its
+case, and the second identical turn "is already the proof". That reasoning has one premise —
+that the turn was the MODEL's — and a provider outage breaks it.
+
+Measured 2026-09-25 on three worker Bodies (LXD containers on zakcode 432d2c3, a Mind's
+worker loop, TURN_END hook the Mind's stop hook) during a 12-hour power-off of the pod that
+serves their model. Each cycle in every Body's log ran the same way: the sentinel fired; the
+turn's context was compacted first (ADR-0187, "a stalled turn's context is compacted") and the
+summarizer's own call failed — "compaction summarizer failed; eliding tool outputs instead";
+the composed skill turn's first call spent the whole 900-second retry budget on "provider
+unavailable"; the turn aborted `provider_error`; the hook vetoed and asked for the skill again;
+three more identical budgets; the fence ended the turn `veto_stall` and `_arm_stall_net` left a
+600-second sentinel behind (the `veto_stall_net` record is in turns 5, 6 and 7 of one Body's
+trace). Roughly 75 minutes per cycle, 0 tokens, no assistant text. The first sentinel cycle was
+recorded; the second ended with the identical fingerprint — `veto_stall`, empty text, because
+the provider had refused every call both times — and the repeat guard cancelled the net
+(`wake_repeat`, 08:27:55Z). When the pod came back, all three Bodies sat at their prompts,
+`MainThread` in `next_input`, until an operator typed `/start` into each of them at 12:48Z. The
+Bodies were built for exactly this: a loop whose wake-up "fires only if the re-entry chain breaks", and a stop
+hook that re-arms the sentinel on every veto. Every part did its job, and the guard read an
+outage as a verdict.
+
+Two facts decide the shape.
+
+First, a turn the provider failed proves nothing about the loop. The model never acted: the
+fingerprint's two fields — why the turn stopped and the last thing it said — are the provider's
+refusal and nothing. Identical endings are what an outage PRODUCES, so a rule that cancels on
+identical endings cancels on every outage of more than one cycle, and a cancel is permanent
+where an outage is not. The loop's own standard, stated more than once in this file, is that a
+break may delay the loop and must never end it; a park with no net ends it.
+
+Second, firing into a dead provider is not free even when the net survives. One cycle costs a
+compaction whose summarizer fails (tool outputs elided from the session for nothing), an hour
+of retry budgets, and a trace the guard must then read. A powered-off server is distinguishable
+from a busy one in milliseconds: it does not answer `GET /models`, the listing every
+OpenAI-compatible server serves and the request `probe_served_window` already makes. The door
+can ask.
+
+**Decision.**
+
+1. **A provider-failed sentinel turn is held, not cancelled.** `WakeupSlot.note_turn_end` takes
+   `provider_failed`; the loop's `_close_wake_repeat_guard` passes it for `stop_reason ==
+   "provider_error"` and for a `veto_stall` whose fence tripped on `provider_error` (the fence
+   records, in `_veto_stall_cause`, the stop reason of the ending it tripped on). Such a turn is
+   still judged — the return value still says
+   whether it repeated — but `hold_for_provider` re-arms the sentinel instead of dropping it:
+   at `provider_hold_delay(streak)`, 600 s doubled per consecutive provider failure and clamped
+   at the slot's 3600 s ceiling, replacing a held sentinel (the 600 s a hook or the fence just
+   armed, sized for a loop that can run) or an empty slot, and leaving a hook's OWN prompt in
+   place — the precedence ADR-0216 keeps. The fingerprint record is KEPT, and the streak
+   (`Session.sentinel_provider_repeats`, persisted) is reset to 0 by any sentinel turn that
+   actually runs. A loop that cannot reach its provider is retried at most hourly, and the
+   first firing after the provider returns runs it.
+
+2. **The REPL door probes before it fires the sentinel.** `_hold_sentinel_if_provider_down` asks
+   the session's current provider `unreachable()` — `LiteLLMProvider`'s is one `GET /models`
+   against its `api_base` with a five-second timeout; `None` when it answers and `None` when
+   there is nothing to ask (no base, a named-provider model whose host may have no listing, or
+   a base `local_only` would refuse, never contacted). A reason means the sentinel goes back
+   through `hold_unfired_sentinel` — which also lifts the sentinel-turn mark `take_due_prompt`
+   set, or the next turn a person typed would be judged as a wake-up turn — and one
+   `notice_warn` line says what was held and for how long. The door and the guard count on the
+   same streak, so a held firing and a failed turn back off together. A provider without the
+   method lets the sentinel fire as before: the door never guesses.
+
+Why not shorten the fence, or the budgets. The fence and the 900-second budget are right for
+their cases (a live provider that is slow, a hook that spins); the defect was reading their
+output as evidence about the loop. Why not exempt provider failures from judgement entirely and
+leave the 600-second net: that re-runs the full cycle every 75 minutes for the length of the
+outage, eliding context each time, and it does not cover the case with no hook and no fence,
+where nothing arms a net at all — the guard is the last party that can leave one.
+
+Tests, each with its positive control, in `test_wake_repeat_guard.py` (the twins of the
+cancelling test, differing only in WHY the two turns ended identically: a refusing provider
+keeps and doubles the net at both turn-end twins; a sentinel turn that runs again resets the
+backoff; a `veto_stall` over provider errors holds while one over prose still cancels; the
+slot's schedule 600/1200/2400/3600; a hook's own prompt outranks the hold; the door's put-back
+lifts the turn mark) and `test_wakeup_provider_door.py` (the door holds on a reason, fires on
+`None`, fires for a provider with no probe, backs off across held firings; `unreachable()`
+reads a closed loopback port as unreachable and a live loopback listing as reachable, and says
+nothing for no base, a named-provider model or a `local_only`-refused base).

@@ -852,6 +852,33 @@ def _hook_named_skill_turn(agent: Any, reason: str, note: str) -> str | None:
     return _harness_skill_turn(agent, reentry[0], reentry[1], note)
 
 
+def _hold_sentinel_if_provider_down(console: Console, agent: Any, slot: Any) -> bool:
+    """Hold a due autonomous-loop sentinel when the provider would refuse the turn it opens
+    (ADR-0250); ``True`` when it was held and no turn should open.
+
+    The session's current provider is asked ``unreachable()`` — one short ``GET /models``
+    against its ``api_base`` — and a provider without that method, without a base, or with a
+    base that answers lets the sentinel fire as before. Otherwise the slot puts the sentinel
+    back at the provider backoff (600 s doubling to 3600 s across consecutive failures, the
+    same streak a provider-failed sentinel turn counts on) and the human is told in one line.
+    Measured 2026-09-25: without this, each firing into a powered-off pod cost a compaction
+    whose summarizer failed, four 900 s retry budgets and a ``veto_stall`` — and on the second
+    identical cycle the repeat guard cancelled the net for good.
+    """
+    provider = getattr(getattr(agent, "loop", None), "provider", None)
+    probe = getattr(provider, "unreachable", None)
+    reason = probe() if callable(probe) else None
+    if reason is None:
+        return False
+    held = slot.hold_unfired_sentinel()
+    notice_warn(
+        console,
+        f"wake-up held: {reason}; the loop re-enters in {held.delay_seconds}s "
+        f"(provider failure {getattr(agent.session, 'sentinel_provider_repeats', '?')} running)",
+    )
+    return True
+
+
 def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
     """The turn that resolves a fired autonomous-loop sentinel (ADR-0187): the skill the
     session's last hook-named re-entry ran (``Session.loop_skill``), composed by the
@@ -2793,6 +2820,12 @@ def chat(
         if prompt is None:
             return None
         if prompt.strip() == LOOP_SENTINEL:
+            # ADR-0250: a sentinel fired into a provider that is not there buys a compaction
+            # whose summarizer call fails, an hour of retry budgets and a turn the repeat
+            # guard must then read — so the door asks first, and holds the sentinel at a
+            # backoff when the base does not answer. One cheap probe per cycle instead.
+            if _hold_sentinel_if_provider_down(console, agent, slot):
+                return None
             composed = _loop_sentinel_turn(console, agent)
             if composed is not None:
                 return composed
