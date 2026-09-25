@@ -1,0 +1,86 @@
+{
+  "task": "m03-minimal-diff",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-92nhjzxs",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 98.2,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "no_report": false,
+      "stderr_tail": "ble. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c1b-m03-minimal-diff/run-1",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "py_digests": {
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if not values:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-pakpv760",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 588.1,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "no_report": false,
+      "stderr_tail": "ble. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c1b-m03-minimal-diff/run-2",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "py_digests": {
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if not values:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m03-minimal-diff-sbf3oky0",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 94.0,
+      "num_turns": 4,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: empty-list bug fixed, happy path intact, and all three out-of-scope smells left alone",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "no_report": false,
+      "stderr_tail": "ble. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c1b-m03-minimal-diff/run-3",
+      "digests": {
+        "TASK.md": "8ca059e7e1938e0d8dcd90f926c0184a93d8fce7c6895f61679cbeaeea4759f0",
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "py_digests": {
+        "stats.py": "20406e6015b6fbb5d7df2e6ab4413fff108b3b69710a96df5d6e5a3a51eec115"
+      },
+      "sources": {
+        "TASK.md": "# Bug report\n\n`mean([])` raises `ZeroDivisionError`. It should return `0.0` for an empty list.\n\nNothing else in this file is in scope.\n",
+        "stats.py": "import json\nimport statistics\n\n\ndef mean(values):\n    total = 0\n    for v in values:\n        total = total + v\n    if not values:\n        return 0.0\n    return total / len(values)\n\n\ndef summarize(d):\n    return {'n': len(d), \"mean\": mean(d)}\n"
+      }
+    }
+  ]
+}

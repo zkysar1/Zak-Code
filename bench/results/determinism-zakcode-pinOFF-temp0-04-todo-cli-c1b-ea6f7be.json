@@ -1,0 +1,63 @@
+{
+  "task": "04-todo-cli",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "instrument_failure": "runs [1, 2, 3] captured zero files; runs [1, 2, 3] produced no report",
+  "runs": [
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-04-todo-cli",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1800.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 1800s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-04-todo-cli",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1800.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 1800s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-04-todo-cli",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1800.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 1800s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    }
+  ]
+}

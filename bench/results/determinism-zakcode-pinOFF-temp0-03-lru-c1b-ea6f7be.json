@@ -1,0 +1,95 @@
+{
+  "task": "03-lru",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "instrument_failure": "runs [1] captured zero files; runs [1] produced no report",
+  "runs": [
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-03-lru",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1800.0,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 1800s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-03-lru-17gjizl3",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1354.5,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "e unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c1b-03-lru/run-2",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "b7269ded912c21ea5d68019432fa7b2831715e081011a20f80a261dcb170bd2b",
+        "lru.py": "87298687bd5b39eb6d0f1cb189d8eab8553986b917b55ae4367b07e6c8bcf611",
+        "test_lru.py": "b4fbac52db8069bb9da1b43a8a29c409452e0cbef32a6db3d5fbb88e73a00f49"
+      },
+      "py_digests": {
+        "lru.py": "87298687bd5b39eb6d0f1cb189d8eab8553986b917b55ae4367b07e6c8bcf611",
+        "test_lru.py": "b4fbac52db8069bb9da1b43a8a29c409452e0cbef32a6db3d5fbb88e73a00f49"
+      },
+      "sources": {
+        "lru.py": "\"\"\"Least-recently-used (LRU) cache.\n\nBacked by ``collections.OrderedDict`` so the most-recently-used key is\nalways at the end and the least-recently-used key at the front, giving\nO(1) ``get`` and ``put``.\n\"\"\"\n\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"A fixed-capacity cache that evicts the least-recently-used key.\"\"\"\n\n    def __init__(self, capacity):\n        if not isinstance(capacity, int) or capacity <= 0:\n            raise ValueError(\"capacity must be a positive integer\")\n        self.capacity = capacity\n        self._data = OrderedDict()\n\n    def get(self, key):\n        \"\"\"Return the value for *key*, or -1 if it is not present.\n\n        A successful get marks *key* as most-recently-used.\n        \"\"\"\n        if key not in self._data:\n            return -1\n        self._data.move_to_end(key)\n        return self._data[key]\n\n    def put(self, key, value):\n        \"\"\"Insert or update *key* with *value* (marks it most-recently-used).\n\n        If inserting a new key exceeds capacity, the least-recently-used\n        key is evicted first.\n        \"\"\"\n        if key in self._data:\n            self._data.move_to_end(key)\n        self._data[key] = value\n        if len(self._data) > self.capacity:\n            self._data.popitem(last=False)\n",
+        "test_lru.py": "\"\"\"Pytest tests for LRUCache: eviction order, update-as-use, capacity boundary.\"\"\"\n\nimport pytest\n\nfrom lru import LRUCache\n\n\ndef test_get_missing_returns_minus_one():\n    cache = LRUCache(2)\n    assert cache.get(\"missing\") == -1\n\n\ndef test_put_and_get_roundtrip():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    assert cache.get(\"a\") == 1\n\n\ndef test_eviction_order():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"c\", 3)  # over capacity: evicts \"a\" (least recently used)\n    assert cache.get(\"a\") == -1\n    assert cache.get(\"b\") == 2\n    assert cache.get(\"c\") == 3\n\n\ndef test_get_counts_as_use():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    assert cache.get(\"a\") == 1  # \"a\" becomes most-recently-used\n    cache.put(\"c\", 3)  # evicts \"b\", not \"a\"\n    assert cache.get(\"b\") == -1\n    assert cache.get(\"a\") == 1\n    assert cache.get(\"c\") == 3\n\n\ndef test_put_update_counts_as_use():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"a\", 10)  # update: \"a\" becomes most-recently-used\n    cache.put(\"c\", 3)  # evicts \"b\", not \"a\"\n    assert cache.get(\"b\") == -1\n    assert cache.get(\"a\") == 10\n    assert cache.get(\"c\") == 3\n\n\ndef test_update_at_full_capacity_does_not_evict():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"a\", 99)  # update only; no new key, so nothing is evicted\n    assert cache.get(\"a\") == 99\n    assert cache.get(\"b\") == 2\n\n\ndef test_capacity_one_boundary():\n    cache = LRUCache(1)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)  # evicts \"a\"\n    assert cache.get(\"a\") == -1\n    assert cache.get(\"b\") == 2\n    cache.put(\"b\", 3)  # update at full capacity keeps the single entry\n    assert cache.get(\"b\") == 3\n\n\ndef test_invalid_capacity_rejected():\n    with pytest.raises(ValueError):\n        LRUCache(0)\n    with pytest.raises(ValueError):\n        LRUCache(-1)\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-03-lru-jctqz6l6",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1210.2,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: LRU eviction + update-as-use correct on the held-out sequence",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "e unavailable. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c1b-03-lru/run-3",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "0aa6370de0693c45be7eb8910f5668435d6d773eb6cb0c341c734d09c8752fe6",
+        "lru.py": "d37fc12faf2b5476dbf8f9bb86f03803d094f38375aeed6ce0b5ca62ce90cd51",
+        "test_lru.py": "495fbcbe1013bf3e02d68bb17a73fd360f8ae9f515fada9cad6365e8a3742a1f"
+      },
+      "py_digests": {
+        "lru.py": "d37fc12faf2b5476dbf8f9bb86f03803d094f38375aeed6ce0b5ca62ce90cd51",
+        "test_lru.py": "495fbcbe1013bf3e02d68bb17a73fd360f8ae9f515fada9cad6365e8a3742a1f"
+      },
+      "sources": {
+        "lru.py": "\"\"\"Least-recently-used (LRU) cache with O(1) get and put.\"\"\"\n\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"A fixed-capacity cache that evicts the least-recently-used entry.\n\n    Both ``get`` (on a hit) and ``put`` count as a use, making the key\n    most-recently-used.\n    \"\"\"\n\n    def __init__(self, capacity):\n        if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:\n            raise ValueError(\"capacity must be a positive integer\")\n        self.capacity = capacity\n        self._data = OrderedDict()\n\n    def get(self, key):\n        \"\"\"Return the value for ``key``, or -1 if it is not present.\n\n        A hit marks the key as most-recently-used.\n        \"\"\"\n        if key not in self._data:\n            return -1\n        self._data.move_to_end(key)\n        return self._data[key]\n\n    def put(self, key, value):\n        \"\"\"Insert or update ``key`` with ``value``.\n\n        Counts as a use. If inserting a new key exceeds capacity, the\n        least-recently-used key is evicted first.\n        \"\"\"\n        if key in self._data:\n            self._data.move_to_end(key)\n        self._data[key] = value\n        if len(self._data) > self.capacity:\n            self._data.popitem(last=False)\n",
+        "test_lru.py": "\"\"\"Pytest tests for LRUCache: eviction order, update-as-use, capacity boundary.\"\"\"\n\nimport pytest\n\nfrom lru import LRUCache\n\n\ndef test_get_missing_returns_minus_one():\n    cache = LRUCache(2)\n    assert cache.get(\"missing\") == -1\n\n\ndef test_put_and_get_roundtrip():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    assert cache.get(\"a\") == 1\n\n\ndef test_eviction_order():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"c\", 3)  # over capacity: evicts \"a\" (least recently used)\n    assert cache.get(\"a\") == -1\n    assert cache.get(\"b\") == 2\n    assert cache.get(\"c\") == 3\n\n\ndef test_get_hit_makes_key_most_recently_used():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    assert cache.get(\"a\") == 1  # \"a\" becomes MRU, \"b\" becomes LRU\n    cache.put(\"c\", 3)  # evicts \"b\", not \"a\"\n    assert cache.get(\"b\") == -1\n    assert cache.get(\"a\") == 1\n    assert cache.get(\"c\") == 3\n\n\ndef test_missing_get_does_not_affect_order():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    assert cache.get(\"nope\") == -1\n    cache.put(\"c\", 3)  # still evicts \"a\"\n    assert cache.get(\"a\") == -1\n    assert cache.get(\"b\") == 2\n\n\ndef test_update_counts_as_use():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"a\", 10)  # update \"a\": \"b\" becomes LRU\n    cache.put(\"c\", 3)  # evicts \"b\", not \"a\"\n    assert cache.get(\"a\") == 10\n    assert cache.get(\"b\") == -1\n    assert cache.get(\"c\") == 3\n\n\ndef test_update_existing_key_does_not_grow_cache():\n    cache = LRUCache(2)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)\n    cache.put(\"a\", 99)\n    assert cache.get(\"a\") == 99\n    assert cache.get(\"b\") == 2\n\n\ndef test_capacity_one():\n    cache = LRUCache(1)\n    cache.put(\"a\", 1)\n    cache.put(\"b\", 2)  # evicts \"a\"\n    assert cache.get(\"a\") == -1\n    assert cache.get(\"b\") == 2\n\n\ndef test_capacity_boundary_full_cache():\n    cache = LRUCache(3)\n    for i in range(3):\n        cache.put(i, i * 10)\n    # Exactly full: nothing evicted yet.\n    for i in range(3):\n        assert cache.get(i) == i * 10\n    # One more NEW key evicts exactly the LRU (0).\n    cache.put(3, 30)\n    assert cache.get(0) == -1\n    for i in range(1, 4):\n        assert cache.get(i) == i * 10\n\n\ndef test_repeated_updates_never_evict():\n    cache = LRUCache(1)\n    cache.put(\"a\", 1)\n    for i in range(5):\n        cache.put(\"a\", i)\n    assert cache.get(\"a\") == 4\n\n\ndef test_invalid_capacity_rejected():\n    with pytest.raises(ValueError):\n        LRUCache(0)\n    with pytest.raises(ValueError):\n        LRUCache(-1)\n"
+      }
+    }
+  ]
+}
