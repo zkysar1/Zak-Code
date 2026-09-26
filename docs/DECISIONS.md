@@ -15184,3 +15184,46 @@ is still cut (the previous code fails it with a FAIL note); the window contains 
 and not the head, both omitted spans are named and the header's span encloses the edit; a
 `Write` keeps the head and names what follows; a single overlong line is cut and says so.
 `test_edit_tool.py`: the result names the line of the first replacement, for a deletion too.
+
+## ADR-0253: the bench arm owns each run's workspace, so a run killed at the cap is still digested
+
+Status: accepted. 2026-09-26.
+
+`bench/determinism_arm.py` runs `bench/run_task.py` N times per cell and digests the files each
+run left, so a cell's verdict can say whether the runs converged. Until now the arm learned an
+unpinned run's workspace path from the child's final JSON report. `run_task.py` made the
+directory itself with `mkdtemp` (the per-run suffix is deliberate: the prompt names the workspace
+root, and identical roots would pin one source of variance the campaign is there to sample) and
+named it in the report. A run killed at the wall cap prints no report. The arm then fell back to
+the full pin's constant path, which an unpinned run never has, digested an empty set, and `main()`
+refused the cell as an INSTRUMENT FAILURE ("captured ZERO files") over the two runs that had
+finished. The real workspace stayed behind in the temp dir.
+
+Measured on two campaigns on the pod: every capped run digested as zero files, three of three in
+one campaign and, in the next, a run whose `Write` and `Edit` had both succeeded before the cap.
+The bench box held 37 leaked workspaces.
+
+Decision: the arm makes the directory and hands it down in `ZBENCH_WORKSPACE`, the way it already
+hands down `ZAKCODE_TRACE_DIR` for the decision trace. `run_task.py` uses that directory when the
+variable is set and otherwise chooses as before. The variable must name an existing absolute
+directory or the runner fails loud: a relative path would resolve against the runner's cwd, not
+the caller's, and a silent `mkdtemp` fallback would re-create the leak this closes. The full pin
+keeps its constant path, which both sides already know, and is unchanged. On every other run the
+arm knows the path before the child starts, digests it whether or not a report arrived, and
+removes it: the arm owns the directory's lifetime, which also ends the leak. When a report does
+arrive naming an existing absolute path, that path wins, so a child that wrote elsewhere is
+digested where it wrote. `mkdtemp` keeps the per-run suffix, so nothing the prompt sees changes.
+
+The verdict still refuses a cell with a capped run, and says why in the run's own terms. A child
+that crashed at startup and a child killed at the cap both print no report, and both read as the
+first ("the child exited before the agent ran, so the digested files are the untouched seed"),
+which is false for a capped run: its files are what the agent left, and its trace names the gates
+that fired. What it lacks is a verify result, and a half-finished workspace compared against
+finished ones would read as a spurious divergence. The two cases now print separately.
+
+Tests, `test_bench_wall_cap.py`: a stand-in runner that writes a file into the handed-down
+directory and outlives an 8 s cap yields rc 124, the file's digest, and no directory left behind
+(the previous code yields an empty digest set); the same runner reporting normally is the positive
+control; the two INSTRUMENT FAILURE messages are told apart by `cli_rc`; the runner takes the
+handed-down directory without wiping it, fails loud on a missing or relative one, and chooses as
+before when the variable is unset.
