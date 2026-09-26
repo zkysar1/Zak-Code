@@ -29,11 +29,19 @@ from zakcode.agent.compact import (
     Compactor,
 )
 from zakcode.agent.loop import AgentLoop
+from zakcode.config import PermissionTier
 from zakcode.hooks.transcript import render_compaction_rows
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
-from zakcode.providers.base import Capabilities, LLMResult, Provider
+from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session, SessionStore
-from zakcode.tools.base import ToolRegistry
+from zakcode.tools.base import (
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    ToolSpec,
+)
 
 
 class _Summarizer(Provider):
@@ -358,3 +366,112 @@ def test_a_consumer_can_count_compactions_and_find_the_first_call_after_one(
     loop._cc_transcript_path()
     assert _compactions(path) == 2
     assert _first_call_after_last_boundary(path) == "ScheduleWakeup"
+
+
+# ── a transcript that was begun is complete at every turn end (amended 2026-09-26) ────
+#
+# A loop with no store persists nothing, so its transcript was written only by the path handed
+# to hook payloads (built at every tool call, hook configured or not) or by a compaction: the
+# PreToolUse payload flushed the assistant's call, the PostToolUse payload was built before the
+# result was appended, and nothing ran after the answer. Measured on 57 of 57 transcripts of a
+# bench that runs the loop storeless: every file ended on the assistant's last tool call, without
+# that tool's result or the answer that followed. The turn's end now completes a begun record.
+
+
+class _Probe(Tool):
+    spec = ToolSpec(
+        name="probe",
+        description="fake probe",
+        required_permission=PermissionTier.WORKSPACE_WRITE,
+        concurrency=ConcurrencyClass.NEVER_PARALLEL,
+    )
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok("probed")
+
+
+class _Scripted(Provider):
+    """One tool call, then a text answer — the shape of every bench turn's last exchange.
+    ``tool_first=False`` answers with the text at once: a turn that makes no tool call."""
+
+    def __init__(self, *, tool_first: bool = True) -> None:
+        self.calls = 0
+        self._tool_first = tool_first
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        self.calls += 1
+        if self.calls == 1 and self._tool_first:
+            return LLMResult(
+                tool_calls=[ToolCall(id="c1", name="probe", arguments={})],
+                finish_reason="tool_calls",
+            )
+        return LLMResult(text="done", finish_reason="stop")
+
+    def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
+        return 100
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(supports_tools=True, context_window=200_000)
+
+
+def _turn_loop(
+    tmp_path: Path, *, store: SessionStore | None = None, tool_first: bool = True
+) -> AgentLoop:
+    registry = ToolRegistry()
+    registry.register(_Probe())
+    return AgentLoop(
+        _Scripted(tool_first=tool_first),
+        registry,
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        store=store,
+        max_iterations=5,
+    )
+
+
+def _shape(row: dict[str, Any]) -> str:
+    """``role:kinds`` of one row — the block types it carries, or ``text`` for a plain string."""
+    message = row.get("message", {})
+    content = message.get("content", row.get("content", ""))
+    if isinstance(content, str):
+        return f"{message.get('role')}:text"
+    return f"{message.get('role')}:" + "+".join(sorted({str(b.get("type")) for b in content}))
+
+
+def test_a_begun_storeless_transcript_holds_the_whole_turn_at_its_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "zk"
+    monkeypatch.setenv("ZAKCODE_HOME", str(home))
+    loop = _turn_loop(tmp_path)
+    path = loop._cc_transcript_path()  # a hook asked for it once: the record is begun
+    asyncio.run(loop.arun_turn("probe it"))
+    shapes = [_shape(r) for r in _rows(path)]
+    # Before: the file ended on ``assistant:tool_use`` — the result and the answer were missing.
+    assert shapes[-2:] == ["user:tool_result", "assistant:text"], shapes
+    assert _said(_rows(path)[-1]) == "done"
+    assert loop.session.transcript_cursor == len(loop.session.messages)
+
+
+def test_a_storeless_turn_that_made_no_tool_call_begins_no_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path is handed to every tool hook's payload, so a tool call begins the record even
+    with no hook configured; a turn that made none, and that nothing asked, leaves no file."""
+    home = tmp_path / "zk"
+    monkeypatch.setenv("ZAKCODE_HOME", str(home))
+    loop = _turn_loop(tmp_path, tool_first=False)
+    asyncio.run(loop.arun_turn("say done"))
+    assert not (home / "transcripts").exists()
+
+
+def test_a_stored_turn_is_written_once_at_its_end_as_before(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "home" / "sessions")
+    loop = _turn_loop(tmp_path, store=store)
+    asyncio.run(loop.arun_turn("probe it"))
+    path = tmp_path / "home" / "transcripts" / f"{loop.session.id}.jsonl"
+    rows = _rows(path)
+    assert len(rows) == len(loop.session.messages) == loop.session.transcript_cursor
+    assert [_shape(r) for r in rows][-2:] == ["user:tool_result", "assistant:text"]

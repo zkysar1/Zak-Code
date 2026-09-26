@@ -6483,6 +6483,21 @@ class AgentLoop:
         """
         return self._flush_transcript()
 
+    def _complete_transcript(self) -> None:
+        """Bring a transcript that was BEGUN up to date at the end of a turn (ADR-0206, amended
+        2026-09-26). With a store, every persist already flushed it and this is a no-op by the
+        cursor. Without one, only the path handed to hook payloads (built at every tool call,
+        whether or not a hook is configured) or a compaction ever wrote it: the PreToolUse
+        payload flushed the assistant's call, the PostToolUse payload was built before the
+        result was appended, and nothing ran after the answer — so every turn's record ended
+        on its last tool call, without that tool's result or the answer that followed.
+        Measured on 57 of 57 transcripts of a bench that runs the loop storeless. Runs on every
+        exit of a turn (completed, stopped, cancelled) and never raises. A loop nothing ever
+        asked a transcript of begins none here: the storeless persist still writes nothing.
+        """
+        if self._transcript_ready_for:
+            self._flush_transcript()
+
     def _transcript_file(self) -> Path | None:
         """Where this session's transcript lives, its directory made ready — ``None`` for a
         session id that is not a safe filename (the same trust boundary the SessionStore
@@ -6708,6 +6723,7 @@ class AgentLoop:
                 self._persist()
             raise
         finally:
+            self._complete_transcript()  # the record holds the whole turn (ADR-0206)
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
@@ -10711,6 +10727,7 @@ class AgentLoop:
                 self._persist()
             raise
         finally:
+            self._complete_transcript()  # the record holds the whole turn (ADR-0206)
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
 
