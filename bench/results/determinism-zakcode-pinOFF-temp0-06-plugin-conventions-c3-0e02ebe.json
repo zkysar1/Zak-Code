@@ -1,0 +1,141 @@
+{
+  "task": "06-plugin-conventions",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "wall_cap_s": 5400,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-06-plugin-conventions-bfo8t3b_",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 569.9,
+      "num_turns": 6,
+      "total_cost_usd": 0.0,
+      "verify_rc": 1,
+      "verify_out": "FAIL: YAML round-trip mismatch.\nexpected: [{'a': 1, 'b': 'hello world'}, {'a': 2, 'b': 'second row'}]\ngot:      [{'a': 1}, {'b': 'hello world'}, {'a': 2}, {'b': 'second row'}]\n--- output ---\n- a: 1\n- b: hello world\n- a: 2\n- b: second row",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-06-plugin-conventions-run1-f02clb1o",
+      "no_report": false,
+      "stderr_tail": " Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-06-plugin-conventions/run-1",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "184c9df06270da016f4ab2248b465a298fb65ecf63cebe7afdfbd90ebf08aa9c",
+        "CONTRIBUTING.md": "8f782840c704cced2d1efc25e1a3d05e004b43dd9851b5985c37a2c2fd4f5d3b",
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "0b2e98ffea9146a82004ae9df2721e92225951dfcbcb234c9b4c27e0c84801de",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "py_digests": {
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "0b2e98ffea9146a82004ae9df2721e92225951dfcbcb234c9b4c27e0c84801de",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "sources": {
+        "CONTRIBUTING.md": "# Contributing\n\n## Hard rules\n\n1. **Standard library only.** This package ships with zero third-party runtime\n   dependencies and that is a hard constraint, not a preference. Do not add an\n   import that is not in the Python standard library, and do not add anything to\n   a requirements file. If a format needs a serializer we do not have, write it.\n2. **Every renderer raises `PluginError`**, never a built-in exception, on input\n   it cannot render. Callers catch `PluginError` and nothing else.\n3. **Every renderer is registered** with `@register(\"<name>\")` and its class name\n   is added to `__all__` in `plugins/__init__.py`. The registry is what the CLI\n   enumerates; an unregistered renderer is invisible.\n4. **Every renderer has a case in the existing parametrized test** in\n   `tests/test_plugins.py`. Add to the parameter list; do not write a new test\n   function.\n",
+        "plugins/__init__.py": "\"\"\"Tiny renderer plugin registry. Standard library only -- see CONTRIBUTING.md.\"\"\"\n\n__all__ = [\"PluginError\", \"Renderer\", \"register\", \"get\", \"CsvRenderer\", \"JsonRenderer\", \"YamlRenderer\"]\n\n_REGISTRY: dict[str, type] = {}\n\n\nclass PluginError(Exception):\n    \"\"\"Raised by a renderer for input it cannot render.\"\"\"\n\n\nclass Renderer:\n    \"\"\"Base renderer. Subclasses implement render(rows) -> str.\"\"\"\n\n    def render(self, rows: list[dict]) -> str:\n        raise NotImplementedError\n\n\ndef register(name: str):\n    def deco(cls):\n        _REGISTRY[name] = cls\n        return cls\n    return deco\n\n\ndef get(name: str) -> type:\n    if name not in _REGISTRY:\n        raise PluginError(f\"no renderer named {name!r}\")\n    return _REGISTRY[name]\n\n\nfrom plugins.csv_out import CsvRenderer  # noqa: E402,F401\nfrom plugins.json_out import JsonRenderer  # noqa: E402,F401\nfrom plugins.yaml_out import YamlRenderer  # noqa: E402,F401\n",
+        "plugins/csv_out.py": "import csv\nimport io\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"csv\")\nclass CsvRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        keys = list(rows[0])\n        buf = io.StringIO()\n        w = csv.DictWriter(buf, fieldnames=keys)\n        w.writeheader()\n        for r in rows:\n            if list(r) != keys:\n                raise PluginError(\"all rows must share the same keys\")\n            w.writerow(r)\n        return buf.getvalue()\n",
+        "plugins/json_out.py": "import json\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"json\")\nclass JsonRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        return json.dumps(rows, indent=2, sort_keys=True)\n",
+        "plugins/yaml_out.py": "\"\"\"YAML renderer. Standard library only -- see CONTRIBUTING.md.\"\"\"\n\nimport re\n\nfrom plugins import PluginError, Renderer, register\n\n# Strings that YAML would misread as booleans, nulls, or numbers if left plain.\n_RESERVED = {\n    \"true\", \"false\", \"null\", \"yes\", \"no\", \"on\", \"off\", \"~\",\n    \"nan\", \"inf\", \"-inf\", \"+inf\", \".nan\", \".inf\",\n}\n\n_NUMBER = re.compile(\n    r\"^[-+]?(\\d+\\.?\\d*|\\.\\d+)([eE][-+]?\\d+)?$|^0[xob][0-9a-fA-F]+$\"\n)\n\n_LEADING_INDICATORS = set(\"-?:,[]{}#&*!|>'\\\"%@`\")\n\n\ndef _plain_safe(value: str) -> bool:\n    \"\"\"True if the string can be emitted unquoted and still parse back as a string.\"\"\"\n    if not value or value != value.strip():\n        return False\n    if value[0] in _LEADING_INDICATORS:\n        return False\n    if \": \" in value or \" #\" in value or value.endswith(\":\"):\n        return False\n    if value.lower() in _RESERVED:\n        return False\n    if _NUMBER.match(value):\n        return False\n    return True\n\n\ndef _double_quote(value: str) -> str:\n    out = []\n    for ch in value:\n        if ch == \"\\\\\":\n            out.append(\"\\\\\\\\\")\n        elif ch == '\"':\n            out.append('\\\\\"')\n        elif ch == \"\\n\":\n            out.append(\"\\\\n\")\n        elif ch == \"\\t\":\n            out.append(\"\\\\t\")\n        elif ch == \"\\r\":\n            out.append(\"\\\\r\")\n        elif ord(ch) < 0x20 or ord(ch) == 0x7F:\n            out.append(f\"\\\\u{ord(ch):04x}\")\n        else:\n            out.append(ch)\n    return '\"' + \"\".join(out) + '\"'\n\n\ndef _scalar(value) -> str:\n    if value is None:\n        return \"null\"\n    if isinstance(value, bool):\n        return \"true\" if value else \"false\"\n    if isinstance(value, int):\n        return str(value)\n    if isinstance(value, float):\n        if value != value:\n            return \".nan\"\n        if value == float(\"inf\"):\n            return \".inf\"\n        if value == float(\"-inf\"):\n            return \"-.inf\"\n        return repr(value)\n    if isinstance(value, str):\n        return value if _plain_safe(value) else _double_quote(value)\n    raise PluginError(f\"yaml cannot render value of type {type(value).__name__}\")\n\n\n@register(\"yaml\")\nclass YamlRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        lines = []\n        for row in rows:\n            if not row:\n                raise PluginError(\"yaml rows must be non-empty dicts\")\n            for key, value in row.items():\n                if not isinstance(key, str):\n                    raise PluginError(\"yaml keys must be strings\")\n                lines.append(f\"- {_scalar(key)}: {_scalar(value)}\")\n        return \"\\n\".join(lines) + \"\\n\"\n",
+        "tests/test_plugins.py": "import pytest\n\nfrom plugins import PluginError, get\n\nROWS = [{\"a\": 1, \"b\": \"x\"}, {\"a\": 2, \"b\": \"y\"}]\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_renders_non_empty(name):\n    out = get(name)().render(ROWS)\n    assert isinstance(out, str) and out.strip()\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_rejects_empty(name):\n    with pytest.raises(PluginError):\n        get(name)().render([])\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-06-plugin-conventions-2sojkh11",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 855.3,
+      "num_turns": 7,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: yaml renderer is stdlib-only, registered, exported, round-trips, raises PluginError, and is covered by the existing parametrized test",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-06-plugin-conventions-run2-gi76ggj4",
+      "no_report": false,
+      "stderr_tail": " Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-06-plugin-conventions/run-2",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "184c9df06270da016f4ab2248b465a298fb65ecf63cebe7afdfbd90ebf08aa9c",
+        "CONTRIBUTING.md": "8f782840c704cced2d1efc25e1a3d05e004b43dd9851b5985c37a2c2fd4f5d3b",
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "576f181f0af24b5100b2469438ee908a9dc46a758ab962a87e22008afc6c932d",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "py_digests": {
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "576f181f0af24b5100b2469438ee908a9dc46a758ab962a87e22008afc6c932d",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "sources": {
+        "CONTRIBUTING.md": "# Contributing\n\n## Hard rules\n\n1. **Standard library only.** This package ships with zero third-party runtime\n   dependencies and that is a hard constraint, not a preference. Do not add an\n   import that is not in the Python standard library, and do not add anything to\n   a requirements file. If a format needs a serializer we do not have, write it.\n2. **Every renderer raises `PluginError`**, never a built-in exception, on input\n   it cannot render. Callers catch `PluginError` and nothing else.\n3. **Every renderer is registered** with `@register(\"<name>\")` and its class name\n   is added to `__all__` in `plugins/__init__.py`. The registry is what the CLI\n   enumerates; an unregistered renderer is invisible.\n4. **Every renderer has a case in the existing parametrized test** in\n   `tests/test_plugins.py`. Add to the parameter list; do not write a new test\n   function.\n",
+        "plugins/__init__.py": "\"\"\"Tiny renderer plugin registry. Standard library only -- see CONTRIBUTING.md.\"\"\"\n\n__all__ = [\"PluginError\", \"Renderer\", \"register\", \"get\", \"CsvRenderer\", \"JsonRenderer\", \"YamlRenderer\"]\n\n_REGISTRY: dict[str, type] = {}\n\n\nclass PluginError(Exception):\n    \"\"\"Raised by a renderer for input it cannot render.\"\"\"\n\n\nclass Renderer:\n    \"\"\"Base renderer. Subclasses implement render(rows) -> str.\"\"\"\n\n    def render(self, rows: list[dict]) -> str:\n        raise NotImplementedError\n\n\ndef register(name: str):\n    def deco(cls):\n        _REGISTRY[name] = cls\n        return cls\n    return deco\n\n\ndef get(name: str) -> type:\n    if name not in _REGISTRY:\n        raise PluginError(f\"no renderer named {name!r}\")\n    return _REGISTRY[name]\n\n\nfrom plugins.csv_out import CsvRenderer  # noqa: E402,F401\nfrom plugins.json_out import JsonRenderer  # noqa: E402,F401\nfrom plugins.yaml_out import YamlRenderer  # noqa: E402,F401\n",
+        "plugins/csv_out.py": "import csv\nimport io\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"csv\")\nclass CsvRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        keys = list(rows[0])\n        buf = io.StringIO()\n        w = csv.DictWriter(buf, fieldnames=keys)\n        w.writeheader()\n        for r in rows:\n            if list(r) != keys:\n                raise PluginError(\"all rows must share the same keys\")\n            w.writerow(r)\n        return buf.getvalue()\n",
+        "plugins/json_out.py": "import json\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"json\")\nclass JsonRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        return json.dumps(rows, indent=2, sort_keys=True)\n",
+        "plugins/yaml_out.py": "\"\"\"YAML renderer. Standard library only -- see CONTRIBUTING.md.\"\"\"\n\nfrom plugins import PluginError, Renderer, register\n\n# Characters that make a plain (unquoted) YAML scalar unsafe.\n_UNSAFE_CHARS = set(\":#{}[],&*!|>'\\\"%@`\")\n\n\ndef _looks_like_non_string(s: str) -> bool:\n    \"\"\"True if s would be parsed back as something other than a string.\"\"\"\n    low = s.lower()\n    if low in {\"true\", \"false\", \"yes\", \"no\", \"on\", \"off\", \"null\", \"~\"}:\n        return True\n    try:\n        int(s, 0)\n        return True\n    except ValueError:\n        pass\n    try:\n        float(s)\n        return True\n    except ValueError:\n        pass\n    return False\n\n\ndef _double_quote(s: str) -> str:\n    out = []\n    for ch in s:\n        if ch == \"\\\\\":\n            out.append(\"\\\\\\\\\")\n        elif ch == '\"':\n            out.append('\\\\\"')\n        elif ch == \"\\n\":\n            out.append(\"\\\\n\")\n        elif ch == \"\\t\":\n            out.append(\"\\\\t\")\n        elif ch == \"\\r\":\n            out.append(\"\\\\r\")\n        elif ord(ch) < 0x20 or ch == \"\\x7f\":\n            out.append(\"\\\\x%02x\" % ord(ch))\n        else:\n            out.append(ch)\n    return '\"' + \"\".join(out) + '\"'\n\n\ndef _scalar(value) -> str:\n    \"\"\"Render one scalar value as a YAML scalar.\"\"\"\n    if value is None:\n        return \"null\"\n    if isinstance(value, bool):\n        return \"true\" if value else \"false\"\n    if isinstance(value, (int, float)):\n        return repr(value)\n    if isinstance(value, str):\n        if (\n            value\n            and value == value.strip()\n            and not any(c in _UNSAFE_CHARS for c in value)\n            and \": \" not in value\n            and \" #\" not in value\n            and not _looks_like_non_string(value)\n        ):\n            return value\n        return _double_quote(value)\n    raise PluginError(\n        \"yaml cannot render value of type %s\" % type(value).__name__\n    )\n\n\n@register(\"yaml\")\nclass YamlRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        lines = []\n        for row in rows:\n            first = True\n            for key, value in row.items():\n                prefix = \"- \" if first else \"  \"\n                lines.append(\"%s%s: %s\" % (prefix, _scalar(key), _scalar(value)))\n                first = False\n        return \"\\n\".join(lines) + \"\\n\"\n",
+        "tests/test_plugins.py": "import pytest\n\nfrom plugins import PluginError, get\n\nROWS = [{\"a\": 1, \"b\": \"x\"}, {\"a\": 2, \"b\": \"y\"}]\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_renders_non_empty(name):\n    out = get(name)().render(ROWS)\n    assert isinstance(out, str) and out.strip()\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_rejects_empty(name):\n    with pytest.raises(PluginError):\n        get(name)().render([])\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-06-plugin-conventions-0vt1ih3_",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 920.5,
+      "num_turns": 5,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: yaml renderer is stdlib-only, registered, exported, round-trips, raises PluginError, and is covered by the existing parametrized test",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-06-plugin-conventions-run3-lq9j3rjp",
+      "no_report": false,
+      "stderr_tail": " Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-06-plugin-conventions/run-3",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "184c9df06270da016f4ab2248b465a298fb65ecf63cebe7afdfbd90ebf08aa9c",
+        "CONTRIBUTING.md": "8f782840c704cced2d1efc25e1a3d05e004b43dd9851b5985c37a2c2fd4f5d3b",
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "93492aaf10ec20fa3ce3701bf45ccdc38bf108a3f9605df5276d92b2dbcd39c0",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "py_digests": {
+        "plugins/__init__.py": "2ad07eabd51cbf6c1169ff41bc095794bdb39455af3a991b0893b1a31a8ad167",
+        "plugins/csv_out.py": "98c1b368a7e3a4e6f74085f209446c75049f3a096b96db912bf9861926d2dadd",
+        "plugins/json_out.py": "c374bc0d7aac0fab2d6226abdd400b018fca9146f82484787389eb723d1e4aa9",
+        "plugins/yaml_out.py": "93492aaf10ec20fa3ce3701bf45ccdc38bf108a3f9605df5276d92b2dbcd39c0",
+        "tests/test_plugins.py": "fc90e0e73c543c4e0f3b68f0bb8d0e5cca9af82d648466a5e55aed8d43e1edc2"
+      },
+      "sources": {
+        "CONTRIBUTING.md": "# Contributing\n\n## Hard rules\n\n1. **Standard library only.** This package ships with zero third-party runtime\n   dependencies and that is a hard constraint, not a preference. Do not add an\n   import that is not in the Python standard library, and do not add anything to\n   a requirements file. If a format needs a serializer we do not have, write it.\n2. **Every renderer raises `PluginError`**, never a built-in exception, on input\n   it cannot render. Callers catch `PluginError` and nothing else.\n3. **Every renderer is registered** with `@register(\"<name>\")` and its class name\n   is added to `__all__` in `plugins/__init__.py`. The registry is what the CLI\n   enumerates; an unregistered renderer is invisible.\n4. **Every renderer has a case in the existing parametrized test** in\n   `tests/test_plugins.py`. Add to the parameter list; do not write a new test\n   function.\n",
+        "plugins/__init__.py": "\"\"\"Tiny renderer plugin registry. Standard library only -- see CONTRIBUTING.md.\"\"\"\n\n__all__ = [\"PluginError\", \"Renderer\", \"register\", \"get\", \"CsvRenderer\", \"JsonRenderer\", \"YamlRenderer\"]\n\n_REGISTRY: dict[str, type] = {}\n\n\nclass PluginError(Exception):\n    \"\"\"Raised by a renderer for input it cannot render.\"\"\"\n\n\nclass Renderer:\n    \"\"\"Base renderer. Subclasses implement render(rows) -> str.\"\"\"\n\n    def render(self, rows: list[dict]) -> str:\n        raise NotImplementedError\n\n\ndef register(name: str):\n    def deco(cls):\n        _REGISTRY[name] = cls\n        return cls\n    return deco\n\n\ndef get(name: str) -> type:\n    if name not in _REGISTRY:\n        raise PluginError(f\"no renderer named {name!r}\")\n    return _REGISTRY[name]\n\n\nfrom plugins.csv_out import CsvRenderer  # noqa: E402,F401\nfrom plugins.json_out import JsonRenderer  # noqa: E402,F401\nfrom plugins.yaml_out import YamlRenderer  # noqa: E402,F401\n",
+        "plugins/csv_out.py": "import csv\nimport io\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"csv\")\nclass CsvRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"csv needs a non-empty list of dicts\")\n        keys = list(rows[0])\n        buf = io.StringIO()\n        w = csv.DictWriter(buf, fieldnames=keys)\n        w.writeheader()\n        for r in rows:\n            if list(r) != keys:\n                raise PluginError(\"all rows must share the same keys\")\n            w.writerow(r)\n        return buf.getvalue()\n",
+        "plugins/json_out.py": "import json\n\nfrom plugins import PluginError, Renderer, register\n\n\n@register(\"json\")\nclass JsonRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"json needs a non-empty list of dicts\")\n        return json.dumps(rows, indent=2, sort_keys=True)\n",
+        "plugins/yaml_out.py": "from plugins import PluginError, Renderer, register\n\n# Strings that YAML would parse as something other than a string.\n_AMBIGUOUS = {\"null\", \"true\", \"false\", \"yes\", \"no\", \"on\", \"off\", \"~\"}\n# Characters that may not start a plain scalar.\n_INDICATORS = set(\"-?:,[]{}#&*!|>'\\\"%@` \\t\")\n\n\ndef _double_quote(s: str) -> str:\n    out = []\n    for ch in s:\n        if ch == \"\\\\\":\n            out.append(\"\\\\\\\\\")\n        elif ch == '\"':\n            out.append('\\\\\"')\n        elif ch == \"\\n\":\n            out.append(\"\\\\n\")\n        elif ch == \"\\t\":\n            out.append(\"\\\\t\")\n        elif ch == \"\\r\":\n            out.append(\"\\\\r\")\n        elif ord(ch) < 0x20:\n            out.append(f\"\\\\x{ord(ch):02x}\")\n        else:\n            out.append(ch)\n    return '\"' + \"\".join(out) + '\"'\n\n\ndef _needs_quoting(s: str) -> bool:\n    if s == \"\" or s != s.strip():\n        return True\n    if s[0] in _INDICATORS:\n        return True\n    if \": \" in s or s.endswith(\":\") or \" #\" in s:\n        return True\n    if s.lower() in _AMBIGUOUS:\n        return True\n    try:\n        float(s)\n    except ValueError:\n        return False\n    return True\n\n\ndef _scalar(value) -> str:\n    if value is None:\n        return \"null\"\n    if isinstance(value, bool):\n        return \"true\" if value else \"false\"\n    if isinstance(value, (int, float)):\n        return repr(value)\n    if isinstance(value, str):\n        return _double_quote(value) if _needs_quoting(value) else value\n    raise PluginError(f\"yaml cannot render value of type {type(value).__name__}\")\n\n\n@register(\"yaml\")\nclass YamlRenderer(Renderer):\n    def render(self, rows: list[dict]) -> str:\n        if not isinstance(rows, list) or not rows:\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        if not all(isinstance(r, dict) for r in rows):\n            raise PluginError(\"yaml needs a non-empty list of dicts\")\n        lines = []\n        for r in rows:\n            if not r:\n                lines.append(\"- {}\")\n                continue\n            first = True\n            for k, v in r.items():\n                if not isinstance(k, str):\n                    raise PluginError(\"yaml keys must be strings\")\n                prefix = \"- \" if first else \"  \"\n                first = False\n                key = _double_quote(k) if _needs_quoting(k) else k\n                lines.append(f\"{prefix}{key}: {_scalar(v)}\")\n        return \"\\n\".join(lines) + \"\\n\"\n",
+        "tests/test_plugins.py": "import pytest\n\nfrom plugins import PluginError, get\n\nROWS = [{\"a\": 1, \"b\": \"x\"}, {\"a\": 2, \"b\": \"y\"}]\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_renders_non_empty(name):\n    out = get(name)().render(ROWS)\n    assert isinstance(out, str) and out.strip()\n\n\n@pytest.mark.parametrize(\"name\", [\"csv\", \"json\", \"yaml\"])\ndef test_rejects_empty(name):\n    with pytest.raises(PluginError):\n        get(name)().render([])\n"
+      }
+    }
+  ]
+}

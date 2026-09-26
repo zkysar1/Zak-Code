@@ -1,0 +1,126 @@
+{
+  "task": "01-wordfreq",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "wall_cap_s": 5400,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-8fzppgx_",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1883.2,
+      "num_turns": 8,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-01-wordfreq-run1-6gvpg635",
+      "no_report": false,
+      "stderr_tail": "available. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-01-wordfreq/run-1",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "cbb485c0b73acad7297700c5b9e6fd6026c3e91356c1e5485caec5d0313e7c38",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "596d7bd8e2c1a1b17edd6e522b3c9aa0c7ce5a7a59d3502e4e5bd241011221de",
+        "wordfreq.py": "399b7617f417f2bb613152be54f36de571a9646f48ed3694cb19fba1d68fb623"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "596d7bd8e2c1a1b17edd6e522b3c9aa0c7ce5a7a59d3502e4e5bd241011221de",
+        "wordfreq.py": "399b7617f417f2bb613152be54f36de571a9646f48ed3694cb19fba1d68fb623"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py.\"\"\"\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nfrom wordfreq import count_words, top_words, tokenize\n\nSCRIPT = Path(__file__).with_name(\"wordfreq.py\")\n\n\ndef run_cli(tmp_path, text, *extra):\n    \"\"\"Write *text* to a temp file and run wordfreq.py on it.\"\"\"\n    f = tmp_path / \"input.txt\"\n    f.write_text(text, encoding=\"utf-8\")\n    return subprocess.run(\n        [sys.executable, str(SCRIPT), str(f), *extra],\n        capture_output=True,\n        text=True,\n    )\n\n\n# --- unit tests -----------------------------------------------------------\n\n\ndef test_tokenize_lowercases_and_splits():\n    assert tokenize(\"Hello, world! hello...\") == [\"hello\", \"world\", \"hello\"]\n\n\ndef test_tokenize_ignores_empty_tokens():\n    assert tokenize(\"  --  ...  \") == []\n\n\ndef test_count_words_basic():\n    assert count_words(\"a b a c\") == {\"a\": 2, \"b\": 1, \"c\": 1}\n\n\ndef test_top_words_sorts_by_count_then_alpha():\n    counter = {\"zebra\": 2, \"apple\": 2, \"mango\": 3, \"kiwi\": 2}\n    assert top_words(counter, 4) == [\n        (\"mango\", 3),\n        (\"apple\", 2),\n        (\"kiwi\", 2),\n        (\"zebra\", 2),\n    ]\n\n\ndef test_top_words_limits_results():\n    counter = {\"a\": 1, \"b\": 1, \"c\": 1}\n    assert top_words(counter, 2) == [(\"a\", 1), (\"b\", 1)]\n\n\n# --- CLI tests ------------------------------------------------------------\n\n\ndef test_basic_counting(tmp_path):\n    result = run_cli(tmp_path, \"apple banana apple cherry banana apple\\n\")\n    assert result.returncode == 0\n    assert result.stdout.splitlines() == [\n        \"apple: 3\",\n        \"banana: 2\",\n        \"cherry: 1\",\n    ]\n\n\ndef test_top_flag_limits_output(tmp_path):\n    result = run_cli(tmp_path, \"a b c d e\\n\", \"--top\", \"2\")\n    assert result.returncode == 0\n    assert result.stdout.splitlines() == [\"a: 1\", \"b: 1\"]\n\n\ndef test_default_top_is_10(tmp_path):\n    text = \" \".join(f\"w{i}\" for i in range(15))\n    result = run_cli(tmp_path, text)\n    assert result.returncode == 0\n    assert len(result.stdout.splitlines()) == 10\n\n\ndef test_case_insensitivity(tmp_path):\n    result = run_cli(tmp_path, \"Apple apple APPLE banana\\n\")\n    assert result.returncode == 0\n    assert result.stdout.splitlines() == [\"apple: 3\", \"banana: 1\"]\n\n\ndef test_tie_breaking_alphabetical(tmp_path):\n    result = run_cli(tmp_path, \"zebra apple mango apple zebra mango\\n\")\n    assert result.returncode == 0\n    assert result.stdout.splitlines() == [\"apple: 2\", \"mango: 2\", \"zebra: 2\"]\n\n\ndef test_non_alphanumeric_splitting(tmp_path):\n    result = run_cli(tmp_path, \"don't stop--now! hello, world... hello\\n\")\n    assert result.returncode == 0\n    assert result.stdout.splitlines() == [\n        \"hello: 2\",\n        \"don: 1\",\n        \"now: 1\",\n        \"stop: 1\",\n        \"t: 1\",\n        \"world: 1\",\n    ]\n\n\ndef test_missing_file_fails(tmp_path):\n    result = subprocess.run(\n        [sys.executable, str(SCRIPT), str(tmp_path / \"nope.txt\")],\n        capture_output=True,\n        text=True,\n    )\n    assert result.returncode != 0\n    assert result.stdout == \"\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\n\nUsage:\n    python wordfreq.py FILE [--top N]\n\nWords are case-insensitive sequences of alphanumeric characters (any\nnon-alphanumeric character acts as a separator). Output is one line per\nword in the format ``word: count``, sorted by count descending with ties\nbroken alphabetically. The top 10 words are printed by default.\n\"\"\"\n\nimport argparse\nimport re\nimport sys\nfrom collections import Counter\n\n# Alphanumeric runs (unicode-aware); underscore is treated as a separator.\nWORD_RE = re.compile(r\"[^\\W_]+\")\n\n\ndef tokenize(text):\n    \"\"\"Return the lowercase alphanumeric tokens found in *text*.\"\"\"\n    return WORD_RE.findall(text.lower())\n\n\ndef count_words(text):\n    \"\"\"Return a Counter of word occurrences in *text*.\"\"\"\n    return Counter(tokenize(text))\n\n\ndef top_words(counter, n):\n    \"\"\"Return the *n* most common (word, count) pairs.\n\n    Sorted by count descending; ties are broken alphabetically ascending.\n    \"\"\"\n    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:n]\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(\n        description=\"Print the most common words in a text file.\"\n    )\n    parser.add_argument(\"path\", help=\"path to the text file to read\")\n    parser.add_argument(\n        \"--top\",\n        type=int,\n        default=10,\n        metavar=\"N\",\n        help=\"number of words to print (default: 10)\",\n    )\n    args = parser.parse_args(argv)\n\n    try:\n        with open(args.path, \"r\", encoding=\"utf-8\") as f:\n            text = f.read()\n    except OSError as exc:\n        print(f\"error: cannot read {args.path}: {exc}\", file=sys.stderr)\n        return 1\n\n    for word, count in top_words(count_words(text), args.top):\n        print(f\"{word}: {count}\")\n    return 0\n\n\nif __name__ == \"__main__\":\n    sys.exit(main())\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-meuw_lce",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1169.0,
+      "num_turns": 9,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-01-wordfreq-run2-_t769vw_",
+      "no_report": false,
+      "stderr_tail": "available. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-01-wordfreq/run-2",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "27d401007e8c256ce284911de475ca563b9e981a70397077b78b3f5f20e99c3c",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "sample.txt": "9e65556150fa3c493a663a2a6aa76ed296726a46c412f75386698266d56f8edb",
+        "test_wordfreq.py": "acfb75095077fc3fa36c1c75c5f59aa987c93f3ee2971141d4c2713cc5462462",
+        "wordfreq.py": "3ca9fbf69f9ab3c02907ad8614a97feb4a5f15df86547d812118640f238dadfe"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "acfb75095077fc3fa36c1c75c5f59aa987c93f3ee2971141d4c2713cc5462462",
+        "wordfreq.py": "3ca9fbf69f9ab3c02907ad8614a97feb4a5f15df86547d812118640f238dadfe"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "sample.txt": "The quick brown fox jumps over the lazy dog.\nThe dog barked, and the fox ran away!\nQuick quick quick \u2014 the fox is fast.\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py.\"\"\"\n\nimport subprocess\nimport sys\nfrom pathlib import Path\n\nfrom wordfreq import top_words, tokenize, word_frequencies\n\nSCRIPT = Path(__file__).with_name(\"wordfreq.py\")\n\n\ndef run_cli(tmp_path, text, *extra_args):\n    \"\"\"Write *text* to a temp file and run wordfreq.py on it.\"\"\"\n    path = tmp_path / \"input.txt\"\n    path.write_text(text, encoding=\"utf-8\")\n    result = subprocess.run(\n        [sys.executable, str(SCRIPT), str(path), *extra_args],\n        capture_output=True,\n        text=True,\n        check=True,\n    )\n    return result.stdout.strip().splitlines()\n\n\ndef test_basic_counting(tmp_path):\n    lines = run_cli(tmp_path, \"apple banana apple cherry banana apple\")\n    assert lines == [\"apple: 3\", \"banana: 2\", \"cherry: 1\"]\n\n\ndef test_top_flag_limits_output(tmp_path):\n    text = \"a b c d e f g h i j k\"\n    lines = run_cli(tmp_path, text, \"--top\", \"3\")\n    assert lines == [\"a: 1\", \"b: 1\", \"c: 1\"]\n\n\ndef test_top_flag_larger_than_word_count(tmp_path):\n    lines = run_cli(tmp_path, \"x y x\", \"--top\", \"10\")\n    assert lines == [\"x: 2\", \"y: 1\"]\n\n\ndef test_default_top_is_10(tmp_path):\n    text = \" \".join(f\"w{i}\" for i in range(15))\n    lines = run_cli(tmp_path, text)\n    assert len(lines) == 10\n    assert lines[0] == \"w0: 1\"\n\n\ndef test_case_insensitivity(tmp_path):\n    lines = run_cli(tmp_path, \"Apple apple APPLE banana Banana\")\n    assert lines == [\"apple: 3\", \"banana: 2\"]\n\n\ndef test_tie_breaking_alphabetical(tmp_path):\n    # alpha and zeta tie at 2: they must come before mid (count 1),\n    # and the tie itself must be broken alphabetically.\n    lines = run_cli(tmp_path, \"zeta alpha zeta alpha mid\")\n    assert lines == [\"alpha: 2\", \"zeta: 2\", \"mid: 1\"]\n\n\ndef test_tie_breaking_with_counts(tmp_path):\n    # 'b' and 'a' tie at 2; 'c' has 1. Ties must be alphabetical.\n    lines = run_cli(tmp_path, \"b a b a c\")\n    assert lines == [\"a: 2\", \"b: 2\", \"c: 1\"]\n\n\ndef test_non_alphanumeric_separators(tmp_path):\n    lines = run_cli(tmp_path, \"hello, world! hello... world; hello-world\")\n    assert lines == [\"hello: 3\", \"world: 3\"]\n\n\ndef test_tokenize_unit():\n    assert tokenize(\"Foo, bar! BAZ-99\") == [\"foo\", \"bar\", \"baz\", \"99\"]\n    assert tokenize(\"   ---   \") == []\n\n\ndef test_word_frequencies_unit():\n    assert word_frequencies(\"a a b\") == {\"a\": 2, \"b\": 1}\n\n\ndef test_top_words_unit():\n    counter = {\"b\": 2, \"a\": 2, \"c\": 1}\n    assert top_words(counter, 2) == [(\"a\", 2), (\"b\", 2)]\n    assert top_words(counter, 10) == [(\"a\", 2), (\"b\", 2), (\"c\", 1)]\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\n\nWords are case-insensitive sequences of alphanumeric characters; any\nnon-alphanumeric character acts as a separator. Output lines have the\nexact format ``word: count``, sorted by count descending with ties\nbroken alphabetically (ascending).\n\"\"\"\n\nimport argparse\nimport re\nimport sys\nfrom collections import Counter\n\n_WORD_RE = re.compile(r\"[a-z0-9]+\")\n\n\ndef tokenize(text):\n    \"\"\"Return the lowercase alphanumeric words in *text*, in order.\"\"\"\n    return _WORD_RE.findall(text.lower())\n\n\ndef word_frequencies(text):\n    \"\"\"Return a Counter of word frequencies for *text*.\"\"\"\n    return Counter(tokenize(text))\n\n\ndef top_words(counter, n):\n    \"\"\"Return the *n* most common (word, count) pairs.\n\n    Sorted by count descending; ties broken alphabetically ascending.\n    \"\"\"\n    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:n]\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(\n        description=\"Print the most common words in a text file.\"\n    )\n    parser.add_argument(\"file\", help=\"path to the text file to read\")\n    parser.add_argument(\n        \"--top\",\n        type=int,\n        default=10,\n        metavar=\"N\",\n        help=\"number of words to print (default: 10)\",\n    )\n    args = parser.parse_args(argv)\n\n    try:\n        with open(args.file, \"r\", encoding=\"utf-8\") as f:\n            text = f.read()\n    except OSError as exc:\n        parser.error(f\"cannot read {args.file!r}: {exc.strerror or exc}\")\n\n    for word, count in top_words(word_frequencies(text), args.top):\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-01-wordfreq-99tq6oee",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1263.9,
+      "num_turns": 11,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: top-3 correct [('the', 3), ('cat', 2), ('mat', 1)]; agent_tests=pass",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "suite_scope_gate": 1,
+        "plan_review": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-01-wordfreq-run3-oh9h5b4a",
+      "no_report": false,
+      "stderr_tail": "available. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-01-wordfreq/run-3",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/nodeids": "9689f0159e3325f50f1e4f5ed2e2d9573cd231b1c8b29b4a80a1b422ae464ca6",
+        "_oracle_sample.txt": "87f6cbcc7b90963ee25a2c99cd858e8750bcf6625dc5490f4b640ac3a2c2c0ed",
+        "test_wordfreq.py": "825da7b6af443d5296870678237992e8b3e27d941f907f2f70798c084891fbc4",
+        "wordfreq.py": "b092f1a7cadf024ce0f2ba1161623baf14e5fd6a4e1e911f56f964287cc31130"
+      },
+      "py_digests": {
+        "test_wordfreq.py": "825da7b6af443d5296870678237992e8b3e27d941f907f2f70798c084891fbc4",
+        "wordfreq.py": "b092f1a7cadf024ce0f2ba1161623baf14e5fd6a4e1e911f56f964287cc31130"
+      },
+      "sources": {
+        "_oracle_sample.txt": "the cat sat on the mat the cat\n",
+        "test_wordfreq.py": "\"\"\"Tests for wordfreq.py.\"\"\"\n\nimport subprocess\nimport sys\n\nimport pytest\n\nimport wordfreq\n\n\ndef write_text(tmp_path, text):\n    path = tmp_path / \"sample.txt\"\n    path.write_text(text, encoding=\"utf-8\")\n    return str(path)\n\n\ndef run_main(capsys, path, *extra):\n    wordfreq.main([path, *extra])\n    return capsys.readouterr().out\n\n\ndef test_basic_counting(tmp_path, capsys):\n    path = write_text(tmp_path, \"apple banana apple cherry banana apple\")\n    out = run_main(capsys, path)\n    assert out == \"apple: 3\\nbanana: 2\\ncherry: 1\\n\"\n\n\ndef test_top_flag_limits_output(tmp_path, capsys):\n    path = write_text(tmp_path, \"a a b b c c d d e e\")\n    out = run_main(capsys, path, \"--top\", \"3\")\n    assert out == \"a: 2\\nb: 2\\nc: 2\\n\"\n\n\ndef test_default_top_is_10(tmp_path, capsys):\n    words = \" \".join(f\"w{i}\" for i in range(12))\n    path = write_text(tmp_path, words)\n    out = run_main(capsys, path)\n    lines = out.splitlines()\n    assert len(lines) == 10\n    assert lines[0] == \"w0: 1\"\n\n\ndef test_case_insensitivity(tmp_path, capsys):\n    path = write_text(tmp_path, \"Apple apple APPLE banana\")\n    out = run_main(capsys, path)\n    assert out == \"apple: 3\\nbanana: 1\\n\"\n\n\ndef test_tie_breaking_alphabetical(tmp_path, capsys):\n    # All counts equal: output must be alphabetical.\n    path = write_text(tmp_path, \"zeta alpha zeta alpha mid mid\")\n    out = run_main(capsys, path)\n    assert out == \"alpha: 2\\nmid: 2\\nzeta: 2\\n\"\n\n\ndef test_tie_breaking_mixed_counts(tmp_path, capsys):\n    # Counts: b=2, a=2, c=1 -> b and a tie, so a comes before b.\n    path = write_text(tmp_path, \"b a b a c\")\n    out = run_main(capsys, path)\n    assert out == \"a: 2\\nb: 2\\nc: 1\\n\"\n\n\ndef test_non_alphanumeric_splitting(tmp_path, capsys):\n    path = write_text(tmp_path, \"don't stop--now! 123 123\")\n    out = run_main(capsys, path)\n    assert out == \"123: 2\\ndon: 1\\nnow: 1\\nstop: 1\\nt: 1\\n\"\n\n\ndef test_empty_file_prints_nothing(tmp_path, capsys):\n    path = write_text(tmp_path, \"!!! ... ???\")\n    out = run_main(capsys, path)\n    assert out == \"\"\n\n\ndef test_cli_subprocess(tmp_path, capsys):\n    path = write_text(tmp_path, \"x x y y z z w\")\n    result = subprocess.run(\n        [sys.executable, \"wordfreq.py\", path, \"--top\", \"3\"],\n        capture_output=True,\n        text=True,\n        check=True,\n    )\n    assert result.stdout == \"x: 2\\ny: 2\\nz: 2\\n\"\n",
+        "wordfreq.py": "#!/usr/bin/env python3\n\"\"\"Print the most common words in a text file.\n\nUsage:\n    python wordfreq.py <file> [--top N]\n\nWords are case-insensitive sequences of alphanumeric characters; any\nnon-alphanumeric character acts as a separator. Output is one line per\nword in the format ``word: count``, sorted by count descending with\nties broken alphabetically (ascending).\n\"\"\"\n\nimport argparse\nimport re\nimport sys\nfrom collections import Counter\n\n_WORD_RE = re.compile(r\"[0-9A-Za-z]+\")\n\n\ndef extract_words(text):\n    \"\"\"Return the lowercase alphanumeric words found in *text*.\"\"\"\n    return [token.lower() for token in _WORD_RE.findall(text) if token]\n\n\ndef word_frequencies(text):\n    \"\"\"Return a Counter of word frequencies for *text*.\"\"\"\n    return Counter(extract_words(text))\n\n\ndef top_words(counter, n):\n    \"\"\"Return the top *n* (word, count) pairs.\n\n    Sorted by count descending, ties broken by word ascending.\n    \"\"\"\n    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:n]\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(\n        description=\"Print the most common words in a text file.\"\n    )\n    parser.add_argument(\"path\", help=\"path to the text file to analyze\")\n    parser.add_argument(\n        \"--top\",\n        type=int,\n        default=10,\n        metavar=\"N\",\n        help=\"number of words to print (default: 10)\",\n    )\n    args = parser.parse_args(argv)\n\n    try:\n        with open(args.path, \"r\", encoding=\"utf-8\") as handle:\n            text = handle.read()\n    except OSError as exc:\n        parser.error(f\"cannot read {args.path!r}: {exc}\")\n\n    for word, count in top_words(word_frequencies(text), args.top):\n        print(f\"{word}: {count}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+      }
+    }
+  ]
+}
