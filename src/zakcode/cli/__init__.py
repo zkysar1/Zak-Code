@@ -979,6 +979,28 @@ def _restart_kick(
     return _unattended_continuation(agent, restarted=restarted, stop_reason=None)
 
 
+def _restart_now(done: Any, mux: Any) -> bool:
+    """Whether the turn that just ended hands the session to the new build BEFORE the REPL
+    consults any input door (ADR-0101, amended 2026-09-26).
+
+    The loop ends a turn with stop reason ``restart`` for one reason: a newer build is
+    installed and it chose this boundary for the exec. The idle wait that used to follow
+    served whatever already waited at a door first — a due wake-up, a background command's
+    exit note — because those are polled every 0.3 s while the install probe fires every
+    5 s. The model then ran one more turn on the build it was leaving, reached the same
+    boundary, and restarted again: measured 2026-09-26 on two Bodies, three extra turns of
+    361–488 s each, one of them opened by a wake-up whose premise was hours stale.
+
+    A typed-ahead line is the one door still served first: it lives only in this process's
+    queue and would die with the exec. Every other door persists — the wake-up on the
+    session, a say in its file, an exit note on the task record — and reaches the fresh
+    process through its own doors.
+    """
+    if getattr(done, "stop_reason", None) != "restart":
+        return False
+    return bool(mux.queue.empty())
+
+
 def _continue_after_collapse(
     console: Console, agent: Any, mux: _InputMux, done: Any, kicks: int
 ) -> int:
@@ -3196,6 +3218,12 @@ def chat(
             # turn, in-process only — it never gated or slowed the turn that just ran.
             _maybe_render_status_line(console, agent)
             kicks = _continue_after_collapse(console, agent, mux, renderer.last_done, kicks)
+            if _restart_now(renderer.last_done, mux):
+                # The loop ended THIS turn for the restart (ADR-0101): take it here, before
+                # any door is consulted — the idle wait would serve a due wake-up or an exit
+                # note first and run one more turn on the build being left behind.
+                _restart_into_new_build(console, agent)
+                continue  # reached only when the exec failed or nothing changed — keep serving
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue
