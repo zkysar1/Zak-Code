@@ -20,8 +20,16 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from zakcode.agent import recipe
 from zakcode.agent.loop import _SCOPE_NUDGE, AgentLoop
-from zakcode.agent.recipe import RecipeCursor, _suite_run_is_scoped
+from zakcode.agent.recipe import (
+    RecipeCursor,
+    _selected_test_files,
+    _suite_run_is_scoped,
+    workspace_test_files,
+)
 from zakcode.config import PermissionTier
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -285,6 +293,109 @@ def test_the_unscoped_run_the_rail_asks_for_ends_the_turn(tmp_path: Path) -> Non
         _bash("uv run --no-sync pytest -q"),
         _text(DONE),
     )
+    loop = _loop(tmp_path, provider)
+    asyncio.run(loop.arun_turn("add three helpers to the text tools"))
+    assert sum(_SCOPE_NUDGE in r for r in _rails(loop)) == 1
+
+
+# ── the census: a file is not a subset when it is the whole suite (amended 2026-09-26) ──
+#
+# Measured on a 19-task x 3-run campaign: 18 of the rail's 21 firings were on a workspace with
+# ONE test file, so `pytest tests/test_x.py` had run the whole suite and the rail asked for a
+# re-run of the same file. The cursor now reads a census of the workspace's test files (injected
+# here; the loop hands it `workspace_test_files`) and counts a file selector that names every one
+# of them as unscoped. Anything the census cannot settle leaves the rail asking, as before.
+
+
+def test_a_file_selector_is_the_files_it_names_and_a_filter_is_not() -> None:
+    assert _selected_test_files("pytest tests/test_text_tools.py") == {"test_text_tools.py"}
+    assert _selected_test_files(FIELD) == {"test_text_tools.py"}
+    both = _selected_test_files("pytest tests/test_a.py tests/test_b.py")
+    assert both == {"test_a.py", "test_b.py"}
+    # A node id or a filter runs PART of a file: no count of files can answer for it.
+    assert _selected_test_files("pytest tests/test_a.py::test_x") is None
+    assert _selected_test_files("pytest tests/test_a.py -k slow") is None
+    # An unscoped run names no files at all.
+    assert _selected_test_files("pytest -q") == frozenset()
+
+
+def test_the_census_lists_test_files_and_skips_dependency_trees(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "test_hidden.py").write_text("", encoding="utf-8")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "a.test.js").write_text("", encoding="utf-8")
+    assert workspace_test_files(tmp_path) == {"tests/test_a.py"}
+    assert workspace_test_files(None) is None
+
+
+def test_the_census_is_unknown_past_its_entry_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for i in range(12):
+        (tmp_path / f"f{i}.txt").write_text("", encoding="utf-8")
+    monkeypatch.setattr(recipe, "_CENSUS_ENTRY_CAP", 10)
+    assert workspace_test_files(tmp_path) is None
+
+
+def test_a_run_scoped_to_the_only_test_file_ran_the_whole_suite() -> None:
+    c = RecipeCursor(enabled=True, test_file_census=lambda: {"tests/test_text_tools.py"})
+    _wrote(c, "solver.py")
+    _run(c, FIELD, GREEN)
+    assert not c.needs_verification()
+    assert not c.suite_scoped_only  # the file WAS the suite
+
+
+def test_a_run_scoped_to_one_of_two_test_files_is_still_scoped() -> None:
+    census = {"tests/test_text_tools.py", "tests/test_other.py"}
+    c = RecipeCursor(enabled=True, test_file_census=lambda: census)
+    _wrote(c, "solver.py")
+    _run(c, FIELD, GREEN)
+    assert c.suite_scoped_only
+
+
+def test_an_unknown_empty_or_ambiguous_census_leaves_the_rail_asking() -> None:
+    readings: list[frozenset[str] | None] = [
+        None,  # the walk gave up or the root was unreadable
+        frozenset(),  # no test files found: nothing to compare against
+        frozenset({"unit/test_text_tools.py", "e2e/test_text_tools.py"}),  # which one ran?
+    ]
+    for reading in readings:
+        c = RecipeCursor(enabled=True, test_file_census=lambda reading=reading: reading)
+        _wrote(c, "solver.py")
+        _run(c, FIELD, GREEN)
+        assert c.suite_scoped_only, reading
+    c = RecipeCursor(enabled=True)  # no census at all: exactly the pre-amendment behavior
+    _wrote(c, "solver.py")
+    _run(c, FIELD, GREEN)
+    assert c.suite_scoped_only
+
+
+def test_a_filter_inside_the_only_test_file_still_narrows() -> None:
+    c = RecipeCursor(enabled=True, test_file_census=lambda: {"tests/test_text_tools.py"})
+    _wrote(c, "solver.py")
+    _run(c, "pytest tests/test_text_tools.py -k truncate", GREEN)
+    assert c.suite_scoped_only
+
+
+def test_the_loop_does_not_ask_when_the_scoped_file_is_the_only_test(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_text_tools.py").write_text("def test_x(): pass\n", encoding="utf-8")
+    provider = _Sequence(_write_call(), _bash(FIELD), _text(DONE))
+    loop = _loop(tmp_path, provider)
+    asyncio.run(loop.arun_turn("add three helpers to the text tools"))
+    # Same non-hollow shape as the whole-suite test above: a firing would re-prompt.
+    assert provider.calls == 3
+    assert not any(_SCOPE_NUDGE in r for r in _rails(loop))
+
+
+def test_the_loop_still_asks_when_the_workspace_holds_another_test_file(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_text_tools.py").write_text("def test_x(): pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_other.py").write_text("def test_y(): pass\n", encoding="utf-8")
+    provider = _Sequence(_write_call(), _bash(FIELD), _text(DONE), _text(DONE))
     loop = _loop(tmp_path, provider)
     asyncio.run(loop.arun_turn("add three helpers to the text tools"))
     assert sum(_SCOPE_NUDGE in r for r in _rails(loop)) == 1

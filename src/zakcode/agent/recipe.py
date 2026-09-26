@@ -30,6 +30,7 @@ import re
 import shlex
 import shutil
 import sys
+from collections.abc import Callable, Collection
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
@@ -425,6 +426,79 @@ def _suite_run_is_scoped(command: str) -> bool:
     return False
 
 
+def _selected_test_files(command: str) -> frozenset[str] | None:
+    """The test FILES a scoped runner command names, as lowercased basenames — or ``None``
+    when it narrows by something a file census cannot answer for: a ``::`` node id or a
+    narrowing flag runs PART of a file, and no count of files says what part.
+
+    Same walk as :func:`_suite_run_is_scoped` (runner segments only), so the two agree on
+    what a selector is; this one collects where that one returns.
+    """
+    files: set[str] = set()
+    for seg in _segments(command):
+        if not seg or not _runs_test_suite(" ".join(seg)):
+            continue
+        for raw in seg:
+            token = raw.strip().strip("'\"")
+            if not token:
+                continue
+            if "::" in token:
+                return None
+            low = token.lower()
+            if low in _SCOPE_FLAGS or low.split("=", 1)[0] in _SCOPE_FLAGS:
+                return None
+            if not token.startswith("-") and os.path.splitext(low)[1] in _TEST_FILE_EXTS:
+                files.add(_basename_any(token).lower())
+    return frozenset(files)
+
+
+#: Filenames a recognised runner collects as TEST files: pytest's ``test_*.py`` / ``*_test.py``,
+#: the JS runners' ``*.test.*`` / ``*.spec.*``, go's ``*_test.go``, rspec's ``*_spec.rb``.
+_TEST_FILE_NAME_RE = re.compile(
+    r"^(?:test_.*\.py|.*_test\.py|.*\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs)|.*_test\.go"
+    r"|.*_spec\.rb)$",
+    re.IGNORECASE,
+)
+#: Directories the census never enters: dependency trees and build output hold thousands of
+#: files and no test the project itself would run. Hidden directories are skipped by name.
+_CENSUS_SKIP_DIRS = frozenset(
+    {"node_modules", "venv", "__pycache__", "build", "dist", "site-packages", "target"}
+)
+#: Directory entries the census may visit before it stops and reports "unknown" — a monorepo
+#: is not worth a walk on every green run, and an unknown census leaves the rail asking.
+_CENSUS_ENTRY_CAP = 5000
+
+
+def workspace_test_files(root: str | os.PathLike[str] | None) -> frozenset[str] | None:
+    """The test files a runner would collect under ``root``, as ``/``-joined paths relative
+    to it — or ``None`` when the reading cannot be trusted: no root, an unreadable one, or a
+    tree past :data:`_CENSUS_ENTRY_CAP` entries (ADR-0141, amended 2026-09-26).
+
+    The loop hands this to :class:`RecipeCursor` as its ``test_file_census`` so the cursor
+    stays a pure function of the call log plus one injected reading; tests inject a census
+    of their own instead of a filesystem.
+    """
+    if root is None:
+        return None
+    found: set[str] = set()
+    visited = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(
+                d for d in dirnames if not d.startswith(".") and d not in _CENSUS_SKIP_DIRS
+            )
+            visited += len(dirnames) + len(filenames)
+            if visited > _CENSUS_ENTRY_CAP:
+                return None
+            for name in filenames:
+                if _TEST_FILE_NAME_RE.match(name):
+                    rel = os.path.relpath(os.path.join(dirpath, name), root)
+                    found.add(rel.replace(os.sep, "/"))
+    except OSError:
+        return None
+    return frozenset(found)
+
+
 def _piped_suite_output_is_green(output: str) -> bool:
     """Read a piped run's verdict from its TEXT, since its exit status is not the runner's.
 
@@ -673,11 +747,19 @@ class RecipeCursor:
     """Per-turn 'verify what you wrote before finishing' gate (see the module docstring)."""
 
     def __init__(
-        self, *, enabled: bool, attempt_cap: int = 3, acceptance: str | None = None
+        self,
+        *,
+        enabled: bool,
+        attempt_cap: int = 3,
+        acceptance: str | None = None,
+        test_file_census: Callable[[], Collection[str] | None] | None = None,
     ) -> None:
         self.enabled = enabled
         self.attempt_cap = max(0, attempt_cap)
         self.acceptance = acceptance  # required substring in the run output, or None
+        #: ADR-0141 (amended 2026-09-26): the test files the workspace holds, read on demand —
+        #: a run "scoped" to every one of them ran the whole suite. ``None`` = no census.
+        self._test_file_census = test_file_census
         self.wrote_runnable = False  # a runnable script was created/edited this turn
         self.nudges = 0  # verification attempts spent (nudges + harness runs) toward the cap
         self._targets: set[str] = set()  # basenames of runnable scripts written this turn
@@ -814,8 +896,34 @@ class RecipeCursor:
                     and _suite_run_is_green(command, result.output or "")
                 ):
                     self._suite_verified = True
-                    if not _suite_run_is_scoped(command):
+                    if not _suite_run_is_scoped(command) or self._selection_is_the_suite(command):
                         self._suite_unscoped = True
+
+    def _selection_is_the_suite(self, command: str) -> bool:
+        """Whether a run that narrowed itself to test FILES named every test file the workspace
+        holds — so the narrowing was the spelling of the command, not its scope.
+
+        ADR-0141, amended 2026-09-26. Measured on a 19-task campaign: 18 of the rail's 21
+        firings were on a workspace with ONE test file — the one just written, or the fixture's
+        only one — so ``pytest tests/test_x.py`` HAD run the whole suite and the unscoped run
+        the rail asked for re-ran the same file. Consulted only for a scoped green run, so the
+        census is read once per such run. Everything the census cannot settle leaves the rail
+        asking: no census, an unknown (``None``) or empty reading, a node id or narrowing flag
+        (part of a file), or two directories sharing a test basename (a name cannot say which
+        of them ran).
+        """
+        if self._test_file_census is None:
+            return False
+        selected = _selected_test_files(command)
+        if not selected:
+            return False
+        census = self._test_file_census()
+        if not census:
+            return False
+        names = [_basename_any(path).lower() for path in census]
+        if len(set(names)) != len(names):
+            return False
+        return set(names) <= selected
 
     @property
     def suite_scoped_only(self) -> bool:

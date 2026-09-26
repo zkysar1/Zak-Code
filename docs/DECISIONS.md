@@ -6239,6 +6239,21 @@ suite run; the cost it prevents is a regression that reaches CI wearing a green 
 incomplete in the same safe direction as ADR-0140: `go test ./pkg/foo` narrows to a package and
 is not detected, because no extension appears.
 
+**Amended 2026-09-26 (a file is not a subset when it is the whole suite).** Measured on a
+19-task x 3-run campaign on the pod: the rail fired 21 times, and in 18 of them the workspace
+held exactly ONE test file — the one the model had just written, or the fixture's only one — so
+`pytest tests/test_x.py` had run the entire suite, and the unscoped run the rail asked for re-ran
+the same file (10 of the 11 readable re-runs green, none red; the other three firings were real
+narrowings on a two-file workspace). One model call and one suite run per firing, about 4% of the
+campaign's calls, spent on a premise that was false. A test FILE selector now counts as unscoped
+when the files it names are every test file the workspace holds: the loop hands the cursor a
+census callable (`workspace_test_files`, a bounded walk of the workspace root that skips hidden,
+dependency and build directories and reports "unknown" past 5000 entries), and the cursor reads
+it only when a scoped green run is recorded with file selectors and no `::` node id or narrowing
+flag. An unknown, empty, or ambiguous census (two directories sharing a test basename) leaves the
+rail exactly as it was: it asks. The cursor is still a pure function of the call log plus that one
+injected reading, so the tests inject the census instead of a filesystem.
+
 ## ADR-0142: A benchmark that did not run must not report success
 
 **Context.** `agent-bench` is the only instrument in this repo that measures the agent against

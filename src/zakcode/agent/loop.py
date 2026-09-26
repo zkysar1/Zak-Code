@@ -120,6 +120,7 @@ from zakcode.agent.recipe import (
     _runs_test_suite,  # ADR-0138: the same classifier the recipe gate credits a suite by
     extract_acceptance,
     resolve_run_command,
+    workspace_test_files,
 )
 from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
 from zakcode.agent.trace import TurnTrace
@@ -7407,6 +7408,9 @@ class AgentLoop:
             # Always extract a stated expected-output literal — high-precision (returns None
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
+            # ADR-0141 (amended): a run "scoped" to every test file the workspace holds ran
+            # the whole suite. Read on demand, only when a scoped green run is recorded.
+            test_file_census=lambda: workspace_test_files(self.workspace_root),
         )
         # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
         # this turn actually changes code, then requires the project's checks to pass before
@@ -9011,6 +9015,9 @@ class AgentLoop:
             # Always extract a stated expected-output literal — high-precision (returns None
             # on ANY ambiguity), so always-on can never over-gate a turn.
             acceptance=extract_acceptance(user_text),
+            # ADR-0141 (amended): a run "scoped" to every test file the workspace holds ran
+            # the whole suite. Read on demand, only when a scoped green run is recorded.
+            test_file_census=lambda: workspace_test_files(self.workspace_root),
         )
         # Project-verifier gate (R1): inert unless a verify command is configured; arms only when
         # this turn actually changes code, then requires the project's checks to pass before
