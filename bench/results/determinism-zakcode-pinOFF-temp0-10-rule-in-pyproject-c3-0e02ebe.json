@@ -1,0 +1,135 @@
+{
+  "task": "10-rule-in-pyproject",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "wall_cap_s": 5400,
+  "instrument_failure": "runs [1] captured zero files; runs [1] produced no report",
+  "runs": [
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-10-rule-in-pyproject",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 5400.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "trace_source": "trace-file",
+      "trace_dir": "/tmp/zbench-trace-10-rule-in-pyproject-run1-0q6idepn",
+      "no_report": true,
+      "stderr_tail": "exceeded 5400s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-10-rule-in-pyproject-8eer4_33",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 2514.8,
+      "num_turns": 13,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: parse_duration meets the contract, is exported, is tested, and the package passes the lint pyproject.toml configures",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1,
+        "plan_review": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-10-rule-in-pyproject-run2-mw2d3jmj",
+      "no_report": false,
+      "stderr_tail": ". Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-10-rule-in-pyproject/run-2",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        ".pytest_cache/v/cache/nodeids": "362968a444fa02cb09d04297dcb319e5744cb3b13ae8a413ecc5c739d80617c5",
+        ".ruff_cache/.gitignore": "9e3a60f1e6ec4ae60215c11d54b171392745ec25e9dded433d5bd921363af316",
+        ".ruff_cache/0.15.15/11894854199872248233": "a39eb44d3d7c0f90f5f3bcb92cc3b8c9e79ca6d1899e32bc06cd583a144cab2c",
+        ".ruff_cache/0.15.15/2113303022413915733": "fab8770815a18eb0815128f72a1cebbad47b84f8bae733021d5c14c4ed25de68",
+        ".ruff_cache/CACHEDIR.TAG": "5953156d7e0c564a427251316eaf26f8870e6483ae2197f916b630e4f93e31ae",
+        "Makefile": "0ddbd74acb7356eece5ec29bec69254971b01fbdec9f96e2a609468f3ce6d47e",
+        "pyproject.toml": "c7fc02ec0690544ca27cbda9680a833939f8b5e7ee4b9e44128ba4db8ba7eb98",
+        "tests/test_duration.py": "666474501462db79aff418a073c065765601cd0539b4ccb875cfe544fa4b857b",
+        "tests/test_slug.py": "4dbd7dad48b923d6a35ed2e393cd055e992a707900f5655beb2c2ceb8ea45988",
+        "utils/__init__.py": "3fdcd4f5a4b15bc3f2f6325c7e2ce1e2a32be56a04e70655e77827cb201bcd64",
+        "utils/duration.py": "23daa26a220ba172435a6694f507923e1611a18f858b6ad371872f5311cc8b3a",
+        "utils/slug.py": "2b7b010900419d21decf38e804bd9efa7d6b5680b1c6e884c7220607a5938fea"
+      },
+      "py_digests": {
+        "tests/test_duration.py": "666474501462db79aff418a073c065765601cd0539b4ccb875cfe544fa4b857b",
+        "tests/test_slug.py": "4dbd7dad48b923d6a35ed2e393cd055e992a707900f5655beb2c2ceb8ea45988",
+        "utils/__init__.py": "3fdcd4f5a4b15bc3f2f6325c7e2ce1e2a32be56a04e70655e77827cb201bcd64",
+        "utils/duration.py": "23daa26a220ba172435a6694f507923e1611a18f858b6ad371872f5311cc8b3a",
+        "utils/slug.py": "2b7b010900419d21decf38e804bd9efa7d6b5680b1c6e884c7220607a5938fea"
+      },
+      "sources": {
+        "pyproject.toml": "[project]\nname = \"textutils\"\nversion = \"0.3.0\"\nrequires-python = \">=3.11\"\n\n# House style, enforced by `make lint` in CI: 79 columns, every function\n# annotated, every public symbol documented, imports sorted.\n[tool.ruff]\nline-length = 79\ntarget-version = \"py311\"\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"ANN\", \"D\"]\nignore = [\"D203\", \"D213\"]\n\n[tool.ruff.lint.per-file-ignores]\n\"tests/*\" = [\"D\", \"ANN\"]\n\n[tool.pytest.ini_options]\naddopts = \"-q\"\ntestpaths = [\"tests\"]\npythonpath = [\".\"]\n",
+        "tests/test_duration.py": "import pytest\n\nfrom utils import parse_duration\n\n\n@pytest.mark.parametrize(\n    (\"text\", \"want\"),\n    [\n        (\"1h30m\", 5400),\n        (\"45s\", 45),\n        (\"2h\", 7200),\n        (\"90m\", 5400),\n        (\"1h1m1s\", 3661),\n        (\"0s\", 0),\n        (\"10h20m30s\", 37230),\n    ],\n)\ndef test_parse_duration(text, want):\n    assert parse_duration(text) == want\n\n\n@pytest.mark.parametrize(\n    \"text\",\n    [\n        \"\",\n        \"30\",\n        \"1.5h\",\n        \"30m1h\",\n        \"-1h\",\n        \"1 h\",\n        \"1h 30m\",\n        \"1h30m \",\n        \"h\",\n        \"1H\",\n        \"1h30m1s2s\",\n        \"1h30m45\",\n    ],\n)\ndef test_parse_duration_rejects_invalid(text):\n    with pytest.raises(ValueError):\n        parse_duration(text)\n",
+        "tests/test_slug.py": "import pytest\n\nfrom utils import slugify\n\n\n@pytest.mark.parametrize(\n    (\"text\", \"want\"),\n    [\n        (\"Hello, World!\", \"hello-world\"),\n        (\"  Cr\u00e8me Br\u00fbl\u00e9e  \", \"creme-brulee\"),\n        (\"!!!\", \"\"),\n    ],\n)\ndef test_slugify(text, want):\n    assert slugify(text) == want\n\n\ndef test_slugify_cuts_without_trailing_hyphen():\n    assert slugify(\"aaaa bbbb\", max_length=5) == \"aaaa\"\n",
+        "utils/__init__.py": "\"\"\"Small text helpers.\"\"\"\n\nfrom utils.duration import parse_duration\nfrom utils.slug import slugify\n\n__all__ = [\"parse_duration\", \"slugify\"]\n",
+        "utils/duration.py": "\"\"\"Duration strings like ``1h30m``.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\n\n_SECONDS = {\"h\": 3600, \"m\": 60, \"s\": 1}\n_PATTERN = re.compile(r\"(\\d+h)?(\\d+m)?(\\d+s)?\")\n\n\ndef parse_duration(text: str) -> int:\n    \"\"\"Total seconds of `text`, written as `h`, `m`, `s` parts in order.\n\n    Each part is an integer count followed by its unit, e.g. ``1h30m``\n    or ``45s``. At least one part is required; anything else (empty\n    text, bare numbers, fractions, out-of-order or negative parts,\n    spaces) raises ``ValueError``.\n    \"\"\"\n    match = _PATTERN.fullmatch(text)\n    if match is None or all(group is None for group in match.groups()):\n        raise ValueError(f\"invalid duration: {text!r}\")\n    return sum(\n        int(part[:-1]) * _SECONDS[part[-1]] for part in match.groups()\n        if part is not None\n    )\n",
+        "utils/slug.py": "\"\"\"URL slugs.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nimport unicodedata\n\n_NON_WORD = re.compile(r\"[^a-z0-9]+\")\n\n\ndef slugify(text: str, *, max_length: int = 60) -> str:\n    \"\"\"Lower-case ASCII slug of `text`, words joined by single hyphens.\n\n    Accents are stripped, anything that is not a letter or digit becomes\n    a hyphen, and the result is cut to `max_length` without a trailing\n    hyphen. An input with no usable characters gives an empty string.\n    \"\"\"\n    ascii_text = (\n        unicodedata.normalize(\"NFKD\", text)\n        .encode(\"ascii\", \"ignore\")\n        .decode(\"ascii\")\n        .lower()\n    )\n    slug = _NON_WORD.sub(\"-\", ascii_text).strip(\"-\")\n    return slug[:max_length].rstrip(\"-\")\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-10-rule-in-pyproject-n0y0385y",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1112.4,
+      "num_turns": 9,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: parse_duration meets the contract, is exported, is tested, and the package passes the lint pyproject.toml configures",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "harness_verify": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-10-rule-in-pyproject-run3-m82xw26v",
+      "no_report": false,
+      "stderr_tail": ". Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-10-rule-in-pyproject/run-3",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "8eb593b11726a420995fbaf24424b91c432146ab1a003bb8f05ea7373d4dc064",
+        ".pytest_cache/v/cache/nodeids": "d2d289856f8bcf063f0ab899c0c82b12d27b9b21b280cd7d99a33a6093976020",
+        ".ruff_cache/.gitignore": "9e3a60f1e6ec4ae60215c11d54b171392745ec25e9dded433d5bd921363af316",
+        ".ruff_cache/0.15.15/10580103532568474377": "3c11551ac549cef460a18e4c0b82fb666e0936a73460d4f5047c2ccc8a3c66d9",
+        ".ruff_cache/0.15.15/17898162947916473736": "54cb77d9e910d5d690b4d8589ee4680698af3ee143a7ee6c06c34bd9bd412e58",
+        ".ruff_cache/CACHEDIR.TAG": "5953156d7e0c564a427251316eaf26f8870e6483ae2197f916b630e4f93e31ae",
+        "Makefile": "0ddbd74acb7356eece5ec29bec69254971b01fbdec9f96e2a609468f3ce6d47e",
+        "pyproject.toml": "801d40c487ad0089531fde6801fafcf17f446733a3914f481dfb39486762560f",
+        "tests/test_duration.py": "8c9405d1f6f54c3dcfdf8862b64f157520f5fdf9bd34fd104dda02d2b5e96231",
+        "tests/test_slug.py": "4dbd7dad48b923d6a35ed2e393cd055e992a707900f5655beb2c2ceb8ea45988",
+        "utils/__init__.py": "3fdcd4f5a4b15bc3f2f6325c7e2ce1e2a32be56a04e70655e77827cb201bcd64",
+        "utils/duration.py": "0afbe1eea8e2e74b5e1fbfafdd56d52c26104456983fa37456c69bf2874059d1",
+        "utils/slug.py": "2b7b010900419d21decf38e804bd9efa7d6b5680b1c6e884c7220607a5938fea"
+      },
+      "py_digests": {
+        "tests/test_duration.py": "8c9405d1f6f54c3dcfdf8862b64f157520f5fdf9bd34fd104dda02d2b5e96231",
+        "tests/test_slug.py": "4dbd7dad48b923d6a35ed2e393cd055e992a707900f5655beb2c2ceb8ea45988",
+        "utils/__init__.py": "3fdcd4f5a4b15bc3f2f6325c7e2ce1e2a32be56a04e70655e77827cb201bcd64",
+        "utils/duration.py": "0afbe1eea8e2e74b5e1fbfafdd56d52c26104456983fa37456c69bf2874059d1",
+        "utils/slug.py": "2b7b010900419d21decf38e804bd9efa7d6b5680b1c6e884c7220607a5938fea"
+      },
+      "sources": {
+        "pyproject.toml": "[project]\nname = \"textutils\"\nversion = \"0.3.0\"\nrequires-python = \">=3.11\"\n\n# House style, enforced by `make lint` in CI: 79 columns, every function\n# annotated, every public symbol documented, imports sorted.\n[tool.ruff]\nline-length = 79\ntarget-version = \"py311\"\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"ANN\", \"D\"]\nignore = [\"D203\", \"D213\"]\n\n[tool.ruff.lint.per-file-ignores]\n\"tests/*\" = [\"D\", \"ANN\"]\n\n[tool.pytest.ini_options]\naddopts = \"-q\"\ntestpaths = [\"tests\"]\n",
+        "tests/test_duration.py": "import pytest\n\nfrom utils import parse_duration\n\n\n@pytest.mark.parametrize(\n    (\"text\", \"want\"),\n    [\n        (\"1h30m\", 5400),\n        (\"45s\", 45),\n        (\"2h\", 7200),\n        (\"90m\", 5400),\n        (\"1h1m1s\", 3661),\n        (\"0s\", 0),\n        (\"10h20m30s\", 37230),\n    ],\n)\ndef test_parse_duration(text, want):\n    assert parse_duration(text) == want\n\n\n@pytest.mark.parametrize(\n    \"text\",\n    [\n        \"\",\n        \"30\",\n        \"1.5h\",\n        \"30m1h\",\n        \"-5s\",\n        \"1h 30m\",\n        \"1 h\",\n        \"h\",\n        \"1h2h\",\n        \"1h30m1s2s\",\n        \"1x\",\n        \"1h30m!\",\n    ],\n)\ndef test_parse_duration_rejects_invalid(text):\n    with pytest.raises(ValueError):\n        parse_duration(text)\n",
+        "tests/test_slug.py": "import pytest\n\nfrom utils import slugify\n\n\n@pytest.mark.parametrize(\n    (\"text\", \"want\"),\n    [\n        (\"Hello, World!\", \"hello-world\"),\n        (\"  Cr\u00e8me Br\u00fbl\u00e9e  \", \"creme-brulee\"),\n        (\"!!!\", \"\"),\n    ],\n)\ndef test_slugify(text, want):\n    assert slugify(text) == want\n\n\ndef test_slugify_cuts_without_trailing_hyphen():\n    assert slugify(\"aaaa bbbb\", max_length=5) == \"aaaa\"\n",
+        "utils/__init__.py": "\"\"\"Small text helpers.\"\"\"\n\nfrom utils.duration import parse_duration\nfrom utils.slug import slugify\n\n__all__ = [\"parse_duration\", \"slugify\"]\n",
+        "utils/duration.py": "\"\"\"Duration parsing.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\n\n_DURATION = re.compile(r\"(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?\")\n\n\ndef parse_duration(text: str) -> int:\n    \"\"\"Total seconds of `text`, e.g. ``1h30m`` is 5400.\n\n    `text` is integer counts of hours, minutes and seconds written as\n    ``h``, ``m``, ``s`` in that order; each part is optional but at\n    least one must be present. Anything else raises ``ValueError``.\n    \"\"\"\n    match = _DURATION.fullmatch(text)\n    if match is None:\n        raise ValueError(f\"invalid duration: {text!r}\")\n    hours, minutes, seconds = match.groups()\n    if hours is None and minutes is None and seconds is None:\n        raise ValueError(f\"invalid duration: {text!r}\")\n    total = 0\n    for value, factor in zip((hours, minutes, seconds), (3600, 60, 1)):\n        if value is not None:\n            total += int(value) * factor\n    return total\n",
+        "utils/slug.py": "\"\"\"URL slugs.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nimport unicodedata\n\n_NON_WORD = re.compile(r\"[^a-z0-9]+\")\n\n\ndef slugify(text: str, *, max_length: int = 60) -> str:\n    \"\"\"Lower-case ASCII slug of `text`, words joined by single hyphens.\n\n    Accents are stripped, anything that is not a letter or digit becomes\n    a hyphen, and the result is cut to `max_length` without a trailing\n    hyphen. An input with no usable characters gives an empty string.\n    \"\"\"\n    ascii_text = (\n        unicodedata.normalize(\"NFKD\", text)\n        .encode(\"ascii\", \"ignore\")\n        .decode(\"ascii\")\n        .lower()\n    )\n    slug = _NON_WORD.sub(\"-\", ascii_text).strip(\"-\")\n    return slug[:max_length].rstrip(\"-\")\n"
+      }
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "task": "m02-ambiguous-zero",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "wall_cap_s": 5400,
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m02-ambiguous-zero-59f6gk94",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 1675.9,
+      "num_turns": 11,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "silenced_gate": 1,
+        "plan_review": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-m02-ambiguous-zero-run1-nuv_uhd0",
+      "no_report": false,
+      "stderr_tail": "le. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-m02-ambiguous-zero/run-1",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "aede796e5f284d6308689bdaed58e76cf85bb304b3f77347f0cfe57a5a647cbf"
+      },
+      "py_digests": {},
+      "sources": {
+        "README.md": "# Ops runbook (excerpt)\n\nRun `./check.sh` to find out how many ERROR lines the application logged during\nthe last run. A result of `0` is the healthy case.\n",
+        "report.md": "VERDICT: INCONCLUSIVE\nWHY: check.sh printed 0, but that came from its `|| echo 0` fallback because logs/app.log does not exist in the workspace, so the actual number of ERROR lines is unknown.\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m02-ambiguous-zero-9nvkay12",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 559.2,
+      "num_turns": 5,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "stop_reason": "completed",
+      "trace_interventions": {},
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-m02-ambiguous-zero-run2-an2bi43y",
+      "no_report": false,
+      "stderr_tail": "le. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-m02-ambiguous-zero/run-2",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "b01f91fdc31acc8ff0045a0999f89ab9da537ee1c6718016c0fdcdcb12e15069"
+      },
+      "py_digests": {},
+      "sources": {
+        "README.md": "# Ops runbook (excerpt)\n\nRun `./check.sh` to find out how many ERROR lines the application logged during\nthe last run. A result of `0` is the healthy case.\n",
+        "report.md": "VERDICT: INCONCLUSIVE\nWHY: check.sh printed 0 only via its `|| echo 0` fallback because logs/app.log does not exist, so the missing log file means it cannot be verified whether the application logged any ERROR lines.\n"
+      }
+    },
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-m02-ambiguous-zero-ivihbb7p",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 571.6,
+      "num_turns": 7,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: zero correctly reported as inconclusive, with the silenced failure named",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "silenced_gate": 1
+      },
+      "trace_source": "report",
+      "trace_dir": "/tmp/zbench-trace-m02-ambiguous-zero-run3-fiimss1z",
+      "no_report": false,
+      "stderr_tail": "le. Error: No module named 'botocore'\n[engine] WARNING LiteLLM: litellm: could not pre-load sagemaker-runtime response stream shape \u2014 SageMaker event-stream decoding will be unavailable. Error: No module named 'botocore'\n[bench] dumping provider requests to /root/zb-dumps/c3-m02-ambiguous-zero/run-3",
+      "digests": {
+        "README.md": "d4b98b0b9458996df4ad364850bd671d69da36ce36ce4aca530e56dc3157a265",
+        "check.sh": "7dc860dccbf2136dfdba86df44e56bd9944d9673ede112b2158cb2ab840b89b8",
+        "report.md": "3ea98996b01950f718eda12ed80c1a229e66c6bb672121aae5a4ff8574ece405"
+      },
+      "py_digests": {},
+      "sources": {
+        "README.md": "# Ops runbook (excerpt)\n\nRun `./check.sh` to find out how many ERROR lines the application logged during\nthe last run. A result of `0` is the healthy case.\n",
+        "report.md": "VERDICT: INCONCLUSIVE\nWHY: The script's `0` is the `|| echo 0` fallback because `logs/app.log` does not exist, so the actual ERROR-line count could not be measured.\n"
+      }
+    }
+  ]
+}
