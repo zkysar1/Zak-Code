@@ -15115,3 +15115,54 @@ out), a dedicated summarizer provider streams too, `_collect_stream` folds the e
 buffered result shape and drops tool-call deltas, a stream that fails midway is closed, and a
 summarizer that never sends a byte through a real `LiteLLMProvider` ends on the stall bound
 with the loop's three interrupt retries and every attempt's stream closed.
+
+## ADR-0252: the write read-back shows the lines the edit changed and checks the whole file
+
+Status: accepted. 2026-09-26.
+
+After every successful `Write` / `Edit` the loop appends a `[verified]` user message echoing the
+file as it now is on disk, with a `[syntax: OK|FAIL]` note for a `.py` file (write-grounding,
+Slice 1 of the Recipe Cursor). The echo is capped at 4,000 characters so one large file cannot
+take the context window. Until now the cap was applied by cutting the file at its head, and the
+syntax note was computed on the cut text.
+
+Measured over seven days of transcripts on the pod — three worker Bodies editing a large
+repository, and the determinism bench editing small ones:
+
+- Bodies: 83 frames, 56 cut at the cap. Of 62 `Edit` calls grounded, 44 (71%) got a frame that
+  did not contain the edited text: the head of a long file, which the edit did not touch, under
+  a preamble that says "this is the real, current content. Use it; do not assume what the files
+  contain".
+- Every `[syntax: FAIL]` in the week sat on a cut frame: 14 on one Body, 11 on another (one file
+  told eleven times "unterminated triple-quoted string literal (detected at line 63)"), 17 on
+  the bench. 0 of 181 whole-file `.py` frames failed. The messages are the shapes a file cut
+  mid-way produces ("'(' was never closed", "unterminated string literal", "expected '('").
+  After a FAIL the bench model's next batch was a `Read` 10 times of 17: a turn spent
+  investigating a syntax error that did not exist.
+- On the bench the cut was rare (25 of 173 frames; 4 edits hidden of 124): small files fit. The
+  defect scales with file size, which is where a coding agent spends most of its edits.
+
+Decision: two changes, one contract, no knob.
+
+1. The syntax note compiles the WHOLE on-disk file. `_read_back` returns all of it; only the
+   echo is capped, afterwards. `compile()` of a large source is milliseconds.
+2. A file longer than the cap is echoed as a window of whole lines around the line the edit
+   changed, grown one line at a time below and above until the cap is reached, with the header
+   naming the span shown (`path now on disk (lines 188-212 of 300) [syntax: OK]:`) and a marker
+   line naming each span left out (`... (truncated: lines 1-187 of 300 not shown)`). `Edit`
+   reports that line as `line` in its result data: the 1-based line of the first replacement in
+   the file as it was, exact whatever `new_string` contains, because every byte before the first
+   match is unchanged. A whole-file `Write` reports no line and keeps the head, now line-aligned
+   and with the omitted span named. A single line longer than the cap is cut and says so.
+
+The frame still says only what the harness knows: the syntax verdict is about the real file, the
+line numbers are the file's own, and "not shown" names what was left out instead of a bare
+"(truncated)" after a head that read like the whole file. When the frame is emitted does not
+change (unconditional after a write batch, `None` when nothing was written), so the loop is
+untouched.
+
+Tests, `test_grounding.py`: a valid 300-line `.py` longer than the cap reads `[syntax: OK]` and
+is still cut (the previous code fails it with a FAIL note); the window contains the edited line
+and not the head, both omitted spans are named and the header's span encloses the edit; a
+`Write` keeps the head and names what follows; a single overlong line is cut and says so.
+`test_edit_tool.py`: the result names the line of the first replacement, for a deletion too.

@@ -39,7 +39,7 @@ def test_unique_replace(tmp_path: Path) -> None:
     )
 
     assert not result.is_error
-    assert result.data == {"path": str(target.resolve()), "replacements": 1}
+    assert result.data == {"path": str(target.resolve()), "replacements": 1, "line": 1}
     assert target.read_text(encoding="utf-8") == "hello there"
     assert _temp_files(tmp_path) == []
 
@@ -58,8 +58,29 @@ def test_replace_all_multi(tmp_path: Path) -> None:
 
     assert not result.is_error
     assert result.data["replacements"] == 3
+    assert result.data["line"] == 1  # the FIRST replacement's line, with replace_all
     assert target.read_text(encoding="utf-8") == "y y y"
     assert _temp_files(tmp_path) == []
+
+
+def test_result_names_the_line_of_the_replacement(tmp_path: Path) -> None:
+    # ADR-0252: the read-back window centres on this line, so it must be the line of the
+    # FIRST match in the file as it was — exact whatever new_string contains, deletions
+    # (an empty new_string) included.
+    target = tmp_path / "d.txt"
+    target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+
+    tool = EditFileTool()
+    result = _run(
+        tool.execute(
+            {"path": "d.txt", "old_string": "three\n", "new_string": ""},
+            _ctx(tmp_path),
+        )
+    )
+
+    assert not result.is_error
+    assert result.data["line"] == 3
+    assert target.read_text(encoding="utf-8") == "one\ntwo\nfour\n"
 
 
 def test_not_found_is_error(tmp_path: Path) -> None:
