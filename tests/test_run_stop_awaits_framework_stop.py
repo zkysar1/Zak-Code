@@ -415,6 +415,66 @@ def test_the_cap_landing_between_beats_still_raises_the_mind_s_own_stop(tmp_path
     assert endings == ["duration_cap"]
 
 
+def test_a_cap_raised_mid_turn_is_named_duration_cap_when_the_mind_signs_off_inside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE measured shape (g-373-155): the clock raises the stop mid-turn, and the mind
+    runs its whole stop inside that same turn.
+
+    That turn lands back on a FINISHED stop, so ``_keep_beating()`` is already False and
+    the loop leaves through its ``while`` guard with no beat in between: the between-beats
+    check that names ``duration_cap`` never runs. Pre-fix the fall-through named the
+    ending ``stopped``. Measured on a dev vessel: the whole run was one turn, it ended
+    ``stopped``, and the host idled the vessel to its own ceiling.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    # cap 1.5 - reserve 1.0: the watcher raises ~0.5s into the run's one and only turn.
+    app, endings = _build(
+        tmp_path,
+        reserve=1.0,
+        max_duration=1.5,
+        agent_for=lambda session: _StoppingMind(session, tmp_path),
+    )
+    assert write_say(say_path(tmp_path), "/start probe")
+
+    async def scenario() -> None:
+        await asyncio.wait_for(app.state.consume_say_loop(), timeout=10)
+
+    asyncio.run(scenario())
+    # The stop was raised by the CLOCK and finished inside the turn it was raised in.
+    assert (framework_session_dir(tmp_path, AGENT) / "handoff.yaml").exists()
+    assert endings == ["duration_cap"]
+    marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert marker[-1] == "duration_cap", marker
+
+
+def test_a_run_stop_with_no_reason_on_a_capped_run_still_ends_stopped(tmp_path: Path) -> None:
+    """The other half of g-373-155: naming the clock's ending must leave a human's stop
+    alone. A ``/run/stop`` with NO reason is a stop, and a capped run whose cap is nowhere
+    near still ends ``stopped``."""
+    app, endings = _build(
+        tmp_path,
+        reserve=5.0,
+        max_duration=60.0,
+        agent_for=lambda session: _StoppingMind(session, tmp_path),
+    )
+    assert write_say(say_path(tmp_path), "/start probe")
+    mode_file = framework_session_dir(tmp_path, AGENT) / AGENT_MODE_FILENAME
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(mode_file.exists)  # the turn is running
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/run/stop")  # no body, so no reason
+            assert response.status_code == 200
+            assert response.json()["reason"] == "stopped"
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    asyncio.run(scenario())
+    assert endings == ["stopped"]
+
+
 # ── one stop window bounds EVERY turn in it ──────────────────────────────────────
 
 
