@@ -2407,6 +2407,11 @@ class AgentLoop:
         # ``signal_latched`` local (the degenerate-argument veto in _execute_tool_call);
         # folded into it each iteration so zakpick latches the deep coder. Per-turn.
         self._turn_struggle = False
+        # Consecutive write/edit calls whose arguments arrived cut off by the output limit
+        # (ADR-0081, escalation): from the second one on, the rail names a size to send per
+        # call. Reset per turn, and by any write/edit whose arguments decoded (the model
+        # adapted). Per-turn.
+        self._turn_cut_writes = 0
         # Claim-vs-action guard (ADR-0033): file-changing tool calls that actually ran this
         # turn (any executed, non-error call whose tier is not READ_ONLY). A completion that
         # reports a change while this is zero is a fabricated done. Per-turn.
@@ -5466,7 +5471,26 @@ class AgentLoop:
                 if cut_off
                 else "a quote, backslash or newline inside a string value is not escaped"
             )
-            if call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS:
+            is_write = call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS
+            cuts = 0
+            if is_write and cut_off:
+                self._turn_cut_writes += 1
+                cuts = self._turn_cut_writes
+            if cuts >= 2:
+                # The first rail said "well under the output limit" and the model sent the SAME
+                # whole-file call again (measured 2026-09-26, bench, a 27B: identical calls twice
+                # in a row, each cut at the output limit after ~30 min of decode on that pod,
+                # then the run's wall cap). "Well under" named no size, and the model had none
+                # to reach for. A second cut is evidence the first rail did not land, so this
+                # one gives a number in the unit the model already saw -- half of what was cut
+                # is under the limit by construction -- and says the whole file will never fit.
+                remedy = (
+                    f"This is call {cuts} in a row cut off at the output limit, at {len(raw)} "
+                    "characters: the whole file does not fit in one call, and sending it again "
+                    f"will cut it again. Send at most {len(raw) // 2} characters of content in "
+                    "this Write, then append the rest with Edit, each call no larger."
+                )
+            elif is_write:
                 remedy = (
                     "Write the file in pieces: call Write with the first part (keep each call "
                     "well under the output limit), then Edit to append the rest."
@@ -5481,8 +5505,17 @@ class AgentLoop:
                     f"was not executed ({len(raw)} characters; {why}). {remedy}"
                 ),
                 is_error=True,
-                data={"undecodable_arguments": True, "chars": len(raw), "cut_off": cut_off},
+                data={
+                    "undecodable_arguments": True,
+                    "chars": len(raw),
+                    "cut_off": cut_off,
+                    "consecutive_cuts": cuts,
+                },
             )
+        # A write/edit whose arguments decoded ends a run of cut-off ones: the model adapted,
+        # so a later cut starts its count afresh and gets the first rail again.
+        if call.name in _WRITE_TOOLS or call.name in _EDIT_TOOLS:
+            self._turn_cut_writes = 0
 
         # 0c. Degenerate-argument veto (ADR-0024): the completion-text repetition guard
         # deliberately skips tool-call batches ("a batch calling tools is doing work"), so
@@ -7322,6 +7355,7 @@ class AgentLoop:
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
+        self._turn_cut_writes = 0  # cut-off write/edit run (ADR-0081 escalation): per-turn
         plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
         open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
@@ -8925,6 +8959,7 @@ class AgentLoop:
         )
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
+        self._turn_cut_writes = 0  # cut-off write/edit run (ADR-0081 escalation): per-turn
         plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
         open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
