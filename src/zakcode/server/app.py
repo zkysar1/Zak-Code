@@ -2589,13 +2589,21 @@ def create_app(
         a capped run would sail past its own ceiling and keep billing for the vessel
         until that turn happened to end. Measured: a run 1050s old against a 480s cap.
 
-        This watcher only ever SIGNALS, and it signals through the interrupt the turn
-        is ALREADY watching for (`_run_turn_for_say` polls `take_interrupt` every
+        This watcher only ever SIGNALS the turn, and it signals through the interrupt the
+        turn is ALREADY watching for (`_run_turn_for_say` polls `take_interrupt` every
         0.3s). So the cancellation path is the existing one — nothing new has to
-        unwind a half-finished turn, and the loop keeps sole authority over what the
-        run's ending IS: the cancelled turn returns, the between-beats check below
-        reads the same clock and sets `duration_cap`, and the reserve is still on the
-        clock for the digest.
+        unwind a half-finished turn: the cancelled turn returns, and the reserve is still
+        on the clock for the digest.
+
+        It also NAMES the ending, at the moment the clock raises it (g-373-155). The
+        between-beats check below cannot be the only namer: a mind that signs off INSIDE
+        the raising turn leaves `_keep_beating()` False when that turn lands back, so the
+        loop leaves through its `while` guard without another beat, and the fall-through
+        named the clock's ending `stopped` — a human's stop, which the host does not end
+        the vessel on. Measured on a dev vessel: the whole run was one turn, it ended
+        `stopped`, and the vessel idled 8 minutes to its own ceiling. It names only an
+        ending nobody has named yet: a ``/run/stop`` whose window was already open keeps
+        its own reason when the cap lands inside that window.
 
         ONE STOP WINDOW BOUNDS EVERY TURN IN IT (g-373-16, measured on a live dev
         vessel). Once a framework stop is raised — by the cap or by ``/run/stop`` —
@@ -2614,6 +2622,7 @@ def create_app(
         as a non-seed run does — but the cap is a hard ceiling, so a cap with no window
         open, or with its window spent, interrupts at once, as it always has.
         """
+        nonlocal run_stop_reason
         while True:
             await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
             if not inflight:
@@ -2632,6 +2641,8 @@ def create_app(
                 _retire_unconsumed_framework_stop()
                 request_interrupt(interrupt_path(resolved_settings.workspace_root))
                 return
+        if run_stop_reason is None:
+            run_stop_reason = "duration_cap"
         await _begin_framework_stop()
         if framework_stop_until is not None:
             # The mind is now ending itself. Keep watching, but only to BOUND it: the
@@ -2670,10 +2681,10 @@ def create_app(
                 # process's own monotonic base so a wall-clock adjustment mid-run can
                 # neither shorten nor extend a paid run.
                 #
-                # This check sits BETWEEN beats and is the only thing that NAMES the
-                # ending. It is not the only thing that ENFORCES the cap: a turn in
-                # flight when the deadline passes is interrupted by the watcher above,
-                # and lands back here to be named. The half-done work that costs is
+                # This check sits BETWEEN beats and names the ending; the watcher above
+                # names it too, when it raises mid-turn (g-373-155). It is not the only
+                # thing that ENFORCES the cap: a turn in flight when the deadline passes
+                # is interrupted by the watcher above. The half-done work that costs is
                 # the work nobody comes back to — and the digest turn IS that return.
                 if turn_deadline is not None and time.monotonic() >= turn_deadline:
                     run_stop_reason = "duration_cap"
