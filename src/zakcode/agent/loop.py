@@ -5378,6 +5378,17 @@ class AgentLoop:
                 )
             else:
                 self._note("intervention", "plan resent unchanged", kind="plan_unchanged")
+        if plan_shape is not None and isinstance(block.data, dict):
+            closed = block.data.get("closed_on_outcome")
+            if isinstance(closed, int) and closed > 0:
+                # ADR-0254: the tool read step(s) sent with an outcome and no status as done.
+                # Noted beside lever N so the census can count how often a model closes a step
+                # this way instead of sending status 'done'.
+                self._note(
+                    "intervention",
+                    f"harness read {closed} outcome-bearing status-less step(s) as done",
+                    kind="plan_outcome_close",
+                )
         if (
             plan_shape is not None
             and not block.is_error

@@ -77,9 +77,11 @@ async def test_a_recorded_outcome_whose_status_never_moved_is_ADVANCED_not_raile
     # ADR-0202 this reached the unchanged rail with a "you recorded an outcome but left the status"
     # prefix, because the advance was behind a flag that a bare ToolContext defaulted OFF. The
     # advance is unconditional now, so the harness closes the step instead of describing it — and
-    # this file's rail is left with exactly one reachable hint (see _unchanged).
+    # this file's rail is left with exactly one reachable hint (see _unchanged). The pending is
+    # explicit: a step sent with an outcome and NO status closes in the call that carries it
+    # (ADR-0254), one call before this rail could see it.
     plan = [
-        {"title": "Create utils/duration.py", "outcome": "wrote the module"},
+        {"title": "Create utils/duration.py", "status": "pending", "outcome": "wrote the module"},
         {"title": "Export parse_duration"},
     ]
     ctx, _ = _ctx()

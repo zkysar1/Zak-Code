@@ -15294,3 +15294,56 @@ directory and outlives an 8 s cap yields rc 124, the file's digest, and no direc
 control; the two INSTRUMENT FAILURE messages are told apart by `cli_rc`; the runner takes the
 handed-down directory without wiping it, fails loud on a missing or relative one, and chooses as
 before when the variable is unset.
+
+## ADR-0254: an outcome on a step sent without a status closes it
+
+Status: accepted. 2026-09-26.
+
+The `update_plan` schema says two things about a step: omit `status` for pending, and set
+`outcome` when you mark the step done. A step sent with an outcome and no status says both at
+once. The builder read it as pending — the default for an omitted field — and the plan's progress
+did not move.
+
+Measured on the bench on 2026-09-26 (a 27B on the 131k pod, the plugin-conventions task, one run
+of three): the model sent no `status` on any step, 80 of 80 across 17 plan calls, and wrote an
+`outcome` on 71 of them. Its first three plan calls put outcomes on one, then three, then all four
+steps and read "Plan updated: 0/4 steps done" back each time. Only a byte-identical resend moved
+the plan: lever N (ADR-0168) advanced the current step, one step per round trip, and every edit
+to an outcome's text made the next call an update again, so the walk restarted. Eight consecutive
+responses did nothing but resend the plan, at 40 s and 15-18k prompt tokens each; the stuck rail
+fired once and the model returned to the same shape. The run finished green in 24 turns and
+2133 s, 395,946 prompt tokens in all; its two siblings took 6 turns each. The two builds that
+campaign compared carry the same `update_plan.py`, so this is the model's shape, not a change in
+the tool. Across the rest of the measured population — 332 steps in 57 runs of the previous
+campaign, 1,369 steps across three served loops over 48 hours — a status-less step carried an
+outcome once, and lever N advanced exactly that one step.
+
+Decision. The outcome is the positive statement: the model wrote what the step PRODUCED. A
+primitive step sent with an outcome and no status is built as `done`, in the call that carries it,
+and the transition is logged like any other close (ADR-0110). Only the ABSENT status closes. An
+explicit `pending` or `in_progress` beside an outcome is the model's call and stays; an unknown
+status string stays pending as before; a compound step's status is derived from its children.
+The `TodoWrite` alias always maps a status, so it is untouched. The schema's status text now says
+so in the clause the model reads: "Omit for pending; a step sent with an 'outcome' and no status
+is read as done." The receipt names what it read — "read N step(s) sent with an outcome and no
+status as done: … — an outcome means the step is finished; send status 'done' with it" — and
+carries `closed_on_outcome` in its data; the loop notes it as a `plan_outcome_close` intervention
+beside lever N's, so the census can count how often a model closes a step this way.
+
+Under this rule the measured run closes one step at its second plan call, three at its third and
+the plan at its fourth, which is where the verdict rail (ADR-0108) hands over. The fourteen
+bookkeeping responses that followed do not happen.
+
+What it does not do. It does not touch lever N: a plan resent unchanged with an explicit pending
+step that carries an outcome or evidence is still advanced on the resend, and the lever's tests
+now say `status: "pending"` where they mean it. It does not read an unknown status as anything;
+that stays the fail-open it was. It does not close a compound: the outcome on a parent is a
+summary, and its children say whether it is finished.
+
+The proof, `tests/test_plan_outcome_closes.py`: the builder reads outcome-and-no-status as done
+and leaves an explicit status, an unknown status, and a compound alone; the four-step plan sent
+with outcomes on three steps reads "3/4 steps done", names the three, logs three closes and
+carries `closed_on_outcome: 3`; the measured shape completes at the call carrying the last outcome
+and a blind resend of the finished plan is unchanged with nothing to advance; an explicit
+`in_progress` beside an outcome stays; the `TodoWrite` alias reads 0 closes; the loop notes one
+`plan_outcome_close` intervention and its receipt reads "Plan updated" twice, never "Advanced".
