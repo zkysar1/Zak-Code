@@ -145,7 +145,8 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
     and re-seeded at the start of each run, so the workspace survives the process and can be
     digested here by the same _digest_tree the reference arm uses. Identical instrument on both
     sides is the whole point: two different digest functions would make any difference between
-    the arms unattributable."""
+    the arms unattributable. Every other run gets a directory THIS arm makes and hands down
+    (ZBENCH_WORKSPACE), so the path is known even when the run is killed at the cap."""
     import os
     # KEEP_WORKSPACE is load-bearing, not convenience: run_task.py deletes the workspace on
     # success, and digesting a deleted directory yields an empty set that compares equal to any
@@ -154,6 +155,22 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
     env = dict(os.environ, ZBENCH_KEEP_WORKSPACE="1")
     if pin:
         env["ZBENCH_PIN_IDENTITY"] = os.environ.get("ZBENCH_PIN_MODE", "1")
+    # The arm makes the workspace and hands it down (ZBENCH_WORKSPACE), except under the full
+    # pin, whose constant path both sides already know. Until 2026-09-26 an unpinned run's
+    # mkdtemp path was learned only from the child's REPORT -- which a run killed at the wall
+    # cap never prints -- so every capped run digested as ZERO files, an INSTRUMENT FAILURE
+    # that refused the whole cell's verdict over the two runs that had finished (measured on
+    # two campaigns: three of three capped runs, then a run whose turn-3 Write and turn-4 Edit
+    # had succeeded before the cap), and the real workspace leaked in the temp dir (37 on one
+    # box). mkdtemp keeps the per-run suffix that the prompt's "Workspace root" line carries,
+    # so unpinned runs still vary the way basin sampling needs; only the arm now knows the path
+    # before the child runs, and it removes the directory after digesting it.
+    constant_path = pin and env["ZBENCH_PIN_IDENTITY"] != "session"
+    if constant_path:
+        ws = Path(tempfile.gettempdir()) / f"zbench-pinned-{spec['id']}"
+    else:
+        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+        env["ZBENCH_WORKSPACE"] = str(ws)
     # ZBENCH_DUMP_REQUESTS (run_task.py) writes call-NNN.json into ONE directory, so N children
     # sharing the arm's environment would overwrite each other and the diff the pre-registered
     # protocol calls for ("dump requests and diff before attributing", ADR-0157) would compare a
@@ -190,15 +207,17 @@ def one_run_zakcode(task_dir: Path, spec: dict, timeout_s: int = ZAKCODE_WALL_CA
     except (json.JSONDecodeError, ValueError):
         rep = {}
 
-    # Unpinned runs get an mkdtemp suffix, so the path must come from the REPORT, not from a
-    # constant. Guessing a constant path here would silently digest nothing.
+    # The report names the workspace too; when it is absolute and present it is the path the
+    # arm handed down (or the pinned constant), and it wins, so a child that wrote elsewhere is
+    # still digested where it wrote. A capped run prints no report, and the arm's own path
+    # stands -- that is the whole point of handing it down.
     reported = rep.get("workspace") or ""
-    ws = (Path(reported) if reported.startswith("/")
-          else Path(tempfile.gettempdir()) / f"zbench-pinned-{spec['id']}")
+    if reported.startswith("/") and Path(reported).is_dir():
+        ws = Path(reported)
     digests = _digest_tree(ws) if ws.is_dir() else {}
     sources = _capture_sources(ws, _private(spec)) if ws.is_dir() else {}
-    if not pin:
-        shutil.rmtree(ws, ignore_errors=True)  # unpinned runs leave a fresh dir each time
+    if not constant_path:
+        shutil.rmtree(ws, ignore_errors=True)  # the arm owns the run's directory: digest, then remove
     # A run that printed no report (the cap, a crash) is tallied from the checkpointed trace
     # files instead, so a timeout row can say which gates fired before the kill. A report's own
     # tally -- even an empty one, a clean run -- is never second-guessed by the file.
@@ -358,12 +377,25 @@ def main(argv: list[str]) -> int:
             print(f"\nINSTRUMENT FAILURE: run(s) {empty} captured ZERO files. An empty digest set "
                   "compares equal to an empty digest set, so a determinism verdict here would be "
                   "vacuous. Refusing to render one. Fix the capture, then re-run.")
-        if noreport:
-            print(f"\nINSTRUMENT FAILURE: run(s) {noreport} produced NO report -- the child exited "
+        # Two very different runs print no report: a child that crashed before the agent ran, and
+        # a child killed at the wall cap after running for the whole cap. Until 2026-09-26 both
+        # read as the first ("the digested files are the untouched seed") -- false for a capped
+        # run, whose workspace the arm now captures: its files are what the agent left, and its
+        # row says which gates fired. What it still lacks is a verify result, and a half-finished
+        # workspace compared against finished ones would read as a spurious divergence.
+        capped = [i for i in noreport if runs[i - 1].get("cli_rc") == 124]
+        crashed = [i for i in noreport if i not in capped]
+        if crashed:
+            print(f"\nINSTRUMENT FAILURE: run(s) {crashed} produced NO report -- the child exited "
                   "before the agent ran, so the digested files are the untouched seed. Refusing to "
                   "render an identity verdict over runs that never ran. Last stderr line of each:")
-            for i in noreport:
+            for i in crashed:
                 print(f"    run {i}: {runs[i - 1].get('stderr_tail', '').strip().splitlines()[-1:] or ['(no stderr)']}")
+        if capped:
+            print(f"\nINSTRUMENT FAILURE: run(s) {capped} outlived the wall cap and were killed before "
+                  "a report. The files each left are digested in its row and its trace names the "
+                  "gates that fired, but a half-finished workspace has no verify result and cannot "
+                  "join an identity verdict. Refusing to render one over it.")
         out = BENCH / "results" / f"determinism-{arm}-{cell}-{spec['id']}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps({"task": spec["id"], "arm": arm, "cell": cell, "n": n, "wall_cap_s": cap,

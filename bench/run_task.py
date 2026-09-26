@@ -483,20 +483,40 @@ def _drive_turn(agent: Any, prompt: str) -> Any:
 
 
 
-def run(task_dir: Path) -> int:
-    spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+def _workspace(spec: dict) -> Path:
+    """The run's workspace directory.
+
+    ``ZBENCH_WORKSPACE`` names a directory the CALLER made and owns (bench/determinism_arm.py
+    hands one down per run): the caller then knows where the run wrote even when it has to
+    kill the run at its wall cap, which is exactly when this process prints no report. It
+    must be an existing absolute path -- a relative one would resolve against this process's
+    cwd, not the caller's, and a silent mkdtemp fallback would re-create the leak it closes.
+    """
+    caller_ws = os.environ.get("ZBENCH_WORKSPACE", "").strip()
+    if caller_ws:
+        ws = Path(caller_ws)
+        if not ws.is_absolute() or not ws.is_dir():
+            raise SystemExit(
+                f"ZBENCH_WORKSPACE must name an existing absolute directory: {caller_ws!r}"
+            )
+        return ws
     if os.environ.get("ZBENCH_PIN_IDENTITY") == "session":
         # session-only: pin the uuid4 (in _build_agent), leave the workspace path varying.
-        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
-    elif os.environ.get("ZBENCH_PIN_IDENTITY"):
+        return Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+    if os.environ.get("ZBENCH_PIN_IDENTITY"):
         # A constant NAME with fresh CONTENT: reusing the directory as-is would carry the previous
         # run's files into this one, which is a far worse confound than the one being removed.
         # Serial execution only -- two parallel tasks would collide on the fixed path.
         ws = Path(tempfile.gettempdir()) / f"zbench-pinned-{spec['id']}"
         shutil.rmtree(ws, ignore_errors=True)
         ws.mkdir(parents=True)
-    else:
-        ws = Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+        return ws
+    return Path(tempfile.mkdtemp(prefix=f"zbench-{spec['id']}-"))
+
+
+def run(task_dir: Path) -> int:
+    spec = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    ws = _workspace(spec)
     seed = task_dir / "workspace"
     if seed.is_dir():
         shutil.copytree(seed, ws, dirs_exist_ok=True)
