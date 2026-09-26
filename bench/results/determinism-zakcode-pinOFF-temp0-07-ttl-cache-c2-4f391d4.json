@@ -1,0 +1,81 @@
+{
+  "task": "07-ttl-cache",
+  "arm": "zakcode",
+  "cell": "pinOFF-temp0",
+  "n": 3,
+  "wall_cap_s": 3600,
+  "instrument_failure": "runs [2, 3] captured zero files; runs [2, 3] produced no report",
+  "runs": [
+    {
+      "cli_rc": 0,
+      "workspace": "/tmp/zbench-07-ttl-cache-vqyv9m61",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 2711.2,
+      "num_turns": 18,
+      "total_cost_usd": 0.0,
+      "verify_rc": 0,
+      "verify_out": "PASS: TTL reset on update, live-only len(), expired gets do not bump recency, expired entries reclaimed before live eviction, and LRU order correct",
+      "stop_reason": "completed",
+      "trace_interventions": {
+        "plan": 1,
+        "plan_review": 1
+      },
+      "no_report": false,
+      "stderr_tail": "s/test_contract_edge_cases.py:135: SyntaxWarning: 'ellipsis' object is not callable; perhaps you missed a comma?\n  c.put(\"d\", 4)\n/tmp/zbench-07-ttl-cache-vqyv9m61/tests/test_contract_edge_cases.py:132: SyntaxWarning: 'ellipsis' object is not callable; perhaps you missed a comma?\n  assert len(c) == 0",
+      "digests": {
+        ".pytest_cache/.gitignore": "3ed731b65d06150c138e2dadb0be0697550888a6b47eb8c45ecc9adba8b8e9bd",
+        ".pytest_cache/CACHEDIR.TAG": "37dc88ef9a0abeddbe81053a6dd8fdfb13afb613045ea1eb4a5c815a74a3bde4",
+        ".pytest_cache/README.md": "73fd6fccdd802c419a6b2d983d6c3173b7da97558ac4b589edec2dfe443db9ad",
+        ".pytest_cache/v/cache/lastfailed": "a52840dd3ee30d1765f00e121a048fa5037a7b6ef8583447b9a67cce404fcca5",
+        ".pytest_cache/v/cache/nodeids": "65c2c763f366a874b7b88e159d8f5789bd99660b15346b8ed5204382d53418ea",
+        "cache.py": "6ef7736a8cbd659f1a8eb1623b6bf49bd9307e4085825943678b80e53d0b47f8",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "py_digests": {
+        "cache.py": "6ef7736a8cbd659f1a8eb1623b6bf49bd9307e4085825943678b80e53d0b47f8",
+        "tests/test_cache.py": "018b57e84b0f3947c8c18e03dfca201bda6edf228592bdfe2b564fa7847ad045"
+      },
+      "sources": {
+        "cache.py": "\"\"\"An LRU cache with per-entry time-to-live (TTL).\n\nAn entry is EXPIRED when ``now() - written_at >= ttl_seconds``. Expired\nentries are removed lazily: a ``get`` that finds one deletes it without\ntouching recency ordering, and a ``put`` that needs room purges every\nexpired entry before evicting the least-recently-used live entry.\n\"\"\"\n\nimport time\nfrom collections import OrderedDict\n\n\nclass Cache:\n    def __init__(self, capacity, ttl_seconds, now=time.monotonic):\n        self._capacity = capacity\n        self._ttl = ttl_seconds\n        self._now = now\n        # key -> (value, written_at); iteration order is LRU -> MRU.\n        self._entries = OrderedDict()\n\n    def _is_expired(self, written_at, t):\n        return t - written_at >= self._ttl\n\n    def _purge_expired(self, t):\n        for key in [k for k, (_, written_at) in self._entries.items()\n                    if self._is_expired(written_at, t)]:\n            del self._entries[key]\n\n    def put(self, key, value):\n        t = self._now()\n        if self._capacity <= 0:\n            return\n        if key in self._entries:\n            # Update: new value, TTL clock resets, becomes most-recently-used.\n            self._entries[key] = (value, t)\n            self._entries.move_to_end(key)\n            return\n        if len(self._entries) >= self._capacity:\n            # Expired entries never occupy capacity: drop them all first.\n            self._purge_expired(t)\n            if len(self._entries) >= self._capacity:\n                # Still full: evict the least-recently-used live entry.\n                self._entries.popitem(last=False)\n        self._entries[key] = (value, t)\n\n    def get(self, key):\n        t = self._now()\n        entry = self._entries.get(key)\n        if entry is None:\n            return None\n        value, written_at = entry\n        if self._is_expired(written_at, t):\n            # Expired: remove it, but do NOT change recency ordering.\n            del self._entries[key]\n            return None\n        self._entries.move_to_end(key)\n        return value\n\n    def __len__(self):\n        self._purge_expired(self._now())\n        return len(self._entries)\n\n    def keys(self):\n        self._purge_expired(self._now())\n        return list(self._entries)\n",
+        "tests/test_cache.py": "\"\"\"Basic coverage. These pass for a naive implementation -- they are not the whole contract.\"\"\"\nimport pytest\n\nfrom cache import Cache\n\n\nclass Clock:\n    def __init__(self): self.t = 1000.0\n    def __call__(self): return self.t\n    def advance(self, d): self.t += d\n\n\ndef test_put_get():\n    c = Cache(capacity=2, ttl_seconds=10, now=Clock())\n    c.put(\"a\", 1)\n    assert c.get(\"a\") == 1\n    assert c.get(\"missing\") is None\n\n\ndef test_evicts_when_full():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"b\", 2); c.put(\"c\", 3)\n    assert c.get(\"a\") is None\n    assert c.get(\"b\") == 2 and c.get(\"c\") == 3\n\n\ndef test_expiry():\n    clk = Clock()\n    c = Cache(capacity=2, ttl_seconds=10, now=clk)\n    c.put(\"a\", 1)\n    clk.advance(11)\n    assert c.get(\"a\") is None\n\n\ndef test_update_value():\n    c = Cache(capacity=2, ttl_seconds=100, now=Clock())\n    c.put(\"a\", 1); c.put(\"a\", 2)\n    assert c.get(\"a\") == 2\n    assert len(c) == 1\n"
+      }
+    },
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-07-ttl-cache",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 3600.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 3600s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    },
+    {
+      "cli_rc": 124,
+      "workspace": "/tmp/zbench-pinned-07-ttl-cache",
+      "pin": false,
+      "temperature_env": "0",
+      "elapsed_s": 3600.1,
+      "num_turns": null,
+      "total_cost_usd": null,
+      "verify_rc": 1,
+      "verify_out": "",
+      "stop_reason": "None",
+      "trace_interventions": {},
+      "no_report": true,
+      "stderr_tail": "exceeded 3600s",
+      "digests": {},
+      "py_digests": {},
+      "sources": {}
+    }
+  ]
+}
