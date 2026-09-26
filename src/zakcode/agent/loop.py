@@ -221,6 +221,7 @@ from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
     LOOP_SENTINEL,
     WakeupSlot,
+    is_fired_line,
     turn_fingerprint,
 )
 
@@ -7289,10 +7290,18 @@ class AgentLoop:
         # body is documentation — never seed skill MENTIONS from it, never demand its
         # re-load. Its numbered SECTIONS are the plan, seeded below (ADR-0062).
         composed_skill = _composed_skill_name(user_text)
+        # A fired wake-up is not a request either (ADR-0017, amended 2026-09-26): the prompt
+        # inside its frame was written by the model that armed it, so a skill it names is
+        # the model's own note to itself. Measured on one served loop: 32 of 42 turns opened
+        # that way and ended with the backstop demanding the named skill; the model complied
+        # twice and otherwise re-opened the finished turn for 118 more provider calls. A loop
+        # the harness carries across a wake-up is carried by the sentinel's skill composition
+        # (ADR-0187), never by a nudge.
+        request_names_skills = composed_skill is None and not is_fired_line(user_text)
         # Compound-ask decomposition: a request naming several skills seeds one plan
         # step per skill BEFORE the model acts, so no part can be lost to an
         # interjection, replay, or compaction — the plan gate holds the finish.
-        seeded = [] if composed_skill else self._seed_plan_from_request(user_text)
+        seeded = self._seed_plan_from_request(user_text) if request_names_skills else []
         if seeded:
             self._note(
                 "intervention",
@@ -7301,7 +7310,7 @@ class AgentLoop:
             )
         self._persist()
         # Skill-coverage backstop state: what the request named vs what use_skill ran.
-        requested_skills = [] if composed_skill else self._skill_refs(user_text)
+        requested_skills = self._skill_refs(user_text) if request_names_skills else []
         skills_invoked: set[str] = set()
         coverage_nudged = False
         # Skill skeletons (ADR-0062): the typed skill's sections become the plan before the
@@ -8897,7 +8906,8 @@ class AgentLoop:
             self.session.add_message(Message.user(_control_rail(_CHALLENGE_RAIL)))
         # Compound-ask decomposition + coverage state — see _run_turn (buffered twin).
         composed_skill = _composed_skill_name(user_text)
-        seeded = [] if composed_skill else self._seed_plan_from_request(user_text)
+        request_names_skills = composed_skill is None and not is_fired_line(user_text)
+        seeded = self._seed_plan_from_request(user_text) if request_names_skills else []
         if seeded:
             self._note(
                 "intervention",
@@ -8905,7 +8915,7 @@ class AgentLoop:
                 kind="plan",
             )
         self._persist()
-        requested_skills = [] if composed_skill else self._skill_refs(user_text)
+        requested_skills = self._skill_refs(user_text) if request_names_skills else []
         skills_invoked: set[str] = set()
         coverage_nudged = False
         # Skill skeletons (ADR-0062) — see _run_turn (buffered twin).
