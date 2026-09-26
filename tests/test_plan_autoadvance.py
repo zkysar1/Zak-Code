@@ -112,10 +112,13 @@ async def test_a_never_worked_plan_resent_unchanged_is_not_advanced() -> None:
 
 
 async def test_an_outcome_recorded_but_status_left_pending_is_advanced() -> None:
-    # The "recorded the result, forgot the status" shape — advanced on the model's own outcome.
+    # The "recorded the result, said pending anyway" shape — advanced on the model's own outcome.
+    # The status is EXPLICIT here: a step sent with an outcome and no status at all closes in the
+    # call that carries it (ADR-0254, test_plan_outcome_closes.py), so it never reaches this lever.
     ctx, net = _ctx()
-    plan = [dict(PLAN[0], outcome="wrote the module"), PLAN[1], PLAN[2]]
-    await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    plan = [dict(PLAN[0], status="pending", outcome="wrote the module"), PLAN[1], PLAN[2]]
+    first = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    assert first.output.startswith("Plan updated: 0/3 steps done")
     result = await UpdatePlanTool().execute({"tasks": plan}, ctx)
     assert result.output.startswith("Advanced step 1")
     assert net.tasks[0].status == "done"
@@ -172,12 +175,14 @@ async def test_the_doom_guard_lets_the_harness_walk_a_resent_plan_to_completion(
     from zakcode.session import Session
     from zakcode.tools import default_registry
 
-    # Every step carries an outcome but stays pending: each identical resend advances the current
+    # Every step carries an outcome but says pending: each identical resend advances the current
     # step (the doom-loop shape where the model does the work but won't emit ``status: done``).
+    # The pending is explicit: sent with no status at all, an outcome-bearing step closes in the
+    # call that carries it (ADR-0254) and there would be no walk to test.
     plan = [
-        {"title": "A", "outcome": "did A"},
-        {"title": "B", "outcome": "did B"},
-        {"title": "C", "outcome": "did C"},
+        {"title": "A", "status": "pending", "outcome": "did A"},
+        {"title": "B", "status": "pending", "outcome": "did B"},
+        {"title": "C", "status": "pending", "outcome": "did C"},
     ]
     # author, decomposition judge, then resend the identical plan (Scripted repeats the last).
     provider = _Scripted([_plan_call(plan), _judge_ok(), _plan_call(plan)])

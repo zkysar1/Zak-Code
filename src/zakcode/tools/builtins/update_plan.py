@@ -112,7 +112,8 @@ def _task_schema(depth: int) -> dict[str, Any]:
             "enum": _STATUS_VALUES,
             "description": (
                 "pending (not started), in_progress (working on it now — keep at most ONE), "
-                "done, blocked (cannot proceed, say why in note), or cancelled. Omit for pending."
+                "done, blocked (cannot proceed, say why in note), or cancelled. Omit for pending; "
+                "a step sent with an 'outcome' and no status is read as done."
             ),
         },
         "note": {
@@ -162,11 +163,16 @@ def _task_schema(depth: int) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": ["title"]}
 
 
-def _build_task(raw: dict[str, Any], depth: int) -> Task:
-    """Build a :class:`Task` from a model-supplied node. ``kind`` is inferred from subtasks."""
+def _build_task(
+    raw: dict[str, Any], depth: int, closed_on_outcome: list[str] | None = None
+) -> Task:
+    """Build a :class:`Task` from a model-supplied node. ``kind`` is inferred from subtasks.
+
+    ``closed_on_outcome`` collects the titles of the primitive steps this call read as done
+    because they carried an ``outcome`` and no ``status`` (ADR-0254), so the receipt can say so.
+    """
     title = str(raw.get("title", "")).strip() or "(untitled)"
     raw_status = raw.get("status")
-    status: TaskStatus = raw_status if raw_status in _STATUS_VALUES else "pending"
     note = str(raw.get("note", "")).strip()
     outcome = str(raw.get("outcome", "")).strip()
     raw_deps = raw.get("blocked_by")
@@ -176,7 +182,30 @@ def _build_task(raw: dict[str, Any], depth: int) -> Task:
     children_raw = raw.get("subtasks") if depth > 1 else None
     children: list[Task] = []
     if isinstance(children_raw, list):
-        children = [_build_task(c, depth - 1) for c in children_raw if isinstance(c, dict)]
+        children = [
+            _build_task(c, depth - 1, closed_on_outcome)
+            for c in children_raw
+            if isinstance(c, dict)
+        ]
+    status: TaskStatus
+    if raw_status in _STATUS_VALUES:
+        status = raw_status
+    elif raw_status is None and outcome and not children:
+        # ADR-0254: an outcome on a step sent WITHOUT a status closes it. The schema says to omit
+        # the status for pending and to set the outcome when marking the step done, so a step
+        # carrying an outcome and no status contradicts itself, and the outcome is the positive
+        # statement: the model wrote what the step PRODUCED. Reading it as pending fed a measured
+        # doom loop — a model that never sent a status wrote outcomes on every step, read "0/4
+        # steps done" back, and resent the plan until lever N walked the frontier one round trip
+        # per step (17 plan calls, 24 turns, for a task its other runs finished in 6). Only the
+        # ABSENT status closes: an explicit pending or in_progress beside an outcome is the model's
+        # call, an unknown status string stays pending as before, and a compound step's status
+        # is derived from its children.
+        status = "done"
+        if closed_on_outcome is not None:
+            closed_on_outcome.append(title)
+    else:
+        status = "pending"
     return Task(
         title=title,
         status=status,
@@ -294,7 +323,10 @@ class UpdatePlanTool(Tool):
             network.normalize()
             return ToolResult.ok("Plan cleared.", data={"task_count": 0})
 
-        built = [_build_task(t, _MAX_DEPTH) for t in tasks if isinstance(t, dict)]
+        closed_on_outcome: list[str] = []
+        built = [
+            _build_task(t, _MAX_DEPTH, closed_on_outcome) for t in tasks if isinstance(t, dict)
+        ]
         if not built:
             # Every item was malformed (no objects). Don't wipe an existing plan over a bad
             # call — leave it untouched and tell the model how to shape the input.
@@ -344,6 +376,17 @@ class UpdatePlanTool(Tool):
                 # which is what keeps an always-on advance from inventing progress.
                 return self._autoadvance(network, current)
             return self._unchanged(network, finished, total)
+        if closed_on_outcome:
+            # ADR-0254: say what was read, in the receipt the model gets back — a harness that
+            # closes a step on the model's behalf tells the model so, and names the contract it
+            # applied, so the next plan can carry the status itself.
+            named = "; ".join(f"'{clip(t, 40)}'" for t in closed_on_outcome[:4])
+            more = f" (+{len(closed_on_outcome) - 4} more)" if len(closed_on_outcome) > 4 else ""
+            advisories.append(
+                f"read {len(closed_on_outcome)} step(s) sent with an outcome and no status as "
+                f"done: {named}{more} — an outcome means the step is finished; send status 'done' "
+                "with it."
+            )
         quality, deficiencies = network.quality()
         # The result is a RECEIPT, not the plan (ADR-0124). The model just sent the whole plan
         # (full-replace), and the loop re-injects the live checklist as an ephemeral tail
@@ -376,6 +419,9 @@ class UpdatePlanTool(Tool):
                 "quality": quality,
                 "deficiencies": deficiencies,
                 "complete": network.is_complete(),
+                # ADR-0254: how many steps this call read as done on their outcome alone. The
+                # loop notes it so the census can count the shape (as it counts lever N).
+                "closed_on_outcome": len(closed_on_outcome),
                 # ADR-0209: this receipt acknowledges an edit that CHANGED the plan, and it
                 # reads the same whenever the done count and the current step do. Measured
                 # in a served loop: 14 of 47 stuck rungs, two of them STOPs, fell on it while
