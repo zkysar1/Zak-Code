@@ -12274,6 +12274,25 @@ that writes nothing fails thirteen tests) and asserts which copy of the package 
 its first version set PYTHONPATH, which this repo's pytest config outranks, and every mutant
 "survived" against the unmutated source.
 
+**Amended 2026-09-26 (a transcript that was begun is complete at every turn end).** The file was
+written at every persist and on hook demand — and a loop with no store persists nothing, so its
+transcript was written only by the path handed to hook payloads (built at every tool call,
+whether or not a hook is configured) or by a compaction: the PreToolUse payload flushed the
+assistant's call, the PostToolUse payload was built before the result was appended, and nothing
+ran after the answer. Measured on a bench that runs the loop storeless (19 tasks x 3 runs, 57
+transcripts): every file ended on the assistant's LAST tool call and held neither that tool's
+result nor the answer that followed. Against each run's trace, tool records exceeded the file's
+tool results by exactly one and provider calls exceeded its assistant rows by exactly one on 50 of
+the 57 (the other 7 by more). Reproduced in a unit turn of one tool call: the storeless file
+stopped at 2 of the turn's 4 messages. A served session was complete: its store flushes at every
+persist, and the cursor equalled the message count on every live document read. So `arun_turn`
+and `astream_turn` now end by bringing a transcript that was
+BEGUN (the loop had made its file ready for someone) up to date, on every exit — completed,
+stopped, cancelled. Idempotent by the cursor, a no-op for a stored session, and a loop nothing
+ever asked a transcript of still begins none: the storeless persist writes nothing, as before.
+Proven by a mutant that inverts the begun check: the begun file stops short of the turn's last
+exchange, and the never-asked loop grows a file.
+
 ## ADR-0207: the turn-ended line carries the turn's wall-clock seconds, so a served run's log can be read as a distribution
 
 Date: 2026-09-21. One field on a line that already existed, on both turn paths. No behaviour change,
