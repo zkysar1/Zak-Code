@@ -3318,6 +3318,24 @@ model is told how to split it. Pinned by `tests/test_small_model_containment.py`
 (`test_undecodable_arguments_name_the_real_defect`,
 `test_undecodable_but_complete_arguments_blame_escaping`).
 
+**Amended 2026-09-26 (the second cut names a size).** Measured on the determinism bench
+(a 27B on a ten-engine pod): the rail above was answered with the identical whole-file
+`Write`, cut at the same 8,192 completion tokens, twice in a row — about 30 minutes of
+decode each at that pod's rate under load — and then the run's wall cap. "Well under the
+output limit" named no size, and the model had none to reach for; at temperature 0 the
+re-emission is the expected outcome, not an accident. The loop now counts consecutive
+cut-off write/edit calls per turn. The first cut gets the rail above unchanged. From the
+second on, the rail says which call in a row this is, that the whole file does not fit in
+one call and sending it again will cut it again, and a size in characters — half the
+length of the text that was cut, in the unit the model already saw, under the limit by
+construction — to send in this `Write`, then extend with `Edit`, each call no larger. A
+write or edit whose arguments decode ends the run, so a later cut starts at one again.
+`consecutive_cuts` travels in the result data, so a trace shows whether the second rail was
+reached and what followed it. Two repeats stay under `DOOM_LOOP_THRESHOLD`, so the rail
+speaks before the doom-loop machinery does. Pinned by
+`test_a_second_cut_off_write_gets_a_size_it_can_act_on`,
+`test_a_write_that_decodes_ends_the_run_of_cuts`, `test_the_cut_counter_is_per_turn`.
+
 ## ADR-0082: A compaction summary is made from rendered text and carries the harness's position
 
 **Context.** The compactor replaces everything but the last six messages with one

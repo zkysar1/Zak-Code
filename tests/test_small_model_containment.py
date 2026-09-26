@@ -165,8 +165,66 @@ def test_undecodable_arguments_name_the_real_defect(tmp_path: Path) -> None:
     assert "call Write with the first part" in blocks[0].output
     assert "'path' is required" not in blocks[0].output
     assert blocks[0].data["undecodable_arguments"] is True and blocks[0].data["cut_off"] is True
+    assert blocks[0].data["consecutive_cuts"] == 1
+    assert "in a row" not in blocks[0].output  # the first cut gets the plain remedy
     assert not (tmp_path / "out.py").exists()
     assert loop._turn_struggle is True
+
+
+_CUT = '{"path":"out.py","content":"#!/usr/bin/env python3\\nimport json\\n' + "x = 1\\n" * 400
+
+
+def _cut_write(call_id: str) -> LLMResult:
+    """The same whole-file write, cut off by the output limit, as a model re-emits it."""
+    return LLMResult(tool_calls=[ToolCall(id=call_id, name="write_file", arguments={"_raw": _CUT})])
+
+
+def test_a_second_cut_off_write_gets_a_size_it_can_act_on(tmp_path: Path) -> None:
+    """ADR-0081 escalation: the first rail says "well under the output limit"; a model that then
+    sends the identical cut-off call is told which call in a row this is, that the whole file
+    will never fit, and how many characters to send per call."""
+    loop = _loop([_cut_write("c1"), _cut_write("c2"), LLMResult(text="understood")], tmp_path)
+    result = asyncio.run(loop.arun_turn("write the script"))
+    assert result.stop_reason == "completed"  # two repeats: under the doom-loop threshold
+    blocks = _tool_blocks(loop)
+    assert len(blocks) == 2 and all(b.is_error for b in blocks)
+    assert blocks[0].data["consecutive_cuts"] == 1
+    assert blocks[1].data["consecutive_cuts"] == 2
+    assert "This is call 2 in a row cut off at the output limit" in blocks[1].output
+    assert f"at {len(_CUT)} characters" in blocks[1].output
+    assert f"Send at most {len(_CUT) // 2} characters of content" in blocks[1].output
+    assert "will cut it again" in blocks[1].output
+    assert "was not executed" in blocks[1].output  # the defect is still named first
+    assert not (tmp_path / "out.py").exists()
+
+
+def test_a_write_that_decodes_ends_the_run_of_cuts(tmp_path: Path) -> None:
+    """A cut, then a write that decoded (the model adapted), then a cut: the second cut is a
+    first cut again, not "call 2 in a row"."""
+    adapted = LLMResult(
+        tool_calls=[
+            ToolCall(
+                id="c2",
+                name="write_file",
+                # non-runnable target keeps the quality gate out, as in the clean control
+                arguments={"path": "notes.txt", "content": "part one\n"},
+            )
+        ]
+    )
+    loop = _loop([_cut_write("c1"), adapted, _cut_write("c3"), LLMResult(text="done")], tmp_path)
+    asyncio.run(loop.arun_turn("write it"))
+    cuts = [b.data["consecutive_cuts"] for b in _tool_blocks(loop) if b.is_error]
+    assert cuts == [1, 1]
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "part one\n"
+
+
+def test_the_cut_counter_is_per_turn(tmp_path: Path) -> None:
+    loop = _loop(
+        [_cut_write("c1"), LLMResult(text="ok"), _cut_write("c2"), LLMResult(text="ok")], tmp_path
+    )
+    asyncio.run(loop.arun_turn("write it"))
+    asyncio.run(loop.arun_turn("write it again"))
+    assert [b.data["consecutive_cuts"] for b in _tool_blocks(loop) if b.is_error] == [1, 1]
 
 
 def test_undecodable_but_complete_arguments_blame_escaping(tmp_path: Path) -> None:
