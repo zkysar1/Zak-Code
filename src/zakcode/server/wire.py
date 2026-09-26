@@ -305,9 +305,22 @@ class SessionInfo(BaseModel):
     #: so every key here is a real model id. The unattributed remainder stays derivable
     #: as ``usage`` minus the sum of these values.
     usage_by_model: dict[str, Usage] = Field(default_factory=dict)
+    #: How many LLM calls ``usage`` sums: one per recorded entry, side calls included
+    #: (g-373-152). A meter that sizes a reserve PER CALL divides a window's draw by the
+    #: change in this count. ``message_count`` cannot stand in for it: tool results and
+    #: user turns add messages, side calls add none, and compaction can shrink it. This
+    #: count only grows, because recorded usage entries are never removed.
+    call_count: int = 0
+    #: Per-model split of ``call_count``, keyed exactly like ``usage_by_model``: untagged
+    #: entries are dropped, so the unattributed calls are ``call_count`` minus the sum.
+    calls_by_model: dict[str, int] = Field(default_factory=dict)
 
     @classmethod
     def from_session(cls, session: Session) -> SessionInfo:
+        calls_by_model: dict[str, int] = {}
+        for usage in session.usages:
+            if usage.model:
+                calls_by_model[usage.model] = calls_by_model.get(usage.model, 0) + 1
         return cls(
             id=session.id,
             model=session.model,
@@ -316,6 +329,8 @@ class SessionInfo(BaseModel):
             message_count=len(session.messages),
             usage=session.cumulative_usage(),
             usage_by_model={m: u for m, u in session.usage_by_model().items() if m},
+            call_count=len(session.usages),
+            calls_by_model=calls_by_model,
         )
 
 
