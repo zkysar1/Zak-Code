@@ -68,7 +68,9 @@ def test_result_names_the_line_of_the_replacement(tmp_path: Path) -> None:
     # FIRST match in the file as it was — exact whatever new_string contains, deletions
     # (an empty new_string) included.
     target = tmp_path / "d.txt"
-    target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+    # newline="\n": the tool matches bytes exactly, and Windows' text mode would otherwise
+    # write CRLF, so "three\n" would not be found there.
+    target.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8", newline="\n")
 
     tool = EditFileTool()
     result = _run(
