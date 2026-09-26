@@ -7291,12 +7291,14 @@ class AgentLoop:
         # re-load. Its numbered SECTIONS are the plan, seeded below (ADR-0062).
         composed_skill = _composed_skill_name(user_text)
         # A fired wake-up is not a request either (ADR-0017, amended 2026-09-26): the prompt
-        # inside its frame was written by the model that armed it, so a skill it names is
-        # the model's own note to itself. Measured on one served loop: 32 of 42 turns opened
-        # that way and ended with the backstop demanding the named skill; the model complied
-        # twice and otherwise re-opened the finished turn for 118 more provider calls. A loop
-        # the harness carries across a wake-up is carried by the sentinel's skill composition
-        # (ADR-0187), never by a nudge.
+        # inside its frame was written by whoever armed it — the model (ADR-0094) or a
+        # turn-end hook (ADR-0102) — never by a person at the prompt, so a skill it names is
+        # the loop's note to its future self. Measured on one served loop whose hook armed a
+        # re-poll wake-up naming the loop skill (40 of the 41 fired): 32 of 42 turns ended with
+        # the backstop demanding that skill; the model complied twice and otherwise re-opened
+        # the finished turn for 118 more provider calls. A hook that wants a skill re-entered
+        # names it in its veto and the harness composes it (ADR-0187); a nudge never carries
+        # a loop.
         request_names_skills = composed_skill is None and not is_fired_line(user_text)
         # Compound-ask decomposition: a request naming several skills seeds one plan
         # step per skill BEFORE the model acts, so no part can be lost to an

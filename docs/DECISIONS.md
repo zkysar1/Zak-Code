@@ -692,18 +692,21 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   model explicitly declines it in text; single-part requests stay ceremony-free.
 
 **Amended 2026-09-26 (a fired wake-up is not a request).** Measured on one served loop
-(42 turns): 41 turns opened with the model's own scheduled wake-up, whose prompt named the
-loop skill in request shape, and 32 of them ended with the backstop demanding that skill —
-the model re-entered it twice, said it was skipping it 18 times, and otherwise took the
-nudge as an invitation to keep working: 118 provider calls followed the 32 nudges (39% of
-those turns' calls), all on turns that were about to end. The premise was wrong, not the
-model: the prompt inside a fired wake-up's frame was written by the model that armed it
-(ADR-0094), so a skill it names is a note to itself, not something a person asked for. Now
+(42 turns): 41 turns opened with a fired scheduled wake-up — 40 of them armed by the
+turn-end hook's re-poll (ADR-0102), one by the model — whose prompt named the loop skill in
+request shape, and 32 of them ended with the backstop demanding that skill: the model
+re-entered it twice, said it was skipping it 18 times, and otherwise took the nudge as an
+invitation to keep working. 118 provider calls followed the 32 nudges (39% of those turns'
+calls), all on turns that were about to end. The premise was wrong, not the model: the
+prompt inside a fired wake-up's frame was written by whoever armed it — the model
+(ADR-0094) or a turn-end hook (ADR-0102) — never by a person at the prompt, so a skill it
+names is the loop's note to its future self, not something a person asked for. Now
 `is_fired_line` (both shapes `fired_line` produces) puts a wake-up opener beside the
 composed-skill turn of ADR-0036: it neither seeds plan steps nor arms the coverage backstop.
-Carrying a loop across a wake-up is the sentinel's job — the harness composes the loop
-skill itself (ADR-0187) — never a nudge's. Sessions that re-enter their loop skill on every
-lap saw no nudge before or after; the change removes a cost, not a guarantee.
+A hook that wants a skill re-entered deterministically names it in its veto and the harness
+composes it (ADR-0187): that path carried the live loops' re-entries (nine each in the same
+window) and saw no nudge before or after. A wake-up prompt is advisory by construction, and
+a nudge never carries a loop; the change removes a cost, not a guarantee.
 
 ## ADR-0018 — Degeneration is contained: model-default temperature, a per-completion output cap, and a repetition guard
 
