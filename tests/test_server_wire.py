@@ -199,6 +199,31 @@ def test_session_info_drops_untagged_usage_from_the_split() -> None:
     assert info.usage.total_tokens - attributed == 2  # the unattributed remainder
 
 
+def test_session_info_counts_calls_not_messages() -> None:
+    """One call per recorded usage entry, side calls included; messages are not calls.
+
+    g-373-152: a meter sizes the ending reserve per call, so it needs the number of calls
+    a window's draw paid for. Here two messages and four calls disagree on purpose.
+    """
+    session = Session(cwd="/work", model="openai/gpt-4o")
+    session.add_message(Message.user("hello"))
+    session.add_message(Message.assistant_text("hi"))
+    session.add_usage(Usage(total_tokens=10), model="openai/gpt-4o")
+    session.add_usage(
+        Usage(total_tokens=3), model="groq/openai/gpt-oss-20b", side_call="summarizer"
+    )
+    session.add_usage(Usage(total_tokens=5), model="openai/gpt-4o")
+    session.add_usage(Usage(total_tokens=2))  # untagged: counted in the total, not the split
+    info = SessionInfo.from_session(session)
+    assert info.message_count == 2
+    assert info.call_count == 4
+    assert info.calls_by_model == {"openai/gpt-4o": 2, "groq/openai/gpt-oss-20b": 1}
+    assert info.call_count - sum(info.calls_by_model.values()) == 1  # the unattributed call
+    restored = SessionInfo.model_validate_json(info.model_dump_json())
+    assert restored.call_count == 4
+    assert restored.calls_by_model == info.calls_by_model
+
+
 def test_session_info_split_survives_the_json_round_trip() -> None:
     """The split has to reach a non-Python consumer -- it is read off the wire by the meter."""
     session = Session(cwd="/work", model="openai/gpt-4o")
@@ -213,6 +238,8 @@ def test_session_info_split_defaults_empty_for_an_older_payload() -> None:
     info = SessionInfo.model_validate({"id": "s1", "usage": {"total_tokens": 9}})
     assert info.usage_by_model == {}
     assert info.usage.total_tokens == 9
+    assert info.call_count == 0  # absent reads as zero, which a meter treats as "no count"
+    assert info.calls_by_model == {}
 
 
 def test_tool_info_from_spec() -> None:
