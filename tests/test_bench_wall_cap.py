@@ -175,13 +175,13 @@ A_PY_SHA = hashlib.sha256(A_PY.encode("utf-8")).hexdigest()
 CAPPED_CHILD = """\
 import os, pathlib, time
 ws = pathlib.Path(os.environ["ZBENCH_WORKSPACE"])
-(ws / "a.py").write_text("x = 1\\n", encoding="utf-8")
+(ws / "a.py").write_bytes(b"x = 1\\n")  # bytes: text mode on Windows writes CRLF, another digest
 time.sleep(120)
 """
 COMPLETED_CHILD = """\
 import json, os, pathlib
 ws = pathlib.Path(os.environ["ZBENCH_WORKSPACE"])
-(ws / "a.py").write_text("x = 1\\n", encoding="utf-8")
+(ws / "a.py").write_bytes(b"x = 1\\n")  # bytes: text mode on Windows writes CRLF, another digest
 report = {"success": True, "iterations": 1, "session_cost_usd": 0.0, "stop_reason": "completed",
           "trace_interventions": {}, "workspace": str(ws)}
 print(json.dumps(report))
