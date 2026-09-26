@@ -4183,6 +4183,22 @@ closed. A batch of exactly one `use_skill` plus nothing but `update_plan` calls
 skill call is answered unexecuted. Any other companion still exempts the batch. Pinned by
 `test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first`.
 
+**Amended 2026-09-26 (the restart is taken at the turn's end, before any door).** The
+"REPL then reaches its idle prompt, the ADR-0034 probe fires" step had a race, measured
+three times in one morning on two Bodies: the idle wait serves the doors first — a due
+wake-up or a background command's exit note, polled every 0.3 s — and consults the install
+probe only every 5 s, so a door won, the model ran one more turn on the build it was
+leaving (361–488 s calls; one turn opened by a park re-poll whose premise, that the Body
+was still parked, was hours stale), reached the same skill boundary, and restarted again:
+two replays and a stale premise per deploy. The REPL now takes the restart directly when
+the turn it just ran ended `restart` (`_restart_now`) — before `try_input`, before the
+wake-up door. A typed-ahead line is the one input still served first, because it lives
+only in the dying process's queue; a wake-up (on the session), a say (in its file) and an
+exit note (on the task record, `notified` false) all persist and reach the fresh process
+through its own doors. Pinned by `tests/test_self_restart.py`
+(`test_a_turn_that_ended_for_a_restart_restarts_before_any_door`,
+`test_a_typed_ahead_line_is_served_before_the_restart`).
+
 ## ADR-0102: A turn-end hook may arm the session's wake-up
 
 **Context.** The wake-up (ADR-0094) is the primitive a parked worker Body resumes on: its

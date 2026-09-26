@@ -179,6 +179,26 @@ def test_mux_without_a_probe_keeps_waiting(tmp_path: Path) -> None:
     assert mux.next_input(idle=True, stop=stop) == ("cancelled", None)
 
 
+# ── a turn that ended for the restart ────────────────────────────────────────
+
+
+def test_a_turn_that_ended_for_a_restart_restarts_before_any_door(tmp_path: Path) -> None:
+    # The loop chose this boundary (ADR-0101). A due wake-up or a background command's exit
+    # note waiting at a door must not open one more turn on the build being left behind.
+    mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
+    assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux) is True
+    assert cli._restart_now(SimpleNamespace(stop_reason="completed"), mux) is False
+    assert cli._restart_now(None, mux) is False
+
+
+def test_a_typed_ahead_line_is_served_before_the_restart(tmp_path: Path) -> None:
+    # Only the in-process queue dies with the exec; every other door persists and reaches
+    # the fresh process on its own, so the typed line is the one input still taken first.
+    mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
+    mux.queue.put(("line", "one more thing"))
+    assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux) is False
+
+
 # ── the handoff ──────────────────────────────────────────────────────────────
 
 
