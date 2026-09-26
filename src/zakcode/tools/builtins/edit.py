@@ -170,6 +170,11 @@ class EditFileTool(Tool):
             else:
                 new_text = text.replace(old_string, new_string, 1)
                 replacements = 1
+            # The 1-based line of the first replacement, reported so the read-back after this
+            # edit can show the lines around it instead of the file's head (ADR-0252). Every
+            # byte before the first match is unchanged, so its line in the old text is its line
+            # in the new one — exact for the first replacement whatever new_string contains.
+            first_line = text.count("\n", 0, text.find(old_string)) + 1
 
             # Write firewall: refuse a shell-command replacement, or an edit that would
             # BREAK a .py file (checked on the resulting file). The guard protects files
@@ -241,7 +246,7 @@ class EditFileTool(Tool):
             suffix = "s" if replacements != 1 else ""
             return ToolResult.ok(
                 f"Made {replacements} replacement{suffix} in {path}{parse_note}",
-                data={"path": str(resolved), "replacements": replacements},
+                data={"path": str(resolved), "replacements": replacements, "line": first_line},
             )
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to edit {path!r}: {exc}")
