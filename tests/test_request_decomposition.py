@@ -24,6 +24,7 @@ from zakcode.session.store import Session
 from zakcode.tasks import Task
 from zakcode.tools.base import SkillLoad, ToolRegistry
 from zakcode.tools.builtins.use_skill import UseSkillTool
+from zakcode.wakeup import fired_line
 
 
 class _Resolver:
@@ -272,3 +273,48 @@ def test_streaming_coverage_nudge(tmp_path: Path) -> None:
     assert any("never ran" in s for s in statuses)
     rails = [m.text for m in loop.session.messages if m.text and "also asked for" in m.text]
     assert len(rails) == 1 and "/encode-session" in rails[0]
+
+
+# ── a fired wake-up is not a request (ADR-0017, amended 2026-09-26) ─────────────
+
+
+def _nudged(loop: AgentLoop) -> bool:
+    return any(m.text and "also asked for" in m.text for m in loop.session.messages)
+
+
+def test_a_fired_wakeup_naming_a_skill_arms_no_coverage_backstop(tmp_path: Path) -> None:
+    # The prompt inside the frame was written by the model that armed it: a skill it names
+    # is a note to itself, not an ask. The same words AS a request do arm the backstop (the
+    # positive control), so the frame alone makes the difference.
+    provider = _ScriptByCallProvider(lambda n, m: LLMResult(text=f"answer {n}"))
+    loop = _loop(provider, tmp_path, SKILLS)
+    result = asyncio.run(loop.arun_turn(fired_line("re-enter /fresh-eyes-code now")))
+    assert result.stop_reason == "completed"
+    assert provider.calls == 1  # the finished turn was not re-opened
+    assert not _nudged(loop)
+
+    control = _loop(
+        _ScriptByCallProvider(lambda n, m: LLMResult(text=f"answer {n}")), tmp_path, SKILLS
+    )
+    asyncio.run(control.arun_turn("re-enter /fresh-eyes-code now"))
+    assert _nudged(control)
+
+
+def test_a_fired_wakeup_naming_two_skills_seeds_no_plan(tmp_path: Path) -> None:
+    provider = _ScriptByCallProvider(lambda n, m: LLMResult(text="ok"))
+    loop = _loop(provider, tmp_path, SKILLS)
+    asyncio.run(loop.arun_turn(fired_line("do a /fresh-eyes-code and a /encode-session")))
+    assert loop.session.task_network.tasks == []
+    assert not _nudged(loop)
+
+
+def test_streaming_fired_wakeup_arms_no_coverage_backstop(tmp_path: Path) -> None:
+    provider = _ScriptByCallProvider(lambda n, m: LLMResult(text=f"answer {n}"))
+    loop = _loop(provider, tmp_path, SKILLS)
+    events = _drain(loop, fired_line("run a /encode-session please"))
+    done = next(e for e in events if isinstance(e, AgentDone))
+    assert done.stop_reason == "completed"
+    assert provider.calls == 1
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    assert not any("never ran" in s for s in statuses)
+    assert not _nudged(loop)

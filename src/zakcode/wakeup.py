@@ -119,11 +119,28 @@ def turn_fingerprint(stop_reason: str, assistant_text: str) -> str:
     return blake2b(canonical.encode("utf-8"), digest_size=16).hexdigest()
 
 
+#: The frame a fired free-text wake-up is delivered in; :func:`is_fired_line` recognises it.
+_FIRED_PREFIX = "[harness] scheduled wake-up: "
+
+
 def fired_line(prompt: str) -> str:
     """The line the session receives when a wake-up armed with ``prompt`` fires."""
     if prompt.strip() == LOOP_SENTINEL:
         return LOOP_LINE
-    return f"[harness] scheduled wake-up: {prompt.strip()}"
+    return f"{_FIRED_PREFIX}{prompt.strip()}"
+
+
+def is_fired_line(text: str) -> bool:
+    """Whether ``text`` is a turn opener the harness built from a FIRED wake-up.
+
+    Both shapes :func:`fired_line` produces count: the sentinel's :data:`LOOP_LINE` and the
+    framed free-text prompt. The loop asks so it can tell a wake-up from a request: the
+    prompt inside the frame was written by the model that armed it (ADR-0094), so a skill it
+    names is the model's own note to itself, not something a person asked for (ADR-0017,
+    amended 2026-09-26).
+    """
+    stripped = text.lstrip()
+    return stripped == LOOP_LINE or stripped.startswith(_FIRED_PREFIX)
 
 
 class Wakeup(BaseModel):

@@ -41,6 +41,7 @@ from zakcode.wakeup import (
     WakeupSlot,
     clamp_delay,
     fired_line,
+    is_fired_line,
 )
 
 
@@ -112,6 +113,15 @@ def test_the_loop_sentinel_fires_as_the_re_entry_line() -> None:
     assert "invoke the skill that runs it" in LOOP_LINE and "Re-arm" in LOOP_LINE
     assert "aspirations" not in LOOP_LINE
     assert fired_line("  poll CI  ") == "[harness] scheduled wake-up: poll CI"
+
+
+def test_a_fired_line_is_recognised_in_both_shapes_and_a_request_is_not() -> None:
+    assert is_fired_line(fired_line(LOOP_SENTINEL))
+    assert is_fired_line(fired_line("poll CI"))
+    assert is_fired_line("  " + fired_line("poll CI"))  # leading whitespace is not a shape
+    assert not is_fired_line("poll CI")
+    assert not is_fired_line("run /fresh-eyes-code, then arm a scheduled wake-up: poll CI")
+    assert not is_fired_line("[harness] something else the harness says")
 
 
 def test_the_held_wakeup_survives_a_session_round_trip(tmp_path: Path) -> None:
