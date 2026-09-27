@@ -116,4 +116,6 @@ def test_every_provider_call_site_in_the_loop_uses_the_helper() -> None:
     src = loop_py.read_text(encoding="utf-8")
     without_helper = src.replace('        return f"zakcode/{self.session.id}"', "")
     assert 'f"zakcode/{self.session.id}"' not in without_helper
-    assert src.count("prompt_cache_key=self._prompt_cache_key()") == 3
+    # Three conversation calls (buffered, streamed, summarizer) and, since ADR-0257, three side
+    # calls on the loop's own model (critic, plan critique, quality gate).
+    assert src.count("prompt_cache_key=self._prompt_cache_key()") == 6

@@ -101,6 +101,7 @@ async def score_rubric(
     dimensions: dict[str, str],
     weights: dict[str, float] | None = None,
     temperature: float = 0.0,
+    prompt_cache_key: str | None = None,
 ) -> tuple[ScoreCard, Usage]:
     """Score ``artifact`` on each of ``dimensions`` (name → what to assess) in ONE judge call, then
     aggregate (:func:`aggregate_scores`). Returns ``(scorecard, usage)``; ``scorecard.overall`` is
@@ -108,6 +109,10 @@ async def score_rubric(
     vetoes). FAIL-SAFE, abstaining LOW: any error (provider failure, unparseable output) yields
     ``overall=0.0``, so a SHIP gate keeps iterating (bounded by the caller's budget) rather than
     shipping an artifact whose quality couldn't be verified.
+
+    ``prompt_cache_key`` is the calling session's affinity key, as for
+    :func:`~zakcode.quality.judge.binary_judge` (ADR-0257): keyless, every session's scoring
+    calls share this fixed system prompt as their head, and so one key and one engine.
     """
     if not dimensions:
         return ScoreCard(), Usage()
@@ -121,6 +126,7 @@ async def score_rubric(
             system=_SCORE_SYSTEM,
             response_format=make_response_format(None),
             temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
         )
         data = coerce_structured(result.text, schema=_SCORE_SCHEMA)
         raw = data.get("scores")

@@ -25,8 +25,10 @@ class _ScoreProvider(Provider):
 
     def __init__(self, text: str) -> None:
         self._text = text
+        self.keys: list[str | None] = []  # each call's affinity key, in call order
 
     async def acomplete(self, messages, *, system=None, tools=None, **kwargs: Any) -> LLMResult:  # noqa: ANN001
+        self.keys.append(kwargs.get("prompt_cache_key"))
         return LLMResult(text=self._text, usage=Usage(total_tokens=2, cost_usd=0.001))
 
     def count_tokens(self, messages, *, system=None) -> int:  # noqa: ANN001
@@ -68,6 +70,15 @@ async def test_quality_gate_record_is_tagged(tmp_path: Path) -> None:
     )
     await loop._quality_gate("req", "the result", [])
     assert [u.side_call for u in loop.session.usages] == ["quality_gate"]
+
+
+async def test_quality_gate_rides_the_sessions_affinity_key(tmp_path: Path) -> None:
+    # ADR-0257: the scorer's call carries the session's key, so it runs on the session's engine
+    # instead of the one engine every session's keyless scoring calls were pinned to.
+    provider = _ScoreProvider(json.dumps({"scores": {"q": 1.0}}))
+    loop = _loop(tmp_path, provider, quality_gate_threshold=0.8)
+    await loop._quality_gate("req", "the result", [])
+    assert provider.keys == [f"zakcode/{loop.session.id}"]
 
 
 async def test_quality_gate_ships_on_scorer_failure(tmp_path: Path) -> None:

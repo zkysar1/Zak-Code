@@ -2693,6 +2693,12 @@ class AgentLoop:
         reproduced 3/3 once the key was held constant -- the pod's prefix-cache routing perturbs a
         near-tie token. A per-workspace key keeps the affinity purpose (every run of one workspace
         lands on one engine) and removes the per-run variation.
+
+        "Every provider call" includes the side calls on the loop's own model: the critic, the
+        plan critique and the quality gate (ADR-0257). Sent keyless, they were keyed by the pod on
+        their fixed system prompts, so every session's side calls shared one engine and queued
+        ahead of the conversation that engine was serving. The session is waiting on its own side
+        call, so its own engine is the free one.
         """
         if self.settings.stable_prompt_identity:
             digest = hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:16]
@@ -6403,7 +6409,12 @@ class AgentLoop:
             # to run it (field 2026-09-10: a correct "type /start yourself" answer, then eleven
             # iterations grepping for start/boot/init scripts). The criteria carry the rule.
             request = f"{request}\n\n{_handed_off_clause(self._turn_handed_off)}"
-        verdict, usage = await binary_judge(self.provider, criteria=request, artifact=artifact)
+        verdict, usage = await binary_judge(
+            self.provider,
+            criteria=request,
+            artifact=artifact,
+            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
+        )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             # ADR-0243: a side call's record is tagged, like the summarizer's (ADR-0241): it has
             # no reply, and untagged it would move each reply before it onto a neighbour's record.
@@ -6414,7 +6425,13 @@ class AgentLoop:
 
     def _judge_provider(self) -> Provider:
         """The provider for quality-engine calls (seam A) — today the loop's own (fresh context,
-        like the critic). Routing ``model_roles['judge']`` to a small model is the next seam."""
+        like the critic). Routing ``model_roles['judge']`` to a small model is the next seam.
+
+        Its calls carry the session's affinity key (ADR-0257), which is right only while this is
+        the loop's own model: the pod pins a key to one engine of one model, so a call on another
+        model under the same key finds no pinned engine and re-pins the key there, and the
+        conversation's next call then misses its cache. A different judge model needs its own key.
+        """
         return self.provider
 
     async def _judged_plan_critique(self) -> str:
@@ -6442,7 +6459,12 @@ class AgentLoop:
             # model could neither act on nor was meant to. Structural quality still rides.
             return ""
         try:
-            card, usage = await score_plan(self._judge_provider(), goal=goal, plan=rendered)
+            card, usage = await score_plan(
+                self._judge_provider(),
+                goal=goal,
+                plan=rendered,
+                prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
+            )
         except Exception:  # noqa: BLE001 — an unreachable judge must never break the tool result
             logger.warning("judged plan critique failed; skipping", exc_info=True)
             return ""
@@ -6481,7 +6503,10 @@ class AgentLoop:
         dimensions = self.settings.quality_gate_dimensions or _DEFAULT_CODE_RUBRIC
         artifact = _gather_work(claimed_result or "", written_paths)
         card, usage = await score_rubric(
-            self._judge_provider(), artifact=artifact, dimensions=dimensions
+            self._judge_provider(),
+            artifact=artifact,
+            dimensions=dimensions,
+            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
         )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(

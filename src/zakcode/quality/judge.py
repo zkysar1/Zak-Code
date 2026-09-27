@@ -99,12 +99,17 @@ async def binary_judge(
     artifact: str,
     system: str = _BINARY_SYSTEM,
     temperature: float = 0.0,
+    prompt_cache_key: str | None = None,
 ) -> tuple[BinaryVerdict, Usage]:
     """One judge: does ``artifact`` satisfy ``criteria``? Returns ``(verdict, usage)``.
 
     A FRESH context (just the criteria + artifact, never a conversation transcript), json_object
     mode, validated locally. FAIL-OPEN: any error (provider failure, unparseable output) returns
     ``approved=True`` — a judge must never trap its caller.
+
+    ``prompt_cache_key`` is the calling session's affinity key (ADR-0257). Without one, an
+    affinity-routing proxy keys the call on its head, and the head of a judge call is this fixed
+    system prompt, so every session's judge calls share one key and queue on one engine.
     """
     criteria = apply_judge_hook(criteria)
     payload = (
@@ -116,6 +121,7 @@ async def binary_judge(
             system=system,
             response_format=make_response_format(None),
             temperature=temperature,
+            prompt_cache_key=prompt_cache_key,
         )
         data = coerce_structured(result.text, schema=_BINARY_SCHEMA)
         verdict = BinaryVerdict(

@@ -15498,3 +15498,50 @@ stop raised, no run clock armed and no second `on_run_end`. The control is a res
 `stopped` ending, which opens its own run, so the same stop raises the mind's graceful stop. Each of
 four sabotaged copies turned the test red: starting as before, starting the consumer beside the
 ended state, calling `on_run_end` from the ended start, and reporting any cleared ending as kept.
+
+## ADR-0257: side calls on the loop's own model carry the session's affinity key
+
+Status: accepted. 2026-09-27.
+
+The pod's proxy routes by affinity. A request's `prompt_cache_key` pins it to one engine, so a
+conversation keeps landing on the engine that holds its cached prefix. A request without a key is
+keyed on the head of its message list, every message but the last. The critic, the plan critique
+and the quality gate sent no key, and each is a system prompt plus one user message, so the head
+is the fixed system prompt. The plan critique and the quality gate share the scorer's system
+prompt. Every session's scorer calls therefore shared one key, and every session's critic calls
+another: one pin each, on whichever engine a conversation was already using.
+
+Measured on 2026-09-27 from the proxy's ledger. Recomputing the proxy's key for the scorer's
+system prompt gives a key seen on 784 calls from five client addresses since 2026-08-28, 641 of
+them on one engine, 52,070 s of request time. The critic's system prompt gives a key seen on 432
+calls from four client addresses. With ten worker loops on ten engines, two consecutive
+conversation calls of one loop took 258 s and 578 s. The engine's own timing for the first was
+26.5 s: 980 prompt tokens and 109 generated. The rest was waiting behind another loop's plan
+critique on the same engine, a call of 297 s that generated 2,256 tokens. The second waited 256 s
+for its first byte behind a third loop's critique, which generated 2,530. The ledger's queue field
+reads zero for all of them: the wait is inside the engine's one slot, where the proxy cannot see it.
+
+Decision.
+
+1. The critic, the plan critique and the quality gate send the session's own key, the one its
+   conversation calls send. `binary_judge`, `score_rubric` and `score_plan` take it as an
+   optional argument, and a caller without a session sends none, as before.
+2. A session waits on its own side call, so its own engine is idle when the call arrives. The
+   call still displaces the conversation's cached state there, as it did on whichever engine held
+   the shared pin. Measured after a foreign critique, the conversation's next call re-processed
+   980 tokens where the conversation had grown by 120; the engine restored the rest.
+3. Only calls on the loop's own model carry the key. The proxy pins a key to one engine of one
+   model. A call on another model under the same key finds no pinned engine there, re-pins the
+   key, and the conversation's next call then misses its cache. The side calls that may run on
+   another model keep sending none: the context classifier and judge, the difficulty classifier
+   and deep think. They need a key per session and model, left until a fleet runs them.
+
+Rejected: a fresh key per side call. A new key gets a durable pin on the least-pinned engine,
+which on a full pod is another conversation's engine, so the queueing moves instead of ending,
+and the pin table grows by one entry per call. Also rejected: turning thinking off for side calls.
+It would shorten them, but it changes what the judge does, which is a separate decision.
+
+The proof. In `tests/test_loop_planning.py` a planning turn's four calls, the plan, the plan
+critique, the answer and the plan review, all carry the session's key. In
+`tests/test_quality_gate.py` the gate's scoring call carries it. Each test was run with the key
+dropped, once at the scorer and once at the critic, and went red.
