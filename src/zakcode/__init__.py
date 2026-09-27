@@ -25,7 +25,13 @@ from typing import TYPE_CHECKING, Any
 
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
-from zakcode.agent.loop import AgentLoop, TurnResult, _answer_room, _composed_skill_name
+from zakcode.agent.loop import (
+    _LENGTH_FINISH_REASONS,
+    AgentLoop,
+    TurnResult,
+    _answer_room,
+    _composed_skill_name,
+)
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
@@ -37,7 +43,7 @@ from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedM
 from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
-from zakcode.tools.base import SkillLoad, SkillResolver
+from zakcode.tools.base import SampleCutOff, SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
 
 __version__: str = _pkg_version("zakcode")
@@ -1720,6 +1726,11 @@ class Agent:
         capable coder even when the current turn is on the cheap one. The usage is tagged for the
         ``/cost`` per-model breakdown and folded into the shared turn-tree budget, so a
         deliberation's cost is visible and bounded like any other model call — never hidden.
+
+        A completion that stopped at the output limit raises
+        :class:`~zakcode.tools.base.SampleCutOff` after its spend is recorded. The main loop
+        continues such a reply itself; this call has no continuation, so the tool is told and
+        cannot pass a fragment off as a finished answer.
         """
         provider, _model = self._resolve_task_provider("deep_code")
         result = await provider.acomplete(
@@ -1731,6 +1742,8 @@ class Agent:
                 self._shared_budget.add_usage(
                     result.usage.cost_usd, result.usage.total_tokens, result.usage.cost_unpriced
                 )
+        if result.finish_reason in _LENGTH_FINISH_REASONS:
+            raise SampleCutOff(result.text)
         return result.text
 
     async def _load_skill_body(

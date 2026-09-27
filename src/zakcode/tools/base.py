@@ -165,11 +165,29 @@ class Sampler(Protocol):
     ``None`` on :class:`ToolContext` when no provider is wired (a bare/test loop), so a
     model-using tool degrades to a clean error instead of crashing. ``runtime_checkable`` so
     pydantic can validate the field structurally.
+
+    A completion that stopped at the output limit raises :class:`SampleCutOff` rather than
+    returning, because what arrived is a fragment and the caller must not mistake it for a
+    finished answer.
     """
 
     async def __call__(
         self, prompt: str, *, system: str | None = None, temperature: float = 0.0
     ) -> str: ...
+
+
+class SampleCutOff(Exception):
+    """A :class:`Sampler` completion stopped at the output limit instead of finishing.
+
+    ``text`` is whatever answer text arrived before the cut. On a reasoning model it is often
+    empty or a sentence or two: the hidden reasoning is charged against the same limit and can
+    use nearly all of it. The limit ran out; that says nothing about whether the model could
+    answer, so a caller reports it as a budget outcome, not as a failure to answer.
+    """
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__("the completion was cut off at the output limit")
+        self.text = text
 
 
 class SkillLoad(BaseModel):
@@ -665,6 +683,7 @@ __all__ = [
     "ToolContext",
     "SubAgentSpawner",
     "Sampler",
+    "SampleCutOff",
     "SkillLoad",
     "SkillResolver",
     "ToolResult",
