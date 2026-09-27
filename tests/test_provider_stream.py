@@ -452,7 +452,7 @@ async def test_midstream_exception_mapped_to_taxonomy(monkeypatch: pytest.Monkey
 
 
 async def test_stream_keeps_a_bounded_sample_of_raw_deltas(monkeypatch: Any) -> None:
-    # The loop reads this when a completion delivers nothing (2026-08-28, coach: 622 tokens
+    # The loop reads this when a completion delivers nothing (2026-08-28: 622 tokens
     # generated, no text/thinking/tool call) — every field the backend sent, head and tail.
     usage = SimpleNamespace(prompt_tokens=1, completion_tokens=5, total_tokens=6)
     chunks = [_chunk(content=c) for c in "abcd"] + [
@@ -474,7 +474,7 @@ async def test_stream_keeps_a_bounded_sample_of_raw_deltas(monkeypatch: Any) -> 
 
 
 # ── the streaming stall deadline (ADR-0120, Zak-Code #176) ────────────────────
-# Measured on the zc-03 pod: a streaming response's HEADERS arrive in 0.12-2.0s at every
+# Measured on a serving pod: a streaming response's HEADERS arrive in 0.12-2.0s at every
 # prompt size while the first DATA chunk waits out the whole prefill (0.29s at 5k prompt
 # tokens, 25.5s at 22k, 126.1s at 60k). A socket-level read timeout is satisfied by the
 # headers and never fires again, so a backend that sent headers and then nothing held one
@@ -526,7 +526,7 @@ async def test_a_stream_that_never_sends_a_chunk_is_timed_out(
     message = str(excinfo.value)
     assert "the first chunk never did" in message
     assert "ZAKCODE_STREAM_STALL_TIMEOUT" in message
-    # The loop's retry notice reads this, not the message (g-375-17).
+    # The loop's retry notice reads this, not the message.
     assert excinfo.value.bound == "ZAKCODE_STREAM_STALL_TIMEOUT"
     assert stream.closed  # the socket is released, not leaked
 
@@ -611,7 +611,7 @@ def test_stream_stall_timeout_resolution_prefers_the_explicit_value() -> None:
 
 
 # ── the first chunk's bound is sized to the prompt (ADR-0248) ─────────────────
-# The first gap covers the prefill, and a prefill is as long as its prompt: on zakpod1
+# The first gap covers the prefill, and a prefill is as long as its prompt: on a pod
 # (70-90 tok/s) a cold full-context prefill is 20-25 minutes, so the fixed 600s bound cut
 # every such call off with zero chunks. The first chunk's bound starts at the stall floor,
 # grows with the prompt at the slowest prefill this provider has measured, and never
@@ -768,7 +768,7 @@ def test_the_rate_is_charged_at_least_one_batch_and_only_rises() -> None:
     assert provider._prefill_seconds_per_token == pytest.approx(0.0125)
     assert LiteLLMProvider._uncached_fraction(None) == 1.0
     assert LiteLLMProvider._uncached_fraction(Usage(prompt_tokens=0)) == 1.0
-    # zakpod1 reports its cache reads (coach's session 2026-09-24: 138 of 143 calls).
+    # A pod reports its cache reads (measured session 2026-09-24: 138 of 143 calls).
     reported = Usage(prompt_tokens=112_249, cache_read_tokens=111_195)
     assert LiteLLMProvider._uncached_fraction(reported) == pytest.approx(1_054 / 112_249)
 

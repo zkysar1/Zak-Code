@@ -126,7 +126,7 @@ class _VerbatimDumpTool(_BigDumpTool):
 
 
 def test_a_verbatim_result_is_never_clamped(tmp_path: Path) -> None:
-    # 2026-08-28 (coach, zc-03): a 37,875-char /boot body clamped to 6 KB lost Steps 0–11.
+    # 2026-08-28: a 37,875-char /boot body clamped to 6 KB lost Steps 0–11.
     payload = (
         "## Step 0\n" + "A" * 10_000 + "\n## Step 5: THE-MIDDLE\n" + "B" * 10_000 + "\n## Step 12\n"
     )

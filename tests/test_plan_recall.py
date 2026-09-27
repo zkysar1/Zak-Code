@@ -136,7 +136,8 @@ def test_plan_recall_is_registered_read_only_with_its_alias() -> None:
     tool = registry.get("plan_recall")
     assert tool is not None and tool.spec.required_permission == PermissionTier.READ_ONLY
     assert registry.get("plan_history") is tool
-    # "recall" stays free: the persistence boundary reserves it for a Mind's own memory tool.
+    # "recall" stays free: the persistence boundary reserves it for a host
+    # framework's own memory tool.
     assert registry.get("recall") is None
 
 

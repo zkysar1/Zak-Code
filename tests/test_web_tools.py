@@ -292,7 +292,7 @@ async def test_a_search_that_found_nothing_is_an_empty_result_not_a_failure(
 ) -> None:
     """``ddgs`` RAISES on a legitimately empty search, and we used to pass that on as a fault.
 
-    Measured on the coach rig 2026-09-10: a real research turn got "DuckDuckGo search failed:
+    Measured on a local rig 2026-09-10: a real research turn got "DuckDuckGo search failed:
     No results found." with the rail "may be rate-limiting; retry shortly" — a wrong diagnosis
     on the one case where retrying is exactly the wrong move, and a tool ERROR (which the
     stuck ladder counts) charged against a search that worked fine.

@@ -1,4 +1,4 @@
-"""The discovery ledger: the mind accumulates what the vessel's projection cannot hold.
+"""The discovery ledger: the host framework accumulates what the vessel's projection cannot hold.
 
 ``discoveryPerception`` is rebuilt from scratch every perception tick and bounded at the
 character's bubble, so an entity that is explored and then walked away from VANISHES from the
@@ -84,7 +84,7 @@ def test_the_unlock_is_reported_once_not_every_round(tmp_path: Path) -> None:
 
 
 def test_walking_away_does_not_re_lock(tmp_path: Path) -> None:
-    """THE POINT OF THE MODULE: the vessel prunes on departure, the mind must not."""
+    """THE POINT OF THE MODULE: the vessel prunes on departure, the host framework must not."""
     path = discovery_path(tmp_path)
     fold_observation(path, _envelope({"fountain": _row(touch=1), "gate": _row(touch=3)}))
 

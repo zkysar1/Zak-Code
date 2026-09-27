@@ -317,10 +317,10 @@ async def test_pre_hook_cannot_rewrite_into_an_undeclared_install(tmp_path: Path
 
 
 async def test_pre_hook_env_prepend_keeps_an_approved_install_runnable(tmp_path: Path) -> None:
-    # Field incident 2026-08-28 (coach, zc-03): a Mind deployment's agent-env hook rewrites
+    # Field incident 2026-08-28: a framework deployment's agent-env hook rewrites
     # EVERY bash command (prepends env assignments), and the post-rewrite re-check re-asserted
     # the dependency floor ABSOLUTELY — so an install the operator had approved at the prompt
-    # seconds earlier was hard-blocked, on every retry, on every Mind box. The floor is a
+    # seconds earlier was hard-blocked, on every retry, on every deployed box. The floor is a
     # smuggle guard: it judges what the rewrite INTRODUCED, and never re-litigates targets
     # the authorized original already carried.
     tool = _RecordingTool("bash", PermissionTier.DANGER_FULL_ACCESS)

@@ -303,8 +303,8 @@ def test_restart_marks_the_new_process_as_a_restart(
 
 
 def test_an_unattended_restart_with_open_steps_continues_the_plan(tmp_path: Path) -> None:
-    """coach-w3 (2026-08-29): a doom-loop end, the restart into the next build, then 46
-    minutes at the prompt with 20 of 23 steps open — nobody types at a worker Body."""
+    """Field incident (2026-08-29): a doom-loop end, the restart into the next build, then 46
+    minutes at the prompt with 20 of 23 steps open — nobody types at a worker session."""
     line = cli._unattended_continuation(
         _unattended_agent(tmp_path), restarted="new-build", stop_reason=None
     )

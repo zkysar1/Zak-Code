@@ -1,6 +1,6 @@
 """An empty completion names what the backend actually sent.
 
-Measured 2026-08-28 (coach, zc-03): six silences in one boot — "622 tokens generated, none
+Measured 2026-08-28: six silences in one boot — "622 tokens generated, none
 delivered" — with no text, no reasoning, no tool call, and nothing in the trace to say which
 channel the tokens took or how the response ended. The empty-completion note now carries the
 backend's finish reason, the buffered message object, and (streaming) the provider's sample of
@@ -95,7 +95,7 @@ def test_streaming_empty_completion_note_carries_the_stream_sample(tmp_path: Pat
 
 def test_the_sample_is_found_through_the_provider_wrapper(tmp_path: Path) -> None:
     # The CLI hands the loop TextToolCallingProvider(LiteLLMProvider(...)); the sample lives
-    # on the inner provider. Measured 2026-08-28 (coach, build 92c9a06): every silence's note
+    # on the inner provider. Measured 2026-08-28 (build 92c9a06): every silence's note
     # read ``stream: null`` because only the wrapper was asked.
     silent = LLMResult(
         finish_reason="stop",

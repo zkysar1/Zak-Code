@@ -3,7 +3,7 @@
 Every original consumer of the say contract sits BETWEEN turns (the REPL's idle wait,
 the serve driver's consumer beat) — but a perpetual-loop deployment's whole session is
 ONE turn (one /start, then Stop-hook vetoes without end), so a message written mid-turn
-starved forever (measured on a live Mind: an operator directive sat unconsumed for 3
+starved forever (measured on a live workspace: an operator directive sat unconsumed for 3
 days). The main loop now polls the inbox at every iteration boundary and folds a
 pending message in as a framed user message; sub-agent loops never do.
 
@@ -170,7 +170,7 @@ async def test_a_typed_line_reaches_this_loop_in_process(tmp_path: Path) -> None
 async def test_a_typed_line_never_reaches_a_sibling_loop_on_the_same_workspace(
     tmp_path: Path,
 ) -> None:
-    """Two sessions share one workspace (a Mind reducer and its worker Bodies). A line
+    """Two sessions share one workspace (a coordinating session and its worker sessions). A line
     typed at A must not be deliverable to B — the failure the file slot produced."""
     loop_a, session_a = _loop(_Recording([_DONE]), tmp_path)
     loop_b, session_b = _loop(_Recording([_DONE]), tmp_path)

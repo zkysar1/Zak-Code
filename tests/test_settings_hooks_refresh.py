@@ -1,6 +1,6 @@
 """ADR-0079: settings.json hooks are re-read at the next turn when the file changes.
 
-A Mind pulls framework updates by git while its sessions run for hours; a gate that
+A host framework pulls updates by git while its sessions run for hours; a gate that
 lands in ``.claude/settings.json`` mid-session must fire from the next turn on, not
 after the next restart (measured 2026-08-29: a store-write guard promoted onto a live
 deployment was invisible to all four running sessions).

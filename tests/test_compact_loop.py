@@ -87,7 +87,7 @@ def _history(n: int) -> list[Message]:
 
 def test_summarize_sends_the_rendered_transcript_as_one_user_message(tmp_path: Path) -> None:
     # ADR-0082: never the raw role-tagged messages — a small model handed those continues
-    # the dialogue instead of summarizing it (measured 2026-08-29, a 27B reducer).
+    # the dialogue instead of summarizing it (measured 2026-08-29, a 27B summarizer).
     provider = _SummarizerProvider(["the summary"], tokens=100)
     loop = _loop(provider, tmp_path)
     history = _history(3)
@@ -150,7 +150,7 @@ def test_position_note_is_empty_without_a_plan_or_pages(tmp_path: Path) -> None:
 
 class _BusyThenSummarizing(_SummarizerProvider):
     """Rate-limited for the first ``busy`` calls, then a canned summary — a pod with
-    every slot taken (five agents on four engines, coach 2026-08-29)."""
+    every slot taken (five agents on four engines, 2026-08-29)."""
 
     def __init__(self, busy: int) -> None:
         super().__init__(["the summary"], tokens=100)
@@ -187,7 +187,7 @@ def test_a_streaming_turn_says_the_summarizer_is_waiting_on_a_rate_limit(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     """ADR-0100. The summarizer's retry loop returns a value, so a streaming turn used
-    to show NOTHING for the whole wait — measured 2026-08-29 (coach reducer): 17 minutes
+    to show NOTHING for the whole wait — measured 2026-08-29 (coordinating session): 17 minutes
     with no socket, no event and no line, before "summarizer failed" printed. The
     streaming path now runs the compaction as a task and relays each retry notice as an
     AgentStatus WHILE the task is pending — before the compaction outcome, not after."""
@@ -548,8 +548,8 @@ def test_the_summarizer_reads_a_skill_turn_by_its_head_and_tail() -> None:
 
 
 def test_the_note_says_when_the_turn_s_skill_was_summarized_away(tmp_path: Path) -> None:
-    """ADR-0238. On a worker Body the loop skill's only copy was summarized mid-lap at three
-    compactions of three, and each time the Body ended its turn 7 to 19 rows later."""
+    """ADR-0238. On a worker session the loop skill's only copy was summarized mid-lap at three
+    compactions of three, and each time the session ended its turn 7 to 19 rows later."""
     provider = _SummarizerProvider(["the summary"], tokens=100_000)
     loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
     loop._skill_pages["worker-loop"] = None  # a whole skill is listed without pages (ADR-0192)
@@ -638,7 +638,7 @@ def test_compact_now_elides_old_tool_outputs_when_the_summarizer_fails(tmp_path:
 
 
 def test_elide_now_reaches_the_tail(tmp_path: Path) -> None:
-    # The shape that killed a worker Body (coach, 2026-08-29): the LAST tool result was an
+    # The shape that killed a worker session (2026-08-29): the LAST tool result was an
     # 87 KB skill load, nothing was old enough to summarize, and every retry re-overflowed.
     provider = _SummarizerProvider(["summary"], tokens=100_000)
     loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
@@ -755,7 +755,7 @@ def test_summarizer_calls_reach_the_session_and_the_budget(tmp_path: Path) -> No
 
 
 def test_the_compaction_row_says_what_it_cost(tmp_path: Path) -> None:
-    # Measured 2026-09-23 (a 27B worker Body): 355 s between the last trace row and a
+    # Measured 2026-09-23 (a 27B worker session): 355 s between the last trace row and a
     # compaction's boundary, with nothing saying whether the PreCompact hooks or the
     # summarizer took it. The row now carries both.
     provider = _PricedSummarizerProvider(["summary"], tokens=100_000)
@@ -828,7 +828,7 @@ def test_a_model_free_elision_row_shows_no_summarizer(tmp_path: Path) -> None:
 
 
 def test_the_compaction_row_says_how_big_the_summary_is(tmp_path: Path) -> None:
-    # Measured 2026-09-25 on three worker Bodies (a 27B reasoning model): a compaction's
+    # Measured 2026-09-25 on three worker sessions (a 27B reasoning model): a compaction's
     # summarizer billed 3,256-9,442 completion tokens, of which the installed summary was
     # 35-45%; the rest was the model's thinking. The row now carries the summary's size, in
     # characters and in the tail budget's own token estimate, so the two are separable.

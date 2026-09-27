@@ -36,7 +36,7 @@ from zakcode.providers.routing import thinking_extra_body
 POD = "http://pod.local:8080/v1"
 
 #: The measured refusal, byte-for-byte as ``str(exc)`` renders it (a bytes repr with the
-#: JSON's quotes backslash-escaped) — 2026-09-17, a served Mind on vertex_ai_beta.
+#: JSON's quotes backslash-escaped) — 2026-09-17, a served workspace on vertex_ai_beta.
 VERTEX_TEXT = (
     'litellm.BadRequestError: Vertex_ai_betaException BadRequestError - b\'{\\n  "error": {\\n'
     '    "code": 400,\\n    "message": "Invalid JSON payload received. Unknown name '

@@ -1,7 +1,7 @@
 """ADR-0190: the model-visible tool names are Claude Code's; the old names are aliases.
 
-A served Mind on a small model read ``Skill('aspirations') with args='loop'`` and answered
-it in prose for hours, because its tool list showed ``use_skill`` — ``Skill`` was only an
+A served workspace on a small model read ``Skill('<loop-skill>') with args='loop'`` and
+answered it in prose for hours, because its tool list showed ``use_skill`` -- ``Skill`` was only an
 alias, and a small model calls what it can SEE. These tests pin the rename at every seam:
 the registry advertises Claude Code's names and resolves the old ones; the loop
 canonicalizes a call (name AND Claude Code's argument keys) where it enters, so nothing

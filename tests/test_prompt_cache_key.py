@@ -21,7 +21,7 @@ Separately: llama.cpp reports context overflow as a plain 400 whose phrasing
 ("request (N tokens) exceeds the available context size (M tokens)") is NOT in
 litellm's context-window sniff list (probed 2026-08-28: recognized False), so
 it mapped to a generic BadRequestError and the agent loop's compact-and-retry
-recovery never fired — measured on zakpod1 the same day as 8 failed turns that
+recovery never fired — measured the same day as 8 failed turns that
 should each have been a silent compaction.
 """
 
@@ -73,7 +73,7 @@ def test_prompt_cache_key_absent_when_not_passed() -> None:
 
 
 def test_llama_cpp_context_overflow_maps_to_context_window_exceeded() -> None:
-    """The exact phrasing zakpod1's engines emit, wrapped the way litellm
+    """The exact phrasing a llama.cpp pod's engines emit, wrapped the way litellm
     surfaces it. Must map to ContextWindowExceeded so the loop's
     compact-and-retry recovery fires instead of failing the turn."""
     exc = Exception(

@@ -1,6 +1,6 @@
 """Decompose-on-stuck (ADR-0057): rung 1 adds investigative steps to the plan, not advice.
 
-Field observation 2026-08-28 (coach on zc-03): every "recovering: no progress — nudging a
+Field observation 2026-08-28: every "recovering: no progress — nudging a
 rethink" was the cue that the task needed MORE decomposition — the model needed steps on
 its list, not a paragraph telling it to think differently. So the stuck evidence the
 tracker already holds (which calls keep failing, whether the same result keeps being
@@ -234,7 +234,7 @@ def test_the_models_own_open_steps_still_hold_the_turn(tmp_path: Path) -> None:
 
 
 def test_repeated_outcome_gets_a_re_measurement_step(tmp_path: Path) -> None:
-    # The coach shape (ADR-0038): the same probe output re-measured with a different comment
+    # The measured shape (ADR-0038): the same probe output re-measured with a different comment
     # each time — nothing errors, so the evidence is the repeat itself, not a failing call.
     provider = _ScriptByCallProvider(
         lambda n: LLMResult(tool_calls=[_c(f"c{n}", "probe", command=f"# probe {n}\ngit refs")])

@@ -712,7 +712,7 @@ def test_facade_gate_allows_the_harness_self_fix_in_autonomous(tmp_path) -> None
 
 
 def test_shell_redirections_are_not_package_names() -> None:
-    # Field incident 2026-08-28 (coach, zc-03): 'pip install espn-api 2>&1 | tail -5' flagged
+    # Field incident 2026-08-28: 'pip install espn-api 2>&1 | tail -5' flagged
     # phantom undeclared package '2' — the '&' segment-split leaves a '2>' token, whose
     # spec-parse reads the fd digits as a name. Redirections are shell plumbing: a fused form
     # ('>out.log', '2>/dev/null') is skipped whole, and a BARE operator ('2>', '>>', '<')

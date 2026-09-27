@@ -1,4 +1,4 @@
-"""Tests for the ``save_rule`` tool and its storage primitive (g-368-14).
+"""Tests for the ``save_rule`` tool and its storage primitive.
 
 ``save_rule`` is the WRITE half of the rules lane ``read_rule`` already reads. The pair is
 the point, so these tests pin the ROUND TRIP — a rule authored by the tool is discovered,

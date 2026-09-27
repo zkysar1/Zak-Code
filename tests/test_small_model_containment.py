@@ -137,7 +137,7 @@ def test_degenerate_arguments_are_vetoed_not_executed(tmp_path: Path) -> None:
     assert "was not executed" in blocks[0].output
     assert not (tmp_path / "out.py").exists()
     assert loop._turn_struggle is True  # zakpick sees a struggle signal
-    # g-357-14: legitimate content can trip the veto (a fixture of identical rows); the rail
+    # Legitimate content can trip the veto (a fixture of identical rows); the rail
     # names the way out — under the ceiling per call, then append — instead of leaving a
     # model retrying the same correct call into the stuck ladder.
     assert "If the repetition is INTENDED content" in blocks[0].output
@@ -569,7 +569,7 @@ def test_streaming_surfaces_the_route_and_the_text_only_count(tmp_path: Path) ->
 
 
 def _veto_once_hook() -> Any:
-    """A Stop-hook stand-in: veto the first turn end, allow after (the Mind loop shape)."""
+    """A Stop-hook stand-in: veto the first turn end, allow after (the framework loop shape)."""
     from zakcode.hooks import TurnEndResult
 
     vetoes = [0]
@@ -596,7 +596,7 @@ def test_parroted_completion_gets_the_broken_record_rail(tmp_path: Path) -> None
         ],
         tmp_path,
     )
-    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.turn_end_vetoable = True  # the framework loop runs with a vetoable Stop seam
     loop.hook_manager.register_turn_end(_veto_once_hook())
     result = asyncio.run(loop.arun_turn("keep the loop going"))
     assert result.stop_reason == "completed"
@@ -619,7 +619,7 @@ def test_distinct_completions_are_not_parroting(tmp_path: Path) -> None:
         ],
         tmp_path,
     )
-    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.turn_end_vetoable = True  # the framework loop runs with a vetoable Stop seam
     loop.hook_manager.register_turn_end(_veto_once_hook())
     result = asyncio.run(loop.arun_turn("keep the loop going"))
     assert result.stop_reason == "completed"
@@ -628,7 +628,7 @@ def test_distinct_completions_are_not_parroting(tmp_path: Path) -> None:
 
 def test_short_repeats_stay_below_the_floor(tmp_path: Path) -> None:
     loop = _loop([LLMResult(text="Done."), LLMResult(text="Done.")], tmp_path)
-    loop.turn_end_vetoable = True  # the Mind loop runs with a vetoable Stop seam
+    loop.turn_end_vetoable = True  # the framework loop runs with a vetoable Stop seam
     loop.hook_manager.register_turn_end(_veto_once_hook())
     result = asyncio.run(loop.arun_turn("quick check"))
     assert result.stop_reason == "completed"

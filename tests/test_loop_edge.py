@@ -816,7 +816,7 @@ class _OperatorOnlyStart:
 @pytest.mark.asyncio
 async def test_the_sweep_asks_the_resolver_whose_skill_the_ended_turn_ran(tmp_path: Path) -> None:
     # The helper takes the set as an argument; this pins that the LOOP passes the real one.
-    # Without it the stored marker tells a served mind to reload /start with a tool that
+    # Without it the stored marker tells a served workspace to reload /start with a tool that
     # refuses it, on every later turn of the session.
     frame = _START_FRAME + _START_BODY
     loop = AgentLoop(
@@ -841,7 +841,7 @@ async def test_the_sweep_asks_the_resolver_whose_skill_the_ended_turn_ran(tmp_pa
 
 @pytest.mark.asyncio
 async def test_skill_turn_body_is_elided_once_the_turn_ends(tmp_path: Path) -> None:
-    # Measured 2026-08-27 (Vinheim, g-369-02 boot C): six persisted /start frames of ~23k
+    # Measured 2026-08-27 (Vinheim, boot C): six persisted /start frames of ~23k
     # tokens each took a served session to 128,666 prompt tokens and a provider_error.
     # The body is documentation for the turn that runs it: the model sees it DURING the
     # turn, and the store keeps only the frame AFTER it (ADR-0045).

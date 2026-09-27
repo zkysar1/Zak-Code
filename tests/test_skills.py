@@ -50,8 +50,8 @@ def test_parse_frontmatter_fields_and_body() -> None:
 
 
 def test_parse_frontmatter_block_style_lists() -> None:
-    # YAML block sequences are the MAJORITY spelling in real Claude-Mind skills (measured
-    # 2026-08-20: 60 of 78 in a live Mind used `key:` + `- item` lines) and previously
+    # YAML block sequences are the MAJORITY spelling in real framework skills (measured
+    # 2026-08-20: 60 of 78 in a live workspace used `key:` + `- item` lines) and previously
     # parsed as an empty string — silently dropping triggers routing and the cognitive
     # metadata the extras-preservation promise (audit P1-2) exists to keep.
     fm, body = parse_frontmatter(
@@ -86,7 +86,7 @@ def test_parse_frontmatter_bare_empty_key_stays_empty() -> None:
 
 
 def test_parse_frontmatter_block_list_of_mappings_survives_as_strings() -> None:
-    # A `- name: x` item (list-of-maps, seen in Mind `parameters:` blocks) is kept as the
+    # A `- name: x` item (list-of-maps, seen in framework `parameters:` blocks) is kept as the
     # string "name: x" — imperfect but strictly better than vanishing, and the non-dash
     # continuation lines fall through to the ordinary key parse exactly as before.
     fm, _ = parse_frontmatter("---\nname: a\nparameters:\n  - name: agent\n---\nx\n")
@@ -127,8 +127,8 @@ def test_body_is_lazy(tmp_path: Path) -> None:
     assert skill.body_loaded is True  # now cached
 
 
-# ADR-0245: an edited SKILL.md is read again, as Claude Code does within a session. A Mind's
-# Body runs for hours while its loop merges framework updates, and a body cached for the
+# ADR-0245: an edited SKILL.md is read again, as Claude Code does within a session. A session
+# runs for hours while its loop merges framework updates, and a body cached for the
 # life of the process kept serving it the old text.
 
 
@@ -266,7 +266,7 @@ def test_render_catalog_states_user_provenance_contract() -> None:
     # The catalog block is where the model learns what a <command-name> frame MEANS: a human
     # typed that slash in the terminal, so "user-invocable only" rules are satisfied. Without
     # this sentence a rule-following model refuses the operator's own keystroke (live
-    # 2026-08-19: a Mind's /start declined as "user-only command" — typed by the user).
+    # 2026-08-19: a framework's /start declined as "user-only command" — typed by the user).
     reg = SkillRegistry()
     fm, _ = parse_frontmatter("---\nname: a\ndescription: alpha\n---\nbody a\n")
     reg.add(Skill(fm, Path("a/SKILL.md")))
@@ -395,7 +395,7 @@ def test_save_skill_refuses_out_of_tree_link(tmp_path: Path) -> None:
 
 
 def test_render_catalog_maps_claude_codes_tool_names() -> None:
-    # ADR-0187: a framework written for Claude Code says "Skill('aspirations') with
+    # ADR-0187: a framework written for Claude Code says "Skill('<loop-skill>') with
     # args='loop'" and "ScheduleWakeup(...)" in its hook reasons and script output; a small
     # model could not map those onto use_skill / schedule_wakeup on its own (measured
     # 2026-09-17: hours of text against exactly that reason). One static line says how.

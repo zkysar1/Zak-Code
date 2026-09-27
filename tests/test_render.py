@@ -521,7 +521,7 @@ async def test_render_todo_collapses_a_complete_plan() -> None:
 async def test_render_todo_collapse_ignores_bracketed_tags_that_are_not_rows() -> None:
     # ADR-0110: only glyph ROWS decide the collapse. A hook's "[plan-completion-verdict] …"
     # provenance tag in the tool output used to count as an open step and kept the finished
-    # plan on screen (measured 2026-09-05 in a Mind workspace).
+    # plan on screen (measured 2026-09-05 in a framework workspace).
     renderer, buffer = _make_renderer()
     events: list[AgentEvent] = [
         AgentToolCall(id="td", name="update_plan", arguments={}),
@@ -934,7 +934,7 @@ async def test_pinned_footer_states() -> None:
 async def test_a_rail_that_fired_and_finished_reads_as_recovery_not_struggle() -> None:
     """The word the operator reads must track whether work was left owing (ADR-0122).
 
-    Measured on the coach rig 2026-09-10: a 12-iteration, 10m41s answer that searched the
+    Measured on a local rig 2026-09-10: a 12-iteration, 10m41s answer that searched the
     web, cross-referenced a local roster and came back correctly sourced with a clean
     ``completed`` terminal and ZERO open steps printed "done — struggled", because the
     stuck ladder had nudged once in the middle and the footer collapsed every degraded

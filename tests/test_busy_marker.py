@@ -1,11 +1,11 @@
 """The busy marker (ADR-0060): the turn in flight owns the say inbox.
 
-Two consumers can share one workspace — a Mind runner whose whole night is one turn, and
-a cockpit chat pane polling the inbox every 0.3 s between ITS turns — and the single
-slot then goes to whoever reads first, which is always the idle one. Measured 2026-08-28
-(coach on zc-03): every operator say of a morning reached the cockpit pane, none the
-runner they were steering; one was a control command that flipped the runner's shared
-mode file from under it.
+Two consumers can share one workspace -- a long-running agent whose whole night is one
+turn, and a cockpit chat pane polling the inbox every 0.3 s between ITS turns -- and the
+single slot then goes to whoever reads first, which is always the idle one. Measured
+2026-08-28 on a served workspace: every operator say of a morning reached the cockpit
+pane, none the runner they were steering; one was a control command that flipped the
+runner's shared mode file from under it.
 
 A main-loop turn now claims ``<workspace>/.busy`` for its length; idle consumers (the
 REPL mux between turns, the serve consumer beat) stand back while a FRESH marker names

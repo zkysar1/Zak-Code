@@ -184,7 +184,7 @@ def test_session_info_splits_usage_per_model() -> None:
 def test_session_info_drops_untagged_usage_from_the_split() -> None:
     """Untagged entries never become a key, so every key prices; the remainder is derivable.
 
-    This is the g-373-45 case: a meter reading only ``usage`` sees a sum whose model id is
+    This is the measured case: a meter reading only ``usage`` sees a sum whose model id is
     empty by construction and buckets the lot as unpriced. The split must contain only real
     model ids, and must NOT silently absorb untagged tokens under one of them.
     """
@@ -202,7 +202,7 @@ def test_session_info_drops_untagged_usage_from_the_split() -> None:
 def test_session_info_counts_calls_not_messages() -> None:
     """One call per recorded usage entry, side calls included; messages are not calls.
 
-    g-373-152: a meter sizes the ending reserve per call, so it needs the number of calls
+    A meter sizes the ending reserve per call, so it needs the number of calls
     a window's draw paid for. Here two messages and four calls disagree on purpose.
     """
     session = Session(cwd="/work", model="openai/gpt-4o")

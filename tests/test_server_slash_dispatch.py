@@ -2,10 +2,10 @@
 through ``Agent.compose_skill_turn`` exactly like the CLI: the say consumer, ``POST /chat``
 and ``POST /chat/stream``.
 
-The field finding: a served Mind could never be STARTED. Its framework's boot command
+The field finding: a served workspace could never be STARTED. Its framework's boot command
 (``/start <agent> --mode assistant``) is a user-invocable-only skill and the server passed
 raw text to the turn, so the model refused its own boot command as self-invocation. A
-headless deployment (systemd ``mind-serve@``, a recipe writing ``.say``) has only these doors.
+headless deployment (a systemd service, a recipe writing ``.say``) has only these doors.
 
 Pinned here: an invoked skill's provenance-framed body IS the turn (nudge left queued); a
 denied / unreadable skill runs NO turn (``/chat`` 403 / 500; stream + bus get ``status`` +

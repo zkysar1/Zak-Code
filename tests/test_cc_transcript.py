@@ -90,7 +90,7 @@ def test_assistant_line_shape_matches_reader_expectations() -> None:
 
 
 def test_tool_use_block_is_findable_with_name_and_input() -> None:
-    """Mirrors aspirations-rejection-audit.py: scan content for a named tool_use + input."""
+    """Mirrors a transcript auditor: scan content for a named tool_use + input."""
     transcript = render_claude_code_transcript(_session())
     found = None
     for evt in _lines(transcript):

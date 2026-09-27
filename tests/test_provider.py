@@ -338,8 +338,9 @@ def test_map_error_retries_transient_infra_errors() -> None:
 def test_map_error_retries_a_502_however_litellm_names_it() -> None:
     # ADR-0076: litellm's BadGatewayError subclasses APIStatusError, NOT ServiceUnavailableError,
     # so the MRO name-match missed it and a pod engine restart (502 upstream_unavailable) ended
-    # a Mind runner's turn as a non-vetoable provider_error. Any 5xx status_code is the server's
-    # fault and transient: it retries under the loop's backoff horizon, whatever the class name.
+    # a workspace runner's turn as a non-vetoable provider_error. Any 5xx
+    # status_code is the server's fault and transient: it retries under the loop's
+    # backoff horizon, whatever the class name.
     for name, code in (("BadGatewayError", 502), ("SomeFutureVendorError", 504), ("APIError", 500)):
         exc = type(name, (Exception,), {"status_code": code})("upstream_unavailable")
         mapped = lp.LiteLLMProvider._map_error(exc)
@@ -356,7 +357,7 @@ def test_map_error_retries_a_502_however_litellm_names_it() -> None:
 
 def test_map_error_names_timeouts_truthfully() -> None:
     # A client-timeout is retryable (subclasses RateLimited) but must be distinguishable:
-    # "rate limited" sent the operator to the wrong knob during the zc-03 boot wedges —
+    # "rate limited" sent the operator to the wrong knob during boot wedges —
     # the real remedy was ZAKCODE_REQUEST_TIMEOUT on an uncached slow backend.
     from zakcode.providers.base import TimedOut
 
@@ -373,7 +374,7 @@ def test_map_error_names_timeouts_truthfully() -> None:
 
 def test_map_error_names_an_outage_as_one() -> None:
     # ADR-0224: a refused or dropped connection, or any 5xx, is retried like a rate limit but
-    # named as what it is. zakpod1's router restarted on 2026-09-23 and every body on it said
+    # named as what it is. A pod's router restarted on 2026-09-23 and every session on it said
     # "rate limited", which points the operator at quota instead of at the pod.
     from zakcode.providers.base import ProviderUnavailable
 
@@ -477,7 +478,7 @@ async def test_rate_limit_mapping_reads_litellm_response_headers(
     """The pod's ``Retry-After: 2`` must reach the loop's retry delay. Before
     ADR-0100 only ``exc.response.headers`` was read — empty on every litellm
     429 — so every capacity 429 fell to the capped exponential backoff and
-    polled every 30-60 s; measured in the pod's journal while the Mind reducer
+    polled every 30-60 s; measured in the pod's journal while the coordinating session
     lost a 900 s race for a slot to seven workers."""
     monkeypatch.setattr(lp, "_LiteLLMRateLimitError", _LiteLLMShapedRateLimitError)
 
@@ -605,7 +606,7 @@ def test_capabilities_gate_disables_tools(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_capabilities_unmapped_model_keeps_native_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     # litellm answers supports_function_calling=False for a model it has never mapped;
-    # that is "unknown", not "no". Measured 2026-08-28 (coach): the self-hosted pod's
+    # that is "unknown", not "no". Measured 2026-08-28: the self-hosted pod's
     # ``openai/zds-…`` models were demoted to the text tool protocol on that answer.
     def unmapped(model: str) -> dict[str, Any]:
         raise Exception("This model isn't mapped yet.")

@@ -51,7 +51,7 @@ def test_litellm_string(model: str, source: str, expected: str) -> None:
 
 
 def test_source_defaults_to_openai() -> None:
-    # Was "groq" until that provider was retired (g-369-295).
+    # Was "groq" until that provider was retired.
     assert ZakpickModel(model="gpt-4o-mini").source == "openai"
     assert ZakpickModel(model="gpt-4o-mini").litellm_string == "openai/gpt-4o-mini"
 
@@ -66,7 +66,7 @@ def test_default_category_models_cover_every_category() -> None:
 
 
 def test_defaults_are_all_first_party_openai() -> None:
-    """Every category defaults to gpt-4o-mini since Groq was retired (g-369-295).
+    """Every category defaults to gpt-4o-mini since Groq was retired.
 
     The cost/capability tier split COLLAPSED with that provider: the cheap tier was
     Groq's open models, and gpt-4o-mini is this repo's own twice-measured choice
@@ -87,7 +87,7 @@ def test_default_avoids_tools_unreliable_model() -> None:
 
     s = Settings(default_model="zakpick", workspace_root=".")
     # Positive control: the flag still discriminates. Every registry row carrying it was a
-    # Groq row, so after g-369-295 the registry population is zero and a registry-keyed
+    # Groq row, so after the retirement the registry population is zero and a registry-keyed
     # control here would be vacuous (see test_model_auto's synthetic-capabilities tests).
     assert Capabilities(supports_tools=True, tools_unreliable=True).tools_unreliable is True
     for category in ("quick_code", "deep_code", "delegate", "plan"):
@@ -256,7 +256,7 @@ def test_agent_zakpick_startup_uses_deep_code_model(tmp_path: Path) -> None:
 
 def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
     # An OVERRIDE supplies the two distinct models. The built-in defaults are uniform since
-    # Groq was retired (g-369-295), so relying on them would stop exercising the per-model
+    # Groq was retired, so relying on them would stop exercising the per-model
     # provider cache this test exists for.
     agent = zakcode.Agent(
         default_model="zakpick",
@@ -271,7 +271,7 @@ def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
 
 
 def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
-    # Distinct models come from an override — the defaults are uniform post-g-369-295, and a
+    # Distinct models come from an override — the defaults are uniform post-retirement, and a
     # uniform pair could not show that _active_model TRACKS the category.
     agent = zakcode.Agent(
         default_model="zakpick",

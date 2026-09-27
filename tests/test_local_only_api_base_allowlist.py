@@ -6,7 +6,7 @@ to metered providers. Measured 2026-08-21 against a litellm gateway fronting
 deepinfra/groq/openai: the call was NOT refused.
 
 The allowlist is opt-in: empty keeps the historical behavior so no working config starts
-refusing (guard-1562); non-empty makes an unlisted base count as metered.
+refusing; non-empty makes an unlisted base count as metered.
 """
 
 from __future__ import annotations

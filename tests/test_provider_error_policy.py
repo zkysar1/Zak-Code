@@ -1,4 +1,4 @@
-"""Both branches of the live-suite skip/fail discriminator, executed (g-373-81).
+"""Both branches of the live-suite skip/fail discriminator, executed.
 
 The diagnosis that produced this policy was read out of source by three agents;
 none of them ever RAN either branch. These tests are that execution, and they
@@ -6,7 +6,7 @@ need no live provider: every condition is constructed directly from the taxonomy
 
 Each "must FAIL" case is paired with a healthy-subject control that must still
 SKIP, so a policy that simply failed everything could not pass this file
-(guard-3366).
+(healthy-subject control).
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def test_these_must_still_skip(exc: BaseException) -> None:
 
 
 def test_quota_text_flips_an_otherwise_identical_rate_limit() -> None:
-    """Same class, same construction -- only the message differs (g-373-80)."""
+    """Same class, same construction -- only the message differs."""
     transient = RateLimited("Rate limit reached for gpt-4o-mini", retry_after=20.0)
     exhausted = RateLimited(
         "RateLimitError: OpenAIException - You exceeded your current quota, "

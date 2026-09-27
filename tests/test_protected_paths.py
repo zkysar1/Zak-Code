@@ -348,7 +348,7 @@ def test_settings_deny_rules_reprotect_agent_config() -> None:
 
 
 # ── 7. relative arguments resolve against the workspace before the scan (ADR-0031) ─
-# The Mind-shaped glob ``*/.claude/skills/start/*`` needs a parent segment (CC matches
+# The framework-shaped glob ``*/.claude/skills/start/*`` needs a parent segment (CC matches
 # absolute paths). Without resolution the relative spelling of the SAME file walked past it.
 
 

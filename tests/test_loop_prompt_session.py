@@ -62,7 +62,7 @@ def test_build_system_keys_the_guide_fold_by_the_sessions_first_user_message(
 def test_a_compaction_leaves_the_fold_where_the_first_ask_put_it(tmp_path: Path) -> None:
     # ADR-0233: a compaction summarizes the first ask away. Read from the history after that,
     # the task was whatever user message the compaction kept, and the system prompt moved
-    # (measured on a Mind: about 51,600 characters in, at every compaction). The task is
+    # (measured on a served workspace: about 51,600 characters in, at every compaction). The task is
     # pinned on the session the first time it is read, so the prompt holds.
     import asyncio
 

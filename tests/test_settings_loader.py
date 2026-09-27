@@ -158,12 +158,12 @@ def test_load_settings_user_prompt_submit_registers(tmp_path: Path) -> None:
     assert specs[0].event is HookEvent.USER_PROMPT_SUBMIT
 
 
-# ── a whole claude-mind hooks block loads with zero unknown events ─────────
+# ── a whole host-framework hooks block loads with zero unknown events ────────
 
-#: Every event claude-mind wires in its own ``.claude/settings.json``, read from a
-#: live Mind tree (2026-09-03). Pinning the literal set is the point: any of these
-#: that neither registers nor skips is a hook the Mind configured and this host
-#: silently dropped -- the ADR-0025 failure class, one layer up.
+#: Every event a host framework wires in its own ``.claude/settings.json``, read from
+#: a live framework tree (2026-09-03). Pinning the literal set is the point: any of
+#: these that neither registers nor skips is a hook the framework configured and this
+#: host silently dropped -- the ADR-0025 failure class, one layer up.
 _CLAUDE_MIND_EVENTS = (
     "PreToolUse",
     "PostToolUse",

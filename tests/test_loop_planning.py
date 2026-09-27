@@ -719,7 +719,7 @@ async def test_judge_failure_is_fail_open() -> None:
 @pytest.mark.asyncio
 async def test_composed_skill_turn_is_never_judged() -> None:
     # ADR-0059: a /skill turn's "goal" is the skill body, and the plan is a phase checklist
-    # that tracks it — coach's six-step /start plan scored 12% coverage against ~65 KB of
+    # that tracks it — a six-step /start plan scored 12% coverage against ~65 KB of
     # ceremony. No judge call at all: the scripted provider sees plan, then done.
     provider = _Scripted(
         [_plan_call([{"title": "Phase 1", "status": "done", "note": "x"}]), _done()]
@@ -833,7 +833,7 @@ async def test_empty_completion_mid_plan_ends_gave_up_not_done() -> None:
 async def test_a_withheld_batch_still_runs_its_wakeup_call() -> None:
     """ADR-0247: the plan-first gate refuses the write, and the ScheduleWakeup beside it runs.
 
-    Measured 2026-09-24 (coach, zc-03): a stale loop sentinel fired into a session whose stop
+    Measured 2026-09-24: a stale loop sentinel fired into a session whose stop
     had just completed, the model batched its cancel with one Bash call, and the whole batch
     came back "Not executed" — the cancel included. The wake-up slot is session state, not
     the workspace, and a cancel that waits a round trip is a net that fires meanwhile."""

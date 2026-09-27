@@ -5,7 +5,7 @@ The fourth axis, alongside transport (``test_sdk_iface_parity.py``), config
 (``test_sdk_iface_permission_parity.py``). Those three pin interfaces that must
 relay the SDK's :class:`~zakcode.events.AgentEvent` stream FAITHFULLY. The CLI's
 terminal :class:`~zakcode.cli.render.StreamRenderer` is deliberately NOT one of
-them: guard-4547 names it a separate axis — a lossy, human-facing SINK, not a
+them: the renderer is a separate axis — a lossy, human-facing SINK, not a
 relay — so byte-exact event parity is the wrong contract to hold it to.
 
 THE CLAIM

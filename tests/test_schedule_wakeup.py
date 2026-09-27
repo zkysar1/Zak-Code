@@ -1,8 +1,9 @@
 """ADR-0094: ``schedule_wakeup`` — Claude Code's ``ScheduleWakeup`` for a Zak Code session.
 
-A Mind's autonomous loop arms a deadman wake-up before every re-entry and a parked worker
-Body arms an hourly re-poll; Zak Code answered both with ``unknown tool``. Now one wake-up is
-held per session (replace-slot; ``stop`` cancels), the delay is clamped to [60, 3600], the
+A host framework's autonomous loop arms a deadman wake-up before every re-entry and a parked
+worker session arms an hourly re-poll; Zak Code answered both with ``unknown tool``.
+Now one wake-up is held per session (replace-slot; ``stop`` cancels), the delay is
+clamped to [60, 3600], the
 slot is persisted with the session, and the REPL's idle wait hands the due prompt over as a
 ``(harness)`` line — never mid-turn. Hermetic: a fake clock, scripted providers, tmp stores.
 """
@@ -208,9 +209,10 @@ async def test_tool_without_a_prompt_or_without_a_session_errors_cleanly(tmp_pat
 
 
 def test_the_schema_declares_claude_codes_noop_field() -> None:
-    """A Mind's PreToolUse gate refuses an arm without ``noop`` (Claude Code 2.1.280 does),
-    and a model driven by this schema emits no property the schema does not declare — so an
-    undeclared ``noop`` left a parked Body re-issuing the same refused arm (zc-04,
+    """A host framework's PreToolUse gate refuses an arm without ``noop``
+    (Claude Code 2.1.280 does), and a model driven by this schema emits no
+    property the schema does not declare — so an
+    undeclared ``noop`` left a parked session re-issuing the same refused arm (
     2026-09-25: five arms, each with prompt/delaySeconds/reason only, the re-poll never
     armed). The field is part of the tool's contract, as Claude Code's name is."""
     props = ScheduleWakeupTool.spec.parameters["properties"]
@@ -250,10 +252,10 @@ def test_the_tool_answers_to_claude_codes_name_and_its_hooks_fire_on_it() -> Non
     registry = default_registry()
     tool = registry.get("schedule_wakeup")
     assert isinstance(tool, ScheduleWakeupTool)
-    # A Mind's loop calls it as Claude Code names it; the alias routes silently.
+    # A host framework's loop calls it as Claude Code names it; the alias routes silently.
     assert registry.get("ScheduleWakeup") is tool
     assert registry.get("wakeup") is tool
-    # The Mind's PreToolUse gate is written as matcher "ScheduleWakeup": it must fire, and
+    # The host framework's PreToolUse gate is written as matcher "ScheduleWakeup": it must fire, and
     # read the Claude Code tool name on the wire.
     assert HookSpec(event=HookEvent.PRE_TOOL_USE, command=["x"], matcher="ScheduleWakeup").matches(
         "schedule_wakeup"
@@ -268,7 +270,8 @@ def test_the_tool_answers_to_claude_codes_name_and_its_hooks_fire_on_it() -> Non
 
 
 class _ArmsThenStops(Provider):
-    """Call 1 arms a wake-up (as a Mind's loop would, by Claude Code's name); call 2 ends."""
+    """Call 1 arms a wake-up (as a host framework's loop would, by Claude
+    Code's name); call 2 ends."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -387,9 +390,9 @@ def test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace(
     tmp_path: Path,
 ) -> None:
     # ADR-0094 amendment: the busy marker (ADR-0060) guards the say inbox — ONE slot the
-    # whole workspace shares — not the session's own wake-up. Eight Bodies on one checkout
-    # keep the marker fresh around the clock (zc-03, 2026-08-30: 12/12 samples over 60 s),
-    # so a parked Body that stood back behind it never woke.
+    # whole workspace shares — not the session's own wake-up. Eight sessions on one checkout
+    # keep the marker fresh around the clock (2026-08-30: 12/12 samples over 60 s),
+    # so a parked session that stood back behind it never woke.
     _, slot = _slot(_Clock(1_000.0))
     slot.arm(LOOP_SENTINEL, 60)
     inbox = tmp_path / "say"

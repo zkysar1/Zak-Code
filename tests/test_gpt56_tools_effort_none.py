@@ -2,7 +2,7 @@
 ``reasoning_effort="none"`` (ADR-0188).
 
 WHY THIS FILE EXISTS
-Every served Mind since the zakpick OpenAI mix landed (2026-09-01) ran on the
+Every served workspace since the zakpick OpenAI mix landed (2026-09-01) ran on the
 gpt-5-mini FALLBACK, not on the terra/luna it was pinned to: the first tool call of
 each session 400'd — "Function tools with reasoning_effort are not supported for
 gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or

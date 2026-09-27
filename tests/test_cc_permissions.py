@@ -255,7 +255,7 @@ def test_ingestion_is_always_on(tmp_path: Path) -> None:
 
 
 def test_non_string_and_empty_entries_are_recorded_not_dropped(tmp_path: Path) -> None:
-    # g-357-16: ``deny: [123]`` used to load with errors == {} — contradicting the module's
+    # ``deny: [123]`` used to load with errors == {} -- contradicting the module's
     # promise that an unmappable gesture is never silently dropped. Now every entry that
     # cannot even be keyed on its text is recorded under its position.
     _write_permissions(tmp_path, {"deny": [123, "", "   ", "Bash"]})
@@ -292,7 +292,7 @@ def test_skipped_gestures_are_summarised_by_kind() -> None:
 def test_agent_construction_logs_one_summary_warning_not_one_per_gesture(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # g-357-17: a Mind workspace declares dozens of gestures with no mapping here; every Agent
+    # A host framework workspace declares dozens of gestures with no mapping here; every Agent
     # construction emitted one WARNING per gesture (19 measured on 2026-08-26), burying the
     # warnings that matter. One summary at WARNING; the per-gesture detail at DEBUG.
     _write_permissions(
@@ -347,7 +347,7 @@ def test_settings_local_json_permissions_are_also_ingested(tmp_path: Path) -> No
 
 
 def test_write_deny_does_not_block_reading_the_path(tmp_path: Path) -> None:
-    # The Mind-shaped case measured in the fresh-eyes dry-run: deny Edit+Write on a path the
+    # The case measured in the fresh-eyes dry-run: deny Edit+Write on a path the
     # framework REQUIRES agents to read (36 of 44 real gestures were Edit/Write-only). CC leaves
     # the path readable; so must we. Autonomous mode makes the outcome binary (deny vs allow).
     _write_permissions(
@@ -386,7 +386,7 @@ def test_read_deny_blocks_reads_and_writes(tmp_path: Path) -> None:
 
 
 def test_relative_path_argument_binds_parent_prefixed_deny(tmp_path: Path) -> None:
-    # The Mind-shaped rule ``Edit(*/.claude/skills/start/*)`` needs a parent segment (CC matches
+    # A rule like ``Edit(*/.claude/skills/start/*)`` needs a parent segment (CC matches
     # absolute paths). The Agent hands its workspace root to the policy, so the RELATIVE
     # spelling a model actually emits resolves to the absolute form and binds too.
     _write_permissions(

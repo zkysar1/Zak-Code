@@ -85,8 +85,9 @@ async def test_shell_lifecycle_hook_receives_payload(tmp_path: Path) -> None:
 async def test_a_session_start_hook_that_leaves_a_daemon_running_is_over_when_it_exits(
     tmp_path: Path,
 ) -> None:
-    # A mind world's SessionStart hook starts the framework's daemon when none is running. The
-    # daemon redirects all three of its streams, so the hook is over when its own process is.
+    # A framework workspace's SessionStart hook starts the framework's daemon when none
+    # is running. The daemon redirects all three of its streams, so the hook is over when
+    # its own process is.
     # Measured 2026-09-18 on the served path under uvloop: 95.0 s, the hook's whole timeout,
     # against 0.7 s on the stdlib loop (ADR-0197 pins the served process to the stdlib loop).
     bash = find_bash()

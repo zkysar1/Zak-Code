@@ -1,4 +1,4 @@
-"""The served mind's session store lives under the workspace (ADR-0032).
+"""The served workspace's session store lives under the workspace (ADR-0032).
 
 Hermetic: ``HOME``/``USERPROFILE`` point at a throwaway "home" so the assertion that the
 user store stays untouched is a real one, and the app runs against a scripted agent
@@ -94,7 +94,7 @@ def test_terminal_client_default_is_still_the_user_home(fake_home: Path) -> None
 # ===========================================================================
 #
 # `_cc_transcript_path()` renders the FULL conversation for hooks that read
-# `transcript_path`. It rooted at `Path.home()`, so every mind served by one host user
+# `transcript_path`. It rooted at `Path.home()`, so every workspace served by one host user
 # pooled its conversation text into one shared directory — the cross-workspace leak
 # ADR-0032 closed for the store itself while its projection went on bypassing it. These
 # assert the projection now shares the store's lifetime and isolation, and that the
@@ -131,7 +131,7 @@ def test_served_transcript_projection_lands_under_the_workspace(
 
     assert path.parent == ws.resolve() / ".zakcode" / "transcripts"
     assert path.read_text(encoding="utf-8").strip()
-    # The host user's home holds no copy of this mind's conversation.
+    # The host user's home holds no copy of this workspace's conversation.
     assert not (fake_home / ".zakcode" / "transcripts").exists()
 
 

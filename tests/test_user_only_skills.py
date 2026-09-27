@@ -1,7 +1,7 @@
 """User-only skills are invisible to the model's seams (ADR-0109).
 
 Field transcript 2026-09-05: "ok, clear that plan, and lets start from scratch" was classified
-as implying the Mind's ``/start`` — a control command whose own description says "USER-ONLY —
+as implying the framework's ``/start`` — a control command whose own description says "USER-ONLY —
 Claude must NEVER invoke /start" — a ``run /start`` step was seeded, the plan gate refused the
 model's text finish, and the model ran ``use_skill(start)``. Claude Code's
 ``disable-model-invocation: true`` is the machine-readable form of that prose; these tests pin
@@ -11,7 +11,7 @@ loop's plan seeders on both routes.
 
 ADR-0127 closes the gap the first cut left: the side-call could not NAME a user-only command,
 so a request for one was matched to the nearest skill the model MAY run and that got seeded
-(field 2026-09-10: "Start yourself as coach in assistant mode" → ``/prime``, thirty iterations
+(field 2026-09-10: "Start yourself in assistant mode" → ``/prime``, thirty iterations
 inside the wrong skill, then a report that it had started). The commands are now listed to the
 classifier under their own heading, the verdict keeps the name, and the loop hands it to the
 operator with a rail — no step, no backstop.
@@ -65,8 +65,8 @@ Forge it.
 """
 
 
-#: The Mind's real /start description (2026-09-10), so the anchor floor sees what the field
-#: sees: "Start yourself as coach in assistant mode" shares ``assi`` and ``mode`` with it.
+#: The framework's real /start description (2026-09-10), so the anchor floor sees what the field
+#: sees: "Start yourself in assistant mode" shares ``assi`` and ``mode`` with it.
 MIND_START_MD = START_MD.replace(
     "Creates or resumes an agent.",
     "Creates or resumes an agent in reader (read-only), assistant (user-directed), or "

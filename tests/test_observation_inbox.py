@@ -174,14 +174,14 @@ def test_take_observation_end_to_end(tmp_path: Path) -> None:
     assert take_observation(tmp_path) is None
 
 
-# --- the narrator (g-373-07) ------------------------------------------------------------
+# --- the narrator ------------------------------------------------------------
 #
 # "These perceptions just happened": the same envelope in second person, ahead of the raw
 # slices. Ordering is the contract (changes, then place, then company, then what was
 # dropped), and the frame stays in front of all of it — P1 does not bend for prose.
 #
 # None of these slices has a live producer today: changesPerception exists nowhere at all,
-# and the rest reach no mind while the vessel's bridge is armed by nothing. So these
+# and the rest reach no host framework while the vessel's bridge is armed by nothing. So these
 # fixtures ARE the contract until a producer lands, which is the same footing the discovery
 # fold shipped on.
 
@@ -228,8 +228,8 @@ def test_the_frame_is_unchanged_and_always_precedes_the_narration() -> None:
 
 
 def test_changes_lead_place_leads_company() -> None:
-    """The order is the point: what MOVED is the only part a mind cannot re-derive by looking
-    again, so it is never buried under standing state."""
+    """The order is the point: what MOVED is the only part the host framework cannot
+    re-derive by looking again, so it is never buried under standing state."""
     observation = dict(_place_and_company())
     observation["changesPerception"] = {"brief.md": {"previousBytes": 1, "bytes": 2}}
 
@@ -240,7 +240,7 @@ def test_changes_lead_place_leads_company() -> None:
 
 def test_a_change_row_without_byte_counts_still_reports_that_it_changed() -> None:
     """THAT something changed is the perception; how much is detail. A row this consumer
-    cannot read in full must degrade, never vanish — a silently dropped change is a mind
+    cannot read in full must degrade, never vanish — a silently dropped change is the host framework
     believing the world held still."""
     observation = {"changesPerception": {"notes.md": {"unrecognisedShape": True}}}
 
@@ -250,8 +250,9 @@ def test_a_change_row_without_byte_counts_still_reports_that_it_changed() -> Non
 def test_an_empty_census_says_alone_but_an_absent_one_says_nothing() -> None:
     """The discriminating case for company. The producer bounds unitPerception at a census
     radius, so an EMPTY map is a verified 'nobody within it' and an ABSENT one is only
-    silence. Collapsing them would let a mind read an unreported world as a verified-empty
-    one — the same absence-is-not-evidence rule the rest of this module turns on."""
+    silence. Collapsing them would let the host framework read an unreported world as
+    a verified-empty one — the same absence-is-not-evidence rule the rest of this
+    module turns on."""
     empty = narrate_observation(_envelope(observation={"unitPerception": {}}))
     absent = narrate_observation(_envelope(observation={"spatialPerception": {"place": "a field"}}))
 
@@ -273,9 +274,9 @@ def test_the_narration_is_capped_but_the_incompleteness_notice_survives_it() -> 
 
 
 def test_the_raw_slices_still_arrive_in_full_beside_the_narration() -> None:
-    """The narration is an ADDITION, never a summary that replaces the payload. A mind that
-    can only read the narrator's wording can no longer perceive what the narrator did not
-    think to say."""
+    """The narration is an ADDITION, never a summary that replaces the payload.
+    A host framework that can only read the narrator's wording can no longer perceive
+    what the narrator did not think to say."""
     observation = dict(_place_and_company())
     observation["someFutureVerdictPerception"] = {"x": 1}
 
@@ -319,7 +320,7 @@ def test_narrate_observation_tolerates_a_junk_envelope() -> None:
     assert narrate_observation({"observation": "not a map"}) == []
 
 
-# ── the change-merge path (g-373-35) ────────────────────────────────────────────────────
+# ── the change-merge path ────────────────────────────────────────────────────
 
 
 def test_peek_reads_without_consuming_while_read_consumes(tmp_path: Path) -> None:
@@ -380,7 +381,8 @@ def test_merge_changes_keeps_a_row_it_cannot_widen() -> None:
 
 def test_envelope_id_is_recomputable_from_the_same_envelope() -> None:
     """The id is derived from content, so anyone holding the envelope can recompute it.
-    Key order must not matter, or the vessel and the mind would disagree on one envelope."""
+    Key order must not matter, or the vessel and the host framework would disagree
+    on one envelope."""
     a = {"envelopeVersion": OBSERVATION_ENVELOPE_VERSION, "observation": {"nearby": ["a door"]}}
     b = {"observation": {"nearby": ["a door"]}, "envelopeVersion": OBSERVATION_ENVELOPE_VERSION}
     assert envelope_id(a) == envelope_id(b)

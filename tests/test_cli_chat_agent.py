@@ -46,8 +46,8 @@ def test_builder_enables_features(tmp_path: Path) -> None:
     assert agent.extension_manager is not None  # MCP
     assert agent.plugin_report is not None  # plugins discovered
     assert agent.command_registry is not None
-    # Rules are on by default in chat. (Cross-session memory is the Mind's job, not the
-    # harness's — a default chat agent registers no remember/recall tool.)
+    # Rules are on by default in chat. (Cross-session memory is the host framework's job,
+    # not the harness's — a default chat agent registers no remember/recall tool.)
     assert agent.rule_registry is not None
     assert agent.registry.get("remember") is None
     assert agent.registry.get("recall") is None

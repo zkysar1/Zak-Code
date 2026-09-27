@@ -2,8 +2,8 @@
 
 Measured 2026-09-12: ``^description:\\s*(.+)$`` read ``description: >-`` as the string ``>-`` for
 11 of 145 skills, which entered every catalogue as ``- name: >-`` (ADR-0158 second addendum).
-The coach box runs a single stdlib file, so ``coach_choosability.py`` carries a verbatim copy of
-the reader; the parity test pins the two copies to one AST.
+The choosability box runs a single stdlib file, so ``coach_choosability.py`` carries a
+verbatim copy of the reader; the parity test pins the two copies to one AST.
 """
 
 from __future__ import annotations

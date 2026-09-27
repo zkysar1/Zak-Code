@@ -93,7 +93,7 @@ def test_idle_inbox_is_a_noop_beat(tmp_path: Path) -> None:
 
 
 def test_a_queued_nudge_starts_a_turn_on_an_idle_inbox(tmp_path: Path) -> None:
-    """g-373-18: a nudge posted to an IDLE sidecar starts a turn within one beat.
+    """A nudge posted to an IDLE sidecar starts a turn within one beat.
 
     The say inbox used to be the only turn trigger and ``.nudge`` is consumed only from
     inside a turn, so a viewer suggestion sent to an idle vessel waited for a say that
@@ -145,7 +145,7 @@ def test_a_nudge_starts_exactly_one_turn(tmp_path: Path) -> None:
 
 def test_a_say_still_wins_and_keeps_the_nudge_as_its_preamble(tmp_path: Path) -> None:
     """The pre-existing say path is unchanged: when BOTH are queued the say is the turn's
-    message and the nudge is folded in front of it, exactly as before g-373-18."""
+    message and the nudge is folded in front of it, exactly as before the fix."""
     app, store = _build(tmp_path)
     (tmp_path / ".nudge").write_text("the ruined tower\n", encoding="utf-8")
     assert write_say(say_path(tmp_path), "hello there")
@@ -747,7 +747,7 @@ def test_run_stop_route_ends_the_run_with_its_digest(tmp_path: Path) -> None:
     assert endings == ["budget_exhausted"]
 
 
-# ── the cap must end an IN-FLIGHT turn, not wait politely for it (g-369-158) ──
+# ── the cap must end an IN-FLIGHT turn, not wait politely for it ──
 
 
 class _InterruptibleAgent:

@@ -36,7 +36,7 @@ def test_stopwords_never_anchor() -> None:
 
 # ── ADR-0109: a NAME made of everyday words needs a reference shape ────────────────────
 
-# The Mind's control command, description as shipped (abridged to its first sentences).
+# The framework's control command, description as shipped (abridged to its first sentences).
 _START = (
     "start",
     "Creates or resumes an agent in reader (read-only), assistant (user-directed), or "
@@ -48,7 +48,7 @@ _TEST = ("test", "Run the project's test suite and report the failures")
 
 def test_the_incident_string_does_not_anchor_a_skill_named_start() -> None:
     """2026-09-05: 'lets start from scratch' seeded `run /start`; the plan gate then made the
-    model run the Mind's start-an-agent command."""
+    model run the framework's start-an-agent command."""
     assert not implied_skill_anchored("ok, clear that plan, and lets start from scratch", *_START)
     assert not implied_skill_anchored("lets test this quickly before we move on", *_TEST)
 

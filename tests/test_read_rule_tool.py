@@ -1,4 +1,4 @@
-"""Tests for the ``read_rule`` tool — Vinheim Lever A chunk 2 (g-016-82).
+"""Tests for the ``read_rule`` tool — Vinheim Lever A chunk 2.
 
 The tool is the retrieval half of ``lean_rules``: ``render_index()`` names every rule without
 its body, and this is how the model fetches one. So the tests pin BOTH halves — the tool
@@ -95,7 +95,7 @@ def test_tool_is_read_only_and_parallel_safe() -> None:
 def test_index_points_at_the_tool_on_a_real_rules_tree(tmp_path: Path) -> None:
     """The retrieval path must be self-documenting: the index names the tool that fetches.
 
-    Second verification outcome of g-016-82. Without this the index tells the model a rule
+    Second verification outcome. Without this the index tells the model a rule
     exists but not how to read it cheaply, and the lean path silently falls back to
     generic file reads keyed on a path.
     """

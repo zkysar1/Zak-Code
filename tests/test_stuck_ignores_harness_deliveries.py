@@ -1,8 +1,8 @@
 """The stuck ladder counts observations of the world, never the harness's own deliveries
 (ADR-0038, amended 2026-09-18).
 
-Measured on a served Mind loop (gpt-5.6-luna, 2026-09-18, 316 calls). The framework's stop hook
-orders ``Skill('aspirations') with args='loop'``; the harness has already delivered that skill,
+Measured on a served workspace loop (gpt-5.6-luna, 2026-09-18, 316 calls). The framework's stop hook
+orders ``Skill('<loop-skill>') with args='loop'``; the harness has already delivered that skill,
 so the loader answers the model's call with the same "[already loaded]" pointer every time. The
 3rd, 4th and 5th pointer of one turn drew nudge, narrow and step-back although distinct,
 successful work ran between them and the tracker was reset at every veto; the step-back rail
@@ -178,8 +178,9 @@ class _Clock:
 async def test_a_re_armed_wakeup_acknowledges_identically_and_is_not_counted(
     tmp_path: Path,
 ) -> None:
-    """A Mind's loop re-arms its deadman net before EVERY re-entry, by contract. The tool's
-    acknowledgement differs only in a clock time the signature masks, so a healthy loop's
+    """A host framework's loop re-arms its deadman net before EVERY re-entry,
+    by contract. The tool's acknowledgement differs only in a clock time the
+    signature masks, so a healthy loop's
     fourth re-arm in one turn read as a third identical observation."""
     clock = _Clock()
     slot = WakeupSlot(Session(cwd="/w", model="test"), clock=clock)

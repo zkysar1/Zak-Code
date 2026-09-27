@@ -156,7 +156,7 @@ def test_rejected_key_is_named(monkeypatch) -> None:
 def test_tools_unreliable_gates_tool_use_only() -> None:
     """The ``tools_unreliable`` predicate, asserted against SYNTHETIC capabilities.
 
-    These two tests used to pin the flag on Groq rows. Retiring Groq (g-369-295) took
+    These two tests used to pin the flag on Groq rows. Retiring Groq took
     every ``tools_unreliable: True`` entry out of the registry with it, so a
     registry-keyed assertion here would now pass vacuously — the exact defect the
     sibling ``test_decommissioned_flag_actually_discriminates`` was written to prevent.
