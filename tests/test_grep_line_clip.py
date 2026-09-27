@@ -1,6 +1,6 @@
 """A match line is clipped to a window around the match; the whole output is capped (ADR-0130).
 
-Field 2026-09-10, a Mind workspace on a local 35B model: the Mind's stores are JSONL, one
+Field 2026-09-10, a framework workspace on a local 35B model: the framework's stores are JSONL, one
 record per line, and a record can carry a whole knowledge article. Three searches over the
 agent's directory returned 18 matches each of ~10 KB — 900 transcript lines per call — the
 model re-ran near-identical searches three times and the no-progress rail fired. Claude Code's

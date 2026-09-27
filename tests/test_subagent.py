@@ -397,8 +397,9 @@ async def test_child_inherits_extra_workspace_roots(tmp_path: Path, monkeypatch)
 
 async def test_subagent_does_not_refire_session_start(tmp_path: Path) -> None:
     # A sub-agent is a sub-task within the parent's already-started session: it must NOT re-run the
-    # workspace's SessionStart hooks. On a Mind those are a heavy boot, so re-firing them per
-    # sub-agent -- and, worse, concurrently across a parallel delegation -- makes the boots contend
+    # workspace's SessionStart hooks. On a host framework those are a heavy boot,
+    # so re-firing them per sub-agent -- and, worse, concurrently across a parallel
+    # delegation -- makes the boots contend
     # and can make parallel delegation SLOWER than sequential. Regression guard for that.
     from zakcode.hooks import HookEvent, HookManager
 
@@ -425,7 +426,7 @@ async def test_subagent_gets_its_own_empty_hooks_not_the_parents(
 ) -> None:
     # CC-faithful: a sub-agent runs ONLY its own (frontmatter) hooks -- it does NOT inherit the
     # parent's project hooks. The runner builds the child loop with hook_manager=None (-> a fresh
-    # empty HookManager), NOT the parent's, so the parent's per-tool gates (e.g. a Mind's
+    # empty HookManager), NOT the parent's, so the parent's per-tool gates (e.g. a framework's
     # PreToolUse[Write] hooks) + SessionStart boot do not fire per sub-agent.
     import zakcode.agent.subagent as sub
     from zakcode.hooks import HookManager

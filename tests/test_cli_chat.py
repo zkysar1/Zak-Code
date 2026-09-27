@@ -191,7 +191,7 @@ class SkillAgent(FakeAgent):
 def test_chat_headless_slash_dispatches_the_skill(monkeypatch) -> None:
     # `-p "/start sera"` (the cron/systemd boot shape) runs the SKILL as the task — the same
     # dispatch + rendering as the REPL — instead of handing the slash line to the model as
-    # prose (#148: found on the first live Claude-Mind deployment).
+    # prose (#148: found on the first live deployment).
     monkeypatch.setattr(zakcode, "Agent", SkillAgent)
     result = runner.invoke(app, ["cli", "-p", "/start sera"])
     assert result.exit_code == 0
@@ -1806,7 +1806,7 @@ def test_typed_line_mid_turn_is_injected_into_this_process_agent(monkeypatch, tm
     """ADR-0078: the keyboard reaches THIS session's running turn in-process. The workspace
     say slot is a file every session on the workspace polls, so a line typed at one cockpit
     used to land on whichever sibling reached an iteration boundary first (measured on a
-    four-session Mind: the reducer consumed a worker's instruction)."""
+    four-session workspace: the coordinating session consumed a worker's instruction)."""
     import threading
 
     from zakcode.cli import _InputMux

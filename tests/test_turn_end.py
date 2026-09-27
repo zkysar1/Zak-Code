@@ -407,7 +407,7 @@ def test_has_hooks_turn_end_in_process() -> None:
 
 
 async def test_wire_fidelity_stop_hook_contract(tmp_path: Path) -> None:
-    """Contract pin: a script that reads stdin exactly like Mind's stop-hook.sh
+    """Contract pin: a script that reads stdin exactly like a framework's stop-hook.sh
     (json.load(sys.stdin).get('session_id'), .get('last_assistant_message'))
     and emits the decision-block JSON. The full round trip must work."""
     body = (

@@ -1,18 +1,18 @@
-"""Tests for POST /observe — the vessel-to-mind perception intake (Portability P4).
+"""Tests for POST /observe — the vessel-to-agent perception intake (Portability P4).
 
 The receiving half of the border contract the environment server's
 PerceptionBridgeVerticle already ships against. Before this route existed every send
-404'd, so the only way to change what a character mind knew was a PUSH.
+404'd, so the only way to change what a character's host framework knew was a PUSH.
 
 The behaviour worth pinning is where this route deliberately DIFFERS from its siblings:
 /say and /nudge carry a person's words and refuse a second one with 429, because losing
 one is the failure. A perception frame is continuous world state and is worthless once
 superseded, so here the newest frame WINS.
 
-With ONE scoped exception (g-373-35): ``changesPerception`` is carried forward across a
+With ONE scoped exception: ``changesPerception`` is carried forward across a
 supersession instead of being overwritten, because a change is an EVENT rather than a
-reading of current state, and an event dropped before the mind reads it never happened as
-far as the mind is concerned. Everything else stays latest-wins, and the tests below pin
+reading of current state, and an event dropped before the host reads it never happened as
+far as the host is concerned. Everything else stays latest-wins, and the tests below pin
 both halves — the exception and its scope.
 """
 
@@ -82,7 +82,7 @@ def test_observe_latest_wins_and_reports_superseded(tmp_path: Path) -> None:
 
     A stale world frame has no value, so an unread pending frame is overwritten rather
     than protected — and the overwrite is REPORTED, because a sustained `superseded`
-    is the signal that the mind is not keeping up with its vessel.
+    is the signal that the host is not keeping up with its vessel.
     """
     client = _client(tmp_path)
     first = client.post("/observe", json=_envelope(observation={"aPerception": {"v": 1}}))
@@ -98,8 +98,8 @@ def test_observe_merges_change_lists_when_superseding_unread_frame(tmp_path: Pat
     """THE exception to latest-wins, and the reason it is an exception.
 
     A state slice is a reading of the world, so the newest one is simply the truth. A CHANGE
-    is an event, and an event overwritten before the mind reads it never happened as far as
-    the mind is concerned — two envelopes inside one ReAct iteration would report only the
+    is an event, and an event overwritten before the host reads it never happened as far as
+    the host is concerned — two envelopes inside one ReAct iteration would report only the
     second file's change. The `aPerception` assertion is the positive control: it pins that
     the exception is scoped to changes and did not turn every slice into an accumulator.
     """
@@ -153,7 +153,7 @@ def test_observe_widens_byte_span_when_one_entity_changes_twice(tmp_path: Path) 
     """The mapping shape cannot hold two rows for one key, so the merge must DECIDE.
 
     Keeping only the newest row would reintroduce exactly the loss this change exists to
-    stop: 812 -> 1,204 then 1,204 -> 900 would be told to the mind as 1,204 -> 900, which
+    stop: 812 -> 1,204 then 1,204 -> 900 would be told to the host as 1,204 -> 900, which
     asserts the file started where it never started. The surviving row spans both frames.
     """
     client = _client(tmp_path)
@@ -179,7 +179,7 @@ def test_observe_drops_the_carry_rather_than_exceed_the_size_floor(tmp_path: Pat
     The 413 above sizes the INCOMING payload, so without a second check a long supersession
     streak could grow the staged file past the cap behind its back. Two frames that each fit
     can merge into one that does not; the newest then stands alone — lossy, which P4 already
-    obliges the mind to tolerate, and far better than a staged frame nothing will read.
+    obliges the host to tolerate, and far better than a staged frame nothing will read.
     """
     client = _client(tmp_path)
     half = OBSERVATION_MAX_CHARS // 2
@@ -241,14 +241,14 @@ def test_observe_preserves_unknown_future_slices(tmp_path: Path) -> None:
 
 
 def test_observe_round_trips_dropped_slices(tmp_path: Path) -> None:
-    """The vessel names what it shed; the mind must be able to know it saw a partial world."""
+    """The vessel names what it shed; the host must be able to know it saw a partial world."""
     resp = _client(tmp_path).post("/observe", json=_envelope(droppedSlices=["hugePerception"]))
     assert resp.json()["droppedSlices"] == ["hugePerception"]
     assert _staged(tmp_path)["droppedSlices"] == ["hugePerception"]
 
 
 def test_observe_never_writes_the_knowledge_tree(tmp_path: Path) -> None:
-    """P2: the mind is the only writer of its own tree. This route stages an INPUT."""
+    """P2: the host framework is the only writer of its own tree. This route stages an INPUT."""
     tree = tmp_path / "knowledge"
     tree.mkdir()
     before = sorted(p.name for p in tree.iterdir())

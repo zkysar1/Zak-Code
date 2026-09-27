@@ -289,7 +289,7 @@ async def test_turn_end_veto_is_deferred_across_a_build_restart(
     """ADR-0099: a Stop hook vetoes while a newer build is installed — the turn ENDS (no
     re-entry in this stale process) and the hook's continuation is set aside for the
     restarted process. A perpetual loop otherwise never reaches the idle prompt where
-    ADR-0034 restarts it: measured 2026-08-29, the reducer ran a 6h-old build through
+    ADR-0034 restarts it: measured 2026-08-29, the coordinating session ran a 6h-old build through
     five deploys."""
     import zakcode.agent.loop as loop_module
 
@@ -470,7 +470,7 @@ async def test_a_skill_boundary_restart_runs_the_deadman_wakeup_arm_first(
 ) -> None:
     """A perpetual loop's healthy unit close is the pair ScheduleWakeup then use_skill (its
     deadman net), so that pair must be a skill boundary too. Measured 2026-09-24 on three
-    Mind worker Bodies: 9 re-entries after two installs, 0 restarts -- every close was the
+    worker sessions: 9 re-entries after two installs, 0 restarts -- every close was the
     pair, and the deploys sat unused. The arm EXECUTES here (the slot is persisted on the
     session and survives the restart, zakcode.wakeup) and the turn still ends in a restart
     carrying the skill call. A batch with real work beside the skill call still runs it
@@ -544,8 +544,8 @@ async def test_turn_end_max_iterations_not_vetoable(tmp_path: Path) -> None:
 
 # ── provider_error: vetoable, bounded, paced (ADR-0181) ──────────────────────
 #
-# Measured 2026-09-17 on a served Mind (vertex_ai_beta): one 400 on the fifth iteration of
-# a plan with seven steps open ended the turn; the Mind's stop hook — whose whole job is to
+# Measured 2026-09-17 on a served workspace (vertex_ai_beta): one 400 on the fifth iteration of
+# a plan with seven steps open ended the turn; the framework's stop hook — whose whole job is to
 # re-enter the loop — was never consulted, and the loop sat at its prompt until a human
 # typed "continue". A provider failure is a fact about the MOMENT; the framework decides
 # whether the turn goes on, up to a cap, with a backoff between re-entries.

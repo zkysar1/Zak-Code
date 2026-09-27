@@ -198,7 +198,7 @@ async def test_edit_old_string_misses_are_tagged_as_refusals(tmp_path: Path) -> 
 _FAKE_DNS = {
     "fantasysports.yahooapis.com": "ok",
     "github.com": "ok",
-    "api.fantasy.yahoo.com": "nxdomain",  # the host coach invented, eleven times
+    "api.fantasy.yahoo.com": "nxdomain",  # the host the model invented, eleven times
     "slow.example-partner.io": "unknown",  # a lookup that could not complete
 }
 _FABRICATED = (

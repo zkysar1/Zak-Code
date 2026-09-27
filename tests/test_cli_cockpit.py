@@ -93,8 +93,8 @@ def test_cockpit_creates_session_in_inheritance_safe_order(
 
 def test_cockpit_sets_focus_follows_color_borders(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
     """The focused pane's border glows orange, unfocused recede to gray — set by the
-    cockpit itself, never left to a host tmux.conf (2026-08-25: zc-03 had a hand
-    conf, serene did not, and the two boxes looked different)."""
+    cockpit itself, never left to a host tmux.conf (2026-08-25: one box had a hand
+    conf, another did not, and the two looked different)."""
     cockpit.cockpit(session="agentbox", workspace=tmp_path, ledger=None, attach=True)
     active = next(c for c in fake_tmux.calls if "pane-active-border-style" in c)
     assert active[-1] == "fg=colour214"
@@ -526,7 +526,7 @@ def test_root_dispatch_covers_every_chat_option() -> None:
 
 
 # ── first touch: focus the box; never eat the operator's boot-time message ────────
-# 2026-08-25 serene report, reproduced live on zc-03: focus landed on the screen
+# 2026-08-25 serene report, reproduced live: focus landed on the screen
 # pane ("couldn't type at first") and the first message typed while the agent
 # booted was discarded by the stale-say guard ("Enter did nothing").
 

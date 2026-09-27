@@ -1,9 +1,9 @@
 """A skill invocation typed as text is the invocation, not an answer.
 
-Measured 2026-08-28 (coach, zc-03, build 99bab59): the served ``/start`` finished its last
+Measured 2026-08-28 (build 99bab59): the served ``/start`` finished its last
 step and the model's next completion was the single line ``/boot``. The loop saw a text-only
-completion, the plan gate pushed on, and the model called ``use_skill("aspirations")`` — the
-whole boot (prime, hypothesis review, status report) skipped. Now a completion that IS one
+completion, the plan gate pushed on, and the model called the loop skill directly — the
+whole boot (prime, review, status report) skipped. Now a completion that IS one
 ``/<skill> [args]`` line naming a discovered skill is routed through ``use_skill``, the one
 door skills take, in both twins. Prose that merely mentions a skill is left alone.
 

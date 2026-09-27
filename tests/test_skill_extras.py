@@ -1,7 +1,7 @@
 """Skill-frontmatter extras + targeted logging instrumentation (audit P1-2 / P1-5).
 
 Acceptance name from the audit: ``test_skill_extras`` — unknown frontmatter keys are
-preserved in an ``extras`` dict (Mind skills carry ``minimum_mode``,
+preserved in an ``extras`` dict (host-framework skills carry ``minimum_mode``,
 ``companion_scripts``, ``user_invocable``, ``triggers``, …) and round-trip through
 ``save_skill``. The logging tests pin the new operator-facing instrumentation.
 """

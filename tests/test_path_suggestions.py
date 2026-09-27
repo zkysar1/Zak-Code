@@ -96,7 +96,7 @@ def test_suggest_skips_ignored_dirs_and_never_raises(tmp_path: Path) -> None:
 
 
 def test_an_extra_root_under_an_ignored_dir_is_searched_by_its_own_rules(tmp_path: Path) -> None:
-    """ADR-0229. A Mind keeps its world under ``.mind-data/``, which the checkout's
+    """ADR-0229. A framework keeps its world under ``.mind-data/``, which the checkout's
     .gitignore excludes, and declares it as an extra root. Field 2026-09-23 (a 27B worker):
     ``Read world/program.md`` came back with six look-alike names from the checkout and never
     the file itself, because the extra root was judged by the primary root's ignore rules."""
@@ -106,7 +106,7 @@ def test_an_extra_root_under_an_ignored_dir_is_searched_by_its_own_rules(tmp_pat
     (world / "program.md").write_text("# The Program\n")
     (tmp_path / "notes").mkdir()
     (tmp_path / "notes" / "old-program.md").write_text("x\n")
-    # Positive control (guard-4166): what the PRIMARY root ignores stays hidden.
+    # Positive control: what the PRIMARY root ignores stays hidden.
     (tmp_path / "build").mkdir()
     (tmp_path / "build" / "program.md").write_text("generated\n")
 

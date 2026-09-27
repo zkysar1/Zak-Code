@@ -46,7 +46,7 @@ def test_anthropic_registry() -> None:
 def test_openai_registry() -> None:
     """Static lookup returns real windows for the first-party OpenAI models we route to.
 
-    Replaced the Groq equivalent when that provider was retired (g-369-295).
+    Replaced the Groq equivalent when that provider was retired.
     """
     for model in ("openai/gpt-4o-mini", "openai/gpt-4o"):
         static = _lookup_static(model)
@@ -69,14 +69,14 @@ def test_provider_key_status(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "_DOTENV_EXPORTED", {})
     assert "ANTHROPIC_API_KEY" in _PROVIDER_KEY_ENV
     assert "OPENAI_API_KEY" in _PROVIDER_KEY_ENV
-    # GROQ_API_KEY was dropped from the advertised list with the provider (g-369-295).
+    # GROQ_API_KEY was dropped from the advertised list with the provider.
     assert "GROQ_API_KEY" not in _PROVIDER_KEY_ENV
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     monkeypatch.setenv("OPENAI_API_KEY", "sk_test")
     status = _provider_key_status()
     assert status["ANTHROPIC_API_KEY"] == "env"
     assert status["OPENAI_API_KEY"] == "env"
-    assert "GROQ_API_KEY" not in status  # retired with the provider (g-369-295)
+    assert "GROQ_API_KEY" not in status  # retired with the provider
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     monkeypatch.delenv("OPENAI_API_KEY")
     status = _provider_key_status()
@@ -88,7 +88,7 @@ def test_provider_key_status(monkeypatch) -> None:
 
 
 def test_env_example_documents_every_live_provider() -> None:
-    """Was ``..._all_three_providers`` until Groq was retired (g-369-295).
+    """Was ``..._all_three_providers`` until Groq was retired.
 
     Kept as a live-provider check rather than a count so the next provider change updates
     ONE list. The negative assertion is the half that matters: a retired provider must not

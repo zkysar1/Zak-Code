@@ -1,7 +1,7 @@
 """``bypassPermissions`` — the dangerously-skip posture (ADR-0055).
 
-Field-driven 2026-08-28 (coach, zc-03): an unattended Mind runner sat blocked forever on
-an interactive y/a/n permission prompt nobody was there to answer. ``autonomous`` is the
+Field-driven 2026-08-28: an unattended agent runner sat blocked forever on an interactive
+y/a/n permission prompt nobody was there to answer. ``autonomous`` is the
 never-prompt-fail-CLOSED mode; ``bypassPermissions`` is its fail-OPEN twin (the Claude
 Code ``--dangerously-skip-permissions`` analog): nothing prompts, every escalation the
 other modes would ASK is ALLOWED, and only two refusals survive — the catastrophic
@@ -74,7 +74,7 @@ def test_bypass_mode_allows_everything_and_never_prompts() -> None:
 
 
 def test_bypass_waives_the_dependency_gate() -> None:
-    # The coach wedge: an undeclared install (plus a phantom package parsed from a
+    # The wedge: an undeclared install (plus a phantom package parsed from a
     # redirection) escalated to a prompt no one could answer. In bypass it just runs.
     policy = PermissionPolicy(PermissionMode.BYPASS, declared_packages=lambda: {"pypi:requests"})
     assert _auth(policy, SHELL, {"command": "pip install evil-pkg"}) == (True, "")

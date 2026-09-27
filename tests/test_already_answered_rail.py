@@ -1,7 +1,7 @@
 """ADR-0217: the call that exists only to hand back a tool result is told the answer already
 stands, so the model stops instead of saying it again.
 
-The shape, measured 2026-09-22 on a served Mind and reported by the user from their terminal.
+The shape, measured 2026-09-22 on a served workspace and reported by the user from their terminal.
 Inside ONE turn: the model wrote a full verdict, called a tool (a bare ``echo``, made to satisfy
 a framework rule that every turn end be a tool call), and then — asked again because a tool had
 run and its result must go back — wrote the same verdict a second time. The user read the same
@@ -13,7 +13,7 @@ only to ask whether it is empty. And by the time the second answer could be reco
 repeat it is already streaming onto the screen, where it cannot be unsaid. So this acts BEFORE,
 on the one fact that is certain at the time: the previous completion had already answered.
 
-WHAT IS PINNED HERE IS THE WIRE, NEVER THE SOURCE (guard-6333). Every assertion reads the rails
+WHAT IS PINNED HERE IS THE WIRE, NEVER THE SOURCE. Every assertion reads the rails
 the loop recorded for each real request, so a test cannot pass because a constant exists.
 
 THE CONTROL IS THE SECOND TEST and it is the point of the file: the line must ride ONLY on the

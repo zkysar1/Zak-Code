@@ -223,7 +223,7 @@ async def test_streaming_twin_also_delivers_and_announces(tmp_path: Path) -> Non
     assert any("perception delivered" in str(getattr(e, "message", "")) for e in events)
 
 
-# --- the discovery fold (g-368-15) -----------------------------------------------------------
+# --- the discovery fold -----------------------------------------------------------
 #
 # The vessel's discoveryPerception slice is a per-tick projection bounded at the character's
 # bubble, so what the character has UNLOCKED by exploring exists nowhere but here. These pin the
@@ -280,7 +280,8 @@ async def test_an_unlock_is_announced_once_across_turns(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_an_untouched_entity_is_perceived_but_not_announced(tmp_path: Path) -> None:
-    """Positive control: the slice DID reach the mind, so a missing note is the gate, not a drop."""
+    """Positive control: the slice DID reach the host framework, so a missing
+    note is the gate, not a drop."""
     provider = _Recording([_tool_call("perceive"), _DONE])
     loop, _ = _loop(
         provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, _discovery(statue=0))]
@@ -340,9 +341,9 @@ async def test_a_failing_fold_never_costs_the_perception(tmp_path: Path, monkeyp
 
 @pytest.mark.asyncio
 async def test_the_delivered_perception_carries_its_envelope_id(tmp_path: Path) -> None:
-    """Line 2 of the delivered frame names the envelope, so the mind can cite it in its
+    """Line 2 of the delivered frame names the envelope, so the host framework can cite it in its
     reaction line. It is in the SESSION, not only in a log line, so the join survives the turn.
-    Line 1 stays the exact provenance tag the Mind's reaction rule keys on."""
+    Line 1 stays the exact provenance tag the host framework's reaction rule keys on."""
     observation = {"nearby": ["a lantern"]}
     provider = _Recording([_tool_call("perceive"), _DONE])
     loop, session = _loop(provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, observation)])

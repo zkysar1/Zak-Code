@@ -133,7 +133,7 @@ async def test_trace_dumps_are_per_session_so_a_restart_keeps_the_previous_turns
     tmp_path: Path,
 ) -> None:
     # Turn numbers restart with every session; a flat turn_1.jsonl was overwritten by the
-    # next session's first turn (every coach restart erased the boot turn's telemetry).
+    # next session's first turn (every restart erased the boot turn's telemetry).
     trace_dir = tmp_path / "traces"
     first = _loop(tmp_path, ScriptedProvider([reply("one")]), trace_dir=str(trace_dir))
     await first.arun_turn("hi")

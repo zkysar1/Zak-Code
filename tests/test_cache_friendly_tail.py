@@ -247,7 +247,7 @@ def test_a_cache_the_tail_does_not_hold_costs_two_probes_and_is_left_alone(
 
 
 def _resume(tmp_path: Path, style: str, **fields: Any) -> tuple[_CachingProvider, AgentLoop]:
-    """A NEW loop on a session an earlier one left mid-plan — a served mind builds one per
+    """A NEW loop on a session an earlier one left mid-plan — a served workspace builds one per
     turn, and must not pay the measurement again each turn."""
     session = Session(cwd=str(tmp_path), model="test", **fields)
     session.task_network.replace_from_author(

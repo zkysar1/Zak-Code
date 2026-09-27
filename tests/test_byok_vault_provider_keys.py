@@ -1,4 +1,4 @@
-"""BYOK — a member's own provider key, taken from their environment's vault (g-369-11).
+"""BYOK -- a member's own provider key, taken from their environment's vault.
 
 The feature is one function, and almost everything worth pinning about it is a NEGATIVE:
 what it must decline to touch. The positive path is a dict lookup.
@@ -10,7 +10,7 @@ produced a spurious AuthError (audit3 #6). The environment is therefore the only
 that reaches real inference, and ``test_cloud_call_still_omits_api_key`` pins that the
 decision this feature depends on has not been quietly reversed underneath it.
 
-MUTATION TABLE — RUN, and the interesting row is the one that SURVIVED (guard-1475).
+MUTATION TABLE -- RUN, and the interesting row is the one that SURVIVED.
 Baseline 14/14 green, restored 14/14 green:
 
   M1  drop the baseline restore (assign only — the naive version)   -> RED  (2)
@@ -24,7 +24,7 @@ file's. Defense in depth is the right design; a test suite that cannot SEE one o
 two layers is not, and a corpus-level assertion reported green through a mutation that
 removed a security filter. The accessor is now pinned directly, which is what moved M2a
 to RED. Recorded rather than quietly fixed: an aggregate that passes through the defect
-it was written to catch is the failure mode worth naming (guard-1793).
+it was written to catch is the failure mode worth naming.
 
 WHY A BASELINE RATHER THAN A PLAIN ASSIGNMENT. A long-lived process freezes its
 environment at exec time, so the naive version — overlay once, assign — pins the member's
@@ -170,7 +170,7 @@ def test_values_for_narrows_independently_of_the_overlay_loop(tmp_path):
     identical, and a corpus-level test cannot tell you whether either works. Measured:
     a mutation replacing ``values_for(...)`` with a raw ``_load()`` passed the whole
     file. Defense in depth is the right design here; an assertion that cannot see one
-    of the two layers is not (guard-1793). This pins the accessor directly.
+    of the two layers is not. This pins the accessor directly.
     """
     from zakcode.tools.builtins._secrets import SecretsProvider
 

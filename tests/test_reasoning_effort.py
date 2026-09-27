@@ -1,7 +1,7 @@
 """A reasoning DEPTH is one config knob, rendered per backend where the backend takes one
 (ADR-0182).
 
-Field origin 2026-09-16: a served Mind on Vertex asked how to make ``gemini-3.8-flash`` reason
+Field origin 2026-09-16: a served workspace on Vertex asked how to make ``gemini-3.8-flash`` reason
 harder and no configurable path existed — ``ZakpickModel.thinking`` is an on/off switch in
 llama.cpp's body form (rendered per backend since ADR-0181), and litellm's real Gemini knob,
 ``reasoning_effort`` (a ``thinkingLevel`` on Gemini 3, a ``thinkingBudget`` on 2.5), was nowhere

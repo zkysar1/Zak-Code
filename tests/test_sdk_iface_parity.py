@@ -3,7 +3,7 @@ stream and every end interface that relays it.
 
 WHY THIS FILE EXISTS
 --------------------
-guard-4547: interfaces carry NO business logic. The SDK (:class:`zakcode.Agent`)
+Interfaces carry NO business logic. The SDK (:class:`zakcode.Agent`)
 owns all of it and emits the one canonical stream of
 :data:`~zakcode.events.AgentEvent`; every interface (HTTP/SSE, WebSocket, and the
 CLI's remote client) is a thin transport that RELAYS that stream. This test pins

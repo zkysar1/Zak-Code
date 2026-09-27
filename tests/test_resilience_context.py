@@ -189,8 +189,8 @@ def test_a_second_overflow_elides_without_the_model() -> None:
 
 def test_a_transcript_nothing_can_summarize_is_elided_within_the_same_overflow() -> None:
     """Rung one cannot help (nothing old enough); the ladder climbs to elision at once
-    instead of giving up — the shape that killed a worker Body whose last tool result
-    was an 87 KB skill load (coach, 2026-08-29)."""
+    instead of giving up — the shape that killed a worker session whose last tool result
+    was an 87 KB skill load (measured 2026-08-29)."""
     provider = OverflowProvider(overflows=1)
     compactor = StubCompactor(succeeds=False, elides=True)
     loop = _make_loop(provider, compactor)
@@ -374,7 +374,7 @@ class PlanningProvider(Provider):
     """Answers a plan-tool call for the first ``steps`` calls, then text — a multi-iteration
     turn. With ``overflow`` set, every call's FIRST attempt overflows and the retry answers:
     each recovered overflow buys one more iteration, the shape a runner's single long turn
-    takes, where a per-TURN bound of two ended the session on the third overflow (coach,
+    takes, where a per-TURN bound of two ended the session on the third overflow (measured
     2026-08-28)."""
 
     def __init__(self, steps: int, *, overflow: bool = False) -> None:
@@ -519,7 +519,7 @@ def test_streaming_auto_compaction_is_checked_before_every_call() -> None:
 class MeasuringProvider(PlanningProvider):
     """Reports a prompt size the local estimate cannot see: ``count_tokens`` says the
     transcript is a handful of tokens, the usage says it fills 90% of the window — the shape
-    id-dense tool output takes against a chars/4 estimate (coach, 2026-08-28: the check read
+    id-dense tool output takes against a chars/4 estimate (measured 2026-08-28: the check read
     "fine" at 129k real on a 131k window)."""
 
     def __init__(self, steps: int, *, reported: int) -> None:

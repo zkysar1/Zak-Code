@@ -230,7 +230,7 @@ def _budgeted() -> list[Message]:
 
 
 def test_compact_trims_the_kept_tail_to_its_token_budget() -> None:
-    # Measured 2026-09-10 (coach, zc-03, 131k window): an eight-message tail carried two
+    # Measured 2026-09-10 (131k window): an eight-message tail carried two
     # ~33k-token grep results through a compaction, the prompt came back down only to
     # 75k, and the session compacted again six calls later. The tail is a budget too.
     async def scenario() -> None:

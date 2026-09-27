@@ -1,4 +1,4 @@
-"""Tests for the perception-intake observability on /sidecar/health (g-373-03).
+"""Tests for the perception-intake observability on /sidecar/health.
 
 The goal these pin: "today success is indistinguishable from failure." The vessel's
 bridge counted a 4xx as a delivered frame, its counters had no callers, the receiver's
@@ -62,12 +62,12 @@ def _intake(client: TestClient) -> dict[str, object]:
     return resp.json()["observation_intake"]
 
 
-# ── the guard-3169 property ───────────────────────────────────────────────────
+# ── the zero-on-idle property ───────────────────────────────────────────────────
 
 
 def test_every_counter_reads_zero_while_idle(tmp_path: Path) -> None:
     """A counter that appears only after the first failure cannot tell "healthy" from
-    "nobody called it" (guard-3169). Every field is present, and reads an explicit zero,
+    "nobody called it". Every field is present, and reads an explicit zero,
     before a single frame has arrived — so a bridge that has gone SILENT is
     distinguishable from one that is delivering."""
     intake = _intake(_client(tmp_path))
@@ -104,7 +104,7 @@ def test_accepted_frame_is_counted_and_aged(tmp_path: Path) -> None:
 
 def test_superseded_delivery_is_counted_separately(tmp_path: Path) -> None:
     """A superseded frame is still DELIVERED — it counts as accepted AND as superseded.
-    A sustained rise in the second is the mind failing to keep up with its vessel, which
+    A sustained rise in the second is the host framework failing to keep up with its vessel, which
     no send/drop split can show."""
     client = _client(tmp_path)
     client.post("/observe", json=_envelope())

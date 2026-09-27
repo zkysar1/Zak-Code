@@ -1,6 +1,6 @@
 """ADR-0066: the context window comes from the model's config entry, never a default.
 
-Field 2026-08-28 (coach on zc-03): the route model ``openai/zds-qwen3.8-27b`` is an alias
+Field 2026-08-28: the route model ``openai/zds-qwen3.8-27b`` is an alias
 the static table does not know and litellm has no metadata for, so capabilities fell to
 an 8,192-token stand-in while the server ran a 131,072 context. Everything keyed on the
 window was wrong by 16×: the seam clamp cut every tool result to 6 KB (a 39 KB /boot lost
@@ -36,7 +36,7 @@ ZDS = {
         },
     ],
 }
-ZDS_FANOUT = {  # rb-8892: ctx_per_engine is the engine total; 3 slots per engine share it
+ZDS_FANOUT = {  # ctx_per_engine is the engine total; 3 slots per engine share it
     "data": [
         {
             "id": "zds-qwen3.6-27b",

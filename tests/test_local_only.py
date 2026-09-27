@@ -5,7 +5,7 @@ run many agents against self-hosted hardware and be CERTAIN none of them quietly
 over to a metered API. Overspending is irreversible, so these tests pin the refusal, not
 just the happy path.
 
-Enforcement is deliberately two-layered (rb-605 — anticipation gates warn, application
+Enforcement is deliberately two-layered (anticipation gates warn, application
 gates guarantee), and both layers are pinned here:
 
 * ``Agent._assert_local_only`` — startup, names every offender at once.
@@ -195,7 +195,7 @@ def test_startup_gate_catches_unset_zakpick_categories() -> None:
     through to the built-in metered defaults. Checking only the configured overrides would
     report this clean, which is the most expensive possible false negative.
 
-    NOTE (g-369-295): this case deliberately configures NO ``api_base``. The built-in
+    NOTE: this case deliberately configures NO ``api_base``. The built-in
     defaults moved from ``groq/`` to ``openai/`` when Groq was retired, and ``openai`` is in
     ``GENERIC_OPENAI_PROVIDERS`` — so WITH a generic ``api_base`` set, the defaults are
     redirected to that self-hosted base and correctly classify as local, and this gate does
@@ -215,7 +215,7 @@ def test_startup_gate_catches_unset_zakpick_categories() -> None:
         _assert(settings, zakpick=True)
     message = str(exc.value)
     # Every defaulted category is named, so the operator fixes them in one pass.
-    # 'delegate' JOINED this list in g-369-295: its default is openai/gpt-4o-mini, and with
+    # 'delegate' JOINED this list: its default is openai/gpt-4o-mini, and with
     # no api_base that goes to api.openai.com and IS metered. It was absent here before only
     # because this case used to set an api_base (see the docstring note).
     for category in ("quick_code", "summarize", "plan", "classify", "delegate"):
@@ -244,7 +244,7 @@ def test_startup_gate_is_inert_when_local_only_is_off() -> None:
 
 
 def test_local_only_defaults_off_and_changes_nothing(monkeypatch) -> None:
-    """guard-1562: a fail-closed check must newly refuse only what the operator opted into."""
+    """A fail-closed check must newly refuse only what the operator opted into."""
     monkeypatch.delenv("ZAKCODE_LOCAL_ONLY", raising=False)
     monkeypatch.delenv("ZAKCODE_API_BASE", raising=False)
     assert Settings(_env_file=None).local_only is False

@@ -1,11 +1,12 @@
 """ADR-0191: ``Bash(run_in_background=true)`` — Claude Code's background command for a Zak
 Code session, with the exit reported as a ``<task-notification>`` at the session's idle door.
 
-A Mind's playbooks say "background the suite, END the turn; the harness notifies", and the
-framework's rules forbid polling a background job with ``ScheduleWakeup`` because the
-harness reports on it. Zak Code had no such thing, so the framework carried a table of
-which harness could notify — the last harness-capability branch. These tests pin the
-contract: the tool returns at once with an id and an output file; the record is persisted;
+A host framework's playbooks say "background the suite, END the turn; the harness
+notifies", and its rules forbid polling a background job with ``ScheduleWakeup``
+because the harness reports on it. Zak Code had no such thing, so the framework
+carried a table of which harness could notify — the last harness-capability branch.
+These tests pin the contract: the tool returns at once with an id and an output file;
+the record is persisted;
 an exited task is reported ONCE, as Claude Code's block, at the REPL's idle door; the exit
 survives a process that did not spawn the task; ``TaskOutput`` reads, ``TaskStop`` kills the
 whole group; a session's end kills what it started. Hermetic: real (short) shell commands

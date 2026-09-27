@@ -69,7 +69,7 @@ async def test_the_saved_output_notice_names_the_tools_that_reach_the_file(
     session_ctx: ToolContext, tmp_path: Path
 ) -> None:
     # "search it with grep in the shell" sent a lesser model to the Grep tool, which ADR-0234
-    # keeps out of this directory (Ayoai-Mind g-375-12, zc-02, 2026-09-23). The notice names
+    # keeps out of this directory (measured 2026-09-23). The notice names
     # the tool that opens the file and the tool that runs grep, and says which one cannot.
     res = await BashTool().execute({"command": _spew(tmp_path, 1000)}, session_ctx)
 

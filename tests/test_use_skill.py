@@ -683,8 +683,8 @@ def _use(name: str, call_id: str) -> LLMResult:
 async def test_a_stop_hook_veto_opens_a_fresh_skill_turn(tmp_path: Path) -> None:
     """The re-entry a Stop-hook BLOCK mandates gets the skill BODY, not a pointer.
 
-    Measured 2026-08-26 on a live Mind (coach, zc-03): the model ended an iteration on a
-    summary, the Stop hook vetoed with "call Skill('aspirations') with args='loop'", the
+    Measured 2026-08-26 on a live workspace: the model ended an iteration on a
+    summary, the Stop hook vetoed with "call Skill('<loop-skill>') with args='loop'", the
     model complied, and use_skill answered "[already loaded]" — four times, then the loop
     died. A veto is a turn boundary for per-turn skill state (ADR-0048): the reload dedup
     forgets, the invocation budget refills, and the body comes back.
@@ -749,8 +749,9 @@ async def test_no_veto_keeps_the_same_turn_dedup(tmp_path: Path) -> None:
 
 # ── ADR-0196: a skill asked for again AFTER WORK is a re-entry ────────────────
 
-#: The framework's own words at a refused stop (the stop hook's reducer reason, in shape),
-#: naming the fixture skill: written for a harness that delivers nothing until the model
+#: The framework's own words at a refused stop (the stop hook's
+#: coordinating-session reason, in shape), naming the fixture skill: written for a
+#: harness that delivers nothing until the model
 #: calls the skill tool.
 _HOOK_WORDS = (
     "Turn ended without a Skill(greeter) re-entry. Your FIRST action MUST be: "

@@ -1,5 +1,5 @@
 """Zak Code honors the **Claude Code hook contract**, so Claude-Code-targeted frameworks
-(e.g. claude-mind) run on it unmodified.
+(e.g. a host framework) run on it unmodified.
 
 The contract, in five parts (each a fix proven here):
   1. shell hooks run at the **workspace cwd** (so a hook's relative ``bash core/scripts/...``
@@ -203,7 +203,7 @@ def _spec(matcher: str) -> HookSpec:
 
 def test_matcher_fires_on_claude_code_tool_names() -> None:
     # A matcher written for Claude Code fires on the corresponding Zak Code tool call, so a
-    # framework's PreToolUse gates (e.g. claude-mind's skill-dedup gate) apply unchanged.
+    # framework's PreToolUse gates (e.g. a host framework's skill-dedup gate) apply unchanged.
     assert _spec("Skill").matches("Skill")
     assert _spec("Read").matches("read_file")
     assert _spec("Bash").matches("bash")  # case-correct cross-platform (fnmatch is POSIX-sensitive)
@@ -317,7 +317,7 @@ def test_wire_payload_uses_claude_code_tool_name_and_file_path(tmp_path: Path) -
 async def test_shell_hook_gates_write_file_by_file_path_and_maps_the_rewrite_back(
     tmp_path: Path,
 ) -> None:
-    # A Claude-Code path gate: denies a write under <workspace>/world/ (the cruft claude-mind's
+    # A Claude-Code path gate: denies a write under <workspace>/world/ (the cruft a host framework's
     # L1 hook refuses), otherwise rewrites file_path. Zak Code must deliver the deny for its
     # own write_file call, and map the rewrite back onto the tool's `path` argument.
     body = (

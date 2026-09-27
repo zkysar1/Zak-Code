@@ -170,7 +170,7 @@ def test_dangerous_command_hard_denied_in_deny_mode() -> None:
         "rm -rf src/a src/b",
         # ADR-0085: a DEEP absolute or home-relative path is an ordinary target -- the floor names
         # the root, top-level directories and home directories, not every "/..." (the 2026-08-29
-        # field incident: an unattended agent's `rm -rf /opt/coach-mind/yahoo/__pycache__` was
+        # field incident: an unattended agent's deep-path `rm -rf` was
         # hard-denied and it spent its goal investigating the refusal).
         "rm -rf /opt/coach-mind/yahoo/__pycache__",
         "rm -rf /tmp/x /var/tmp/y",

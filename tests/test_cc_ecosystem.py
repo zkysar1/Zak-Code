@@ -3,7 +3,7 @@
 The conformance suite (test_cc_conformance.py) proves each contract piece in isolation. THIS proves
 the bonus the whole effort is for — assemble a self-contained Claude-Code plug-in (a skill with a
 slash trigger, a settings.json with a Stop hook + permission denies, an output style, an always-on
-rule), none of it Zak-Code- or claude-mind-specific, and show every piece works together on ONE
+rule), none of it Zak-Code- or host-framework-specific, and show every piece works together on ONE
 Agent. If this passes, anything built for Claude Code's extension surface rides in the same way.
 """
 

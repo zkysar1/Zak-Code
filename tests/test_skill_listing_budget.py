@@ -3,7 +3,7 @@
 Claude Code bounds the skill listing it shows the model: 1% of the context window at 4
 characters per token, each description cut at 1,536 characters, and over budget the least-used
 skills lose their descriptions first while every name stays. zakcode rendered every description
-unconditionally, so a Mind's 146-skill catalogue cost 85,714 characters (about 20k tokens) on
+unconditionally, so a framework's 146-skill catalogue cost 85,714 characters (about 20k tokens) on
 every call, against 7,882 under the budget, with every skill still named.
 
 What these tests pin: a catalogue that fits renders exactly as before (bench prompts and small

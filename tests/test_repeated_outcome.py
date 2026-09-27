@@ -1,6 +1,6 @@
 """Repeated-outcome ladder (ADR-0038) and its file-edit epoch exemption.
 
-Field incident 2026-08-27 (coach on zc-03): 135 iterations, 103 minutes, 10.5M tokens. The
+Field incident 2026-08-27: 135 iterations, 103 minutes, 10.5M tokens. The
 model re-ran the same probe with a different comment each time, every command wrapped in
 ``|| echo`` so nothing ever errored, and observed the same 5-line output ~15 times. The doom
 guard needs byte-identical consecutive batches; every stuck signal keyed on an error. Nothing

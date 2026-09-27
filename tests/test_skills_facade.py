@@ -140,7 +140,7 @@ def test_slash_unknown_skill_falls_through(tmp_path: Path) -> None:
     assert _skill_command_turn(console, agent, "nope").handled is False
 
 
-# ── skill-selection signal (ON_SKILL_SELECTED): the seam a learning mind records from ──
+# ── skill-selection signal (ON_SKILL_SELECTED): the seam a learning framework records from ──
 
 
 def _capture(into: list[LifecyclePayload]):

@@ -1,7 +1,7 @@
 """ADR-0192: a skill whose body fits the window is delivered WHOLE and seeds no plan; paging
 and the seeded skeleton are the shape of a body that cannot fit.
 
-Measured 2026-09-18 on a served Mind (Vinheim prod, gpt-5.6-terra, a 922k window): every
+Measured 2026-09-18 on a served workspace (Vinheim prod, gpt-5.6-terra, a 922k window): every
 sectioned skill was paged and seeded regardless of the window, so one loop iteration cost
 45 page deliveries and 101 ``update_plan`` calls out of 232 tool calls, the prompt grew to
 360k tokens and the turn died ``veto_stall`` at $155 with no iteration completed. Three

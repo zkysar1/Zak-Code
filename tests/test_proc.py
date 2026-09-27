@@ -43,8 +43,9 @@ async def test_run_capturing_normal_command() -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell's `&` child")
 async def test_a_command_that_leaves_a_redirected_child_running_returns_when_it_exits() -> None:
-    # A mind world's playbooks do this all the time: start a daemon, `nohup ... &`. With all
-    # three of the child's streams redirected nothing holds the command's pipe, so the call is
+    # A framework workspace's playbooks do this all the time: start a daemon,
+    # `nohup ... &`. With all three of the child's streams redirected nothing holds
+    # the command's pipe, so the call is
     # over when the command is. True on the stdlib loop, which is why the served process is
     # pinned to it (ADR-0197): under uvloop this exact command waits out its whole timeout.
     start = time.monotonic()
@@ -192,7 +193,7 @@ async def test_terminate_tree_lets_go_of_pipes_a_stray_descendant_holds() -> Non
 
 async def test_shell_commands_run_under_real_bash(tmp_path) -> None:
     # The tool is NAMED bash; /bin/sh is dash on Debian/Ubuntu, where bashisms fail
-    # (mind-world playbooks assume bash — 2026-08-25 field report from a live box).
+    # (framework-workspace playbooks assume bash — 2026-08-25 field report from a live box).
     # [[ ]] is a bashism dash rejects, so this passes only under real bash.
     out, code = await run_capturing(
         shell_command='[[ -n "x" ]] && echo real-bash', cwd=str(tmp_path), timeout=10.0
@@ -203,7 +204,7 @@ async def test_shell_commands_run_under_real_bash(tmp_path) -> None:
 
 async def test_workspace_env_hook_extends_path(tmp_path) -> None:
     # <workspace>/.zakcode/env is sourced (via BASH_ENV) by every shell command, so a
-    # workspace can put its own script dirs on PATH — a mind world's bare script
+    # workspace can put its own script dirs on PATH — a framework workspace's bare script
     # names then resolve without the model re-deriving the bash-prefix form.
     bin_dir = tmp_path / "myscripts"
     bin_dir.mkdir()

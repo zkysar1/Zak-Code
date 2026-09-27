@@ -2,7 +2,7 @@
 
 /say queues a single user message into ``<workspace>/.say`` (atomic, single-slot,
 length-capped). Unlike a /nudge suggestion (folded into the preamble), a say is
-delivered by the driver as the next turn's MESSAGE — talking to the driven mind is
+delivered by the driver as the next turn's MESSAGE — talking to the driven workspace is
 just its next turn. Plain JSON (no streaming), so Starlette's TestClient drives it
 directly; turn-side consumption is pinned in test_server_consumer.py.
 """

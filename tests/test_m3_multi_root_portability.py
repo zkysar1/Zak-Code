@@ -1,16 +1,16 @@
 """M-3 integration test: cross-runtime skill portability via multi-root sandbox.
 
-Proves that when ``--skill-dir`` points at claude-mind's ``.claude/skills``
+Proves that when ``--skill-dir`` points at a host framework's ``.claude/skills``
 directory, the auto-detection logic correctly identifies:
 
-1. The mind repo root (the ``.git``-owning ancestor of the skill dir).
+1. The framework repo root (the ``.git``-owning ancestor of the skill dir).
 2. External ``WORLD_PATH`` and ``META_PATH`` parsed from
    ``agents/*/local-paths.conf`` under that repo root.
 
 Then proves the sandbox accepts file reads from all detected roots (and rejects
 paths outside them).
 
-These tests use hermetic temp directories; they do NOT hit the real claude-mind
+These tests use hermetic temp directories; they do NOT hit a real framework
 repo. The _infer_roots_from_skill_dir helper is exercised directly so the test
 does not require an LLM provider.
 """
@@ -69,7 +69,7 @@ def test_parse_local_paths_conf_missing_file(tmp_path):
 
 
 def test_parse_local_paths_conf_grants_quoted_values_and_every_product_repo(tmp_path):
-    """ADR-0230. The Mind quotes values so a shell can source the file, and lists the product
+    """ADR-0230. The framework quotes values so a shell can source the file, and lists the product
     repos its agent works on as AGENT_WRITE_PATH, separated by ';'. Its own write hook allows
     all of them. The parser read neither, so a quoted WORLD_PATH was dropped and a product
     repo was outside every root."""
@@ -95,7 +95,7 @@ def test_parse_local_paths_conf_grants_quoted_values_and_every_product_repo(tmp_
 
 @pytest.fixture
 def mock_mind_repo(tmp_path):
-    """Build a minimal repo structure mirroring claude-mind's layout."""
+    """Build a minimal repo structure mirroring a host framework's layout."""
     repo = tmp_path / "Mind"
     repo.mkdir()
     (repo / ".git").mkdir()
@@ -172,7 +172,7 @@ async def test_m3_sandbox_accepts_reads_across_all_roots(mock_mind_repo):
     assert not res.is_error, f"Primary read failed: {res.output}"
     assert "zakcode" in res.output
 
-    # Read from mind repo root — should work.
+    # Read from framework repo root — should work.
     res = await ReadFileTool().execute(
         {"path": str(repo / ".claude" / "skills" / "prime" / "SKILL.md")}, ctx
     )
@@ -220,12 +220,12 @@ def test_m3_safety_layer_rejects_traversal_from_multi_root(mock_mind_repo):
 
 
 # --------------------------------------------------------------------------- #
-# Workspace-IS-the-mind: externals auto-added with no --skill-dir (2026-08-25)
+# Workspace-IS-the-framework: externals auto-added with no --skill-dir (2026-08-25)
 # --------------------------------------------------------------------------- #
 
 
 def test_mind_workspace_gets_its_own_external_roots(mock_mind_repo):
-    """When the WORKSPACE ITSELF is a Mind repo (agents/*/local-paths.conf), its
+    """When the WORKSPACE ITSELF is a framework repo (agents/*/local-paths.conf), its
     external world/meta homes are workspace roots automatically — no --skill-dir,
     no flag. Without this, file tools refused the real world ("resolves outside
     the workspace root") and a relative Write("world/…") landed in a stray world/
@@ -245,8 +245,8 @@ def test_mind_workspace_gets_its_own_external_roots(mock_mind_repo):
 
 
 async def test_mind_workspace_reads_a_file_in_its_product_repo(mock_mind_repo, tmp_path):
-    """ADR-0230. Field 2026-09-23: two 27B workers on a Mind workspace each had a Read of a
-    file in the product repo their Mind names in AGENT_WRITE_PATH refused as outside all
+    """ADR-0230. Field 2026-09-23: two 27B workers on a framework workspace each had a Read of a
+    file in the product repo their framework names in AGENT_WRITE_PATH refused as outside all
     workspace roots."""
     from zakcode import Agent
     from zakcode.evals.harness import ScriptedProvider, reply
@@ -271,7 +271,7 @@ async def test_mind_workspace_reads_a_file_in_its_product_repo(mock_mind_repo, t
 
 
 def test_plain_workspace_gets_no_extra_roots(tmp_path):
-    """A non-Mind workspace (no agents/*/local-paths.conf) stays single-root."""
+    """A non-framework workspace (no agents/*/local-paths.conf) stays single-root."""
     from zakcode import Agent
     from zakcode.evals.harness import ScriptedProvider, reply
 

@@ -1,6 +1,6 @@
 """ADR-0063: what an empty completion inside a skill turn costs, and what it says.
 
-Field 2026-08-28 (coach on zc-03, the composed ``/start`` turn): the third completion came
+Field 2026-08-28 (the composed ``/start`` turn): the third completion came
 back empty — 254 tokens generated, no text, no thinking, no tool call — and read as a plain
 silence; the skill nudge that followed made the model call ``use_skill start`` INSIDE
 ``/start``, and 65 KB of instructions it already held landed a second time, because the

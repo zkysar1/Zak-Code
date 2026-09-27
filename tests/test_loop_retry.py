@@ -679,7 +679,7 @@ def test_buffered_rejection_then_rate_limit_resets_temperature(
     assert provider.temps == [None, 0.5, None]
 
 
-# ── g-373-80: a PERMANENT quota refusal must not spend the backoff budget ─────
+# ── a PERMANENT quota refusal must not spend the backoff budget ─────
 #
 # Measured on a live dev vessel 2026-09-14: an ``insufficient_quota`` refusal was
 # classified as a transient 429, so every turn retried an un-retryable condition
@@ -730,7 +730,7 @@ def test_the_same_text_as_a_rate_limit_still_burns_the_budget(
     The loop receives whatever object the provider raises, so constructing a
     ``RateLimited`` with the identical quota text reproduces the old behaviour
     exactly: it retries, and it sleeps. Nothing in the loop can tell the two
-    apart — only the class can, which is why ``_map_error`` is where g-373-80
+    apart — only the class can, which is why ``_map_error`` is where the fix
     landed rather than here.
 
     The horizon is pinned to 0.0 ONLY so this test finishes: in production it is
@@ -753,7 +753,7 @@ def test_the_same_text_as_a_rate_limit_still_burns_the_budget(
 def test_buffered_outage_is_ridden_out_and_named_as_one(fast_sleep: list[float], caplog) -> None:
     """A pod whose router restarts refuses connections for about a minute. The loop waits it
     out under the rate-limit horizon, not the fixed three-attempt bound, and the log says the
-    provider was unavailable. zakpod1, 2026-09-23 06:27Z: every body said "rate limited"."""
+    provider was unavailable. 2026-09-23 06:27Z: every session said "rate limited"."""
     import logging
 
     from zakcode.providers.base import ProviderUnavailable
@@ -798,10 +798,10 @@ def test_buffered_timeout_notice_names_the_bound_that_fired(
     fast_sleep: list[float], caplog
 ) -> None:
     """A TimedOut names WHICH bound expired. A stream-stall expiry logged as
-    ZAKCODE_REQUEST_TIMEOUT sends the operator to the wrong knob: zakpod1
-    2026-09-23, eleven Body calls aborted with zero chunks, seven at the 600s
+    ZAKCODE_REQUEST_TIMEOUT sends the operator to the wrong knob:
+    2026-09-23, eleven session calls aborted with zero chunks, seven at the 600s
     stall default, and every notice said 'request timed out
-    (ZAKCODE_REQUEST_TIMEOUT)' (g-375-17)."""
+    (ZAKCODE_REQUEST_TIMEOUT)'."""
     import logging
 
     from zakcode.providers.base import TimedOut

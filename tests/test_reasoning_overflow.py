@@ -2,7 +2,7 @@
 
 A completion with no visible text and no tool calls can be two different things: the
 model went SILENT, or it REASONED and delivered nothing — a thinking channel arrived, or
-the output cap cut it off mid-thought. Measured 2026-08-28 on the coach pod (Qwen3.8-27B
+the output cap cut it off mid-thought. Measured on a local pod (Qwen3.8-27B
 behind a reasoning parser): the fatal "empty" completion carried 8,192 completion tokens,
 exactly the cap, with empty ``content`` and a ``reasoning_content`` still mid-sentence.
 The loop nudged it with "your response was empty" (an instruction a template-enforced
@@ -84,7 +84,7 @@ def _make_loop(provider: Provider, tmp_path: Path, *, max_iterations: int = 20) 
 
 
 def _overflow(**over: Any) -> LLMResult:
-    """The coach shape: reasoning arrived, nothing visible, the cap cut it off."""
+    """The measured shape: reasoning arrived, nothing visible, the cap cut it off."""
     fields: dict[str, Any] = {
         "thinking": "Here's a thinking process: 1.",
         "finish_reason": "length",
@@ -190,7 +190,7 @@ async def test_overflow_after_prior_text_is_still_retried(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_empty_budget_is_consecutive_not_cumulative(tmp_path: Path) -> None:
-    # The coach death: empties separated by real work must never add up to gave_up.
+    # The measured death: empties separated by real work must never add up to gave_up.
     empties = 2 * (1 + _MAX_EMPTY_RETRIES)  # far past the bound if it were cumulative
     script: list[LLMResult] = []
     for i in range(empties):

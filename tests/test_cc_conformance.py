@@ -2,11 +2,11 @@
 
 Zak Code's strategic promise is to be a *faithful, GENERIC Claude-Code host*: anything built for
 Claude Code (skills, hooks, settings, commands) runs on it unmodified, while the *behavior* comes
-from whatever plugs in — claude-mind, another skill system, a third-party tool. This module is the
-guardian of that promise.
+from whatever plugs in — a host framework, another skill system, a third-party tool.
+This module is the guardian of that promise.
 
 THE RULE: every assertion here proves a piece of the Claude Code extension contract using only
-GENERIC fixtures — never claude-mind (or any single framework) by name. If a conformance test can
+GENERIC fixtures — never a specific framework by name. If a conformance test can
 only be written by referencing a specific plug-in, the host has leaked plug-in behavior into the
 core and the design is wrong. See docs/CLAUDE-CODE-HOST-ROADMAP.md and docs/CLAUDE-MIND-COMPAT.md.
 
@@ -235,8 +235,8 @@ async def test_pretooluse_allow_additional_context_reaches_the_model(tmp_path: P
     # Claude Code delivers an ALLOWED PreToolUse hook's hookSpecificOutput.additionalContext to the
     # model with that tool call's result. HookManager.run already aggregated it, but the loop read
     # only the veto and updatedInput off a PreToolUse result, so the text never reached the model.
-    # Measured live 2026-09-13 on a Mind vessel: a PreToolUse[Bash] stop advisory fired 7 times and
-    # appeared in 0 of 97 session messages, so the mind never learned its run was ending.
+    # Measured live 2026-09-13 on a served workspace: a PreToolUse[Bash] stop advisory fired
+    # 7 times and appeared in 0 of 97 session messages, so it never learned its run was ending.
     import sys
 
     from zakcode import Agent
@@ -357,9 +357,10 @@ async def test_skill_without_arguments_has_no_frame(tmp_path: Path) -> None:
 
 
 async def test_block_style_triggers_route_the_slash(tmp_path: Path) -> None:
-    # Claude-Mind skills declare triggers in YAML BLOCK form (`triggers:` + `- "/start"`),
-    # not the inline form — 60 of 78 skills in a live Mind (2026-08-20). The block form
-    # must route a typed slash exactly like the inline form does.
+    # A host framework's skills declare triggers in YAML BLOCK form
+    # (`triggers:` + `- "/start"`), not the inline form -- 60 of 78 skills in a
+    # live workspace (2026-08-20). The block form must route a typed slash exactly
+    # like the inline form does.
     _write_claude_skill(tmp_path, "looper", "Loop body.", frontmatter='triggers:\n  - "/go"')
     agent = _scripted_agent(tmp_path)
     result = await agent.compose_skill_turn("go", "now")
@@ -373,7 +374,7 @@ async def test_slash_frame_echoes_the_typed_command_under_triggers_routing(
 ) -> None:
     # The command-expansion frame is invocation provenance — the only signal telling the model
     # a HUMAN typed the slash. That is what lets a skill whose own rules forbid model
-    # self-invocation ("user-invocable only", a Mind's /start) run instead of refusing: the
+    # self-invocation ("user-invocable only", a framework's /start) run instead of refusing: the
     # live 2026-08-19 report was `/start sera` answered with "user-only command, please run
     # this yourself in the terminal" — typed from the terminal. Under `triggers:` routing the
     # frame echoes what the USER TYPED (/start), not the resolved skill's name, while

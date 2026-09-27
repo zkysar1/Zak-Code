@@ -10,7 +10,7 @@ emitted inside its loop over the caller's ``non_default_params``, while the defa
 supplies for these models (``temperature = 1.0`` when the request carries none) is applied
 afterwards and says nothing.
 
-So the line was ours. A Mind served on ``gemini-3.5-flash`` drew that warning on every
+So the line was ours. A workspace served on ``gemini-3.5-flash`` drew that warning on every
 structured-output call, because the schema path REQUESTS ``temperature=0`` for determinism
 (``providers/structured.py``, whose own docstring calls that a request and not a guarantee),
 and on every judge, score and deep-think call, which pass an explicit temperature too.

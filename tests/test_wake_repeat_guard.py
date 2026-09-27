@@ -5,7 +5,7 @@ The line a fired sentinel hands over says "re-arm a wake-up FIRST, then re-enter
 it says that deliberately -- a net that fires while it is being replaced is a net with a hole.
 But the model obeys it BEFORE it can discover whether there is anything to re-enter, so a loop
 that cannot run arms its own next firing and the pair repeats. Measured 2026-09-22 on a served
-Mind: six turns, ~3-5M tokens each, every one ending with the identical verdict that the agent
+workspace: six turns, ~3-5M tokens each, every one ending with the identical verdict that the agent
 was IDLE and the loop would not start.
 
 Neither existing guard could see it. The doom guard and the stuck ladder are both per-TURN state
@@ -13,7 +13,7 @@ Neither existing guard could see it. The doom guard and the stuck ladder are bot
 flailing inside one turn; these repeats are one turn apart, so no threshold could have been set
 low enough. What is pinned here is therefore the new scope, not a new sensitivity.
 
-THE POSITIVE CONTROL IS THE POINT OF THIS FILE, not a courtesy (guard-4166). This change's whole
+THE POSITIVE CONTROL IS THE POINT OF THIS FILE, not a courtesy. This change's whole
 effect is that something STOPS happening, and a suite that only asserts absence passes just as
 well when the wake-up never worked at all. So every cancelling test has a twin that differs in
 one thing only -- what the second turn SAID -- and asserts the net survives.
@@ -152,7 +152,7 @@ async def test_a_second_wake_up_turn_that_ends_differently_keeps_the_net_it_arme
     # RECORDED, and the mutation proof showed why that is wrong for a control: removing either
     # turn-end call site broke the recording, so the control went red alongside the tests it is
     # supposed to stay green beside, and a suite where the control flips with everything else
-    # cannot tell a working guard from a dead wake-up (guard-4166). The recording is a separate
+    # cannot tell a working guard from a dead wake-up. The recording is a separate
     # claim and gets its own test below.
     assert _held(loop) == LOOP_SENTINEL
 
@@ -264,9 +264,9 @@ def test_the_flag_is_cleared_even_when_the_turn_did_not_repeat() -> None:
 
 # ── the exception: a turn the PROVIDER failed is not a verdict on the loop (ADR-0250) ────
 #
-# Measured 2026-09-25 on three worker Bodies during a 12-hour pod outage: every sentinel turn
+# Measured 2026-09-25 on three worker sessions during a 12-hour pod outage: every sentinel turn
 # ended identically -- the provider refused every call, the model never acted -- and on the
-# second such turn the guard above cancelled the net, exactly as designed, and the Bodies sat
+# second such turn the guard above cancelled the net, exactly as designed, and the sessions sat
 # at their prompts for four and a half hours after the pod came back. The tests below are the
 # twins of the cancelling test at the top of this file; each differs in one thing only -- WHY
 # the two turns ended identically -- and asserts the net survives and backs off.

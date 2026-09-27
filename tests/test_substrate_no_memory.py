@@ -1,9 +1,9 @@
-"""The harness ships NO cross-session memory — that is claude-mind's job.
+"""The harness ships NO cross-session memory — that is the host framework's job.
 
 See ``docs/PERSISTENCE-BOUNDARY.md``: the substrate records the transcript (``SessionStore``,
 powering ``/resume``) and exposes generic seams; it does not remember, recall, or learn. These
 tests pin the removal: a bare Agent registers no ``remember``/``recall`` tools and holds no memory
-store, while the GENERIC seams a Mind attaches its own recall to — the context-hook and
+store, while the GENERIC seams a host framework attaches its own recall to — the context-hook and
 lifecycle-hook registration points — remain present and usable.
 """
 
@@ -37,8 +37,8 @@ def test_no_enable_memory_flag(tmp_path: Path) -> None:
 
 
 def test_generic_recall_seams_survive(tmp_path: Path) -> None:
-    # claude-mind brings its own recall via these generic, non-memory-specific seams — they must
-    # still be present and accept a Mind's hooks after the memory subsystem is gone.
+    # A host framework brings its own recall via these generic, non-memory-specific seams — they
+    # must still be present and accept a framework's hooks after the memory subsystem is gone.
     agent = _agent(tmp_path)
     agent.hook_manager.register_context(lambda payload: "background a mind supplies")
     agent.hook_manager.register_lifecycle(HookEvent.SESSION_START, lambda payload: None)

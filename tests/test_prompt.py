@@ -97,7 +97,7 @@ def test_environment_section_names_the_shell(tmp_path: Path, monkeypatch) -> Non
 def test_planning_guidance_names_primitiveness_criteria(tmp_path: Path) -> None:
     # The decomposition stopping-rule must name the two criteria a single-action floor alone
     # omits: a checkable done-condition, and no approach decision still hidden in the step
-    # (convergent across the /decompose + Ayoai-Mind HTN surveys; keeps weak models from
+    # (convergent across the /decompose + framework HTN surveys; keeps weak models from
     # stopping at vague, half-decided steps). Pinned in BOTH the system prompt and the
     # update_plan tool description — the model reads the latter exactly when it fills 'subtasks'.
     prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path)).lower()
@@ -470,7 +470,7 @@ def test_evidence_discipline_is_in_the_stable_tier(tmp_path: Path) -> None:
     # result is a claim about the instrument, the user saying "you're wrong" escalates the
     # search (two approaches of a different KIND), a named alternative is a step owed — sit
     # in the cacheable tier for every model, every domain. Domain facts (which account a
-    # token belongs to, how a given API names an extension) stay with the Mind's knowledge.
+    # token belongs to, how a given API names an extension) stay with the workspace's knowledge.
     prompt = SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
     stable = prompt.split(DYNAMIC_BOUNDARY)[0]
     assert "Negative results and the user's conviction:" in stable
@@ -1097,7 +1097,7 @@ def test_fold_admits_an_oversized_mandate_section_abridged(tmp_path: Path) -> No
 
 
 def test_fold_never_abridges_a_table_bearing_section(tmp_path: Path) -> None:
-    # rb-10979's index hazard: a rules section that carries a table folds whole or not at all.
+    # Index hazard: a rules section that carries a table folds whole or not at all.
     guide = _guide_around(_oversized_rules(table=True))
     (tmp_path / "AGENTS.md").write_text(guide, encoding="utf-8")
     [(_, content)] = discover_context(tmp_path, include_readme=False)

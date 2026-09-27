@@ -6,7 +6,7 @@ exception through ``isinstance(exc, ProviderError) -> pytest.skip``. That predic
 is the whole base class, so it converted the product's OWN defects into a green
 skip — including the one condition the suite exists to catch.
 
-Measured 2026-09-14/15 (g-373-81, and g-373-80 for the classification leg):
+Measured 2026-09-14/15:
 
 * The ``LIVE_TESTS=1`` module-level ``skipif`` already disposes of "not opted in".
   A run that reaches this policy has declared it intends to talk to a real
@@ -20,9 +20,9 @@ Measured 2026-09-14/15 (g-373-81, and g-373-80 for the classification leg):
 
 So the default here is FAIL, and only the conditions named below are skipped. A
 ``ProviderError`` subclass added later therefore fails loudly until someone
-classifies it, rather than silently joining the quiet set (guard-1718: a
-fail-open default poisons every assertion of its own value; guard-373: catch the
-specific class for the documented failure mode, never the base).
+classifies it, rather than silently joining the quiet set (a fail-open
+default poisons every assertion of its own value; catch the specific class
+for the documented failure mode, never the base).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from zakcode.providers.base import (
 )
 
 #: The marker list and its discriminator now live in the PRODUCT
-#: (:mod:`zakcode.providers.base`), because as of g-373-80 the product classifies a
+#: (:mod:`zakcode.providers.base`), because the product now classifies a
 #: permanent refusal itself — ``_map_error`` raises :class:`QuotaExhausted` instead
 #: of a retryable ``RateLimited``. They are re-exported here so a test still imports
 #: one name from one module, while the vendor-phrasing list has exactly ONE home:
@@ -79,7 +79,7 @@ def environmental_skip_reason(exc: BaseException) -> str | None:
 
     # A permanent quota/credit refusal is a REAL failure wearing a 429's clothes.
     # Two checks, and both earn their place. The TYPE check is the product's own
-    # verdict (g-373-80): ``_map_error`` now raises QuotaExhausted for any message
+    # verdict: ``_map_error`` now raises QuotaExhausted for any message
     # carrying a marker, whatever status code it arrived under. The TEXT check
     # behind it is the net for a refusal that reaches a test WITHOUT that verdict —
     # a provider litellm never mapped to 429 at all (landing in RequestFailed), or

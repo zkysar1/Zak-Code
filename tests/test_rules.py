@@ -371,7 +371,7 @@ def test_agent_subagents_inherit_parent_rules(tmp_path: Path) -> None:
     assert runner.rules is not None and "DELEGATED_RULE_MARKER" in runner.rules
 
 
-# ── g-016-86: the env var must reach a NON-server Agent construction ─────────
+# ── The env var must reach a NON-server Agent construction ───────────────────
 #
 # ZAKCODE_LEAN_RULES was documented as a deployment knob ("set ZAKCODE_LEAN_RULES=true
 # for token-constrained deployments") but reached the Agent through exactly one call
@@ -415,7 +415,7 @@ def test_env_var_reaches_a_non_server_agent(tmp_path: Path, monkeypatch) -> None
     # registered whenever rules are on, so its name reaches this same system prompt through
     # the tool catalog ("- read_rule(name): ...") even when the FULL render is in use. That
     # marker passes against both arms and so proves nothing about which render ran — verified
-    # by re-running this test against the pre-g-016-82 header. This phrase appears only in
+    # by re-running this test against the pre-fix header. This phrase appears only in
     # render_index()'s header.
     assert "call read_rule with its name" in system
     assert "BODY-MARKER-0" not in system

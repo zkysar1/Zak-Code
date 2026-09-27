@@ -2,7 +2,7 @@
 
 Zak Code's one internal spelling for "thinking off" is llama.cpp's
 ``{"chat_template_kwargs": {"enable_thinking": false}}`` (ADR-0056). Measured 2026-09-17 on
-a served Mind (``vertex_ai_beta``): Vertex AI does not ignore a body key it does not know —
+a served workspace (``vertex_ai_beta``): Vertex AI does not ignore a body key it does not know —
 it refuses the whole request (``400 INVALID_ARGUMENT — Invalid JSON payload received.
 Unknown name "chat_template_kwargs": Cannot find field.``), so the reasoning-overflow
 retry killed the turn it existed to save. The provider now renders the switch for the

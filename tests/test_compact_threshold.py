@@ -1,6 +1,6 @@
 """ADR-0240: the compaction threshold leaves the call room for one answer.
 
-Field 2026-09-23 (three worker Bodies on one 131k pod): compaction was ~37% of a Body's
+Field 2026-09-23 (three worker sessions on one 131k pod): compaction was ~37% of a session's
 model time. The old threshold, a fixed 0.8 of the window, left ~26k tokens unused on every
 call it guarded, while the largest completion across 945 measured calls was 4,468 tokens.
 The threshold is now 0.9 of the window where the window can spare the answer's room, pulled

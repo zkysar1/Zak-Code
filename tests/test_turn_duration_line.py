@@ -1,6 +1,6 @@
 """The turn-ended log line carries a parseable wall-clock duration, on BOTH turn paths.
 
-Why this file exists (g-373-122). Sizing the framework-stop grace needs the
+Why this file exists. Sizing the framework-stop grace needs the
 distribution of real turn LENGTHS from a served run's ``serve.log``. The loop has
 logged an unconditional ``turn ended: stop_reason=... iterations=... tokens=...``
 line since the first commit — measured 55 of them across a 52-log / 37,144-line
@@ -174,7 +174,7 @@ def test_instrument_rejects_the_pre_duration_line() -> None:
     """Positive control for the regex: the OLD line shape must NOT parse.
 
     Without this, a pattern that happened to match the duration-less line would
-    make both tests above pass over an unchanged loop (guard-5501 class: prove
+    make both tests above pass over an unchanged loop (prove
     the diagnostic can fail before trusting that it fired).
     """
     old = (

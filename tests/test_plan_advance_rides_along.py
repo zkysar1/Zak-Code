@@ -2,7 +2,7 @@
 
 A response that only updates the plan costs a whole model call, and on a slow backend it is the
 most expensive kind (measured 2026-09-23 on the 131k P40 pod: 17.8 and 22.3 percent of the two
-worker Bodies' model time). Nothing told the model it could pair the update with the work, so it
+worker sessions' model time). Nothing told the model it could pair the update with the work, so it
 rarely did. These tests pin the one sentence that now says so on every surface the model reads
 about the plan, the batch mechanics that make the pairing safe (the plan runs first, so the work
 is credited to the step it starts), and the one exception: a paged skill's section, whose next

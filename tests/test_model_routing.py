@@ -1,6 +1,6 @@
 """Tests for per-role model routing (the "three specialized models" pattern).
 
-A mind can route cheap roles (planner sub-agent, compaction summarizer) to a cheaper/local
+A workspace can route cheap roles (planner sub-agent, compaction summarizer) to a cheaper/local
 model while the generator (main loop) keeps default_model. Hermetic: scripted providers, no
 network. ``_provider_for`` is the seam; the provider built from settings is exercised offline
 (litellm construction is lazy — no key/network needed to build the wrapper).
@@ -142,7 +142,7 @@ async def test_compaction_summarizer_defaults_to_main_provider(tmp_path: Path) -
     assert out == "gen-summary" and gen.calls == 1
 
 
-# ── g-016-83: routed models must not be decommissioned ───────────────────────
+# ── routed models must not be decommissioned ───────────────────────
 #
 # THE DEFECT THIS PINS. Groq removed ``qwen/qwen3-32b`` from its catalog around
 # 2026-07-19. The registry recorded that — in a COMMENT — and its successor's
@@ -180,7 +180,7 @@ def test_decommissioned_flag_actually_discriminates() -> None:
     from zakcode.providers.base import Capabilities
 
     # Asserted on SYNTHETIC capabilities, not a registry row. Every row that carried
-    # decommissioned=True was a Groq row, and retiring Groq (g-369-295) emptied that
+    # decommissioned=True was a Groq row, and retiring Groq emptied that
     # population — so the registry-keyed control this test used to make would now pass
     # vacuously, which is the precise defect its docstring above warns about. The flag
     # itself still discriminates, and the sibling test above still walks the live table.

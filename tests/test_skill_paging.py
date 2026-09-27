@@ -117,7 +117,7 @@ def test_fewer_than_two_sections_is_delivered_whole() -> None:
 
 def test_bold_lead_ins_and_fenced_phase_comments_page_too() -> None:
     # ADR-0084: the control skills' bold checklist and a loop skill's fenced pseudocode
-    # markers are sections — /start (63 KB) and /worker-loop (84 KB) were delivered whole.
+    # markers are sections — /start (63 KB) and a loop skill (84 KB) were delivered whole.
     filler = "x " * 30
     bold = skill_pages(
         f"# x\n\n**Step 1**: bold only.\n\n{filler}\n\n**Step 2**: still bold.\n\n{filler}\n",
@@ -193,7 +193,7 @@ def test_a_section_over_the_budget_is_cut_at_its_markers_then_headings_then_para
 @pytest.mark.real_page_budget
 def test_small_consecutive_sections_share_a_page() -> None:
     """ADR-0088: a page costs a model turn to deliver, so consecutive sections pack to the
-    budget — measured on a Mind's 131 skills: 976 pages, 321 deliveries. Any packed
+    budget — measured on a workspace's 131 skills: 976 pages, 321 deliveries. Any packed
     section names the page; the sections are the step's sub-steps; a skill that packs
     into ONE page is delivered whole, its sections still the plan's steps."""
     body = (
@@ -523,7 +523,7 @@ def test_a_restart_reads_how_far_it_was_paged_from_the_transcript(tmp_path: Path
     assert second._skill_pages_delivered["demo"] == {1, 2}
 
 
-# ADR-0245: a skill's file can change while a loop runs (a Mind's Body merges framework updates
+# ADR-0245: a skill's file can change while a loop runs (a session merges framework updates
 # for hours). A load fixes the version its pages are turned from; the next load reads the file
 # again. These scripts answer from the conversation, not the call count: the loop's side calls
 # share the provider.
@@ -685,7 +685,7 @@ def test_a_paged_load_without_a_whole_body_is_named_not_hidden(
     assert [t.title for t in loop.session.task_network.tasks] == ["Step 1: First"]
 
 
-# ── the first field run's defects (2026-08-28, coach /boot) ──────────────────────
+# ── the first field run's defects (2026-08-28, /boot) ──────────────────────
 
 
 def _start_steps(*statuses: str) -> list[dict[str, Any]]:
@@ -766,7 +766,7 @@ def test_a_section_the_plan_moved_past_is_not_restored(tmp_path: Path) -> None:
     assert (note["page"], note["skipped"]) == (3, 1)
 
 
-# ── the second field run's defects (2026-08-28, coach /aspirations-precheck) ────────
+# ── the second field run's defects (2026-08-28, /aspirations-precheck) ────────
 
 
 def _keep_first(rewrite: int = 0) -> list[dict[str, Any]]:
@@ -857,7 +857,7 @@ def test_the_plan_can_come_back_to_a_page_it_jumped_over(tmp_path: Path) -> None
     assert loop._skill_pages_delivered["demo"] == {1, 2, 3}
 
 
-# ── the third field run's defect (2026-08-29, coach worker /start) ────────────────────
+# ── the third field run's defect (2026-08-29, worker /start) ────────────────────
 
 
 def _plans_sent(messages: list[Message]) -> int:
@@ -909,7 +909,7 @@ def test_a_section_closed_unseen_gets_its_own_page_not_the_one_left_behind(
 ) -> None:
     """The model skipped section 2 and closed 3 without its page. Reopening 3 and re-sending
     page 2 — the earliest open one — was a doom loop in the field: the model wanted 3, closed
-    it again, got page 2 again (coach-w, 2026-08-29). ADR-0089: page 3 arrives, the rail
+    it again, got page 2 again (2026-08-29). ADR-0089: page 3 arrives, the rail
     names the section left behind, and the second close stands."""
 
     def script(n: int, messages: list[Message]) -> LLMResult:
@@ -1089,11 +1089,11 @@ def test_a_document_saved_before_the_record_takes_its_open_work_as_held(tmp_path
     assert session.skill_pages_delivered == {"demo": [1, 2, 3]}
 
 
-# ── the fourth field run's defect (2026-08-29, coach-w "awaiting section 23") ─────────
+# ── the fourth field run's defect (2026-08-29, "awaiting section 23") ─────────
 
 
 def _unattended_loop(provider: Provider, tmp_path: Path) -> AgentLoop:
-    """A worker Body: ``--dangerously-skip-permissions``, no one at the prompt."""
+    """A worker session: ``--dangerously-skip-permissions``, no one at the prompt."""
     registry = ToolRegistry()
     registry.register(UseSkillTool())
     registry.register(UpdatePlanTool())
@@ -1162,13 +1162,13 @@ def test_an_attended_turn_may_end_on_an_open_section(tmp_path: Path) -> None:
     assert loop.session.messages[-1].role == "assistant"
 
 
-# ── the fifth field run's defect (2026-08-29, coach-w2 on the ADR-0088 build) ──────────
+# ── the fifth field run's defect (2026-08-29, on the ADR-0088 build) ──────────
 
 
 def test_a_section_cancelled_then_dropped_stays_closed(tmp_path: Path) -> None:
     """The worker cancelled /start's IDLE branches; a later rewrite dropped them; the restore
     (ADR-0075) put them back PENDING and pages 4–6 arrived one per turn while the worker was
-    three skills further on (coach-w2, 2026-08-29). ADR-0091: a closed section is settled —
+    three skills further on (2026-08-29). ADR-0091: a closed section is settled —
     a rewrite that drops it neither restores nor delivers it — and the record outlives a
     restart."""
 
@@ -1207,7 +1207,7 @@ def test_a_marker_the_rewrite_folded_into_the_title_still_marks_the_section(
     """The plan renders a step as ``title — note``; the model copied that back as the title
     and wrote its own note — so no step carried the note marker, the seeded structure
     read as gone, and /start's cancelled branches (no marker token to match on) were
-    delivered as "dropped" one per turn (coach-w2, 2026-08-29). ADR-0092: the marker
+    delivered as "dropped" one per turn (2026-08-29). ADR-0092: the marker
     counts wherever it landed; the closed sections stay closed and no page arrives."""
 
     def script(n: int, messages: list[Message]) -> LLMResult:
@@ -1265,7 +1265,7 @@ def test_a_token_two_sections_share_maps_a_step_to_the_first_page(tmp_path: Path
     """/worker-loop's last page packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 —
     REDUCER-LIVENESS POLL"; a rewritten Phase 0.5 step matched BOTH, so closing it reopened
     the never-held last page and the closure section arrived while the plan stood at
-    SELECT (coach-w2, coach-w, coach-w4 — 2026-08-29). ADR-0092: a step is one page's, the
+    SELECT (2026-08-29). ADR-0092: a step is one page's, the
     first in order, so the page delivered is the one under way."""
     pages = skill_pages(SHARED, skill="shared")
     assert [p.title for p in pages.pages] == [
@@ -1323,7 +1323,7 @@ the goal each gap should be filed under.
 
 
 def test_a_lettered_step_id_is_a_marker() -> None:
-    """coach's skills: 60 of 210 pages had no marker, a third of them ``Step B2.5`` /
+    """Field measurement: 60 of 210 pages had no marker, a third of them ``Step B2.5`` /
     ``Phase GS-1`` / ``Phase S4.6`` ids the regex refused (2026-08-29)."""
     pages = skill_pages(LETTERED, skill="lettered")
     assert pages is not None and pages.count == 3
@@ -1335,7 +1335,7 @@ def test_a_lettered_step_id_is_a_marker() -> None:
 
 
 def test_overlap_finds_the_page_a_paraphrase_means() -> None:
-    """/start's pages as coach has them: branch names, no marker, a section split in three."""
+    """/start's pages as measured: branch names, no marker, a section split in three."""
     idle = 'IDLE (agent-state contains "IDLE")'
     pages = [
         SkillPage(
@@ -1407,7 +1407,7 @@ ask the operator for the agent's purpose before the first goal.
 
 
 def test_a_paraphrased_branch_plan_delivers_no_page_the_model_closed(tmp_path: Path) -> None:
-    """coach-w, coach-w2 and the reducer (2026-08-29): the RUNNING branch done, the other
+    """Field incident (2026-08-29): the RUNNING branch done, the other
     three cancelled, every title paraphrased and every note dropped — and all of /start's
     pages arrived one per turn, the cancelled ones included, with none of them settled."""
     rewrite = [

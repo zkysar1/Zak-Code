@@ -1,4 +1,4 @@
-"""The vessel-to-mind channel must be visible in serve.log AT ALL (g-373-40).
+"""The vessel-to-host-framework channel must be visible in serve.log AT ALL.
 
 Sibling of ``test_observation_intake_observability.py``. That file pins what
 ``/sidecar/health`` REPORTS about intake; this one pins whether anything reaches the
@@ -14,7 +14,7 @@ distinguish "no vessel is sending" from "every frame is being rejected".
 
 That is the worst shape for this channel specifically, because P4 makes every failure on
 it a SILENT DROP by design — producer cooperation is optional, so the receiver's log is
-the only witness. Per guard-5501, a diagnostic's silence is not evidence until you prove
+the only witness. A diagnostic's silence is not evidence until you prove
 the diagnostic can fire, which is what the refusal tests below do for each reason.
 """
 
@@ -88,7 +88,7 @@ def test_an_accepted_frame_writes_an_info_line(
 
 # ── the refusal direction — the one that matters ──────────────────────────────
 #
-# Each case proves the diagnostic CAN fire for that specific reason (guard-5501).
+# Each case proves the diagnostic CAN fire for that specific reason.
 # A config that only shows successes does not close this goal: under P4 a refusal is
 # indistinguishable from silence from outside, so the refusal line IS the signal.
 

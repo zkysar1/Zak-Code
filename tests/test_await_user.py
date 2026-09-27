@@ -215,7 +215,7 @@ def _loop_with_mode(provider: Provider, mode: PermissionMode) -> tuple[AgentLoop
 
 
 async def test_await_user_fails_closed_when_unattended() -> None:
-    # Autonomous, and a worker Body's bypass, both mean "no one at the prompt" (loop.unattended):
+    # Autonomous and bypass modes both mean "no one at the prompt" (loop.unattended):
     # await_user then has no terminus, so it must NOT end the turn -- the loop continues instead
     # of stranding on a question no one will answer (the bobby /start-that-asked-to-boot class).
     for mode in (PermissionMode.AUTONOMOUS, PermissionMode.BYPASS):

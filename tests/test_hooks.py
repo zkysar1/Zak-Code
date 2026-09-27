@@ -47,7 +47,7 @@ async def test_a_hook_registered_under_two_spellings_of_one_tool_runs_once(
     """A Claude Code settings.json lists the same hook under separate ``Edit`` and
     ``MultiEdit`` matcher blocks. zakcode's one edit tool answers to both spellings
     (``_CLAUDE_CODE_TOOL_NAMES``), so both specs match one Edit call -- and the hook
-    ran twice per edit. Measured 2026-09-24 on three Mind worker Bodies: every hook
+    ran twice per edit. Measured 2026-09-24 on three worker sessions: every hook
     in those blocks fired twice per Edit (two 15 s timeouts of ONE hook, 32.4 s
     edits, two pushes of one file). One tool call runs one distinct command once."""
     out = tmp_path / "fires.txt"
@@ -102,7 +102,7 @@ async def test_in_process_block_vetoes() -> None:
 async def test_block_reason_leads_the_joined_message() -> None:
     """An allowing hook's advisory must not stand in front of the veto.
 
-    Measured 2026-08-30 (zc-03): a Mind path hook emitted "[stray-root-advisory] …" on
+    Measured 2026-08-30: a framework path hook emitted "[stray-root-advisory] …" on
     allow, a later hook refused an inline store parse, and the joined text read
     "Blocked by hook for 'bash': [stray-root-advisory] …; direct store parse refused …"
     — the model took the advisory for the reason, four times in three hours."""

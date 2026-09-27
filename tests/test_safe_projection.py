@@ -5,7 +5,7 @@ so these tests pin two properties hard: (1) whitelist-by-construction — every 
 maps to an explicit allow-listed shape or is DROPPED, and an UNKNOWN type is always dropped
 (never passed through); (2) extended redaction removes credential-shaped strings, exact env
 secret values, workspace paths, and high-entropy tokens from every text field that escapes.
-Bravo audit g-335-41 F2 is the reason for the unknown-type test: a blacklist would fail open
+The reason for the unknown-type test: a blacklist would fail open
 the moment the SDK adds a field or event type.
 """
 
@@ -236,7 +236,7 @@ def test_redaction_never_raises_on_empty() -> None:
     assert _proj().project(AgentTextDelta(text="")) == SafeText(text="")
 
 
-# ── g-366-05: named-vault layer — usage NAMES surfaced, stored VALUES scrubbed ─
+# ── Named-vault layer — usage NAMES surfaced, stored VALUES scrubbed ──────────
 
 
 def test_tool_call_surfaces_placeholder_names_only() -> None:
@@ -446,7 +446,7 @@ def test_a_result_that_names_no_tool_is_receipted_as_the_terminal_does(
 
 def _plan_event(*steps: Task) -> AgentTaskUpdate:
     """The loop's own ``task_update`` for a plan (``AgentLoop._task_update_event``): the bytes
-    a served session publishes, never a hand-written render (rb-11490)."""
+    a served session publishes, never a hand-written render."""
     network = TaskNetwork()
     network.replace_from_author(list(steps))
     holder = SimpleNamespace(session=SimpleNamespace(task_network=network))

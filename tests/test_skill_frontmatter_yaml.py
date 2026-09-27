@@ -1,12 +1,12 @@
 """The skill frontmatter parser reads indentation as YAML does.
 
-Measured 2026-09-23 against PyYAML: of a live Mind's 148 skills, 49 reached the model's
+Measured 2026-09-23 against PyYAML: of a live framework's 148 skills, 49 reached the model's
 catalogue with the wrong description. 11 were YAML block scalars (``description: >-`` then
 indented lines) listed as the indicator ``>-``, and a folded line with a colon in it became a
 key of its own. 25 had an ``arguments:`` list whose items carry a ``description:`` of their own,
 and the parser, which stripped every line's indentation, let the LAST ``description:`` win, so
 the skill was listed with one of its arguments' descriptions. 13 were double-quoted with
-escapes, and the backslashes reached the model. Coach's deployment: 20 of 58. The
+escapes, and the backslashes reached the model. A local deployment: 20 of 58. The
 bench's catalogue reader had been fixed for block scalars on 2026-09-12 (ADR-0158 second
 addendum, ``tests/test_bench_frontmatter.py``); the product parser that builds the real
 catalogue had not.

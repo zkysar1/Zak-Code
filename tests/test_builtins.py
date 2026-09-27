@@ -147,9 +147,9 @@ def test_bash_timeout_cap_raised_above_60() -> None:
 async def test_bash_default_timeout_is_claude_codes_two_minutes(
     ctx: ToolContext, monkeypatch
 ) -> None:
-    """With no ``timeout``, a command gets Claude Code's default of two minutes, not the 60s
-    that killed a Mind worker's goal-selector run on zc-02 (2026-09-23). An explicit value is
-    honored, and one above the cap is clamped to it."""
+    """With no ``timeout``, a command gets Claude Code's default of two minutes,
+    not 60 s (measured 2026-09-23). An explicit value is honored, and one above
+    the cap is clamped to it."""
     import zakcode.tools.builtins.bash as bash_module
 
     seen: list[int] = []
@@ -378,7 +378,7 @@ async def test_registry_execute_dispatch(ctx: ToolContext) -> None:
 async def test_bash_127_names_the_workspace_script(tmp_path) -> None:
     """A bare script name not on PATH gets a fix naming the real workspace path —
     one error instead of the model's error -> find -> retry ritual (measured on a
-    mind agent 2026-08-25: dozens of identical 127s on core/scripts names)."""
+    a framework agent 2026-08-25: dozens of identical 127s on core/scripts names)."""
     scripts = tmp_path / "core" / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "pipeline-read.sh").write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
@@ -417,9 +417,9 @@ async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
 
 
 def _mind_workspace(tmp_path: Path) -> Path:
-    """The shape of a Mind deployment: framework scripts under core/scripts, the domain's
-    data under a HIDDEN .mind-data/ (which the basename locator used to prune), and a
-    .git/ that must never be offered as a lead."""
+    """A workspace with framework scripts under core/scripts, domain data under a
+    HIDDEN .mind-data/ (which the basename locator used to prune), and a .git/
+    that must never be offered as a lead."""
     scripts = tmp_path / "core" / "scripts"
     scripts.mkdir(parents=True)
     for name in ("reasoning-bank-add.sh", "reasoning-bank-read.sh", "wm-read.sh", "wm-set.sh"):
@@ -435,9 +435,9 @@ def _mind_workspace(tmp_path: Path) -> Path:
 
 
 async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
-    """`cat world/forged-skills.yaml` on a Mind deployment: the file lives at
-    .mind-data/world/forged-skills.yaml. Measured 2026-08-29 (zc-03, eight Bodies): 15 of
-    the day's 73 failed commands were ENOENT, every one a guessed path."""
+    """`cat world/forged-skills.yaml` on a workspace whose data lives at
+    .mind-data/world/forged-skills.yaml. Measured 2026-08-29 (eight sessions):
+    15 of the day's 73 failed commands were ENOENT, every one a guessed path."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
     res = await BashTool().execute({"command": "cat world/forged-skills.yaml"}, ctx)
     assert res.is_error
@@ -453,11 +453,12 @@ async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
 
 
 async def test_bash_wrong_prefix_hint_says_cd_will_not_help(tmp_path) -> None:
-    """Measured 2026-08-30 (zc-03): refused for `bash world/scripts/yahoo/discover.sh`
-    with the lead naming `.mind-data/world/scripts/yahoo/discover.sh`, the Body replied
-    `cd <workspace root> && <same command>` — it read "(or `cd` there first)" as a cwd
-    problem — and only after a second refusal used the path already named. When the
-    guess is the real path minus its leading directory, say exactly that."""
+    """Measured 2026-08-30: refused for `bash world/scripts/yahoo/discover.sh`
+    with the lead naming `.mind-data/world/scripts/yahoo/discover.sh`, the model
+    replied `cd <workspace root> && <same command>` -- it read "(or `cd` there
+    first)" as a cwd problem -- and only after a second refusal used the path
+    already named. When the guess is the real path minus its leading directory,
+    say exactly that."""
     root = _mind_workspace(tmp_path)
     script = root / ".mind-data" / "world" / "scripts" / "yahoo" / "discover.sh"
     script.parent.mkdir(parents=True)
@@ -503,9 +504,9 @@ async def test_bash_enoent_with_no_lead_gets_no_fix(tmp_path) -> None:
 
 
 async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path) -> None:
-    """`bash core/scripts/wm-list.sh`: the directory is real, the name is invented. The
-    family sharing its leading token (wm-read.sh, wm-set.sh) is the answer — not the
-    global token match (`history-list.sh` on 'list') the live smoke on zc-03 produced."""
+    """`bash core/scripts/wm-list.sh`: the directory is real, the name is invented.
+    The family sharing its leading token (wm-read.sh, wm-set.sh) is the answer --
+    not the global token match (`history-list.sh` on 'list') a live smoke produced."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
     res = await BashTool().execute({"command": "bash core/scripts/wm-list.sh"}, ctx)
     assert res.is_error
@@ -517,7 +518,7 @@ async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path)
 async def test_bash_enoent_same_words_in_another_order_lead_the_hint(tmp_path) -> None:
     """`bash core/scripts/blocker-create.sh` when the script is `create-blocker.sh`: the
     leading-token family (blocker-create-gate.sh, blocker-recheck.sh) is not the answer
-    and used to be the whole hint — measured 2026-08-30 (zc-03), six more commands to
+    and used to be the whole hint -- measured 2026-08-30, six more commands to
     find the real file. The reordered name leads, as a pasteable path."""
     root = _mind_workspace(tmp_path)
     scripts = root / "core" / "scripts"
@@ -600,9 +601,9 @@ def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
 
 
 def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
-    """The four ENOENTs the first deploy of the hint did NOT match (zc-03, 2026-08-29,
-    verbatim shapes): touch, grep, and directory targets — plus the coreutils siblings
-    that print the same `cannot <verb> 'x'` frame."""
+    """The four ENOENTs the first deploy of the hint did NOT match (2026-08-29,
+    verbatim shapes): touch, grep, and directory targets -- plus the coreutils
+    siblings that print the same `cannot <verb> 'x'` frame."""
     from zakcode.tools.builtins.bash import _ENOENT_RES
 
     def captured(out: str) -> str | None:
@@ -640,10 +641,11 @@ def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
 
 
 async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) -> None:
-    """`touch /ws/.mind-data/agents/coach/sessions/<sid>/light-prime-done` — measured
-    2026-08-29 (zc-03): a Body invented `.mind-data/agents/...`; `agents/` lives at the
-    workspace root. Nothing anywhere is named light-prime-done (the file was about to be
-    CREATED), so the file search has no lead — the first missing path component does."""
+    """`touch /ws/.mind-data/agents/coach/sessions/<sid>/light-prime-done` --
+    measured 2026-08-29: the model invented `.mind-data/agents/...`; `agents/`
+    lives at the workspace root. Nothing anywhere is named light-prime-done
+    (the file was about to be CREATED), so the file search has no lead -- the
+    first missing path component does."""
     root = _mind_workspace(tmp_path)
     (root / "agents" / "coach" / "sessions" / "abc").mkdir(parents=True)
     ctx = ToolContext(workspace_root=root)
@@ -678,8 +680,9 @@ async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path)
 
 
 async def test_bash_enoent_directory_guessed_at_the_wrong_place(tmp_path) -> None:
-    """`ls world/` on a Mind deployment: no file is named `world`, its parent (the root)
-    exists, and nothing at the root shares its token — the directory itself is the lead."""
+    """`ls world/` on a workspace whose data lives under .mind-data/: no file is
+    named `world`, its parent (the root) exists, and nothing at the root shares
+    its token -- the directory itself is the lead."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
     res = await BashTool().execute({"command": "ls world/"}, ctx)
     assert res.is_error
@@ -733,10 +736,11 @@ def _registry_ctx(tmp_path: Path) -> ToolContext:
 
 
 async def test_bash_refuses_a_tool_written_as_a_shell_call_and_names_the_tool(tmp_path) -> None:
-    """The Bodies typed the loop's deadman net — `ScheduleWakeup(prompt=…, delaySeconds=600)`
-    — into the bash tool, five times in one session (zc-03, 2026-08-29): a shell syntax
-    error and a lost turn each, then no real call at all. Refuse it BEFORE running, with
-    the tool's real name and parameters."""
+    """The model typed the loop's deadman net --
+    `ScheduleWakeup(prompt=..., delaySeconds=600)` -- into the bash tool, five
+    times in one session (2026-08-29): a shell syntax error and a lost turn each,
+    then no real call at all. Refuse it BEFORE running, with the tool's real name
+    and parameters."""
     ctx = _registry_ctx(tmp_path)
     res = await BashTool().execute(
         {"command": "ScheduleWakeup(prompt='<<autonomous-loop-dynamic>>', delaySeconds=600)"}, ctx
@@ -807,7 +811,7 @@ async def test_bash_python_inline_parse_error_gets_file_hint(tmp_path) -> None:
 def test_json_first_line_fix_predicate() -> None:
     """`wrapper.sh | python3 -c` dying on `Expecting value: line 1 column 2 (char 1)` is
     json.loads on a lone `[`/`{` — the upstream printed a pretty-printed document and the
-    program read it line by line (measured 2026-08-30, zc-03, two sessions)."""
+    program read it line by line (measured 2026-08-30, two sessions)."""
     from zakcode.tools.builtins.bash import _json_first_line_fix
 
     err = (
@@ -888,7 +892,7 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_module_not_found_names_the_package_parent(tmp_path) -> None:
     """`cd <root> && python3 -c "import yahoo"` after the package moved under
-    .mind-data/world/scripts — five times in 24 h on zc-03 (2026-08-30), one identical
+    .mind-data/world/scripts -- five times in 24 h (2026-08-30), one identical
     retry, no hint. The hint names the parent to run from and the PYTHONPATH form."""
     pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
     pkg.mkdir(parents=True)
@@ -911,8 +915,8 @@ async def test_bash_module_not_found_without_a_workspace_package_is_plain(tmp_pa
 
 
 def test_nearest_module_fix_predicate(tmp_path) -> None:
-    """The measured shape (zc-03 2026-08-30, g-353-80): `sys.path.insert(0, "core/scripts")`
-    then `from pipeline_read import …` — a module name invented the way script paths are.
+    """The measured shape (2026-08-30): `sys.path.insert(0, "core/scripts")` then
+    `from pipeline_read import ...` -- a module name invented the way script paths are.
     Nothing by that name exists anywhere, so the closest real names under the root the
     command declared are the lead; without a declared root the error stays plain."""
     from zakcode.tools.builtins.bash import _module_not_found_fix as fix
@@ -1024,8 +1028,8 @@ def test_python_inline_fix_predicate() -> None:
 def test_interpreter_mismatch_fix_predicate() -> None:
     from zakcode.tools.builtins.bash import _interpreter_mismatch_fix as fix
 
-    # A shell script fed to Python — the reducer's verbatim shape (2026-08-29), the py
-    # launcher, options before the path, a cd/env prefix.
+    # A shell script fed to Python -- a coordinating session's verbatim shape
+    # (2026-08-29), the py launcher, options before the path, a cd/env prefix.
     hint = fix("cd /w && MIND_AGENT=coach python3 core/scripts/aspirations-update-goal.sh --a b")
     assert hint is not None and "bash core/scripts/aspirations-update-goal.sh" in hint
     assert fix("py -3 core/scripts/x.sh") is not None
@@ -1046,7 +1050,8 @@ def test_interpreter_mismatch_fix_predicate() -> None:
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_python_on_a_shell_script_names_the_interpreter(tmp_path) -> None:
     """``python3 x.sh`` fails with a SyntaxError that reads like a broken script; the hint
-    names the real fix — the reducer retried the identical command four times (2026-08-29)."""
+    names the real fix -- a coordinating session retried the identical command
+    four times (2026-08-29)."""
     script = tmp_path / "doit.sh"
     script.write_text('case "$1" in\n  --a) echo a ;;\nesac\n', encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
@@ -1056,9 +1061,10 @@ async def test_bash_python_on_a_shell_script_names_the_interpreter(tmp_path) -> 
 
 
 async def test_bash_a_pipe_that_hides_the_exit_code_still_names_the_interpreter(tmp_path) -> None:
-    """``python3 x.sh … | tail -40`` exits 0 — tail's status — so the hint chain never ran;
-    the reducer read the SyntaxError as a broken script again, the day the hint shipped
-    (2026-08-29). The mismatched command plus the interpreter's error text is the signal."""
+    """``python3 x.sh ... | tail -40`` exits 0 -- tail's status -- so the hint
+    chain never ran; the coordinating session read the SyntaxError as a broken
+    script again the day the hint shipped (2026-08-29). The mismatched command
+    plus the interpreter's error text is the signal."""
     script = tmp_path / "doit.sh"
     script.write_text('case "$1" in\n  --a) echo a ;;\nesac\n', encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
@@ -1093,8 +1099,9 @@ _APPORT = (
 
 
 def test_apport_excepthook_noise_is_stripped_from_bash_output() -> None:
-    """zc-03, 2026-08-29: 20 of the fleet's 61 tracebacks carried apport's own ~20-line
-    crash plus a re-print of the original — read by a small model as a second error."""
+    """Measured 2026-08-29: 20 of the fleet's 61 tracebacks carried apport's own
+    ~20-line crash plus a re-print of the original -- read by a small model as a
+    second error."""
     from zakcode.tools.builtins.bash import _strip_apport_noise
 
     # The common shape: original, apport's failure, the original again.

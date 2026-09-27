@@ -2,9 +2,10 @@
 background, not killed.
 
 Claude Code does this (probed 2026-09-23: a command past its timeout, default or explicit,
-keeps running as a background task). Zak Code killed it, and a Mind's closing step can run 12
-to 15 minutes: measured 2026-09-23 on two worker Bodies, the models' calls to it were killed at
-their timeouts 8 times, and then they went around the step instead of waiting for it. These
+keeps running as a background task). Zak Code killed it, and a host framework's closing
+step can run 12 to 15 minutes: measured 2026-09-23 on two worker sessions, the models'
+calls to it were killed at their timeouts 8 times, and then they went around the step
+instead of waiting for it. These
 tests pin the contract: a quick
 command leaves no trace; a slow one keeps running, recorded like ``run_in_background``, with
 its output still landing in its file and its exit reported once; a failure is still an error;

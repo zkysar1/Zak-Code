@@ -53,7 +53,7 @@ def _isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     an override that exists, in its own words, for "tests / portable installs".
     Nothing was setting it, so the suite inherited whatever Zak Code config the box
     running it happened to have: on a machine where Zak Code is INSTALLED the tests
-    read its real settings, skills and endpoints. Measured on such a box (zc-03, same
+    read its real settings, skills and endpoints. Measured on such a box (same
     tree and commit): **154 failed / 3467 passed** with the ambient config against
     **0 failed / 3621 passed** with this override -- 154 failures that are purely the
     developer's own installation, in the suite they would run to check their change.

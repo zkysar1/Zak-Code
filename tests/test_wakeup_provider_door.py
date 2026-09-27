@@ -1,7 +1,7 @@
 """ADR-0250, the door half: a due autonomous-loop sentinel is held, not fired, when the
 provider would refuse the turn it opens.
 
-Measured 2026-09-25 (three worker Bodies, a 12-hour pod outage): each sentinel that fired into
+Measured 2026-09-25 (three worker sessions, a 12-hour pod outage): each sentinel that fired into
 the powered-off pod bought a compaction whose summarizer call failed, four 900-second retry
 budgets and a ``veto_stall`` -- and the repeat guard then cancelled the net on the second
 identical cycle. The door now asks the provider one cheap ``GET /models`` first and, when the

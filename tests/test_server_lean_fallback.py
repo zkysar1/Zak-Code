@@ -1,7 +1,7 @@
 """Tests for the lean-research-agent fallbacks on the read-only surface.
 
 A lean research agent writes raw markdown notes to ``<workspace>/knowledge/tree/*.md``
-and a running journal to ``<workspace>/journal/journal.md`` — it never runs the Mind's
+and a running journal to ``<workspace>/journal/journal.md`` — it never runs the framework's
 KnowledgeProjection (no ``.knowledge-bundle.json``) and never uses the v0 Tricks
 ``research/journal.md`` path. Without a fallback the wiki (/knowledge/tree) and the
 World view (/workspace/summary) both read empty even though the agent has produced
@@ -10,7 +10,7 @@ knowledge. These tests lock in the raw-file fallbacks:
   * /knowledge/tree + /knowledge/node/* fall open to raw ``knowledge/tree/*.md`` when
     no projected bundle (or an empty projected tree) is present.
   * A projected bundle, when present, still takes precedence (the redacted path is
-    unchanged for a full Mind).
+    unchanged for a full workspace).
   * /workspace/summary reads ``journal/journal.md`` when ``research/journal.md`` is
     absent, with ``research/`` winning when both exist.
 """
@@ -86,7 +86,7 @@ def test_knowledge_node_serves_raw_note_body(tmp_path: Path) -> None:
 
 
 def test_knowledge_node_carries_full_body_distinct_from_summary(tmp_path: Path) -> None:
-    # g-335-191: a multi-paragraph raw note exposes a short sampler ``summary`` for the
+    # A multi-paragraph raw note exposes a short sampler ``summary`` for the
     # map AND the full article as ``body`` so click-through shows the whole note.
     long_note = "# Gravity\n\nFirst paragraph sampler.\n\n" + "Deep detail. " * 200
     _seed_raw_tree(tmp_path, {"gravity": long_note})
@@ -98,7 +98,7 @@ def test_knowledge_node_carries_full_body_distinct_from_summary(tmp_path: Path) 
 
 
 def test_knowledge_tree_map_omits_body(tmp_path: Path) -> None:
-    # g-335-191 verification check: the listing endpoint stays lightweight — no body.
+    # Verification check: the listing endpoint stays lightweight — no body.
     _seed_raw_tree(tmp_path, {"gravity": "# Gravity\n\nBends spacetime.\n\n" + "x " * 100})
     body = _client(tmp_path).get("/knowledge/tree").json()
     assert body["count"] == 1
@@ -112,7 +112,7 @@ def test_raw_note_title_falls_back_to_filename_without_heading(tmp_path: Path) -
 
 
 def test_projected_bundle_takes_precedence_over_raw_notes(tmp_path: Path) -> None:
-    # A full Mind's redacted bundle must win — the raw path is a lean-agent-only fallback.
+    # A full workspace's redacted bundle must win — the raw path is a lean-agent-only fallback.
     _seed_raw_tree(tmp_path, {"raw-only": "# Raw Only\n\nshould be hidden\n"})
     bundle = {
         "counts": {"tree": 1},

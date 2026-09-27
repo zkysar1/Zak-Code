@@ -1248,7 +1248,7 @@ def test_usage_refusal_does_not_satisfy_an_acceptance_literal() -> None:
 def test_extract_acceptance_rejects_format_templates() -> None:
     """'as "word count" lines' describes the SHAPE of every output line, not one exact stdout
     string. Extracting it demands the program print the literal `word count`, which no run
-    can, and the gate stalls a fully green turn (measured 2026-09-05 on coach's local model).
+    can, and the gate stalls a fully green turn (measured 2026-09-05 on a local model).
     """
     request = (
         "create wordstats/cli.py with a main() that reads a file and prints the five most "

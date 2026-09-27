@@ -1,4 +1,4 @@
-"""g-373-80: a PERMANENT quota refusal must never classify as a transient 429.
+"""A PERMANENT quota refusal must never classify as a transient 429.
 
 Measured on a live dev vessel 2026-09-14: an ``insufficient_quota`` refusal was
 classified ``RateLimited`` and rode the loop's ~15-minute backoff horizon, so the
@@ -9,7 +9,7 @@ The distinction cannot live in the exception TYPE: litellm maps HTTP 429 on the
 status code alone (eight 429 branches, none reads the body's ``code``), so the
 permanent and transient conditions arrive as the same class. It therefore lives in
 the message TEXT, checked once at the value rather than inside any single branch —
-guard-2521: ``_map_error`` has TWO returns that emit a bare ``RateLimited`` (the
+``_map_error`` has TWO returns that emit a bare ``RateLimited`` (the
 429 arm and the transient-5xx arm), and a fix scoped to the measured route would
 have left the other live and silent. Every route below is tested, and every
 must-classify case is paired with a healthy-subject control that must NOT.
