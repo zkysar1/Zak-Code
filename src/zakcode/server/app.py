@@ -1306,14 +1306,13 @@ def create_app(
         was 7080s. The health surface goes live before the driver's first iteration, so
         this window is open on EVERY boot — it is not a rare interleaving.
 
-        Hence ``_clear_run_stop_reason`` below, called at process start. It clears an
-        ending only when it was recorded under an EARLIER BOOT, which is why the boot id
-        is the marker's third line. A process start is not always a run start: when a
-        run ends, this process exits and its supervisor restarts it seconds later on the
-        same boot (mind-serve@'s Restart=always). An ending that the env-server has not
-        polled yet belongs to THAT restart, and clearing it there hid every bounded
-        run's ending from the env-server, which then idled on to its own session cap
-        (g-373-159, ADR-0256).
+        Hence ``_clear_run_stop_reason`` below, called at process start. A process start
+        is not always a run start: when a run ends, this process exits and its supervisor
+        restarts it seconds later on the same boot (mind-serve@'s Restart=always).
+        Clearing at every start therefore deleted each capped run's ending before the
+        env-server could poll it, and the environment idled on to its own session cap.
+        The start now keeps a ``duration_cap`` ending that THIS boot recorded, which is
+        why the boot id is the marker's third line (g-373-159, ADR-0256).
 
         Never raises — an unwritable marker must not break a run that has ALREADY ended.
         """
@@ -1327,20 +1326,26 @@ def create_app(
             logger.warning("could not record run stop reason (%s)", reason)
 
     def _clear_run_stop_reason() -> None:
-        """Drop an ending left by an EARLIER BOOT (g-369-86); keep this boot's (g-373-159).
+        """Drop a PREVIOUS run's ending (g-369-86), except this boot's cap (g-373-159).
 
         Called once at process start. The session fence in ``_current_run_stop_reason``
         cannot cover a reboot on its own: at boot ``.current-session`` still names the
         session the previous run ended on, so a stale marker and a stale current-session
         agree and the fence passes.
 
-        An ending recorded under THIS boot is kept. The process is starting because its
-        supervisor restarted it after the run ended, and that ending is exactly what the
-        env-server's next ``/sidecar/health`` poll exists to collect. Everything else is
-        cleared, including a marker with no boot line (written before ADR-0256, or by a
-        provisioner) and every marker on a platform with no boot id. Each doubtful case
-        falls to the clear, because a stale ending ends a live run while a lost ending
-        only delays the environment's end.
+        ONE ending is kept: ``duration_cap``, recorded under THIS boot. The process is
+        starting because its supervisor restarted it after the run spent its time, and
+        that ending is what the env-server's next ``/sidecar/health`` poll exists to
+        collect. A restart buys no more time, so the ending still stands.
+
+        Every other ending is cleared, as before. After it the world can stay up (a
+        stopped "Keep it running" run keeps its world), so this start opens a run of its
+        own, and the env-server's step-out wait reads ANY ending as that run's receipt.
+        A kept ``stopped`` would satisfy the wait before the new run's digest was
+        written. Also cleared: a marker from another boot, one with no boot line
+        (written before ADR-0256, or by a provisioner), and every marker on a platform
+        with no boot id. The doubtful cases take the clear because a stale ending ends
+        a live run, while a lost one only delays the environment's end.
 
         Never raises. A marker that cannot be removed is logged and left in place — the
         fence then still narrows the exposure to exactly the same-session reboot that
@@ -1354,8 +1359,13 @@ def create_app(
         except OSError:
             lines = []
         boot = _boot_id()
-        if boot is not None and len(lines) > 2 and lines[2].strip() == boot:
-            logger.info("kept this boot's run ending across a restart (%s)", lines[1].strip())
+        if (
+            boot is not None
+            and len(lines) > 2
+            and lines[1].strip() == "duration_cap"
+            and lines[2].strip() == boot
+        ):
+            logger.info("kept this boot's duration_cap ending across a restart")
             return
         try:
             path.unlink(missing_ok=True)
@@ -2800,12 +2810,13 @@ def create_app(
     consumer_tasks: list[asyncio.Task[None]] = []
 
     async def _start_consumer() -> None:
-        # Drop an ending an EARLIER BOOT left in this (EFS-persistent) workspace before the
-        # health surface can serve it to the env-server (g-369-86), and keep one THIS boot
-        # recorded: that is a restart after the run ended, and the env-server has yet to
-        # collect it (g-373-159, ADR-0256). Lifespan startup completes before the server
-        # accepts requests, so this always precedes the first /sidecar/health poll — the
-        # clear cannot race the reader that the incident turned on.
+        # Drop a PREVIOUS run's ending from this (EFS-persistent) workspace before the
+        # health surface can serve it to the env-server (g-369-86). The one exception is a
+        # duration_cap THIS boot recorded: this start is the supervisor's restart after the
+        # run spent its time, and the env-server has yet to collect that ending (g-373-159,
+        # ADR-0256). Lifespan startup completes before the server accepts requests, so this
+        # always precedes the first /sidecar/health poll — the clear cannot race the reader
+        # that the incident turned on.
         _clear_run_stop_reason()
         # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
         # retired must not open this run's /start on a stop nobody asked for — the

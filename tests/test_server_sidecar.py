@@ -399,6 +399,27 @@ def test_a_start_with_no_readable_boot_id_clears_even_a_boot_stamped_ending(
     assert not (tmp_path / ".run-stop-reason").exists()
 
 
+@pytest.mark.parametrize("reason", ["stopped", "idle", "budget_exhausted"])
+def test_only_a_duration_cap_ending_survives_a_restart_on_the_same_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """Every ending but ``duration_cap`` is cleared at start, even one THIS boot recorded.
+
+    After any other ending the world can stay up, as a stopped "Keep it running" run does, so
+    this start opens a run of its own. The env-server's step-out wait reads ANY ending on
+    ``/sidecar/health`` as that run's receipt (SidecarProxyVerticle ``awaitSidecarExit``).
+    A kept ending would end the wait before the new run's digest was written.
+    """
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: "boot-A")
+    (tmp_path / ".run-stop-reason").write_text(f"\n{reason}\nboot-A", encoding="utf-8")
+    # Positive control: before any start, the fence passes this marker (no session on either
+    # side), so the None below can only come from the clear.
+    assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == reason
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] is None
+    assert not (tmp_path / ".run-stop-reason").exists()
+
+
 def test_sidecar_endpoints_require_bearer_when_auth_configured(tmp_path: Path) -> None:
     token = "sidecar-secret"
     (tmp_path / ".current-session").write_text("sess-9\n", encoding="utf-8")
