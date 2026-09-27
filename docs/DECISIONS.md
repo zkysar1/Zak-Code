@@ -15395,3 +15395,74 @@ The proof, `tests/test_loop_say.py`: a hold aged past the wall-time bound by one
 delivered at the next boundary, while the boundary cap alone would have held it two calls more;
 the streaming path yields the hold status exactly once, before the delivery status. Each test was
 run against a sabotaged copy of the change and went red.
+
+## ADR-0256: a duration_cap ending is kept across a restart on the same boot
+
+Status: accepted. 2026-09-27.
+
+`/sidecar/health` reports `last_run_stop_reason` from `.run-stop-reason` in the workspace: the
+session the ending belongs to, then the reason (g-369-28). The env-server's BudgetMeterVerticle
+polls it every 60 s and ends the environment when it reads `duration_cap`. Since g-369-86 the
+server has cleared that marker at every process start, and the reason was a reboot. A reboot
+of an EFS-persistent workspace brings back the marker and `.current-session` in matching state.
+The session fence passes that stale ending, and the first poll ended a brand-new run.
+
+A process start is not always a run start. `mind-serve@` runs with `Restart=always`
+(g-369-157). When a run ends, `on_run_end` brings the process down and systemd starts it again
+seconds later on the same boot and workspace. That start cleared the ending the run had just
+recorded, before any poll could read it. Measured on DEV run 1790433482000_g373155u2
+(2026-09-26):
+- the run ended on its cap at 14:54:57 and the restart came 8 s later;
+- the env-server never logged "Bounded run finished its duration cap";
+- the environment idled until its own session cap and grace ended it 12 min 37 s later;
+- its termination notes carried no `shutdownReason`.
+
+Decision.
+
+1. The writer adds this boot's id as a third line, so the marker reads session, reason, boot.
+   The id is Linux's `/proc/sys/kernel/random/boot_id`: one random id per kernel boot, read the
+   same by every process of that boot.
+2. At process start the ending is kept only when it is `duration_cap` AND its third line equals
+   this boot's id. A restart buys no more time, so a run that spent its cap stays ended.
+   Everything else is cleared, as before:
+   - every other reason, even one this boot recorded;
+   - a marker that names another boot;
+   - a marker with no third line (written before this change, or by a provisioner);
+   - every marker, when no boot id can be read.
+   The doubtful cases take the clear because the two failures are unequal. A stale ending ends
+   a live run (g-369-86); a lost one only delays the environment's end.
+3. The reader takes the reason from the second line by position. A two-line marker reads as
+   before.
+
+Why only `duration_cap`. The env-server reads this one field at two call sites, and they ask
+different questions. BudgetMeterVerticle ends the environment on `duration_cap` and on nothing
+else. After any other ending the world can stay up (a stopped "Keep it running" run keeps its
+world), so the restart opens a run of its own. SidecarProxyVerticle's step-out wait then reads
+ANY non-empty reason as that run's receipt. A kept `stopped` or `idle` would end that wait
+before the new run's digest was written.
+
+What it does not do.
+- It leaves the session fence unchanged.
+- It does not stop the restarted process from arming a fresh run clock. The kept ending is
+  what lets the env-server end the environment within one poll.
+- It does not change how a new run starts on a provisioned vessel. Provisioning already moves
+  `.current-session` and `.run-stop-reason` aside at every genuine run start (provision-env.sh,
+  g-369-157), so that run starts with no marker at all. This change governs the starts no
+  provisioning precedes.
+- It does not help an env-server wait that misses the restart window after any other ending.
+  Those endings are cleared exactly as before.
+
+The proof, `tests/test_server_sidecar.py`:
+- A capped run ends through the real writer. A restart through the real lifespan keeps its
+  `duration_cap` on `/sidecar/health` under the same boot, and clears it under another boot.
+- `stopped`, `idle` and `budget_exhausted` recorded under the same boot are cleared.
+- The reboot test clears both a marker recorded under an earlier boot and one with no boot line.
+- A start with no readable boot id clears even a boot-stamped marker.
+
+Each of four sabotaged copies of the change turned these tests red:
+- the unconditional clear failed the same-boot restart;
+- a reader of the last line failed six;
+- a missing boot id treated as a match failed the no-boot-id test;
+- keeping any same-boot reason failed all three non-cap reasons.
+
+Three tests that read the reason as the marker's last line now read it by position.
