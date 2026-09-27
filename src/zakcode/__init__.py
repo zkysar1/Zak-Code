@@ -1733,8 +1733,19 @@ class Agent:
         cannot pass a fragment off as a finished answer.
         """
         provider, _model = self._resolve_task_provider("deep_code")
+        # A deliberation carries an affinity key, like the loop's other side calls (ADR-0257,
+        # amended 2026-09-27). Sent keyless, the pod's proxy keyed it on the fixed system prompt,
+        # so every session's deliberations shared ONE key and one pinned engine: some other
+        # conversation's engine, whose cached prefix each deliberation displaced. On the
+        # conversation's own model the session's key sends it to the session's own engine,
+        # which is idle because the session is waiting on this call. On another model (zakpick's
+        # deep_code) that key would re-pin the session there and cost the conversation its
+        # cache, so the key names the session AND the model: one key per session and model.
+        key = self.loop._prompt_cache_key()
+        if provider.model_id() != self.loop.provider.model_id():
+            key = f"{key}/{provider.model_id()}"
         result = await provider.acomplete(
-            [Message.user(prompt)], system=system, temperature=temperature
+            [Message.user(prompt)], system=system, temperature=temperature, prompt_cache_key=key
         )
         with contextlib.suppress(Exception):  # accounting must never break the deliberation
             self.session.add_usage(result.usage, model=provider.model_id(), side_call="deep_think")
