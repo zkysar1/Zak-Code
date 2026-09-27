@@ -357,6 +357,12 @@ class StuckTracker:
         # since the counts last started over — NOT consecutively — and read the worst count
         # this batch.
         worst, worst_tool, worst_receipt = 0, "", False
+        # ONE batch is one moment: the model asked for all of it before it saw any answer, so
+        # identical results inside it are one observation, never a re-observation of a known
+        # result. The epoch is read once, after the batch, so without this a batch of N
+        # single-line edits to one file (N x "Made 1 replacement in <path>") counted N sightings
+        # and jumped to rung N (ADR-0038, amended 2026-09-27).
+        batch_outcomes: set[str] = set()
         for call in calls:
             result = by_id.get(call.id)
             if result is None:
@@ -369,8 +375,9 @@ class StuckTracker:
             osig = outcome_signature(
                 call.name, result.output or "", epoch, work=work if receipt else None
             )
-            if osig is None:
+            if osig is None or osig in batch_outcomes:
                 continue
+            batch_outcomes.add(osig)
             if not receipt:
                 # Only a look at the world can be the lap's "something new": a receipt is new
                 # after every work call, and would let any spin with a plan in it off the bound.
