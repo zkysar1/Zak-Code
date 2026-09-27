@@ -1325,7 +1325,7 @@ def create_app(
         except OSError:
             logger.warning("could not record run stop reason (%s)", reason)
 
-    def _clear_run_stop_reason() -> None:
+    def _clear_run_stop_reason() -> bool:
         """Drop a PREVIOUS run's ending (g-369-86), except this boot's cap (g-373-159).
 
         Called once at process start. The session fence in ``_current_run_stop_reason``
@@ -1336,7 +1336,8 @@ def create_app(
         ONE ending is kept: ``duration_cap``, recorded under THIS boot. The process is
         starting because its supervisor restarted it after the run spent its time, and
         that ending is what the env-server's next ``/sidecar/health`` poll exists to
-        collect. A restart buys no more time, so the ending still stands.
+        collect. A restart buys no more time, so the ending still stands. Returns True
+        exactly then, and the caller starts ENDED instead of opening a run (g-373-161).
 
         Every other ending is cleared, as before. After it the world can stay up (a
         stopped "Keep it running" run keeps its world), so this start opens a run of its
@@ -1355,7 +1356,7 @@ def create_app(
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except FileNotFoundError:
-            return
+            return False
         except OSError:
             lines = []
         boot = _boot_id()
@@ -1366,11 +1367,12 @@ def create_app(
             and lines[2].strip() == boot
         ):
             logger.info("kept this boot's duration_cap ending across a restart")
-            return
+            return True
         try:
             path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("could not clear a prior run's stop reason (%s)", exc)
+        return False
 
     def _current_run_stop_reason() -> str | None:
         """This run's ending, or None if absent, unreadable, or from a PRIOR session."""
@@ -2810,6 +2812,7 @@ def create_app(
     consumer_tasks: list[asyncio.Task[None]] = []
 
     async def _start_consumer() -> None:
+        nonlocal run_stop_reason
         # Drop a PREVIOUS run's ending from this (EFS-persistent) workspace before the
         # health surface can serve it to the env-server (g-369-86). The one exception is a
         # duration_cap THIS boot recorded: this start is the supervisor's restart after the
@@ -2817,7 +2820,7 @@ def create_app(
         # ADR-0256). Lifespan startup completes before the server accepts requests, so this
         # always precedes the first /sidecar/health poll — the clear cannot race the reader
         # that the incident turned on.
-        _clear_run_stop_reason()
+        kept_cap = _clear_run_stop_reason()
         # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
         # retired must not open this run's /start on a stop nobody asked for — the
         # framework keeps a signed signal without consulting time, so its lifetime is
@@ -2828,6 +2831,20 @@ def create_app(
                 resolved_settings.run_stop_agent,
                 grace_s=resolved_settings.run_consolidation_reserve,
             )
+        if kept_cap:
+            # That run is over, and this process is its restart, not a new run (g-373-161).
+            # So it starts ENDED: no say consumer, hence no fresh run clock, and /run/stop
+            # answers `ended` instead of raising a second framework stop on a mind that has
+            # already finished its own. `on_run_end` is not called again, because it would
+            # bring the process down into yet another restart.
+            run_stop_reason = "duration_cap"
+            run_ended.set()
+            logger.info(
+                "this boot's run already ended on its duration cap: starting ended, no new run "
+                "(remove %s to open one on this boot)",
+                _workspace_root / ".run-stop-reason",
+            )
+            return
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:

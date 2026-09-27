@@ -182,7 +182,8 @@ Four distinct mechanisms, each for a different job:
 - `POST /run/stop` — the **run contract** (ADR-0047): ask the whole run, not a turn, to end
   gracefully with a reason token; the consumer takes the same ending path a cap-hit takes
   (digest → `run_end_command` → `on_run_end`), so a bound outside the process can end a run
-  with its receipt.
+  with its receipt. A process whose start kept this boot's `duration_cap` ending comes up ended
+  (ADR-0256, amended), so there the call answers `ended` and raises nothing.
 - `GET /sessions` / `GET /sessions/{id}` / `POST /sessions` / `DELETE /sessions/{id}` — list, fetch (history + usage), create, delete sessions.
 - `GET /sessions/{id}/transcript` — the conversation as a reader sees it: user/assistant text only, secret-redacted like the watch stream, `?limit=N` for the tail, `current` resolved through the marker (ADR-0041).
 - `GET /sessions/{id}/artifacts` — list artifact refs recorded in a session's uploads and tool results. `POST /sessions/{id}/uploads` stores a user-provided file under `uploads/<session>/`, records an artifact ref, and returns a suggested reader prompt. `GET /sessions/{id}/artifacts/{artifact_id}/download` downloads one file after re-resolving it under the workspace root and verifying its recorded size/hash.
