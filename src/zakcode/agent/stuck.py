@@ -93,8 +93,9 @@ SIG_NO_PROGRESS = "no-progress"
 #: acknowledgement -- a skill's body, its "[already loaded]" pointer, a wake-up's "armed" line --
 #: is identical by construction and measures nothing, so the loop names those tools in
 #: ``uncounted_outcome_tools`` and they never feed this signal (amended 2026-09-18). Measured on
-#: a served Mind loop (gpt-5.6-luna): the stop hook orders ``Skill('aspirations')``, the loader
-#: answers with the same pointer every time, and the 3rd, 4th and 5th pointer of one turn drew
+#: a served workspace loop (gpt-5.6-luna): the stop hook orders ``Skill('<loop-skill>')``,
+#: the loader answers with the same pointer every time, and the 3rd, 4th and 5th pointer of
+#: one turn drew
 #: nudge, narrow and step-back although distinct, successful work ran between them; the
 #: graceful-stop body, asked for again after work, drew the whole ladder and a STOP in the
 #: middle of the stop itself. Every OTHER signal still sees those calls.

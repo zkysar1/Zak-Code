@@ -3,8 +3,9 @@
 
 Claude Code runs a command detached when asked to, returns at once with a task id and an
 output file, and re-invokes the model with a ``<task-notification>`` when the command exits;
-``TaskOutput`` reads the output, ``TaskStop`` kills it. A Mind's playbooks are written
-against exactly that: "background the suite, END the turn; the harness notifies" — and the
+``TaskOutput`` reads the output, ``TaskStop`` kills it. A host framework's playbooks are
+written against exactly that: "background the suite, END the turn; the harness notifies"
+— and the
 framework's rules forbid polling a background job with ``ScheduleWakeup`` because the
 harness reports on it. Zak Code had no such thing: a suite run held the turn for its whole
 duration, a framework had to branch on WHICH harness ran it to know whether a background

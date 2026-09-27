@@ -55,7 +55,7 @@ class DuckDuckGoBackend(SearchBackend):
             # A search that RAN and found nothing is not a failure. Reporting it as one told
             # the model the wrong thing ("may be rate-limiting; retry shortly") about the one
             # case where retrying is exactly wrong, and spent a tool error — which the stuck
-            # ladder counts — on a working search (measured on the coach rig, 2026-09-10).
+            # ladder counts — on a working search (measured on a self-hosted rig, 2026-09-10).
             # Returning the empty list hands it to web_search's own no-results branch, whose
             # advice is the right advice: try different or broader keywords.
             if type(exc) is DDGSException and str(exc) == _NO_RESULTS_SENTINEL:

@@ -39,8 +39,8 @@ _STATUS_VALUES = ["pending", "in_progress", "done", "blocked", "cancelled"]
 #: How the plan advances (ADR-0237): in the response that starts the next step, never in one of
 #: its own. Every model call is a round trip, and on a slow backend a response that only
 #: updates the plan is the most expensive kind: measured 2026-09-23 on the 131k P40 pod, it took
-#: 17.8 and 22.3 percent of the two worker Bodies' model time (median 104 and 146 seconds,
-#: against 38 and 35 for a work call), and on one Body 43 of 53 such calls in a day were
+#: 17.8 and 22.3 percent of the two worker sessions' model time (median 104 and 146 seconds,
+#: against 38 and 35 for a work call), and on one session 43 of 53 such calls in a day were
 #: followed by a response that only ran Bash, which they could have ridden with. The plan goes
 #: FIRST in the batch because a call's evidence belongs to the step current when it runs
 #: (ADR-0110), and the batch runs in order (update_plan is NEVER_PARALLEL). One sentence, said by

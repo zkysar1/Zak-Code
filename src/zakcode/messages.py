@@ -89,8 +89,8 @@ class Message(BaseModel):
     #: Event time (UTC ISO-8601), stamped when the message is CREATED — not when a
     #: projection renders it (ADR-0049). Before this, the CC transcript stamped every
     #: line with render time, so a 270-record history carried ONE timestamp and a dead
-    #: loop could not be dated from its own transcript (coach, zc-03, 2026-08-26 — the
-    #: Mind's stop-hook log was the only clock). A document persisted by an older build
+    #: loop could not be dated from its own transcript (a self-hosted pod — the
+    #: framework's stop-hook log was the only clock). A document persisted by an older build
     #: loads with a load-time stamp (no worse than the render-time it had); equality of
     #: separately-constructed messages differs by this field, which is what event time
     #: means.

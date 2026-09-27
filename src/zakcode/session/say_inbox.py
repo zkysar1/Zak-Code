@@ -126,7 +126,7 @@ def take_interrupt(path: Path) -> bool:
 # Two consumers can legitimately share one workspace — a runner whose whole night is
 # one turn, and a cockpit chat pane polling the inbox every 0.3 s between ITS turns —
 # and the single slot then goes to whoever reads first, which is always the idle one.
-# Measured 2026-08-28 (coach on zc-03): every operator say of a morning reached the
+# Measured 2026-08-28 (a self-hosted pod): every operator say of a morning reached the
 # cockpit pane, none the runner they were steering; one of them was a control command
 # that flipped the runner's shared mode file from under it. The marker settles it: a
 # main-loop turn claims ``<workspace>/.busy`` for its length and refreshes it while it

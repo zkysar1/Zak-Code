@@ -242,7 +242,7 @@ class Session(BaseModel):
     #: wake-up is simply lost (fails SAFE — the pre-ADR-0094 behavior, no wake-up at all).
     pending_wakeup: Wakeup | None = None
     #: The skill a turn-end hook last asked the loop to re-enter with, as ``"<name> <args>"``
-    #: (ADR-0187; ``"aspirations loop"`` on a Mind). The autonomous-loop sentinel wake-up
+    #: (ADR-0187). The autonomous-loop sentinel wake-up
     #: resolves to it when it fires, composed by the harness, instead of a prose line asking
     #: the model to remember which skill runs the loop. Persisted: the net is for the process
     #: that resumes this session as much as for this one. Schema v1 stays append-only: an

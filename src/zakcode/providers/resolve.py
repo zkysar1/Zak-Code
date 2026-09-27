@@ -302,7 +302,7 @@ _OVERLAID_DISPLACED: dict[str, str | None] = {}
 def apply_vault_provider_keys(settings: object) -> list[str]:
     """Overlay member-supplied provider keys from the per-env vault into ``os.environ``.
 
-    BYOK (g-369-11 outcome 3). A member saves e.g. ``ANTHROPIC_API_KEY`` in the vault they
+    BYOK. A member saves e.g. ``ANTHROPIC_API_KEY`` in the vault they
     already have; inference for that environment then bills to their provider account and
     the meter's thinking line goes to ~0. Returns the names taken from the vault, sorted —
     NAMES only, never values, so the return is safe to log.

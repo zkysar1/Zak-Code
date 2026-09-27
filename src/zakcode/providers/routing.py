@@ -17,7 +17,7 @@ quick-vs-deep coder split (:func:`classify_main_turn`), which only ever chooses 
 
 Out of the box (no config) every category has a sensible default. Defaults all use
 ``source="openai"``; override any category — model and/or source — via
-``Settings.zakpick_models``. Groq was retired as a provider on 2026-09-11 (g-369-295), which
+``Settings.zakpick_models``. Groq was retired as a provider on 2026-09-11, which
 removed the cheap open-model tier these defaults used to draw on — see
 :data:`DEFAULT_CATEGORY_MODELS` for what replaced it and why.
 
@@ -150,7 +150,7 @@ class ZakpickModel(BaseModel):
     #: refuses to run, and the startup error names the value the server's ``/v1/models``
     #: listing declares so it can be pasted once. The listing is a CHECK, never a source —
     #: a mismatch (config says 131,072, server says 43,690) is reported loudly, and the
-    #: config wins, because a per-engine figure can overstate the per-request window (rb-8892).
+    #: config wins, because a per-engine figure can overstate the per-request window.
     context_window: int | None = None
 
     @field_validator("reasoning_effort", mode="before")
@@ -194,8 +194,8 @@ def _o(model: str) -> ZakpickModel:
 #:
 #: THE COST/CAPABILITY TIER SPLIT COLLAPSED ON PURPOSE, and that is the one consequence of
 #: this table worth understanding. The cheap/read-only/easy-turn tier used to run on Groq's
-#: fast open models; Groq was retired as a provider on 2026-09-11 (g-369-295) under the
-#: owner's 100%-OpenAI directive (g-369-283), so that tier had no backing provider left.
+#: fast open models; Groq was retired as a provider on 2026-09-11 under the
+#: owner's 100%-OpenAI directive, so that tier had no backing provider left.
 #: The four categories it served (classify, summarize, quick_code, plan) were re-pointed to
 #: ``gpt-4o-mini`` — NOT an invented pin, but this module's own twice-measured conclusion
 #: below, which already governed deep_code/delegate. No OpenAI model was benchmarked here
@@ -219,7 +219,7 @@ def _o(model: str) -> ZakpickModel:
 #:     override deep_code/delegate to ``llama-3.3-70b-versatile`` with
 #:     ``ZAKCODE_TOOL_CALLING_MODE=text`` (focused tasks) instead.
 #:
-#: RE-TESTED 2026-07-29 UNDER LEAN RULES (g-016-84), because the caching argument above was
+#: RE-TESTED 2026-07-29 UNDER LEAN RULES, because the caching argument above was
 #: measured against an ~8.2k-token rule block re-sent every turn. With ``lean_rules`` on that
 #: block is ~0.9k, so the uncached per-turn penalty that made Groq expensive should have
 #: largely vanished. It did not change the answer:
@@ -239,7 +239,7 @@ def _o(model: str) -> ZakpickModel:
 #: n=3 is small (gpt-4o-mini's own 1/3 did not reproduce the "completed the full benchmark"
 #: claim above, so treat both numbers as directional).
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
-    # Re-pointed off Groq 2026-09-11 (g-369-295) when that provider was retired. These four
+    # Re-pointed off Groq 2026-09-11 when that provider was retired. These four
     # previously ran llama-3.1-8b-instant / openai-gpt-oss-20b / qwen3.6-27b on Groq.
     "classify": _o("gpt-4o-mini"),  # cheap bounded JSON gates
     "summarize": _o("gpt-4o-mini"),  # cheap, fast prose; NO tools, so the flag is moot
@@ -443,8 +443,9 @@ def difficulty_system_prompt(
     ``user_only`` — the commands the operator alone may run (``disable-model-invocation:
     true``, ADR-0109) — is listed under its own heading (ADR-0127) so the classifier can NAME
     one. Left out, a request for ``/start`` has no right answer and the classifier picks the
-    nearest skill the model may run (field 2026-09-10: "Start yourself as coach in assistant
-    mode" → ``prime``, seeded, thirty iterations inside the wrong skill). Named, the loop
+    nearest skill the model may run (field 2026-09-10: "Start yourself as X in
+    assistant mode" → ``prime``, seeded, thirty iterations inside the wrong
+    skill). Named, the loop
     hands the command back to the operator instead of seeding anything.
     """
     base = (
@@ -618,8 +619,9 @@ def _anchor_stems(text: str) -> set[str]:
 
 #: Everyday action/state words that double as skill names (``start``, ``stop``, ``test``,
 #: ``review``…). They occur in ordinary sentences about anything at all — "lets start from
-#: scratch" (2026-09-05, seeded a Mind's user-only ``/start``, which the plan gate then made
-#: the model run) — so a NAME built only from these words does not anchor on a shared stem:
+#: scratch" (2026-09-05, seeded a framework's user-only ``/start``, which the plan gate
+#: then made the model run) — so a NAME built only from these words does not anchor on a
+#: shared stem:
 #: the request must reference it AS a skill (:func:`_references_skill`) or the description
 #: rule must carry it. Words under 4 chars never anchor anyway. A distinctive activity
 #: (research, forge, notify, deploy) is not here and still anchors on its stem (ADR-0109).
@@ -645,7 +647,7 @@ def _name_is_generic(name: str) -> bool:
     """True when EVERY content word of the skill's name is an everyday word — judged on the
     name's WHOLE words, never on the 4-char stems the anchor compares: stems collide
     (``reset`` / ``research`` → ``rese``), and a stem test would strip distinctive names of
-    the anchor they have always had. ``create-aspiration`` is not generic (``aspiration``);
+    the anchor they have always had. ``create-project`` is not generic (``project``);
     ``start``, ``reset`` and ``test-report`` are.
     """
     words = [
@@ -679,11 +681,11 @@ def implied_skill_anchored(request: str, name: str, description: str = "") -> bo
     description (ADR-0036) — the deterministic floor under the classifier's "never guess".
 
     A model told "never guess" still guessed in the field: "then make one" came back as
-    ``create-aspiration`` (make ≈ create). A skill the request is genuinely asking to RUN is
+    ``create-project`` (make = create). A skill the request is genuinely asking to RUN is
     named or described in the request's own words — "finish forging this skill" carries
-    ``forg`` for ``forge-skill``; a request with no such word is a topic match at best, and the
-    skill is dropped rather than seeded. Stems are 4-char prefixes so inflection
-    (forging/forge, aspirations/aspiration) still anchors.
+    ``forg`` for ``forge-skill``; a request with no such word is a topic match at best,
+    and the skill is dropped rather than seeded. Stems are 4-char prefixes so inflection
+    (forging/forge, projects/project) still anchors.
 
     The NAME anchors on one shared stem — unless the name is made of everyday words
     (:func:`_name_is_generic`, ADR-0109): "lets start from scratch" shares ``star`` with a

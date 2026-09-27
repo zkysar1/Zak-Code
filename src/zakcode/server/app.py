@@ -446,8 +446,8 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     (ADR-0032) and receives a ~23k-token skill frame every boot (ADR-0037's ``/start``
     ceremony) — so without the CLI's compactor it walks off the model's context window in
     a few boots and every later turn dies ``provider_error`` before a step runs. Measured
-    2026-08-27 on a served Mind: 40k prompt tokens on boot A, 105k on boot B, 128,666 on
-    boot C against a 131,072 window, then nothing but refusals.
+    2026-08-27 on a served workspace: 40k prompt tokens on boot A, 105k on boot B,
+    128,666 on boot C against a 131,072 window, then nothing but refusals.
 
     Bound to ``settings`` so every agent shares the operator's configured posture (model,
     permission mode, workspace root, …) and to ``store`` so a turn persists incrementally at
@@ -595,7 +595,7 @@ NUDGE_FRAME = (
     "because of this text.\n\n"
 )
 
-#: The turn body used when a nudge is queued but the say inbox is EMPTY (g-373-18).
+#: The turn body used when a nudge is queued but the say inbox is EMPTY.
 #: A nudge alone could not start a turn — only a say could — so a suggestion sent to an
 #: idle sidecar waited indefinitely. This is the harness's own line, deliberately
 #: content-free: ``NUDGE_FRAME`` ends in a blank line and is authored as a PREAMBLE that
@@ -1280,7 +1280,7 @@ def create_app(
         return value or None
 
     def _record_run_stop_reason(reason: str) -> None:
-        """Record this run's ending beside the session it belongs to (g-369-28).
+        """Record this run's ending beside the session it belongs to.
 
         The env-server's BudgetMeterVerticle polls ``/sidecar/health`` on a timer it
         already runs; carrying the ending on that payload lets it end the ENVIRONMENT
@@ -1290,13 +1290,13 @@ def create_app(
         SESSION-SCOPED, *AND* CLEARED AT RUN START — and the second half is not
         belt-and-braces. A bare reason marker is write-once and never false — until the
         NEXT run, when a stale ``duration_cap`` still sitting here would terminate a
-        fresh run at birth (rb-5759: a write-once marker is not liveness). Pairing the
+        fresh run at birth (a write-once marker is not liveness). Pairing the
         reason with the session that produced it makes the marker self-invalidating
         ACROSS SESSION ROTATION INSIDE A LIVING SERVER, and this docstring used to
         conclude from that: "so no clear-on-start hook is needed and a missed clear
         cannot strand the next run."
 
-        That conclusion was wrong, and it cost a production world (g-369-86, env
+        That conclusion was wrong, and it cost a production workspace (env
         debc47de, 2026-09-01). The fence compares the marker's session against
         ``.current-session`` — which is PERSISTENT, and is only advanced by the driver
         at its next iteration. A reboot of the same workspace therefore resurrects BOTH
@@ -1308,11 +1308,11 @@ def create_app(
 
         Hence ``_clear_run_stop_reason`` below, called at process start. A process start
         is not always a run start: when a run ends, this process exits and its supervisor
-        restarts it seconds later on the same boot (mind-serve@'s Restart=always).
+        restarts it seconds later on the same boot (the service unit's Restart=always).
         Clearing at every start therefore deleted each capped run's ending before the
         env-server could poll it, and the environment idled on to its own session cap.
         The start now keeps a ``duration_cap`` ending that THIS boot recorded, which is
-        why the boot id is the marker's third line (g-373-159, ADR-0256).
+        why the boot id is the marker's third line (ADR-0256).
 
         Never raises — an unwritable marker must not break a run that has ALREADY ended.
         """
@@ -1326,7 +1326,7 @@ def create_app(
             logger.warning("could not record run stop reason (%s)", reason)
 
     def _clear_run_stop_reason() -> bool:
-        """Drop a PREVIOUS run's ending (g-369-86), except this boot's cap (g-373-159).
+        """Drop a PREVIOUS run's ending, except this boot's cap.
 
         Called once at process start. The session fence in ``_current_run_stop_reason``
         cannot cover a reboot on its own: at boot ``.current-session`` still names the
@@ -1337,7 +1337,7 @@ def create_app(
         starting because its supervisor restarted it after the run spent its time, and
         that ending is what the env-server's next ``/sidecar/health`` poll exists to
         collect. A restart buys no more time, so the ending still stands. Returns True
-        exactly then, and the caller starts ENDED instead of opening a run (g-373-161).
+        exactly then, and the caller starts ENDED instead of opening a run.
 
         Every other ending is cleared, as before. After it the world can stay up (a
         stopped "Keep it running" run keeps its world), so this start opens a run of its
@@ -1393,11 +1393,11 @@ def create_app(
             return None
         return reason
 
-    #: Perception-intake observability (g-373-03). Cumulative, in-process, and reported on
+    #: Perception-intake observability. Cumulative, in-process, and reported on
     #: /sidecar/health so a reader can tell a bridge that is delivering from one that has
-    #: gone silent. EVERY field is present from process start — a counter that appears only
-    #: after the first failure cannot distinguish "healthy" from "nobody called it"
-    #: (guard-3169), so these read as explicit zeros rather than absent keys.
+    #: gone silent. EVERY field is present from process start — a counter that appears
+    #: only after the first failure cannot distinguish "healthy" from "nobody called it",
+    #: so these read as explicit zeros rather than absent keys.
     _observation_stats: dict[str, Any] = {
         "accepted": 0,
         "superseded": 0,
@@ -1472,7 +1472,7 @@ def create_app(
         return 0
 
     def _list_findings() -> list[dict[str, Any]]:
-        """The findings THEMSELVES, newest first, for the client's Environment tab (g-373-28).
+        """The findings THEMSELVES, newest first, for the client's Environment tab.
 
         Companion to ``_count_findings`` and deliberately mirroring its two accepted
         shapes, so a writer that satisfies the count can never be invisible here. Purely
@@ -1580,7 +1580,7 @@ def create_app(
         return {
             "journal": journal,
             "finding_count": _count_findings(),
-            # The findings themselves, newest first (g-373-28). ADDITIVE — finding_count
+            # The findings themselves, newest first. ADDITIVE — finding_count
             # stays the count it always was, so an older gateway reading only that field
             # is unaffected by this key appearing beside it.
             "findings": _list_findings(),
@@ -1599,10 +1599,10 @@ def create_app(
             "status": "ok",
             "active_session_id": _current_session_id(),
             # None until this session's run ends; consumed by the env-server to end
-            # the environment on a bounded-run completion (g-369-28).
+            # the environment on a bounded-run completion.
             "last_run_stop_reason": _current_run_stop_reason(),
             # Perception intake by outcome, plus how stale the last frame was when it
-            # landed (g-373-03). Beside last_run_stop_reason deliberately: this is the
+            # landed. Beside last_run_stop_reason deliberately: this is the
             # surface the env-server already polls, so the bridge becomes observable
             # without a new endpoint or a new poller.
             "observation_intake": dict(_observation_stats),
@@ -1815,17 +1815,16 @@ def create_app(
                 woke = set_framework_signal(
                     resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
                 )
-        # WAKE DISPOSITION (g-373-56). Fail-open keeps the frame and keeps the 200, which is
-        # right -- but it left the dropped wake with NO EGRESS: `woke` reached one log line
-        # and nothing else, and a caller reading the 200 body saw accepted:true either way.
+        # WAKE DISPOSITION. Fail-open keeps the frame and keeps the 200, which is right --
+        # but it left the dropped wake with NO EGRESS: `woke` reached one log line and
+        # nothing else, and a caller reading the 200 body saw accepted:true either way.
         # That is the always-reports-clear class. An armed bridge whose workspace seed
         # REFUSES the signal NAME posts every round, is accepted every round, and wakes
-        # nothing; measured on a live vessel (g-373-10, alpha/cc-09) where the seed's
-        # 8-entry VALID_SIGNALS rejected `perception-received` and the POST still returned
-        # accepted:true.
+        # nothing; measured on a live vessel where the seed's 8-entry VALID_SIGNALS
+        # rejected `perception-received` and the POST still returned accepted:true.
         #
         # THREE STATES, NOT A BOOLEAN, because a FAILED wake must not read as an
-        # UN-ATTEMPTED one (guard-1091: a failed measurement is not a measurement of zero).
+        # UN-ATTEMPTED one (a failed measurement is not a measurement of zero).
         # A heartbeat, a non-seed workspace and a reader-mode agent all legitimately attempt
         # nothing and are healthy; only `dropped` is a defect, and only now is it nameable.
         #
@@ -1836,8 +1835,8 @@ def create_app(
         # vessel its frame was rejected while the frame is on disk, and would contradict the
         # fail-open contract two tests pin. What the goal actually asks for is that a caller
         # can TELL the two apart -- which a dedicated field does without overloading a field
-        # that already means something else (guard-2634: check whether the body already
-        # carries the answer before deriving it from the status).
+        # that already means something else (check whether the body already carries the
+        # answer before deriving it from the status).
         wake = "delivered" if woke else ("dropped" if wake_attempted else "not-attempted")
         if wake_attempted:
             _observation_stats["wake_delivered" if woke else "wake_dropped"] += 1
@@ -1876,8 +1875,8 @@ def create_app(
     # ── PEARL knowledge base (§10.4) — read-only browse over the pre-projected bundle ──
     # Backs the env-server /sidecar/knowledge/* proxy → gateway /knowledge/* → Vinheim
     # KnowledgeExplorer. Every route reads the already-filtered + redacted bundle the
-    # Mind's KnowledgeProjection wrote (§10.3 — filter at the source); the daemon holds
-    # no projection logic and fails open to an empty base before the first export.
+    # workspace's KnowledgeProjection wrote (§10.3 — filter at the source); the daemon
+    # holds no projection logic and fails open to an empty base before the first export.
     @app.get("/knowledge/tree")
     def knowledge_tree() -> dict[str, Any]:
         """The wiki map: node keys, titles, and parent/child edges (no bodies)."""
@@ -1898,9 +1897,9 @@ def create_app(
     def knowledge_node(key: str) -> dict[str, Any]:
         """One node (title, summary sampler, full body, parent, child links). 404 if absent.
 
-        ``body`` is the full node article — already redacted upstream by the Mind's
-        KnowledgeProjection for a full Mind, or the raw note for a lean-agent workspace
-        (g-335-191). Deliberately kept OUT of ``/knowledge/tree`` (the map), which stays
+        ``body`` is the full node article — already redacted upstream by the framework's
+        KnowledgeProjection for a full workspace, or the raw note for a lean-agent
+        workspace. Deliberately kept OUT of ``/knowledge/tree`` (the map), which stays
         lightweight; the body is fetched only on a per-node click.
         """
         bundle = read_knowledge_bundle(Path(resolved_settings.workspace_root))
@@ -1937,14 +1936,14 @@ def create_app(
         An OBJECT, not a list — and EMPTINESS IS THE SIGNAL. ``{}`` means "no
         identity published"; a populated object means published. So this route
         does NOT 404 on empty: collapsing the two would tell a caller the route
-        is absent when the answer is "nothing is published yet" (guard-5493).
-        ``published`` states which case it is without making the caller infer it
+        is absent when the answer is "nothing is published yet". ``published``
+        states which case it is without making the caller infer it
         from truthiness, the same way the sibling routes carry a derived
         ``count``.
 
         Like every route here it serves the already-filtered + redacted bundle
         verbatim and holds NO projection logic of its own: the cut is made at the
-        source by the Mind's KnowledgeProjection (PEARL §10.3), whose allowlist is
+        source by the framework's KnowledgeProjection (PEARL §10.3), whose allowlist is
         the prose before the first '##' plus two dates. Re-filtering identity
         content here would be a second, divergent redactor — a bug, not defence.
         """
@@ -1959,12 +1958,12 @@ def create_app(
         Exact twin of /knowledge/self above, and for the same reasons: an OBJECT
         rather than a list, EMPTINESS IS THE SIGNAL, and empty is therefore NOT a
         404 — ``{}`` means "nothing published", which is a different answer from
-        "this route does not exist" (guard-5493). ``published`` states which case
+        "this route does not exist". ``published`` states which case
         it is so a caller never infers it from truthiness.
 
         Like every route here it serves the already-filtered bundle verbatim and
-        holds NO projection logic: the cut is made at the source by the Mind's
-        KnowledgeProjection (PEARL §10.3). For `program` that cut is a literal
+        holds NO projection logic: the cut is made at the source by the
+        framework's KnowledgeProjection (PEARL §10.3). For `program` that cut is a
         marker pair in world/program.md rather than self.md's structural
         first-'##' rule — program.md has no enforced section structure, so the
         projection fails CLOSED and publishes {} when no marker is present.
@@ -2036,7 +2035,7 @@ def create_app(
         return NUDGE_FRAME.format(text=queued) if queued else ""
 
     def _nudge_pending() -> bool:
-        """Whether a viewer nudge is queued, WITHOUT consuming it (g-373-18).
+        """Whether a viewer nudge is queued, WITHOUT consuming it.
 
         Deliberately a peek rather than a take: the turn is started by handing
         ``_run_turn_for_say`` the harness's line, and that function folds the nudge in
@@ -2228,7 +2227,7 @@ def create_app(
         (same prod run: signed at 02:33:29Z, nothing in flight, retired unconsumed). Only
         while the window is open, and only when the session knows its hook-named loop
         re-entry: the turn this starts is the harness's own composed re-entry, never a
-        prompt of ours — the sidecar still decides WHEN, the mind WHAT (guard-1807).
+        prompt of ours — the sidecar still decides WHEN, the framework WHAT.
         """
         nonlocal stop_reentry_pending
         if not stop_reentry_pending:
@@ -2274,10 +2273,11 @@ def create_app(
         """One consumer beat: run a turn if a say OR a nudge is waiting and nothing is
         in flight.
 
-        "In flight" includes a turn running in ANOTHER process on this workspace (a Mind
-        runner's REPL, say): its busy marker owns the inbox (ADR-0060) and this beat yields.
+        "In flight" includes a turn running in ANOTHER process on this workspace (a
+        framework runner's REPL, say): its busy marker owns the inbox (ADR-0060) and
+        this beat yields.
 
-        A QUEUED NUDGE IS ALSO A REASON TO START A TURN (g-373-18). The say inbox used to
+        A QUEUED NUDGE IS ALSO A REASON TO START A TURN. The say inbox used to
         be the only trigger, and ``.nudge`` is consumed only from INSIDE a turn, so a
         suggestion sent to an idle sidecar waited for a say that might never come. The
         nudge stays a PREAMBLE either way: the turn's message is the harness's own line,
@@ -2515,7 +2515,7 @@ def create_app(
         await _run_run_end_command(run_stop_reason or "stopped", digest)
         # AFTER the receipt, never before: this marker is what tells the env-server it
         # may end the environment, and a terminate landing mid-digest would cost the
-        # receipt — the one part of the bounded run that already works (g-369-28).
+        # receipt — the one part of the bounded run that already works.
         _record_run_stop_reason(run_stop_reason or "stopped")
         if on_run_end is not None:
             try:
@@ -2534,7 +2534,7 @@ def create_app(
         return effective_reserve or resolved_settings.run_consolidation_reserve
 
     async def _raise_framework_stop() -> bool:
-        """Ask the workspace's Mind to run its own graceful stop (ADR-0047).
+        """Ask the workspace's framework to run its own graceful stop (ADR-0047).
 
         False means "not a framework seed, or the raise failed" — the caller then keeps
         the ending it already had. Off the event loop: the raise shells out to the
@@ -2552,7 +2552,7 @@ def create_app(
             return False
 
     async def _begin_framework_stop() -> None:
-        """Raise the mind's own stop ONCE and open the window it needs to run it.
+        """Raise the framework's own stop ONCE and open the window it needs to run it.
 
         Idempotent across the three callers that can end a run (the human's
         ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
@@ -2571,14 +2571,15 @@ def create_app(
     def _keep_beating() -> bool:
         """Whether the say consumer gets another beat.
 
-        THE DEFECT THIS EXISTS FOR (g-373-16, measured on two live dev vessels):
-        raising a framework stop writes signals the mind reads at the TOP of its next
+        THE DEFECT THIS EXISTS FOR (measured on two live dev vessels): raising a
+        framework stop writes signals the framework reads at the TOP of its next
         beat (Phase -1.4). Setting `run_stopping` in the same breath ended the loop
-        before that beat could happen, so the mind NEVER read the signal it had just
-        been sent -- `stop-requested` landed, `stop-loop` and `handoff.yaml` never
-        appeared, and the vessel died at grace expiry with no consolidation. The
-        served process IS the mind's only reader (`zakcode-serve.service` runs one
-        unit), so stopping the beat removes the reader.
+        before that beat could happen, so the framework NEVER read the signal it had
+        just been sent -- the stop signal landed, but the consolidation artifacts
+        never appeared, and the vessel died at grace expiry with no consolidation.
+        The served process IS the framework's only reader
+        (`zakcode-serve.service` runs one unit), so stopping the beat removes the
+        reader.
 
         While a raise is in flight we therefore keep beating, bounded BOTH ways: the
         mind's own sign-off ends the wait early, and the grace ends it at all. A
@@ -2595,11 +2596,11 @@ def create_app(
 
     def _retire_unconsumed_framework_stop() -> None:
         """Both overrun branches below mean the same thing: the grace is spent and the
-        mind never consumed the stop. Retire the pair here rather than at either call
-        site so the two endings cannot drift (g-373-92).
+        framework never consumed the stop. Retire the pair here rather than at either
+        call site so the two endings cannot drift.
 
-        REPORT SEEN-vs-DONE BEFORE RETIRING (g-373-120). Until this, every overrun looked
-        identical in serve.log: the reserve was spent and nothing said whether the mind had
+        REPORT SEEN-vs-DONE BEFORE RETIRING. Until this, every overrun looked identical
+        in serve.log: the reserve was spent and nothing said whether the framework had
         even been TOLD. `framework_stop_complete` answers DONE and is already the wait's
         bound; `framework_stop_seen` answers SEEN, so an unacknowledged raise is REPORTED
         instead of silently consuming the whole reserve.
@@ -2649,9 +2650,9 @@ def create_app(
         unwind a half-finished turn: the cancelled turn returns, and the reserve is still
         on the clock for the digest.
 
-        It also NAMES the ending, at the moment the clock raises it (g-373-155). The
-        between-beats check below cannot be the only namer: a mind that signs off INSIDE
-        the raising turn leaves `_keep_beating()` False when that turn lands back, so the
+        It also NAMES the ending, at the moment the clock raises it. The between-beats
+        check below cannot be the only namer: a framework that signs off INSIDE the
+        raising turn leaves `_keep_beating()` False when that turn lands back, so the
         loop leaves through its `while` guard without another beat, and the fall-through
         named the clock's ending `stopped` — a human's stop, which the host does not end
         the vessel on. Measured on a dev vessel: the whole run was one turn, it ended
@@ -2659,12 +2660,12 @@ def create_app(
         ending nobody has named yet: a ``/run/stop`` whose window was already open keeps
         its own reason when the cap lands inside that window.
 
-        ONE STOP WINDOW BOUNDS EVERY TURN IN IT (g-373-16, measured on a live dev
-        vessel). Once a framework stop is raised — by the cap or by ``/run/stop`` —
-        whatever turn is still running when its window closes gets the interrupt. This used
-        to watch only the turn in flight at the cap, and returned when THAT turn ended;
-        but the loop keeps beating inside the window, so the next say started a turn
-        nothing watched. Measured: the cap raised the stop inside the mind's boot turn,
+        ONE STOP WINDOW BOUNDS EVERY TURN IN IT (measured on a live dev vessel).
+        Once a framework stop is raised — by the cap or by ``/run/stop`` — whatever turn
+        is still running when its window closes gets the interrupt. This used to watch
+        only the turn in flight at the cap, and returned when THAT turn ended; but the
+        loop keeps beating inside the window, so the next say started a turn nothing
+        watched. Measured: the cap raised the stop inside the framework's boot turn,
         that turn ended inside the window, a re-issued ``/start`` began a second turn
         42s before the window closed, and that turn was still running 123s after it
         closed; the host tore the vessel down with no run end ever reported. A
@@ -2736,7 +2737,7 @@ def create_app(
                 # neither shorten nor extend a paid run.
                 #
                 # This check sits BETWEEN beats and names the ending; the watcher above
-                # names it too, when it raises mid-turn (g-373-155). It is not the only
+                # names it too, when it raises mid-turn. It is not the only
                 # thing that ENFORCES the cap: a turn in flight when the deadline passes
                 # is interrupted by the watcher above. The half-done work that costs is
                 # the work nobody comes back to — and the digest turn IS that return.
@@ -2790,13 +2791,13 @@ def create_app(
             # BEFORE `_end_run()`, always, on every exit path — the consolidation turn
             # runs PAST `turn_deadline` by design, so a watcher still alive would
             # interrupt the digest it exists to protect. Cancelling is SYNC and that is
-            # deliberate (guard-4846): an `await` here is skipped in full if this
+            # deliberate: an `await` here is skipped in full if this
             # cleanup is itself reached by cancellation, and the guarantee must not
             # depend on it. `cancel()` alone suffices — the watcher is suspended in its
             # sleep, so it can never reach the fire branch again.
             deadline_watcher.cancel()
             # The window closed with the pair still on disk and NO turn to interrupt —
-            # the third orphan path (g-373-92): the watcher's two overrun branches retire
+            # the third orphan path: the watcher's two overrun branches retire
             # the pair only when a turn was running as the grace ran out. Measured on
             # prod 2026-09-18: loop at rest, stop signed 02:33:29Z, window closed
             # 02:39:20Z, the signed pair still on EFS after the vessel was torn down.
@@ -2814,10 +2815,10 @@ def create_app(
     async def _start_consumer() -> None:
         nonlocal run_stop_reason
         # Drop a PREVIOUS run's ending from this (EFS-persistent) workspace before the
-        # health surface can serve it to the env-server (g-369-86). The one exception is a
+        # health surface can serve it to the env-server. The one exception is a
         # duration_cap THIS boot recorded: this start is the supervisor's restart after the
-        # run spent its time, and the env-server has yet to collect that ending (g-373-159,
-        # ADR-0256). Lifespan startup completes before the server accepts requests, so this
+        # run spent its time, and the env-server has yet to collect that ending (ADR-0256).
+        # Lifespan startup completes before the server accepts requests, so this
         # always precedes the first /sidecar/health poll — the clear cannot race the reader
         # that the incident turned on.
         kept_cap = _clear_run_stop_reason()
@@ -2832,9 +2833,9 @@ def create_app(
                 grace_s=resolved_settings.run_consolidation_reserve,
             )
         if kept_cap:
-            # That run is over, and this process is its restart, not a new run (g-373-161).
-            # So it starts ENDED: no say consumer, hence no fresh run clock, and /run/stop
-            # answers `ended` instead of raising a second framework stop on a mind that has
+            # That run is over, and this process is its restart, not a new run. So it starts
+            # ENDED: no say consumer, hence no fresh run clock, and /run/stop answers
+            # `ended` instead of raising a second framework stop on a framework that has
             # already finished its own. `on_run_end` is not called again, because it would
             # bring the process down into yet another restart.
             run_stop_reason = "duration_cap"

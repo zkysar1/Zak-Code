@@ -1214,16 +1214,16 @@ class TaskNetwork(BaseModel):
 #: Section headings that read as ORDERED WORK — the checklist a skill author already wrote
 #: ("## Phase 1: …", "### Step 2.3 …", "## Lane 4 …", "## 3. …"). Anything else ("## Syntax",
 #: "## Return Protocol", "## Chaining") is documentation and never becomes a step. Measured
-#: on a Mind deployment's 130 skills: 78 carry such sections, 52 carry none.
+#: on a host framework's 130 skills: 78 carry such sections, 52 carry none.
 _STEP_HEADING_RE = re.compile(
     r"^(#{2,3})\s+(?:\*\*)?(?:phase|step|lane|stage|part|task|\d+[.)])(?![a-z-])", re.I
 )
 #: The same ordered-work markers written as a bold lead-in instead of a heading — the shape
-#: a Mind's control skills use ("**Step 0.7: Recovery Branch** — …", "**Step 1 — Find the
+#: a host framework's control skills use ("**Step 0.7: Recovery Branch** — …", "**Step 1 — Find the
 #: right session:**", "- **Step 2**: …"): at line start (a list bullet allowed), the word, a
 #: number, then a separator or the closing bold. "**Phase 6 spark is NOT wrapped …**" is
 #: prose (a word follows the number) and never matches. Measured (ADR-0064): /start, /stop
-#: and /aspirations carry no step-like heading at all and 6 / 4 / 2 of these; a first
+#: and the main loop skill carry no step-like heading at all and 6 / 4 / 2 of these; a first
 #: `/start` on a small model stopped after "Following Step 0.7 cleanup sequence." with an
 #: empty plan and nothing to hold it.
 _STEP_BOLD_RE = re.compile(
@@ -1304,12 +1304,14 @@ def skill_skeleton(body: str, *, skill: str) -> list[Task]:
 #: The most skill text one page puts in context — ~3–4k tokens on the tokenizers measured
 #: (ADR-0084). A section over this is cut at its deeper ordered-work markers, then at any
 #: heading, then at paragraph breaks; front matter over it is paged the same way. Measured
-#: 2026-08-29 on a Mind deployment: nine of its largest skills (51–116 KB) had no step-like
-#: ``##`` heading and were delivered whole — /worker-loop, 84 KB, on every worker unit.
+#: 2026-08-29 on a host-framework deployment: nine of its largest skills (51–116 KB)
+#: had no step-like
+#: ``##`` heading and were delivered whole — one 84 KB skill on every worker unit.
 PAGE_BUDGET_CHARS = 12_000
 #: An ordered-work marker written as a pseudocode comment at column 0 inside a fenced
-#: block — the shape a Mind's loop skills use ("# Phase -0.5 — LIGHT PRIME …", "# Phase 1 —
-#: SELECT …"): /worker-loop is one fence carrying 23 of these and no heading at all.
+#: block — the shape a host framework's loop skills use ("# Phase -0.5 —
+#: LIGHT PRIME …", "# Phase 1 —
+#: SELECT …"): one large skill is a single fence carrying 23 of these and no heading.
 #: A separator (or the line's end) must follow the id — a prime may sit between them
 #: ("# Phase -0.5e': …" is a marker) (ADR-0192): "# Phase 6 for
 #: non-recurring deep closes rode on LLM memory …" is the second line of a comment, and it
@@ -1324,7 +1326,7 @@ _ANY_HEADING_RE = re.compile(r"^#{2,4}\s+\S")
 #: ``3.`` — the part a model keeps when it rewrites the step ("Step 0.5 + 0.6: …"), so a page
 #: can still find its step after the plan has been reshaped.
 #: A step id may carry a short letter prefix (``Step B2.5``, ``Phase GS-1``, ``Phase S4.6``):
-#: measured 2026-08-29 over coach's 39 paged skills, 60 of 210 pages had no marker, and
+#: measured 2026-08-29 over a workspace's 39 paged skills, 60 of 210 pages had no marker, and
 #: the lettered ids were a third of them (ADR-0095).
 _SECTION_MARKER_RE = re.compile(
     r"^(?:(phase|step|lane|stage|part|task)\s+(-?(?:[a-z]{1,3}-?)?\d[\w.-]*)|(\d+)[.)])", re.I
@@ -1371,9 +1373,10 @@ class _Unit:
 def _pack(pages: list[_Unit]) -> list[_Unit]:
     """Consecutive small sections share a page up to the budget (ADR-0088).
 
-    A page costs a model turn to deliver — on a slow pod, minutes — and a Mind's skills
-    are mostly short sections: measured 2026-08-29 over 131 skills, 976 pages became 321
-    deliveries at the budget (/aspirations-precheck 55 → 18, /boot 26 → 4, /respond
+    A page costs a model turn to deliver — on a slow pod, minutes — and a host
+    framework's skills are mostly short sections: measured 2026-08-29 over 131 skills,
+    976 pages became 321 deliveries at the budget (the largest skill 55 → 18, /boot
+    26 → 4, /respond
     35 → 7). A section over the budget stays alone (it was already cut to fit); the
     folded closing page is never packed. A packed page is titled by its first section and
     counts the rest; its sections become the skeleton step's sub-steps and any of them
@@ -1630,7 +1633,8 @@ def _outline(body: str, *, skill: str) -> _Outline:
 #: with ``from /<skill>``; the plan renders a step as ``title — note``, and a model that
 #: copies the render into its next ``update_plan`` folds ``— from /<skill>`` into the TITLE
 #: and writes its own note — the very thing the rails ask for ("mark it cancelled with a
-#: note saying why"). Measured 2026-08-29 (coach-w2, then every worker on the packed build):
+#: note saying why"). Measured 2026-08-29 (a self-hosted pod, then every worker on
+#: the packed build):
 #: after one rewrite no step carried the note marker, so the seeded structure was gone,
 #: every page fell to title matching, /start's cancelled branches (no marker token) were
 #: delivered as "dropped", and a token two sections share reopened the wrong page.

@@ -54,7 +54,7 @@ class SkillFrontmatter(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     version: str = "0.0.0"
     #: Every frontmatter key this parser does not type explicitly, PRESERVED verbatim
-    #: (audit P1-2): Mind skills carry cognitive metadata — ``minimum_mode``,
+    #: (audit P1-2): host-framework skills carry cognitive metadata — ``minimum_mode``,
     #: ``companion_scripts``, ``user_invocable``, ``triggers``, … — that must survive
     #: parsing and stay queryable by the host. Bracketed values arrive as lists,
     #: everything else as the (de-quoted) string. Keys are normalized ``-`` → ``_``.
@@ -150,17 +150,17 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
     The frontmatter is the block between the leading ``---`` fence and the next
     ``---`` line; the body is everything after. ``name``/``description``/``version``/
     ``allowed-tools`` (alias ``allowed_tools``) get typed fields; every OTHER key is
-    preserved verbatim in :attr:`SkillFrontmatter.extras` (audit P1-2 — Mind skills'
-    cognitive metadata must survive). Lists parse in BOTH YAML spellings: inline
-    (``triggers: ["/start"]``) and block sequence (``triggers:`` followed by
-    ``- "/start"`` lines) — the block form is what real Claude-Mind skills
-    overwhelmingly use (measured 2026-08-20: 60 of 78 skills in a live Mind), and
+    preserved verbatim in :attr:`SkillFrontmatter.extras` (audit P1-2 — host-framework
+    skills' cognitive metadata must survive). Lists parse in BOTH YAML spellings:
+    inline (``triggers: ["/start"]``) and block sequence (``triggers:`` followed by
+    ``- "/start"`` lines) — the block form is what real host-framework skills
+    overwhelmingly use (measured 2026-08-20: 60 of 78 skills in a live workspace), and
     before this it silently parsed as an empty string, so trigger routing and the
     extras-preservation promise both quietly degraded. Only a line at the mapping's margin
     opens a key; a more-indented line belongs to the key above it. A value may be a YAML
     block scalar (``description: >-`` followed by indented lines, or ``|`` for literal
     text), a plain value continued on indented lines, or a quoted value with escapes, and
-    each is read as YAML reads it. Measured 2026-09-23 against PyYAML on a live Mind's 148
+    each is read as YAML reads it. Measured 2026-09-23 against PyYAML on a live workspace's 148
     skills, 49 were listed with the wrong description before this: 11 as the indicator
     ``>-``, 25 as the description of one of their own arguments, 13 with their escapes
     left in. Raises :class:`SkillError` if the fence or ``name`` is missing.
@@ -189,7 +189,7 @@ def parse_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
         idx += 1
         # Only a line at the margin opens a key. A more-indented line belongs to the key
         # above it. Read as keys of their own, a nested `description:` under a skill's
-        # `arguments:` replaced the skill's own description (25 of a live Mind's 148 skills,
+        # `arguments:` replaced the skill's own description (25 of a live workspace's 148 skills,
         # measured 2026-09-23), and a folded line with a colon in it became a key.
         if not line or line.startswith("#") or ":" not in line or _indent(raw_line) > margin:
             continue
@@ -280,10 +280,10 @@ class Skill:
         """The L1 markdown body: read on first call, not at discovery, and read again when
         the file has changed since (ADR-0245).
 
-        Claude Code picks up an edited ``SKILL.md`` within the session. A Mind's Body runs for
-        hours while its loop merges framework updates into the workspace, and a body cached
-        for the life of the process kept serving the old text: measured 2026-09-23 on zc-02,
-        a worker Body delivered a skill at 84,073 characters three times, the last more than
+        Claude Code picks up an edited ``SKILL.md`` within the session. A framework session
+        runs for hours while its loop merges framework updates into the workspace, and a body
+        cached for the life of the process kept serving the old text: measured 2026-09-23,
+        a worker session delivered a skill at 84,073 characters three times, the last more than
         four hours after the file on disk had become 62,682 characters. A stat per call is the
         whole cost.
         """
@@ -408,7 +408,7 @@ class SkillRegistry:
         if user_only:
             # ADR-0109: named so the model can point the operator at them, never offered as
             # a use_skill call — the tool refuses them and a plan step for one only holds the
-            # turn open (field 2026-09-05: "lets start from scratch" ran a Mind's /start).
+            # turn open (field 2026-09-05: "lets start from scratch" ran a host framework's /start).
             tail.append(
                 "User-only commands ("
                 + ", ".join(f"/{n}" for n in user_only)
@@ -420,7 +420,8 @@ class SkillRegistry:
         # composes a <command-name> frame ONLY for a human-typed slash, so this contract line
         # is what lets a skill that forbids model self-invocation run when the USER asks.
         # Without it, a rule-following model refuses the operator's own keystroke (live
-        # 2026-08-19: a Mind's /start — "user-invocable only" — was declined as self-invocation).
+        # 2026-08-19: a host framework's /start — "user-invocable only" — was
+        # declined as self-invocation).
         tail.append(
             "When a user message BEGINS with a <command-name> block, the human operator "
             "typed that slash command in their terminal: the skill was invoked BY THE USER, "
@@ -569,7 +570,7 @@ def default_skill_dirs(workspace_root: str | Path) -> list[Path]:
     """Candidate skill roots, in increasing precedence (later wins on a name clash).
 
     Bundled → user → project ``.zakcode/skills`` → project ``.claude/skills`` (the
-    last for Claude-Code / Claude-Mind compatibility, mirroring rule discovery).
+    last for Claude Code compatibility, mirroring rule discovery).
     """
     bundled = Path(__file__).parent / "bundled"
     return [
@@ -665,7 +666,7 @@ def discover_skills(
 
     Later sources override earlier ones by name (so a project skill shadows a bundled
     one of the same name). ``extra_skill_dirs``, when provided, are scanned *after* the
-    defaults — so an external skill directory (e.g. a claude-mind ``skills/`` tree)
+    defaults — so an external skill directory (e.g. a host-framework ``skills/`` tree)
     shadows same-named project skills. Returns ``(registry, errors)``.
     """
     registry = SkillRegistry()

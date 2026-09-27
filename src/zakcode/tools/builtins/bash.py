@@ -25,9 +25,9 @@ from zakcode.tools.builtins._suggest import suggest
 # Default and hard-cap timeouts, in seconds. The cap is generous so a real build/test suite
 # can finish with an explicit ``timeout`` instead of always failing -- the prior 60s hard cap
 # surfaced as a false stall. The default is Claude Code's: two minutes (its schema counts
-# milliseconds, default 120000, max 600000). It was 60s here, and a Mind's own scripts can
-# outlast that on a slow box: measured 2026-09-23, an alpha worker's goal-selector run on
-# zc-02 was killed at 60s and the model spent a call retrying it with a longer timeout.
+# milliseconds, default 120000, max 600000). It was 60s here, and a workspace's own scripts
+# can outlast that on a slow box: measured 2026-09-23, a worker session's goal-selector run
+# was killed at 60s and the model spent a call retrying it with a longer timeout.
 _DEFAULT_TIMEOUT = 120
 _MAX_TIMEOUT = 600
 # How much of a command's output reaches the model: Claude Code's limits, from its public tools
@@ -35,8 +35,8 @@ _MAX_TIMEOUT = 600
 # the whole output is saved to a file in the session's output directory and the result is its
 # first _PREVIEW_CHARS plus the file's path. A command that failed is shown whole up to
 # _FAILURE_CHARS; past that, its start and end, and the path too. It was 64 KB here, cut at the
-# head for success and failure alike: measured 2026-09-23 on two worker Bodies over 16 hours,
-# five outputs hit that cap (a goal selector's JSON, an aspirations dump, a cat), each put about
+# head for success and failure alike: measured 2026-09-23 on two worker sessions over 16 hours,
+# five outputs hit that cap (a goal selector's JSON, a task dump, a cat), each put about
 # 22k tokens into a 131k window, and four of the ten compactions kept mostly such outputs.
 _INLINE_CHARS = 30_000
 _PREVIEW_CHARS = 2_000
@@ -74,10 +74,10 @@ _NOT_FOUND_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): (?:command )?not found
 #: ``bash: line 1: ./x.sh: Permission denied``.
 _PERM_DENIED_RE = re.compile(r"(?:line )?\d*:?\s*([^\s:]+): Permission denied")
 #: Directories never worth descending into when locating a file by basename: VCS,
-#: dependency trees, virtualenvs and tool caches. Other dot-dirs ARE walked — a Mind
-#: deployment keeps its domain data and scripts under a hidden `.mind-data/`, and
-#: pruning every dot-dir left both the 127 hint and the ENOENT hint blind to the very
-#: directory the model was guessing at (measured 2026-08-29, zc-03).
+#: dependency trees, virtualenvs and tool caches. Other dot-dirs ARE walked — a served
+#: workspace keeps its domain data and scripts under a hidden prefix, and pruning every
+#: dot-dir left both the 127 hint and the ENOENT hint blind to the very directory the
+#: model was guessing at (measured 2026-08-29).
 _SKIP_DIRS = frozenset(
     {
         "node_modules",
@@ -186,16 +186,16 @@ def _module_not_found_fix(
 ) -> str | None:
     """Name where a package of that name lives in the workspace, else None.
 
-    Measured 2026-08-30 (zc-03, coach Bodies): five ``ModuleNotFoundError: No module
+    Measured 2026-08-30 (worker sessions): five ``ModuleNotFoundError: No module
     named 'yahoo'`` in 24 h across four sessions — every one ``cd <workspace> && python3
-    …`` after the package had been consolidated under ``.mind-data/world/scripts/yahoo``
-    — and one identical retry, because the error names the module and nothing names the
+    …`` after the package had been consolidated under a workspace data directory — and
+    one identical retry, because the error names the module and nothing names the
     directory Python would have had to be run from. A dotted name whose top package IS
     found but whose submodule is not gets the package's real module names instead. A
     name found nowhere in the workspace is an invented one when the command itself
     declared a root — a literal ``sys.path.insert``, a ``PYTHONPATH=``, a ``cd`` — and
-    the closest real names under that root are then the lead (g-353-80); with no
-    declared root it stays a plain error: install guesses are not this hint's business.
+    the closest real names under that root are then the lead; with no declared root it
+    stays a plain error: install guesses are not this hint's business.
     """
     m = _MODULE_NOT_FOUND_RE.search(output)
     if m is None:
@@ -342,8 +342,8 @@ def _shown_root(p: Path, root: Path) -> str:
 def _nearest_module_fix(command: str, top: str, root: Path) -> str | None:
     """The lead for a module that exists nowhere in the workspace, else None.
 
-    Measured 2026-08-30 (zc-03, coach-w7): ``python3 -c`` with ``sys.path.insert(0,
-    "core/scripts")`` then ``from pipeline_read import …`` — a module name invented the
+    Measured 2026-08-30 (a served workspace): ``python3 -c`` with ``sys.path.insert(0,
+    "core/scripts")`` then ``from some_module import …`` — a module name invented the
     way script paths are invented (ADR-0106 refuses those before running), but an import
     inside ``-c`` is not a path a preflight can stat. The error carries the missing NAME
     and the command carries the root the model believed it lived under, so the same
@@ -390,8 +390,8 @@ def _json_first_line_fix(command: str, output: str) -> str | None:
     """A remedy hint when a piped-in Python parser choked on the first line of a
     pretty-printed JSON document, else None.
 
-    Measured 2026-08-30 (zc-03, two sessions): ``aspirations-query.sh … | python3 -c`` and
-    ``goal-selector.sh … | python3 -c`` both died with ``Expecting value: line 1 column 2
+    Measured 2026-08-30 (two sessions): a query script's JSON piped into ``python3 -c``
+    died with ``Expecting value: line 1 column 2
     (char 1)`` — the signature of ``json.loads("[")``: the wrapper prints an indented
     document, the program parsed it line by line as JSONL. The error names a column, not
     the cause, so the model reads it as broken output and re-runs the wrapper.
@@ -429,7 +429,7 @@ _INTERPRETER_ERROR_RE = re.compile(
 #: Ubuntu's apport installs a Python excepthook that itself crashes on an inline program (it
 #: ``stat``s the "binary", which is ``-c``), so every traceback from ``python3 -c`` is followed
 #: by the hook's own ~20-line traceback and, under "Original exception was:", a re-print of
-#: the original. Measured 2026-08-29 (zc-03): 20 of the fleet's 61 tracebacks that day — and a
+#: the original. Measured 2026-08-29: 20 of the fleet's 61 tracebacks that day — and a
 #: small model reads the hook's failure as a second, unrelated error (ADR-0096).
 _APPORT_BLOCK_RE = re.compile(
     r"\nError in sys\.excepthook:\n(?P<hook>(?:.*\n)*?)Original exception was:\n"
@@ -483,7 +483,7 @@ def _fit_output(
     size = f"{len(output):,} characters in {lines:,} lines"
     where = (
         # Named by tool, not by verb: "search it with grep in the shell" sent a lesser model
-        # to the Grep tool, which ADR-0234 keeps out of this directory (Ayoai-Mind g-375-12).
+        # to the Grep tool, which ADR-0234 keeps out of this directory.
         # Read opens the file, grep reaches it through the Bash tool, the Grep tool does not.
         f"The whole output is in {saved}: use the Read tool on it (offset/limit), or run grep "
         "on it through the Bash tool. The Grep tool cannot open this directory."
@@ -513,10 +513,10 @@ def _interpreter_mismatch_fix(command: str) -> str | None:
 
     Python parsing a shell script reports a SyntaxError at the first ``case`` arm or
     ``fi`` — a traceback that reads like a broken script, not a wrong command. Measured
-    2026-08-29 (coach reducer): ``python3 core/scripts/aspirations-update-goal.sh …`` four
-    times verbatim, each a SyntaxError on the .sh's line 65, until the stuck guard limited
-    the turn to read-only tools and the iteration's state update never ran. Naming the
-    interpreter breaks that loop; nothing else in the output does.
+    2026-08-29 (a coordinating session): ``python3 <workspace>/scripts/update-goal.sh …``
+    four times verbatim, each a SyntaxError on the .sh's line 65, until the stuck guard
+    limited the turn to read-only tools and the iteration's state update never ran.
+    Naming the interpreter breaks that loop; nothing else in the output does.
     """
     py_on_shell = _PY_ON_SHELL_RE.search(command)
     if py_on_shell:
@@ -539,9 +539,9 @@ def _posix_exit_fix(command: str, output: str, exit_code: int, root: Path) -> st
     """A remedy hint for the two classic script-invocation failures, else None.
 
     * exit 127 — a bare script name not on PATH: locate the basename in the workspace and
-      name the working invocation (measured 2026-08-25: a mind agent burned an error +
+      name the working invocation (measured 2026-08-25: a session burned an error +
       find + retry ritual per script, dozens of times, because ``x.sh`` lived at
-      ``core/scripts/x.sh``).
+      ``<workspace>/scripts/x.sh``).
     * exit 126 — the file exists but is not executable: name the chmod (or ``bash path``)
       escape, once, instead of letting the model rediscover it per file.
     """
@@ -595,13 +595,13 @@ _NOT_A_FILE = frozenset({"-", "-c", "<stdin>", "<string>"})
 def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     """Name where a missing file actually is, or its nearest names — else None.
 
-    Measured 2026-08-29 (zc-03, eight Bodies): 15 of the day's 73 failed commands were
-    ENOENT and every one was a guessed path — `world/scripts/reasoning-bank.py`,
-    `core/scripts/wm-list.sh`, `core/scripts/aspirations-write.sh`, `world/forged-skills.yaml`
-    for `.mind-data/world/forged-skills.yaml` — each followed by the model's own
-    find -> retry ritual, or a second guess. The file tools already answer a not-found
-    with the workspace's closest paths (ADR-0040); a shell command deserves the same
-    answer. No lead, no hint: a genuinely absent file stays a plain error.
+    Measured 2026-08-29 (eight worker sessions): 15 of the day's 73 failed commands
+    were ENOENT and every one was a guessed path — the model named scripts and data
+    files at their logical prefix instead of the workspace's actual hidden prefix —
+    each followed by the model's own find -> retry ritual, or a second guess. The file
+    tools already answer a not-found with the workspace's closest paths (ADR-0040); a
+    shell command deserves the same answer. No lead, no hint: a genuinely absent file
+    stays a plain error.
     """
     best: re.Match[str] | None = None
     for rx in _ENOENT_RES:
@@ -620,7 +620,7 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
         found.extend((r, rel) for rel in _locate_all(r, name))
     parent = _existing_parent(path, roots)
     # A hit that ENDS with the guessed path is a wrong-prefix guess (`world/x.yaml` for
-    # `.mind-data/world/x.yaml`); a same-named file in an unrelated directory is only a
+    # `.project-data/world/x.yaml`); a same-named file in an unrelated directory is only a
     # lead when the guessed directory does not exist at all. When the directory is real,
     # the file under another agent's dir is noise, not a lead.
     guess = _guess_relative(path, roots)
@@ -631,7 +631,7 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     if parent is not None:
         # The directory is real and the file is not: a typo'd name (its siblings share
         # the leading token: `wm-list.sh` beside `wm-read.sh`), a directory guessed at
-        # the wrong place (`ls world/` for `.mind-data/world`), or a deliberate check of
+        # the wrong place (`ls world/` for `.project-data/world`), or a deliberate check of
         # an optional file — which gets no hint, because there is no lead.
         same_words = _reordered_siblings(parent, name)
         kin = [k for k in _prefix_siblings(parent, name) if k not in same_words]
@@ -658,9 +658,9 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
             )
         return None
     # The guessed DIRECTORY does not exist. Name the first component that is missing and
-    # where a directory of that name really is: `.mind-data/agents/coach/sessions/<sid>/x`
-    # fails at `.mind-data/agents`, and `agents/` lives at the workspace root (measured
-    # 2026-08-29, zc-03: touch/grep/ls on that invented prefix, four times in one hour,
+    # where a directory of that name really is: `.data/agents/<name>/sessions/<sid>/x`
+    # fails at `.data/agents`, and `agents/` lives at the workspace root (measured
+    # 2026-08-29: touch/grep/ls on that invented prefix, four times in one hour,
     # none of them a name the file search could lead on — the file was about to be created).
     # A same-named FILE elsewhere is the more specific lead and keeps the first word; the
     # prefix diagnosis rides beside it, and stands alone only when there is no file lead.
@@ -715,8 +715,8 @@ def _wrong_prefix_hint(
     guess = _guess_relative(path, roots)
     if first_root == roots[0] and first_rel.endswith("/" + guess):
         # The guess is the real path minus its leading directory. Say exactly that: the
-        # generic "(or `cd` there first)" read as a cwd problem — measured 2026-08-30
-        # (zc-03): a Body answered this hint with `cd <workspace root> && <same command>`,
+        # generic "(or `cd` there first)" read as a cwd problem — measured 2026-08-30:
+        # a session answered this hint with `cd <workspace root> && <same command>`,
         # was refused again, and only then used the path the hint had already named.
         prefix = first_rel[: -len(guess) - 1]
         return lead + (
@@ -730,8 +730,8 @@ def _wrong_prefix_hint(
 def _guess_relative(path: str, roots: list[Path]) -> str:
     """The guessed path as a root-relative POSIX string when it lies under a root, else as
     written minus any leading `./` — the form the suffix match compares against hits.
-    Bodies guess ABSOLUTE paths as often as relative ones (measured 2026-08-29), and an
-    absolute `<root>/world/x.yaml` must match the hit `.mind-data/world/x.yaml` too."""
+    Worker sessions guess ABSOLUTE paths as often as relative ones (measured 2026-08-29), and an
+    absolute `<root>/world/x.yaml` must match the hit `.project-data/world/x.yaml` too."""
     p = Path(path)
     if p.is_absolute():
         for r in roots:
@@ -794,10 +794,10 @@ def _reordered_siblings(directory: Path, name: str) -> list[str]:
     """Files in ``directory`` made of exactly ``name``'s words in another order
     (`create-blocker.sh` for a guessed `blocker-create.sh`).
 
-    Measured 2026-08-30 (zc-03): a Body guessed `core/scripts/blocker-create.sh`; the
-    leading-token family offered `blocker-create-gate.sh`, `blocker-recheck.sh` — none of
-    them the script — and the Body spent six more commands (`ls`, three `grep -rl`, two
-    reads) finding `create-blocker.sh` on its own. Same multiset of tokens, extension
+    Measured 2026-08-30: a session guessed `scripts/blocker-create.sh`; the
+    leading-token family offered `blocker-create-gate.sh`, `blocker-recheck.sh` — none
+    of them the script — and the session spent six more commands (`ls`, three `grep -rl`,
+    two reads) finding `create-blocker.sh` on its own. Same multiset of tokens, extension
     included, is a stronger lead than a shared first word and is listed first.
     """
     want = sorted(t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t)
@@ -822,9 +822,9 @@ _CALL_SYNTAX_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[^)\s]")
 def _tool_typed_as_command(command: str, registry: Any) -> str | None:
     """The refusal for a registered tool written as a shell call, else None.
 
-    Measured 2026-08-29 (zc-03, eight Bodies on a 27B local model): the loop's skills
+    Measured 2026-08-29 (eight worker sessions on a 27B local model): the loop's skills
     show the deadman net as ``ScheduleWakeup(prompt=…, delaySeconds=600)``, and the
-    Bodies typed exactly that into the bash tool — five times in one session, each a
+    sessions typed exactly that into the bash tool — five times in one session, each a
     shell syntax error and a lost turn, followed by "that needs to be a direct tool
     call" and then no call at all: zero ``schedule_wakeup`` invocations fleet-wide, so
     the net was never armed. The registry knows the name (and the Claude-Code-shaped
@@ -852,13 +852,14 @@ def _tool_typed_as_command(command: str, registry: Any) -> str | None:
 
 #: An interpreter (or ``source``/``.``) followed by a RELATIVE script path — at least one
 #: slash, a script extension, no `$`/quote (an unexpandable path is not checked). This is
-#: the shape a Body types when it names a Mind script from memory: `bash core/scripts/x.sh`.
+#: the shape a worker session types when it names a workspace script from memory:
+#: ``bash <workspace>/scripts/x.sh``.
 #:
 #: Leading ``VAR=value`` assignments are stepped over. They are not decoration on this
-#: fleet: measured 2026-08-30 (zc-03, eight Bodies, 24 h) 165 of 454 script invocations
-#: were ``cd … && MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local bash
-#: core/scripts/x.sh`` — 36 %, invisible to the start-of-command anchor — and five of them
-#: named a script that does not exist (``loop-orchestrator-entry-battery.sh``,
+#: fleet: measured 2026-08-30 (eight worker sessions, 24 h) 165 of 454 script invocations
+#: were ``cd … && AGENT=<name> STORAGE_BACKEND=local bash <workspace>/scripts/x.sh``
+#: — 36 %, invisible to the start-of-command anchor — and five of them named a script
+#: that does not exist (``loop-orchestrator-entry-battery.sh``,
 #: ``runner-heartbeat-tick.sh``, ``goal-scorer.sh``, ``wm-list.sh``, ``parse-flags.sh``),
 #: each reaching bash as a 127 the model then spent a ~7-minute step on.
 _SCRIPT_INVOCATION_RE = re.compile(
@@ -885,9 +886,9 @@ def _cwd_before(prefix: str, root: Path) -> Path | None:
 def _script_path_missing(command: str, root: Path, extra_roots: list[Path]) -> str | None:
     """The refusal for a script invocation naming a file that does not exist, else None.
 
-    Measured 2026-08-29 (zc-03, eight Bodies, 24 h): 13 of 340 `bash|python3 <path>`
-    invocations named a script that does not exist — `core/scripts/recurring-goal-detectors.sh`,
-    `core/scripts/aspirations-read-goal.sh`, `core/scripts/worker-close-unit.sh` — and 5 of
+    Measured 2026-08-29 (eight worker sessions, 24 h): 13 of 340 `bash|python3 <path>`
+    invocations named a script that does not exist — invented names like
+    `recurring-goal-detectors.sh`, `read-goal.sh`, `close-unit.sh` — and 5 of
     them piped the output (`… 2>&1 | python3 -c "json.loads(…)"`), so bash's own "No such
     file" went down the pipe, the parser raised JSONDecodeError, and the ENOENT hint
     (ADR-0097) that answers exactly this never saw the frame it keys on. Checking the path
@@ -1114,8 +1115,9 @@ class BashTool(Tool):
             )
         else:
             # Exit 0 can be a trailing pipe's (`python3 x.sh … | tail -40`): the interpreter
-            # choked and `tail` reported success (ADR-0093, measured on the reducer the same
-            # day the hint shipped — the pipe hid the failure the hint was written for). The
+            # choked and `tail` reported success (ADR-0093, measured on the coordinating
+            # session the same day the hint shipped — the pipe hid the failure the hint was
+            # written for). The
             # mismatched command plus the interpreter's own error text is the signal; the
             # result is the failure it was.
             mismatch = _interpreter_mismatch_fix(command)

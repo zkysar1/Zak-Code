@@ -98,8 +98,8 @@ ENVELOPE_ID_PREFIX = "env-"
 def envelope_id(envelope: dict[str, Any] | None) -> str | None:
     """A stable id for one envelope: the key that joins a delivered perception to what followed.
 
-    The mind cites it in its reaction line, and from there it reaches the aspiration the
-    reaction filed or fed and the model spend of that work (the One Body flywheel's linked
+    The framework cites it in its reaction line, and from there it reaches the goal the
+    reaction filed or fed and the model spend of that work (the linked
     ids). A producer-supplied ``envelopeId`` wins, so a vessel that mints its own ids joins on
     them verbatim. Otherwise the id is derived from the envelope's CONTENT, which anyone
     holding the same envelope can recompute. Deliberately not a counter or a clock: a counter

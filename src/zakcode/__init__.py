@@ -108,11 +108,12 @@ def _find_repo_root(start: Path) -> Path | None:
 
 
 def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
-    """Parse a claude-mind-style ``local-paths.conf`` and return the directories it grants.
+    """Parse a ``local-paths.conf`` and return the directories it grants.
 
     The file is ``KEY=VALUE``, one per line. A value may be quoted, since the file is also
-    sourced by a shell; the quotes are stripped. The Mind grants its agent three kinds of root
-    here, and its own write hook allows all three (ADR-0230): ``WORLD_PATH``, ``META_PATH``, and
+    sourced by a shell; the quotes are stripped. The framework grants its agent three kinds
+    of root here, and its own write hook allows all three (ADR-0230): ``WORLD_PATH``,
+    ``META_PATH``, and
     ``AGENT_WRITE_PATH``, the product repositories the agent works on, several separated by
     ``;``. Only existing absolute directories are returned.
     """
@@ -145,7 +146,7 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
 
 
 def _mind_external_roots(repo_root: Path) -> list[Path]:
-    """The world, meta and product roots a Mind repo declares via ``agents/*/local-paths.conf``.
+    """The world, meta and product roots a framework repo declares via ``local-paths.conf``.
 
     Returns a deduplicated list of existing absolute directories.
     """
@@ -401,7 +402,7 @@ class Agent:
         **setting_overrides: Any,
     ) -> None:
         self.settings = settings or load_settings(**setting_overrides)
-        # BYOK (g-369-11): a member's own provider key, saved in this environment's vault,
+        # BYOK: a member's own provider key, saved in this environment's vault,
         # overlays the deployment's before anything reads a key. Placed HERE, immediately
         # after settings resolve and before model resolution / provider build, because the
         # availability resolver runs ONLY for default_model == "auto" — wiring it there
@@ -558,7 +559,7 @@ class Agent:
             from zakcode.permissions_settings import load_settings_permissions, summarize_skipped
 
             _ingested, _perm_errs = load_settings_permissions(workspace_root)
-            # One WARNING per construction, not one per gesture (g-357-17): a Mind workspace
+            # One WARNING per construction, not one per gesture: a host workspace
             # declares dozens of gestures with no tighten-only mapping here, and the per-gesture
             # lines buried the warnings that matter. The detail stays available at DEBUG.
             if _perm_errs:
@@ -619,7 +620,7 @@ class Agent:
         # declared hooks always load — no adoption flag, no folder-trust prompt, no env
         # toggle. Hooks are the workspace's own committed automation, and a framework whose
         # protections ride on them must never silently run unprotected (field incident: a
-        # Mind deployment ran with ZERO of its 43 gates because the adoption ask was never
+        # host deployment ran with ZERO of its 43 gates because the adoption ask was never
         # answered). The security floor is not a flag and is unchanged: every command is
         # danger-scanned (hard-denied in autonomous mode) and provider keys are scrubbed
         # from hook children. TE-R3(3): with a programmatic hook_manager, the settings.json
@@ -718,14 +719,14 @@ class Agent:
             # name (and lets skills chain). It reads the resolver off the ToolContext, which the
             # loop is handed below; only registered when skills are on, so the default tool
             # surface is unchanged. (Gated identically to the catalog so the two stay consistent.)
-            # Canonical name ``Skill`` (ADR-0190) — a Mind's loop calls Skill(aspirations) by
+            # Canonical name ``Skill`` (ADR-0190) — a host's loop calls its main skill by
             # that name; ``use_skill`` stays as the pre-0190 alias (the bash tool's
             # typed-as-command refusal, ADR-0098, resolves either through the registry).
             self.registry.register(UseSkillTool(), aliases=["use_skill"])
             skill_resolver = _SkillToolResolver(self)
 
         # Rules: always-on guidance (bundled + user + project, incl. .claude/rules for
-        # Claude-Code/Claude-Mind compatibility) rendered into the cacheable tier.
+        # Claude-Code / host-framework compatibility) rendered into the cacheable tier.
         # ``lean_rules`` (Vinheim Lever A) swaps the full-body render for a compact
         # one-line-per-rule INDEX, so a rules-heavy "mind" stops paying every rule's full
         # body on every cached turn — the model reads a rule's body on demand instead.
@@ -740,7 +741,7 @@ class Agent:
             # ``None`` defers to Settings.lean_rules (ZAKCODE_LEAN_RULES); an explicit
             # True/False from the host wins — the same deferral shape as
             # enable_output_style above.
-            # Before g-016-86 this was a hard ``False`` default, so the documented env
+            # Before this change, this was a hard ``False`` default, so the documented env
             # var reached the Agent through server/app.py ONLY: CLI, library and bench
             # constructions silently took the full render, and an A/B driven by the env
             # var returned byte-identical arms. Settings.lean_rules still defaults to
@@ -749,7 +750,7 @@ class Agent:
             rules_text = (
                 self.rule_registry.render_index() if use_lean else self.rule_registry.render()
             )
-            # Vinheim Lever A chunk 2 (g-016-82): the retrieval half of the lean path. The
+            # Vinheim Lever A chunk 2: the retrieval half of the lean path. The
             # index names every rule but carries no bodies, so the model needs a cheap,
             # unambiguous way to fetch one — register ``read_rule`` whenever rules are on.
             # Registered for BOTH renders on purpose: under the full render the index header
@@ -758,7 +759,7 @@ class Agent:
             from zakcode.tools.builtins.read_rule import ReadRuleTool
 
             self.registry.register(ReadRuleTool())
-            # The WRITE half of the same lane (g-368-14). read_rule made rules readable from
+            # The WRITE half of the same lane. read_rule made rules readable from
             # a turn; nothing made them writable, so a rule the agent learned by experience
             # could only enter the store through an out-of-band human edit — i.e. it had to
             # be PUSHED. Registered under the same `enable_rules` gate as the reader so the
@@ -865,7 +866,7 @@ class Agent:
         if extra_skill_dirs:
             for sd in extra_skill_dirs:
                 computed_extra_roots.extend(_infer_roots_from_skill_dir(Path(sd)))
-        # A Mind workspace declares its EXTERNAL world/meta homes in
+        # A host workspace declares its EXTERNAL world/meta homes in
         # agents/*/local-paths.conf — the same inference --skill-dir repos already
         # get. Without this, file tools refuse the real world ("resolves outside
         # the workspace root") and a relative Write("world/…") lands in a stray
@@ -1205,8 +1206,8 @@ class Agent:
         """Count a typed ``/<skill>`` turn's body as loaded for the reload dedup (ADR-0063).
 
         The command path never registered its load, so a ``use_skill`` of the very skill
-        the turn is running came back as the whole body again. Measured 2026-08-28 (coach,
-        zc-03): an empty completion inside ``/start`` drew the skill nudge, the model
+        the turn is running came back as the whole body again. Measured 2026-08-28 on a
+        served workspace: an empty completion inside ``/start`` drew the skill nudge, the model
         answered ``use_skill start``, and 65 KB of instructions it already held landed a
         second time. Runs AFTER :meth:`_begin_skill_turn` at every top-level turn start, on
         the same digest the dedup compares, so that re-invocation now gets the pointer. A
@@ -1265,7 +1266,7 @@ class Agent:
     def _assert_local_only(self) -> None:
         """Refuse to start when ``local_only`` is set but a configured model is metered.
 
-        The ANTICIPATION half of the cost guarantee (rb-605). It cannot be the whole
+        The ANTICIPATION half of the cost guarantee. It cannot be the whole
         guarantee — it only sees the config it knows to enumerate, so a route added later
         would bypass it; that is what the fail-closed check in
         ``LiteLLMProvider._build_kwargs`` is for. What this half buys is a failure at
@@ -1665,7 +1666,7 @@ class Agent:
         # model_catalog (ADR-0109) is what the model may RUN; the user-only commands travel
         # separately (ADR-0127) so the classifier can NAME one without the loop ever seeding
         # it — a request for /start that cannot be named gets matched to the nearest skill the
-        # model may run (field 2026-09-10: "Start yourself as coach in assistant mode" →
+        # model may run (field 2026-09-10: "Start yourself as X in assistant mode" →
         # /prime, seeded, thirty iterations inside the wrong skill, then a false "started").
         registry = self.skill_registry
         skills = registry.model_catalog() if registry is not None else []

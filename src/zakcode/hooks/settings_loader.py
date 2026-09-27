@@ -34,7 +34,7 @@ from zakcode.hooks import DEFAULT_HOOK_TIMEOUT, HookEvent, HookManager, HookSpec
 logger = logging.getLogger("zakcode.hooks.settings_loader")
 
 #: Claude Code settings.json event names -> HookEvent.  ``"Stop"`` maps to
-#: ``TURN_END`` (the seam Mind's stop-hook.sh targets).
+#: ``TURN_END`` (the seam a host framework's turn-end hook targets).
 _EVENT_MAP: dict[str, HookEvent] = {
     "PreToolUse": HookEvent.PRE_TOOL_USE,
     "PostToolUse": HookEvent.POST_TOOL_USE,
@@ -66,7 +66,7 @@ _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 def _split_command(cmd: str) -> list[str]:
     """Split a shell command string into an argv array (platform-aware).
 
-    ``argv[0]`` is resolved to a real executable path so a hook's ``bash core/scripts/...``
+    ``argv[0]`` is resolved to a real executable path so a hook's ``bash <script>``
     spawns the actual Git Bash, not the Windows WSL app-exec stub (see ``resolve_executable``).
     """
     argv = shlex.split(cmd, posix=False) if sys.platform == "win32" else shlex.split(cmd)
@@ -121,8 +121,8 @@ def load_settings_hooks(
     from zakcode.secrets import provider_key_env_names
 
     scrub_names = provider_key_env_names()
-    # Claude Code's $CLAUDE_PROJECT_DIR (the project root); Claude-Code hooks reference scripts
-    # through it (e.g. `bash $CLAUDE_PROJECT_DIR/core/scripts/x.sh`). We run hook argv WITHOUT a
+    # Claude Code's $CLAUDE_PROJECT_DIR (the project root); hooks reference scripts through
+    # it (e.g. `bash $CLAUDE_PROJECT_DIR/scripts/x.sh`). We run hook argv WITHOUT a
     # shell, so substitute it here ourselves — forward-slash form so Git Bash resolves the path.
     project_dir = workspace_root.as_posix()
 

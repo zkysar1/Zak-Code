@@ -114,7 +114,8 @@ class ListDirTool(Tool):
             all_ignored = False
             if not entries and hidden_entries:
                 # EVERY entry is ignored — a workspace whose data lives under a gitignored root
-                # (field 2026-09-10: a Mind's world/ under .mind-data/; three listings came back
+                # (field 2026-09-10: a framework's data under a hidden prefix; three
+                # listings came back
                 # as one count line, the model skimmed the note four times, and the no-progress
                 # rail had to fire). An empty listing of a non-empty directory is the one shape
                 # that misleads, so these are shown, tagged, rather than hidden behind a count.

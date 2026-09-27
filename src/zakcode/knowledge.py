@@ -1,10 +1,10 @@
 """Knowledge-base reading and export shaping — the SDK side of PEARL §10.4/§10.5.
 
 Everything here is pure workspace/bundle logic with no HTTP in it: reading the
-Mind's pre-projected ``.knowledge-bundle.json`` (filter-at-the-source), the
-lean-agent raw-note fallback under ``knowledge/``, and the OKF transfer-bundle
+host framework's pre-projected ``.knowledge-bundle.json`` (filter-at-the-source),
+the lean-agent raw-note fallback under ``knowledge/``, and the OKF transfer-bundle
 export shaping. It lived inline in ``server/app.py`` until the interface-purity
-pass (guard-4547: business logic belongs in the SDK, interfaces stay thin); the
+pass (business logic belongs in the SDK, interfaces stay thin); the
 server routes now call :func:`read_knowledge_bundle` / :func:`okf_bundle` and do
 nothing else.
 """
@@ -36,12 +36,13 @@ def _empty_bundle() -> dict[str, Any]:
     }
 
 
-#: Caps for the lean-agent raw-note fallback (g-335-191): a short sampler ``summary``
-#: for the wiki map vs the fuller clickable ``body``. Mirrors the Mind projection's
-#: summary/body split so the viewer shows a sampler in the tree and the full note on
-#: click. The raw path is workspace-isolated (a research agent writes only its own
-#: domain notes under ``knowledge/tree/``) — unlike the kid-facing PEARL path, which
-#: serves the Mind's already-redacted projected bundle, this fallback carries the note
+#: Caps for the lean-agent raw-note fallback: a short sampler ``summary``
+#: for the wiki map vs the fuller clickable ``body``. Mirrors the framework
+#: projection's summary/body split so the viewer shows a sampler in the tree and the
+#: full note on click. The raw path is workspace-isolated (a research agent writes
+#: only its own domain notes under ``knowledge/tree/``) — unlike the kid-facing PEARL
+#: path, which serves the framework's already-redacted projected bundle, this fallback
+#: carries the note
 #: as written and never reads a framework ``system/`` path.
 _RAW_NODE_SUMMARY_CAP = 500
 _RAW_NODE_BODY_CAP = 32_000
@@ -50,7 +51,7 @@ _RAW_NODE_BODY_CAP = 32_000
 def _raw_summary(text: str) -> str:
     """A short sampler for a raw markdown note: the first non-heading paragraph, capped
     at ``_RAW_NODE_SUMMARY_CAP``. The full note is carried separately as ``body`` so the
-    viewer renders a sampler in the map and the whole article on click (g-335-191)."""
+    viewer renders a sampler in the map and the whole article on click."""
     for para in text.split("\n\n"):
         stripped = "\n".join(
             ln for ln in para.splitlines() if not ln.strip().startswith("#")
@@ -62,13 +63,14 @@ def _raw_summary(text: str) -> str:
 
 def _read_raw_tree(workspace_root: Path) -> list[dict[str, Any]]:
     """Fallback for lean research agents that write raw markdown notes to
-    ``<workspace>/knowledge/tree/*.md`` instead of running the Mind's
+    ``<workspace>/knowledge/tree/*.md`` instead of running the framework's
     ``KnowledgeProjection``. Each ``<key>.md`` becomes a node: the first ``# ``
     heading is the title, a short first-paragraph sampler is the ``summary``, and the
     full note (capped) is the ``body`` — so the map stays light and clicking a node
-    shows the whole article (g-335-191). Flat — raw notes carry no parent/child edges.
+    shows the whole article. Flat — raw notes carry no parent/child edges.
     Returns ``[]`` when the directory is absent, so a
-    full Mind (whose tree lives elsewhere and is surfaced via the projected bundle)
+    full framework (whose tree lives elsewhere and is surfaced via the projected
+    bundle)
     is never affected: there is simply nothing to read at this path.
     """
     tree_dir = workspace_root / "knowledge" / "tree"
@@ -125,19 +127,19 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _read_raw_hypotheses(workspace_root: Path) -> list[dict[str, Any]]:
     """Fallback for agents that record hypotheses as raw JSONL at
-    ``<workspace>/knowledge/hypotheses.jsonl`` instead of running the Mind's
+    ``<workspace>/knowledge/hypotheses.jsonl`` instead of running the framework's
     ``KnowledgeProjection``. Each line becomes a hypothesis card, mapping the
-    common Mind pipeline field names onto the viewer shape (statement / horizon /
+    common pipeline field names onto the viewer shape (statement / horizon /
     status / outcome). Field lookups are defensive (multiple aliases) so a lean
     agent and a full pipeline record both surface. Returns ``[]`` when the file
-    is absent, so a full Mind (which surfaces hypotheses via the projected
+    is absent, so a full framework (which surfaces hypotheses via the projected
     bundle) is never affected.
 
     Reads two lean store names, BOTH under ``<workspace>/knowledge/`` — never the
     framework ``world/`` tree outside the workspace:
       * ``knowledge/hypotheses.jsonl`` — a lean agent's raw export, and
       * ``knowledge/pipeline.jsonl`` — the REAL framework pipeline store, when a
-        sidecar Mind runs the mind_api daemon with ``AYOAI_WORLD`` pointed at
+        sidecar framework runs the daemon with the world variable pointed at
         ``<workspace>/knowledge`` (the PEARL sidecar layout). The daemon names its
         pipeline store ``pipeline.jsonl``, so reading only ``hypotheses.jsonl``
         would miss every hypothesis a real ``pipeline-add.sh`` call produced.
@@ -189,10 +191,10 @@ def _read_raw_guardrails(workspace_root: Path) -> list[dict[str, Any]]:
 
 
 def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
-    """The pre-projected knowledge bundle the Mind's periodic export wrote.
+    """The pre-projected knowledge bundle the framework's periodic export wrote.
 
-    ``KnowledgeProjection`` runs in-process on the box in the MIND (where the stores
-    live) and writes an already-filtered + redacted bundle to
+    ``KnowledgeProjection`` runs in-process on the box in the FRAMEWORK (where the
+    stores live) and writes an already-filtered + redacted bundle to
     ``<workspace>/.knowledge-bundle.json`` (PEARL §10.3 — filter at the source). The
     daemon serves that artifact read-only and holds NO projection logic, so it can
     never see raw framework internals. Fail-open: a missing / unreadable / malformed /
@@ -201,7 +203,7 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     Lean-agent fallback: when no projected ``tree`` is present, surface the raw
     ``knowledge/tree/*.md`` notes directly (see ``_read_raw_tree``). This makes the
     wiki work for research agents that write raw markdown and never project, while
-    leaving a full Mind's redacted-bundle path unchanged — its ``tree`` is non-empty
+    leaving a full framework's redacted-bundle path unchanged — its ``tree`` is non-empty
     whenever a bundle exists, and it keeps no raw notes under this path.
     """
     out = _empty_bundle()
@@ -217,7 +219,7 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
             out[section] = val if isinstance(val, list) else []
         # `self` is the agent's projected identity — an OBJECT ({} or
         # {purpose, created, last_updated}), NOT a list, because emptiness is the
-        # signal: "no identity published" vs "published and blank" (guard-5493).
+        # signal: "no identity published" vs "published and blank".
         # THIS ASSIGNMENT MUST STAY BELOW THE LOOP. The loop coerces every
         # _KNOWLEDGE_SECTIONS member to a list, so running last is what makes this
         # authoritative — registering `self` up there is then harmless, but hoisting
@@ -242,7 +244,7 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     return out
 
 
-# ── OKF transfer-bundle export (PEARL §10.5 / g-335-45) ──────────────────────
+# ── OKF transfer-bundle export (PEARL §10.5) ─────────────────────────────────
 # `/knowledge/export` returns a PORTABLE, HUMAN-READABLE WIKI — "Markdown nodes
 # plus a manifest, not a database dump" (§10.5). The shape is the framework's
 # own OKF-aligned contract (core/config/conventions/transfer-bundle-export-shape.md):
@@ -272,7 +274,7 @@ OKF_BUNDLE_VERSION = 1
 # Fields this producer renders into the BODY rather than the frontmatter; every
 # other field on a record falls through to frontmatter under invariant 4.
 _OKF_BODY_FIELDS = {
-    # "node", not "concept": the Mind's own OKF writer (knowledge-export.py
+    # "node", not "concept": the framework's own OKF writer (knowledge-export.py
     # writeokf_bundle) already ships `type: node` for tree records, and both
     # producers emit into `nodes/`. The convention deliberately does not
     # enumerate type values (invariant 5 — consumers tolerate unknown ones), so
@@ -283,7 +285,7 @@ _OKF_BODY_FIELDS = {
     "hypothesis": ("statement",),
     "guardrail": ("rule",),
     # "lesson" leads the tuple because it is the ONLY prose key a projected
-    # lesson actually carries: the Mind's KnowledgeProjection builds each record
+    # lesson actually carries: the framework's KnowledgeProjection builds each record
     # as exactly {title, lesson} (knowledge_projection.py, bundle.lessons), and
     # .knowledge-bundle.json is the only thing this path ever reads. Omitting it
     # cost both halves at once — the prose fell through to FRONTMATTER as an

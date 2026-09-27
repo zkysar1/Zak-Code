@@ -2,8 +2,9 @@
 (ADR-0094).
 
 Arms ONE wake-up on the session: at the next idle prompt on or after the delay, the harness
-hands the session the prompt as a ``(harness)`` line — the deadman net a Mind's autonomous
-loop arms before every re-entry, and the re-poll a parked worker Body arms. A new call
+hands the session the prompt as a ``(harness)`` line — the deadman net a served workspace's
+autonomous loop arms before every re-entry, and the re-poll a parked worker session arms.
+A new call
 replaces the held wake-up; ``stop`` cancels it. Nothing fires mid-turn. The mechanics live in
 :mod:`zakcode.wakeup`; this is the model-facing door.
 """

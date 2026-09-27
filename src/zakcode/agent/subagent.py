@@ -254,7 +254,8 @@ class SubAgentRunner:
             # Claude Code runs a sub-agent with ONLY its own (frontmatter) hooks -- it does NOT
             # inherit the parent's project hooks. So give the child its OWN empty hook set
             # (hook_manager=None -> a fresh empty HookManager), NOT the parent's. The parent's
-            # per-tool gates (e.g. a Mind's eight PreToolUse[Write] hooks) and its SessionStart boot
+            # per-tool gates (e.g. a framework's eight PreToolUse[Write] hooks) and its SessionStart
+            # boot
             # then do NOT fire per sub-agent -- avoiding wasted work + delegation contention on
             # shared resources (daemon/locks). The loop's built-in write-grounding + verify gates
             # (below) and the child permission policy still apply, so the child stays safe.

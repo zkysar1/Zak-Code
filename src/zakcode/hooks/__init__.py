@@ -94,7 +94,7 @@ class HookEvent(StrEnum):
     # Fired ONCE at the user-message boundary (before the turn's model calls), carrying the
     # raw ``prompt`` text. Its hooks return text to fold into the turn (injection only;
     # exit-2 prompt-blocking is a documented follow-up). Mirrors Claude Code's UserPromptSubmit;
-    # the seam a Mind's user-prompt retrieval/inject hook plugs into.
+    # the seam a host framework's user-prompt retrieval/inject hook plugs into.
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
 
@@ -238,8 +238,8 @@ class LifecyclePayload(BaseModel):
 class TurnEndPayload(BaseModel):
     """Payload for TURN_END hooks.
 
-    Field names match Claude Code's Stop-hook stdin protocol so Mind's
-    stop-hook.sh works unmodified: it reads ``session_id`` and
+    Field names match Claude Code's Stop-hook stdin protocol so a host
+    framework's turn-end hook works unmodified: it reads ``session_id`` and
     ``last_assistant_message`` via ``json.load(sys.stdin).get()``.
     """
 
@@ -621,7 +621,8 @@ class HookManager:
         # lists the same hook under separate ``Edit`` and ``MultiEdit`` matcher blocks, and
         # zakcode's one edit tool answers to both spellings (``_CLAUDE_CODE_TOOL_NAMES``), so
         # both specs match one Edit -- and every hook in those blocks ran twice per edit.
-        # Measured 2026-09-24 on three Mind worker Bodies: two 15 s timeouts of ONE hook per
+        # Measured 2026-09-24 on three served worker sessions: two 15 s timeouts of ONE hook
+        # per
         # Edit (32.4 s edits) and two pushes of each edited file. The matcher keeps its alias
         # reach (a settings file written for Claude Code must keep firing); the dispatch
         # dedupes on the argv it would run, first registration winning.
@@ -852,7 +853,7 @@ class HookManager:
         if one.message:
             # A PreToolUse BLOCK leads the joined message. The model reads the FIRST
             # clause as THE reason, and an earlier allowing hook's advisory in front of
-            # the veto reads as the veto itself — measured 2026-08-30 (zc-03): "Blocked by
+            # the veto reads as the veto itself — measured 2026-08-30: "Blocked by
             # hook for 'bash': [stray-root-advisory] A literal 'world/' directory exists
             # …; direct store parse refused: inline Python parsing `journal.jsonl`", four
             # times in three hours, each read as "blocked by the stray directory".
@@ -1242,8 +1243,8 @@ class HookManager:
 def _valid_cwd(cwd: str) -> str | None:
     """The directory a hook should run in: the workspace root when it exists, else inherit.
 
-    Hooks run AT the workspace root so a Claude-Code hook's relative command (e.g.
-    claude-mind's ``bash core/scripts/...``) resolves. Guarded with ``isdir`` so a payload
+    Hooks run AT the workspace root so a hook's relative command (e.g.
+    ``bash scripts/...``) resolves. Guarded with ``isdir`` so a payload
     carrying a bogus/relative cwd never breaks hook spawn — it just inherits the parent cwd.
     """
     return cwd if cwd and os.path.isdir(cwd) else None
@@ -1254,7 +1255,7 @@ def _msgs(message: str) -> list[str]:
 
 
 #: How much of ONE SessionStart hook's output reaches the model (ADR-0211). Generous on purpose:
-#: measured 2026-09-21, the Mind framework's post-compaction banner is about 2,500 characters,
+#: measured 2026-09-21, a host framework's post-compaction banner is about 2,500 characters,
 #: and its own header says it does not truncate. The bound exists for the hook that misbehaves,
 #: not for the one that works: a quarter of the shell tool's own output ceiling.
 _MAX_SESSION_START_CHARS = 16 * 1024

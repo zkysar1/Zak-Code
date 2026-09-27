@@ -38,7 +38,7 @@ class SkillFit:
         return self.tokens / self.window if self.window else 0.0
 
     def describe(self) -> str:
-        """``/aspirations-precheck 49.7k tokens (152%) — cannot load on this model``."""
+        """``/example-skill 49.7k tokens (152%) — cannot load on this model``."""
         size = f"{self.tokens / 1000:.1f}k" if self.tokens >= 1000 else str(self.tokens)
         unit = "tokens, largest section" if self.paged else "tokens"
         line = f"/{self.name} {size} {unit} ({self.share:.0%} of the window)"

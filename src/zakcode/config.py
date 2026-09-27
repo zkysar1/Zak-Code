@@ -309,12 +309,12 @@ class Settings(BaseSettings):
     # inference server, both qualify. A named cloud prefix (``groq/``, ``anthropic/``) never
     # does — by the allowlist in ``providers/endpoints``, ``api_base`` cannot redirect those.
     #
-    # Enforced in TWO places on purpose (rb-605: anticipation gates warn, application gates
+    # Enforced in TWO places on purpose (anticipation gates warn, application gates
     # guarantee): ``Agent._assert_local_only`` checks the whole config at startup so a
     # misconfiguration fails early with every offender named, and
     # ``LiteLLMProvider._build_kwargs`` refuses at the call itself so no unenumerated route
     # (runtime failover, auto-resolution, a zakpick category, a sub-agent) can slip past.
-    # Default False, so nothing that works today starts refusing (guard-1562).
+    # Default False, so nothing that works today starts refusing.
     local_only: bool = Field(
         default=False,
         description=(
@@ -430,7 +430,8 @@ class Settings(BaseSettings):
         description="Per-call wall-clock ceiling (seconds) for one model call.",
     )
     # A STREAMING call needs its own bound, and it cannot be this one. Measured on the
-    # zc-03 pod 2026-09-10: the response HEADERS arrive in 0.12-2.0s at every prompt size
+    # self-hosted pod 2026-09-10: the response HEADERS arrive in 0.12-2.0s at every prompt
+    # size
     # while the first DATA chunk waits out the whole prefill (0.29s at 5k prompt tokens,
     # 25.5s at 22k, 126.1s at 60k — ~2.1ms/token, so ~275s at that pod's 131k context
     # limit). A socket read timeout is therefore satisfied by the headers and never fires,
@@ -441,7 +442,7 @@ class Settings(BaseSettings):
     # (the pod runs 3600), and a per-gap bound that large would not have caught the 45
     # minutes it exists to catch. The prefill gap is the exception (ADR-0248): one fixed
     # bound cannot serve a 5k-token prompt and a full-context one on a backend that
-    # prefills at 70-90 tok/s (zakpod1 2026-09-23: a cold full-context prefill is 20-25
+    # prefills at 70-90 tok/s (GPU pod 2026-09-23: a cold full-context prefill is 20-25
     # minutes, and every such call was cut off here at 600s with zero chunks). The FIRST
     # chunk's wait starts at this floor, grows with the prompt at the slowest prefill the
     # provider has measured on that backend, and `request_timeout` is its ceiling — the
@@ -463,8 +464,8 @@ class Settings(BaseSettings):
     # on the clock when the mind is asked to consolidate. That is the difference between a
     # receipt and a cut-off — a cap-hit ends in a real digest instead of a severed stream.
     #
-    # There is deliberately NO auto-extend knob (the no-knobs ruling above, and outcome 3
-    # of g-369-08): a bounded run is a PRICE the customer agreed to up front. A disabled
+    # There is deliberately NO auto-extend knob (the no-knobs ruling above): a bounded
+    # run is a PRICE the customer agreed to up front. A disabled
     # knob is still a knob, and the failure it invites is silent.
     run_max_duration: float | None = Field(
         default=None,

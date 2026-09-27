@@ -114,7 +114,7 @@ class SecretsProvider:
         callers here are asking "does the member happen to have saved this?", which is
         a legitimate no.
 
-        Added for BYOK (g-369-11): provider-key overlay needs the VALUE of a specific
+        Added for BYOK: provider-key overlay needs the VALUE of a specific
         well-known name, and every other reader of this file wants placeholders. Routing
         it through the same validated loader keeps the size cap, the name grammar and
         the malformed-file behaviour identical for both — a second reader with its own

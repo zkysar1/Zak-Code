@@ -12,8 +12,7 @@ does NOT strip fields off a raw event (a blacklist that fails open the moment th
 new field or event type). It CONSTRUCTS a fresh :data:`SafeEvent` from an explicit allow-list
 of fields, and returns ``None`` for any event type it does not recognize. A future zak-code SDK
 upgrade that adds a field or an event type therefore cannot leak anything without a code change
-here — the new shape simply projects to ``None`` or to its allow-listed subset. (Bravo audit
-g-335-41 F2.)
+here — the new shape simply projects to ``None`` or to its allow-listed subset.
 
 Companion: :mod:`zakcode.secrets` ``redact_secrets`` (regex-shaped tokens, now incl. ``gsk_``/
 ``vin_``) is the base; :func:`redact_secrets_extended` layers env-value matching, workspace-path

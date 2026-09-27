@@ -1,12 +1,12 @@
 """A scheduled wake-up: ONE held line the harness hands the session at an idle prompt
 (ADR-0094).
 
-Claude Code's ``ScheduleWakeup`` is the primitive a Mind's autonomous loop is built on: the
-reducer arms a "deadman" wake-up before every loop re-entry (it fires only if the re-entry
-chain breaks), and a worker Body that parks — its reducer gone — arms an hourly re-poll.
-Zak Code had no such tool: the calls came back ``unknown tool``, the reducer ran with no net,
-and a parked Body sat at its prompt forever. Measured 2026-08-29 (zc-03): a reducer restart
-re-minted the runner token, every worker's liveness poll parked, and all four Bodies were
+Claude Code's ``ScheduleWakeup`` is the primitive a framework's autonomous loop is built on:
+a coordinating session arms a "deadman" wake-up before every loop re-entry (it fires only if
+the re-entry chain breaks), and a worker session that parks arms an hourly re-poll. Zak Code
+had no such tool: the calls came back ``unknown tool``, the coordinator ran with no net,
+and a parked worker sat at its prompt forever. Measured 2026-08-29: a coordinator restart
+re-minted the runner token, every worker's liveness poll parked, and all four sessions were
 dead until an operator cycled them — the re-poll they had armed never existed.
 
 The contract, matching Claude Code's: a single replace-slot per session (a new call replaces
@@ -20,7 +20,7 @@ the session a line that opens "re-arm a wake-up FIRST, then re-enter the loop" �
 because a net that fires while it is being replaced is a net with a hole. But the model obeys
 that instruction BEFORE it can discover whether there is anything to re-enter, so a loop that
 cannot run re-arms its own resurrection and the pair repeats until someone notices. Measured
-2026-09-22 on a served Mind: six turns, each ~3-5M tokens, each ending with the identical
+2026-09-22 on a served workspace: six turns, each ~3-5M tokens, each ending with the identical
 verdict that the agent was IDLE and the loop would not start. Nothing in the product could see
 it, because every repeat detector it has — the doom guard and the stuck ladder both — is scoped
 to ONE TURN, and these repeats are one turn apart.
@@ -37,9 +37,9 @@ AND ONE EXCEPTION TO THAT RULE, WHICH IS NOT A LOOPHOLE BUT ITS OWN CASE (ADR-02
 turn the PROVIDER failed — every model call refused, no answer at all — proves nothing about
 the loop, because the model never got to act; and a provider outage produces identical endings
 by construction, two of them in a row on the second cycle. Measured 2026-09-25 on three worker
-Bodies during a 12-hour pod outage: each cycle was a fired sentinel, a compaction whose
+sessions during a 12-hour pod outage: each cycle was a fired sentinel, a compaction whose
 summarizer call failed, four 900-second retry budgets, a ``veto_stall`` and a fresh 600-second
-net; on the second identical cycle the repeat guard cancelled that net, and all three Bodies sat
+net; on the second identical cycle the repeat guard cancelled that net, and all three sessions sat
 at their prompts for four and a half hours after the pod came back, until an operator typed
 ``/start``. A cancel converts a temporary outage into a permanent park. So a provider-failed
 sentinel turn HOLDS its net instead: the sentinel is re-armed at a delay that doubles per
@@ -66,7 +66,7 @@ MAX_DELAY_SECONDS = 3600
 DEFAULT_DELAY_SECONDS = 600
 
 #: Claude Code resolves this sentinel back to its autonomous-loop instructions at fire time;
-#: a Mind's deadman net arms exactly this. Zak Code resolves it to the skill a turn-end hook
+#: a framework's deadman net arms exactly this. Zak Code resolves it to the skill a turn-end hook
 #: last asked the loop to re-enter with (``Session.loop_skill``, ADR-0187), composed by the
 #: harness with :data:`LOOP_WAKE_NOTE` in the frame; when no such skill is known yet it hands
 #: over :data:`LOOP_LINE` instead.

@@ -7,7 +7,7 @@ path and rejects anything that escapes the workspace root.
 Multi-root support (M-3): :func:`resolve_in_workspace_roots` accepts a list of
 allowed roots. A path is accepted if it resolves under ANY of them; the first
 matching root wins for relative-path interpretation. This enables cross-repo skill
-execution (e.g. a claude-mind skill reading files from the mind repo, an external
+execution (e.g. a host-framework skill reading files from the framework repo, an external
 world directory, and an external meta directory — all separate filesystem roots).
 """
 
@@ -280,9 +280,10 @@ def check_python_syntax(path: str, content: str) -> str | None:
 
 
 # ── the skill-claim gate (ADR-0126) ──────────────────────────────────────────────────
-# A SKILL.md is an artifact a FUTURE session executes. Measured 2026-09-10 (coach rig,
-# qwen3.6-35b): asked to write "the exact API calls where you know them", the model wrote
-# eleven endpoints on a host that does not exist — every one of them — into five skills a
+# A SKILL.md is an artifact a FUTURE session executes. Measured 2026-09-10 (a served
+# workspace, qwen3.6-35b): asked to write "the exact API calls where you know them", the
+# model wrote eleven endpoints on a host that does not exist — every one of them — into
+# five skills a
 # later session then followed. Nothing at authoring time checks a skill's claims; the format
 # is verified, the facts are not. This gate checks the one claim that is cheap and decisive:
 # a host the skill tells a future self to call must resolve. Refuse-only, before any bytes

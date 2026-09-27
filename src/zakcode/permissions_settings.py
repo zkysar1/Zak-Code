@@ -258,7 +258,7 @@ def _translate_gestures(
 
     for index, raw in enumerate(gestures):
         # A non-string or blank entry has no gesture text to key on, so it is recorded under
-        # its position — the docstring's promise holds for it too (g-357-16: ``deny: [123]``
+        # its position — the docstring's promise holds for it too (``deny: [123]``
         # used to load with ``errors == {}``).
         if not isinstance(raw, str):
             errors[f"{source}:{decision}[{index}]"] = (
@@ -318,7 +318,7 @@ def _translate_gestures(
         # decision == "deny" with a concrete pattern. The VERB is retained (fresh-eyes finding,
         # ADR-0030): a ``deny Read(glob)`` binds read-only tools too, but a ``deny
         # Edit|Write|MultiEdit(glob)`` is a WRITE deny — CC leaves those paths readable, and
-        # collapsing the verbs read-blocked paths a Mind framework requires agents to read
+        # collapsing the verbs read-blocked paths a host framework requires agents to read
         # (measured: 36 of 44 real-world deny gestures were Edit/Write-only).
         if tool in _COMMAND_TOOLS:
             out.denied_command_regexes.append(_glob_to_command_regex(pattern))
@@ -337,7 +337,7 @@ def _translate_gestures(
             )
 
 
-#: How a skipped gesture is bucketed for the one-line summary (g-357-17). Matched against
+#: How a skipped gesture is bucketed for the one-line summary. Matched against
 #: the recorded reason, first hit wins; anything unmatched counts as ``other``.
 _SKIP_KINDS: tuple[tuple[str, str], ...] = (
     ("per-pattern allow", "per-pattern allow"),
@@ -355,7 +355,7 @@ _SKIP_KINDS: tuple[tuple[str, str], ...] = (
 def summarize_skipped(errors: dict[str, str]) -> str:
     """One line for the log: how many gestures were not applied, bucketed by kind.
 
-    A Mind workspace declares many Claude Code gestures Zak Code has no tighten-only mapping
+    A host workspace declares many Claude Code gestures Zak Code has no tighten-only mapping
     for (per-pattern allows, tools that do not exist here), and every Agent construction used
     to emit one WARNING per gesture — measured 2026-08-26: 19 identical lines on every session
     start, burying the warnings that matter. Correct behaviour, noisy signal: the caller logs

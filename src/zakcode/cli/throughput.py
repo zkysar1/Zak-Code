@@ -17,7 +17,7 @@ known distortion: a document persisted BEFORE event-time stamps (ADR-0049) loads
 message with a load-time stamp, so a resumed old transcript can pair a backfilled stamp
 with a real one and read as a turn that never took that long — zero gaps are dropped, a
 gap over the idle cap is dropped, and anything between is a lead to check against the
-transcript, not a measurement (the Mind's guard-3265: histogram a stamp before pairing
+transcript, not a measurement (histogram a stamp before pairing
 on it). Documents written since ADR-0049 carry real event times.
 
 The router line (``slots``, ``in flight``, ``capacity available``) comes from the
@@ -60,7 +60,8 @@ __all__ = [
 ]
 
 #: A gap longer than this between a message and the assistant reply that follows it is a
-#: session waiting (for a wake-up, an operator, a parked reducer) — not a turn the model
+#: session waiting (for a wake-up, an operator, a parked coordinating session) — not a
+#: turn the model
 #: took that long over. Half an hour: the longest measured genuine turn was ~4 min.
 IDLE_GAP_SECONDS = 1800.0
 

@@ -289,7 +289,7 @@ class SessionInfo(BaseModel):
     created_at: str = ""
     message_count: int = 0
     usage: Usage = Field(default_factory=Usage)
-    #: Per-model split of ``usage``, for consumers that meter by model (g-373-45).
+    #: Per-model split of ``usage``, for consumers that meter by model.
     #:
     #: ``usage`` is a SUM ACROSS MODELS, so its own ``model`` field is empty by
     #: construction -- see ``Usage.model``, "Empty ... for aggregate totals (a sum
@@ -306,7 +306,7 @@ class SessionInfo(BaseModel):
     #: as ``usage`` minus the sum of these values.
     usage_by_model: dict[str, Usage] = Field(default_factory=dict)
     #: How many LLM calls ``usage`` sums: one per recorded entry, side calls included
-    #: (g-373-152). A meter that sizes a reserve PER CALL divides a window's draw by the
+    #: A meter that sizes a reserve PER CALL divides a window's draw by the
     #: change in this count. ``message_count`` cannot stand in for it: tool results and
     #: user turns add messages, side calls add none, and compaction can shrink it. This
     #: count only grows, because recorded usage entries are never removed.

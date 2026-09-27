@@ -47,7 +47,7 @@ class AgentThinkingDelta(BaseModel):
 
     Emitted throughout a reasoning model's thinking phase, which can run for
     minutes. Without it a streaming client shows nothing at all for that whole
-    window (g-326-567).
+    window.
     """
 
     event: Literal["thinking"] = "thinking"
