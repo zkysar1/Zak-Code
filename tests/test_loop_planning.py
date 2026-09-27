@@ -42,9 +42,11 @@ class _Scripted(Provider):
         self._results = results
         self.calls = 0
         self.seen: list[list] = []
+        self.keys: list[str | None] = []  # each call's affinity key, in call order
 
     async def acomplete(self, messages, *, system=None, tools=None, **kw) -> LLMResult:
         self.seen.append(list(messages))
+        self.keys.append(kw.get("prompt_cache_key"))
         i = min(self.calls, len(self._results) - 1)
         self.calls += 1
         return self._results[i]
@@ -635,6 +637,25 @@ async def test_the_judges_records_are_tagged_so_each_reply_pairs_with_its_own() 
     await loop.arun_turn("small thing")
     assert [u.side_call for u in session.usages] == ["", "plan_critique", "", "critic"]
     assert [u.prompt_tokens for _, u in _paired(session)] == [100, 200]
+
+
+@pytest.mark.asyncio
+async def test_the_judges_ride_the_sessions_affinity_key() -> None:
+    # ADR-0256: sent keyless, a judge call was keyed by the pod on its fixed system prompt, so
+    # every session's judge calls shared one engine and queued ahead of the conversation that
+    # engine served. Each side call carries its own session's key, like the conversation's calls.
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done", "note": "x"}]),
+            _judge(_JUDGE_STRONG),
+            _done(),
+            _review_ok(),
+        ]
+    )
+    loop, session = _loop(provider)
+    await loop.arun_turn("small thing")
+    assert [u.side_call for u in session.usages] == ["", "plan_critique", "", "critic"]
+    assert provider.keys == [f"zakcode/{session.id}"] * 4
 
 
 @pytest.mark.asyncio

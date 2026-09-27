@@ -33,11 +33,13 @@ async def score_plan(
     plan: str,
     rubric: dict[str, str] | None = None,
     weights: dict[str, float] | None = None,
+    prompt_cache_key: str | None = None,
 ) -> tuple[ScoreCard, Usage]:
     """Score one candidate ``plan`` for ``goal`` on a decomposition ``rubric`` (default
     :data:`PLAN_RUBRIC`) via :func:`~zakcode.quality.score.score_rubric`. The absolute "how good is
     this decomposition?" — as useful for an anti-over-planning gate (a one-liner that already scores
-    high needs no plan) as for quality. Returns ``(scorecard, usage)``.
+    high needs no plan) as for quality. Returns ``(scorecard, usage)``. ``prompt_cache_key`` is
+    passed through to the scorer's call (ADR-0256).
     """
     # The judge sees a plan BEFORE any of it has run. Without this framing it docked a correct
     # three-step plan to 0% coverage for "failing to execute the first step as requested" —
@@ -49,7 +51,11 @@ async def score_plan(
         f"</framing>\n\n<goal>\n{goal}\n</goal>\n\n<plan>\n{plan}\n</plan>"
     )
     return await score_rubric(
-        provider, artifact=artifact, dimensions=rubric or PLAN_RUBRIC, weights=weights
+        provider,
+        artifact=artifact,
+        dimensions=rubric or PLAN_RUBRIC,
+        weights=weights,
+        prompt_cache_key=prompt_cache_key,
     )
 
 
