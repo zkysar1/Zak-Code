@@ -15559,6 +15559,23 @@ critique, the answer and the plan review, all carry the session's key. In
 `tests/test_quality_gate.py` the gate's scoring call carries it. Each test was run with the key
 dropped, once at the scorer and once at the critic, and went red.
 
+**Amended 2026-09-27 (deep think carries a key).** Decision 3 left deep think keyless until a
+fleet ran it, and one does. Measured over one day on a self-hosted pod's proxy ledger: the
+worker loops' deliberations, sent keyless, all took the key of deep think's fixed system prompt.
+That was eleven calls, nine of them on one engine, the engine a third loop's conversation was
+using. That conversation had eight calls in the day whose first byte took 124 to 436 s against
+its median of 29 s. Each came after one of those deliberations had run on its engine since its
+own previous call, and none came after anything else. That is about 0.6 h of added wait, beside
+about an hour of other loops' deliberation run on its engine. So `deep_think` now carries a key.
+On the conversation's own model, which is every call when zakpick is off, it is the session's
+key, as for the critic: the session waits on its deliberation, so its own engine is the idle
+one. On another model it is the session's key joined to that model's id, the key per session and
+model that decision 3 asked for, so it never re-pins the conversation's own key. The context
+classifier and judge and the difficulty classifier keep sending none: no fleet runs them. The
+proof: `tests/test_deep_think.py` pins both keys, and a second session's distinct key. Both
+tests went red with the key dropped, and the other-model test went red with the model left out
+of its key.
+
 ## ADR-0258: a deep_think sample cut off at the output limit is reported, not fused as an answer
 
 Status: accepted. 2026-09-27.

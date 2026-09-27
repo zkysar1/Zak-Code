@@ -300,6 +300,60 @@ def test_agent_sampler_raises_cut_off_after_recording_usage(
     assert agent.session.usage_by_model()["test/model"].cost_usd == pytest.approx(0.005)
 
 
+class _KeyedResponder(_Responder):
+    """Records the affinity key (``prompt_cache_key``) each deliberation call carries."""
+
+    def __init__(self, model: str = "test/model") -> None:
+        super().__init__()
+        self.model = model
+        self.keys: list[object] = []
+
+    async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
+        if system in (_CANDIDATE_SYSTEM, _SYNTH_SYSTEM):
+            self.keys.append(kw.get("prompt_cache_key"))
+        return await super().acomplete(
+            messages, system=system, tools=tools, response_format=response_format, **kw
+        )
+
+    def model_id(self) -> str:
+        return self.model
+
+
+def test_a_deliberation_on_the_conversations_model_rides_the_sessions_key(tmp_path: Path) -> None:
+    # ADR-0257, amended: sent keyless, every session's deliberations shared one proxy key, so one
+    # pinned engine, some other conversation's. On the conversation's own model a deliberation
+    # carries the key the conversation's calls carry, so it lands on the session's own engine.
+    import asyncio
+
+    provider = _KeyedResponder()
+    agent = zakcode.Agent(workspace_root=tmp_path, provider=provider)
+    asyncio.run(agent._deep_think_sample("ponder this", system=_CANDIDATE_SYSTEM))
+    asyncio.run(agent._deep_think_sample("fuse these", system=_SYNTH_SYSTEM))
+    assert provider.keys == [f"zakcode/{agent.session.id}"] * 2
+
+    # Control: a second session's deliberation carries ITS key, so no key is shared fleet-wide.
+    other = _KeyedResponder()
+    other_agent = zakcode.Agent(workspace_root=tmp_path, provider=other)
+    asyncio.run(other_agent._deep_think_sample("ponder this", system=_CANDIDATE_SYSTEM))
+    assert other.keys == [f"zakcode/{other_agent.session.id}"]
+    assert other.keys != provider.keys[:1]
+
+
+def test_a_deliberation_on_another_model_gets_a_key_per_session_and_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On another model (zakpick's deep_code) the session's own key would re-pin the session to
+    # that model's engine and cost the conversation its cache (ADR-0257 decision 3). So the key
+    # names the model too: still one key per session, never one shared by every session.
+    import asyncio
+
+    agent = zakcode.Agent(workspace_root=tmp_path, provider=_KeyedResponder())
+    coder = _KeyedResponder(model="other/coder")
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda category: (coder, "other/coder"))
+    asyncio.run(agent._deep_think_sample("ponder this", system=_CANDIDATE_SYSTEM))
+    assert coder.keys == [f"zakcode/{agent.session.id}/other/coder"]
+
+
 def test_full_turn_invokes_deep_think(tmp_path: Path) -> None:
     import asyncio
 
