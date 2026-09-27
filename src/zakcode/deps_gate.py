@@ -140,8 +140,9 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 #: A shell redirection at the START of a token: optional fd digits then ``>``/``>>``/``<``
 #: (``2>``, ``>>``, ``<``, and the fused ``>out.log`` / ``2>/dev/null`` forms). These are
 #: plumbing, not packages — but they LOOK like packages to the spec parser, which splits on
-#: comparison operators and reads the fd digits as a name. Field incident 2026-08-28 (coach,
-#: zc-03): ``pip install espn-api 2>&1 | tail -5`` flagged phantom undeclared package ``2``
+#: comparison operators and reads the fd digits as a name. Field incident 2026-08-28 on a
+#: self-hosted pod: ``pip install espn-api 2>&1 | tail -5`` flagged phantom undeclared
+#: package ``2``
 #: (the ``&`` segment-split leaves a ``2>`` token), wedging an approved install behind the
 #: dependency gate on every retry. A version constraint never matches: its token starts with
 #: the package name (``requests>=2`` / ``2to3>=1``), so the operator is not at the start.

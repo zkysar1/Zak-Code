@@ -93,10 +93,10 @@ def _suggest(
         if not root.is_dir():
             continue
         # Each root is judged by its OWN ignore rules (ADR-0229). A declared extra root is
-        # wanted by definition, and a Mind's world sits under a directory the checkout's
-        # .gitignore excludes (`.mind-data/`). Judged by the primary root's rules, every file
+        # wanted by definition, and a served workspace's data sits under a directory the checkout's
+        # .gitignore excludes (`.project-data/`). Judged by the primary root's rules, every file
         # in it was ignored, so `world/program.md` was answered with six look-alikes and
-        # never with `.mind-data/world/program.md` itself.
+        # never with `.project-data/world/program.md` itself.
         ignore = load_ignore(root)
         ignore_root = root.resolve()
         for current, dirnames, filenames in os.walk(root, followlinks=False):
@@ -129,7 +129,7 @@ def _suggest(
                 if score:
                     rel = _display(leaf, workspace_root)
                     if rel.lower() == want or rel.lower().endswith("/" + want):
-                        # `world/program.md` for `.mind-data/world/program.md`: the file the
+                        # `world/program.md` for `.project-data/world/program.md`: the file the
                         # model meant, above a shorter look-alike (ADR-0229).
                         score = 4
                     scored.append((-score, len(rel), rel, leaf))

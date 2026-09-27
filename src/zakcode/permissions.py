@@ -74,7 +74,7 @@ class PermissionMode(StrEnum):
       interactively approve a catastrophic command; ``autonomous`` never can.
     * ``bypassPermissions`` — the dangerously-skip posture (the Claude Code
       ``--dangerously-skip-permissions`` analog, field-driven 2026-08-28: an
-      unattended Mind runner stalled forever on an interactive y/a/n prompt).
+      unattended framework runner stalled forever on an interactive y/a/n prompt).
       NOTHING ever prompts, and everything the other modes would ESCALATE is
       ALLOWED instead: undeclared package installs, protected-path writes, and
       confirm-on-use tools all pass. Only two refusals survive, both as
@@ -794,7 +794,7 @@ class PermissionPolicy:
         The list form of :meth:`undeclared_install_reason`, for callers that must COMPARE two
         commands — the loop's post-rewrite re-check blocks only the targets a hook rewrite
         INTRODUCED relative to the authorized original, so a hook that rewrites every command
-        (a Mind deployment's env prepend) cannot nullify an operator-approved install.
+        (a framework deployment's env prepend) cannot nullify an operator-approved install.
         """
         return self._undeclared_install(arguments)
 

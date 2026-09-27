@@ -908,11 +908,12 @@ def _unattended_continuation(
     """The line that continues an unattended session at an idle prompt, or ``None``
     (ADR-0090).
 
-    A worker Body runs under a permission mode that never asks, so an idle prompt is a
-    dead Body: nobody types. Two ways it lands there with work still open — a build
+    A worker session runs under a permission mode that never asks, so an idle prompt is
+    a dead session: nobody types. Two ways it lands there with work still open — a build
     restart (ADR-0034 resumes the session at the prompt) and a turn that collapsed
     (``doom_loop`` …; the transcript is compacted first, as a resume would). Measured
-    2026-08-29 (coach-w3, zc-03): a doom-loop end, the restart into the next build, then
+    2026-08-29 on a self-hosted pod: a doom-loop end, the restart into the next build,
+    then
     46 minutes at the prompt with 20 of 23 steps open. An attended session, a plan with
     nothing open, and a turn that ended any other way are left alone.
     """
@@ -988,7 +989,8 @@ def _restart_now(done: Any, mux: Any) -> bool:
     served whatever already waited at a door first — a due wake-up, a background command's
     exit note — because those are polled every 0.3 s while the install probe fires every
     5 s. The model then ran one more turn on the build it was leaving, reached the same
-    boundary, and restarted again: measured 2026-09-26 on two Bodies, three extra turns of
+    boundary, and restarted again: measured 2026-09-26 on two worker sessions, three extra
+    turns of
     361–488 s each, one of them opened by a wake-up whose premise was hours stale.
 
     A typed-ahead line is the one door still served first: it lives only in this process's
@@ -1365,8 +1367,9 @@ class _InputMux:
                 # idle prompt that nothing typed or said has claimed first. It does NOT
                 # stand back behind the busy marker: the marker guards the say inbox — ONE
                 # slot the whole workspace shares — while a wake-up is held per session and
-                # no other process can take it. Eight Bodies on one checkout keep the marker
-                # fresh around the clock, and a parked Body that waited behind it never woke
+                # no other process can take it. Eight worker sessions on one checkout keep
+                # the marker fresh around the clock, and a parked session that waited behind
+                # it never woke
                 # (ADR-0094 amendment).
                 if idle and self._wakeup_probe is not None:
                     woke = self._wakeup_probe()

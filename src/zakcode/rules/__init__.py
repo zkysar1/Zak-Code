@@ -21,7 +21,7 @@ precedence (later overrides earlier by rule name):
 * bundled (``zakcode/rules/bundled``),
 * user (``~/.config/zakcode/rules``),
 * project (``<workspace>/.zakcode/rules`` then ``<workspace>/.claude/rules`` — the
-  latter for Claude-Code / Claude-Mind compatibility).
+  latter for Claude Code compatibility).
 
 A rule file may carry an optional ``---`` frontmatter block (``name`` / ``description``
 are recognized; anything else is ignored); without one, the file *stem* is the rule
@@ -200,7 +200,7 @@ class RuleRegistry:
 
         The lean alternative to :meth:`render`. Where :meth:`render` folds every rule's
         full body into the cached prefix on *every* turn — fine for a handful of rules, a
-        per-turn cost multiplier for a rules-heavy "mind" carrying dozens — this emits one
+        per-turn cost multiplier for a rules-heavy workspace carrying dozens — this emits one
         line per rule (``- name: summary [path]``) and tells the model to READ the full
         rule file on demand (via its file-read tool) when a rule looks relevant to the
         current step. This is exactly the on-demand model this module's docstring
@@ -210,7 +210,7 @@ class RuleRegistry:
         non-empty body line (with any leading Markdown heading marker stripped), capped at
         :data:`_INDEX_SUMMARY_CHARS`. The on-disk ``path`` lets the model fetch the body
         with its file-read tool (directly usable for workspace-local rules such as
-        ``.claude/rules/*.md`` — the dominant "mind" case). Bounded overall by
+        ``.claude/rules/*.md`` — the dominant case). Bounded overall by
         :data:`MAX_RULES_TOTAL_CHARS` for parity with :meth:`render` (the index is far
         smaller, but the cap is enforced for safety); rules beyond the budget are dropped
         with a recorded note. Returns ``""`` when there are no rules.
@@ -322,8 +322,8 @@ def discover_rule_dir(rules_dir: str | Path) -> tuple[list[Rule], dict[str, str]
 def default_rule_dirs(workspace_root: str | Path) -> list[Path]:
     """Candidate rule roots: bundled, user, then project (project wins on clash).
 
-    ``.claude/rules`` is included after ``.zakcode/rules`` for Claude-Code /
-    Claude-Mind compatibility.
+    ``.claude/rules`` is included after ``.zakcode/rules`` for Claude Code
+    compatibility.
     """
     bundled = Path(__file__).parent / "bundled"
     ws = Path(workspace_root)

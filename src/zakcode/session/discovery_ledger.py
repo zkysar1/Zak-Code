@@ -1,6 +1,6 @@
 """The discovery ledger — what this mind has unlocked by exploring, kept because the vessel forgets.
 
-The vessel's ``discoveryPerception`` slice (env-server ``SpatialPerceptionVerticle``, g-368-15)
+The vessel's ``discoveryPerception`` slice (env-server ``SpatialPerceptionVerticle``)
 is a **projection, not a store**: the perception tick CLEARS the folder and rebuilds it every
 round from the entities currently inside the character's 27-stud bubble. That is the right
 design for the vessel — nothing accumulates, a departing entity prunes itself, and the slice

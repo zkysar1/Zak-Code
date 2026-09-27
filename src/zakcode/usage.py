@@ -64,9 +64,9 @@ class Usage(BaseModel):
     #: Empty for older persisted records and for aggregate totals.
     side_call: str = ""
     #: The envelope id of the last perception delivered before this call, or empty when none
-    #: had been. It joins spend to the perception the mind was reacting to, and through the
-    #: mind's reaction line to the aspiration that reaction filed or fed (the One Body
-    #: flywheel's linked ids). Empty for older persisted records and for mixed totals.
+    #: had been. It joins spend to the perception the framework was reacting to, and through
+    #: the framework's reaction line to the goal that reaction filed or fed (the linked
+    #: ids). Empty for older persisted records and for mixed totals.
     envelope: str = ""
 
     def __add__(self, other: Usage) -> Usage:
@@ -77,7 +77,7 @@ class Usage(BaseModel):
         rule. ``cost_unpriced`` is sticky under addition: a total containing one unpriceable call
         is itself an underestimate, so
         the flag must survive into the aggregate or the session total silently launders it back
-        into a clean-looking number (the rb-7829 shape — a missingness flag that sibling fields
+        into a clean-looking number (a missingness flag that sibling fields
         and aggregates do not consult).
         """
         return Usage(

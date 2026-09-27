@@ -34,8 +34,9 @@ if TYPE_CHECKING:
 #: Built-ins a session rarely needs. The main agent keeps them out of the model's tool list
 #: until it loads one with ``tool_search`` (ADR-0228). On 2026-09-23 their schemas were 5,063
 #: of the built-ins' 26,970 JSON characters, sent on every model call, and none of them had
-#: been called in coach's CLI log (17 MB) or in the alpha workers' logs: they appeared only on
-#: two lines listing tool names. Only the creators are here. The document and image readers
+#: been called in a served workspace's CLI log (17 MB) or in the worker session logs:
+#: they appeared only on two lines listing tool names. Only the creators are here. The
+#: document and image readers
 #: stay exposed: a file can arrive unannounced, and the server's upload prompt names its
 #: reader (``_reader_tool_for_artifact``), while a new document is asked for in the user's own
 #: words. This factory still registers them active, so a sub-agent's registry, which has no
@@ -88,7 +89,8 @@ def default_registry(settings: Settings | None = None) -> ToolRegistry:
     # TodoWrite / TodoRead: Claude Code's names for the plan pair; the tools accept its shape.
     registry.register(UpdatePlanTool(), aliases=["plan", "todo", "TodoWrite"])
     # No bare "recall" alias: that name is reserved by the persistence boundary (the harness
-    # ships no cross-session memory tool; a Mind attaches its own recall through the seams —
+    # ships no cross-session memory tool; a host framework attaches its own recall
+    # through the seams —
     # docs/PERSISTENCE-BOUNDARY.md). plan_recall reads THIS plan's record only.
     registry.register(PlanRecallTool(), aliases=["plan_history", "TodoRead"])
     registry.register(AwaitUserTool(), aliases=["ask_user", "wait_for_user"])

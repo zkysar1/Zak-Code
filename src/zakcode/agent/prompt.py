@@ -433,8 +433,9 @@ class SystemPromptBuilder:
     def _environment_section(settings: Settings, *, session_id: str | None = None) -> str:
         # Curated, non-secret facts only — never the raw Settings object.
         # The session id is the one fact about THIS conversation the model cannot discover
-        # with a tool: a framework that runs several sessions of one agent (a reducer, a
-        # worker, an observer) keys its per-session state by it, and a model asked "which
+        # with a tool: a framework that runs several sessions of one agent (a coordinating
+        # session, a worker, an observer) keys its per-session state by it, and a model
+        # asked "which
         # session are you?" answered from memory until it was written here (ADR-0072).
         # The shell line steers the model to the right tool: on Windows the `bash` tool runs
         # commands through cmd.exe, so bash-style single-quote quoting and ';' chaining fail —
@@ -688,7 +689,7 @@ def _fit_sections(
     real 25K guide keeps its test-authoring rules in a 7K sub-section with no sub-headings; the
     whole-or-nothing fold dropped it first, and a rule stated only there scored 3/12 on the 35B
     (the no-guide control 1/12) at a flat six turns — no fetch. A table-bearing section is left
-    whole or out (rb-10979: an index whose rows name rules is not a rule), and so is a section
+    whole or out (an index whose rows name rules is not a rule), and so is a section
     smaller than the share that merely ran out of budget.
     """
     total_len = len(content)

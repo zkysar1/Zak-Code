@@ -101,7 +101,7 @@ def api_base_is_trusted(api_base: str | None, local_api_bases: Sequence[str] | N
     """Whether ``api_base`` is one the operator has declared genuinely local.
 
     An EMPTY (or unset) allowlist trusts any base — that is the historical behavior and
-    it stays the default, so no working configuration starts refusing (guard-1562).
+    it stays the default, so no working configuration starts refusing.
 
     Setting the allowlist closes a real hole. ``local_only`` classifies by MODEL PREFIX,
     so any ``openai/*`` model with an ``api_base`` counted as local — including a base

@@ -64,7 +64,7 @@ def skill_directory_line(skill_md: str | None, workspace_root: Path) -> str:
     )
 
 
-#: Bodies at or above this size get the DECOMPOSE hint instead of the plain follow hint
+#: Skill bodies at or above this size get the DECOMPOSE hint instead of the plain follow hint
 #: (ADR-0027). A small model cannot hold a wall of instructions as working state — field
 #: incident: a 2,776-line skill body was followed for two steps and then narrated instead
 #: of executed. Decomposing into the plan converts instructions into checked-off steps

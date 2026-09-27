@@ -125,7 +125,7 @@ class Capabilities(BaseModel):
     #: comment because a comment cannot be asserted: qwen3-32b was decommissioned
     #: 2026-07-19, the note was written in the registry, its successor's
     #: capabilities were registered — and DEFAULT_CATEGORY_MODELS kept routing two
-    #: categories to the dead model for ten days because nothing checked. (g-016-83)
+    #: categories to the dead model for ten days because nothing checked.
     decommissioned: bool = False
     supports_vision: bool = False
     supports_caching: bool = False
@@ -133,7 +133,7 @@ class Capabilities(BaseModel):
     #: never a stand-in number (ADR-0066). The loop refuses to run on an unknown window, and
     #: the litellm provider refuses to be built on one, because every window-keyed limit
     #: (the seam clamp, the compaction threshold, overflow recovery) inherits it: the old
-    #: 8,192 default silently cut every skill body on a 131k pod to 6 KB (coach, 2026-08-28).
+    #: 8,192 default silently cut every skill body on a 131k pod to 6 KB (2026-08-28).
     context_window: int | None = None
     max_output: int | None = None
     #: Maximum number of ``stop`` sequences the backend accepts in one request (e.g. the
@@ -250,11 +250,13 @@ class TimedOut(RateLimited):
     uncached local backend a long-context call can genuinely need more than the
     configured timeout, and every retry pays the full prefill again — so the
     remedy is the timeout knob (or a smaller call), and a "rate limited" label
-    sends the operator to the wrong one (zc-03 coach boot wedges, 2026-08-25).
+    sends the operator to the wrong one (boot wedges on a self-hosted pod,
+    2026-08-25).
 
     ``bound`` names WHICH knob, and the loop's retry notice prints it. Naming the
     whole-call ceiling for every expiry sent operators to the wrong knob again:
-    zakpod1 2026-09-23, eleven Body calls aborted with zero chunks received, seven
+    On a self-hosted pod 2026-09-23, eleven calls aborted with zero chunks
+    received, seven
     of them at the 600s stall default, and every notice read
     ``request timed out (ZAKCODE_REQUEST_TIMEOUT)``.
 
@@ -282,8 +284,8 @@ class ProviderUnavailable(RateLimited):
     Subclasses :class:`RateLimited` ONLY to ride its retry, under the same wall-clock
     backoff horizon as a 429: an inference pod whose router or engine restarts is back
     within a minute or two, and waiting is the remedy. The notice must say what happened,
-    as :class:`TimedOut`'s does. Measured 2026-09-23: zakpod1's router restarted at 06:27Z
-    and all three bodies on it reported "rate limited; retrying" for an outage no quota or
+    as :class:`TimedOut`'s does. Measured 2026-09-23: a pod's router restarted at 06:27Z
+    and all three sessions on it reported "rate limited; retrying" for an outage no quota or
     throttle caused.
     """
 
@@ -316,7 +318,7 @@ class QuotaExhausted(ProviderError):
     zero tokens, because the remedy is a billing action outside the fleet's
     control and no retry can reach it.
 
-    Measured 2026-09-14 on a live dev vessel (g-373-80): the first call refused
+    Measured 2026-09-14 on a live dev vessel: the first call refused
     at 12:04:25, the loop logged "rate limited; retrying" throughout, and the
     provider's real message surfaced only at 12:19:26 when the budget ran out —
     the turn ended ``stop_reason="provider_error"``, iterations=1, tokens=0,
@@ -334,7 +336,7 @@ class QuotaExhausted(ProviderError):
 
 #: Substrings that identify a PERMANENT quota/credit refusal. Lower-cased compare.
 #:
-#: MEASURED (g-373-80, 2026-09-15): litellm maps HTTP 429 to ``RateLimitError`` on
+#: MEASURED (2026-09-15): litellm maps HTTP 429 to ``RateLimitError`` on
 #: the STATUS CODE ALONE — eight 429 branches in ``exception_mapping_utils.py``,
 #: not one of which reads the response body's ``code`` — and ``insufficient_quota``
 #: appears ZERO times across its 1,812 files. The permanent-vs-transient
@@ -373,7 +375,7 @@ def quota_exhaustion_marker(text: str | BaseException) -> str | None:
 #: (case-insensitive; group 1 is the field). The list is a JUDGEMENT CALL like the quota
 #: markers above — the phrasings known at the time of writing — and the one place to
 #: extend when a vendor's wording is observed to differ. The Vertex form is the measured
-#: one (2026-09-17, a served Mind on ``vertex_ai_beta``), and it arrives with the JSON
+#: one (2026-09-17, a served workspace on ``vertex_ai_beta``), and it arrives with the JSON
 #: body's quotes backslash-escaped inside a bytes repr, which the ``\\*`` runs absorb.
 #:
 #: A pattern alone NEVER decides anything: :func:`rejected_request_field` returns a name

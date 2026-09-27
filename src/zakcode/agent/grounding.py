@@ -10,7 +10,7 @@ The syntax check runs on the WHOLE file; the echo is capped. A file longer than 
 echoed as a window around the line the edit tool reports it changed (ADR-0252), with the
 span it shows and the spans it leaves out named in line numbers. Before that decision the
 echo was the file's head, cut at the cap, and the syntax check compiled that cut text: on the
-pod's worker Bodies 71% of edits to long files got a frame without the edited lines, and
+pod's worker sessions 71% of edits to long files got a frame without the edited lines, and
 every ``[syntax: FAIL]`` seen in a week sat on a cut file (0 of 181 whole files failed).
 
 Pure and vendor-agnostic: :func:`build_write_grounding` correlates the iteration's tool

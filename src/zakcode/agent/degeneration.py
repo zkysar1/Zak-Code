@@ -155,7 +155,7 @@ def repeated_tail(text: str) -> str | None:
 _BURST_MIN_RUN_CHARS = 150
 _BURST_MIN_REPEATS = 12
 #: Public alias for the rail text: the veto names the exact ceiling a legitimately
-#: repetitive write must stay under per call (g-357-14).
+#: repetitive write must stay under per call.
 BURST_MIN_REPEATS = _BURST_MIN_REPEATS
 _BURST_MAX_UNIT_CHARS = 64
 _BURST_SCAN_CAP = 65_536

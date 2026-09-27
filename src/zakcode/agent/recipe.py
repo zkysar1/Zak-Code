@@ -122,7 +122,7 @@ _CLI_FLAG_RE = re.compile(r"^--?[A-Za-z]")
 # lines, not one exact stdout string: 'prints the top words as "word count" lines'. The tell
 # is around the quote, not inside it — a template lead-in right before it ("as", "like", "in
 # the form", ...) or a plural/format noun right after it ("lines", "pairs", "rows", "format",
-# ...). Either rejects the candidate. Measured 2026-09-05 on coach's local model: the
+# ...). Either rejects the candidate. Measured 2026-09-05 on a served workspace's model: the
 # wordstats request extracted `word count`, which no run could ever print, so the gate re-ran
 # the file to the attempt cap and stalled a fully green turn (ADR-0114).
 _TEMPLATE_LEAD_RE = re.compile(
@@ -930,7 +930,7 @@ class RecipeCursor:
         """The turn's green-suite credit rests ENTIRELY on runs that narrowed themselves.
 
         ADR-0141. ``_suite_verified`` means "a green test-runner run verified the whole turn",
-        and a run scoped to one file cannot: measured 2026-09-11 on the 35B coach, a model
+        and a run scoped to one file cannot: measured 2026-09-11 on a 35B model, a session
         added three helpers to ``providers/text_tools.py``, ran
         ``pytest tests/test_text_tools.py -v | tail -30``, saw "67 passed", said "All done --
         67/67 tests pass", and left the FULL suite at 2 failed where the clean tree was green.

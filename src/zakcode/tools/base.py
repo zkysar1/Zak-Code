@@ -624,7 +624,7 @@ class ToolRegistry:
         """
         tool = self.get(name)
         if tool is None:
-            # Skill-heavy deployments (Claude-Mind, etc.) list dozens of skills in the
+            # Skill-heavy deployments (a host framework, etc.) list dozens of skills in the
             # system prompt. Open-weights models frequently emit a skill NAME as a bare
             # tool call instead of routing through `use_skill`. When the unknown name
             # matches a discovered skill, return the correct invocation path instead of a

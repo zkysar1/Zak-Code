@@ -256,7 +256,7 @@ def _is_gemini_sampling_deprecated_model(model: str) -> bool:
     3.x models, with an error promised for a later generation — so sending one buys nothing
     today and breaks a call later. litellm warns once per request-mapping when a caller sends
     any of the three to such a model ("DeprecationWarning: ... planned for removal in a future
-    release"), which is how this surfaced: a Mind served on ``gemini-3.5-flash`` drew that line
+    release"), which is how this surfaced: a workspace served on ``gemini-3.5-flash`` drew that
     on every structured-output call, because the schema path REQUESTS ``temperature=0`` for
     determinism (``providers/structured.py``, whose docstring already calls that a request and
     not a guarantee).
@@ -336,7 +336,7 @@ def _model_uses_generic_endpoint(model: str) -> bool:
 #: Where an OpenAI-compatible ``GET /models`` entry may declare its context window, first
 #: present wins: vLLM (``max_model_len``), gateways (``context_window`` / ``context_length``
 #: / ``max_context_length``), llama.cpp (``meta.n_ctx_train`` / ``meta.n_ctx``), the zds
-#: inference server (``zds.ctx_per_engine``). Measured 2026-08-28 (coach, zc-03): the route
+#: inference server (``zds.ctx_per_engine``). Measured 2026-08-28 on a self-hosted pod: the
 #: model was an alias neither the static table nor litellm knew, capabilities fell to the
 #: 8,192 default against a 131,072 server, and every window-keyed limit (the seam clamp, the
 #: compaction threshold) was wrong by 16× — while the server declared the real figure here.
@@ -405,7 +405,7 @@ def discover_context_window(models_json: Any, model: str) -> int | None:
 def _zds_slots_per_engine(zds: dict[str, Any]) -> int:
     """How many request slots share one zds engine's context — ``ctx_per_engine`` is the
     engine TOTAL (llama.cpp ``-c`` across ``-np``), so a fan-out divides the per-request
-    window (rb-8892: a router advertising 131,072 over 3 slots serves ~43,690 per lane)."""
+    window (a router advertising 131,072 over 3 slots serves ~43,690 per lane)."""
     slots, replicas = zds.get("slots_total"), zds.get("replicas")
     if isinstance(slots, int) and isinstance(replicas, int) and replicas > 0 and slots > replicas:
         return max(1, slots // replicas)
@@ -632,7 +632,7 @@ class LiteLLMProvider(Provider):
         #: A bounded sample of the most recent stream's raw deltas (the first and last few,
         #: compacted) with its chunk count and finish reason. The loop reads it when a
         #: completion delivered nothing, so the trace can say what the backend actually sent
-        #: — measured 2026-08-28 (coach, zc-03): 622 tokens generated, no text, no
+        #: — measured 2026-08-28 on a self-hosted pod: 622 tokens generated, no text, no
         #: reasoning, no tool call, and nothing recorded to tell which channel they took.
         self.last_stream_sample: dict[str, Any] | None = None
         #: Served-model names already announced by :meth:`_record_served` (ADR-0214). The
@@ -968,7 +968,7 @@ class LiteLLMProvider(Provider):
             # budget ceiling would under-report to $0 on the streaming path. Recompute from
             # litellm's own price map by model + tokens. This is now the ONLY cost fallback:
             # the hand-maintained Groq rate table it used to sit behind was removed with that
-            # provider (g-369-295), and it had become a mispricing hazard — it matched by STEM,
+            # provider, and it had become a mispricing hazard — it matched by STEM,
             # so it priced `openai/gpt-oss-*` at Groq rates.
             priced = cls._litellm_token_cost(model, prompt, completion, cache_read, cache_creation)
             # None = the model has no price anywhere. Keep cost at 0.0 (never guess a rate) and
@@ -1128,7 +1128,7 @@ class LiteLLMProvider(Provider):
         both the buffered and the streaming call. Reading only ``response`` meant
         every 429 from the fleet's own pod — which asks for a 2 s retry — fell to
         the capped exponential backoff and polled every 30-60 s, which is how the
-        Mind reducer lost a 900 s race for a slot to seven workers (the pod's
+        coordinating session lost a 900 s race for a slot to seven workers (the pod's
         journal showed exactly that cadence).
         """
         candidate = getattr(exc, "retry_after", None)
@@ -1318,7 +1318,7 @@ class LiteLLMProvider(Provider):
             # context size (M tokens)") is NOT in litellm's context-window
             # sniff list (probed litellm 2026-08-28: recognized False), so it
             # arrives as a generic BadRequestError and the loop's
-            # compact-and-retry recovery never fires. Measured on zakpod1 the
+            # compact-and-retry recovery never fires. Measured on a self-hosted pod the
             # same day: 8 such 400s, each a failed turn instead of a compact.
             return ContextWindowExceeded(message)
         if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
@@ -1356,7 +1356,7 @@ class LiteLLMProvider(Provider):
             #
             # ``BadGatewayError`` is listed by NAME because it does not subclass
             # ServiceUnavailableError (litellm 1.86: BadGatewayError -> APIStatusError), so the
-            # MRO match never saw it. Measured 2026-08-28 on a Mind runner (coach, zc-03): the
+            # MRO match never saw it. Measured 2026-08-28 on a served workspace: the
             # inference pod's engine restarted, litellm raised ``BadGatewayError: 502
             # upstream_unavailable``, and the turn ended as ``provider_error`` — the one stop a
             # Stop hook cannot veto — while the pod was healthy again within the minute. The
@@ -1387,7 +1387,7 @@ class LiteLLMProvider(Provider):
         # failover, auto-resolution, a zakpick category, a sub-agent, a skill. The
         # startup check in ZakCode._assert_local_only is the ANTICIPATION gate: it is
         # louder and earlier, but it can only inspect the config it knows to look at.
-        # Paired deliberately (rb-605): anticipation gates warn early, application gates
+        # Paired deliberately: anticipation gates warn early, application gates
         # are the guarantee. Overspending is irreversible, so the guarantee lives here.
         if self.local_only:
             ok, reason = classify_destination(self.model, self.api_base, self.local_api_bases)
@@ -1427,7 +1427,7 @@ class LiteLLMProvider(Provider):
         # forwards extra_body into the JSON body on the OpenAI-compatible path and keeps it
         # through drop_params, so an unknown-to-litellm key still reaches the server. NOT
         # every server ignores a key it does not understand — Vertex AI refuses the whole
-        # payload (400 INVALID_ARGUMENT, measured 2026-09-17 on a served Mind) — so two
+        # payload (400 INVALID_ARGUMENT, measured 2026-09-17 on a served workspace) — so two
         # things happen here (ADR-0181). The thinking switch, which has ONE internal
         # spelling, is RENDERED for the destination: kept verbatim for a self-hosted
         # OpenAI-compatible server (the measured case), litellm's first-class
@@ -1750,7 +1750,7 @@ class LiteLLMProvider(Provider):
             # variant the loop re-emits as AgentThinkingDelta and never folds into
             # ``text_parts``. Dropping these was what made a reasoning model look
             # frozen: the pod streams reasoning_content incrementally (78 deltas,
-            # median gap 0.127s, measured g-326-564) and every one used to vanish, so
+            # median gap 0.127s) and every one used to vanish, so
             # a streaming client saw zero bytes for the whole thinking phase.
             # Emitted after ``content`` only because a single delta carries one or the
             # other in practice, never both; the buffered path still captures the same
@@ -1868,9 +1868,9 @@ class LiteLLMProvider(Provider):
     ) -> AsyncIterator[Any]:
         """Yield the stream's chunks, bounding the WAIT for each one (ADR-0120, #176).
 
-        litellm's scalar ``timeout`` does not bound a streaming READ. Measured on the
-        zc-03 pod 2026-09-10: response HEADERS arrive in 0.12-2.0s at every prompt size,
-        while the first DATA chunk waits out the whole prefill (0.29s at a 5k-token
+        litellm's scalar ``timeout`` does not bound a streaming READ. Measured on a
+        self-hosted pod 2026-09-10: response HEADERS arrive in 0.12-2.0s at every prompt
+        size, while the first DATA chunk waits out the whole prefill (0.29s at a 5k-token
         prompt, 25.5s at 22k, 126.1s at 60k). A socket-level read timeout is satisfied by
         the headers and never fires again, so a backend that sent headers and then nothing
         held one call for 45 minutes with the request fully sent and zero bytes back.
@@ -1885,7 +1885,7 @@ class LiteLLMProvider(Provider):
 
         The FIRST gap is sized to the prompt (ADR-0248). One fixed bound cannot serve a
         5k-token prompt and a 112k-token one on a backend that prefills at 70-90 tok/s:
-        measured on zakpod1 2026-09-23/24, a full-context cold prefill takes 20-25
+        measured on a GPU pod 2026-09-23/24, a full-context cold prefill takes 20-25
         minutes, and under the 600s default every such call was cut off with zero chunks
         and retried against its half-built cache. So the first wait is
         :meth:`_first_chunk_bound` — the stall floor, grown with the prompt at the slowest
@@ -2095,7 +2095,7 @@ class LiteLLMProvider(Provider):
         # Best-effort gate: if litellm is confident the model lacks function calling,
         # reflect that. Confidence needs a MAPPED model: ``supports_function_calling``
         # answers False for a model the registry has never heard of, and that "unknown"
-        # used to read as "no" — measured 2026-08-28 (coach, zc-03): every self-hosted pod
+        # used to read as "no" — measured 2026-08-28: every self-hosted pod
         # model (``openai/zds-…``, unmapped) was demoted to the text tool protocol, ~7k
         # tokens of injected protocol per request plus stop sentinels, while the same
         # endpoint answered native tool calls. An unmapped model keeps the default (native;

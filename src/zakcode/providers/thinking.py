@@ -6,7 +6,7 @@ Zak Code carries ONE internal spelling for a reasoning model's thinking switch,
 to work on the self-hosted pod (2026-08-17: completion_tokens 36 → 4, answer unchanged),
 and it was carried on the assumption that "a server that does not understand the key
 ignores it". That assumption is FALSE for the strict-schema clouds: Vertex AI validates
-the whole JSON payload and refuses it (measured 2026-09-17 on a served Mind,
+the whole JSON payload and refuses it (measured 2026-09-17 on a served workspace,
 ``vertex_ai_beta``: ``400 INVALID_ARGUMENT — Invalid JSON payload received. Unknown name
 "chat_template_kwargs": Cannot find field.``), and OpenAI / Anthropic reject unknown body
 fields the same way. The reasoning-overflow retry (ADR-0056) therefore turned a

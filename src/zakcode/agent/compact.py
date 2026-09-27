@@ -130,7 +130,7 @@ def trim_tail(
     """Elide the oldest long tool outputs in ``recent`` until it fits ``budget`` tokens.
 
     The kept tail is chosen by COUNT, and a count says nothing about size: measured
-    2026-09-10 (coach, zc-03, 131k window), two clamped grep results in an eight-message
+    2026-09-10 (a self-hosted pod, 131k window), two clamped grep results in an eight-message
     tail survived a compaction at ~45k tokens, the prompt came back down only to 75k, and
     six calls later the session compacted again — three summarizer calls on ~100k
     prompts in one turn. This bounds the tail's SUM the way the seam clamp bounds one

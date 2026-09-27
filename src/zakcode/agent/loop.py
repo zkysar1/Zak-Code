@@ -311,7 +311,7 @@ _REJECTION_RETRY_TEMP_STEP = 0.3
 #: it is the same logical call, retried on a smaller transcript. Per CALL, not per turn
 #: (ADR-0074): a
 #: runner's whole session is one turn, and two recoveries that each bought thirty more
-#: iterations are not a loop — measured 2026-08-28 (coach, 131k window): the third
+#: iterations are not a loop — measured 2026-08-28 (served workspace, 131k window): the third
 #: overflow of a 142-minute turn found the per-turn count spent and ended the session.
 _MAX_CONTEXT_RECOVERY = 2
 
@@ -342,8 +342,8 @@ _FOLD_PROMPT = "Fold these part-summaries of one conversation into a single cohe
 _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by role):\n\n"
 #: What closes every transcript the summarizer reads, whole or a part (ADR-0242): the
 #: instruction, where the model starts writing. Measured 2026-09-23 on a local pod (a 27B
-#: model, three Bodies, 34 compactions): 9 responses were not summaries but a status line, the
-#: transcript's next turn, a first-person plan or a tool call, and each of those Bodies resumed
+#: model, three worker sessions, 34 compactions): 9 responses were not summaries but a status
+#: line, the transcript's next turn, a first-person plan or a tool call, and each resumed
 #: on the harness note and its kept tail alone. The instruction sat only in the system prompt,
 #: above some 40,000 tokens of agent turns.
 _SUMMARY_CLOSE = (
@@ -595,7 +595,7 @@ def _answer_room(caps: Capabilities) -> int:
 #: (ADR-0075). Each restore tells the model how to close a section it means to skip; a
 #: plan rewritten without them a third time is the model's decision and stays as written
 #: — its pages are still handed over as the plan reaches them. Measured 2026-08-28
-#: (coach, /aspirations-precheck): a 46-step plan collapsed to 10 was silently restored
+#: (served workspace, a large skill): a 46-step plan collapsed to 10 was silently restored
 #: eight times in a row, the model narrating the same collapse each time, until the
 #: window overflowed.
 _MAX_SECTION_RESTORES = 2
@@ -613,7 +613,7 @@ _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 #: real answer up to ``_MAX_EMPTY_RETRIES`` times IN A ROW; any visible output (text or a
 #: tool call) resets the count, because the bound is for a model that STAYS silent, not
 #: one that stumbles three times across a long autonomous turn — measured 2026-08-28
-#: (coach, Qwen3.8-27B): a /start ceremony died on its THIRD empty completion of the turn,
+#: (served workspace, Qwen3.8-27B): a /start ceremony died on its THIRD empty completion,
 #: eight successful tool calls after the second, under a per-turn cumulative count. If it
 #: stays silent the turn ends ``gave_up`` (degraded, vetoable) instead of masquerading as
 #: completed. An empty completion AFTER the model already produced text this turn keeps
@@ -635,7 +635,7 @@ _EMPTY_COMPLETION_NUDGE = (
 #: A typed/served ``/<skill>`` turn (the command frame at the start of the user message)
 #: is a SEQUENCE the model is executing, so an empty completion mid-way is never a clean
 #: finish — even after it has said something. Measured 2026-08-27 (Vinheim, boot B of the
-#: g-369-02 verify): ``/start tricks --mode assistant`` ran four steps, emitted two lines
+#: verify): ``/start tricks --mode assistant`` ran four steps, emitted two lines
 #: of narration, then went silent; ``turn_saw_text`` read the silence as "nothing more to
 #: say" and the turn ended ``completed`` with the agent half-started (persona never set),
 #: and the product's ready gate then waited on a ceremony that would never resume. The
@@ -650,7 +650,7 @@ _SKILL_EMPTY_COMPLETION_NUDGE = (
 )
 #: Reasoning overflow (ADR-0056): an empty completion that was NOT silence. The model
 #: reasoned — a thinking channel arrived, or the output cap cut it off mid-thought — and
-#: delivered nothing visible. Measured 2026-08-28 on the coach pod (Qwen3.8-27B behind a
+#: delivered nothing visible. Measured 2026-08-28 on a self-hosted pod (Qwen3.8-27B behind a
 #: reasoning parser): the fatal completion carried 8,192 completion tokens, exactly the
 #: cap, with empty ``content`` and a ``reasoning_content`` still mid-sentence; an earlier
 #: one thought for 2,139 tokens and stopped without answering. "Your response was empty"
@@ -674,7 +674,7 @@ def _silent_detail(generated: int, finish_reason: str | None = None) -> str:
     """What an empty completion cost, for its note and status (ADR-0063): ``""`` when the
     model truly produced nothing, else how many tokens the backend generated and then
     delivered as neither text, thinking, nor a tool call — and how the backend said the
-    response ended, when it said. Measured 2026-08-28 (coach, zc-03): 254 generated,
+    response ended, when it said. Measured 2026-08-28 (served workspace): 254 generated,
     nothing visible, no thinking — a silence the operator could not tell from a zero-token
     one, and the two point at different failures."""
     if generated <= 0:
@@ -935,7 +935,7 @@ _DEFERRAL_NUDGE = (
 
 
 #: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
-#: script or directory ("I have updated world/forged-skills.yaml … I have registered the
+#: script or directory ("I have updated the skill registry … I have registered the
 #: skill") in a turn that ran no file-changing tool call is a fabricated done — the
 #: 2026-08-26 serene transcript ended on exactly that sentence with nothing written. Judged
 #: on the tail like the false-done guard; one nudge per turn; a model reporting work from an
@@ -1009,7 +1009,7 @@ _REFUSAL_BLOCKER_NUDGE = (
 #: Operator-only command rail (ADR-0127): the classify side-call named a skill the model may
 #: never run (``disable-model-invocation: true``, ADR-0109). Before the classifier could name
 #: one it matched the nearest skill the model MAY run and the loop seeded that — field
-#: 2026-09-10, "Start yourself as coach in assistant mode": ``/prime`` seeded, thirty
+#: 2026-09-10, "Start yourself as <agent> in assistant mode": ``/prime`` seeded, thirty
 #: iterations inside the wrong skill, then a report that it had started. Claude Code's model
 #: says "run /start yourself" in one turn; this rail says exactly that, and where to stop.
 _USER_ONLY_SKILL_NUDGE = (
@@ -1138,8 +1138,9 @@ _SILENCED_NUDGE = (
 #: Suite-scope gate (ADR-0141): the verify-before-finish obligation was discharged, but every
 #: test run this turn NARROWED itself -- one file, a ``-k`` filter, a single node id. The gate's
 #: own contract is that a green suite run "verified the whole turn", and a scoped run cannot.
-#: Measured 2026-09-11 on the 35B coach, in BOTH arms of a two-arm probe: it added three helpers
-#: to ``providers/text_tools.py``, ran ``pytest tests/test_text_tools.py -v | tail -30``, saw
+#: Measured 2026-09-11 on a 35B local model, in BOTH arms of a two-arm probe: it added
+#: three helpers to ``providers/text_tools.py``, ran
+#: ``pytest tests/test_text_tools.py -v | tail -30``, saw
 #: "67 passed", closed with "All done -- 67/67 tests pass" -- and the FULL suite was 2 failed
 #: where the same tree one commit earlier was 3656 passed / 0 failed. The regression was real,
 #: caused by its own change, and structurally invisible to the run it chose.
@@ -1157,7 +1158,7 @@ _SCOPE_NUDGE = (
 
 #: Attribution gate (ADR-0138): a completion that blames a failing test on the tree as it was
 #: BEFORE this turn's edits — "that failure is pre-existing", "unrelated to my change" — is a
-#: verdict about code the model never ran. Measured 2026-09-11 on a 35B coach: it added a
+#: verdict about code the model never ran. Measured 2026-09-11 on a 35B local model: it added a
 #: function to providers/text_tools.py, ran the suite, saw one red in a test covering that very
 #: module, and closed with "pre-existing and unrelated to this change" having issued ZERO git
 #: commands in seventeen iterations. The claim happened to be true — and that is the danger: the
@@ -1265,8 +1266,9 @@ _CHALLENGE_RAIL = (
 #: BETWEEN turns (the REPL's idle wait, the serve driver) — but an autonomous deployment's
 #: whole session is ONE turn (one /start, then Stop-hook vetoes without end), so a message
 #: waiting on a turn boundary starves forever (measured 2026-08-27: an operator directive
-#: sat unconsumed in a live Mind's inbox for 3 days while the loop worked on). Delivering
-#: at the iteration boundary is what the reference harness does with input typed mid-turn.
+#: sat unconsumed in a served workspace's inbox for 3 days while the loop worked on).
+#: Delivering at the iteration boundary is what the reference harness does with input
+#: typed mid-turn.
 _MIDTURN_SAY_FRAME = (
     "[user message — arrived mid-task]\n{text}\n"
     "(Address the message as part of the current work; abandon or reorder the task only "
@@ -1304,9 +1306,10 @@ _SAY_HELD_STATUS = (
 #: arrives as a user-role message, and a field model once misattributed one to the human.
 #: A perception is the WORLD reporting itself, never a person speaking, and never the
 #: turn's message.
-#: Line 1 is the provenance tag and stays byte-identical: the Mind's perception-reaction rule
-#: and its checker key on it. Line 2 is the envelope id, which the mind cites in its reaction
-#: line so the delivery can be joined to what the mind did about it.
+#: Line 1 is the provenance tag and stays byte-identical: the host framework's
+#: perception-reaction rule and its checker key on it. Line 2 is the envelope id, which
+#: the framework cites in its reaction line so the delivery can be joined to what the
+#: framework did about it.
 _OBSERVATION_FRAME = (
     "[perception — from your vessel, not from a person]\nenvelope={envelope_id}\n{text}"
 )
@@ -1588,17 +1591,17 @@ def _composed_skill_body(text: str) -> str:
 
 
 #: A turn-end hook's continuation that names the skill the loop must re-enter with, in
-#: any spelling (ADR-0187, ADR-0190): ``Skill('aspirations') with args='loop'`` /
-#: ``Skill(worker-loop)`` / ``Skill(skill='aspirations', args='loop')``, and the pre-0190
-#: ``use_skill(name='aspirations', args='loop')``. The name may be bare or quoted; the args
-#: ride ``with args=`` or the keyword.
+#: any spelling (ADR-0187, ADR-0190): ``Skill('<loop-skill>') with args='loop'`` /
+#: ``Skill(<worker-skill>)`` / ``Skill(skill='<loop-skill>', args='loop')``, and the
+#: pre-0190 ``use_skill(name='<loop-skill>', args='loop')``. The name may be bare or
+#: quoted; the args ride ``with args=`` or the keyword.
 _SKILL_REENTRY_RE = re.compile(
     r"\b(?:Skill|use_skill)\(\s*(?:(?:name|skill)\s*=\s*)?['\"]?(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)['\"]?"
     r"\s*(?:,\s*args\s*=\s*['\"](?P<kw>[^'\"]*)['\"])?\s*\)"
     r"(?:\s+with\s+args\s*=\s*['\"](?P<with>[^'\"]*)['\"])?"
 )
 #: A mention right after one of these is a skill the hook says NOT to run ("ended without a
-#: Skill(aspirations) re-entry", "NOT Skill('aspirations'), which is the reducer-only …").
+#: Skill(<loop-skill>) re-entry", "NOT Skill('<loop-skill>'), which is the coordinator …").
 _SKILL_REENTRY_NEGATED_RE = re.compile(
     r"(?:\bnot|\bnever|\bno|\bwithout|instead\s+of)\s+(?:an?\s+)?$", re.IGNORECASE
 )
@@ -1608,7 +1611,7 @@ _SKILL_REENTRY_NEGATED_RE = re.compile(
 #: (ADR-0187). Three: one delivery is the fix for a model that could not map the tool name,
 #: a second covers a body that landed mid-thought, a third is the spiral — measured
 #: 2026-09-17 (serene, gemini-3.5-flash): productivity-check → ``echo`` → "Verdict: …" →
-#: BLOCK → the same, for hours, with the hook naming ``Skill('aspirations')`` every time.
+#: BLOCK → the same, for hours, with the hook naming ``Skill('<loop-skill>')`` every time.
 #: Vetoes whose reason names no skill are not counted and never trip it: a generic Stop
 #: hook keeps Claude Code's unbounded contract.
 _VETO_STALL_THRESHOLD = 3
@@ -1618,11 +1621,12 @@ def skill_reentry_in(reason: str) -> tuple[str, str] | None:
     """The ``(skill, args)`` a turn-end hook's continuation asks the loop to re-enter with, or
     ``None`` when it names no skill (ADR-0187).
 
-    Among the mentions that are not negated, the first that carries arguments wins, else the
-    first: a Mind's reducer reason reads "ended without a Skill(aspirations) re-entry …
-    Your FIRST action MUST be: Skill('aspirations') with args='loop'" and its worker reason
-    "MUST be: Skill('worker-loop') — NOT Skill('aspirations')"; both resolve to the skill
-    the hook means. Pure text; never raises.
+    Among the mentions that are not negated, the first that carries arguments wins, else
+    the first: a coordinating session's reason reads "ended without a
+    Skill(<loop-skill>) re-entry … Your FIRST action MUST be:
+    Skill('<loop-skill>') with args='loop'" and its worker reason "MUST be:
+    Skill('<worker-skill>') — NOT Skill('<loop-skill>')"; both resolve to the skill the
+    hook means. Pure text; never raises.
     """
     first: tuple[str, str] | None = None
     for match in _SKILL_REENTRY_RE.finditer(reason):
@@ -1641,7 +1645,7 @@ _COMMAND_MESSAGE_RE = re.compile(r"\A<command-message>(?P<message>[^\n]*)</comma
 
 #: What the harness says at the head of a skill a turn-end hook asked for (ADR-0196), ahead
 #: of the hook's own words. Those words were written for a harness that delivers nothing
-#: until the model calls the skill tool ("Your FIRST action MUST be: Skill('aspirations')
+#: until the model calls the skill tool ("Your FIRST action MUST be: Skill('<loop-skill>')
 #: … Do NOT run Bash commands first") — and here the harness has just made that call.
 #: Relayed bare, a literal model obeys them: measured 2026-09-18 (gpt-5.6-luna, served
 #: loop), it called the skill tool, was told the body was already loaded, summarised and
@@ -1837,7 +1841,7 @@ _CTX_SENTINEL_RE = re.compile(r"</?\s*injected_context", re.IGNORECASE)
 
 
 # One control-rail vocabulary for "what to do next", used everywhere the harness names the
-# model's next action (rb-204): tool-result success/error rails AND the loop-injected
+# model's next action: tool-result success/error rails AND the loop-injected
 # stuck/recipe guidance. Keeping a single marker word means the model learns one cue. (A
 # future flip to e.g. "Next:" is a one-constant change.) The bracket idiom —
 # ``[harness]``/``[hook]``/``[plan]`` — marks PROVENANCE (automated runtime output, not the
@@ -1933,7 +1937,7 @@ def _control_rail(text: str) -> str:
     """Render loop-injected guidance (a stuck nudge / recipe stall) with provenance + rail.
 
     Every harness-issued "next action" opens with the same control word the model already
-    learns from tool rails (rb-204: one consistent vocabulary) — PLUS the ``[harness]``
+    learns from tool rails (one consistent vocabulary) — PLUS the ``[harness]``
     provenance tag, because these arrive as user-role messages and a field model
     misattributed one to the human ("I have received your request to continue with the
     plan" — no user had spoken; ADR-0021). The system prompt defines the tag once, so
@@ -1960,8 +1964,9 @@ def _answered_then_called_a_tool(message: Message) -> bool:
     That pair is what forces the next request to exist: a tool ran, so its result must go back,
     so the model is asked again — with its answer already given and nothing to add. A model
     with nothing to add says the thing it just said, and the user reads the same answer twice
-    and pays for it twice. Measured 2026-09-22 on a served Mind, where the tool in question was
-    a bare ``echo`` made to satisfy a framework rule that every turn end be a tool call.
+    and pays for it twice. Measured 2026-09-22 on a served workspace, where the tool in
+    question was a bare ``echo`` made to satisfy a framework rule that every turn end be a
+    tool call.
 
     Deliberately a LENGTH and not a similarity test. The cheap, certain reading is "there was an
     answer here"; deciding whether the NEXT message repeats it would mean judging text the model
@@ -2054,15 +2059,17 @@ _DEGRADED_STOP_REASONS = {
 #: stayed armed on the same files. On a veto it now stands down for them
 #: (:meth:`RecipeCursor.stand_down`), so the turn the hook continues is not held by files
 #: whose attempts are already spent, and cannot stall on them a second time. A runnable
-#: written after the veto arms the gate again. Before this, a served Mind whose turn wrote a
-#: helper script it could not get to run lost the turn, and its stop hook was never asked.
+#: written after the veto arms the gate again. Before this, a served workspace whose turn
+#: wrote a helper script it could not get to run lost the turn, and its stop hook was
+#: never asked.
 #:
 #: ``provider_error`` was in that list until ADR-0181, as "infrastructure — a hard bound".
 #: It is not one: a provider failure is a fact about the MOMENT, and the framework whose
 #: Stop hook keeps a perpetual loop alive is exactly the party that should decide whether
-#: a turn the provider failed goes on. Measured 2026-09-17 on a served Mind: one 400 on the
-#: fifth iteration of a plan with seven steps open ended the turn, the Mind's stop hook —
-#: whose whole job is to re-enter — was never consulted, and the loop sat at its prompt
+#: a turn the provider failed goes on. Measured 2026-09-17 on a served workspace: one 400
+#: on the fifth iteration of a plan with seven steps open ended the turn, the workspace's
+#: stop hook — whose whole job is to re-enter — was never consulted, and the loop sat at
+#: its prompt
 #: until a human typed "continue". The veto is BOUNDED and PACED, unlike the others (see
 #: :data:`_MAX_PROVIDER_ERROR_VETOES`), because the retry it licenses is against a
 #: provider that just failed.
@@ -2100,8 +2107,9 @@ def _provider_error_veto_delay(veto: int) -> float:
 #: the session and survives the restart (``zakcode.wakeup``), and the arm runs before the
 #: restart like the plan update. It has to be here because a perpetual loop's healthy unit
 #: close IS the pair ``ScheduleWakeup`` then ``use_skill`` (the loop's deadman net), so
-#: without it a working Body crossed no boundary at all: measured 2026-09-24 on three Mind
-#: worker Bodies, 9 re-entries after two installs, 0 restarts — the deploys sat unused.
+#: without it a working session crossed no boundary at all: measured 2026-09-24 on three
+#: served-workspace worker sessions, 9 re-entries after two installs, 0 restarts — the
+#: deploys sat unused.
 _SKILL_BOUNDARY_COMPANIONS = frozenset({"update_plan"}) | _WAKEUP_TOOLS
 
 #: The independent completion critic (the bounded completion-review gate). When a code-changing
@@ -2350,8 +2358,8 @@ class AgentLoop:
         #: ends, the REPL's idle restart (ADR-0034) execs the new build, and the fresh
         #: process delivers this line as the session's next input — so a perpetual loop
         #: takes a deploy at its next turn boundary instead of never (a loop that vetoes
-        #: every stop has no idle prompt; measured 2026-08-29: the reducer ran a 6h-old
-        #: build through five deploys).
+        #: every stop has no idle prompt; measured 2026-08-29: the coordinating session ran
+        #: a 6h-old build through five deploys).
         self.restart_continuation: str | None = None
         #: Which boundary set ``restart_continuation`` aside: ``"stop-hook"`` (ADR-0099) or
         #: ``"skill"`` (ADR-0101, a lone ``use_skill`` re-entry). The fresh process words its
@@ -2627,9 +2635,10 @@ class AgentLoop:
         # Fired once, lazily, on the first turn of this loop's lifetime (a session). A delegated
         # sub-agent passes ``fire_session_start=False``: it is a sub-task WITHIN the parent's
         # already-started session, not a new session, so it must NOT re-run the workspace's
-        # SessionStart hooks (e.g. a Mind's boot orchestrator). Re-running them per sub-agent is
-        # wasted work and, under concurrent delegation, makes the boots contend on shared resources
-        # (daemon/locks) -- which can make "parallel" delegation slower than sequential. Skipping it
+        # SessionStart hooks (e.g. a framework's boot orchestrator). Re-running them per
+        # sub-agent is wasted work and, under concurrent delegation, makes the boots contend
+        # on shared resources (daemon/locks) -- which can make "parallel" delegation slower than
+        # sequential. Skipping it
         # also matches Claude Code, where a sub-agent (Task) does not re-fire SessionStart.
         self._session_started = not fire_session_start
         #: ADR-0211: what the startup/resume SessionStart hook said and the ``source`` it fired
@@ -2668,8 +2677,8 @@ class AgentLoop:
 
         The provider the loop holds is usually a wrapper (``TextToolCallingProvider`` around
         the model provider that actually streamed), so the sample is looked for down the
-        ``inner`` chain — measured 2026-08-28 (coach, build 92c9a06): every ``empty_completion``
-        note carried ``stream: null`` because only the wrapper was asked.
+        ``inner`` chain — measured 2026-08-28 (served workspace, build 92c9a06): every
+        ``empty_completion`` note carried ``stream: null`` because only the wrapper was asked.
         """
         provider: Any = self.provider
         seen: set[int] = set()
@@ -2710,7 +2719,7 @@ class AgentLoop:
         configured.
 
         One directory per session: turn numbers restart with every session, so a flat
-        ``turn_<n>.jsonl`` was overwritten by the next session's turn ``n`` — every coach
+        ``turn_<n>.jsonl`` was overwritten by the next session's turn ``n`` — every served
         restart erased the previous session's turn 1, the very turn a boot's paging and
         silence telemetry lands in (measured 2026-08-28). A child loop writes under its
         PARENT's session (``trace_session``), beside the turns that spawned it. ``<n>``
@@ -2873,8 +2882,9 @@ class AgentLoop:
         CHARACTERS at :data:`_SUMMARY_CHARS_PER_TOKEN` — the same budget the slices use —
         never by ``count_tokens``: a local model's counter is a guess, and the guess is
         what let the recovery's own summarize call overflow the window it was summarizing
-        FOR (coach, 2026-08-29, twice: "request (131297 tokens) exceeds 131072", no
-        compaction line, "stopping: provider error"). Under one slice budget it goes in
+        FOR (served workspace, 2026-08-29, twice: "request (131297 tokens) exceeds
+        131072", no compaction line, "stopping: provider error"). Under one slice budget it
+        goes in
         one call; above it, in at most :data:`_MAX_SUMMARY_SLICES` slices (the transcript's
         middle elided past the cap, with a note) whose part-summaries are folded under the same
         budget — packed groups, at most :data:`_MAX_FOLD_PASSES` passes, then a clamp — so
@@ -2891,8 +2901,9 @@ class AgentLoop:
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
-        # 2026-08-29 (a 27B reducer, 131k window): the "summary" was its own last reply
-        # plus a text-format tool call, and the session re-ran a skill it had finished.
+        # 2026-08-29 (a 27B coordinating session, 131k window): the "summary" was its
+        # own last reply plus a text-format tool call, and the session re-ran a skill it
+        # had finished.
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
@@ -3000,7 +3011,7 @@ class AgentLoop:
         budget; the summarizer returned only its text, so a compaction's calls reached
         neither ``/cost`` nor a ``--max-budget-usd`` cap, and no trace row said what they
         took. They are the biggest side calls a session makes: the older history, re-read in
-        full. Measured 2026-09-23 (a 27B worker Body on a 131k window): 355 s from the last
+        full. Measured 2026-09-23 (a 27B worker session on a 131k window): 355 s from the last
         row before a compaction to its boundary, none of it attributable.
         """
         with contextlib.suppress(Exception):  # accounting must never break a compaction
@@ -3111,9 +3122,9 @@ class AgentLoop:
         The compaction summarizer goes through ``_complete_with_retry``, which waits a
         pod's 429s out for up to the rate-limit horizon — correct, and INVISIBLE from a
         streaming turn: the coroutine returns a value, so nothing reaches the client
-        until it is done. Measured 2026-08-29 (coach reducer, a 430 KB resumed session):
-        17 minutes with no provider socket, no event and no log line, read from outside
-        as a dead process, before "summarizer failed" finally printed.
+        until it is done. Measured 2026-08-29 (coordinating session, a 430 KB resumed
+        session): 17 minutes with no provider socket, no event and no log line, read
+        from outside as a dead process, before "summarizer failed" finally printed.
 
         So the streaming path runs the compaction as a TASK and, while it is pending,
         installs :attr:`_status_sink` and relays whatever the retry loop says as
@@ -3149,8 +3160,9 @@ class AgentLoop:
         Best-effort: a turn never dies because compaction couldn't run (the turn proceeds
         with the full history) — but the failure is SAID, not swallowed (ADR-0083): the
         loop's logger has no handler, so the warning that used to go here reached nobody
-        while a session died of the very overflow this check exists to prevent (coach,
-        2026-08-29). Returns a short user-facing notice when a compaction happened or
+        while a session died of the very overflow this check exists to prevent (served
+        workspace, 2026-08-29). Returns a short user-facing notice when a compaction
+        happened or
         failed (``None`` when the threshold was not reached) so the streaming path can
         surface it — a silent transcript rewrite reads as memory loss to an operator
         watching the session.
@@ -3190,10 +3202,10 @@ class AgentLoop:
         The prompt anchor (ADR-0077) measured a prefix that no longer exists. The per-turn
         skill reload dedup (ADR-0063) is keyed to the same premise — "that body is still in
         your context THIS turn" — and after a compaction it is not (ADR-0080): a worker
-        Body whose whole night is one turn re-enters its loop skill after every unit, and
-        measured 2026-08-29 (coach, zc-03) the re-entry after a 119 → 7 compaction came
-        back as the "[already loaded] … continue from where you are" pointer with the
-        instructions gone; the Body improvised its close by hand. Forgetting the loads
+        session whose whole night is one turn re-enters its loop skill after every unit,
+        and measured 2026-08-29 (served workspace) the re-entry after a 119 → 7 compaction
+        came back as the "[already loaded] … continue from where you are" pointer with the
+        instructions gone; the session improvised its close by hand. Forgetting the loads
         here makes the next use_skill deliver the body again.
         """
         self._flush_transcript()
@@ -3231,8 +3243,9 @@ class AgentLoop:
 
         ``count_tokens`` is chars/4; id-dense tool output runs ~2.5 chars per token, so the
         estimate sat ~25k under the truth on a 131k window and the threshold check read
-        "fine" at 129k real (coach, 2026-08-28 — the compaction fired 2k under the window,
-        and the turn before it died at 131,297). The anchor is the reported prompt size of
+        "fine" at 129k real (served workspace, 2026-08-28 — the compaction fired 2k
+        under the window, and the turn before it died at 131,297). The anchor is the
+        reported prompt size of
         the last main call — system prompt and tools included — plus the estimate of only
         the messages appended since; the delta is small, so its error is small. Whichever
         is larger wins: the anchor can only pull the check EARLIER, never later.
@@ -3289,7 +3302,7 @@ class AgentLoop:
 
         The second rung of the overflow-recovery ladder: after a summarize-compaction the
         retry can still overflow when the kept tail itself is too big — measured
-        2026-08-29 (coach, zc-03): an 87 KB skill load was the last tool result, six
+        2026-08-29 (served workspace): an 87 KB skill load was the last tool result, six
         messages could not be summarized past, and every "continue" re-died at 137k
         tokens. Dropping the long tool outputs needs no model, so this rung cannot fail
         the way the first can; the model re-runs a tool whose output it still needs.
@@ -3396,7 +3409,7 @@ class AgentLoop:
         if summary is not None:
             # ADR-0241 amendment: the summary's size rides on the cost record. The summarizer's
             # completion tokens include a reasoning model's thinking (llama.cpp bills it there),
-            # and measured on three worker Bodies the summary text was 35-45% of them; without
+            # and measured on three worker sessions the summary text was 35-45% of them; without
             # its size on the row, nothing in the trace could say which part of a 15-minute
             # compaction was the summary and which the thinking. The estimate is the tail
             # budget's own counter (ADR-0132), so the two sizes are comparable.
@@ -4051,7 +4064,7 @@ class AgentLoop:
         """Turn a completion that IS a skill invocation typed as text into the ``use_skill``
         call the model meant (measured 2026-08-28: the served /start ended its last step
         with the text "/boot"; the loop saw no tool call, the plan gate pushed on, and the
-        model went straight to /aspirations — the whole boot skipped). One door for
+        model went straight to the main loop skill — the whole boot skipped). One door for
         skills, whichever way the model spells the request."""
         if tool_calls:
             return None
@@ -4411,7 +4424,7 @@ class AgentLoop:
         at or past the plan's FRONTIER (``_plan_frontier``: the section under way, else the
         last one closed): sections are worked in order, but an open section the plan has
         moved past was left behind on purpose — a merge, a skip — and does not hold the
-        later pages back (ADR-0089; measured 2026-08-29, coach-w /worker-loop: the earliest
+        later pages back (ADR-0089; measured 2026-08-29: the earliest
         open section was delivered again and again while the model closed later ones it
         had never held — every close reopened, the same rail re-sent, a doom loop). A page
         with no step left is finished once the model HELD it (it read the section and
@@ -4490,11 +4503,11 @@ class AgentLoop:
     def _page_matches(self, name: str, pages: SkillPages) -> list[list[Task]]:
         """Per page, the candidate steps that are its section — each step counted for ONE
         page: by its verbatim title first (the page's, or a packed section's), else by
-        marker token, the first page in order taking it. A token is not unique: /worker-loop's
-        page 7 packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 — REDUCER-LIVENESS POLL",
-        and a step matching both reopened page 7 — never held — while the plan stood at
-        page 4, so the closure page arrived at SELECT (measured 2026-08-29, coach-w2, then
-        every worker on the packed build; ADR-0092)."""
+        marker token, the first page in order taking it. A token is not unique: a worker
+        skill's page 7 packs "Phase 0.5 PARK …" beside page 3's
+        "Phase 0.5 — REDUCER-LIVENESS POLL", and a step matching both reopened page 7 —
+        never held — while the plan stood at page 4, so the closure page arrived at
+        SELECT (measured 2026-08-29; ADR-0092)."""
         candidates = self._candidate_steps(name)
         matched: list[list[Task]] = [[] for _ in pages.pages]
         taken: set[int] = set()
@@ -4507,8 +4520,8 @@ class AgentLoop:
                     taken.add(id(step))
         # A page with no marker — a branch-named heading — and a paraphrased step: the page
         # sharing the most telling words with the step takes it, the first on a tie.
-        # Measured 2026-08-29 on three of four fresh sessions (coach-w, coach-w2, the
-        # reducer): /start's five branch pages carry no marker and the rewrite kept none of
+        # Measured 2026-08-29 on three of four fresh sessions (two workers, the
+        # coordinator): /start's five branch pages carry no marker and the rewrite kept none of
         # the seeded titles ("IDLE (1/3)", "RUNNING + autonomous mode"), so every page stood
         # matched by nothing and all six were delivered, cancelled branches included, while
         # the plan settled none of them (ADR-0095).
@@ -4525,8 +4538,9 @@ class AgentLoop:
     def _reopen_unseen_done(self, name: str, pages: SkillPages) -> list[tuple[int, Task]]:
         """Put back to pending the section steps of ``/<name>`` the model marked done without
         ever holding their page — work it cannot have done (ADR-0086). Measured 2026-08-29
-        (coach worker, paged /start): nine sections closed in one rewrite, the RUNNING branch
-        among them, then "waiting for the next /start page" at an idle prompt for an hour —
+        (served workspace worker, paged /start): nine sections closed in one rewrite,
+        the RUNNING branch among them, then "waiting for the next /start page" at an idle
+        prompt for an hour —
         the page never came because its step was closed. A section CANCELLED unseen stays
         closed: that is a decision about its title, not a claim of work. Returns
         ``(page, step)`` per step reopened (``[]`` when none were)."""
@@ -4559,7 +4573,7 @@ class AgentLoop:
         """Put back the section steps of ``/<name>`` that a full-replace plan dropped while
         they were still open — the skill's sections ARE the plan (ADR-0062), and a model
         that rewrites the plan without them cannot receive their pages. Measured 2026-08-28
-        (coach, first paged /boot): an 18-step rewrite kept the five sections done so far
+        (served workspace, first paged /boot): an 18-step rewrite kept the five sections done
         and lost twenty open ones, then narrated "I need to add the remaining boot sections
         to the plan" without knowing their titles. Sections the plan moved past (before
         ``frontier`` — a later section under way or closed) are the model's call and stay
@@ -4712,7 +4726,7 @@ class AgentLoop:
 
     def unattended(self) -> bool:
         """No one is at the prompt: the session runs under a permission mode that never asks
-        (a worker Body's ``--dangerously-skip-permissions``, or autonomous)."""
+        (a worker session's ``--dangerously-skip-permissions``, or autonomous)."""
         policy = self.permission_policy
         return policy is not None and policy.mode in (
             PermissionMode.BYPASS,
@@ -5188,7 +5202,7 @@ class AgentLoop:
         summarizer used to call the provider
         directly, so the first 429 of a busy pod failed the compaction outright while the
         very same 429 on the main call would have been waited out. Measured 2026-08-29
-        (coach, five agents on four engines): "summarizer failed (RateLimited: …)".
+        (served workspace, five agents on four engines): "summarizer failed (RateLimited: …)".
         """
         attempt = 0
         interrupt_attempts = 0  # TimedOut / ModelOutputRejected retries (fixed bound)
@@ -5252,7 +5266,7 @@ class AgentLoop:
                 logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
                 # Said, not only logged (ADR-0100): this logger has no handler, so a
                 # 900 s summarizer wait was a session that looked dead — no socket, no
-                # event, no line — until the horizon expired (coach reducer, 2026-08-29).
+                # event, no line — until the horizon expired (coordinating session, 2026-08-29).
                 sink = self._status_sink
                 if sink is not None:
                     sink(f"{reason}; retrying in {delay:.1f}s ({budget})")
@@ -5322,7 +5336,7 @@ class AgentLoop:
             if isinstance(block.data, dict):
                 question = str(block.data.get("question") or "")
             if self.unattended():
-                # No one is at the prompt (ADR-0133): the session is autonomous, or a worker Body
+                # No one is at the prompt (ADR-0133): the session is autonomous, or a worker session
                 # under --dangerously-skip-permissions. Waiting for the operator then has no
                 # terminus -- the turn would end stop_reason="awaiting_user" and nothing would ever
                 # resume it, stranding the loop (measured: an autonomous /start that asked "shall I
@@ -5497,7 +5511,7 @@ class AgentLoop:
         # argument string and handed over ``{"_raw": <text>}`` (providers/base.py) instead of
         # raising. Every tool then reads its required field as missing and answers with its
         # own "'path' is required and must be a string." — true of the dict, false of the
-        # call, and useless to the model, which sent a path (measured 2026-08-29, coach: a
+        # call, and useless to the model, which sent a path (measured 2026-08-29: a
         # 27B writing a long module in one write_file, the JSON cut off by the output
         # limit; the model got a message about a field it had plainly written). Name the
         # real defect and the cheapest remedy before any tool sees the arguments.
@@ -5646,10 +5660,10 @@ class AgentLoop:
                 # absolutely. Targets already in the authorized ORIGINAL passed the permission
                 # gate (declared, auto-allowed, or operator-approved at the prompt) and are not
                 # re-litigated; only NEW targets are the smuggle this floor exists to stop.
-                # Field incident 2026-08-28 (coach, zc-03): a Mind deployment's agent-env hook
-                # rewrites EVERY bash command (env prepend), so the absolute re-check hard-
-                # blocked an install the operator had approved seconds earlier — permanently,
-                # on every retry, on every Mind box.
+                # Field incident 2026-08-28 (served workspace): a host framework's agent-env
+                # hook rewrites EVERY bash command (env prepend), so the absolute re-check
+                # hard-blocked an install the operator had approved seconds earlier —
+                # permanently, on every retry, on every host box.
                 introduced = [
                     t
                     for t in self.permission_policy.undeclared_install_targets(arguments)
@@ -5729,7 +5743,7 @@ class AgentLoop:
         # Clamp the tool's own text BEFORE hook notes and rails are appended, so guidance
         # can never be lost to the elision. Hooks above saw the full output (they are
         # subprocesses, not context). A verbatim result (a skill body, a rule — ADR-0065)
-        # is instructions and lands whole: measured 2026-08-28 (coach, zc-03), a 39 KB /boot
+        # is instructions and lands whole: measured 2026-08-28 (served workspace), a 39 KB /boot
         # clamped to 6 KB lost Steps 0–11 and the model "completed" the boot without them.
         # And instructions that cannot fit the window AT ALL end the turn loudly (ADR-0066)
         # — the model gets an error it cannot work around, and the loop stops on it.
@@ -5750,7 +5764,7 @@ class AgentLoop:
         # An ALLOWED PreToolUse hook's additionalContext reaches the model with this call's result,
         # as in Claude Code. HookManager.run aggregates it for every event, but only the
         # PostToolUse fold below read it, so PreToolUse context was silently dropped (measured
-        # 2026-09-13: a Mind vessel's run-ending advisory fired 7 times and reached the model
+        # 2026-09-13: a host vessel's run-ending advisory fired 7 times and reached the model
         # 0 times). additionalContext only: on an allowed call Claude Code shows
         # permissionDecisionReason and systemMessage to the user, not the model.
         if pre.additional_context:
@@ -6103,7 +6117,7 @@ class AgentLoop:
         :func:`_unexecuted_tool_results` would answer the whole batch. A ``ScheduleWakeup``
         call RUNS: it touches only the session's wake-up slot (READ_ONLY tier, never a
         workspace change, which is all the gate is for) and it is time-critical. Measured
-        2026-09-24 (coach, zc-03): a stale loop sentinel fired into a session whose stop had
+        2026-09-24 (served workspace): a stale loop sentinel fired into a session whose stop had
         just completed, the model cancelled it in the same batch as one Bash call, and the
         whole batch came back "Not executed" — the cancel included — so the model spent the
         next half hour planning a loop re-entry the sentinel should never have asked for.
@@ -6316,7 +6330,7 @@ class AgentLoop:
         ended asked for the next one. Between that ending and the next body loading
         nothing is in flight, the same kind of boundary ADR-0099 restarts at; unlike a
         Stop-hook veto it is crossed EVERY unit, because a healthy loop never tries to
-        stop (measured 2026-08-29: 0 of 8 Bodies took a deploy in 50 minutes — every hook
+        stop (measured 2026-08-29: 0 of 8 sessions took a deploy in 50 minutes — every hook
         sat unvetoed behind a loop that kept re-entering). So when this batch is that
         call — alone, or beside nothing but ``update_plan`` bookkeeping (the common shape:
         mark the last step done, load the next body; measured the same evening, 1 of 7
@@ -6454,7 +6468,7 @@ class AgentLoop:
             return ""
         if self._turn_skill is not None:
             # A composed /skill turn's "goal" is the skill body — a wall of ceremony the plan
-            # tracks by phase, not a request the plan decomposes. Coach's six-step /start
+            # tracks by phase, not a request the plan decomposes. A six-step /start
             # plan scored 12% coverage against 65 KB of skill text (ADR-0059): a critique the
             # model could neither act on nor was meant to. Structural quality still rides.
             return ""
@@ -6796,7 +6810,7 @@ class AgentLoop:
 
         Returns the message it re-entered with when a hook vetoes the stop — ALREADY added to
         the session: the ``[harness]`` rail around the hook's reason, or (ADR-0187) the
-        composed body of the skill that reason names, ``/aspirations loop`` delivered the
+        composed body of the skill that reason names, the main loop skill delivered the
         way the say inbox delivers a typed slash — and ``None`` (the overwhelmingly common
         case) to let the turn end. Vetoes are UNBOUNDED on a vetoable loop — a registered
         Stop hook is in charge of standing down (and the cost budget is the hard bound),
@@ -6943,7 +6957,7 @@ class AgentLoop:
         composed (no composer, an unknown or refused skill, an unreadable body), and the
         caller then sends the plain rail, as before.
 
-        A hook's "your FIRST action MUST be Skill('aspirations') with args='loop'" is the
+        A hook's "your FIRST action MUST be Skill('<loop-skill>') with args='loop'" is the
         framework asking for the loop skill; handing the model that instruction left the
         re-entry to the model's ability to map another harness's tool name — measured
         2026-09-17 (serene, gemini-3.5-flash): hours of ``echo`` + "Verdict: …" text
@@ -7016,7 +7030,7 @@ class AgentLoop:
     def _arm_stall_net(self) -> None:
         """Leave a wake-up behind a ``veto_stall`` when none is held (ADR-0187). The turn is
         ending against the hook's wish, and a loop that ends at its prompt with no net is
-        the dead loop every Mind incident is about; the sentinel resolves, when it fires,
+        the dead loop every framework incident is about; the sentinel resolves, when it fires,
         to the very skill the hook asked for (``Session.loop_skill``) — a deadman's switch
         the harness arms because the model that should have did not. A held wake-up is
         kept: the framework's own net outranks this one."""
@@ -7035,8 +7049,9 @@ class AgentLoop:
 
         The hook that lets a turn END is the last thing to run before the session sits at
         its prompt, so it is the one place a "come back later" can be made deterministic
-        instead of being left to the model: measured 2026-08-29 (zc-03, 26 sessions), the
-        park re-poll a Mind's worker loop asks its Body to arm was armed once. Same
+        instead of being left to the model: measured 2026-08-29 (self-hosted pod,
+        26 sessions), the park re-poll a host's worker loop asks the session to arm was
+        armed once. Same
         replace-slot semantics as the tool; a cancel with nothing held is a no-op.
         """
         slot = self.wakeup_slot
@@ -7240,7 +7255,7 @@ class AgentLoop:
         ADR-0052 step-seam hold), but in-process (ADR-0078): the workspace say slot is a
         FILE shared by every session on the workspace, so routing the keyboard through it
         handed a line typed at one cockpit to whichever sibling polled the slot first.
-        Measured 2026-08-29 on a four-session Mind (coach, zc-03): the reducer consumed
+        Measured 2026-08-29 on a four-session workspace: the coordinating session consumed
         an instruction typed at a worker and executed a goal it did not hold; a line
         typed at another worker vanished. The slot stays the door for OTHER producers
         (``zakcode say``, ``POST /say``). Safe to call from the stdin pump thread.
@@ -8513,7 +8528,7 @@ class AgentLoop:
                 # Open-section guard (ADR-0087): the turn is ending while the model holds a
                 # section it has not closed. Nothing is ever pushed — the next page rides in
                 # the reply to the update_plan that closes this one — so a model that stops
-                # "awaiting the next section" waits forever, and an unattended Body has no
+                # "awaiting the next section" waits forever, and an unattended session has no
                 # one to type. Once per section per turn; a second stop ends the turn.
                 open_section = self._open_delivered_section() if self.unattended() else None
                 if open_section is not None and open_section[:2] not in section_nudged:
