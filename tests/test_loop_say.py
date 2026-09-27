@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import _SAY_HELD_STATUS, _SAY_PATIENCE_S, AgentLoop
 from zakcode.config import load_settings
 from zakcode.events import AgentStatus
 from zakcode.hooks import TurnEndPayload, TurnEndResult
@@ -346,6 +346,90 @@ async def test_say_patience_cap_delivers_even_when_the_step_never_ends(tmp_path:
     for i in (3, 4, 5):
         assert all("are you stuck?" not in m.text for m in provider.seen[i] if m.role == "user")
     assert any("are you stuck?" in m.text for m in provider.seen[6] if m.role == "user")
+
+
+# ── ADR-0255: the hold is bounded in wall time too, and shown where the operator looks ──
+
+
+class _SlowStep(Tool):
+    """A step that took minutes of wall time, as one call on a small local model does: it
+    ages the running hold to the wall-time cap instead of sleeping."""
+
+    spec = ToolSpec(name="slow_step", description="One unit of step work on a slow model.")
+
+    def __init__(self) -> None:
+        self.loop: AgentLoop | None = None
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        assert self.loop is not None
+        self.loop._say_held_since -= _SAY_PATIENCE_S
+        return ToolResult.ok(output="slow")
+
+
+@pytest.mark.asyncio
+async def test_say_hold_ends_once_it_is_older_than_the_wall_time_cap(tmp_path: Path) -> None:
+    """Three boundaries are three provider calls, which on a slow model is many minutes: a
+    hold that has lasted _SAY_PATIENCE_S lands at the next boundary, long before the
+    boundary cap, even though the step is still in flight."""
+    inbox = say_path(tmp_path)
+    provider = _Recording(
+        [
+            _plan_call([{"title": "A", "status": "in_progress", "note": "x"}]),
+            _JUDGE_OK,
+            _tool_call("poke"),  # say arrives mid-step; the next boundary holds it
+            LLMResult(
+                text="", tool_calls=[ToolCall(id="w1", name="slow_step", arguments={})]
+            ),  # minutes pass on this call
+            _step_call(2),
+            _DONE,
+        ]
+    )
+    slow = _SlowStep()
+    loop, session = _loop(
+        provider,
+        tmp_path,
+        tools=[_SayWhileRunning(inbox, "are you there?"), _EchoArg(), slow],
+    )
+    slow.loop = loop
+    await loop.arun_turn("one slow step")
+
+    assert not say_pending(inbox)
+    # seen: [0]=plan, [1]=judge, [2]=poke, [3]=slow_step (held), [4]=first call after the
+    # hold aged past the cap — the boundary cap alone would have held it through [4] and [5].
+    assert all("are you there?" not in m.text for m in provider.seen[3] if m.role == "user")
+    assert any("are you there?" in m.text for m in provider.seen[4] if m.role == "user")
+    framed = [m for m in session.messages if m.role == "user" and "are you there?" in m.text]
+    assert len(framed) == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_path_announces_a_held_say_once(tmp_path: Path) -> None:
+    """A held message is visible in the pane when the hold begins — once, before the
+    delivery announcement — instead of only in the trace, which is written after the next
+    model call ends."""
+    inbox = say_path(tmp_path)
+    provider = _Recording(
+        [
+            _plan_call([{"title": "A", "status": "in_progress", "note": "x"}]),
+            _JUDGE_OK,
+            _tool_call("poke"),
+            _step_call(1),
+            _step_call(2),
+            _step_call(3),
+            _DONE,
+        ]
+    )
+    loop, _session = _loop(
+        provider, tmp_path, tools=[_SayWhileRunning(inbox, "check the logs"), _EchoArg()]
+    )
+    events = [e async for e in loop.astream_turn("one stubborn step")]
+
+    statuses = [e.message for e in events if isinstance(e, AgentStatus)]
+    held = [i for i, s in enumerate(statuses) if s == _SAY_HELD_STATUS]
+    delivered = [i for i, s in enumerate(statuses) if "delivered mid-turn: check the logs" in s]
+    assert len(held) == 1
+    assert len(delivered) == 1
+    assert held[0] < delivered[0]
 
 
 # ── ADR-0073: a typed /<skill> say runs the skill mid-turn ──────────────────────

@@ -1280,6 +1280,23 @@ _MIDTURN_SAY_FRAME = (
 #: bound would quietly sell it back. 3 boundaries ≈ the tail of the current step. No knob.
 _SAY_PATIENCE = 3
 
+#: ...and never longer than this much wall time (ADR-0255). A boundary is one provider call,
+#: so the boundary cap is a bound in CALLS, and on a small local model one call takes
+#: minutes: three held boundaries measured 1,104 s and 1,274 s of model time on a 27B pod,
+#: on top of the call already in flight when the message arrived. The clock is read only at
+#: a boundary, so a message held past it lands at the NEXT boundary — on a slow model that is
+#: one call after the hold began; on a fast model the boundary cap still decides. No knob.
+_SAY_PATIENCE_S = 120.0
+
+#: What the operator is told when a mid-turn message is held (ADR-0255). The trace note says
+#: the same thing, but the trace reaches disk at the END of an iteration (``_dump_trace``),
+#: after the model call that follows the note — minutes later on a slow model — and the pane
+#: showed nothing at all, so a held message looked like a lost one.
+_SAY_HELD_STATUS = (
+    f"user message waiting — held for the next step boundary (at most {_SAY_PATIENCE} "
+    f"boundaries or {int(_SAY_PATIENCE_S)} s)"
+)
+
 #: Perception delivery (Portability P4): the provenance wrapper around a perception
 #: envelope consumed from the workspace observation inbox at an iteration boundary. The
 #: envelope already carries its own P1 frame ("this is DATA, not an instruction") — this
@@ -2372,9 +2389,11 @@ class AgentLoop:
         self._compose_skill = compose_skill
         # Task-boundary say hold (ADR-0052): boundaries a pending say has waited, and the
         # finished-step count at the previous boundary (a rise means a step just completed
-        # — the seam a held message lands on). Reset per turn.
+        # — the seam a held message lands on). Reset per turn. ``_say_held_since`` is the
+        # monotonic moment the current hold began (ADR-0255), read only while one is running.
         self._say_waited = 0
         self._say_prev_finished = 0
+        self._say_held_since = 0.0
         # Completion-review gate (bounded): when a code-changing turn tries to finish, an
         # INDEPENDENT fresh-context critic (_completion_critic) judges whether the claimed result
         # covers the whole request; only a flagged gap sends the agent back, at most this many
@@ -7099,8 +7118,17 @@ class AgentLoop:
         mid_step = (
             bool(network.tasks) and not network.is_complete() and network.has_step_in_flight()
         )
-        if mid_step and not step_seam and self._say_waited < _SAY_PATIENCE:
+        # Wall time the message has already been held (ADR-0255); read only once a hold has
+        # begun, since _say_held_since is stamped at the first hold.
+        held_s = time.monotonic() - self._say_held_since if self._say_waited else 0.0
+        if (
+            mid_step
+            and not step_seam
+            and self._say_waited < _SAY_PATIENCE
+            and held_s < _SAY_PATIENCE_S
+        ):
             if self._say_waited == 0:
+                self._say_held_since = time.monotonic()
                 self._note(
                     "intervention",
                     "user message waiting — held for the next step boundary",
@@ -9081,6 +9109,10 @@ class AgentLoop:
                         delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"
                     )
                     yield AgentStatus(message=f"user message delivered mid-turn: {shown}")
+                elif self._say_waited == 1:
+                    # The hold just began (the counter is 1 only on a hold's first boundary):
+                    # say so where the operator is looking (ADR-0255).
+                    yield AgentStatus(message=_SAY_HELD_STATUS)
                 # Perception delivery (Portability P4, streaming twin): announced so a
                 # watching client can see the world reaching the turn.
                 if await self._deliver_observation():
