@@ -11,8 +11,10 @@ configured; only the unauth liveness /health is exempt.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -261,7 +263,14 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
     assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == "stopped"
 
 
-def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "marker",
+    ["sess-777\nduration_cap\nboot-BEFORE", "sess-777\nduration_cap"],
+    ids=["recorded-under-an-earlier-boot", "no-boot-line"],
+)
+def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
     """A marker that survived a REBOOT must not end the run that just started (g-369-86).
 
     The session fence cannot catch this on its own, and the gap took down a production
@@ -272,10 +281,14 @@ def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(tmp_path: Path
     Env debc47de died 5.1 minutes after boot on a day whose cap was 7080s.
 
     Both files are therefore left in the MATCHING state a reboot produces — the exact
-    state the fence is blind to — not the mismatched state the rotation test uses.
+    state the fence is blind to — not the mismatched state the rotation test uses. This
+    boot's id is pinned, so each marker is cleared for the reason its id names. One was
+    recorded under another boot. The other carries no boot line, the shape written
+    before ADR-0256 and by the provisioner.
     """
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: "boot-AFTER")
     (tmp_path / ".current-session").write_text("sess-777\n", encoding="utf-8")
-    (tmp_path / ".run-stop-reason").write_text("sess-777\nduration_cap", encoding="utf-8")
+    (tmp_path / ".run-stop-reason").write_text(marker, encoding="utf-8")
 
     # Positive control FIRST, and it is what makes this test meaningful: with no run
     # started, this is precisely the state the session fence green-lights. Without it
@@ -323,6 +336,67 @@ def test_sidecar_health_still_reports_an_ending_from_the_RUNNING_process(
         (tmp_path / ".run-stop-reason").write_text(f"{sid}\nduration_cap", encoding="utf-8")
         body = client.get("/sidecar/health").json()
         assert body["last_run_stop_reason"] == "duration_cap"
+
+
+@pytest.mark.parametrize(
+    ("restart_boot", "reported"),
+    [("boot-A", "duration_cap"), ("boot-B", None)],
+    ids=["same-boot-restart-keeps-it", "reboot-clears-it"],
+)
+def test_a_bounded_runs_ending_is_kept_across_a_restart_on_the_same_boot_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restart_boot: str, reported: str | None
+) -> None:
+    """The run ends, the process exits, and it starts again: the ending must still be on
+    ``/sidecar/health`` for the env-server's next poll when the start is a RESTART on the
+    same boot, and cleared when it is a reboot (g-373-159, ADR-0256).
+
+    mind-serve@ runs with Restart=always, so every bounded run ends in exactly this restart,
+    seconds after ``on_run_end`` brings the process down, while the env-server polls every
+    60s. Clearing at every process start deleted the ending before any poll could read it,
+    and the environment idled on to its own session cap (measured on DEV: a 12m37s tail
+    after a ``duration_cap`` ending). The boot is the discriminator: the SAME ending, met by
+    a start under another boot, is the g-369-86 landmine, so both cases run the same code.
+    Both halves are production code. The real writer records the ending when the capped
+    run ends, and entering the TestClient runs the real lifespan that the restart runs.
+    """
+    boot = {"id": "boot-A"}
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: boot["id"])
+    settings = Settings(
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        run_max_duration=0.3,
+    )
+    ended = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=_factory,
+    )
+    asyncio.run(ended.state.consume_say_loop())  # returns because the cap ended the run
+    # Read by position (guard-6956): session (none was ever current), reason, boot.
+    recorded = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert recorded == ["", "duration_cap", "boot-A"], recorded
+
+    boot["id"] = restart_boot
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] == reported
+    assert (tmp_path / ".run-stop-reason").exists() is (reported is not None)
+
+
+def test_a_start_with_no_readable_boot_id_clears_even_a_boot_stamped_ending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no boot id to read (not Linux, or /proc unreadable), no ending can be proved to
+    be this boot's, so the start clears it. A stale ending ends a live run (g-369-86), while
+    a lost one only delays the environment's end, so the doubtful case takes the clear."""
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: None)
+    (tmp_path / ".run-stop-reason").write_text("\nduration_cap\nboot-A", encoding="utf-8")
+    # Positive control: before any start, the fence passes this marker (no session on
+    # either side), so the None below can only come from the clear.
+    assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == "duration_cap"
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] is None
+    assert not (tmp_path / ".run-stop-reason").exists()
 
 
 def test_sidecar_endpoints_require_bearer_when_auth_configured(tmp_path: Path) -> None:

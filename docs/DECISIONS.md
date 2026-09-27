@@ -15395,3 +15395,62 @@ The proof, `tests/test_loop_say.py`: a hold aged past the wall-time bound by one
 delivered at the next boundary, while the boundary cap alone would have held it two calls more;
 the streaming path yields the hold status exactly once, before the delivery status. Each test was
 run against a sabotaged copy of the change and went red.
+
+## ADR-0256: a run's ending is kept across a restart on the same boot, and cleared only across a reboot
+
+Status: accepted. 2026-09-27.
+
+`/sidecar/health` reports `last_run_stop_reason` from `.run-stop-reason` in the workspace: the
+session the ending belongs to, then the reason (g-369-28). The env-server's BudgetMeterVerticle
+polls it every 60 s and ends the environment when it reads `duration_cap`. Since g-369-86 the
+server has cleared that marker at every process start, and the reason was a reboot. A reboot
+of an EFS-persistent workspace brings back the marker and `.current-session` in matching state.
+The session fence passes that stale ending, and the first poll ended a brand-new run.
+
+A process start is not always a run start. `mind-serve@` runs with `Restart=always`
+(g-369-157). When a run ends, `on_run_end` brings the process down and systemd starts it again
+seconds later on the same boot and workspace. That start cleared the ending the run had just
+recorded, before any poll could read it. Measured on DEV run 1790433482000_g373155u2
+(2026-09-26):
+- the run ended on its cap at 14:54:57 and the restart came 8 s later;
+- the env-server never logged "Bounded run finished its duration cap";
+- the environment idled until its own session cap and grace ended it 12 min 37 s later;
+- its termination notes carried no `shutdownReason`.
+
+Decision.
+
+1. The writer adds this boot's id as a third line, so the marker reads session, reason, boot.
+   The id is Linux's `/proc/sys/kernel/random/boot_id`: one random id per kernel boot, read the
+   same by every process of that boot.
+2. At process start the ending is kept only when its third line equals this boot's id. It is
+   cleared in every other case: it names another boot, it has no third line (written before
+   this change, or by a provisioner), or no boot id can be read. The doubtful cases take the
+   clear because the two failures are unequal. A stale ending ends a live run (g-369-86); a
+   lost ending only delays the environment's end.
+3. The reader takes the reason from the second line by position. A two-line marker reads as
+   before.
+
+What it does not do.
+- It leaves the session fence unchanged.
+- It does not stop the restarted process from arming a fresh run clock. The kept ending is
+  what lets the env-server end the environment within one poll.
+- It does not change how a new run starts on a provisioned vessel. Provisioning already moves
+  `.current-session` and `.run-stop-reason` aside at every genuine run start (provision-env.sh,
+  g-369-157), so that run starts with no marker at all. This change governs the starts no
+  provisioning precedes.
+- It leaves one corner open. An `idle` ending, which the env-server does not act on, can be
+  followed by a restart and then by a stop request from the env-server. That stop request
+  reads the kept `idle` as its receipt.
+
+The proof, `tests/test_server_sidecar.py`:
+- A capped run ends through the real writer. A restart through the real lifespan keeps its
+  ending on `/sidecar/health` under the same boot, and clears it under another boot.
+- The reboot test clears both a marker recorded under an earlier boot and one with no boot line.
+- A start with no readable boot id clears even a boot-stamped marker.
+
+Each of three sabotaged copies of the change turned these tests red:
+- the unconditional clear failed the same-boot restart;
+- a reader of the last line failed three;
+- a missing boot id treated as a match failed the no-boot-id test.
+
+Three tests that read the reason as the marker's last line now read it by position.
