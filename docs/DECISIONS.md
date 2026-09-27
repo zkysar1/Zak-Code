@@ -1551,6 +1551,19 @@ provider layer, not a vendor special case leaking into the loop.
   repeat that ended the turn `stuck` ends it again at the next identical observation if
   the hook keeps the loop alive. That is the bound doing its job on a model that is
   still repeating; no run has shown it to be wrong.
+- **Amended 2026-09-27 (one batch is one moment).** Measured on an unattended session
+  with a small local model: its last model call asked for eight edits to one test file in
+  one batch. Seven applied (the file's diff was nine changed lines, so they were distinct),
+  each answering "Made 1 replacement in <path>". The tracker reads the epoch once, after
+  the batch, so the seven shared it, the signal counted seven sightings, and the seventh
+  sighting's rung ended a 155-iteration turn `stuck` on its most productive step. Across
+  ten such sessions, 8 of 13 ladder steps in their traces had their whole repeat count
+  inside one batch (7 on edits, 1 on a shell command). The rule this ADR states is "no file
+  edit in between", and its premise is re-observing a KNOWN result; inside one batch the
+  model has seen none of the answers, and each edit is itself a file edit. So identical
+  results inside one batch count once. Across batches nothing changes: the same answer in
+  a later batch is a sighting, and three of them still draw the nudge
+  (`tests/test_stuck_one_batch_is_one_moment.py`, with its control).
 
 ## ADR-0039: A run is bounded by wall-clock, and the reserve is carved out of the cap so it ends in a receipt
 
