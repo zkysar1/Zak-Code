@@ -11,13 +11,22 @@ configured; only the unauth liveness /health is exempt.
 
 from __future__ import annotations
 
+import asyncio
+import stat
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from zakcode.config import Settings
 from zakcode.server.app import create_app
+from zakcode.session.framework_stop import (
+    SIGNAL_SET_SCRIPT,
+    STOP_REQUESTED_SIGNAL,
+    framework_session_dir,
+)
 from zakcode.session.store import Session, SessionStore
 
 
@@ -261,7 +270,14 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
     assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == "stopped"
 
 
-def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "marker",
+    ["sess-777\nduration_cap\nboot-BEFORE", "sess-777\nduration_cap"],
+    ids=["recorded-under-an-earlier-boot", "no-boot-line"],
+)
+def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
     """A marker that survived a REBOOT must not end the run that just started (g-369-86).
 
     The session fence cannot catch this on its own, and the gap took down a production
@@ -272,10 +288,14 @@ def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(tmp_path: Path
     Env debc47de died 5.1 minutes after boot on a day whose cap was 7080s.
 
     Both files are therefore left in the MATCHING state a reboot produces — the exact
-    state the fence is blind to — not the mismatched state the rotation test uses.
+    state the fence is blind to — not the mismatched state the rotation test uses. This
+    boot's id is pinned, so each marker is cleared for the reason its id names. One was
+    recorded under another boot. The other carries no boot line, the shape written
+    before ADR-0256 and by the provisioner.
     """
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: "boot-AFTER")
     (tmp_path / ".current-session").write_text("sess-777\n", encoding="utf-8")
-    (tmp_path / ".run-stop-reason").write_text("sess-777\nduration_cap", encoding="utf-8")
+    (tmp_path / ".run-stop-reason").write_text(marker, encoding="utf-8")
 
     # Positive control FIRST, and it is what makes this test meaningful: with no run
     # started, this is precisely the state the session fence green-lights. Without it
@@ -323,6 +343,196 @@ def test_sidecar_health_still_reports_an_ending_from_the_RUNNING_process(
         (tmp_path / ".run-stop-reason").write_text(f"{sid}\nduration_cap", encoding="utf-8")
         body = client.get("/sidecar/health").json()
         assert body["last_run_stop_reason"] == "duration_cap"
+
+
+@pytest.mark.parametrize(
+    ("restart_boot", "reported"),
+    [("boot-A", "duration_cap"), ("boot-B", None)],
+    ids=["same-boot-restart-keeps-it", "reboot-clears-it"],
+)
+def test_a_bounded_runs_ending_is_kept_across_a_restart_on_the_same_boot_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restart_boot: str, reported: str | None
+) -> None:
+    """The run ends, the process exits, and it starts again: the ending must still be on
+    ``/sidecar/health`` for the env-server's next poll when the start is a RESTART on the
+    same boot, and cleared when it is a reboot (g-373-159, ADR-0256).
+
+    mind-serve@ runs with Restart=always, so every bounded run ends in exactly this restart,
+    seconds after ``on_run_end`` brings the process down, while the env-server polls every
+    60s. Clearing at every process start deleted the ending before any poll could read it,
+    and the environment idled on to its own session cap (measured on DEV: a 12m37s tail
+    after a ``duration_cap`` ending). The boot is the discriminator: the SAME ending, met by
+    a start under another boot, is the g-369-86 landmine, so both cases run the same code.
+    Both halves are production code. The real writer records the ending when the capped
+    run ends, and entering the TestClient runs the real lifespan that the restart runs.
+    """
+    boot = {"id": "boot-A"}
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: boot["id"])
+    settings = Settings(
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        run_max_duration=0.3,
+    )
+    ended = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=_factory,
+    )
+    asyncio.run(ended.state.consume_say_loop())  # returns because the cap ended the run
+    # Read by position (guard-6956): session (none was ever current), reason, boot.
+    recorded = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert recorded == ["", "duration_cap", "boot-A"], recorded
+
+    boot["id"] = restart_boot
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] == reported
+    assert (tmp_path / ".run-stop-reason").exists() is (reported is not None)
+
+
+def test_a_start_with_no_readable_boot_id_clears_even_a_boot_stamped_ending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no boot id to read (not Linux, or /proc unreadable), no ending can be proved to
+    be this boot's, so the start clears it. A stale ending ends a live run (g-369-86), while
+    a lost one only delays the environment's end, so the doubtful case takes the clear."""
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: None)
+    (tmp_path / ".run-stop-reason").write_text("\nduration_cap\nboot-A", encoding="utf-8")
+    # Positive control: before any start, the fence passes this marker (no session on
+    # either side), so the None below can only come from the clear.
+    assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == "duration_cap"
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] is None
+    assert not (tmp_path / ".run-stop-reason").exists()
+
+
+@pytest.mark.parametrize("reason", ["stopped", "idle", "budget_exhausted"])
+def test_only_a_duration_cap_ending_survives_a_restart_on_the_same_boot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """Every ending but ``duration_cap`` is cleared at start, even one THIS boot recorded.
+
+    After any other ending the world can stay up, as a stopped "Keep it running" run does, so
+    this start opens a run of its own. The env-server's step-out wait reads ANY ending on
+    ``/sidecar/health`` as that run's receipt (SidecarProxyVerticle ``awaitSidecarExit``).
+    A kept ending would end the wait before the new run's digest was written.
+    """
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: "boot-A")
+    (tmp_path / ".run-stop-reason").write_text(f"\n{reason}\nboot-A", encoding="utf-8")
+    # Positive control: before any start, the fence passes this marker (no session on either
+    # side), so the None below can only come from the clear.
+    assert _client(tmp_path).get("/sidecar/health").json()["last_run_stop_reason"] == reason
+    with TestClient(_make_app(tmp_path)) as client:
+        assert client.get("/sidecar/health").json()["last_run_stop_reason"] is None
+    assert not (tmp_path / ".run-stop-reason").exists()
+
+
+def _plant_signal_setter(root: Path) -> None:
+    """A stand-in for the framework's own signal writer, at the path the sidecar calls."""
+    script = root / SIGNAL_SET_SCRIPT
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        'dir="agents/${AYOAI_AGENT}/session"\n'
+        'mkdir -p "$dir"\n'
+        'touch "$dir/$1"\n',
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+
+
+@pytest.mark.parametrize(
+    ("ending", "opens_a_run"),
+    [("duration_cap", False), ("stopped", True)],
+    ids=["kept-cap-starts-ended", "stopped-ending-opens-its-own-run"],
+)
+def test_a_restart_that_keeps_this_boots_cap_starts_ended_and_raises_no_second_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str, opens_a_run: bool
+) -> None:
+    """A start that keeps this boot's cap is that run's restart, not a new run (g-373-161).
+
+    Keeping the ending (ADR-0256) let the env-server read it, and it then ended the
+    environment with POST /run/stop. But the restarted process had armed a fresh run clock
+    and started its say consumer, so that stop reached an OPEN run and raised a second
+    framework stop on a mind that had already finished its own. Measured on DEV run
+    1790481966000_g373159: an 8-iteration graceful-stop turn of 653,630 tokens, run while
+    the vessel was being torn down. The kept start must come up ENDED: the stop is answered
+    ``ended``, nothing is raised, no run clock is armed, and ``on_run_end`` is not called
+    again (it would only bring the process down into another restart).
+
+    The control is a restart after a ``stopped`` ending. That ending is cleared, so the
+    restart opens its own run and the same stop DOES raise the mind's graceful stop, which
+    is also what keeps the ``not raised`` assertion from holding vacuously.
+    """
+    monkeypatch.setattr("zakcode.server.app._boot_id", lambda: "boot-A")
+    agent = "probe"
+    # The first run ends through the real writer: on its cap, or on a person's stop.
+    first = create_app(
+        settings=Settings(
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            run_max_duration=0.3 if ending == "duration_cap" else None,
+        ),
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=_factory,
+    )
+
+    async def end_the_first_run() -> None:
+        loop = asyncio.create_task(first.state.consume_say_loop())
+        if ending == "stopped":
+            transport = httpx.ASGITransport(app=first)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                assert (await c.post("/run/stop", json={"reason": "stopped"})).status_code == 200
+        await asyncio.wait_for(loop, timeout=10)
+
+    asyncio.run(end_the_first_run())
+    recorded = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert recorded == ["", ending, "boot-A"], recorded
+
+    # The supervisor's restart on the same boot, configured as a vessel is: capped, and a
+    # framework seed, so a stop that reaches an open run raises the mind's own.
+    _plant_signal_setter(tmp_path)
+    endings: list[str] = []
+
+    async def _on_run_end(reason: str) -> None:
+        endings.append(reason)
+
+    restarted = create_app(
+        settings=Settings(
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            run_max_duration=60.0,
+            run_consolidation_reserve=1.0,
+            run_stop_agent=agent,
+        ),
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=_factory,
+        on_run_end=_on_run_end,
+    )
+    stop_requested = framework_session_dir(tmp_path, agent) / STOP_REQUESTED_SIGNAL
+    # Entering the TestClient runs the real lifespan, which is what the restart runs. The
+    # stop is the env-server's own call: BudgetMeterVerticle sends the reason it acts on.
+    with TestClient(restarted) as client:
+        answer = client.post("/run/stop", json={"reason": "duration_cap"}).json()
+        raised = stop_requested.exists()
+        reported = client.get("/sidecar/health").json()["last_run_stop_reason"]
+
+    if opens_a_run:
+        assert answer == {"stopping": True, "reason": "duration_cap"}, answer
+        assert raised, "a run the restart opened must still get the mind's own stop"
+        assert reported is None
+        return
+    assert answer == {"stopping": False, "ended": True, "reason": "duration_cap"}, answer
+    assert not raised, "a second framework stop was raised on a run that had already ended"
+    assert not (tmp_path / "agents").exists(), "the raise wrote the framework's stop files"
+    # No say consumer, so no run clock: `_consume_say_loop` is what arms the deadlines.
+    assert not hasattr(restarted.state, "deadline_watcher")
+    assert endings == []
+    # The env-server still reads the ending it came for, before and after its stop.
+    assert reported == "duration_cap"
 
 
 def test_sidecar_endpoints_require_bearer_when_auth_configured(tmp_path: Path) -> None:

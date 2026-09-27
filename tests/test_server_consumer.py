@@ -839,7 +839,7 @@ def test_the_cap_interrupts_a_turn_still_in_flight(tmp_path: Path) -> None:
     assert endings == ["duration_cap"]
     assert json.loads(out.read_text(encoding="utf-8"))["reason"] == "duration_cap"
     marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
-    assert marker[-1] == "duration_cap", marker
+    assert marker[1] == "duration_cap", marker  # by position: the boot id rides third
 
 
 def test_the_deadline_watcher_cannot_interrupt_the_digest_turn(tmp_path: Path) -> None:

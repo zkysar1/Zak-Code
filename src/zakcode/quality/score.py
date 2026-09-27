@@ -111,7 +111,7 @@ async def score_rubric(
     shipping an artifact whose quality couldn't be verified.
 
     ``prompt_cache_key`` is the calling session's affinity key, as for
-    :func:`~zakcode.quality.judge.binary_judge` (ADR-0256): keyless, every session's scoring
+    :func:`~zakcode.quality.judge.binary_judge` (ADR-0257): keyless, every session's scoring
     calls share this fixed system prompt as their head, and so one key and one engine.
     """
     if not dimensions:

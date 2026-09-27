@@ -2695,7 +2695,7 @@ class AgentLoop:
         lands on one engine) and removes the per-run variation.
 
         "Every provider call" includes the side calls on the loop's own model: the critic, the
-        plan critique and the quality gate (ADR-0256). Sent keyless, they were keyed by the pod on
+        plan critique and the quality gate (ADR-0257). Sent keyless, they were keyed by the pod on
         their fixed system prompts, so every session's side calls shared one engine and queued
         ahead of the conversation that engine was serving. The session is waiting on its own side
         call, so its own engine is the free one.
@@ -6413,7 +6413,7 @@ class AgentLoop:
             self.provider,
             criteria=request,
             artifact=artifact,
-            prompt_cache_key=self._prompt_cache_key(),  # ADR-0256: this session's engine
+            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
         )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             # ADR-0243: a side call's record is tagged, like the summarizer's (ADR-0241): it has
@@ -6427,7 +6427,7 @@ class AgentLoop:
         """The provider for quality-engine calls (seam A) — today the loop's own (fresh context,
         like the critic). Routing ``model_roles['judge']`` to a small model is the next seam.
 
-        Its calls carry the session's affinity key (ADR-0256), which is right only while this is
+        Its calls carry the session's affinity key (ADR-0257), which is right only while this is
         the loop's own model: the pod pins a key to one engine of one model, so a call on another
         model under the same key finds no pinned engine and re-pins the key there, and the
         conversation's next call then misses its cache. A different judge model needs its own key.
@@ -6463,7 +6463,7 @@ class AgentLoop:
                 self._judge_provider(),
                 goal=goal,
                 plan=rendered,
-                prompt_cache_key=self._prompt_cache_key(),  # ADR-0256: this session's engine
+                prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
             )
         except Exception:  # noqa: BLE001 — an unreachable judge must never break the tool result
             logger.warning("judged plan critique failed; skipping", exc_info=True)
@@ -6506,7 +6506,7 @@ class AgentLoop:
             self._judge_provider(),
             artifact=artifact,
             dimensions=dimensions,
-            prompt_cache_key=self._prompt_cache_key(),  # ADR-0256: this session's engine
+            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
         )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(

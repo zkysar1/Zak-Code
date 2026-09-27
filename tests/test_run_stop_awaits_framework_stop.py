@@ -445,7 +445,7 @@ def test_a_cap_raised_mid_turn_is_named_duration_cap_when_the_mind_signs_off_ins
     assert (framework_session_dir(tmp_path, AGENT) / "handoff.yaml").exists()
     assert endings == ["duration_cap"]
     marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
-    assert marker[-1] == "duration_cap", marker
+    assert marker[1] == "duration_cap", marker  # by position: the boot id rides third
 
 
 def test_a_run_stop_with_no_reason_on_a_capped_run_still_ends_stopped(tmp_path: Path) -> None:
@@ -523,7 +523,7 @@ def test_a_turn_started_inside_the_cap_s_stop_window_is_still_bounded(
     assert elapsed < 7.0, f"run took {elapsed:.2f}s against a 4s cap"
     assert endings == ["duration_cap"]
     marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
-    assert marker[-1] == "duration_cap", marker
+    assert marker[1] == "duration_cap", marker  # by position: the boot id rides third
 
 
 def test_a_run_stop_window_bounds_the_turn_in_flight_on_a_capless_run(

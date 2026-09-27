@@ -641,7 +641,7 @@ async def test_the_judges_records_are_tagged_so_each_reply_pairs_with_its_own() 
 
 @pytest.mark.asyncio
 async def test_the_judges_ride_the_sessions_affinity_key() -> None:
-    # ADR-0256: sent keyless, a judge call was keyed by the pod on its fixed system prompt, so
+    # ADR-0257: sent keyless, a judge call was keyed by the pod on its fixed system prompt, so
     # every session's judge calls shared one engine and queued ahead of the conversation that
     # engine served. Each side call carries its own session's key, like the conversation's calls.
     provider = _Scripted(

@@ -650,6 +650,20 @@ RUN_END_COMMAND_TIMEOUT_S = 60.0
 #: on it (``duration_cap`` / ``stopped`` / ``budget_exhausted`` …).
 _RUN_STOP_REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
+#: Linux names the running boot here: a random id drawn once per kernel boot and read the
+#: same by every process of that boot. It is what tells a restart under the same boot (the
+#: supervisor bringing the server back after its run ended) from a reboot (ADR-0256).
+_BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+
+
+def _boot_id() -> str | None:
+    """This kernel boot's id, or None where there is none to read (not Linux, or unreadable)."""
+    try:
+        value = _BOOT_ID_PATH.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    return value or None
+
 
 def create_app(
     *,
@@ -1292,35 +1306,73 @@ def create_app(
         was 7080s. The health surface goes live before the driver's first iteration, so
         this window is open on EVERY boot — it is not a rare interleaving.
 
-        Hence ``_clear_run_stop_reason`` below, called at run start: a run that is
-        STARTING has by definition not ENDED, so any marker present at that moment
-        belongs to a run that is already over.
+        Hence ``_clear_run_stop_reason`` below, called at process start. A process start
+        is not always a run start: when a run ends, this process exits and its supervisor
+        restarts it seconds later on the same boot (mind-serve@'s Restart=always).
+        Clearing at every start therefore deleted each capped run's ending before the
+        env-server could poll it, and the environment idled on to its own session cap.
+        The start now keeps a ``duration_cap`` ending that THIS boot recorded, which is
+        why the boot id is the marker's third line (g-373-159, ADR-0256).
 
         Never raises — an unwritable marker must not break a run that has ALREADY ended.
         """
+        boot = _boot_id()
         try:
             (_workspace_root / ".run-stop-reason").write_text(
-                f"{_current_session_id() or ''}\n{reason}", encoding="utf-8"
+                f"{_current_session_id() or ''}\n{reason}" + (f"\n{boot}" if boot else ""),
+                encoding="utf-8",
             )
         except OSError:
             logger.warning("could not record run stop reason (%s)", reason)
 
-    def _clear_run_stop_reason() -> None:
-        """Drop any ending left by a PREVIOUS run (g-369-86).
+    def _clear_run_stop_reason() -> bool:
+        """Drop a PREVIOUS run's ending (g-369-86), except this boot's cap (g-373-159).
 
-        Called once at run start. The session fence in ``_current_run_stop_reason``
-        cannot cover this case on its own: at boot ``.current-session`` still names the
+        Called once at process start. The session fence in ``_current_run_stop_reason``
+        cannot cover a reboot on its own: at boot ``.current-session`` still names the
         session the previous run ended on, so a stale marker and a stale current-session
         agree and the fence passes.
+
+        ONE ending is kept: ``duration_cap``, recorded under THIS boot. The process is
+        starting because its supervisor restarted it after the run spent its time, and
+        that ending is what the env-server's next ``/sidecar/health`` poll exists to
+        collect. A restart buys no more time, so the ending still stands. Returns True
+        exactly then, and the caller starts ENDED instead of opening a run (g-373-161).
+
+        Every other ending is cleared, as before. After it the world can stay up (a
+        stopped "Keep it running" run keeps its world), so this start opens a run of its
+        own, and the env-server's step-out wait reads ANY ending as that run's receipt.
+        A kept ``stopped`` would satisfy the wait before the new run's digest was
+        written. Also cleared: a marker from another boot, one with no boot line
+        (written before ADR-0256, or by a provisioner), and every marker on a platform
+        with no boot id. The doubtful cases take the clear because a stale ending ends
+        a live run, while a lost one only delays the environment's end.
 
         Never raises. A marker that cannot be removed is logged and left in place — the
         fence then still narrows the exposure to exactly the same-session reboot that
         produced the incident, so this log line is a signal to act on, not noise.
         """
+        path = _workspace_root / ".run-stop-reason"
         try:
-            (_workspace_root / ".run-stop-reason").unlink(missing_ok=True)
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            lines = []
+        boot = _boot_id()
+        if (
+            boot is not None
+            and len(lines) > 2
+            and lines[1].strip() == "duration_cap"
+            and lines[2].strip() == boot
+        ):
+            logger.info("kept this boot's duration_cap ending across a restart")
+            return True
+        try:
+            path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("could not clear a prior run's stop reason (%s)", exc)
+        return False
 
     def _current_run_stop_reason() -> str | None:
         """This run's ending, or None if absent, unreadable, or from a PRIOR session."""
@@ -1330,8 +1382,10 @@ def create_app(
             )
         except OSError:
             return None
-        marker_session, _, reason = raw.partition("\n")
-        reason = reason.strip()
+        # By position, never "the last line": the boot id rides third (ADR-0256).
+        lines = raw.splitlines()
+        marker_session = lines[0] if lines else ""
+        reason = lines[1].strip() if len(lines) > 1 else ""
         if not reason:
             return None
         # Stale-marker fence: an ending only describes the session that produced it.
@@ -2758,12 +2812,15 @@ def create_app(
     consumer_tasks: list[asyncio.Task[None]] = []
 
     async def _start_consumer() -> None:
-        # A starting run has by definition not ended, so drop any marker a PREVIOUS run
-        # left behind in this (EFS-persistent) workspace before the health surface can
-        # serve it to the env-server (g-369-86). Lifespan startup completes before the
-        # server accepts requests, so this always precedes the first /sidecar/health
-        # poll — the clear cannot race the reader that the incident turned on.
-        _clear_run_stop_reason()
+        nonlocal run_stop_reason
+        # Drop a PREVIOUS run's ending from this (EFS-persistent) workspace before the
+        # health surface can serve it to the env-server (g-369-86). The one exception is a
+        # duration_cap THIS boot recorded: this start is the supervisor's restart after the
+        # run spent its time, and the env-server has yet to collect that ending (g-373-159,
+        # ADR-0256). Lifespan startup completes before the server accepts requests, so this
+        # always precedes the first /sidecar/health poll — the clear cannot race the reader
+        # that the incident turned on.
+        kept_cap = _clear_run_stop_reason()
         # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
         # retired must not open this run's /start on a stop nobody asked for — the
         # framework keeps a signed signal without consulting time, so its lifetime is
@@ -2774,6 +2831,20 @@ def create_app(
                 resolved_settings.run_stop_agent,
                 grace_s=resolved_settings.run_consolidation_reserve,
             )
+        if kept_cap:
+            # That run is over, and this process is its restart, not a new run (g-373-161).
+            # So it starts ENDED: no say consumer, hence no fresh run clock, and /run/stop
+            # answers `ended` instead of raising a second framework stop on a mind that has
+            # already finished its own. `on_run_end` is not called again, because it would
+            # bring the process down into yet another restart.
+            run_stop_reason = "duration_cap"
+            run_ended.set()
+            logger.info(
+                "this boot's run already ended on its duration cap: starting ended, no new run "
+                "(remove %s to open one on this boot)",
+                _workspace_root / ".run-stop-reason",
+            )
+            return
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:

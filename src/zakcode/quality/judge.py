@@ -107,7 +107,7 @@ async def binary_judge(
     mode, validated locally. FAIL-OPEN: any error (provider failure, unparseable output) returns
     ``approved=True`` — a judge must never trap its caller.
 
-    ``prompt_cache_key`` is the calling session's affinity key (ADR-0256). Without one, an
+    ``prompt_cache_key`` is the calling session's affinity key (ADR-0257). Without one, an
     affinity-routing proxy keys the call on its head, and the head of a judge call is this fixed
     system prompt, so every session's judge calls share one key and queue on one engine.
     """

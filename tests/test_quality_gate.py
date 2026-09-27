@@ -73,7 +73,7 @@ async def test_quality_gate_record_is_tagged(tmp_path: Path) -> None:
 
 
 async def test_quality_gate_rides_the_sessions_affinity_key(tmp_path: Path) -> None:
-    # ADR-0256: the scorer's call carries the session's key, so it runs on the session's engine
+    # ADR-0257: the scorer's call carries the session's key, so it runs on the session's engine
     # instead of the one engine every session's keyless scoring calls were pinned to.
     provider = _ScoreProvider(json.dumps({"scores": {"q": 1.0}}))
     loop = _loop(tmp_path, provider, quality_gate_threshold=0.8)

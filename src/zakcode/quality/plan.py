@@ -39,7 +39,7 @@ async def score_plan(
     :data:`PLAN_RUBRIC`) via :func:`~zakcode.quality.score.score_rubric`. The absolute "how good is
     this decomposition?" — as useful for an anti-over-planning gate (a one-liner that already scores
     high needs no plan) as for quality. Returns ``(scorecard, usage)``. ``prompt_cache_key`` is
-    passed through to the scorer's call (ADR-0256).
+    passed through to the scorer's call (ADR-0257).
     """
     # The judge sees a plan BEFORE any of it has run. Without this framing it docked a correct
     # three-step plan to 0% coverage for "failing to execute the first step as requested" —
