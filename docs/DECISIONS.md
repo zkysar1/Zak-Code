@@ -2052,6 +2052,9 @@ case and within 3 boundaries always. Sub-agents unchanged (they never poll). Pin
 tests/test_loop_say.py: hold-then-seam delivery (held calls proven message-free), and
 the patience cap on a step that never ends.
 
+**Amended by ADR-0255 (2026-09-27):** the hold is also bounded in wall time, and it is
+shown in the pane when it begins.
+
 ## ADR-0053: Small-model prompt clarity — one story per rule, numbered escapes, declared tags
 
 **Status.** Accepted (2026-08-28).
@@ -15347,3 +15350,48 @@ carries `closed_on_outcome: 3`; the measured shape completes at the call carryin
 and a blind resend of the finished plan is unchanged with nothing to advance; an explicit
 `in_progress` beside an outcome stays; the `TodoWrite` alias reads 0 closes; the loop notes one
 `plan_outcome_close` intervention and its receipt reads "Plan updated" twice, never "Advanced".
+
+## ADR-0255: the say hold is bounded in wall time too, and shown where the operator looks
+
+Status: accepted. 2026-09-27.
+
+ADR-0052 holds a message that arrives mid-step until the step's seam, and bounds the hold at
+three iteration boundaries: "worst case the message lands a few provider calls late, never
+hours." A boundary is one provider call, so that bound is a count of calls, and on a small local
+model one call takes minutes.
+
+Measured on 2026-09-26, three worker loops on a 27B pod, each sent the same operator message
+through the say inbox while a plan step was in flight. The traces give the model time spent
+between the hold note and the delivery note. The first loop held the message through three calls
+of 540 s, 397 s and 166 s: 1,104 s. The second held it through three calls of 98 s, 671 s and
+505 s, with a compaction between them: 1,274 s. The third delivered after one call of 353 s,
+when a step completed. The call already in flight when the message arrived comes on top of each
+figure, because a message can only land at a boundary. Through all of it the pane showed nothing:
+the hold wrote a trace note, and the streaming loop writes its trace at the end of an iteration,
+after the model call that follows the note. An operator watching the pane could not tell a held
+message from a lost one.
+
+Decision.
+
+1. The hold also ends once it has lasted `_SAY_PATIENCE_S` (120 s) of wall time, measured with
+   the monotonic clock from the boundary where the hold began. The clock is read only at a
+   boundary, so a message held past the bound lands at the NEXT boundary. On a slow model that is
+   the first call after the hold began; on a fast one, where three boundaries pass in seconds,
+   the boundary cap still decides. The step-seam delivery is unchanged. No knob.
+2. The streaming loop announces the hold once, when it begins, as a status line: "user message
+   waiting — held for the next step boundary (at most 3 boundaries or 120 s)". The delivery line
+   that follows is unchanged. The trace note stays as it was.
+
+Under this rule the first measured loop takes the message after the 540 s call instead of after
+the third, and the second no later than after the 671 s call, instead of after the 505 s one that
+followed.
+
+What it does not do. It does not deliver a message at any point other than a boundary, so the
+call in flight when a message arrives still runs to its end. It does not change a turn with no
+plan, which delivers at the next boundary as before. It does not classify messages by urgency;
+ADR-0052's growth path still stands.
+
+The proof, `tests/test_loop_say.py`: a hold aged past the wall-time bound by one slow step is
+delivered at the next boundary, while the boundary cap alone would have held it two calls more;
+the streaming path yields the hold status exactly once, before the delivery status. Each test was
+run against a sabotaged copy of the change and went red.
