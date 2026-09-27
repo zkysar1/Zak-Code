@@ -15545,3 +15545,54 @@ The proof. In `tests/test_loop_planning.py` a planning turn's four calls, the pl
 critique, the answer and the plan review, all carry the session's key. In
 `tests/test_quality_gate.py` the gate's scoring call carries it. Each test was run with the key
 dropped, once at the scorer and once at the critic, and went red.
+
+## ADR-0258: a deep_think sample cut off at the output limit is reported, not fused as an answer
+
+Status: accepted. 2026-09-27.
+
+`deep_think` samples several independent answers and fuses them into one. Its sampler returned the
+reply text and dropped the finish reason. A reply that stopped at the per-completion output cap
+(ADR-0018, 8,192 tokens) therefore looked to the tool exactly like one that finished. The main
+loop handles that case for its own replies: it continues a cut-off final answer, and it retries a
+reasoning overflow. `deep_think`'s calls do not go through the loop, so they got neither.
+
+Measured on 2026-09-27 on a self-hosted 27B reasoning model with thinking on, one request at a
+time per engine. One `deep_think` call sampled three candidates, and the proxy's ledger shows each
+generating exactly 8,192 tokens, the cap. The synthesis call's prompt was 2,119 tokens against the
+candidates' 1,836. The synthesis template adds roughly 110, so the three candidates delivered on
+the order of 175 tokens of answer between them. Each had spent nearly the whole cap reasoning and
+was cut off a sentence or two into its answer. The candidates queued behind each other on the
+engine's one slot, 40 minutes before the synthesis began, and the tool then fused the fragments
+and labelled the result a synthesized best-of-N answer. The one earlier call still recorded in
+the same machines' sessions, on 2026-09-26, generated 5,257, 5,994 and 5,516 tokens per
+candidate, all under the cap. Had every candidate been cut off before writing anything, the error
+would have read "no answers produced". That invites the model to ask again and spend the same 40
+minutes to the same end.
+
+Decision.
+
+1. The `Sampler` seam raises `SampleCutOff` when a completion stops at the output limit, finish
+   reason `length` or `max_tokens`. The exception carries whatever answer text arrived, and the
+   call's spend is recorded before it is raised. A cut-off reply is never returned as if it had
+   finished.
+2. `deep_think` keeps a cut-off candidate only when it carries answer text, and appends a line
+   marking it incomplete, so the synthesis weighs it as a fragment. A candidate cut off before any
+   answer adds nothing. Either way it is counted: the result's data gains `cut_off`, and the hint
+   says how many of the N were cut off.
+3. When every candidate was cut off before answering, the error says so, and says the same
+   question will end the same way. The fix it offers is a narrower question, or reasoning directly.
+4. A synthesis cut off at the limit takes the existing synthesis-failure path. The fallback now
+   picks the longest candidate that finished over a longer fragment.
+
+Not decided here: the cap and thinking are unchanged. A bigger cap for deliberation calls, a
+per-request reasoning budget below the cap, or turning thinking off after a cut-off would each
+let an answer land, and each changes the cost or the kind of reasoning `deep_think` buys. Each is
+its own decision. Also not done: cancelling the queued candidates once one comes back cut off with
+nothing. On a backend that serves one request at a time it would save most of the wasted time,
+but it changes what the tool does and needs its own measurement.
+
+The proof. In `tests/test_deep_think.py`, a cut-off candidate reaches the synthesis prompt marked
+and is counted. Every candidate cut off gives the named error, with no synthesis call. The
+fallback picks a finished candidate over a longer fragment. The Agent's sampler raises
+`SampleCutOff` for both spellings of the finish reason, after recording the call's cost. Each was
+run with its mechanism removed and went red.

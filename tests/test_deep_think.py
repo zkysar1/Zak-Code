@@ -13,9 +13,10 @@ import pytest
 
 import zakcode
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
-from zakcode.tools.base import Sampler, ToolContext
+from zakcode.tools.base import SampleCutOff, Sampler, ToolContext
 from zakcode.tools.builtins.deep_think import (
     _CANDIDATE_SYSTEM,
+    _CUT_OFF_MARK,
     _MAX_SAMPLES,
     _SYNTH_SYSTEM,
     DeepThinkTool,
@@ -136,6 +137,70 @@ async def test_empty_synthesis_falls_back_and_labels_honestly() -> None:
     assert result.data["synthesis_error"] == "empty"
 
 
+# ── output-limit cut-offs ───────────────────────────────────────────────────────────
+
+
+async def test_cut_off_candidate_is_marked_for_the_synthesis_and_counted() -> None:
+    # A candidate that stopped at the output limit is a fragment: it reaches the synthesis marked
+    # incomplete, and the result says how many candidates ran out of room.
+    seen = {"n": 0, "synth_prompt": ""}
+
+    async def sampler(prompt, *, system=None, temperature=0.0):
+        if system == _SYNTH_SYSTEM:
+            seen["synth_prompt"] = prompt
+            return "THE FUSED ANSWER"
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise SampleCutOff("the start of an answer")
+        return f"a finished answer {seen['n']}"
+
+    result = await DeepThinkTool().execute({"question": "q", "samples": 3}, _ctx(sampler))
+    assert not result.is_error
+    assert result.output == "THE FUSED ANSWER"
+    assert result.data == {"samples": 3, "synthesized": True, "cut_off": 1}
+    assert "the start of an answer" + _CUT_OFF_MARK in seen["synth_prompt"]
+    assert "1 of 3 candidate answers were cut off at the output limit" in (result.hint or "")
+
+
+async def test_every_candidate_cut_off_before_answering_is_an_honest_error() -> None:
+    # A reasoning model can spend the whole output limit thinking and deliver no answer at all.
+    # When every candidate did, the error names the limit and says the same question will end
+    # the same way, instead of a bare "no answers produced" that invites the costly retry.
+    calls = {"synth": 0}
+
+    async def sampler(prompt, *, system=None, temperature=0.0):
+        if system == _SYNTH_SYSTEM:
+            calls["synth"] += 1
+        raise SampleCutOff("")
+
+    result = await DeepThinkTool().execute({"question": "q", "samples": 3}, _ctx(sampler))
+    assert result.is_error
+    assert "all 3 candidates were cut off at the output limit" in result.output
+    assert "narrower question" in (result.fix or "")
+    assert calls["synth"] == 0  # nothing to fuse
+
+
+async def test_fallback_prefers_a_finished_candidate_over_a_longer_fragment() -> None:
+    # The synthesis itself ran out of room, so the fallback picks a candidate. The longest one is
+    # a fragment; the shorter one finished, and a finished answer wins.
+    seen = {"n": 0}
+
+    async def sampler(prompt, *, system=None, temperature=0.0):
+        if system == _SYNTH_SYSTEM:
+            raise SampleCutOff("half a fus")
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise SampleCutOff("a long fragment " * 20)
+        return "short but finished"
+
+    result = await DeepThinkTool().execute({"question": "q", "samples": 2}, _ctx(sampler))
+    assert not result.is_error
+    assert result.output == "short but finished"
+    assert result.data["synthesized"] is False
+    assert "cut off at the output limit" in result.data["synthesis_error"]
+    assert result.data["cut_off"] == 1
+
+
 def test_deep_think_in_default_registry() -> None:
     from zakcode.tools.builtins.default_registry import default_registry
 
@@ -199,6 +264,40 @@ def test_agent_wires_sampler_and_records_usage(tmp_path: Path) -> None:
     assert by_model["test/model"].cost_usd == pytest.approx(0.005)
     # ADR-0243: a deliberation is a side call; no reply of the conversation pairs with it
     assert {u.side_call for u in agent.session.usages} == {"deep_think"}
+
+
+class _CutOffResponder(_Responder):
+    """Every candidate call stops at the output limit, spelled the way the backend spells it."""
+
+    def __init__(self, finish_reason: str) -> None:
+        super().__init__()
+        self.finish_reason = finish_reason
+
+    async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
+        if system == _CANDIDATE_SYSTEM:
+            return LLMResult(
+                text="the start of an answer",
+                finish_reason=self.finish_reason,
+                usage=Usage(total_tokens=2, cost_usd=0.005),
+            )
+        return await super().acomplete(
+            messages, system=system, tools=tools, response_format=response_format, **kw
+        )
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+def test_agent_sampler_raises_cut_off_after_recording_usage(
+    tmp_path: Path, finish_reason: str
+) -> None:
+    # The sampler has no continuation path, so a cut-off completion is raised, never returned
+    # as if it were a finished answer. Its spend was real and is still counted.
+    import asyncio
+
+    agent = zakcode.Agent(workspace_root=tmp_path, provider=_CutOffResponder(finish_reason))
+    with pytest.raises(SampleCutOff) as info:
+        asyncio.run(agent._deep_think_sample("ponder this", system=_CANDIDATE_SYSTEM))
+    assert info.value.text == "the start of an answer"
+    assert agent.session.usage_by_model()["test/model"].cost_usd == pytest.approx(0.005)
 
 
 def test_full_turn_invokes_deep_think(tmp_path: Path) -> None:
