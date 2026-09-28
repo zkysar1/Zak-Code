@@ -2436,6 +2436,9 @@ class AgentLoop:
         # The composed /skill this turn is running, else None (ADR-0059): its "goal" is a
         # skill body, and a plan that tracks a ceremony by phase is never judged against it.
         self._turn_skill: str | None = None
+        # An operator-only command reached this turn MID-TURN (ADR-0265): the turn now runs
+        # the operator's control input, so no fresh-eyes review may reopen its finished plan.
+        self._turn_operator_command = False
         self._turn_plan_judged = False
         # Dropped-section restores per paged skill this turn (ADR-0075): bounded by
         # ``_MAX_SECTION_RESTORES``, after which a drop is the model's decision. Per-turn.
@@ -5023,7 +5026,8 @@ class AgentLoop:
 
     def _plan_review_due(self, spent: int) -> bool:
         """The fresh-eyes review fires once per turn, on a completed plan the model authored
-        (an anchor-only board is a record, not a plan) and never on a composed /skill turn."""
+        (an anchor-only board is a record, not a plan), never on a composed /skill turn, and
+        never once an operator-only command has arrived mid-turn (ADR-0265)."""
         network = self.session.task_network
         return (
             self.settings.plan_review
@@ -5031,6 +5035,7 @@ class AgentLoop:
             and network.is_complete()
             and not network.is_anchor_only()
             and self._turn_skill is None
+            and not self._turn_operator_command
         )
 
     def _seed_review_step(self, issues: str) -> None:
@@ -7364,6 +7369,10 @@ class AgentLoop:
             logger.info("say inbox: /%s typed mid-turn was not run: %s", name, reason)
             return f"/{name} not run: {reason}"
         skill = str(getattr(result, "name", name) or name)
+        if skill.lower() in self._user_only_skills():
+            # ADR-0265: the rest of this turn is the operator's command, not the request the
+            # turn opened with — the fresh-eyes review would judge the wrong ask.
+            self._turn_operator_command = True
         self.session.add_message(Message.user(str(turn_text)))
         self._persist()
         # The typed skill's sections become plan steps (ADR-0062) and page 1 counts as
@@ -7568,6 +7577,7 @@ class AgentLoop:
         self._turn_skill = _composed_skill_name(
             user_text
         )  # a ceremony plan is not judged (ADR-0059)
+        self._turn_operator_command = False  # ADR-0265: per turn
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
@@ -9177,6 +9187,7 @@ class AgentLoop:
         self._turn_skill = _composed_skill_name(
             user_text
         )  # a ceremony plan is not judged (ADR-0059)
+        self._turn_operator_command = False  # ADR-0265: per turn
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline

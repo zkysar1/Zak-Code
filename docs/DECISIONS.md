@@ -15946,3 +15946,31 @@ keeps the single-slot guarantee while ensuring the ending eventually lands.
 
 Both paths coexist in the same release. The legacy path is unchanged and works as before when only
 `run_stop_agent` is set. Removal of the legacy path is a future release.
+
+## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
+
+Status: accepted. 2026-09-28.
+
+A stop command typed by the operator reached an unattended agent through the say inbox while a
+turn was running. The agent ran the command, its plan read complete, and the turn tried to finish.
+The fresh-eyes review (ADR-0117) then judged that finished plan against the request the turn had
+OPENED with, flagged a gap, and seeded a step, so the stopped agent kept calling the model. Measured
+in production: calls continued for more than half an hour after the stop had taken effect, on a
+card nothing else was using. Under the say-inbox ending (ADR-0264) the same extension costs more:
+DONE waits for the consuming turn to end `completed`, so a reviewer-extended ending turn spends the
+grace window and can end interrupted.
+
+Decision.
+
+1. When a slash command delivered mid-turn (ADR-0073) resolves to an operator-only skill
+   (ADR-0109, the same set whose says bypass the ADR-0052 hold), the loop marks the turn. For the
+   rest of that turn the fresh-eyes review is not due. The mark is per turn: every turn start
+   clears it, on both the buffered and the streaming path.
+2. A turn that OPENS with a composed /skill was already exempt (ADR-0059's composed-skill check);
+   this closes the mid-turn path, which never set that field.
+
+Rejected: skipping the review after ANY skill delivered mid-turn. A non-operator skill the operator
+types mid-turn adds work to the same ask, and a review of the combined result still has a purpose;
+an operator-only command replaces the ask with a control action. Rejected: a setting that turns the
+review off for unattended runs. The review is right for their ordinary turns; only the turn an
+operator command takes over is wrong to review.
