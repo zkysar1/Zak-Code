@@ -117,7 +117,8 @@ class Settings(BaseSettings):
     # ADR-0117: fresh eyes on a finished plan. When the plan the model authored completes and the
     # turn tries to finish, the independent critic reads the request against the answer and the
     # plan record; a flagged gap is seeded as a plan step the plan gate then holds the turn for.
-    # One cheap judge call per plan-completing turn; never on anchor-only boards or /skill turns.
+    # One cheap judge call per plan-completing turn; never on anchor-only boards or /skill turns,
+    # nor after an operator-only command arrives mid-turn (ADR-0265).
     plan_review: bool = Field(
         default=True,
         description="Fresh-eyes review when a plan completes: an independent critic reads the "
