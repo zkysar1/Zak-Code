@@ -15900,3 +15900,49 @@ two red. A mutation that drops the recorded stop reason at the restart turns the
 including the fallback in the existing carried-continuation test. Existing tests that called the
 restart continuation with no stop reason now pass the collapse they describe, so each still fails
 only on the condition it names.
+
+## ADR-0264: a host-neutral ending via the say inbox
+
+Status: accepted. 2026-09-28.
+
+The legacy ending path (`run_stop_agent`) shells out to the host framework's signal-file writer,
+coupling the server to a specific session directory layout, a specific script, and a subprocess call
+that fails when the host is absent or differently shaped. A host-neutral path sends the ending as
+operator input through the say inbox, the single contract every producer and consumer already speaks.
+
+Decision.
+
+1. A new setting `run_stop_message` names the line to queue. When `/run/stop` fires, the server
+   writes that line into the say inbox via `write_say` and opens the consolidation reserve as the
+   grace window. The agent reads the line as a normal turn — it appears in the transcript exactly as
+   if the operator typed it. No `SessionEnd` event is added; the host framework's own stop skill
+   handles the session lifecycle once it receives the command.
+2. DONE means three conditions are simultaneously true: the line was taken from the inbox (the slot
+   no longer holds it), the turn that consumed it ended `completed`, and nothing is in flight. An
+   abnormal stop reason (`provider_error`, `veto_stall`) after the line is taken is not DONE: the
+   run stays open until either a clean turn or the grace expires.
+3. The slot is single: a pending human say blocks the ending's write. Each beat retries, so the
+   ending lands as soon as the slot clears. Retraction on grace overrun deletes the say only when
+   it still holds exactly the configured line — a different say is never touched.
+4. Startup drops a pending say equal to the configured line, so a run never opens on its own ending
+   left by a previous process. A different pending say is kept — it is the operator's.
+5. Precedence: when both `run_stop_message` and `run_stop_agent` are set, the message path wins.
+   When only `run_stop_agent` is set, a deprecation warning is logged at startup.
+6. Operator-only slash commands (skills with `disable-model-invocation: true`) bypass the ADR-0052
+   task-boundary hold. The model never invokes these skills itself, so holding them for a step seam
+   only delays the operator's control input. The check peeks at the pending text without consuming
+   it, consistent with the existing TOCTOU tolerance in the say inbox flow.
+7. With the message path active, `/observe` resolves no agent address and does not attempt a wake
+   (the perception is staged for the next beat, not pushed through a subprocess). A superseding
+   heartbeat cannot hide an unread `change` frame: the `kind` field is sticky.
+
+Rejected: firing a `SessionEnd` event from the server. The host framework already has a stop skill
+that handles session lifecycle; a second end signal from the server would either duplicate or race
+with it. The say inbox makes the server's ending indistinguishable from the operator's, which is
+the point. Rejected: adding the ending as a second slot or a queue. The single-slot discipline is
+load-bearing for exactly-once delivery; a second slot breaks the invariant that only one message
+may be pending, and a queue changes the contract for every consumer. The retry-on-busy-slot design
+keeps the single-slot guarantee while ensuring the ending eventually lands.
+
+Both paths coexist in the same release. The legacy path is unchanged and works as before when only
+`run_stop_agent` is set. Removal of the legacy path is a future release.
