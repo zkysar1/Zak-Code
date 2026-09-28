@@ -170,7 +170,7 @@ if sys.platform == "win32":
         if not proc_handle:
             try:
                 # asyncio Process -> SubprocessTransport -> subprocess.Popen -> handle
-                proc_handle = proc._transport._proc._handle  # type: ignore[union-attr]
+                proc_handle = proc._transport._proc._handle  # type: ignore[attr-defined]
                 owns_handle = False  # the Popen owns this handle; don't close it
             except AttributeError:
                 with contextlib.suppress(ProcessLookupError):
