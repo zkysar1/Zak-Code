@@ -149,7 +149,17 @@ async def test_a_cancelled_call_still_kills_the_command_and_records_nothing(
 
     call = asyncio.create_task(
         BashTool().execute(
-            {"command": f"echo $$ > {pid_file.name}; sleep 30", "timeout": 60},
+            # The shell's pid in the OS's own numbering. On Windows, Git Bash's $$ is an MSYS
+            # pid from its own counter, not a Windows pid, so the checks below read some other
+            # process: failing runs showed a "surviving shell" whose start time was minutes
+            # before the CI job began. /proc/$$/winpid holds the Windows pid there and exists
+            # nowhere else, so everywhere else this falls back to $$.
+            {
+                "command": (
+                    f"{{ cat /proc/$$/winpid 2>/dev/null || echo $$; }} > {pid_file.name}; sleep 30"
+                ),
+                "timeout": 60,
+            },
             _ctx(tmp_path, tasks),
         )
     )
@@ -160,6 +170,8 @@ async def test_a_cancelled_call_still_kills_the_command_and_records_nothing(
     # missed; task_is_live draws the same line for a task. Alive with the SAME start token is
     # the survivor this test exists to catch.
     token = process_start_token(pid)
+    # A pid that names no live process would pass the check below without testing the kill.
+    assert pid_alive(pid) and token is not None, f"pid {pid} does not name a live process"
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
