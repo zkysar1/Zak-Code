@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+from zakcode._subprocess import create_group_subprocess_exec, terminate_process_tree
 from zakcode.tool_names import PRE_0190_TOOL_NAMES
 from zakcode.wakeup import clamp_delay
 from zakcode.workspace_env import settings_env
@@ -778,14 +778,13 @@ class HookManager:
         child_env = _hook_env([*spec.drop_env, *(drop_env or [])], payload.cwd)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
-                **new_group_kwargs(),
             )
         except (OSError, ValueError) as exc:
             logger.warning("turn_end hook %r failed to start: %s", spec.command, exc)
@@ -932,14 +931,13 @@ class HookManager:
         stdin_bytes = _named_wire(payload, payload.event)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
-                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("context hook %r failed to start: %s", spec.command, exc)
@@ -1074,14 +1072,13 @@ class HookManager:
         stdin_bytes = _named_wire(payload, payload.event)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
-                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("lifecycle hook %r failed to start: %s", spec.command, exc)
@@ -1131,14 +1128,13 @@ class HookManager:
         stdin_bytes = wire_payload(payload)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 *spec.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=_valid_cwd(payload.cwd),  # run at the workspace root (see _valid_cwd)
                 env=child_env,
-                **new_group_kwargs(),  # own process group so the whole tree is killable
             )
         except (OSError, ValueError) as exc:
             logger.warning("hook %r failed to start: %s", spec.command, exc)

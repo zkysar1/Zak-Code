@@ -21,8 +21,9 @@ from typing import Any
 
 from zakcode._subprocess import (
     CommandTimeout,
+    create_group_subprocess_exec,
+    create_group_subprocess_shell,
     find_bash,
-    new_group_kwargs,
     terminate_process_tree,
 )
 from zakcode.workspace_env import settings_env
@@ -135,7 +136,6 @@ async def run_capturing(
         "stderr": subprocess.STDOUT,
         "stdin": stdin,
         "env": child_env,
-        **new_group_kwargs(),
     }
     if shell_command is not None:
         # The tool is NAMED bash and models write bash — run REAL bash wherever one
@@ -151,12 +151,12 @@ async def run_capturing(
         # resolve) without zakcode learning any domain layout.
         bash = find_bash()
         if bash is not None:
-            proc = await asyncio.create_subprocess_exec(bash, "-c", shell_command, **spawn_kwargs)
+            proc = await create_group_subprocess_exec(bash, "-c", shell_command, **spawn_kwargs)
         else:
-            proc = await asyncio.create_subprocess_shell(shell_command, **spawn_kwargs)
+            proc = await create_group_subprocess_shell(shell_command, **spawn_kwargs)
     else:
         assert argv is not None
-        proc = await asyncio.create_subprocess_exec(*argv, **spawn_kwargs)
+        proc = await create_group_subprocess_exec(*argv, **spawn_kwargs)
 
     input_bytes = stdin_text.encode("utf-8") if stdin_text is not None else None
     try:

@@ -47,7 +47,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from zakcode._subprocess import new_group_kwargs, resolve_executable, terminate_process_tree
+from zakcode._subprocess import (
+    create_group_subprocess_exec,
+    resolve_executable,
+    terminate_process_tree,
+)
 
 logger = logging.getLogger("zakcode.status_line")
 
@@ -283,14 +287,14 @@ async def render_status_line(spec: StatusLineSpec, status: StatusLineInput) -> s
     child_env = _status_env(spec.drop_env, cwd)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
+        # Own process group/session so the whole tree is killable.
+        proc = await create_group_subprocess_exec(
             *spec.command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd if cwd and Path(cwd).is_dir() else None,
             env=child_env,
-            **new_group_kwargs(),  # own process group so the whole tree is killable
         )
     except (OSError, ValueError) as exc:
         logger.warning("statusLine command %r failed to start: %s", spec.command, exc)

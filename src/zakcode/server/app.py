@@ -55,7 +55,7 @@ from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 from zakcode import __version__
-from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+from zakcode._subprocess import create_group_subprocess_exec, terminate_process_tree
 from zakcode.agent.loop import TurnResult, harness_skill_turn_text
 from zakcode.artifacts import (
     ArtifactChangedError,
@@ -2475,14 +2475,13 @@ def create_app(
             }
         ).encode("utf-8")
         try:
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=_hook_env(scrub, cwd),
-                **new_group_kwargs(),
             )
         except (OSError, ValueError) as exc:
             logger.warning("run_end_command failed to start: %s", exc)

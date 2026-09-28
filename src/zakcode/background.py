@@ -57,7 +57,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from zakcode._subprocess import find_bash, new_group_kwargs, terminate_process_tree
+from zakcode._subprocess import (
+    create_group_subprocess_exec,
+    create_group_subprocess_shell,
+    find_bash,
+    terminate_process_tree,
+)
 from zakcode.config import zakcode_home
 
 #: The output tail ``TaskOutput`` returns. It was the foreground bash tool's budget until ADR-0234.
@@ -289,8 +294,8 @@ def notification_block(task: BackgroundTask, status: str, code: int | None) -> s
 
 def _kill_pid_tree(pid: int) -> None:
     """Kill a task's whole process group by pid — the path for a task THIS process did not
-    spawn (a restart in between). The spawn used :func:`new_group_kwargs`, so the group
-    is the task's own."""
+    spawn (a restart in between). The spawn used :func:`create_group_subprocess_exec` (or
+    ``_shell``), so the group is the task's own."""
     try:
         if sys.platform == "win32":
             subprocess.run(
@@ -483,14 +488,13 @@ class BackgroundTasks:
             "cwd": cwd,
             "stdin": subprocess.DEVNULL,
             "env": child_env,
-            **new_group_kwargs(),
         }
         bash = find_bash()
         if bash is not None:
             # A wrapper shell runs the command, owns the redirect, and writes the exit code
             # itself — so the exit is recorded even if THIS process is gone by then.
             script = '"$4" -c "$1" >"$2" 2>&1; printf "%s\\n" "$?" >"$3"'
-            proc = await asyncio.create_subprocess_exec(
+            proc = await create_group_subprocess_exec(
                 bash,
                 "-c",
                 script,
@@ -507,7 +511,7 @@ class BackgroundTasks:
             # No bash anywhere: the platform shell, output straight into the file; only the
             # in-process watcher records the exit (a restart in between loses the code).
             with output_file.open("wb") as handle:
-                proc = await asyncio.create_subprocess_shell(
+                proc = await create_group_subprocess_shell(
                     command, stdout=handle, stderr=subprocess.STDOUT, **spawn_kwargs
                 )
         task = BackgroundTask(

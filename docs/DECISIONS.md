@@ -15738,3 +15738,60 @@ build, with nothing pinned, reads the workspace and says nothing. Each mechanism
 turn. Without the pin, the restart test and three others went red. Without the compaction's clear,
 the catch-up test went red. Without the record of what the session knows, the message repeated.
 The control stayed green each time.
+
+## ADR-0261: kill a child's process tree through a Windows job object
+
+Status: accepted. 2026-09-28.
+
+`terminate_process_tree` killed a child's tree on Windows with `taskkill /PID <pid> /T /F` plus
+`proc.kill()`. Under Git for Windows (Git Bash), each program runs in a new Windows process whose
+Windows parent is a short-lived forked process, not the shell that started it. `taskkill /T` walks
+Windows parent links, so from our shell it reached nothing below the first exec.
+
+Measured: a probe that spawned commands exactly as `BackgroundTasks._spawn` does (an outer
+`bash -c` wrapper running an inner command) and called `terminate_process_tree` on the outer shell
+found, 5 s after the kill: exec form (command ending `sleep 41.25`): sleep.exe still running;
+no-exec form (ending `sleep 43.75; :`): the inner bash and sleep.exe still running. Only the outer
+shell died. On Linux, `killpg` left nothing. So on Windows a cancelled Bash call left the command
+running.
+
+Decision.
+
+1. Every child spawned for a killable group goes into its own Windows job object at spawn time.
+   Every descendant inherits the job regardless of its Windows parent link, so
+   `TerminateJobObject` kills the entire tree. The spawn is race-free: the child is created
+   `CREATE_SUSPENDED`, assigned to the job, then resumed via `NtResumeProcess` on a process
+   handle (asyncio's `Popen` closes the thread handle from `CreateProcess`, so `ResumeThread`
+   is not available). `CREATE_NEW_PROCESS_GROUP` is kept for the `taskkill` fallback.
+2. `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is NOT set: a background task must keep running after the
+   zakcode process exits. Closing the job handle is a cleanup, not a kill.
+3. `terminate_process_tree` on Windows uses `TerminateJobObject` when the child has a job (the
+   primary path), falls back to `taskkill /T /F` when there is no job (a failure to create or
+   assign the job degrades to today's behavior with a logged warning), and calls `proc.kill()` for
+   the direct child in both cases.
+4. Job handles are closed by a `weakref.finalize` on the asyncio `Process`, or by
+   `terminate_process_tree` when it kills the job — whichever runs first; the other is a no-op.
+5. The spawn is ONE contract: `create_group_subprocess_exec` and `create_group_subprocess_shell`
+   in `_subprocess.py` handle the suspended-spawn + job-object dance on Windows and pass
+   `start_new_session=True` on POSIX. Spawn sites use them instead of spreading
+   `**new_group_kwargs()` into `asyncio.create_subprocess_exec/shell`. A child created suspended
+   that cannot be resumed is killed and the spawn raises `OSError` — it is never left suspended.
+6. All Win32/ntdll calls use `ctypes` with explicit `argtypes`/`restype`, guarded by
+   `sys.platform == "win32"` so Linux never loads them.
+
+Rejected: `taskkill /T /F` alone (the status quo — it misses descendants under Git Bash, which is
+the measured failure). Rejected: `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (a background task must
+outlive the zakcode process). Rejected: assigning the process to the job after spawn without
+suspension, because a fast child can fork before the assignment and the fork escapes the job — the
+race was the reason for `CREATE_SUSPENDED`.
+
+The proof. The xfail on `test_a_cancelled_call_still_kills_the_command_and_records_nothing` is
+removed: the test must pass on Windows after the fix. A Windows-only test spawns a Git Bash
+command through the exact wrapper argv `BackgroundTasks._spawn` uses, in both forms (exec and
+no-exec), calls `terminate_process_tree`, and asserts within 5 s that zero processes carrying
+the command's unique argument survive (identified by command line via `Get-CimInstance
+Win32_Process`, not by pid files or parent links). A Windows-only test verifies a background task
+outlives the job handle being closed (no kill-on-close). A Windows-only test monkeypatches
+`NtResumeProcess` to fail and verifies `create_group_subprocess_exec` raises `OSError` (a child
+is never left suspended). POSIX-only tests verify `create_group_subprocess_exec` puts the child in
+its own session (`os.getsid(pid) == pid`) and that `terminate_process_tree` kills via `killpg`.
