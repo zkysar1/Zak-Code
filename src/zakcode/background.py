@@ -445,7 +445,8 @@ class BackgroundTasks:
             self._record(task)
             return task
         except asyncio.CancelledError:
-            await terminate_process_tree(proc)
+            # PROOF-ONLY SABOTAGE, DO NOT MERGE: the cancel no longer kills the command, so
+            # the cancelled-call test must go red. Reverted before merge.
             # Let the watcher write the exit file BEFORE the files go, or it lands after.
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(asyncio.shield(watcher), timeout=2.0)
