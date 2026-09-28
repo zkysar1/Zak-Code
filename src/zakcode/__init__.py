@@ -786,7 +786,10 @@ class Agent:
         # output_style_text empty so the prompt is byte-identical to today.
         self.output_style_error: str | None = None
         output_style_text = ""
-        if enable_output_style if enable_output_style is not None else self.settings.output_style:
+        style_on = (
+            enable_output_style if enable_output_style is not None else self.settings.output_style
+        )
+        if style_on:
             from zakcode.output_styles import load_active_output_style
 
             _style_block, self.output_style_error = load_active_output_style(
@@ -855,6 +858,28 @@ class Agent:
             # never a silent no-op (mirrors the rules slot above).
             if output_style_text and not prompt_builder.output_style:
                 prompt_builder.output_style = output_style_text
+
+        # ADR-0260: what each workspace input above was read from, item by item. A session
+        # pins the prompt text these produce, and its loop compares these items with the
+        # session's record at the first turn to tell the model what changed, since the pinned
+        # prompt keeps the old text. An input that was not read has no entry and is not compared.
+        prompt_input_items: dict[str, dict[str, str]] = {}
+        if self.rule_registry is not None:
+            rules = (self.rule_registry.get(name) for name in self.rule_registry.names())
+            prompt_input_items["rules"] = {
+                f"rule {r.name}": r.content for r in rules if r is not None
+            }
+        if self.skill_registry is not None:
+            prompt_input_items["extra_instructions"] = {
+                f"skill {name}": description
+                for name, description in self.skill_registry.model_catalog()
+            }
+        if identity is not None or enable_identity:
+            prompt_input_items["identity"] = {"identity": self.identity} if self.identity else {}
+        if style_on:
+            prompt_input_items["output_style"] = (
+                {"output style": output_style_text} if output_style_text else {}
+            )
 
         # Delegation (M4), opt-in. When enabled, the parent gets the ``task`` tool and
         # a shared :class:`IterationBudget`, and a :class:`SubAgentManager` is placed
@@ -1167,6 +1192,7 @@ class Agent:
             # body by name. None unless enable_rules (same shape as skill_resolver above), so
             # the tool's seam exists exactly when rules are on.
             rule_registry=self.rule_registry,
+            prompt_input_items=prompt_input_items,  # ADR-0260: what the model hears changed
             # TURN_END veto seam (T2/T3/T4): structurally ALWAYS ON for the main loop —
             # a Stop hook registered by the workspace's adopted hooks fires at every
             # vetoable turn end. Sub-agent loops never set this (their completions

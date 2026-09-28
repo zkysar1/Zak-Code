@@ -187,6 +187,23 @@ class Session(BaseModel):
     #: older build drops the field and reads the first user message still in the history
     #: (fails SAFE: the pre-ADR-0233 behavior, where a compaction can move the fold).
     task: str = ""
+    #: ADR-0260: the text each workspace input put into this session's system prompt (the
+    #: identity, the rules, the output style, the skills catalog, the project guides and the
+    #: workspace survey), pinned the first time the prompt was built after ``task`` existed.
+    #: A restart into a new build, a resume, or a served turn builds the prompt from this
+    #: instead of reading the workspace again: any change on disk in between otherwise moved
+    #: the prompt, and an engine that caches by exact prefix re-processed the whole
+    #: conversation. A compaction clears it, so the prompt catches up with the workspace when
+    #: the conversation is being re-processed anyway. Schema v1 stays append-only: an OLDER
+    #: build drops the field and reads the workspace at every start (fails SAFE: the
+    #: pre-ADR-0260 behavior).
+    prompt_inputs: dict[str, str] = Field(default_factory=dict)
+    #: ADR-0260: what each pinned input was read from, item by item (a rule, a guide file, a
+    #: skill → its text), as this session last knew it. A new loop compares the workspace with
+    #: it and tells the model once what changed, since the pinned prompt keeps the old text.
+    #: Schema v1 stays append-only: an OLDER build drops the field, and this build then records
+    #: the workspace as it finds it and announces nothing (fails SAFE: nothing is invented).
+    prompt_input_items: dict[str, dict[str, str]] = Field(default_factory=dict)
     #: Skill paging (ADR-0067 / ADR-0086): per lower-cased skill name, the pages of that skill
     #: the model has HELD — page 1 at the load, later pages as the plan reached them. A section
     #: is finished only once its page was held, so the record must outlive a restart (ADR-0034

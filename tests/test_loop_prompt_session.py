@@ -100,6 +100,8 @@ def test_a_compaction_leaves_the_fold_where_the_first_ask_put_it(tmp_path: Path)
     restored = Session.model_validate_json(loop.session.model_dump_json())
     assert restored.task == first_ask  # a resumed session keeps it too
 
-    # Positive control: without the pin the kept tail's first user message keys the fold.
+    # Positive control: without the pin the kept tail's first user message keys the fold. The
+    # session's pinned prompt inputs (ADR-0260) would hold the fold as well, so they go too.
     loop.session.task = ""
+    loop.session.prompt_inputs.clear()
     assert loop._build_system() != keyed

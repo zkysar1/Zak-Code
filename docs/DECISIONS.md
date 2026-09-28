@@ -15670,3 +15670,70 @@ The proof. In `tests/test_prompt_cache.py`, two builds with a guide edited betwe
 byte-identical prompts. A second test is the positive control: a new builder reads the edited
 guide. With the cache check replaced by a re-read on every build, the first test went red and the
 control stayed green.
+
+## ADR-0260: a session keeps the prompt inputs it started with, and is told what changed
+
+Status: accepted. 2026-09-28.
+
+ADR-0259 made the project guides hold still between the calls of one process. A session outlives
+its processes. A restart into a newly installed build (ADR-0034) execs a new process that resumes
+the session, `--resume` does the same, and `zakcode serve` builds a new Agent for every served
+turn. Each of them read the workspace again: the identity, the rules, the output style, the skills
+catalog (ranked by skill usage), the guides and the workspace survey. Anything changed on disk
+since then moved the system prompt. On an engine that reuses only an exact prefix, as llama.cpp
+does for a recurrent-hybrid model, that re-processes the whole prompt from its first token: 21 of
+21 measured cases where a worker's prompt diverged part-way through.
+
+Measured on 2026-09-28 on a self-hosted pod serving ten worker loops. Their workspace merges its
+upstream between tasks, and they restart into each new build. Over about a day there were 27
+restarts. 10 adopted a build that changed the prompt's own text, and 9 of those re-processed their
+prompt, 566,213 tokens; that cost belongs to the build and stays. The other 17 adopted builds that
+render the same prompt. 13 of them re-processed more than 10,000 tokens on their first call,
+863,223 tokens in all, each a 3 to 16 minute stall at 110 to 175 tokens per second. All 4 that
+stayed warm had no input change. Each section was rebuilt from the workspace as it stood at each
+process start: the survey had changed in 11 of the 13 (the only change in 6), the guides in 5,
+the rules in 4, and the skills' own text in none. One more diverged at the catalog with no skill
+text changed, which is where a skill's first use moves the usage-ranked catalog (the usage file
+keeps no history to confirm it); one is unexplained. Where the engine's log still held the worker's
+previous prompt, the divergence sat at the changed section: at the rules in 3 of 3, at the
+catalog, at the survey. The workspace's rules had changed in 21 commits over the preceding week.
+
+Decision. The session pins the text each workspace input put into its system prompt, the first
+time the prompt is built after the session has a task (ADR-0233), and every later build uses the
+pinned text, in this process or any later one. A new process compares what each input was read
+from, item by item (a rule, a guide file, a skill, the identity, the output style), with what the
+session last knew, and at its first turn it adds one message after the turn's first user message.
+The message quotes each change as a diff, or a new item in full, up to the size one rule or guide
+file may have in the prompt and twice that in all. Past that bound an item is named along with
+where to read it. The session then records the new state, so the change is said once. The survey
+is pinned without a message: a changed file list carries no instruction. A compaction clears the
+pins. The conversation is re-processed then anyway, so the prompt catches up with the workspace for
+the cost of the stretch between the first changed section and the conversation, and a change the
+message announced no longer depends on a summary keeping it.
+
+The change is quoted, not pointed at, because a small model does not fetch what it is only told
+about: ADR-0105 counted zero `read_rule` calls in an hour of eight live sessions, and ADR-0169's
+omission note alone scored 0 of 12.
+
+Rejected: pinning with no message. A worker session can run for more than a day, and it would keep
+following a rule that had since been replaced. Also rejected: pinning only the survey and the skill
+usage, the two inputs that carry no instruction. That keeps at most 7 of the 13 warm, since a rule
+or guide change still moves the prompt. Also rejected: turning on `stable_prompt_identity`
+(ADR-0157). It drops the usage ranking, but it also keys the prompt cache per workspace, which
+would send every session of one workspace to the same engine.
+
+Not covered: a build that changes the prompt's own text still re-processes each session once.
+Settings that shape an input (the lean rules index, the README, the survey switch) reach a running
+session at its next compaction, like the inputs. An input edited while a process runs still waits
+for the next process, as under ADR-0259.
+
+The proof. In `tests/test_pinned_inputs.py`, a session is saved, the workspace changes (a rule, a
+guide, a skill description and a new file), and the session resumes in a new Agent: the provider
+receives the byte-identical system prompt, the first turn carries one message quoting the three
+changes and not the new file, and neither that process's next turn nor the process after it says
+anything more. The positive control is a new session on the changed workspace, which sends all
+four changes. A compaction brings the prompt up to the workspace, and a session saved by an older
+build, with nothing pinned, reads the workspace and says nothing. Each mechanism was removed in
+turn. Without the pin, the restart test and three others went red. Without the compaction's clear,
+the catch-up test went red. Without the record of what the session knows, the message repeated.
+The control stayed green each time.
