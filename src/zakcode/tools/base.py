@@ -278,8 +278,8 @@ class ToolContext(BaseModel):
     additional trusted filesystem roots. When non-empty, file tools accept paths
     under any of ``[workspace_root] + extra_workspace_roots``. This enables
     cross-repo skill execution where a skill needs to read/write across the primary
-    workspace and one or more external directories (e.g. a claude-mind skill
-    accessing the mind repo, its world dir, and its meta dir).
+    workspace and one or more external directories (e.g. a host framework's skill
+    accessing the framework's repo and its separate state directories).
     """
 
     model_config = {"arbitrary_types_allowed": True}

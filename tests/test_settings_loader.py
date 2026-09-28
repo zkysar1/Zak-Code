@@ -235,7 +235,7 @@ def test_the_docs_name_exactly_the_deferred_hook_events() -> None:
     to update the TEST. Nothing forced the docs, and for weeks both went on telling a framework
     author that a hook which fires on every prompt was skipped. So the docs are read here.
     """
-    for name in ("CLAUDE-MIND-COMPAT.md", "CLAUDE-CODE-HOST-ROADMAP.md"):
+    for name in ("HOST-FRAMEWORK-COMPAT.md", "CLAUDE-CODE-HOST-ROADMAP.md"):
         named = _deferred_events_named_by((_DOCS / name).read_text(encoding="utf-8"))
         assert named == _SKIP_EVENTS, f"{name} names {sorted(named)}, the loader skips " + str(
             sorted(_SKIP_EVENTS)

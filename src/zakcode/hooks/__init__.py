@@ -137,7 +137,7 @@ class HookPayload(BaseModel):
 
     Shell hooks are serialized with ``by_alias=True`` so the wire shape matches the **Claude
     Code hook contract** — ``tool_input`` (not ``arguments``) and a top-level ``session_id`` —
-    which frameworks like claude-mind read (e.g. ``tool_input.command``, ``session_id`` to
+    which host frameworks read (e.g. ``tool_input.command``, ``session_id`` to
     resolve the agent and inject env). The in-process attribute stays ``arguments``.
 
     The wire goes one step further than the alias (:func:`wire_payload`, ADR-0071): a tool
@@ -433,9 +433,9 @@ def wire_payload(payload: HookPayload) -> bytes:
     counterpart is named as that counterpart (``write_file`` → ``Write``; the first alias
     when there are several) and the file tools' ``path`` is sent as ``file_path`` — made
     absolute against ``cwd`` (the workspace root) when relative, because that is the path
-    the tool will resolve and the path a gate must judge. Measured 2026-08-28 (a
-    claude-mind agent served by Zak Code): the framework's path-resolution hook DENIES a
-    write into a literal ``<project>/world/...`` cruft path when it sees ``Write`` +
+    the tool will resolve and the path a gate must judge. Measured 2026-08-28 (a host
+    framework's agent served by Zak Code): the framework's path-resolution hook DENIES a
+    write into a stray literal directory under the project when it sees ``Write`` +
     ``tool_input.file_path``; it received ``write_file`` + ``path`` and approved
     unconditionally, and the cruft directory was created. Hooks must run every time — and
     they must be able to read what they are gating.
@@ -1200,10 +1200,10 @@ class HookManager:
         Understands two stdout shapes:
 
         - **Zak-native:** ``{"message": str, "arguments": {...}}``.
-        - **Claude Code** (what claude-mind and other Claude-Code hooks emit):
+        - **Claude Code** (what a host framework's Claude-Code hooks emit):
           ``{"hookSpecificOutput": {"updatedInput": {...}, "permissionDecision":
           "allow"|"deny"|"ask", "permissionDecisionReason": str}}``. ``updatedInput`` rewrites
-          the tool arguments (e.g. claude-mind's ``bash-agent-inject`` prepending
+          the tool arguments (e.g. a host framework's hook prepending
           ``export PATH=...; export MIND_SID=...`` to a Bash command); ``permissionDecision ==
           "deny"`` blocks the call — Claude Code blocks via this JSON on **exit 0**, not exit 2 —
           so it is surfaced for the caller to honor.

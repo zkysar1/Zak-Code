@@ -18,7 +18,7 @@ prioritized plan). ~5.7M tokens. The three references:
 
 > **⚠ Freshness caveat (read before building).** The review was snapshotted against the
 > Zak-Code tree at the `pr-5-tooling` stack tip. Between the snapshot and this doc landing,
-> a large amount of work merged to `main`: the whole external improvement stack, omni's
+> a large amount of work merged to `main`: the whole external improvement stack, the framework operator's
 > **PKG-AUTO** auto-model resolver (#17), the **TurnEnd** internal package + veto gates
 > (#12, #18), provider retry fixes (#13, #15), and a frontend/UX track (#9–#11). Two items
 > below are therefore likely **already addressed** and must be re-verified against `main`
@@ -291,7 +291,7 @@ in a stale-stream/read-timeout watchdog (a hung stream surfaces as `RequestFaile
 mid-stream failure after deltas streamed, persist the partial as the assistant message and
 end degraded instead of discarding it.
 **27. Memory & retrieval depth: embedding RAG, transcript search, selective elision** · L ·
-*claude-mind* — an embedding-backed recall store (a Mind's, fall back to FTS5); a
+*the host framework* — an embedding-backed recall store (a host framework's, fall back to FTS5); a
 `session_search` builtin over indexed transcripts (no LLM in the path); a visibility/elision
 concept marking large stale tool results collapsed before full compaction.
 **28. Orchestration polish: configurable delegation depth, dynamic tool schemas, plugin
@@ -350,7 +350,7 @@ The verifier dropped these as already-present or already-best-in-class:
   goose/claw-code on re-compaction); stable/dynamic system-prompt split; just-in-time
   agent-guide discovery (`AGENTS.md` / `CLAUDE.md` / `ZAK.md` ancestor-chain, `CONTRIBUTING.md`
   conventions folded after the guides (ADR-0161), + workspace README)
-  with caps + content-hash dedup; a generic `PreLLMCall` recall seam a Mind injects
+  with caps + content-hash dedup; a generic `PreLLMCall` recall seam a host framework injects
   fenced-untrusted context through (the harness ships no memory of its own);
   per-role summarizer routing.
 - **Extensibility:** clean-room no-SDK MCP stdio client with qualified tool naming into one

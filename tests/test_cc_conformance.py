@@ -8,7 +8,8 @@ This module is the guardian of that promise.
 THE RULE: every assertion here proves a piece of the Claude Code extension contract using only
 GENERIC fixtures — never a specific framework by name. If a conformance test can
 only be written by referencing a specific plug-in, the host has leaked plug-in behavior into the
-core and the design is wrong. See docs/CLAUDE-CODE-HOST-ROADMAP.md and docs/CLAUDE-MIND-COMPAT.md.
+core and the design is wrong. See docs/CLAUDE-CODE-HOST-ROADMAP.md and
+docs/HOST-FRAMEWORK-COMPAT.md.
 
 Contract areas (each roadmap row lands its test here):
   - Skills      (done)    — .claude/skills/<name>/SKILL.md discovery + tolerant frontmatter

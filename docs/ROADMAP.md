@@ -576,7 +576,7 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 ### M11 — Learning substrate (P2) — ✅ DONE (2026-06-01, commits `7467420`…HEAD)
 
 > **Status: shipped.** Not a learning *policy* of its own — the **substrate seams** a
-> self-learning framework (e.g. Claude-Mind) folds into. Built in seven reviewed phases,
+> self-learning framework folds into. Built in seven reviewed phases,
 > each adversarially fresh-eyes-reviewed and committed green:
 >
 > 1. **Text tool-calling fallback** (`providers/text_tools.py`) — tool-less local models
@@ -588,7 +588,7 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > 3. **Rules** (`rules/`) — always-on `.md` guidance (`.zakcode/rules` + `.claude/rules`)
 >    in the cacheable tier; sub-agents inherit them; bounded render.
 > 4. **Cross-session memory** — shipped in M11, then **REMOVED** (see
->    [`PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)): memory is claude-mind's, attached via the
+>    [`PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)): memory is the host framework's, attached via the
 >    generic recall (`PreLLMCall`) / lifecycle / tool seams; the harness ships no store.
 > 5. **Skill authoring** (`skills.save_skill` + `save_skill` tool, `.claude/skills`
 >    discovery) — runtime, path-traversal-safe skill creation.
@@ -610,7 +610,7 @@ shipped Recipe Cursor; see Post-M11); additional providers (Anthropic/Bedrock/Ve
 > `qwen2.5:3b` usable, *not* to upgrade the model — plus extraction of a vendor-agnostic
 > provider package. Highlights:
 >
-> 1. **Vendor-agnostic provider package** (`packages/zds-llm-provider`, provider track
+> 1. **Vendor-agnostic provider package** (`packages/llm-provider`, provider track
 >    "M-7/8/9") — the `Provider` ABC + the text tool-calling layer extracted into a
 >    pydantic-only, no-vendor-SDK package; adds `ClaudeCodeProvider` + `BitNetProvider`.
 >    *(Reabsorbed into `zakcode.providers` on 2026-06-10 — single consumer, double

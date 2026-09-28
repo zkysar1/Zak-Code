@@ -1,6 +1,6 @@
 # Zak Code as a Claude-Code-Compatible Host — Strategic Roadmap
 
-*Companion to [`CLAUDE-MIND-COMPAT.md`](CLAUDE-MIND-COMPAT.md) (the gap map). This is the plan: the
+*Companion to [`HOST-FRAMEWORK-COMPAT.md`](HOST-FRAMEWORK-COMPAT.md) (the gap map). This is the plan: the
 architecture, the rule that keeps it clean, the phases (with a live run early), and who builds what.*
 
 > **Status (2026-06-22): Phases 0–3 SHIPPED, and the ecosystem proof landed.** The CC-compat edge
@@ -14,35 +14,35 @@ architecture, the rule that keeps it clean, the phases (with a live run early), 
 Zak Code is a **generic, behavior-free host that speaks the Claude Code extension contract.** It has
 no memory, no goals, no opinions. The *behavior* comes from whatever you plug in:
 
-- Plug in **claude-mind** → it comes to life as a self-directed research mind.
+- Plug in **a host framework** → it comes to life as a self-directed research agent.
 - Plug in a **different skill system** → it comes to life another way.
 - Plug in **someone else's Claude-Code skill / hook / tool** → it just works.
 
 The strategic prize is the last one: because the host speaks the **general** Claude-Code language (not
-"claude-mind's needs"), **anything built for Claude Code runs on Zak Code unmodified** — and
-claude-mind stays an upstream project we pull updates from, never a fork we babysit.
+one framework's needs), **anything built for Claude Code runs on Zak Code unmodified** — and
+the host framework stays an upstream project we pull updates from, never a fork we babysit.
 
 ## Architecture: generic core · CC-compat edge · plug-ins
 
 ```
-   plug-ins      │  claude-mind   ·   other skill systems   ·   3rd-party CC tools
+   plug-ins      │  host framework  ·   other skill systems   ·   3rd-party CC tools
   ───────────────┼──────────────────────────────────────────────────────────────
    CC-compat edge │  translates Claude Code's language ⇄ generic seams
                   │  (skills · commands · hooks · settings · transcript · env)
   ───────────────┼──────────────────────────────────────────────────────────────
    generic core   │  hook seams · tool registry · skills loader · SessionStore · context
-                  │  (knows nothing about Claude Code OR claude-mind)
+                  │  (knows nothing about Claude Code OR any specific host framework)
 ```
 
 The core already exists and stays CC-agnostic. The **CC-compat edge** is the thing we build out. Part
-of it already exists and proves the pattern: Zak Code didn't add a "claude-mind loop" — it added a
-generic `TURN_END` event plus a thin translator (`"Stop" → TURN_END`). The Mind plugs into the
+of it already exists and proves the pattern: Zak Code didn't add a framework-specific loop — it added a
+generic `TURN_END` event plus a thin translator (`"Stop" → TURN_END`). The host framework plugs into the
 generic event. **Every item in this plan follows that template.**
 
 ## The boundary test (run on every step)
 
 > **1. Generic, not specific.** *Am I teaching the host a GENERIC Claude-Code capability any plug-in
-> can use — or leaking claude-mind-specific behavior into the host?* If the latter, redesign until the
+> can use — or leaking framework-specific behavior into the host?* If the latter, redesign until the
 > host stays generic and the plug-in-specific part lives on the plug-in's side.
 >
 > **2. Within reason.** *Is this a real Claude-Code contract worth speaking — or a CC implementation
@@ -53,7 +53,7 @@ Where a step involves a judgment call, the plan flags it inline as **⟂ boundar
 
 ## The Claude Code contract — the surface we're implementing
 
-"Speaking the language" means these nine areas. Each is built as a generic capability; claude-mind is
+"Speaking the language" means these nine areas. Each is built as a generic capability; the host framework is
 just the first consumer that proves it.
 
 1. **Skills** — `.claude/skills/*/SKILL.md` discovery, tolerant frontmatter, invocation, args, chaining.
@@ -78,7 +78,7 @@ The strategic backbone. Without this, the abstraction rots into hacks within two
 | Item | What / why | Owner | Effort |
 |---|---|---|---|
 | **Name the CC-compat layer** | Gather the scattered translators (`settings_loader` Stop-map, tool-name map, `$CLAUDE_PROJECT_DIR`) under one named, documented surface (`compat/claude_code/`). Make "the edge" a real place, not a habit. | dev | S |
-| **Conformance suite** | A test suite that asserts each contract area independently of claude-mind ("a Stop hook returning `{decision:block}` re-enters the loop", "a skill with `triggers:[/x]` is invocable as `/x`"). **This is how we keep the abstraction honest forever** — no contract piece is "done" without a CC-generic test that never names the Mind. | dev | M |
+| **Conformance suite** | A test suite that asserts each contract area independently of any specific framework ("a Stop hook returning `{decision:block}` re-enters the loop", "a skill with `triggers:[/x]` is invocable as `/x`"). **This is how we keep the abstraction honest forever** — no contract piece is "done" without a CC-generic test that never names a specific host framework. | dev | M |
 | **Fix stale docs** | `INTEGRATIONS.md` "deferred" section wrongly says Stop-continuation + settings ingestion aren't built — they are. Correct it; publish the CC-compat contract as the public integration surface. | dev | S |
 
 ## Phase 1 — Minimum viable host → **LIVE "ALIENS" RUN** 🛸 — ✅ DONE
@@ -87,41 +87,41 @@ The strategic backbone. Without this, the abstraction rots into hacks within two
 enforcement, plus `settings.local.json` layering — the minimum viable generic host surface.
 
 The proof-of-life. Almost entirely **dev-side surface work** (CLI + skills + settings reader), so it
-moves fast with no hard omni dependency. Each item is a generic capability.
+moves fast with no hard framework-operator dependency. Each item is a generic capability.
 
-| Item | Generic capability (not "make Mind work") | Owner | Effort |
+| Item | Generic capability (not "make one specific host framework work") | Owner | Effort |
 |---|---|---|---|
 | **Trigger dispatch** | Route `/<tok>` on a skill's `triggers:` frontmatter, not just its folder name. | dev | S |
 | **Command args** | Thread the text after the command into the skill body, so `/x foo --bar` keeps `foo --bar`. | dev | S |
 | **`use_skill` args** | Optional `args` param so skill→skill chaining (`Skill('x') with args='loop'`) survives. | dev | S |
-| **`user-invocable`** | Honor the frontmatter flag: gate user-typed `/x` vs. model-invoked `use_skill` on it (a generic safety contract, not a Mind rule). | dev | S |
+| **`user-invocable`** | Honor the frontmatter flag: gate user-typed `/x` vs. model-invoked `use_skill` on it (a generic safety contract, not a framework rule). | dev | S |
 | **`settings.local.json`** | Read it alongside `settings.json`, local-over-project precedence. | dev / ⟂ shared | S |
-| **Daemon startup** | **⟂ boundary call:** the host does **not** manage claude-mind's `mind_api` daemon. The Mind starts it via a `SessionStart` hook the host **already fires**. Host work = none; Mind config = one settings entry. | Mind-side config | — |
-| **Tolerate transcript gap** | First run is always "fresh", so the transcript view (Phase 2) isn't on the critical path; the Mind's stop-hook already gets `last_assistant_message` directly. Fail-open. | — | — |
+| **Daemon startup** | **⟂ boundary call:** the host does **not** manage the host framework's daemon. The framework starts it via a `SessionStart` hook the host **already fires**. Host work = none; framework config = one settings entry. | framework-side config | — |
+| **Tolerate transcript gap** | First run is always "fresh", so the transcript view (Phase 2) isn't on the critical path; the framework's stop-hook already gets `last_assistant_message` directly. Fail-open. | — | — |
 
-**Milestone:** `zakcode cli` in a fresh `aliens/` folder → `/start aliens` → the Mind boots, picks a
+**Milestone:** `zakcode cli` in a fresh `aliens/` folder → `/start aliens` → the framework boots, picks a
 goal, researches, and the loop re-enters itself. We watch it actually do research. **Proof the engine
 works on Zak Code.**
 
-## Phase 2 — Transcript & lifecycle fidelity (mostly omni seam-domain) — ✅ DONE
+## Phase 2 — Transcript & lifecycle fidelity (mostly framework-operator seam-domain) — ✅ DONE
 
 **Shipped:** a Claude-Code-shaped `transcript_path` view, SessionStart `source`, PreCompact `trigger`
 at the payload top level, and PostToolUse `additionalContext` (StopFailure + UserPromptExpansion
 events deferred — see below; UserPromptSubmit shipped later as ADR-0134, SessionStart's words as
 ADR-0211).
 
-Make the host *record and signal* like Claude Code, so the Mind's full machinery (recovery, resume,
+Make the host *record and signal* like Claude Code, so the host framework's full machinery (recovery, resume,
 consolidation) works — and so do other CC tools that read transcripts/lifecycle.
 
 | Item | Generic capability | Owner | Effort |
 |---|---|---|---|
-| **Transcript view** | **⟂ boundary call:** keep `SessionStore` as the clean source of truth; expose a Claude-Code-shaped `.jsonl` *view* at the edge, handed to hooks as `transcript_path`. Core stays CC-agnostic; the edge does the projection. | omni (store) + dev (projection) | M |
-| **SessionStart `source`** | Add `startup`/`resume`/`compact` to the lifecycle payload (resume-vs-fresh branching). | omni | S |
-| **PreCompact `trigger`** | Surface `trigger` at the stdin top level, matching the contract. | omni | S |
-| **PostToolUse `additionalContext`** | Honor it (a hook injecting post-tool context). ~5 lines. | omni | S |
-| **`StopFailure` + `UserPromptExpansion` events** | Fire these generic events in the loop (crash-recovery + prompt telemetry). | omni | M |
-| **`UserPromptSubmit` event** ✅ shipped (ADR-0134) | Fires ONCE at the user-message boundary with the CC stdin contract (`prompt`), on both turn paths, and folds the hook's `additionalContext` (or plain stdout) into every request of that turn as an ephemeral tail. A real firing seam on turn ENTRY, not a mapping entry. Injection only: exit-2 prompt-blocking is a follow-up that the one known consumer never uses. | omni | M |
-| **Lifecycle hook stdout as context (SessionStart)** ✅ shipped (ADR-0211) | CC adds what a SessionStart hook prints to the context the model reads. `HookManager.fire()` now returns what its `SessionStart` shell hooks said on exit 0 (plain stdout, or the JSON `additionalContext`), and the loop hands it to the model ONCE as a `[hook]` user message where the hook fired: after the ask at startup and resume, after the summary at a compaction. Every other lifecycle event stays observe-only, as CC's own `PreCompact` is. Until 2026-09-21 this row was a documented divergence whose cost nobody had measured: one served run compacted 19 times in 35 minutes and the plug-in's restore text was dropped each time. | omni | M |
+| **Transcript view** | **⟂ boundary call:** keep `SessionStore` as the clean source of truth; expose a Claude-Code-shaped `.jsonl` *view* at the edge, handed to hooks as `transcript_path`. Core stays CC-agnostic; the edge does the projection. | framework operator (store) + dev (projection) | M |
+| **SessionStart `source`** | Add `startup`/`resume`/`compact` to the lifecycle payload (resume-vs-fresh branching). | framework operator | S |
+| **PreCompact `trigger`** | Surface `trigger` at the stdin top level, matching the contract. | framework operator | S |
+| **PostToolUse `additionalContext`** | Honor it (a hook injecting post-tool context). ~5 lines. | framework operator | S |
+| **`StopFailure` + `UserPromptExpansion` events** | Fire these generic events in the loop (crash-recovery + prompt telemetry). | framework operator | M |
+| **`UserPromptSubmit` event** ✅ shipped (ADR-0134) | Fires ONCE at the user-message boundary with the CC stdin contract (`prompt`), on both turn paths, and folds the hook's `additionalContext` (or plain stdout) into every request of that turn as an ephemeral tail. A real firing seam on turn ENTRY, not a mapping entry. Injection only: exit-2 prompt-blocking is a follow-up that the one known consumer never uses. | framework operator | M |
+| **Lifecycle hook stdout as context (SessionStart)** ✅ shipped (ADR-0211) | CC adds what a SessionStart hook prints to the context the model reads. `HookManager.fire()` now returns what its `SessionStart` shell hooks said on exit 0 (plain stdout, or the JSON `additionalContext`), and the loop hands it to the model ONCE as a `[hook]` user message where the hook fired: after the ask at startup and resume, after the summary at a compaction. Every other lifecycle event stays observe-only, as CC's own `PreCompact` is. Until 2026-09-21 this row was a documented divergence whose cost nobody had measured: one served run compacted 19 times in 35 minutes and the plug-in's restore text was dropped each time. | framework operator | M |
 
 ## Phase 3 — Settings, permissions & presentation (the parity subsystems) — ✅ DONE
 
@@ -130,11 +130,11 @@ whole-tool deny binds even read-only tools), a statusLine subsystem, and output-
 prompt — all off by default.
 
 The genuinely-new generic subsystems. All three are **already "Planned" in Zak Code's own roadmap**,
-so they serve broad Claude-Code parity, not just the Mind.
+so they serve broad Claude-Code parity, not just one framework.
 
 | Item | Generic capability | Owner | Effort |
 |---|---|---|---|
-| **Permission ingestion** | Read CC `permissions.{allow,deny}` `Tool(glob)` gestures from settings(.local).json and translate them into Zak Code's (stronger) deny-first policy. **⟂** Translate the *gesture grammar*; don't weaken the catastrophic floor. | dev (translator) + omni (policy seam) | M |
+| **Permission ingestion** | Read CC `permissions.{allow,deny}` `Tool(glob)` gestures from settings(.local).json and translate them into Zak Code's (stronger) deny-first policy. **⟂** Translate the *gesture grammar*; don't weaken the catastrophic floor. | dev (translator) + framework operator (policy seam) | M |
 | **statusLine** | A generic statusLine subsystem: read the `statusLine` command from settings, feed it session JSON per turn, render it. | dev | M–L |
 | **output-styles** | A generic output-style subsystem (named styles that shape generation + persist in settings). | dev | M–L |
 
@@ -176,8 +176,8 @@ none is a loop-blocker, and each is recognised-and-handled today (never silently
 Faithful ≠ slavish. These are Claude-Code *quirks*, not contracts:
 
 - **Literal `~/.claude/` home** — honor the *concept* (a user-level config dir) at the edge; keep Zak Code's own `~/.zakcode/`. ⟂
-- **The `mind_api` daemon** — claude-mind's own process; the host never manages a plug-in's background services. ⟂
-- ~~**`ScheduleWakeup` tool** — not on the heartbeat path (the loop re-enters via skill chaining); build only if a real plug-in needs timed self-wake.~~ **SUPERSEDED — shipped as ADR-0094** (`schedule_wakeup`, aliases `ScheduleWakeup`/`wakeup`). The premise was wrong, not merely outdated: a real plug-in DID need timed self-wake, and it was the Mind's deadman net and a parked worker's re-poll — the primitive its resurrection is built on, not a convenience. Kept struck through rather than deleted because this list's whole job is to record what was judged unnecessary, and this row is the one time that judgement cost a live fleet (four parked Bodies dead at their prompts, zc-03 2026-08-29). See the CLAUDE-MIND-COMPAT.md `ScheduleWakeup` row.
+- **The `mind_api` daemon** — the host framework's own process; the host never manages a plug-in's background services. ⟂
+- ~~**`ScheduleWakeup` tool** — not on the heartbeat path (the loop re-enters via skill chaining); build only if a real plug-in needs timed self-wake.~~ **SUPERSEDED — shipped as ADR-0094** (`schedule_wakeup`, aliases `ScheduleWakeup`/`wakeup`). The premise was wrong, not merely outdated: a real plug-in DID need timed self-wake, and it was the host framework's deadman net and a parked worker session's re-poll — the primitive its resurrection is built on, not a convenience. Kept struck through rather than deleted because this list's whole job is to record what was judged unnecessary, and this row is the one time that judgement cost a live fleet (four parked worker sessions dead at their prompts, 2026-08-29). See the HOST-FRAMEWORK-COMPAT.md `ScheduleWakeup` row.
 - **`CLAUDE_CODE_AUTO_COMPACT_WINDOW` envs** — plug-ins degrade gracefully without them.
 
 If faithfully speaking the contract ever forces a genuinely bad design into the core, that's a signal
@@ -185,19 +185,19 @@ to expose the capability more cleanly at the edge — and I'll flag it, per "wit
 
 ## Ownership at a glance
 
-- **Dev surface (build via PR, omni reviews):** the named compat layer, conformance suite, skill/command
+- **Dev surface (build via PR, framework operator reviews):** the named compat layer, conformance suite, skill/command
   dispatch + args + `user-invocable`, settings reading/dispatch, the permission-gesture translator,
   statusLine + output-styles, the transcript *projection*, docs, ecosystem proof.
-- **Omni seam-domain (design-sensitive internals):** new hook *events* (StopFailure, UserPromptExpansion, UserPromptSubmit),
+- **Framework-operator seam-domain (design-sensitive internals):** new hook *events* (StopFailure, UserPromptExpansion, UserPromptSubmit),
   hook *payload* fields (SessionStart `source`, PreCompact `trigger`, PostToolUse `additionalContext`),
   the SessionStore side of the transcript view, the permission-policy core seam.
-- **Mind-side (config, not host):** starting `mind_api` via a SessionStart hook; any Mind-specific paths.
+- **Framework-side (config, not host):** starting `mind_api` via a SessionStart hook; any framework-specific paths.
 
-> Phase 1 is almost entirely dev-surface, so the **live aliens run isn't blocked on omni.** Phases 2–3
-> lean into omni's seam-domain — sequence those with omni in the loop.
+> Phase 1 is almost entirely dev-surface, so the **live aliens run isn't blocked on the framework operator.** Phases 2–3
+> lean into the framework operator's seam-domain — sequence those with the framework operator in the loop.
 
 ## How we keep the abstraction honest
 
 The **conformance suite is the guardian.** Rule: *no Claude-Code contract piece is "done" until it has
-a test that proves it generically — without ever naming claude-mind.* If a test can only be written by
-referencing the Mind, the boundary has been crossed and the design is wrong.
+a test that proves it generically — without ever naming a specific host framework.* If a test can only be written by
+referencing a specific framework, the boundary has been crossed and the design is wrong.

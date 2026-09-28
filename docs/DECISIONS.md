@@ -105,8 +105,8 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   not exist in code. The owner wanted Zak Code to be a drop-in replacement for Claude Code's
   domain-agnostic cognitive core (skills carry domain knowledge), with planning bolstered at
   the **first/near-term layer** — "what am I doing immediately next", decompose-to-primitives
-  then execute — explicitly NOT the long-horizon, multi-layer planning a higher "mind"
-  (ayoai-mind) owns. The owner had researched HTN/PDDL and asked that decomposition, "one of
+  then execute — explicitly NOT the long-horizon, multi-layer planning a host framework
+  owns. The owner had researched HTN/PDDL and asked that decomposition, "one of
   the most basic forms," be done "extremely well, not lazy."
 - **Decision:** Add a **hierarchical task network** as the engine substrate (`zakcode/tasks.py`):
   every node is **compound** (a goal that must be decomposed into `children` before it is
@@ -156,7 +156,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     gate (withhold the first mutating tool until a plan exists; bounded, fail-open), and **R6** a
     shared structured-handoff instruction on every sub-agent. **R7** (a facts/assumptions ledger)
     stays DEFERRED, per its own "watch, don't build" recommendation — it belongs to the higher-level
-    mind, not the near-term core. The single-threaded inline design was kept (no planner/executor
+    framework, not the near-term core. The single-threaded inline design was kept (no planner/executor
     split) per the report's "keep it sharp; simple beats agentic" caveat.
 
   - **Update (2026-06-15, issue #32 — stale-plan auto-clear):** generalized the turn-start plan
@@ -172,17 +172,17 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     wired identically on both the buffered and streaming loop paths.
 
   - **Update (2026-06-15, primitiveness criteria — HTN cross-system survey):** surveyed three
-    sibling HTN/decomposition implementations for transferable ideas — the Ayoai-Environment-Processor
+    sibling HTN/decomposition implementations for transferable ideas — an environment-processor
     (a dual **HTN + A\*** planner over a STRIPS world-model, archive-informed cost weighting,
-    LLM-grounded decomposition); **ayoai-mind** (the higher mind's aspirations→goals layer, a
-    22-criterion goal-selector, scope classification, per-goal verification + blocker-TTL); and the
-    omni continual-learning framework's `/decompose` skill (a model-driven HTN *protocol*:
+    LLM-grounded decomposition); a host framework's goals layer (a
+    22-criterion goal selector, scope classification, per-goal verification + blocker-TTL); and a
+    continual-learning framework's `/decompose` skill (a model-driven HTN *protocol*:
     5-criterion primitiveness test, idempotency gate, verification-as-schema). **Headline:** the lean
     design here already *structurally* neutralizes most of what those systems add machinery for —
-    full-replace `update_plan` moots idempotency back-references (ayoai-mind's own report says so
+    full-replace `update_plan` moots idempotency back-references (the host framework's own report says so
     verbatim), `kind`-inferred-from-nesting makes hierarchical cycles and "compound-but-empty" states
     unrepresentable, and the issue-#32 idle auto-clear subsumes stale-blocker TTLs. The one genuinely
-    additive, philosophy-fitting idea (convergent across `/decompose` AND ayoai-mind) was implemented:
+    additive, philosophy-fitting idea (convergent across `/decompose` AND the host framework) was implemented:
     the primitiveness **stopping-rule** now names the two criteria a single-action floor omits — a
     **clear done-condition** and **no approach decision still hidden in the step** — in both the
     `_PLANNING` system-prompt section and the `update_plan` tool description. Model-facing guidance
@@ -442,7 +442,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   `relay-start → relay-middle → relay-finish` in one turn, every call `source=tool`, all three
   execution markers landed, `completed` for ~$0.003.
 - **Consequences:** skills are now a model-driven, composable capability surface, and the
-  `source` field lets a learning mind weight model- vs. operator-driven selections.
+  `source` field lets a learning host framework weight model- vs. operator-driven selections.
 - **Follow-ups (shipped 2026-06-20):**
   - **Sub-agents can invoke + chain skills.** The parent's resolver is threaded into the
     `SubAgentRunner` → each child `AgentLoop`, and `use_skill` is registered on the child registry.
@@ -463,16 +463,16 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   - **CLI `/<skill>` runs the turn immediately (2026-08-19).** The REPL used to load the body
     lazily and print "describe your task and it will apply" — a second message was needed before
     anything happened, which is not Claude Code's slash semantics and confused the first live
-    Claude-Mind boot (`/start sera` loaded and then sat at the prompt). Core gained
+    host-framework boot (`/start` loaded and then sat at the prompt). Core gained
     `Agent.compose_skill_turn` (load + defang + signal, **no session mutation**, returns
     `turn_text`); the REPL streams that text through the same path as any typed message, so the
     slash command IS the turn. `Agent.invoke_skill` is retained, rewritten over compose, as the
-    deferred stage-context variant for embedders. First defect surfaced by the Serene
+    deferred stage-context variant for embedders. First defect surfaced by an early
     dogfooding engagement.
   - **The composed slash turn carries invocation provenance (2026-08-19, same live boot, one
     fix later).** Running the skill immediately was not enough: the composed text
     (`[skill: start]` + body) never said WHO invoked it, and frameworks ship skills whose own
-    rules forbid model self-invocation (a Mind's "control skills: Claude MUST NOT invoke
+    rules forbid model self-invocation (a host framework's "control skills: Claude MUST NOT invoke
     /start"). A rule-following model (Gemini, no Claude-Code training priors) therefore
     refused the operator's own keystroke: "user-only command, please run this yourself in the
     terminal" — answered TO the terminal. Two-part fix, both in core: `compose_skill_turn` now
@@ -495,7 +495,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     agent with no skills surface) falls through as plain text, since a one-shot prompt may
     legitimately begin with a slash-path.
   - **Block-form frontmatter lists (2026-08-20).** A pre-deployment smoke over a live
-    Claude-Mind tree (78 skills, zero parse errors) found 60 of 78 declare lists in YAML
+    host-framework skill tree (78 skills, zero parse errors) found 60 of 78 declare lists in YAML
     block form (`triggers:` + `- "/start"` lines) — which the minimal parser returned as an
     EMPTY STRING, silently no-opping trigger routing (masked by name-matching) and breaking
     the extras-preservation promise for the majority spelling. `parse_frontmatter` now does a
@@ -510,10 +510,10 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   principle ("every compatibility surface off by default — a foreign workspace never changes
   behavior un-opted-in", INTEGRATIONS.md) is right for embedders: the SDK passes
   `enable_settings_hooks=True` explicitly and works. But the interactive CLI inherited the
-  library default *silently*, so a Claude-Mind workspace loaded, discovered skills, ran them —
-  and dropped every hook. The first live Mind boot failed four layers downstream (`/start`
-  refused on a missing hook-injected `MIND_SID`), and the in-session model diagnosed it as an
-  unfixable environment problem. Second defect surfaced by the Serene dogfooding engagement;
+  library default *silently*, so a host-framework workspace loaded, discovered skills, ran them —
+  and dropped every hook. The first live boot failed four layers downstream (`/start`
+  refused on a missing hook-injected env var), and the in-session model diagnosed it as an
+  unfixable environment problem. Second defect surfaced by an early dogfooding engagement;
   the operator's design review named the root cause: same core, different defaults per door,
   with the risky door silent.
 - **Decision:** Make `settings_hooks` **tri-state** (`bool | None`, default `None` = unset).
@@ -536,7 +536,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
   (that is a workaround shipped as a fix — the operator explicitly rejected it); prompting
   every session without persistence (nags the common case; Claude Code's folder trust is
   remembered, so ours is).
-- **Consequences:** `zakcode chat` in a Claude-Mind workspace is now zero-config: answer `y`
+- **Consequences:** `zakcode chat` in a host-framework workspace is now zero-config: answer `y`
   once and the Stop-hook loop, PreToolUse injection, and SessionStart hooks all fire from then
   on. The trust store is keyed per surface (`{path: {settings_hooks: …}}`) so permissions /
   statusLine / output-styles can join the same one-decision flow later without re-asking.
@@ -583,7 +583,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 ## ADR-0015 — Stuck ladder gets a step-back rung: attack the premise before giving up
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** A field turn (serene) burned 17 iterations trying to add a knowledge-tree
+- **Context:** A field turn burned 17 iterations trying to add a knowledge-tree
   node: every attempt varied the METHOD (`tree` as a shell command, `tree.sh`, `tree.py`
   with guessed flags) while sharing one wrong PREMISE — that `world/knowledge/tree/`
   existed relative to the cwd (the real tree lived under an external `.mind-data/` root).
@@ -616,7 +616,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 ## ADR-0016 — One Ctrl-C gesture can never kill the session (or the cockpit)
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** Field incident (serene): the operator hammered Ctrl-C at a turn that looked
+- **Context:** Field incident: the operator hammered Ctrl-C at a turn that looked
   hung (a model call chewing a 529-line `git status` prompt), and the whole cockpit died —
   every tmux pane, one gesture. Three stacked defects: (1) presses landing in the gaps of
   the mid-turn interrupt teardown (during the drain pump, the wait-line stop, the notice
@@ -653,7 +653,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 ## ADR-0017 — Compound requests decompose into plan steps; a coverage backstop guards the finish
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** Field incident (serene): one message asked for two skills — a
+- **Context:** Field incident: one message asked for two skills — a
   /fresh-eyes-code review AND an /encode-session. A mid-turn interjection plus a session
   replay evicted the first ask from conversation memory, and the turn ended "done" having
   run only the second. Conversation memory is the wrong home for a multi-part ask: it is
@@ -711,7 +711,7 @@ a nudge never carries a loop; the change removes a cost, not a guarantee.
 ## ADR-0018 — Degeneration is contained: model-default temperature, a per-completion output cap, and a repetition guard
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** Field incident (serene, the morning zakpick put Gemini on the quick
+- **Context:** Field incident (the morning zakpick put Gemini on the quick
   categories): gemini-2.5-flash-lite fell into the documented Gemini 2.5 repetition
   attractor — "I will now provide the information you requested." streamed once a second,
   indefinitely — and only the operator's Ctrl-C ended the turn. Three harness facts made
@@ -1008,15 +1008,15 @@ provider layer, not a vendor special case leaking into the loop.
 ## ADR-0025: Workspace hooks always load — the adoption flag is gone
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** Settings-hooks ingestion was tri-state (`ZAKCODE_SETTINGS_HOOKS` unset/true/false), resolved in the interactive CLI by a one-time folder-trust prompt remembered per workspace. On a Mind deployment box the ask was never answered, so the framework ran with ZERO of its declared hooks — no agent-env injection, no Stop-hook veto, none of its 43 PreToolUse gates — and the miss was invisible until a transcript showed the model hand-typing what the inject hook should have added. This is the operator's standing rule made concrete: no feature flags, one way of doing things — a framework whose protections ride on hooks must never silently run unprotected.
+- **Context:** Settings-hooks ingestion was tri-state (`ZAKCODE_SETTINGS_HOOKS` unset/true/false), resolved in the interactive CLI by a one-time folder-trust prompt remembered per workspace. On a host-framework deployment box the ask was never answered, so the framework ran with ZERO of its declared hooks — no agent-env injection, no Stop-hook veto, none of its 43 PreToolUse gates — and the miss was invisible until a transcript showed the model hand-typing what the inject hook should have added. This is the operator's standing rule made concrete: no feature flags, one way of doing things — a framework whose protections ride on hooks must never silently run unprotected.
 - **Decision:** Hooks declared in `<workspace>/.claude/settings.json`, `.claude/settings.local.json`, and `.zakcode/settings.json` ALWAYS load at Agent construction. The `settings_hooks` setting, the `enable_settings_hooks` parameter, the folder-trust prompt, and the whole `workspace_trust` module are deleted. What remains is not a flag but the security floor, unchanged: every hook command is scanned against the catastrophic blocklist (matches hard-denied in autonomous mode, registered-with-warning otherwise), and provider keys are scrubbed from every hook child's environment.
-- **Alternatives rejected:** keeping the prompt but defaulting to "always" (still a flag, still a divergent path, and a dismissed prompt still meant an unprotected session); folding hooks under a broader workspace-trust gate (same silent-failure shape, one level up); auto-enabling only when a Mind-style framework is detected (special-casing one consumer inside a generic engine).
+- **Alternatives rejected:** keeping the prompt but defaulting to "always" (still a flag, still a divergent path, and a dismissed prompt still meant an unprotected session); folding hooks under a broader workspace-trust gate (same silent-failure shape, one level up); auto-enabling only when a specific framework is detected (special-casing one consumer inside a generic engine).
 - **Consequences:** a workspace's committed automation is live the moment zakcode opens it — the Claude Code parity story is now unconditional; opening an unfamiliar repo executes its declared hooks (mitigated by the danger scan and key scrubbing — the same posture Claude Code lands on after one keystroke); the sibling opt-ins (`settings_permissions`, `output_style`, `status_line`) are deliberately untouched — they reshape permission posture and voice rather than run declared automation, and each needs its own decision.
 
 ## ADR-0026: The broken-record guard, and skill references must be request-shaped
 
 - **Status:** Accepted (shipped, 2026-08-26).
-- **Context:** Two more small-model transcripts. (1) A Mind loop session re-sent ONE
+- **Context:** Two more small-model transcripts. (1) A host-framework loop session re-sent ONE
   closing paragraph ("The plan shows all 3 steps are complete … No further action is
   needed") five times: the framework's Stop hook correctly vetoed each finish, the veto
   re-prompt went out, and the model answered it by re-emitting its previous message
@@ -1090,7 +1090,7 @@ provider layer, not a vendor special case leaking into the loop.
 - **Status:** Accepted (shipped, 2026-08-26).
 - **Context:** The protected-path floor (ADR self-remediation Step 2, PR #27) scanned the
   file-path arguments of EVERY tool against the protected patterns without consulting the
-  tool's permission tier. Field incident (2026-08-26, sera on a Mind deployment): a
+  tool's permission tier. Field incident (2026-08-26, on a host-framework deployment): a
   `read_file` of the agent's OWN `.claude/skills/google-drive-access/SKILL.md` was hard-denied
   in autonomous with "blocked write to a protected path: agent config (.claude/)" — a read,
   refused by a write gate, with a message describing it as a write. The wrongly-refused first
@@ -1111,7 +1111,7 @@ provider layer, not a vendor special case leaking into the loop.
   tool (no spec) stays fail-closed (tier defaults to most-dangerous → no read exemption).
   The grant fast-paths are unchanged: a read-exempt call falls through to `decide()` and
   allows; a secrets read still re-decides and can never ride a session grant.
-- **Consequences:** Mind-deployment agents can read their own skills, rules, and settings
+- **Consequences:** Framework-deployment agents can read their own skills, rules, and settings
   with file tools again; `.env` reads still hard-deny in autonomous and re-prompt
   interactively; write behavior is byte-for-byte unchanged. Residual (unchanged, deliberate):
   autonomous agents still cannot WRITE `.claude/` — deployments whose framework expects
@@ -1125,7 +1125,7 @@ provider layer, not a vendor special case leaking into the loop.
   files, as long as the settings allow."
 - **Context:** The protected-path floor hardcoded `agent config (.claude/)` as a built-in
   class, so an autonomous agent could never write its own skills, rules, or settings — even
-  though frameworks built on this engine (the Mind framework) are DESIGNED around agents
+  though frameworks built on this engine are DESIGNED around agents
   evolving their own config, with git as the safety net and a deliberate, narrow
   constitutional-anchor deny (`settings.local.json` protecting itself) as the only hard line.
   Meanwhile the mechanism that could express that policy — CC `permissions.{allow,deny,ask}`
@@ -1144,12 +1144,12 @@ provider layer, not a vendor special case leaking into the loop.
   protected paths and bind reads AND writes, hard-denying in autonomous. The `.git/`, `.env`,
   and venv built-ins are unchanged (not named by the ruling; `.env` read-blocking and the
   catastrophic-command floor remain the never-waivable secrets/safety spine).
-- **Alternatives rejected:** keeping `.claude/` built-in but exempting Mind-style workspaces
+- **Alternatives rejected:** keeping `.claude/` built-in but exempting host-framework workspaces
   (special-casing one consumer); a config flag to disable the built-in (a flag — the standing
   rule is one way of doing things); ingestion-on-only-when-permissions-present (still a
   divergent path, and indistinguishable from silent non-loading when a file has a typo).
-- **Consequences:** Mind agents self-evolve their skills/rules/settings under zakcode exactly
-  as the framework intends, and Mind's constitutional anchor (the self-referential deny in
+- **Consequences:** Host-framework agents self-evolve their skills/rules/settings under zakcode exactly
+  as the framework intends, and a framework's constitutional anchor (the self-referential deny in
   `settings.local.json`) is now actually ENFORCED by the engine instead of approximated by a
   blanket block. A workspace with no permissions block leaves `.claude/` fully open — that is
   the ruling's default, not an oversight. An agent can edit settings files to loosen its own
@@ -1165,8 +1165,8 @@ provider layer, not a vendor special case leaking into the loop.
   `deny Read|Edit|Write|MultiEdit(glob)` gestures all ingested into ONE protected-path list,
   and settings-ingested extras were deliberately never read-exempt (ADR-0028, so a
   `deny Read(glob)` would bind reads). The two decisions composed into a regression: every
-  Edit/Write-only deny also blocked READS. Measured against the real Ayoai Mind settings pair
-  (the shape sera runs): 36 of 44 deny gestures are Edit/Write-only, so under always-on
+  Edit/Write-only deny also blocked READS. Measured against a real host-framework settings pair:
+  36 of 44 deny gestures are Edit/Write-only, so under always-on
   ingestion `read_file` on `world/knowledge/tree/_tree.yaml`, the `start`/`stop`/`boot`
   control skills, and `settings.local.json` itself would hard-deny in autonomous — paths the
   framework REQUIRES agents to read (Tier-1 retrieval reads the tree; the anchor tripwire
@@ -1180,7 +1180,7 @@ provider layer, not a vendor special case leaking into the loop.
   each compiled description with the `" (write-only)"` mark; `_protected_path_reason`
   skips marked patterns for READ_ONLY-tier tools exactly as it skips the write-sensitive
   built-ins. Operator `ZAKCODE_PROTECTED_PATHS` regexes have no verb and stay strict.
-- **Consequences:** Verified against the live Mind settings on absolute paths — the tree,
+- **Consequences:** Verified against the live host-framework settings on absolute paths — the tree,
   control skills, anchor, and validator all read=ALLOW / write=DENY; `.env.local` denied
   both ways (a `Read` deny plus the built-in). Write behavior is unchanged: every Edit/Write
   deny binds writes exactly as before. Residual found by the same probe and fixed next
@@ -1193,9 +1193,9 @@ provider layer, not a vendor special case leaking into the loop.
 - **Context:** Found by the ADR-0030 verification probe. The permission decision runs on
   the RAW tool arguments (step 1 of the seam, before the tool resolves anything), while
   Claude Code matches path rules against absolute paths — its file tools only take absolute
-  paths. A framework's deny globs are written for that world: the Mind's
+  paths. A framework's deny globs are written for that world: a host framework's
   `Edit(*/.claude/skills/start/*)` needs a parent segment. So the same file was denied when
-  spelled `/opt/ayoai-mind/.claude/skills/start/SKILL.md` and ALLOWED when spelled
+  spelled with an absolute path and ALLOWED when spelled
   `.claude/skills/start/SKILL.md` — and models spell paths relative to the workspace
   constantly. Pre-existing, but ADR-0029 made the settings the SOLE authority over
   `.claude/`, which turned a quirk into a bypass of every `*/`-prefixed rule.
@@ -1209,19 +1209,19 @@ provider layer, not a vendor special case leaking into the loop.
   optional (fixes one idiom, silently diverges from CC glob semantics, and leaves absolute
   patterns like `//C:/...` unreachable from relative spellings); resolving in each file tool
   (the decision has already been made by then).
-- **Consequences:** Verified against the live Mind settings: the relative spelling of a
+- **Consequences:** Verified against the live host framework settings: the relative spelling of a
   control-skill file now denies exactly like the absolute one; the verb semantics of
   ADR-0030 are unchanged (read still ALLOW). A policy constructed without a root (library
   callers, tests) behaves exactly as before.
 
-## ADR-0032: The served mind's session store lives under the workspace — conversations travel with the mind, not the host
+## ADR-0032: The served agent's session store lives under the workspace — conversations travel with the workspace, not the host
 
-- **Status:** Accepted (shipped, 2026-08-27). Found live by the Vinheim presence work
-  (g-369-15): a served mind's conversations vanished with the host that served it.
+- **Status:** Accepted (shipped, 2026-08-27). Found live during presence work:
+  a served agent's conversations vanished with the host that served it.
 - **Context:** `SessionStore()` defaulted to the per-user home (`~/.zakcode/sessions`),
   which is right for the terminal client — one human, one machine, many projects — and
   wrong for `zakcode webapp`, whose topology is one container per served workspace. A
-  served workspace IS one mind's home: its identity (`self.md`), rules, skills, the
+  served workspace IS one agent's home: its identity (`self.md`), rules, skills, the
   `.say` inbox, the `.current-session` marker and its uploads already live there. Only the
   transcripts those things point at lived somewhere else, on the serving host's disk. So
   the marker (workspace-scoped, durable) and its target (host-scoped, ephemeral) were on
@@ -1241,22 +1241,22 @@ provider layer, not a vendor special case leaking into the loop.
   it); repointing `ZAKCODE_HOME` at the workspace (`zakcode_home()` is a config home only
   and must never be treated as a workspace — D20 — and it would drag `.env` along with
   it); a host-side symlink from `~/.zakcode/sessions` into the workspace (leaves the
-  lifetime split in place and, with several minds served from one host user, makes every
+  lifetime split in place and, with several agents served from one host user, makes every
   daemon share one store).
 - **Consequences:** Conversations survive the host: stop the container, start another
   against the same workspace, `/sessions` lists the same transcripts and
   `/sessions/current` resolves. Two served workspaces are isolated by construction. A
   local `zakcode webapp` run without `--workspace` now stores under `<cwd>/.zakcode/sessions`
   rather than the home dir — sessions created by the old default are not migrated (the
-  format is identical; copy the files if they matter). The mind's own file tools can see
-  its transcripts, since `.zakcode/` is not in the default ignore set — deliberate (a mind
+  format is identical; copy the files if they matter). The agent's own file tools can see
+  its transcripts, since `.zakcode/` is not in the default ignore set — deliberate (an agent
   may read its own history); `.zakcodeignore` hides it where that is unwanted. Markers
   written before this ADR point at ids the new store does not have and self-heal through
   `/sessions/current` exactly as any dangling marker does.
 
 ## ADR-0033: Small-model containment II — fuzzy repetition, claim-vs-action, directive nudges, text-only stall, resume safety
 
-- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (serene:
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (
   gemini-2.5-flash-lite on `quick_code`, a `/resume`d transcript, on a process still
   running the pre-`zakcode update` build): "finish forging this skill" produced a 20-line
   "Let's try again. I will try to create the skill correctly." spiral, then "I have updated
@@ -1322,7 +1322,7 @@ provider layer, not a vendor special case leaking into the loop.
 ## ADR-0034: A running chat restarts itself into a newly installed build at its next idle prompt
 
 - **Status:** Accepted (shipped, 2026-08-27). Resolves the ADR-0033 residual for the
-  terminal client. Field incident 2026-08-26 (serene): `zakcode update` printed
+  terminal client. Field incident 2026-08-26: `zakcode update` printed
   `c4edaa4 → 0c28c8b` and "running chat sessions keep the old build until restarted"; the
   chat was not restarted, and the next turn collapsed on code that had already been fixed.
 - **Context:** A Python process runs the modules it imported; a reinstall changes the disk,
@@ -1364,12 +1364,12 @@ provider layer, not a vendor special case leaking into the loop.
 
 ## ADR-0037: Every server door dispatches a leading slash like the CLI
 
-- **Status:** Accepted (shipped, 2026-08-27). Field finding 2026-08-27 (Vinheim, bravo): a
-  served Mind could never be STARTED. Its framework's boot command (`/start <agent> --mode
+- **Status:** Accepted (shipped, 2026-08-27). Field finding 2026-08-27: a
+  served agent could never be STARTED. Its framework's boot command (`/start <agent> --mode
   assistant`) is a user-invocable-only skill, and the server's three doors — the say consumer,
   `POST /chat`, `POST /chat/stream` — passed raw text to the turn, so the model either refused
   its own boot command as self-invocation or free-associated over the slash line. A headless
-  deployment (systemd `mind-serve@`, a provisioning recipe, no terminal) has ONLY those doors.
+  deployment (a systemd unit, a provisioning recipe, no terminal) has ONLY those doors.
 - **Context:** the 2026-08-19 CLI work gave a typed slash Claude Code semantics through
   `Agent.compose_skill_turn` — the command-expansion frame at the very START of the user
   message is how a user-invocable-only skill learns a human typed it. The REPL,
@@ -1391,15 +1391,15 @@ provider layer, not a vendor special case leaking into the loop.
   contract, and a recipe writes a file, not HTTP); letting a refused slash fall through as
   prose (the CLI already decided a scripted boot fails loudly, never silently).
 - **Consequences:** a recipe can end provisioning by writing `/start tricks --mode assistant`
-  into `.say`, and the Mind boots itself; the operator sees the typed command on the watch
+  into `.say`, and the host framework boots itself; the operator sees the typed command on the watch
   page and the framework's own "Assistant mode active" reply. The inbox is now a COMMAND
   lane: any surface that forwards untrusted user text to `/say` must neutralize a leading
-  slash at ITS trust boundary (Vinheim: the gateway's `sanitizeSay`). Open: no telemetry
+  slash at ITS trust boundary (e.g. a gateway's `sanitizeSay`). Open: no telemetry
   distinguishes a served slash from a typed one (same gap the CLI has).
 
 ## ADR-0035: The classify side-call also names the skill a request implies
 
-- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26 (serene): "finish
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-26: "finish
   forging this skill" — the skill-forging skill was the whole task, but the request carried no
   `/slash` token, so the harness never knew: no plan step was seeded, the coverage backstop
   stayed unarmed, and the model collapsed without ever reading the skill.
@@ -1436,15 +1436,15 @@ provider layer, not a vendor special case leaking into the loop.
 
 ## ADR-0036: A typed /skill is not a request to parse; a blocker is not a finding until a tool call fails
 
-- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (serene, first
-  typed `/start sera` on a build carrying ADR-0026's compound-request seeder): the harness
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (first
+  typed `/start` on a build carrying ADR-0026's compound-request seeder): the harness
   seeded `run /start, /stop, /boot, /prime` from the start skill's own prose — a plan telling
   the model to STOP the agent it was starting — and the coverage backstop made it re-load
   the 1,200-line skill through `use_skill` (492k tokens in 7 iterations). The model then read
   a hook's source, declared the session id it injects "not available in this execution
   environment", and ended three turns on that sentence without ever running the skill's own
   one-line check (which passes). A follow-up "then make one" was classified as implying
-  `/create-aspiration` — a guess. And every status line read `route: … →
+  a framework skill — a guess. And every status line read `route: … →
   TextToolCallingProvider`, naming the adapter, not the model.
 - **Context:** `Agent.compose_skill_turn` (Claude Code slash semantics) makes the typed
   skill's WHOLE BODY the user message, behind a command-expansion frame at the very start.
@@ -1470,7 +1470,7 @@ provider layer, not a vendor special case leaking into the loop.
   right finish); asking the classifier for a confidence (a guessing model reports high
   confidence); a per-skill "may be implied" flag (the user forbids flags; the anchor is one
   rule for all).
-- **Consequences:** `/start sera` runs the start skill with an empty plan and the body loaded
+- **Consequences:** `/start <agent>` runs the start skill with an empty plan and the body loaded
   once. A hallucinated environment blocker costs one nudge instead of a dead turn — and the
   nudge names the fix (probe it). A genuine blocker still ends the turn on the second
   completion. A request that describes a skill in unrelated words ("do the thing that
@@ -1478,9 +1478,9 @@ provider layer, not a vendor special case leaking into the loop.
 
 ## ADR-0038: Re-observing a known result is not progress; `.git` is not the model's to destroy
 
-- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (coach on zc-03,
+- **Status:** Accepted (shipped, 2026-08-27). Field incident 2026-08-27 (on a worker machine,
   unattended, free local models): 135 iterations, 103 minutes, 10.5M tokens on one turn.
-  A runner-claim acquire kept answering HELD (a Mind-side auth failure misreported as a
+  A claim acquire kept answering HELD (a host-framework auth failure misreported as a
   held claim — fixed there). The model re-ran the same probe with a different comment each
   time, wrapped every command in `|| echo` so nothing exited non-zero, observed the same
   5-line output ~15 times, misread `rev-parse --verify -q` printing nothing as "refs exist
@@ -1515,9 +1515,9 @@ provider layer, not a vendor special case leaking into the loop.
   HELD line appeared in ~45 of 135 outputs inside otherwise-different probes) are not
   caught; the identical-probe case that preceded the destruction is.
 - **Amended 2026-09-18 (the signal counts observations of the world, never the harness's
-  own deliveries).** Measured on a served Mind loop (gpt-5.6-luna, 316 calls; sample 2 in
+  own deliveries).** Measured on a served host-framework loop (gpt-5.6-luna, 316 calls; sample 2 in
   `bench/results/served-luna-preregistration.log`). The framework's stop hook orders
-  `Skill('aspirations') with args='loop'`; the harness has already delivered that skill
+  a `Skill` call (e.g. the framework's orchestrator skill); the harness has already delivered that skill
   (ADR-0187), so the loader answers the model's call with the same "[already loaded]"
   pointer every time (ADR-0196). That pointer is a tool output of more than 24 characters,
   identical by construction, so the 3rd, 4th and 5th pointer of one turn drew nudge,
@@ -1530,7 +1530,7 @@ provider layer, not a vendor special case leaking into the loop.
   narrowing and a STOP in the middle of the consolidation window. Both are reproduced
   with no model: a probe against `StuckTracker`, and a replay of the turn's recorded calls
   that matches the trace's notes one for one. A third case is proven from the tool's own
-  text and not yet seen in the field: a Mind re-arms its deadman wake-up before EVERY
+  text and not yet seen in the field: a host framework re-arms its deadman wake-up before EVERY
   re-entry by contract, the acknowledgement differs only in a clock time the signature
   masks, so a healthy loop's fourth re-arm in one turn would read as a third identical
   observation and its seventh would end the turn `stuck`.
@@ -1602,7 +1602,7 @@ provider layer, not a vendor special case leaking into the loop.
 ## ADR-0040: A miss is a fact about one path; a challenge is a request to re-measure; a typo is not an unknown command
 
 - **Status:** Accepted (shipped, 2026-08-27). Three field transcripts from one afternoon on
-  small models (serene, `gemini-2.5-flash` / `-flash-lite`): (a) "the script
+  small models (`gemini-2.5-flash` / `-flash-lite`): (a) "the script
   `google-drive-list` could not be found in the workspace … could you please provide the
   correct path" — twice, `done — struggled`, without one content search; the operator typed
   "you can't grep it?" and the first search returned seven hits. (b) `/enocde-session` →
@@ -1653,7 +1653,7 @@ provider layer, not a vendor special case leaking into the loop.
 
 ## ADR-0041: A session has a readable transcript, separate from its watch stream
 
-**Context.** ADR-0032 made the served mind's conversations part of the mind: one
+**Context.** ADR-0032 made the served agent's conversations part of the workspace: one
 versioned document per session under the workspace, resumed and grown across
 vessels (verified live 2026-08-27 — the same session id carried two boots). But the
 only way to SEE a conversation was the watch stream, and its retained buffer begins
@@ -1685,8 +1685,8 @@ silent give-up only when the user has seen nothing this turn; once the model has
 something, a trailing empty completion is a deliberate "nothing more to say". That is
 right for a request and wrong for a SEQUENCE. A typed or served `/<skill>` turn
 (ADR-0037: the command frame at the start of the user message) carries a procedure the
-model is executing step by step. Measured 2026-08-27 on a served Mind (Vinheim, boot B
-of the g-369-02 verify): `/start tricks --mode assistant` ran four steps, narrated two
+model is executing step by step. Measured 2026-08-27 on a served host-framework agent:
+`/start tricks --mode assistant` ran four steps, narrated two
 lines, then went silent — the turn ended `completed` with the agent half-started (its
 persona never set), and the product's ready gate then waited on a ceremony that would
 never resume, because nothing on the box re-issues a finished turn.
@@ -1706,10 +1706,10 @@ ended without its effects) stays with the deployment; this is the loop's half.
 
 **Addendum (2026-08-27, streaming path).** #244 applied the rule to `arun_turn` only. The served
 daemon's say consumer and `/chat/stream` run `astream_turn`, whose twin gate kept the
-pre-ADR condition — measured on the served `/start` of Vinheim boot D: the silence was
+pre-ADR condition — measured on a served `/start` boot: the silence was
 caught only because no text had been seen yet, and the nudge that landed was the generic
 one. Both paths now carry the same gate and the same skill-naming nudge, pinned by the
-streaming twins in `tests/test_loop_edge.py`. Lesson (guard-1622 class): a rule that
+streaming twins in `tests/test_loop_edge.py`. Lesson: a rule that
 lives in two loop bodies must be applied to both, and the test that pins it must drive
 the path production uses.
 
@@ -1722,7 +1722,7 @@ That was a fine default for a connection substrate whose sessions were ephemeral
 are not any more: ADR-0032 resumes and grows the SAME session across vessels, and
 ADR-0037 opens every boot with a served `/start` whose composed frame is the skill's
 whole body (~91KB, ~23k tokens) persisted as a user message. Measured 2026-08-27 on a
-served Mind (Vinheim, boot C of the g-369-02 verify): 40k prompt tokens on boot A, 105k
+served host-framework agent: 40k prompt tokens on boot A, 105k
 on boot B, 128,666 on boot C against a 131,072 window — then the ceremony turn ended
 `provider_error` before a single step ran, the product's ready gate never opened, and
 the deployment's re-issue watchdog appended two more frames to a transcript the model
@@ -1750,7 +1750,7 @@ provides.
   skill, the model said it was "a python file, not a skill" — it was a skill directory whose
   SKILL.md the model had itself loaded through `use_skill`, and whose directory it had
   never listed; the SKILL.md said "run python3 …", and that sentence became the identity.
-  (b) "The knowledge tree has 10,892 nodes … directly reported by the tree stats command" —
+  (b) "The knowledge store has 10,892 nodes … directly reported by the tree stats command" —
   in a 5.7-second turn where no tool ran; the figure appears in no tool output of the
   session, and the real count was 1,510. Both answers were confident, both were false, and
   neither tripped a rail: they were not "could not find" (ADR-0040), not a done-announcement
@@ -1793,8 +1793,8 @@ provides.
 turn's user message is the command-expansion frame plus the skill's WHOLE body, and
 ADR-0032 persists that message and resumes the same session across vessels. The body is
 documentation for the turn that runs it — nothing reads it afterwards — yet it was stored
-verbatim and re-fed on every later turn. Measured 2026-08-27 on a served Mind (Vinheim,
-g-369-02 boot C, session c02e3062): six `/start` frames (~91KB, ~23k tokens each) in one
+verbatim and re-fed on every later turn. Measured 2026-08-27 on a served host-framework agent
+(session c02e3062): six `/start` frames (~91KB, ~23k tokens each) in one
 document; `usages[].prompt_tokens` 40k → 105k → 128,666 against a 131,072 window; the
 ceremony ended `provider_error` before a step ran. ADR-0043 compacts at 80% of the window,
 which bounds the growth at the price of a summarize call per crossing — and a fresh Talk
@@ -1824,7 +1824,7 @@ is still not rescued (ADR-0043's caveat stands). Pinned by
 **Amended 2026-09-21 (the marker's closing advice is true of the skill it stands on).** The
 marker ended, for every skill, by telling the model to load the skill again with the Skill
 tool. For a skill only the operator may run (ADR-0109) that is false: Skill refuses the call.
-The frame that carries this marker on a served Mind is `/start`, which its framework ships
+The frame that carries this marker on a served host framework session is `/start`, which its framework ships
 operator-only, so the one false sentence sat in the history of a served session for the rest
 of its life, and a small model does what a harness sentence says (ADR-0198). The ending is
 now chosen by the skill the frame names. An ordinary skill keeps the reload advice. An
@@ -1845,7 +1845,7 @@ once restored.
 **Context.** ADR-0039 gave a bounded run its receipt: the digest turn runs on every
 graceful ending and `on_run_end` tells `zakcode serve` to bring the process down. The
 digest then sat in the session store on a vessel that was about to be terminated. The
-bounded-run design (Ayoai-Mind g-369-08, pearl node C1) needs that digest DELIVERED —
+bounded-run design needs that digest DELIVERED —
 a first-person email from the agent to its owner — and the transport is a platform
 matter (which mail path, which identity, which recipient resolver) that Zak Code must not
 know about: it is vendor-agnostic and the receipt is the operator's policy.
@@ -1872,7 +1872,7 @@ budget before the shutdown proceeds. Pinned by
 
 **Context.** ADR-0039 bounds a run by wall-clock and ADR-0046 delivers its receipt, but
 the ONLY ways a run ended were its own cap or process shutdown. The bounded-run design
-(Ayoai-Mind g-369-08, pearl node C1) has a fourth bound that lives outside the process:
+has a fourth bound that lives outside the process:
 the platform's money cap, which on exhaustion tears the vessel down — severing the run
 with no digest, the one ending a paying customer never got a receipt for. Nothing in the
 say contract (`/say`, `/interrupt`, `/nudge`) speaks about the RUN.
@@ -1898,14 +1898,14 @@ same turn when a hook vetoes, and a perpetual-loop framework runs its whole auto
 session that way: one `/start`, then vetoes without end. The `use_skill` reload dedup
 (2026-08-25) is keyed on that turn — the SAME unchanged body loaded earlier in the turn
 is answered with an `[already loaded]` pointer — and so is `skill_invocation_budget`.
-The two collided on a live Mind (coach, zc-03, session `2fc9870…`, 2026-08-26
+The two collided on a live host-framework session (session `2fc9870…`, 2026-08-26
 19:07–19:09): the model ended an iteration on a text summary; the Stop hook vetoed with
-"Your FIRST action MUST be: Skill('aspirations') with args='loop'"; the model complied;
+"Your FIRST action MUST be: Skill('<orchestrator>') with args='loop'"; the model complied;
 `use_skill` returned the pointer; the model, holding no fresh instructions, produced the
 same summary. Four vetoes, four pointers, then the run ended and the agent stayed dark
 ~29 hours (the operator found it `IDLE`/`autonomous` the next day). Claude Code never
 dedups a Skill call — the framework's own PreToolUse gate does, and it exempts its
-orchestrator skills (`aspirations|aspirations-*|worker-loop`) for exactly this reason.
+orchestrator skills for exactly this reason.
 
 **Decision.** A TURN_END veto is a turn boundary for per-turn skill state. `AgentLoop`
 takes `turn_end_veto_reset`; the `Agent` wires `_begin_skill_turn` — the reset
@@ -1927,7 +1927,7 @@ dedup still saves the repeat loads it was built for. Pinned by
 
 **Context.** The CC transcript projection (`hooks/transcript.py`) stamped every line
 with the time of the RENDER, so an entire history carried one timestamp. Measured
-2026-08-27 on a live Mind (coach, zc-03): a 270-record session showed 270 identical
+2026-08-27 on a live host-framework session (on a worker machine): a 270-record session showed 270 identical
 timestamps; the moment the 08-26 loop died (ADR-0048's incident) was unrecoverable from
 the agent's own transcript and had to be dug out of the framework's stop-hook log. The
 projection is what every CC-shaped hook and audit reads — a transcript that cannot date
@@ -1953,9 +1953,9 @@ messages now differ by `created_at`; that is what event time means. Pinned by
 
 ## ADR-0050: Judged decomposition — every plan edit is scored, and a weak plan is critiqued against the goal
 
-**Context.** Coach (a Mind deployment driving Zak-Code with a 27B local model) plans
+**Context.** A host-framework deployment driving Zak Code with a 27B local model plans
 shallowly: flat step lists, no done-conditions, compounds never decomposed. The operator
-already owns a proven decomposition engine — Ayoai-Environment-Processor's
+already owns a proven decomposition engine — an environment-processor's
 `htn_planner.py` — whose shape is exactly what update_plan lacks: candidate
 decompositions are *scored* (`evaluate_candidate`: 0.5 completeness / 0.3 feasibility /
 0.2 granularity), *validated* (`check_subtasks`: duplicate-in-level detection), and the
@@ -2005,7 +2005,7 @@ the serve driver's consumer beat (`if inflight: return False`), and `zakcode cha
 inbox mode. A permission prompt consumes mid-turn, but only as prompt answers. That
 architecture assumes turns end. A perpetual-loop deployment's whole session is ONE turn
 — one `/start`, then Stop-hook vetoes without end (the ADR-0048 shape) — so its inbox is
-polled exactly never. Measured 2026-08-27 (coach, zc-03): an operator directive written
+polled exactly never. Measured 2026-08-27 on a worker machine: an operator directive written
 with `zakcode say` sat unconsumed in `<workspace>/.say` for 3 days while the loop worked
 on beside it. The reference harness delivers input typed mid-turn between iterations;
 Zak-Code silently dropped that property.
@@ -2027,7 +2027,7 @@ call — neither moment is an iteration boundary. One process, disjoint moments.
 
 **Consequences.** A directive sent to a busy agent lands within one iteration instead
 of one turn (∞ for a perpetual loop). A say arriving during a Stop-hook veto is
-delivered on the continued iteration — the exact coach scenario. Sub-agents and bare
+delivered on the continued iteration — the exact perpetual-loop scenario. Sub-agents and bare
 loops are byte-identical. Pinned by tests/test_loop_say.py (mid-turn reach, exactly-once,
 sub-agent isolation, veto-continuation pickup, streaming announcement).
 
@@ -2072,7 +2072,7 @@ shown in the pane when it begins.
 
 **Status.** Accepted (2026-08-28).
 
-**Context.** Zak Code increasingly runs small local models (a 27B coach deployment is the
+**Context.** Zak Code increasingly runs small local models (a 27B deployment is the
 live case), and a full clarity review of the prompt surface found texts that work fine for
 frontier models carrying contradictions and buried escape hatches that throw smaller ones.
 The worst was mechanical: the system prompt says plan at "roughly three or more distinct
@@ -2114,22 +2114,22 @@ until field evidence demands them.
 
 **Consequences.** No behavior changes: every edit is a string. Tests updated where they
 pinned old wording (provenance-tag legend, decompose hint); the field-proven "take a step
-back" phrase kept verbatim. The same review's Mind-side findings ship separately in the
-ayoai-mind repo (origin_signal refusal rewrite, exact-title duplicate gate, mode-doc
+back" phrase kept verbatim. The same review's host-framework-side findings ship separately in the
+host framework's repo (origin_signal refusal rewrite, exact-title duplicate gate, mode-doc
 contradiction fixes).
 
 ## ADR-0054: Dependency-gate fixes — redirections are not packages, and a rewrite is judged by what it introduces
 
 **Status.** Accepted (2026-08-28).
 
-**Context.** First unattended field night on a Mind deployment (coach, zc-03, 27B) wedged
+**Context.** First unattended field night on a host-framework deployment (a worker machine, 27B) wedged
 both live sessions inside the dependency gate, in a compounding pair. (1) The install
 parser flagged `pip install espn-api 2>&1 | tail -5` as installing undeclared package
 "2": the `&` segment-split leaves a `2>` token, and the spec parser splits on comparison
 operators and reads the fd digits as a package name. The package itself was DECLARED
 (the agent had done manifest-first work) — the phantom "2" alone forced the prompt.
 (2) The operator then approved at the prompt, and the post-rewrite floor re-check
-(audit3 #5) blocked anyway: a Mind deployment's agent-env hook rewrites EVERY bash
+(audit3 #5) blocked anyway: a host-framework deployment's agent-env hook rewrites EVERY bash
 command (env prepend), and the re-check re-asserted the dependency floor absolutely
 against the rewritten command — "never waived by a rewrite" — nullifying the human
 approval, permanently, on every retry. Approve → block → retry → prompt, forever.
@@ -2163,7 +2163,7 @@ env-prepend rewrite; the smuggle rewrite still blocks).
 
 **Status.** Accepted (2026-08-28).
 
-**Context.** The coach field night (ADR-0054's incident) exposed the posture gap:
+**Context.** The overnight field test (ADR-0054's incident) exposed the posture gap:
 `autonomous` never prompts but fails CLOSED — undeclared installs, protected paths, and
 confirm-tools become hard denies — while every attended mode can raise an interactive
 y/a/n prompt. An unattended runner in an attended mode therefore blocks forever on a
@@ -2182,7 +2182,7 @@ blocklist (uniform in every mode — bypass waives prompts and gates, never that
 and explicit whole-tool config denies. An explicit per-tool TIGHTEN override is still
 honored: the operator who wrote both has asked for that tool to prompt. The flag
 exports `ZAKCODE_PERMISSION_MODE=bypassPermissions` so every launch path — inline REPL,
-`-p` runs, the elevated cockpit's children, a served mind — inherits one mechanism, and
+`-p` runs, the elevated cockpit's children, a served host framework — inherits one mechanism, and
 prints a warning line at startup. SDK/programmatic use is the same single knob:
 `Settings(permission_mode="bypassPermissions")` or the env var.
 
@@ -2192,7 +2192,7 @@ prints a warning line at startup. SDK/programmatic use is the same single knob:
 bare launch until the dict was extended. Pinned two ways: the defaults entry, and a
 signature-parity test that fails the moment any future chat option is added without one.
 
-**Consequences.** The Mind runner deployment launches with the flag and can never stall
+**Consequences.** The served runner deployment launches with the flag and can never stall
 on a prompt; the attended cockpit keeps prompting. `autonomous` remains the right
 unattended mode when the surrounding stack is NOT trusted to be the guardrail layer —
 the two modes are twins with opposite fail directions, documented side by side in the
@@ -2204,7 +2204,7 @@ tighten override honored; parse spellings, bare "bypass" fails safe).
 
 **Status.** Accepted (2026-08-28).
 
-**Context.** The coach field night, again: the first `/start` on the new bypass build got
+**Context.** The overnight field test, again: the first `/start` on the new bypass build got
 through crash recovery and then ended `gave_up` — "the model went silent" — 12 iterations
 in. The trace said otherwise. The fatal "empty" completion carried 8,192 completion
 tokens, exactly `_MAX_COMPLETION_TOKENS`, with empty `content` and a `reasoning_content`
@@ -2216,7 +2216,7 @@ before any answer. Two defects compounded. The empty gate's rail said "Your resp
 empty. Reply with…" — an instruction a template-enforced thinking model cannot obey,
 since its chat template opens a thinking block on every turn regardless. And
 `empty_retries` was a per-TURN cumulative count: two nudges early in the ceremony, eight
-successful tool calls, then the third empty of the turn ended it. A Mind runner's whole
+successful tool calls, then the third empty of the turn ended it. A served runner's whole
 night is one composed `/start` turn, so under that count a third thinking blow-out
 anywhere in the night was fatal. The length-continuation rail (parity #5) could not catch
 it either: it needs visible text to continue from.
@@ -2270,7 +2270,7 @@ instance body).
 
 **Status.** Accepted (2026-08-28).
 
-**Context.** Watching coach's night on the bypass build, every `recovering: no progress —
+**Context.** Watching the overnight field test on the bypass build, every `recovering: no progress —
 nudging a rethink` status line was the same cue: the step the model was on needed MORE
 decomposition. Rung 1 of the stuck ladder (nudge@3, ADR-0019 lineage) injected a paragraph
 of advice — "stop and reconsider, re-read the error, try a DIFFERENT approach" — plus a
@@ -2343,7 +2343,7 @@ pinned the old wording or the deleted hint.
 
 **Context.** ADR-0053's review left two behavior changes on the table "until field
 evidence demands them": two gates can nudge in contradictory directions in one turn, and
-the missing-conclusion gate (ADR-0040) counted only `grep` as a search. The coach
+the missing-conclusion gate (ADR-0040) counted only `grep` as a search. The field
 transcripts of 2026-08-28 supplied the evidence for both. A small model that answers a
 nudge with more words is answered by the NEXT gate — intent, then missing, then identity —
 and each is a once-per-turn latch, so six different corrections can land in six
@@ -2383,7 +2383,7 @@ conclusion; a failed read is still nudged).
 
 **Context.** The judged decomposition (ADR-0050) scores a freshly-shaped plan against
 the turn's user text. On a composed `/skill` turn the user text IS the skill body — for
-coach's `/start`, ~65 KB of ceremony across dozens of phases — and the plan the model
+a framework's `/start`, ~65 KB of ceremony across dozens of phases — and the plan the model
 writes is a six-step phase checklist that tracks that ceremony. Judged as a
 decomposition of "the goal", it scored 12% (coverage 10%): a critique that told the
 model to "cover what is missing" in a plan whose whole job was to be coarser than the
@@ -2407,12 +2407,12 @@ critique — beside the existing weak/strong/once-per-turn/fail-open cases).
 **Status.** Accepted (2026-08-28).
 
 **Context.** The say inbox is one slot per workspace, and its docstring said "run at most
-ONE consumer" — two race for the slot and one silently wins. Coach's morning was that
+ONE consumer" — two race for the slot and one silently wins. The agent's morning was that
 race, measured. The runner's whole night is one turn, so it polls the inbox once per
 iteration, minutes apart (ADR-0051); the cockpit chat pane the operator had opened polls
 every 0.3 s between ITS turns. Every say of the morning — the research directives, the
 review, `continue` — landed in the pane; none reached the runner they were steering. One
-of them was `/start coach --mode assistant`, which the pane executed as an
+of them was `/start <agent> --mode assistant`, which the pane executed as an
 observer-session command: it rewrote the agent's shared mode file from under the RUNNING
 runner, and the runner spent the next hour idle-ticking and misdiagnosing itself.
 
@@ -2443,8 +2443,8 @@ runner, and the runner spent the next hour idle-ticking and misdiagnosing itself
 **What this does not do.** It does not address a say. With a runner busy, the cockpit
 pane is a viewer of the workspace, not a second correspondent; a side conversation
 while a runner runs is a plain `zakcode cli` with its own keyboard. The control command
-that flipped coach's mode was delivered to an idle observer session BY this race; the
-Mind-side refusal for that command is filed separately (g-115-8154).
+that flipped the agent's mode was delivered to an idle observer session BY this race; the
+host-framework-side refusal for that command is filed separately.
 
 **Consequences.** A steering say reaches the agent doing the work; between turns nothing
 changes (whoever polls first wins, as before). Pinned by tests/test_busy_marker.py
@@ -2460,20 +2460,20 @@ back and resume once the marker is stale or gone).
 
 **Context.** `AgentLoop._cc_transcript_path()` renders a Claude-Code-shaped `.jsonl` of the
 FULL conversation for hooks that read `transcript_path`, and wrote it under
-`Path.home() / ".zakcode" / "transcripts"`. Found on a served box during the g-369-15
-verify (env `pearl-verify-0827b`): after the first `say`, the only session document was the
+`Path.home() / ".zakcode" / "transcripts"`. Found on a served box during a field
+verify: after the first `say`, the only session document was the
 workspace one — ADR-0032 holding — but a 783 B 0600 `~/.zakcode/transcripts/<sid>.jsonl`
 had appeared beside it.
 
 This is not a durability defect: nothing resumes from the projection, the SessionStore is
 the source of truth, and both call sites already skip it when no hook consumer is
 registered (`has_lifecycle_hooks`, `observe or vetoable`). The defect is **isolation**.
-ADR-0032 settled that a served workspace IS one mind's home and that two served workspaces
+ADR-0032 settled that a served workspace IS one agent's home and that two served workspaces
 are "isolated by construction" — and rejected a host-side symlink precisely because "with
-several minds served from one host user, makes every daemon share one store". The
+several agents served from one host user, makes every daemon share one store". The
 projection re-created that shared store for the same bytes: `~/.zakcode/transcripts` is one
 directory per host USER, keyed only by session id, holding the full conversation text —
-maybe secrets — of every mind that host serves. A served workspace's hooks are not rare
+maybe secrets — of every agent that host serves. A served workspace's hooks are not rare
 either: settings.json hooks load UNCONDITIONALLY (ADR-0025), so a workspace whose framework
 declares lifecycle hooks materializes this on essentially every turn.
 
@@ -2483,21 +2483,21 @@ declares lifecycle hooks materializes this on essentially every turn.
 - Terminal client — store is `~/.zakcode/sessions`, so the path stays `~/.zakcode/transcripts`,
   byte-for-byte what it always was. A loop with no store injected keeps that too.
 - Served workspace — store is `<workspace>/.zakcode/sessions`, so the projection is
-  `<workspace>/.zakcode/transcripts`, inside the mind whose conversation it is.
+  `<workspace>/.zakcode/transcripts`, inside the workspace whose conversation it is.
 - The directory carries the same self-ignoring `.gitignore` (`*`) `for_workspace` writes,
   never overwritten, so a served workspace that is also a git checkout cannot commit one.
   Perms are unchanged: 0700 directory, 0600 file.
 
-**Alternatives rejected.** *Leave as-is* — its premise was that served minds rarely fire
+**Alternatives rejected.** *Leave as-is* — its premise was that served agents rarely fire
 hooks, and ADR-0025 falsifies it. *Skip the projection when nothing reads it* — already
 true at the gate level, and it cannot be tightened further: a shell hook receives
 `transcript_path` in its payload and the host cannot know whether the external command
 reads it. Neither addresses the isolation gap, which is the actual finding.
 
-**Consequences.** A mind's conversation has one lifetime and one blast radius again: stop
+**Consequences.** An agent's conversation has one lifetime and one blast radius again: stop
 the container and the projection goes with the host that no longer holds the only copy;
 two served workspaces share no transcript directory. Hooks are unaffected — they read the
-path they are handed. A host user's home stops accumulating other minds' conversations.
+path they are handed. A host user's home stops accumulating other agents' conversations.
 
 **Amended 2026-09-21 (ADR-0206).** Where the file lives and who may read it stand as decided
 here. What the file IS changed: it is no longer a projection rendered whole at each hook
@@ -2509,17 +2509,17 @@ most is the one nobody knew to ask for until the run was over.
 ## ADR-0062: A loaded skill's sections are the plan — the harness decomposes, the model refines
 
 **Context.** ADR-0027 asked the model to decompose a long skill body into plan steps
-("FIRST call update_plan …") and deliberately left the decomposition to the model — bodies
-are heterogeneous prose, and the model holds the request context. It was a hint. Field
+("FIRST call update_plan …") and deliberately left the decomposition to the model — skill
+bodies are heterogeneous prose, and the model holds the request context. It was a hint. Field
 2026-08-28 (sera, `gemini-2.5-flash`): a say naming `/encode-session` mid-sentence had the
 model load the skill through `use_skill` (883 lines, decompose hint attached) and go straight
 to `git status`; no plan was ever written, nothing enforced the hint, and the operator asked
 why "all skills are supposed to get decomposed" had not happened. A turn typed as
 `/encode-session` fared no better: the only mechanical seeding was ADR-0017's `run /a,
-run /b` steps for a message naming two or more skills. Measured across a Mind deployment's
+run /b` steps for a message naming two or more skills. Measured across a host framework's
 130 skills: 78 carry numbered `## Phase` / `## Step` / `## Lane` sections — a checklist their
-author already wrote (encode-session: 22 headings) — and 52 do not (`/start` and
-`/aspirations` among them).
+author already wrote (encode-session: 22 headings) — and 52 do not (the start and
+loop-entry skills among them).
 
 **Decision.** Seeding, not hinting — the ADR-0057 shape ("I added steps to your plan")
 applied to skill loads, at both doors, no flag.
@@ -2576,7 +2576,7 @@ decomposed is left alone; the tool hint names the sections).
 
 ## ADR-0063: The typed skill is a loaded skill — and a silence says what it cost
 
-**Context.** Field 2026-08-28 (coach on zc-03, `zds-qwen3.8-27b`, the composed `/start`
+**Context.** Field 2026-08-28 (a served agent on a worker machine, `zds-qwen3.8-27b`, the composed `/start`
 turn): the third completion came back empty — usage said 254 completion tokens, no text, no
 thinking, no tool call, finish reason not `length` — and the loop reported "empty completion
 — asking for a real answer" (ADR-0042's skill-naming nudge, since the turn was a `/<skill>`).
@@ -2625,12 +2625,12 @@ fresh skill turn).
 ## ADR-0064: Bold step lead-ins are sections too
 
 **Context.** ADR-0062 seeds a plan from a skill body's step-like headings. Field
-2026-08-28 (coach on zc-03, the first `/start coach --recover --force` on that build): the
-model ran one state check, wrote "Agent coach is RUNNING. Recovery with --force detected.
+2026-08-28 (a served agent on a worker machine, the first `/start <agent> --recover --force` on that build): the
+model ran one state check, wrote "Agent <name> is RUNNING. Recovery with --force detected.
 Following Step 0.7 cleanup sequence." and ended the turn — two iterations, plan empty,
 nothing to hold it. `/start` has no step-like heading at all: its checklist is written as
 bold lead-ins (`**Step 0.7: Recovery Branch (…)** — …`), and so are `/stop`'s and
-`/aspirations`' — the three control skills, exactly the ones a served Mind cannot afford to
+the loop-entry skill's — the three control skills, exactly the ones a served agent cannot afford to
 half-run. Measured across the deployment's 130 skills: 44 carry such lead-ins (most just
 `**Step 0: Load Conventions**`, the preamble convention; /start 6, /stop 4, state-replay 6).
 
@@ -2650,13 +2650,13 @@ line that must not count).
 
 ## ADR-0065: A skill body lands whole, and a local pod declares its own window
 
-**Context.** Field 2026-08-28 (coach on zc-03), reading the first ADR-0062 seeding: "plan
+**Context.** Field 2026-08-28 (a served agent on a worker machine), reading the first ADR-0062 seeding: "plan
 seeded from /boot: 7 steps" — for a skill with 25 numbered sections. The `use_skill` result
 carried `[output clamped: 37,875 chars is too large for the model's context window; kept
 the first 4,096 and last 2,048]`: the seam clamp (ADR-0023) had cut /boot to Phases -3…-0.5
 plus Step 12, Steps 0–11 never reached the model, and the model "completed" the boot 7/7.
-Every core skill the coach had loaded for days was cut the same way (/aspirations 55 KB,
-/aspirations-execute 78 KB, /aspirations-precheck 184 KB, /prime 27 KB — eleven clamped
+Every core skill the agent had loaded for days was cut the same way (the loop skill 55 KB,
+its execute sub-skill 78 KB, its precheck sub-skill 184 KB, the prime skill 27 KB — eleven clamped
 loads in one session). Two causes, both real:
 
 1. The route model `openai/zds-qwen3.8-27b` is an alias the static capability table does
@@ -2678,7 +2678,7 @@ loads in one session). Two causes, both real:
   stripped) and takes the first window field present — `max_model_len`, `context_window`,
   `context_length`, `max_context_length`, `meta.n_ctx_train`, `meta.n_ctx`,
   `zds.ctx_per_engine` (divided by the slots per engine when the listing shows a fan-out:
-  the per-engine figure is the engine total, rb-8892). Fail-open and remembered either way: one probe per provider
+  the per-engine figure is the engine total). Fail-open and remembered either way: one probe per provider
   instance, never on the request path. `LOCAL_ONLY` is honoured — an unlisted base is not
   probed, by the same `classify_destination` the request path uses.
 - `ToolResult.verbatim`: a result that is instructions rather than data. `use_skill` and
@@ -2737,7 +2737,7 @@ and the loop's answer was to compact, retry, and finally "continue without it".
    `api_base` once (LOCAL_ONLY honoured) and flags a mismatch — config says 131,072, server
    says 43,690 — loudly (`Agent.window_warnings`, red at chat start; `zakcode info` shows
    "server declares N"). The configured number stays in force: a router's per-engine figure
-   can overstate the per-request window (rb-8892), so the operator's number wins over the
+   can overstate the per-request window, so the operator's number wins over the
    server's. `zakcode info` prints one `Context window (<label>)` row per effective model:
    the number, its source (`config` / `registry`), the server's verdict, or
    `unknown — REFUSES TO RUN`.
@@ -2778,7 +2778,7 @@ tests/test_skill_fit.py (verdicts, `zakcode info` rows, banner lines).
 ## ADR-0067: A sectioned skill is paged through the plan — one section in context at a time
 
 **Context.** ADR-0066 left the second defect standing. A skill that takes 35% of the pod's
-131k window (`/aspirations-precheck`, 184 KB, ~46k tokens) cannot load on a 32k model at
+131k window (a large host-framework skill, 184 KB, ~46k tokens) cannot load on a 32k model at
 all, and the only answers were a refusal (ADR-0066), a truncation (rejected in ADR-0065 —
 a head-and-tail of a skill is a broken skill) or a bigger window. ADR-0062 already turns a
 sectioned skill into a table of contents — its `##` step sections seed the plan the moment
@@ -2845,7 +2845,7 @@ Every `SkillResolver` implements `body(name)`. Pinned by tests/test_skill_paging
 twice, a merged step, a fully closed plan, restart recovery, the streaming status, a page
 that cannot fit, the fit report) and the paged hint contract in tests/test_skill_skeleton.py.
 
-**Field correction (same day, coach's first paged /boot).** Three defects, one turn.
+**Field correction (same day, the agent's first paged /boot).** Three defects, one turn.
 The model's full-replace plan kept the five sections it had done and DROPPED the twenty
 still open; with the seeded structure gone, marker matching ran over every plan step, so
 /boot's "Step 1..3" pages were satisfied by /start's closed "Step 1..3" steps, a
@@ -2862,10 +2862,10 @@ past stay out — that is the model's call, and the skipped count records it.
 
 ## ADR-0068: A skill typed as text is the invocation — and a runner's trace lands every iteration
 
-**Context.** The served `/start` on coach (zc-03, build 99bab59, 2026-08-28) finished its
+**Context.** The served `/start` on a worker machine (build 99bab59, 2026-08-28) finished its
 last step and the model's next completion was the single line `/boot`. To the loop that was
 a text-only completion: the turn-end hook vetoed the stop, the plan gate pushed on, and the
-model called `use_skill("aspirations")` — prime, hypothesis review and the status report
+model called the loop-entry skill — prime, hypothesis review and the status report
 never ran. The model had asked for the skill in the only spelling a human uses; the
 harness accepted the spelling from a human (the typed door) and from a tool call, never
 from the model's own text. A second, quieter gap surfaced the same hour: the decision trace
@@ -2889,7 +2889,7 @@ invocation (ADR-0026's precision lesson — a pasted prompt discussing eight ski
 run eight); dumping the trace on a timer (an extra thread for a file write the batch
 boundary already offers).
 
-**Consequences.** A served Mind whose skills tell the model to "invoke /boot" now boots
+**Consequences.** A served host framework session whose skills tell the model to "invoke /boot" now boots
 whether the model calls the tool or types the line. Trace files are rewritten per
 iteration (small, best-effort). Pinned by tests/test_slash_text.py (both twins, args,
 prose and unknown names left alone, the checkpoint).
@@ -2899,7 +2899,7 @@ prose and unknown names left alone, the checkpoint).
 **Context.** `LiteLLMProvider.capabilities()` demoted `supports_tools` whenever
 `litellm.supports_function_calling` answered False, and the `auto` tool-calling mode then
 put the model on the text tool protocol. But litellm answers False for any model it has
-never mapped — "unknown", not "no". Measured 2026-08-28 on coach (zc-03): all three
+never mapped — "unknown", not "no". Measured 2026-08-28 on a worker machine: all three
 self-hosted pod models (`openai/zds-qwen3.8-27b`, `-3.6-35b`, `-3.5-35b`;
 `get_model_info` raises "This model isn't mapped yet") were running the text protocol —
 ~7k tokens of injected protocol on every request, tool calls parsed from text, stop
@@ -2968,7 +2968,7 @@ budget-exhausted stop still resumable) and tests/test_provider_edge.py (wrapper 
 fired on the Zak tool (`write_file`). But the document itself still said
 `"tool_name": "write_file"` with `"tool_input": {"path": ...}`, while every Claude-Code
 path gate switches on `tool_name == "Write"` and reads `tool_input.file_path`. Measured
-2026-08-28 on a claude-mind agent served by Zak Code: the framework's L1 path-resolution
+2026-08-28 on a host-framework agent served by Zak Code: the framework's L1 path-resolution
 hook DENIES a write into a literal `<project>/world/...` path (the world lives at an
 external path; the literal one is cruft) when it sees `Write` + `file_path` — fed
 `write_file` + `path`, it approved unconditionally, the model wrote four knowledge files
@@ -2999,10 +2999,10 @@ gate denying the cruft path and its rewrite mapping back onto `path`).
 
 ## ADR-0072: The prompt names the session and states the skill-paging contract
 
-**Context.** Two of six hard questions put to a served agent (a claude-mind deployment on a
+**Context.** Two of six hard questions put to a served agent (a host-framework deployment on a
 self-hosted 27B model, 2026-08-28) failed for one reason: the runtime knew something the
-model had no way to read. Asked which of the agent's concurrent sessions it was (a reducer
-and a worker of the same agent were running in other windows, and the framework keys
+model had no way to read. Asked which of the agent's concurrent sessions it was (a coordinating
+session and a worker session of the same agent were running in other windows, and the framework keys
 per-session state — bindings, scratch, claims — by session id), it guessed; the id was in
 every hook's stdin and nowhere in the model's context. Asked what happens when a skill is
 larger than the context window, it recalled a plausible mechanism instead of reading one;
@@ -3035,14 +3035,14 @@ passes its own session id).
 ## ADR-0073: A line typed while a turn runs reaches the running turn — and a typed skill runs
 
 **Context.** The chat REPL's keyboard pump put every typed line on a queue read at the
-prompt, between turns. A runner — a claude-mind reducer whose whole session is ONE turn
+prompt, between turns. A long-running agent session whose whole session is ONE turn
 (one `/start`, then Stop-hook vetoes without end) — never reaches that prompt, so a line
-typed into its terminal waited forever. Measured 2026-08-28 on coach (zc-03): `/stop coach`
-typed into the live reducer's pane was never consumed; the session had to be hard-cycled.
+typed into its terminal waited forever. Measured 2026-08-28 on a worker machine: `/stop <agent>`
+typed into the live session's pane was never consumed; the session had to be hard-cycled.
 Meanwhile the say inbox (ADR-0051) already delivered messages INTO a running turn at every
 iteration boundary — for `zakcode say` and the cockpit box, but not for the keyboard,
 which is the door an operator sitting at the runner actually uses. And a say that named a
-skill (`/stop coach`) reached the model as prose, not as the skill.
+skill (`/stop <agent>`) reached the model as prose, not as the skill.
 
 **Decision.** (1) While a turn runs in this process (`_InputMux.turn_active`, set by the
 REPL around each turn) a typed line goes through the say inbox — the one contract every
@@ -3078,9 +3078,9 @@ to the queue).
 **Context.** The compactor's threshold check ran once per turn, at turn start, and the
 reactive `ContextWindowExceeded` recovery (force-compact, retry the same call) was bounded
 per turn at `_MAX_CONTEXT_RECOVERY = 2`. Both were written for a chat: turns of a few
-iterations with a prompt between them. A claude-mind runner's whole session is ONE turn —
-`/start`, then Stop-hook vetoes without end. Measured 2026-08-28 on coach (zc-03, a served
-27B, 131,072-token window): the reducer's first turn ran 142 minutes and 131 iterations.
+iterations with a prompt between them. A long-running agent session's whole run is ONE turn —
+`/start`, then Stop-hook vetoes without end. Measured 2026-08-28 on a worker machine (a served
+27B, 131,072-token window): the coordinating session's first turn ran 142 minutes and 131 iterations.
 Its prompt grew from 35k to 125k tokens, was force-compacted to 52k by the first overflow
 recovery, grew to 109k, was compacted to 51k by the second, grew to 121k — and the third
 overflow (131,297 tokens) found the per-turn count spent: `stopping: provider error —
@@ -3117,7 +3117,7 @@ repeatedly is still terminal.
 dropped while their pages were undelivered — the model cannot receive a page whose step is
 gone. The put-back was explained only when it rode a page delivery; when the plan's
 current page was already held, the sections came back silently. Measured 2026-08-28 on
-coach (zc-03, /aspirations-precheck, 37 sections): the model collapsed a 46-step plan to
+a worker machine (a large host-framework skill, 37 sections): the model collapsed a 46-step plan to
 10 ("steps 10–45 are precheck sections already executed"), the tool answered "1/10
 steps", the harness put 36 sections back before the next call, the model saw 46 steps
 again and issued the identical collapse — eight times in a row, each a full 27B call at
@@ -3152,7 +3152,7 @@ backoff retry instead of a dead turn, and the transient list already retried
 `APIConnectionError`, `ServiceUnavailableError` (503) and `InternalServerError` (500) — matched
 by class NAME across the exception's MRO. litellm's `BadGatewayError` (502) subclasses
 `APIStatusError` directly, not `ServiceUnavailableError`, so the match never saw it and a
-502 fell through to `RequestFailed`. Measured 2026-08-28 on a Mind runner (coach, zc-03,
+502 fell through to `RequestFailed`. Measured 2026-08-28 on a served runner (a worker machine,
 /boot page 22 of 25, 57 iterations): the self-hosted pod's engine `qwen38-gpu1` restarted,
 litellm raised `BadGatewayError: 502 upstream_unavailable — All connection attempts
 failed`, and the turn ended as `provider_error` — the one stop a Stop hook cannot veto, so
@@ -3184,7 +3184,7 @@ not a loop. Pinned by tests/test_provider.py: a 502 / 504 / 500 by status code r
 `threshold_fraction` (0.8) of the model's window. The count it checks is
 `LiteLLMProvider.count_tokens` — `chars // 4 + 4 per message`, a heuristic. Id-dense tool
 output (goal ids, shas, YAML, JSONL) tokenizes at ~2.5 chars per token, so on that content
-the estimate runs ~40% low. Measured 2026-08-28 on coach (zc-03, 131,072-token window,
+the estimate runs ~40% low. Measured 2026-08-28 on a worker machine (131,072-token window,
 threshold 104,858): the provider reported 107,868 → 112,355 → 113,854 → **129,251** prompt
 tokens across four consecutive calls while the pre-call check stayed silent; the compaction
 finally fired at the next check, 2k under the window. The turn before it had died at
@@ -3227,10 +3227,10 @@ the workspace say inbox — the single-slot FILE the loop polls at every iterati
 (ADR-0051). That is one door for the whole workspace: `zakcode say`, `POST /say`, and the
 keyboard all landed in the same slot, and the slot is consumed by whichever loop on the
 workspace reaches a boundary first. One runner per workspace was the unstated premise. A
-Mind on Zak Code breaks it: a reducer and its worker Bodies are four sessions of one agent
-in one checkout. Measured 2026-08-29 (coach, zc-03): an instruction typed at a worker
-("your claim of g-005-05 succeeded — it is your own session id") was consumed by the
-reducer, which then announced "g-005-05 is already claimed by my session" and built it
+host framework on Zak Code breaks it: a coordinating session and its worker sessions are four sessions of one agent
+in one checkout. Measured 2026-08-29 on a worker machine: an instruction typed at a worker
+("your claim succeeded — it is your own session id") was consumed by the
+coordinating session, which then announced "already claimed by my session" and built it
 without holding the claim; a line typed at another worker never appeared in any transcript.
 Two goals were double-executed by sessions that could not see each other's keystrokes.
 
@@ -3245,7 +3245,7 @@ turn runs elsewhere) keeps the file path as its fallback.
 **Alternatives rejected.** A per-session say file (external producers would have to
 discover session ids, and the workspace slot's exactly-once contract would fragment); a
 "busy elsewhere" stand-back for mid-turn consumers like ADR-0060's idle one (every session
-is busy on a Mind; the line still goes to the wrong one); telling operators not to type at
+is busy on a host framework; the line still goes to the wrong one); telling operators not to type at
 workers (the keystroke is the highest-bandwidth channel there is, and nothing told them it
 could be misdelivered).
 
@@ -3258,11 +3258,11 @@ other's lines; a line is consumed exactly once).
 ## ADR-0079: settings.json hooks are re-read at the turn boundary when the file changes
 
 **Context.** ADR-0025 made workspace hooks unconditional, but the list was read once, at
-`Agent` construction — Claude Code's snapshot-at-startup semantics. A Mind is not a
+`Agent` construction — Claude Code's snapshot-at-startup semantics. A long-running agent is not a
 short-lived REPL: its sessions run for hours and pull framework updates by git while
-they run. Measured 2026-08-29 (coach, zc-03): a PreToolUse gate promoted into
+they run. Measured 2026-08-29 on a worker machine: a PreToolUse gate promoted into
 `.claude/settings.json` and pulled onto the live deployment was invisible to all four
-running sessions — the reducer that had just been restarted included — and would have
+running sessions — the coordinating session that had just been restarted included — and would have
 stayed so until each next restart. The operator's standing rule is that hooks run every
 time, no exception; a hook that exists on disk and does not run is that exception.
 
@@ -3279,7 +3279,7 @@ workspace's gates.
 on a hot path, for a change that arrives a few times a day); a file watcher thread
 (another moving part, no portable inotify); restarting the session on change (ADR-0034
 does that for a `zakcode update` at an idle prompt, but a settings edit mid-turn is not a
-build change and a running reducer has no idle prompt for hours).
+build change and a running coordinating session has no idle prompt for hours).
 
 **Consequences.** A hook registered mid-session fires from the next turn on. Pinned by
 `tests/test_settings_hooks_refresh.py`: unchanged files are not re-read; an added hook
@@ -3292,13 +3292,13 @@ and a later good edit is picked up.
 **Context.** ADR-0063 answers a second `use_skill` of a body already delivered THIS turn
 with a short "[already loaded] … continue from where you are" pointer, and ADR-0048
 resets that dedup on every TURN_END veto because a perpetual loop runs its whole session
-as one turn. One reset was missing. A Mind worker Body re-enters its loop skill after
+as one turn. One reset was missing. A worker session re-enters its loop skill after
 every work unit — mid-turn, by design — and its units are long enough to compact the
-transcript in between. Measured 2026-08-29 (coach, zc-03, worker 00be93b8): a
-`119 → 7` compaction, then `use_skill(worker-loop)` returned the pointer ("the full
+transcript in between. Measured 2026-08-29 on a worker machine (worker 00be93b8): a
+`119 → 7` compaction, then `use_skill(worker)` returned the pointer ("the full
 instructions … are already in your context THIS turn — unchanged"), which was false —
-the instructions were in the summarized half. The Body improvised its close by hand
-(a python heredoc setting status "done" in the aspirations store) instead of running the
+the instructions were in the summarized half. The worker improvised its close by hand
+(a python heredoc setting status "done" in the host's task store) instead of running the
 close writer the skill names; the framework grew a Bash gate for the write, but the
 reason the model had nothing to follow was this pointer.
 
@@ -3325,7 +3325,7 @@ delivers the body. Pinned by `tests/test_use_skill.py::test_compaction_forgets_t
 loop `{"_raw": "<text>"}` (providers/base.py) rather than raising. Every tool then sees
 its required field missing and answers with its own validation line — `write_file`:
 "'path' is required and must be a string." True of the dict, false of the call: the
-model had written a path. Measured 2026-08-29 (coach, zc-03, worker dbd99eac): a 27B
+model had written a path. Measured 2026-08-29 on a worker machine (worker dbd99eac): a 27B
 writing a ~300-line module in one `write_file`, the JSON cut off by the output limit
 (the raw text stopped mid-value); two identical retries, each answered with the path
 message; then a guess ("the file write tool hit a parameter size limit") and a bash
@@ -3373,8 +3373,8 @@ speaks before the doom-loop machinery does. Pinned by
 
 **Context.** The compactor replaces everything but the last six messages with one
 summary the model writes (ADR-0022). The summarizer handed the model the raw
-role-tagged messages when they fit the window. Measured 2026-08-29 (coach, zc-03, a
-27B reducer on a 131k window, 154 → 7 messages): the "summary" was the model's own
+role-tagged messages when they fit the window. Measured 2026-08-29 on a worker machine (a
+27B coordinating session on a 131k window, 154 → 7 messages): the "summary" was the model's own
 last reply verbatim plus a text-format `<tool_call><function=update_plan>…` block — it
 continued the conversation instead of describing it. The kept tail still held the
 harness hints for `/boot` page 17 and `/prime` page 6 from twelve minutes earlier, so
@@ -3414,7 +3414,7 @@ where it is. Small models stop re-running finished skills after compaction. Pinn
 silent failure mode: the summarize call is itself a model call, and when it failed
 (`compact_now` caught the exception and returned False) the only record was a
 `logging.warning` on the `zakcode` logger, which carries a `NullHandler`. Measured
-2026-08-29 (coach, zc-03, a worker Body on a 131k window): the request overflowed at
+2026-08-29 (a worker session on a worker machine, 131k window): the request overflowed at
 137,486 tokens, two minutes passed, and the session ended "stopping: provider error"
 with no compaction line at all; every later "continue" re-died the same way, because
 the transcript on disk was unchanged. The last tool result was an 87 KB skill load — a
@@ -3464,17 +3464,17 @@ ladder's length, not a retry count. Pinned by `tests/test_compact.py` (the three
 
 **Context.** ADR-0067 paged a skill by its step-like `##` headings and delivered
 everything else — the preamble and every non-step `##` section — up front with page 1.
-Measured 2026-08-29 against a Mind deployment's 55 skills: nine of its largest were
-delivered WHOLE because they carry no step-like `##` heading at all — `/worker-loop`
+Measured 2026-08-29 against a host-framework deployment's 55 skills: nine of its largest were
+delivered WHOLE because they carry no step-like `##` heading at all — the worker skill
 (84 KB: one fenced pseudocode block with 23 `# Phase N` comments, loaded on every
-worker unit), `/aspirations-spark` (116 KB, run on every goal), `/aspirations-evolve`
-(88 KB), `/aspirations-consolidate` (78 KB), `/start` and `/tree` (63 KB each), the
-loop itself (54 KB), `/aspirations-state-update` (52 KB), `/review-hypotheses` (51 KB,
-whose 21 `### Step` headings sit under non-step `## Mode` headings). `/reflect` paged,
+worker unit), a per-goal skill (116 KB, run on every goal), an evolution skill (88 KB),
+a consolidation skill (78 KB), two 63 KB skills, the loop itself (54 KB), a state-update
+skill (52 KB), and a review skill (51 KB, whose 21 `### Step` headings sit under
+non-step `## Mode` headings). The reflect skill paged,
 but with 44 KB of "front" — its procedures live under `## Mode Routing`. And a paged
-skill past the 40-step cap folded the rest into one page: `/aspirations-precheck`'s was
+skill past the 40-step cap folded the rest into one page: the precheck skill's was
 64 KB. A 27B on a 131k window filled its context in two iterations and compacted every
-goal; the reducer spent an hour re-running `/boot`.
+goal; the coordinating session spent an hour re-running `/boot`.
 
 **Decision.** One outline behind both the skeleton (ADR-0062) and the pages, read to a
 **page budget** (`PAGE_BUDGET_CHARS`, 12,000 — three to four thousand tokens). The body
@@ -3488,7 +3488,7 @@ each marker opens a page (`## The loop` → 23 phase pages; `## Mode 1` → its 
 over the budget with no markers is paged at its headings, then paragraphs. A cut inside
 a fence is re-fenced on both sides, so every page is markdown on its own. Page `k` is
 skeleton step `k` by construction; markers inside a page that was not cut are its
-sub-steps, as before. The step cap rises to 60. Measured on the same corpus: worker-loop
+sub-steps, as before. The step cap rises to 60. Measured on the same corpus: worker
 23 pages (first delivery 19 KB, largest page 9.7 KB), spark 27 (first 2.9 KB), the loop
 19, evolve 15, consolidate 9, start 13, precheck 55 unfolded (largest 11.6 KB), boot 26.
 
@@ -3501,7 +3501,7 @@ and `_current_page` follows the first open step). Bounding the front the same wa
 (deferred: `/tree`'s eighteen router sections each fit and stay up front, 35 KB — the
 one shape still worth a decision).
 
-**Consequences.** Small models read the largest Mind skills a section at a time; the
+**Consequences.** Small models read the largest host-framework skills a section at a time; the
 most skill text in context at once is the front plus one page. More pages mean more
 `update_plan` round-trips per skill — the price of the bound, and the plan the model
 keeps anyway. A body that never fits — one paragraph over the window — still ends the
@@ -3517,10 +3517,10 @@ and paging suites, whose expectations did not move.
 ReDoS-proof tokeniser) flagged any target that *started with* `/`, `~` or `$HOME`. The
 docstring said "a root or home path"; the predicate said "any absolute path". Under
 `autonomous` mode the floor is a hard deny, so an unattended agent could not
-`rm -rf /opt/coach-mind/yahoo/__pycache__` — measured 2026-08-29 on a Mind worker that
+`rm -rf /opt/<workspace>/yahoo/__pycache__` — measured 2026-08-29 on a worker session that
 was refused twice ("recursive remove of a root or home path"), then rewrote its plan to
 "Investigate: why bash keeps failing on cleanup" and spent the rest of its goal on the
-refusal. Every path a Mind agent cleans — its temp store, a worktree, a build dir, a
+refusal. Every path a host-framework agent cleans — its temp store, a worktree, a build dir, a
 cache — is absolute, because the framework resolves everything to absolute paths.
 
 **Decision.** `_names_root_or_home` names exactly the footgun: the filesystem root (`/`,
@@ -3534,7 +3534,7 @@ position keep their coverage. Quotes are stripped from both ends.
 
 **Alternatives rejected.** An operator allowlist for the workspace (a knob, and the
 floor is documented as never-waivable — one way). Keeping "any absolute path" and
-teaching the Mind to use relative paths (its scripts print absolute paths by design, and
+teaching the host framework to use relative paths (its scripts print absolute paths by design, and
 a floor that blocks the normal case is not a floor, it is a bug the agent routes around).
 Depth-based rules such as "fewer than three components" (`/home/user/proj` would be
 flagged while `/opt/x/y` passes — the footgun is *what* the directory is, not how deep).
@@ -3550,11 +3550,11 @@ home-relative targets, the glued deep path, and `$HOMEDIR/x` (not the home varia
 **Context.** ADR-0067 pages a sectioned skill through the plan: page k arrives when the plan
 reaches section step k, and a section the model closed without its page counted as finished
 ("the plan is the model's to shape"). On a small field model that contract failed in one
-rewrite: a coach worker's paged `/start` (13 sections) was closed nine steps at a time — the
+rewrite: a worker session's paged `/start` (13 sections) was closed nine steps at a time — the
 `RUNNING + autonomous` branch, the one it needed, marked done unseen and later renamed; every
 branch after it cancelled — so `_current_page` found nothing open, the page never came, and
 the worker sat at an idle prompt for an hour saying "waiting for the next /start page (page 4
-of 13)" (coach-w3, 2026-08-29 05:51–06:27). Two smaller defects compounded it: a later
+of 13)" (worker-w3, 2026-08-29 05:51–06:27). Two smaller defects compounded it: a later
 section CANCELLED counted as "moved past" an earlier unseen one, so the renamed page was
 neither matched nor restored; and which pages had been held lived only in memory, re-read
 after an ADR-0034 restart from the transcript's page headers — which a compaction removes
@@ -3591,11 +3591,11 @@ away; a pre-record document takes its open work as held.
 
 **Context.** A paged skill's next section arrives only in the reply to the `update_plan`
 call that closes the current one; nothing is pushed. The page footer said the next section
-"arrives in the next message", and a field model read that as a promise: coach-w closed its
-work unit (`iteration-close.sh` ran) and ended its turn with "Awaiting the final park
-instruction (section 23) from the harness" (coach-w, 2026-08-29 ~08:20). A worker Body has
+"arrives in the next message", and a field model read that as a promise: the worker closed its
+work unit (the framework's iteration-close ran) and ended its turn with "Awaiting the final park
+instruction (section 23) from the harness" (worker-w, 2026-08-29 ~08:20). A worker session has
 no one at the prompt, so that stop is a dead worker — only the coincidence of a build update
-(ADR-0034 restarts at the idle prompt) revived it; the day's earlier stall (coach-w3,
+(ADR-0034 restarts at the idle prompt) revived it; the day's earlier stall (worker-w3,
 ADR-0086) ended the same way for a different reason. The existing turn-end veto ("your plan
 still has N open steps") fires once but does not say the one thing the model needs: that
 waiting cannot work.
@@ -3626,12 +3626,12 @@ is asserted by the paging-contract test.
 ## ADR-0088: Consecutive small sections share a page
 
 **Context.** Paging (ADR-0067/0084) bounds what one delivery puts in context, but it also
-fixes the number of model turns a skill costs — one per page, and on the coach pod a turn
-is about three minutes with thinking on. A Mind's skills are mostly SHORT sections (a
+fixes the number of model turns a skill costs — one per page, and on the field pod a turn
+is about three minutes with thinking on. A host framework's skills are mostly SHORT sections (a
 `## Step 0.7` of two paragraphs), so the pager delivered the same text in far more turns
-than the budget required. Measured 2026-08-29 over a Mind's 131 skills: 976 pages —
-`/aspirations-precheck` 55, `/reflect-on-outcome` 47, `/respond` 35, `/seed` 27 for
-10.8 KB that fits one page. The reducer's first iteration on the ADR-0084 build ran over
+than the budget required. Measured 2026-08-29 over a host framework's 131 skills: 976 pages —
+the precheck skill with 55, the reflect skill with 47, the respond skill with 35, another with 27 for
+10.8 KB that fits one page. The coordinating session's first iteration on the ADR-0084 build ran over
 an hour and was still paging.
 
 **Decision.** After the outline is cut, consecutive sections that together fit the page
@@ -3642,11 +3642,11 @@ skeleton step's sub-steps, and any of them names the page when the model rewrite
 plan (`SkillPage.sections`, any-of `matches`). A skill that packs into ONE page is not
 paged at all: it is delivered whole and its sections stay the plan's steps
 (`_Outline.paged`). The same corpus after: 321 deliveries — precheck 18,
-reflect-on-outcome 10, respond 7, worker-loop 7, boot 4, seed whole; 44 multi-section
+reflect-on-outcome 10, respond 7, worker 7, boot 4, seed whole; 44 multi-section
 skills now arrive in one piece.
 
 **Alternatives rejected.** Packing only within a `##` group (keeps the section structure
-visible but cut coach's 701 pages only to 518 — the turn cost is per page, not per
+visible but cut the agent's 701 pages only to 518 — the turn cost is per page, not per
 group). One page per section when a skill packs into a single page (a 27-section, 10 KB
 skill would still cost 27 turns; small skills are the common case). A larger budget
 (raises the largest-page context cost for every skill; packing keeps that bound and cuts
@@ -3657,7 +3657,7 @@ things).
 section count, so tests that pinned a page per tiny section shrink the budget to 100
 chars (`test_skill_paging.py` autouse fixture; the `real_page_budget` marker opts out) or
 measure at the real one. The plan for a packed page lists the sections as sub-steps, so a
-Body still sees each named step; the page carries their text in order. Pinned in
+Worker still sees each named step; the page carries their text in order. Pinned in
 `tests/test_skill_paging.py` (`test_small_consecutive_sections_share_a_page`, the
 splitter test's packed shape), `tests/test_skill_skeleton.py`
 (`test_a_skill_that_packs_into_one_page_arrives_whole_with_its_steps`) and
@@ -3668,11 +3668,11 @@ splitter test's packed shape), `tests/test_skill_skeleton.py`
 **Context.** The current page of a paged skill was its EARLIEST open section: sections are
 worked in order, so an open one held every later page back. A model that skips a section
 and closes a later one it never held (ADR-0086 reopens it) then got the skipped page again —
-and again: coach-w (2026-08-29, /worker-loop) had merged Phase 3.6 away, closed "Phase
+and again: a worker session (2026-08-29, the worker skill) had merged Phase 3.6 away, closed "Phase
 3.9–4.5" without its page, and for six turns the harness reopened 3.9, restored 3.6, and
 re-sent the same rail with page 14 while the model re-closed 3.9. The harness never
 escalated, the model never yielded, and the turn ended in the doom-loop detector. The same
-shape on coach-w3 ended a `/worker-loop` unit the same way.
+shape on another worker ended the worker unit the same way.
 
 **Decision.** The plan has a FRONTIER: the page of the section under way, else the last
 page whose section is done or blocked, read from the plan as the model sent it — before a
@@ -3701,11 +3701,11 @@ page" tests hold).
 
 ## ADR-0090: An unattended session continues at an idle prompt
 
-**Context.** A worker Body runs under a permission mode that never asks
-(`--dangerously-skip-permissions`), so an idle prompt is a dead Body — nobody types. Two
+**Context.** A worker session runs under a permission mode that never asks
+(`--dangerously-skip-permissions`), so an idle prompt is a dead session — nobody types. Two
 paths put a working session there: the build restart (ADR-0034 execs a fresh process that
 resumes the session AT THE PROMPT), and a turn that collapsed (`doom_loop`, `gave_up`,
-`degenerated`, `stuck`). coach-w3 (2026-08-29): a doom-loop end at 09:04, the restart into
+`degenerated`, `stuck`). A worker (2026-08-29): a doom-loop end at 09:04, the restart into
 the ADR-0087 build, the ADR-0033 compaction, then 46 minutes at the prompt with 20 of 23
 steps open — until an operator noticed.
 
@@ -3734,10 +3734,10 @@ once-in-a-row bound).
 sections it had CLOSED. A full-replace rewrite that dropped a section the model had
 cancelled made it indistinguishable from one dropped unseen: the restore (ADR-0075) put it
 back pending, and once the restore gave up the pages still arrived "as the plan reached
-them". coach-w2 (2026-08-29, first unit on the ADR-0088 build): the worker had cancelled
+them". A worker (2026-08-29, first unit on the ADR-0088 build): the worker had cancelled
 `/start`'s IDLE branches (the RUNNING branch was taken; correct), a 2-step rewrite dropped
 them, the restore resurrected all four as pending, and `/start` pages 4, 5 and 6 arrived one
-per turn while the worker was in `/worker-loop` — three model turns of a skill it had
+per turn while the worker was in `/worker` — three model turns of a skill it had
 finished.
 
 **Decision.** The session records, per skill, the pages whose section the plan has closed —
@@ -3764,11 +3764,11 @@ render into its next `update_plan` folds `— from /<skill>` into the TITLE and 
 own note — exactly what every rail asks for ("mark it cancelled with a note saying why").
 After one such rewrite no step carried the note marker, so the seeded structure read as
 gone and every page fell to title matching, which is exact-title-or-marker-token. Two
-failures followed, on every worker (coach-w2, coach-w, coach-w4 — 2026-08-29, builds
+failures followed, on every worker (worker-w2, worker-w, worker-w4 — 2026-08-29, builds
 4968c11 and 14252da): `/start`'s branch pages carry no marker token, so its five cancelled
 branches matched nothing and were delivered as "dropped, never held", one per turn; and a
-marker token is not unique — `/worker-loop`'s last page packs "Phase 0.5 PARK …" beside
-page 3's "Phase 0.5 — REDUCER-LIVENESS POLL", so the closed Phase 0.5 step matched both,
+marker token is not unique — `/worker`'s last page packs "Phase 0.5 PARK …" beside
+page 3's "Phase 0.5 — COORDINATOR-LIVENESS POLL", so the closed Phase 0.5 step matched both,
 the never-held last page was "reopened", the frontier jumped to it, and the CLOSURE page
 arrived with a rail promising "the first of them is delivered below" while the plan stood
 at SELECT. Three workers, the same turn of the same unit, every time.
@@ -3796,7 +3796,7 @@ previous build.
 
 ## ADR-0093: A script run through the wrong interpreter is named as such
 
-**Context.** The reducer ran `python3 core/scripts/aspirations-update-goal.sh …` — a bash
+**Context.** The coordinating session ran `python3 scripts/update-goal.sh …` — a bash
 script through Python — four times verbatim (2026-08-29). Each run was a SyntaxError on
 the script's `case` arm at line 65, a traceback that reads like a broken script rather
 than a wrong command; the stuck guard then limited the turn to read-only tools and the
@@ -3818,8 +3818,8 @@ because Python echoes the filename; the command is the reliable signal.
 (`test_interpreter_mismatch_fix_predicate`,
 `test_bash_python_on_a_shell_script_names_the_interpreter`).
 
-**Amended (same day).** The hint chain ran only on a non-zero exit, and the reducer's next
-attempt was `python3 core/scripts/recurring-close.sh … 2>&1 | tail -40` — exit 0, `tail`'s —
+**Amended (same day).** The hint chain ran only on a non-zero exit, and the coordinating session's next
+attempt was `python3 scripts/recurring-close.sh … 2>&1 | tail -40` — exit 0, `tail`'s —
 so the SyntaxError arrived with no hint and was read as a broken script once more. When the
 command matches the mismatch predicate AND the output carries the wrong interpreter's own
 error text (Python's `SyntaxError` / `IndentationError`; a shell's `syntax error near
@@ -3829,13 +3829,13 @@ fine is untouched (`test_bash_a_pipe_that_hides_the_exit_code_still_names_the_in
 
 ## ADR-0094: A session holds one scheduled wake-up, delivered at its idle prompt
 
-**Context.** Claude Code's `ScheduleWakeup` is the primitive a Mind's autonomous loop is
-built on: the reducer arms a "deadman" wake-up (`<<autonomous-loop-dynamic>>`, 600 s)
-before every `Skill(aspirations)` re-entry — it fires only if the re-entry chain breaks —
-and a worker Body that parks because its reducer is gone arms an hourly re-poll. Zak Code
-had no such tool; the calls came back `unknown tool`. Measured on zc-03 (2026-08-29): a
-reducer restart re-minted the runner token, every worker's liveness poll parked, each
-armed its re-poll, and all four Bodies sat dead at their prompts until an operator cycled
+**Context.** Claude Code's `ScheduleWakeup` is the primitive a host framework's autonomous loop is
+built on: the coordinating session arms a "deadman" wake-up (`<<autonomous-loop-dynamic>>`, 600 s)
+before every loop re-entry — it fires only if the re-entry chain breaks —
+and a worker session that parks because its coordinator is gone arms an hourly re-poll. Zak Code
+had no such tool; the calls came back `unknown tool`. Measured on a worker machine (2026-08-29): a
+coordinator restart re-minted the runner token, every worker's liveness poll parked, each
+armed its re-poll, and all four workers sat dead at their prompts until an operator cycled
 them. The compatibility map had filed `ScheduleWakeup` under "not load-bearing".
 
 **Decision.** A `schedule_wakeup` tool (registered under Claude Code's `ScheduleWakeup`
@@ -3846,11 +3846,11 @@ the session document (`pending_wakeup`), written on every change through the loo
 persist, so it survives the ADR-0034 restart into a new build and a `/resume`. The REPL's
 idle wait (`_InputMux`) asks the slot for a due wake-up only when nothing typed or said is
 already there — and, since the amendment below, without standing back behind another
-process's busy marker (as first shipped it did, and a parked Body never woke); the line
+process's busy marker (as first shipped it did, and a parked worker never woke); the line
 arrives as `("harness", …)` — the ADR-0090 door, echoed with the same tag. The sentinel
 prompt fires as an explicit re-enter-the-loop instruction; any other prompt fires as
 `[harness] scheduled wake-up: <prompt>`. Nothing ever fires mid-turn. The hook name map
-carries the new tool so a Mind's `PreToolUse` gate on `ScheduleWakeup` fires on it.
+carries the new tool so a host framework's `PreToolUse` gate on `ScheduleWakeup` fires on it.
 
 **Alternatives rejected.** A timer thread that injects the prompt when due — it would fire
 mid-turn (a wake-up is a prompt-time event by contract) and add a second writer to the
@@ -3872,11 +3872,11 @@ first shipped, the idle wait skipped the wake-up probe whenever ADR-0060's busy 
 named another process — the same stand-back a say gets. The say slot is ONE file the whole
 workspace shares, so standing back is right for it; a wake-up is held per session and no
 other process can take it, so standing back only starves it. On a shared checkout the
-marker is never stale: measured on zc-03 (2026-08-30 05:36, eight Bodies on
-`/opt/coach-mind`), `.busy` was fresh in 12 of 12 samples over 60 s, refreshed every 30 s
+marker is never stale: measured on a worker machine (2026-08-30 05:36, eight workers on
+the workspace), `.busy` was fresh in 12 of 12 samples over 60 s, refreshed every 30 s
 by whichever sibling was mid-turn, and worker w3 — parked at its prompt with its hourly
 re-poll due at 05:13 — sat unwoken 22 minutes later with the prompt still pending. Every
-parked Body since ADR-0094 shipped waited behind the same marker; the ADR-0090 dead-Body
+parked worker since ADR-0094 shipped waited behind the same marker; the ADR-0090 dead-worker
 finding it was built to end had merely moved. The probe now runs at every idle poll and
 in the non-blocking peek, marker or no marker; the say still stands back. Pinned in
 `tests/test_schedule_wakeup.py`
@@ -3887,18 +3887,18 @@ a thing each process owns for itself — ask who else could take it before yield
 
 **Amendment (2026-09-25) — the schema carries Claude Code's `noop`, because a gate reads
 the wire.** Claude Code 2.1.280 refuses a `ScheduleWakeup` arm that omits `noop` unless
-`stop` is true, and a Mind's PreToolUse gate now mirrors that refusal so a net it believes
+`stop` is true, and a host framework's PreToolUse gate now mirrors that refusal so a net it believes
 armed is armed. This tool declared `prompt`, `delaySeconds`, `stop` and `reason` — no
 `noop` — and a model driven by a tool schema emits no property the schema does not
-declare, however plainly a refusal asks for one. Measured on a parked worker Body (zc-04,
+declare, however plainly a refusal asks for one. Measured on a parked worker session (a worker machine,
 2026-09-25 18:32–18:54 UTC): five arms of its 3600 s re-poll in one park turn, every one
 carrying prompt/delaySeconds/reason only, every one refused by the gate with the fix
-spelled out (`noop=false`), the Body narrating "including the noop field directly" and
+spelled out (`noop=false`), the worker narrating "including the noop field directly" and
 still not emitting it, the re-poll never armed, and the turn burning provider calls on the
 same refusal. A gate that requires an undeclared field is a wedge with no exit. The schema
 now declares `noop` with Claude Code's meaning (true for a quiet hold, false when the turn
 did something); the arm records it on the held wake-up and echoes it in the result, and
-an arm without it still lands — which gate to enforce is the Mind's, not the harness's.
+an arm without it still lands — which gate to enforce is the host framework's, not the harness's.
 Pinned in `tests/test_schedule_wakeup.py` (`test_the_schema_declares_claude_codes_noop_field`,
 `test_the_arm_records_noop_on_the_held_wakeup_and_echoes_it`, which also pins that the
 field reaches the hook payload as sent). Lesson: a harness that answers to a Claude Code
@@ -3912,10 +3912,10 @@ the page's marker token (`Phase 0.5`, `Step 3`). A page whose heading is a branc
 `/start`'s `RUNNING + requested mode is autonomous`, `IDLE (agent-state contains "IDLE")
 (2/3)` — has no marker, so the moment the model paraphrases the title (`RUNNING +
 autonomous mode`, `IDLE (2/3)`) nothing matches it. Measured 2026-08-29 on three of four
-fresh sessions (coach-w, coach-w2, the reducer): every `/start` page stood matched by
+fresh sessions (worker-w, worker-w2, the coordinating session): every `/start` page stood matched by
 nothing, the loop read each as a section dropped before it was held, and all six pages
 were delivered one per turn — the cancelled branches included — while the session settled
-none of them; the fourth session had kept the seeded titles and was fine. Across coach's
+none of them; the fourth session had kept the seeded titles and was fine. Across the agent's
 39 paged skills, 60 of 210 pages carried no marker, a third of those because the id had a
 letter prefix (`Step B2.5`, `Phase GS-1`, `Phase S4.6`) the marker regex refused.
 
@@ -3943,8 +3943,8 @@ frontier; the two-word floor and the stop list are the guard.
 **Context.** Ubuntu installs apport's Python excepthook system-wide. On an inline program
 (`python3 -c …`) the hook itself crashes — it `stat`s the "binary", which is `-c` — so the
 interpreter prints the real traceback, then `Error in sys.excepthook:` with the hook's
-~20-line traceback (`FileNotFoundError: … '/opt/coach-mind/-c'`), then `Original exception
-was:` and the real traceback again. Measured 2026-08-29 on zc-03: 20 of the fleet's 61
+~20-line traceback (`FileNotFoundError: … '/opt/workspace/-c'`), then `Original exception
+was:` and the real traceback again. Measured 2026-08-29 on a worker machine: 20 of the fleet's 61
 tracebacks that day. A small model reads the hook's failure as a second, unrelated error,
 and the block spends output budget on nothing.
 
@@ -3955,7 +3955,7 @@ already stands above, and stays when it is the only copy. Any other hook's failu
 output and is kept. Done before the 64 KB truncation so the noise cannot spend the budget.
 
 **Alternatives rejected.** Disabling apport on the box (`enabled=0` in
-`/etc/default/apport`) — a per-box fix the next box lacks; the harness runs wherever a Mind
+`/etc/default/apport`) — a per-box fix the next box lacks; the harness runs wherever a host framework
 is deployed. Stripping every `Error in sys.excepthook` — another hook's failure is the
 model's to see.
 
@@ -3964,12 +3964,12 @@ model's to see.
 
 ## ADR-0097: A shell command's "No such file" names where the file actually is
 
-**Context.** On zc-03 (2026-08-29, eight Bodies on a 27B local model) 15 of the day's 73
+**Context.** On a worker machine (2026-08-29, eight workers on a 27B local model) 15 of the day's 73
 failed shell commands were ENOENT, and every one was a guessed path:
-`world/scripts/reasoning-bank.py` (the writer is `core/scripts/reasoning-bank-add.sh`),
-`core/scripts/wm-list.sh`, `core/scripts/aspirations-write.sh`,
-`.mind-data/world/scripts/tests/test_yahoo_skills_registry.py`, and
-`world/forged-skills.yaml` for `.mind-data/world/forged-skills.yaml`. Each was followed
+`scripts/reasoning-bank.py` (the writer is a host framework shell script),
+the host framework's store scripts (e.g. `scripts/wm-list.sh`, `scripts/goal-write.sh`),
+`scripts/tests/test_skills_registry.py`, and
+`world/forged-skills.yaml` for `<data root>/world/forged-skills.yaml`. Each was followed
 by the model's own find → retry ritual, or by a second guess. The file tools already
 answer a not-found with the workspace's closest paths (ADR-0040); the bash tool returned
 the bare `cat: …: No such file or directory` and left the search to the model.
@@ -3982,12 +3982,12 @@ under the workspace roots (up to three, workspace-relative), else the closest na
 ADR-0040's `suggest`, else nothing: a genuinely absent file stays a plain error, no
 speculative hint. The basename locator (shared with the exit-127 hint) now descends into
 hidden data dirs and prunes only VCS, virtualenv, dependency and cache dirs; it used to
-prune every dot-dir, so on a Mind deployment neither hint could see `.mind-data/`, the
+prune every dot-dir, so on a host-framework deployment neither hint could see `.mind-data/`, the
 directory the model was guessing at. Stdin markers and apport's `-c` artefact are never a
 file the model meant.
 
-Precision, from the live smoke on zc-03 the same day: an exact hit also names the family
-beside it sharing the leading token (`core/scripts/reasoning-bank.py` found, and
+Precision, from the live smoke on a worker machine the same day: an exact hit also names the family
+beside it sharing the leading token (`scripts/reasoning-bank.py` found, and
 `reasoning-bank-add.sh` / `reasoning-bank-read.sh` beside it — the wrapper is what the
 model wanted; the module is a silent no-op as a script). When the guessed path's
 DIRECTORY exists and the file does not, the hint is the directory's own siblings with
@@ -4013,9 +4013,9 @@ the loop makes deliberately.
 `test_bash_enoent_exact_hit_lists_the_family_beside_it`).
 
 **Addendum (2026-08-29, same day, after the first deploy).** The post-deploy census
-on zc-03 found four ENOENTs in the first hour that the hint did not touch, and none
-of them was a file the file search could lead on: a Body invented the prefix
-`.mind-data/agents/coach/sessions/<sid>/` (the agents dir lives at the workspace
+on a worker machine found four ENOENTs in the first hour that the hint did not touch, and none
+of them was a file the file search could lead on: a worker session invented the prefix
+`.mind-data/agents/agent/sessions/<sid>/` (the agents dir lives at the workspace
 root) and then `touch`ed, `grep`ped and `ls`ed under it — the file was about to be
 *created*, so no same-named file existed anywhere. Three widenings, one rule:
 
@@ -4048,10 +4048,10 @@ Pinned by `test_enoent_regexes_capture_the_coreutils_and_grep_shapes`,
 
 ## ADR-0098: A tool written as a shell command is refused before it runs
 
-**Context.** The Mind's loop skills show the deadman net as
+**Context.** The host framework's loop skills show the deadman net as
 `ScheduleWakeup(prompt="<<autonomous-loop-dynamic>>", delaySeconds=600)` and the parked
-worker's re-poll the same way. On zc-03 (2026-08-29, eight Bodies on a 27B local model)
-the Bodies typed exactly that into the **bash** tool — five times in one session, a shell
+worker's re-poll the same way. On a worker machine (2026-08-29, eight worker sessions on a 27B local model)
+the workers typed exactly that into the **bash** tool — five times in one session, a shell
 syntax error and a lost turn each — then wrote "The ScheduleWakeup needs to be a direct
 tool call, not a bash command. Let me fix this:" and never called it: a census of every
 transcript touched that day found **zero** `schedule_wakeup` invocations fleet-wide, so
@@ -4065,8 +4065,8 @@ A hit is refused as an error carrying the tool's real name and its parameter nam
 (`Call the schedule_wakeup tool directly with {prompt, delaySeconds}`), with
 `tool_typed_as_command: true` in the result data. A shell function definition
 (`name() {`) has nothing between its parens and never matches; an unknown name is left
-to the shell. `use_skill` gains the alias `Skill`, the name the Mind's loop uses for its
-re-entry, so `Skill(aspirations)` typed as a command resolves the same way.
+to the shell. `use_skill` gains the alias `Skill`, the name the host framework's loop uses for its
+re-entry, so `Skill(orchestrate)` typed as a command resolves the same way.
 
 **Alternatives rejected.** Rewriting the command into a tool call — the model must learn
 the call shape, and a silent rewrite teaches nothing. A hint after the syntax error —
@@ -4084,11 +4084,11 @@ are shared with a harness that calls the tool by exactly that spelling.
 **Context.** ADR-0034 restarts a session into a newly installed build "at the next idle
 prompt". A perpetual-loop deployment never has one: its Stop hook vetoes every turn end
 and the loop re-enters, so the whole autonomous session is one turn (ADR-0048). Measured
-2026-08-29 on zc-03: the fleet's reducer (started 11:02) and one worker (11:34) were still
+2026-08-29 on a worker machine: the fleet's coordinating session (started 11:02) and one worker (11:34) were still
 running a build from before ADR-0093, ADR-0097 and ADR-0098 at 16:30 — five `zakcode
 update`s had landed, every fix aimed at exactly those sessions, and none had reached
 them. Workers that happened to park (an idle prompt) took the update within a minute;
-the process that owns the queue never will. A census of the reducer's 40 post-deploy
+the process that owns the queue never will. A census of the coordinating session's 40 post-deploy
 failed commands found the interpreter, ENOENT and typed-tool hints all absent — the
 process was simply old.
 
@@ -4107,8 +4107,8 @@ no ADR-0090 kick and would otherwise sit at the prompt forever.
 
 **Alternatives rejected.** Restarting mid-turn at an iteration boundary — tool results in
 flight, and the session document is only consistent at message boundaries. Killing and
-relaunching the reducer by hand at each deploy (the operator's actual workaround) — it
-parks every worker for the reducer's downtime and needs a human each time. Making the
+relaunching the coordinating session by hand at each deploy (the operator's actual workaround) — it
+parks every worker for the coordinating session's downtime and needs a human each time. Making the
 veto continue on the old build and restarting "later" — later never comes.
 
 **Consequences.** Every deploy now reaches a perpetual loop within one iteration, so a
@@ -4120,8 +4120,8 @@ and `tests/test_self_restart.py` (`test_restart_kick_prefers_the_carried_continu
 
 ## ADR-0100: A rate-limit wait is said while it happens, and the server's retry hint is read
 
-**Context.** Measured 2026-08-29 on zc-03, right after the ADR-0099 cycle: the fleet's
-reducer echoed its restart kick and then went dark for 17 minutes — no provider socket, no
+**Context.** Measured 2026-08-29 on a worker machine, right after the ADR-0099 cycle: the fleet's
+coordinating session echoed its restart kick and then went dark for 17 minutes — no provider socket, no
 event, no log line, main thread idle in `select`. py-spy put the turn inside
 `_run_streamed_turn`; the pod's journal held the explanation: the resumed 430 KB session
 needed compaction, the summarizer's first call met a pod at capacity (4 engines ×
@@ -4135,7 +4135,7 @@ the session had a dead process. (2) The pod answers every capacity 429 with
 which `_extract_retry_after` never read. Every 429 therefore fell to the capped exponential
 backoff and polled every 30–60 s (the journal showed exactly that cadence), while seven
 workers re-calling the instant their previous call returned took each freed slot. The pod
-was never idle; the reducer lost a lottery it was told not to play.
+was never idle; the coordinating session lost a lottery it was told not to play.
 
 **Decision.** Two changes, one per defect. `_extract_retry_after` reads
 `litellm_response_headers` first, then `headers`, then `response.headers` — the server's
@@ -4164,15 +4164,15 @@ from any OpenAI-compatible server is honoured through litellm. Pinned by
 ## ADR-0101: A perpetual loop takes a build update at its skill re-entry
 
 **Context.** ADR-0099 restarts a perpetual loop into a newer build when a Stop hook vetoes
-a turn end. Measured 2026-08-29 on zc-03, 50 minutes after `zakcode update` installed
-2e81727: 0 of 8 Bodies had restarted — every session document still carried its
+a turn end. Measured 2026-08-29 on a worker machine, 50 minutes after `zakcode update` installed
+2e81727: 0 of 8 worker sessions had restarted — every session document still carried its
 pre-install `build`, and no session log had the "restarted into build" line. The hook
 never vetoed because the loop never tried to stop: a healthy loop ends each unit by
 calling `use_skill` for the next one, and a turn that keeps issuing tool calls never
 reaches a vetoable break site. ADR-0099's boundary is real but rare (only a loop that
 stumbles into "completed" crosses it); the boundary every loop crosses every unit is the
 skill re-entry. (A process's pid and start time survive the `os.execv` restart, so `ps`
-cannot tell a restarted Body from a stale one — the session document's `build` stamp is
+cannot tell a restarted worker from a stale one — the session document's `build` stamp is
 the honest signal.)
 
 **Decision.** Before executing a tool batch, both loop twins ask
@@ -4194,10 +4194,10 @@ restart.
 work is to load the next instructions, which the fresh process can do itself. Making the
 skill loader exec — a tool must not replace the process it runs in. Executing the
 `use_skill` and restarting afterwards — the loaded body dies with the old process.
-Cycling Bodies by hand at each deploy (the operator's actual workaround) — needs a human
-and parks every worker for the reducer's downtime.
+Cycling workers by hand at each deploy (the operator's actual workaround) — needs a human
+and parks every worker for the coordinating session's downtime.
 
-**Consequences.** A deploy reaches every Body within one unit, so a fleet test measures
+**Consequences.** A deploy reaches every worker session within one unit, so a fleet test measures
 the code that was shipped. Pinned by `tests/test_turn_end_loop.py`
 (`test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary`,
 `test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call`) and
@@ -4205,11 +4205,11 @@ the code that was shipped. Pinned by `tests/test_turn_end_loop.py`
 `test_restart_kick_words_a_skill_boundary_restart`), each mutation-proved.
 
 **Amendment (same evening, measured live).** Within 30 minutes of a marker change on
-zc-03, 6 of 7 workers restarted at their first skill boundary and re-invoked
-`/worker-loop` in the fresh process. The seventh paired its `use_skill(worker-loop)` with
+a worker machine, 6 of 7 workers restarted at their first skill boundary and re-invoked
+the loop skill in the fresh process. The seventh paired its `use_skill(worker)` with
 an `update_plan` in the same batch and executed as before — correct under the rule as
 written, and the COMMON shape of a re-entry (mark the last step done, load the next
-body); a Body that always pairs them would never restart, the same class of gap this ADR
+body); a worker that always pairs them would never restart, the same class of gap this ADR
 closed. A batch of exactly one `use_skill` plus nothing but `update_plan` calls
 (`_SKILL_BOUNDARY_COMPANIONS`) is therefore a boundary too: the plan updates run here
 (local session state, no model call, persisted at the same message boundary) and the
@@ -4218,10 +4218,10 @@ skill call is answered unexecuted. Any other companion still exempts the batch. 
 
 **Amended 2026-09-26 (the restart is taken at the turn's end, before any door).** The
 "REPL then reaches its idle prompt, the ADR-0034 probe fires" step had a race, measured
-three times in one morning on two Bodies: the idle wait serves the doors first — a due
+three times in one morning on two workers: the idle wait serves the doors first — a due
 wake-up or a background command's exit note, polled every 0.3 s — and consults the install
 probe only every 5 s, so a door won, the model ran one more turn on the build it was
-leaving (361–488 s calls; one turn opened by a park re-poll whose premise, that the Body
+leaving (361–488 s calls; one turn opened by a park re-poll whose premise, that the worker
 was still parked, was hours stale), reached the same skill boundary, and restarted again:
 two replays and a stale premise per deploy. The REPL now takes the restart directly when
 the turn it just ran ended `restart` (`_restart_now`) — before `try_input`, before the
@@ -4234,14 +4234,14 @@ through its own doors. Pinned by `tests/test_self_restart.py`
 
 ## ADR-0102: A turn-end hook may arm the session's wake-up
 
-**Context.** The wake-up (ADR-0094) is the primitive a parked worker Body resumes on: its
+**Context.** The wake-up (ADR-0094) is the primitive a parked worker session resumes on: its
 loop skill ends the park turn with a `ScheduleWakeup(<re-poll prompt>, 3600)` and nothing
 else, and the harness delivers the prompt at the idle prompt an hour later. That arm is the
-MODEL's to make, and measured across the 26 zc-03 sessions of 2026-08-29 it was made once:
+MODEL's to make, and measured across the 26 sessions on a worker machine on 2026-08-29 it was made once:
 427 bash calls, 18 skill re-entries, one `schedule_wakeup`. The bash-typed form (ADR-0098's
 refusal) had stopped; the calls did not start. A park that forgets to arm is a close with a
-friendlier name — the Body sits at its prompt until an operator relaunches it, which is the
-outcome parking exists to remove. The Mind's Stop hook already knows the Body is parked (it
+friendlier name — the worker sits at its prompt until an operator relaunches it, which is the
+outcome parking exists to remove. The host framework's Stop hook already knows the worker is parked (it
 ALLOWS that turn-end on the manifest's `parked` state, and logs the gate), so the one process
 that holds the fact runs at the one moment it matters, and cannot say so.
 
@@ -4256,7 +4256,7 @@ ignores the key, so a framework's hook can emit it unconditionally.
 
 **Alternatives rejected.** Making the loop arm a wake-up itself whenever an unattended turn
 ends with plan steps open (the loop cannot tell a park from a pause, and ADR-0090's kick is
-already the answer for restarts and collapses). Teaching the loop the Mind's manifest (the
+already the answer for restarts and collapses). Teaching the loop the host framework's manifest (the
 harness stays framework-agnostic; the hook is the framework's voice). A new hook event
 (the Stop hook is exactly where a "come back later" belongs).
 
@@ -4273,7 +4273,7 @@ drops a held one, a veto carries one).
 reinstall never trips it — and it accepted, as "harmless", that a no-op reinstall of the same
 commit restarts once too. Measured on a live fleet 2026-08-29: a `zakcode update` that
 resolved to the commit already installed moved the marker, and every session on that build
-took the restart at its next boundary — six Bodies, "build a575b462851e reinstalled", each
+took the restart at its next boundary — six worker sessions, "build a575b462851e reinstalled", each
 re-priming a 23-page loop on a saturated pod for code that had not changed. Harmless per
 session; a fleet-wide stall per no-op update. The same event also contaminated the ADR-0101
 measurement: four of the "restarted within 30 min" tallies were this restart, not the
@@ -4298,7 +4298,7 @@ quiet, a later real update still reports; local-path same-HEAD reinstall still r
 ## ADR-0104: `zakcode throughput` reads where the fleet's turn time goes
 
 **Context.** "Are we bottlenecked, and on what?" was answered on 2026-08-29 by hand: the
-eight coach sessions' documents read with an ad-hoc script — event-time gaps between each
+eight served agent sessions' documents read with an ad-hoc script — event-time gaps between each
 assistant message and the message before it, paired with the usage record from the tail —
 and the router's `/v1/models` listing read for its `zds` block. The answer drove a hardware
 decision: four engine slots, seven to eight requests in flight all evening, a p50 turn of
@@ -4336,15 +4336,15 @@ queue-factor warning).
 
 ## ADR-0105: `alwaysApply: true` keeps a rule's full body under the lean rules index
 
-**Context.** A Mind ships 216 KB of rules in 34 files. Under the full render
+**Context.** A host framework ships 216 KB of rules in 34 files. Under the full render
 (`MAX_RULES_TOTAL_CHARS` 32 KB, 8 KB per file) only the first seven by name reach the
-prompt and 27 are dropped with a one-line note; the coach fleet therefore runs
+prompt and 27 are dropped with a one-line note; the served fleet therefore runs
 `ZAKCODE_LEAN_RULES=true`, the index of name + summary + path with `read_rule` on demand.
 Measured 2026-08-29 over one hour of eight live sessions on a 35B model: 252 assistant
 turns, 207 `bash`, 59 `update_plan`, 33 `read_file` — and **zero** `read_rule`. Every
-behavioural rule the Mind carries was, in practice, absent from every turn, and the
+behavioural rule the host framework carries was, in practice, absent from every turn, and the
 summary line the index showed was the rule's TITLE ("Verify Before Assuming"), because
-no rule carried a `description:`. The Mind's fix for the second half is a one-line
+no rule carried a `description:`. The host framework's fix for the second half is a one-line
 imperative `description:` on every rule (the index shows it; Claude Code ignores it).
 This ADR is the first half: a way for the operator to say "these few rules ride in full,
 whatever the model chooses to read".
@@ -4363,7 +4363,7 @@ budgets protect). Making the model read rules (measured: it does not). Pinning b
 in settings (the rule file is where the operator already edits; the flag travels with
 it across deployments and is Cursor's own vocabulary).
 
-**Consequences.** A Mind chooses its always-on core — four rules at ~23 KB in the
+**Consequences.** A host framework chooses its always-on core — four rules at ~23 KB in the
 measured case — and pays index lines for the rest. Pinned in
 `tests/test_rules_always_apply.py` (flag spellings, body-in-full vs one-line siblings,
 no-flag byte-identity, per-file and total caps with the omission note, index lines still
@@ -4371,14 +4371,15 @@ fitting beside pins, full-render priority).
 
 ## ADR-0106: a script path that does not exist is refused before the command runs
 
-**Context.** Measured on the coach fleet (zc-03, eight Bodies, 24 h to 2026-08-29 23:20):
+**Context.** Measured on the served fleet (a worker machine, eight worker sessions, 24 h to 2026-08-29 23:20):
 340 `bash|python3 <relative path>` invocations, 13 naming a script that does not exist —
-`core/scripts/recurring-goal-detectors.sh`, `core/scripts/aspirations-read-goal.sh`,
-`core/scripts/worker-close-unit.sh`, `core/scripts/deadman-update.sh` — every one a name
+the host framework's shell scripts (`scripts/recurring-goal-detectors.sh`,
+`scripts/goal-read.sh`, `scripts/worker-close-unit.sh`,
+`scripts/deadman-update.sh`) — every one a name
 composed from memory. Five of the 13 piped the output (`… 2>&1 | python3 -c
 "json.loads(sys.stdin.read())"`): bash's own "No such file or directory" went down the pipe,
 the parser raised `JSONDecodeError: Expecting value`, and the ENOENT hint (ADR-0097) that
-answers exactly this shape never saw the frame it keys on. The reducer read that traceback
+answers exactly this shape never saw the frame it keys on. The coordinating session read that traceback
 as a JSON bug in a script that does not exist. ADR-0093 already showed the same laundering
 for interpreter mismatches; a pipe hides any post-run signal.
 
@@ -4405,13 +4406,13 @@ fail open, same-command write skipped, extra root honoured).
 
 **Amendment (#329, 2026-08-30) — leading `VAR=value` assignments are stepped over.** The
 scan anchored the interpreter at a command start, so the fleet's own idiom — `cd … &&
-MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local bash core/scripts/x.sh`, the
-Mind's hook-injection prefix that every Body copies into every command — was never
+AGENT_NAME=agent STORAGE_BACKEND=local bash scripts/x.sh`, the
+host framework's hook-injection prefix that every worker copies into every command — was never
 checked. Measured over the same fleet's next 24 h: 165 of 454 script invocations (36 %)
 carried leading assignments, and five of them named a script that does not exist
 (`loop-orchestrator-entry-battery.sh`, `runner-heartbeat-tick.sh`, `goal-scorer.sh`,
 `wm-list.sh`, `parse-flags.sh`) — each a bare 127 the model spent a ~7-minute step on,
-the reducer's first loop entry among them. The regex now accepts any run of `\w+=…`
+the coordinating session's first loop entry among them. The regex now accepts any run of `\w+=…`
 tokens between the anchor and the interpreter; an assignment alone, or one followed by a
 non-interpreter (`FOO=1 ls x.sh`), is still not an invocation. Lesson for the next shape:
 when a case a guard was built for still reaches the model, diff the guard's predicate
@@ -4420,7 +4421,7 @@ before concluding the model was unlucky.
 
 ## ADR-0107: A rate-limit horizon exhaustion still does not fail over — re-affirmed against a field incident
 
-**Context.** On 2026-09-01 a PROD mind-sidecar (owner-operated, paying customer) died at
+**Context.** On 2026-09-01 a PROD framework-sidecar (owner-operated, paying customer) died at
 `stop_reason=provider_error`, "481s into the 900s backoff budget", boot plan 0/9. The
 incident report reasoned that failover needs three layers and that the third was the
 primary defect: (1) an OpenAI credential — **present**, resolved from the JVM process
@@ -4483,7 +4484,7 @@ existing spec test all stand. Two things do change:
 `ZAKCODE_FALLBACK_MODEL` in the sidecar bootstrap so layer 2 is non-empty for the *broken*
 -route case it is genuinely for, and correct `run-loop.sh`'s "No fallback model: this box
 has only a GROQ key", which states a cause the incident falsified. Both land in
-Ayoai-Environment-Server (g-369-89).
+the environment server.
 
 ## ADR-0108: a finished plan yields the verdict, not "plan finished"
 
@@ -4524,26 +4525,26 @@ reset already guarantees a finished plan never reaches the next turn; the two pl
 actually lingered were the model's context (piece 2) and the UIs (piece 4). A model-judged
 "does this completion contain a conclusion" gate: a model call per completion for a question
 a 400-character regex plus a length bound answers deterministically (the ADR-0040 lesson).
-Relying on the Mind framework's rule and hook alone: they ship in `.claude/` and only reach
-a Body running inside a Mind workspace; this makes the behaviour Zak Code's own.
+Relying on the host framework's rule and hook alone: they ship in `.claude/` and only reach
+a worker running inside a host framework workspace; this makes the behaviour Zak Code's own.
 
 **Consequences.** One bounded nudge per turn; a false positive costs a single re-prompt, and
 the broken-record guard (ADR-0026) bounds any cascade. The 600-character bound is the
 deliberate trade: a long answer that happens to end on "all steps are done" is left alone.
-On a Mind workspace the hint, the one-line reminder and the Mind's own PostToolUse reminder
+On a host framework workspace the hint, the one-line reminder and the framework's own PostToolUse reminder
 all fire at the same moment — redundant by design, since each covers a workspace the others
 do not. Tests: `tests/test_plan_verdict.py` (all four pieces, both paths, matcher
 surgicality) and `test_render_todo_collapses_a_complete_plan`.
 
 ## ADR-0109: A user-only skill is invisible to the model's seams; a common word is not a skill reference
 
-**Context.** Field transcript 2026-09-05, a Mind workspace on a quick-route model: the
+**Context.** Field transcript 2026-09-05, a host framework workspace on a quick-route model: the
 operator typed "ok, clear that plan, and lets start from scratch". The classify side-call
 (ADR-0035) answered `skill: "start"`; the deterministic anchor (ADR-0036) accepted it, because
 the request shares the stem `star` with a skill NAMED `start`; `_adopt_implied_skill` seeded
 `run /start` and armed the backstop; the model said "I have cleared the plan" and the plan gate
 refused that finish ("plan has open steps; continuing"); the model obeyed and ran
-`use_skill(start)` — the Mind's start-an-agent control command, whose own description says
+`use_skill(start)` — the host framework's start-an-agent control command, whose own description says
 "USER-ONLY — Claude must NEVER invoke /start" — which seeded six more steps before the operator
 hit Ctrl-C. Two roots, not one. (1) The anchor's NAME rule cannot tell "start from scratch"
 from "start the agent": for a skill named by an everyday verb the shared stem is present in
@@ -4568,7 +4569,7 @@ start, stop, test, review, …; judged on whole words, because 4-char stems coll
 `reset`/`research`), the name anchors only if the request references it AS a skill
 (`_references_skill`: a `/name` token, "<name> skill|command", or an invocation verb in front
 of it) — else the two-stem description rule decides, as before. A classifier-implied step's note now says it is a harness
-guess the model may cancel when the request did not ask for the skill. The Mind marks its
+guess the model may cancel when the request did not ask for the skill. The host framework marks its
 control skills (`start`, `stop`, `open-questions`) with the flag on its side.
 
 **Alternatives rejected.** Detecting user-only skills from their prose ("USER-ONLY",
@@ -4585,7 +4586,7 @@ control command: not the catalog, not a nudge, not a plan step, not the tool. Sk
 by everyday words need a reference shape or two description words to be implied; "lets test
 this" no longer conscripts a `/test`, while "run the test skill" and "review the pull request
 for regressions" (two description stems) still do. Existing anchors keep working — research,
-forge, notify, aspiration are not everyday words. Tests: `tests/test_user_only_skills.py`
+forge, notify, orchestrate are not everyday words. Tests: `tests/test_user_only_skills.py`
 (flag → catalog, prompt, tool refusal, classifier, seeding) and
 `tests/test_skill_anchor_prose.py` (the incident string, the generic-name floor, the
 reference shapes).
@@ -4654,7 +4655,7 @@ full-replace) is unchanged except for one optional field.
 
 Also folded in: the CLI's finished-plan collapse (ADR-0108) matched any bracketed line as a
 step, so a hook's `[plan-completion-verdict] …` tag in the tool output kept a finished plan
-from collapsing (measured the same day in a Mind workspace); it now matches glyph rows only.
+from collapsing (measured the same day in a host framework workspace); it now matches glyph rows only.
 
 **Alternatives considered.** Per-id patch operations for the plan (add / mark / search
 tools) — rejected: the full-replace contract is what keeps weak models robust, and every
@@ -4807,7 +4808,7 @@ Tests: `tests/test_plan_ledger.py` (drop recorded + advised, faithful resend sil
 
 ## ADR-0114: The verify gate credits how Python actually runs, and a template is not an expected output
 
-**Context.** ADR-0110–0113 were tried live on coach's box (a 35B local model, 2026-09-05):
+**Context.** ADR-0110–0113 were tried live on a served agent's box (a 35B local model, 2026-09-05):
 the plan machinery held, and the harness stalled two of seven turns that the model had
 finished correctly. Both stalls were the recipe gate's, not the model's. (1) The request
 "prints the five most common words as `"word count"` lines" extracted `word count` as an
@@ -4840,7 +4841,7 @@ arm the gate (they are verified the way they run: by a suite or a sibling module
 `TaskNetwork.quality` marks a truncated id list with `…`. `score_plan` frames the artifact:
 judge the plan before any of it has run.
 
-**Consequences.** The turn-1 and turn-5 stalls on coach reproduce as clean `done` endings
+**Consequences.** The turn-1 and turn-5 stalls on a served agent reproduce as clean `done` endings
 (re-tested live after install). The acceptance extractor stays high-precision — every prior
 positive still extracts; only shape descriptions are dropped. Credit by module path is
 exact-basename, like the file form, so `python -m pytest` credits nothing but the suite.
@@ -4850,7 +4851,7 @@ commands, plumbing files inert), `tests/test_tasks.py` (truncation marker),
 
 ## ADR-0115: The plan gate's budget is charged by progress, silence mid-plan is a give-up, and the footer counts what was left open
 
-**Context.** Live on serene (`gemini-2.5-flash`, 2026-09-08): a 14-step plan ended
+**Context.** Live on a served agent (`gemini-2.5-flash`, 2026-09-08): a 14-step plan ended
 `done — struggled · 51 iterations` at 9/14 with step 2.2.1 `in_progress` and no answer —
 "why did it tell me it was done mid-todo list?!". Three mechanisms, all in the harness.
 (1) `_MAX_PLAN_NUDGES = 2` was a flat per-turn cap, and the no-progress guard added
@@ -4883,11 +4884,11 @@ before (`test_completion_gate_nudges_then_completes_degraded` moves from four ca
 `gave_up` (`test_empty_completion_mid_plan_ends_gave_up_not_done`); the footer says how much
 was left (`tests/test_render.py`). Not fixed here, by design: a model that restates in TEXT
 twice without touching the plan still ends after the cap — bounded beats deadlocked. The
-other half of the serene turn (a search closed on "No files found") is ADR-0116.
+other half of that turn (a search closed on "No files found") is ADR-0116.
 
 ## ADR-0116: A null result is a claim about the instrument — `∅` evidence, the one-time close challenge, the evidence-discipline rails, and token masking at the seam
 
-**Context.** Same serene session, the turn before: asked for `.tar.gz` files in a Drive the
+**Context.** Same field session, the turn before: asked for `.tar.gz` files in a Drive the
 user KNOWS holds them, the agent ran `fileExtension = 'tar.gz'` → "No files found", listed
 the ROOT → "No files found", and told the user twice they were wrong. Both nulls were the
 instrument, not the world: a root listing that returns nothing is blindness (the token's
@@ -4901,10 +4902,10 @@ conviction, make the agent more curious — explore more before saying they are 
 
 **Boundary** (`docs/PERSISTENCE-BOUNDARY.md`). The harness owns the domain-free discipline:
 how a null result is RECORDED, when a close is TRUSTED, what every model is told about
-negative results and a user's conviction, and that secrets never cross the seam. The Mind
+negative results and a user's conviction, and that secrets never cross the seam. The host framework
 owns the domain facts — which principal a token belongs to, how a given API names an
 extension, the skill body that carries the positive control for THAT tool. None of the
-second kind is encoded here; the harness gives the Mind's knowledge a place to land (the
+second kind is encoded here; the harness gives the host framework's knowledge a place to land (the
 step's `note`) and refuses to let its absence pass silently.
 
 **Decision.** (1) An evidence line for a call that SUCCEEDED and found nothing reads
@@ -4930,7 +4931,7 @@ the model reads) runs on every tool output at the execution seam, with `ya29.`, 
 JWT shapes added to the guard, and a rail telling the model to keep a secret inside one
 command.
 
-**Consequences.** The serene turn replays as: search → `∅` → the close is handed back →
+**Consequences.** The field turn replays as: search → `∅` → the close is handed back →
 positive control → an honest answer ("the account this token belongs to sees an empty
 drive"), pinned end-to-end in
 `test_a_search_that_found_nothing_is_recorded_as_null_and_its_close_is_challenged`. The null
@@ -4944,7 +4945,7 @@ trust, cancel, the loop replay), `tests/test_prompt.py` (tier and order),
 
 ## ADR-0117: A finish is not a finish while the answer defers the ask, announces work, or the plan hides a gap
 
-**Context.** Two more serene turns (`gemini-2.5-flash`, 2026-09-08). (1) A 50-iteration turn
+**Context.** Two more field turns (`gemini-2.5-flash`, 2026-09-08). (1) A 50-iteration turn
 closed its plan and ended `done — struggled` on a conclusion that said, in its own words, the
 ask was not met: "the google-drive-list 'no files' issue … will enable further debugging in a
 future session … still present, but now debuggable". Nothing in the harness had a word for
@@ -5001,7 +5002,7 @@ the plan gate and finished degraded with the step open, off switch, fail-open, s
 
 **Status.** Accepted (2026-09-09).
 
-**Context.** Field incident 2026-09-09 (serene, `gemini-2.5-flash`): asked to fix one line of a
+**Context.** Field incident 2026-09-09 (a served agent, `gemini-2.5-flash`): asked to fix one line of a
 Python script, the model reported that `edit_file`/`write_file` "report success" but "the
 system then reports syntax errors (unterminated string literal / expected ':') even when the
 code I have written is syntactically correct", declared an "environmental blocker", and asked
@@ -5059,7 +5060,7 @@ fix the content and retry; never hand the user an edit you have the tools to mak
 **Consequences.** The incident's turn now reads, at the first refusal, the line it broke and
 why, with the file untouched; its "manual intervention is required" conclusion is nudged
 back to the fix instead of reaching the user; and a file left broken by an earlier write can
-be repaired edit by edit. No new judge call, no setting. Domain facts stay in the Mind: the
+be repaired edit by edit. No new judge call, no setting. Domain facts stay in the host framework: the
 harness diagnoses the SHAPE of a bad write (cut off, newline in a string), never what the
 script should say. Tests: `tests/test_write_firewall.py` (window, cause classes, the fix
 rail, the refusal tag through both tools, edit refuses-only-breakage, already-broken file
@@ -5113,7 +5114,7 @@ pipe, tokens, history across editors, geometry, folding), `tests/test_cli_cockpi
 
 **Status.** Accepted (2026-09-10). Closes Zak-Code #176.
 
-**Context.** Measured on the zc-03 pod test bed 2026-08-21: a streaming completion whose
+**Context.** Measured on a worker machine's inference pod on 2026-08-21: a streaming completion whose
 backend never sent a single response byte ran **45 minutes** with no client-side timeout —
 the socket showed the request fully sent (89,028 bytes) and no bytes ever received, while
 litellm's scalar `timeout` (600s at the time) never raised. A scalar httpx timeout is
@@ -5211,7 +5212,7 @@ both nudges, the stop label, registration).
 
 **Status.** Accepted (2026-09-10).
 
-**Context.** Measured on the coach rig, 2026-09-10, on the build shipped hours earlier. A
+**Context.** Measured on a served agent rig, 2026-09-10, on the build shipped hours earlier. A
 real task — find every injury from last night's NE-at-SEA game, cross-reference the local
 roster, cite a source for every claim, and say plainly what could not be confirmed — ran
 12 iterations over 10m41s on local inference and came back correct and fully sourced: two
@@ -5277,7 +5278,7 @@ where a degraded turn was visually indistinguishable from a clean one.
 
 **Status.** Accepted (2026-09-10).
 
-**Context.** Measured on the coach rig, 2026-09-10, in the same field run that produced
+**Context.** Measured on a served agent rig, 2026-09-10, in the same field run that produced
 ADR-0122. Mid-research the model got back:
 
 ```
@@ -5332,7 +5333,7 @@ implementation detail in the shared tool, where it would be wrong for every othe
 
 **Status.** Accepted (2026-09-10).
 
-**Context.** A live agent on `gemini-2.5-flash` (the serene deployment, 2026-09-10) ran a
+**Context.** A live agent on `gemini-2.5-flash` (a served deployment, 2026-09-10) ran a
 40-step plan to a stop: **37 iterations, 11.68M tokens, $3.57, six minutes** — most of them
 restating that it was blocked. The bill was not the restating. It was the plan.
 
@@ -5343,7 +5344,7 @@ purpose). So each edit delivered the plan to the model twice — and the two cop
 equal. The reminder is ephemeral and never persisted; the tool result is a message in the
 session history. Every `update_plan` call therefore appended a full copy of the plan to the
 context for the rest of the session, compounding with the plan's size and the iteration
-count. On coach's own run this morning the echo was 7.8% of the transcript on a nine-step
+count. On the served agent's own run this morning the echo was 7.8% of the transcript on a nine-step
 plan; at forty steps it is the bulk of every subsequent prompt.
 
 The operator paid the same tax in the terminal: forty rows redrawn on every edit, so the work
@@ -5376,7 +5377,7 @@ each iteration and never persisted; it is the right carrier, the echo was the wr
 
 **Status.** Accepted (2026-09-10).
 
-**Context.** Measured on the coach rig, 2026-09-10, in a skill-use test. The skill's
+**Context.** Measured on a served agent rig, 2026-09-10, in a skill-use test. The skill's
 prerequisites said to check the Yahoo token file; the model ran `cat .yahoo_token.json`; the
 tool output — a 230-character opaque OAuth access token and a refresh token — reached the
 model's context, the CLI log and the persisted session store unredacted. Zero redaction
@@ -5430,7 +5431,7 @@ legitimate reasons to check a token's expiry, and the skill in the field did exa
 
 **Status.** Accepted (2026-09-10).
 
-**Context.** Measured on the coach rig, 2026-09-10 (qwen3.6-35b, local). Asked to build the
+**Context.** Measured on a served agent rig, 2026-09-10 (qwen3.6-35b, local). Asked to build the
 skills it would need for a fantasy-football API, with the instruction *"the exact commands
 or API calls where you know them"*, the model wrote five well-formed skills — every one
 parsed, every description carried real trigger phrases, the closing rationale correctly
@@ -5478,8 +5479,8 @@ workspace and the future session's environment; a host either resolves or it doe
 
 ## ADR-0127: A request for an operator-only command is handed to the operator, not to a neighbouring skill
 
-**Context.** Field run 2026-09-10 on a Mind workspace (a local 35B model): "Start yourself as
-coach in assistant mode. Once you are started, save a note … then tell me what state you are
+**Context.** Field run 2026-09-10 on a host framework workspace (a local 35B model): "Start yourself as
+the agent in assistant mode. Once you are started, save a note … then tell me what state you are
 in." The classify side-call (ADR-0035) was offered `model_catalog()` only — ADR-0109 removed
 the user-only commands so that none could ever be implied — so the one skill the request was
 plainly asking for, `/start`, was not on its list and could not be named. The classifier did
@@ -5491,7 +5492,7 @@ plan step it had not asked for, ran /prime, spun through its pages for thirty it
 assistant (confirmed)" — read from the PRE-EXISTING on-disk state after itself seeing
 `NO_AGENT` for its own session. The harness graded the turn "done — recovered". Claude Code's
 model, shown the same framework rule ("Claude MUST NOT invoke /start"), answers such a request
-in one turn: "I can't start myself — run `/start coach --mode assistant`." Zak Code's could not,
+in one turn: "I can't start myself — run `/start agent --mode assistant`." Zak Code's could not,
 because the harness had already decided the task was a different skill before the model spoke.
 
 **Decision.** The classifier is shown the operator-only commands too, under their own heading
@@ -5533,7 +5534,7 @@ with commands alone, skills alone, and both).
 
 ## ADR-0128: The reviewer grades the ask minus what was handed to the operator
 
-**Context.** The field test of ADR-0127 (2026-09-10, the same "Start yourself as coach in
+**Context.** The field test of ADR-0127 (2026-09-10, the same "Start yourself as the agent in
 assistant mode …" request on a local 35B model): the hand-off worked — iteration one, "I can't
 run /start — that's a user-only slash command. I'll do what I can" — the note was saved and read
 back, the operator was told to type the command, and the report was honest ("State: IDLE —
@@ -5541,9 +5542,9 @@ back, the operator was told to type the command, and the report was honest ("Sta
 fresh-eyes review of the finished plan (ADR-0117) fired. The completion critic reads a FRESH
 context — the bare request, the answer, the plan record — by design, so it cannot be talked out
 of a gap by the transcript; and by the same design it could not see the rail that had, by rule,
-taken `/start` out of the agent's hands. It flagged "Failed to start itself as coach in assistant
+taken `/start` out of the agent's hands. It flagged "Failed to start itself as the agent in assistant
 mode (explicitly requested)", the harness seeded a "Reviewer flagged" step, and the model spent
-the remaining eleven iterations re-measuring state and grepping `core/scripts` for
+the remaining eleven iterations re-measuring state and grepping the host framework's scripts for
 start/boot/init entry points — pushed by one harness rail toward the very thing another had
 just forbidden. It ran no state-writing script (the session snapshot taken beforehand was not
 needed) and ended "done — recovered" at 23 iterations, 874k tokens; but the pressure was in the
@@ -5577,8 +5578,8 @@ the next turn). Field re-test: the same request on this build, expected to end a
 
 ## ADR-0129: A directory whose every entry is ignored is listed anyway
 
-**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, a domain question
-answered from the knowledge tree. The Mind's world lives under a gitignored root
+**Context.** Field run 2026-09-10, a host framework workspace on a local 35B model, a domain question
+answered from the knowledge store. The host framework's world lives under a gitignored root
 (`.mind-data/`), so every `list_dir` on its tree came back as one line — `[... 5 ignored
 entries hidden; include_ignored=true to show ...]`. The tool said exactly what to do. The model
 read that line four times without acting on it, the no-progress rail fired and seeded
@@ -5604,7 +5605,7 @@ did not fail; it also still leaves the model one more call from the answer. Maki
 first line — the model that skims one line skims the first as easily as the last.
 
 **Consequences.** A listing never comes back empty for a directory with contents. Workspaces
-whose data lives under an ignored root (a Mind's external world, a vendored dataset) list like
+whose data lives under an ignored root (a host framework's external world, a vendored dataset) list like
 any other. Test: `tests/test_list_dir_all_ignored.py` (all-ignored shown and tagged, `.git`
 still hidden, mixed directory unchanged, `include_ignored` unchanged).
 
@@ -5612,8 +5613,8 @@ still hidden, mixed directory unchanged, `include_ignored` unchanged).
 
 ## ADR-0130: A search result clips each match line and caps the whole
 
-**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, asked to author a
-skill with exact API calls. The Mind's stores are JSONL — one record per line, and a record can
+**Context.** Field run 2026-09-10, a host framework workspace on a local 35B model, asked to author a
+skill with exact API calls. The host framework's stores are JSONL — one record per line, and a record can
 carry a whole knowledge article. Three `grep` calls over the agent's directory (`league|fantasy|
 yahoo|free.agent`, then two near-identical `league_id` patterns) each returned 18 matches of
 ~10 KB: 958, 928 and 924 transcript lines, and in the session store 229 KB, 136 KB and 133 KB
@@ -5645,7 +5646,7 @@ a match deep in a line kept with the lead marker, the total cap with its count).
 
 ## ADR-0131: A skill no session could load is refused at write time, with its header
 
-**Context.** Field run 2026-09-10, a Mind workspace on a local 35B model, asked to author a
+**Context.** Field run 2026-09-10, a host framework workspace on a local 35B model, asked to author a
 skill with exact API calls. After 46 iterations — most lost to two floods this same day's
 ADR-0129 and ADR-0130 closed — the model wrote `.zakcode/skills/free-agent-scan/SKILL.md`. Its
 first line was `# Free Agent Scan`. No fence, no `name`: the harness parser raises
@@ -5681,7 +5682,7 @@ loadable skill and allows the one that repairs a broken one).
 
 ## ADR-0132: The kept compaction tail is a token budget, not only a message count
 
-**Context.** Field run 2026-09-10 (coach, zc-03, a 131k-window local 35B model, the /forge-skill
+**Context.** Field run 2026-09-10 (a served agent on a worker machine, a 131k-window local 35B model, the /forge-skill
 run behind ADR-0131). Two grep results over multi-kilobyte JSONL lines — each clamped at the seam
 to ~98k chars, ~33k tokens at the data's ~2.5 chars/token — took the prompt from 32k to 106k
 tokens in three calls; the 106k call took 380 s. Compaction fired (`52 → 8 messages`) and the
@@ -5731,11 +5732,11 @@ ADR-0131's build.
 a model blocked on a human says so once instead of restating it for 27 iterations. Its motivating
 incident was an INTERACTIVE session on slow local inference: an operator was present and expected
 to answer. The unattended case was never considered. But the same tool is reachable in an
-autonomous loop and under a worker Body's `--dangerously-skip-permissions`, where by definition no
+autonomous loop and under a worker session's `--dangerously-skip-permissions`, where by definition no
 one is at the prompt (`AgentLoop.unattended()` — the modes `autonomous` and `bypassPermissions`).
 There, `await_user` ends the turn `stop_reason="awaiting_user"` and NOTHING resumes it: the loop is
-stranded until a human notices. Measured on the Mind framework running on zakcode (2026-09-11): an
-autonomous `/start coach` set the agent RUNNING, then the model, reaching a soft "invoke /boot"
+stranded until a human notices. Measured on a host framework running on zakcode (2026-09-11): an
+autonomous `/start` set the agent RUNNING, then the model, reaching a soft "invoke /boot"
 instruction, stopped and asked the operator "shall I boot?" — the loop never started. This is the
 exact failure `permissions.py` already designs against for permission prompts: in `autonomous` mode
 "everything auto-allows and NOTHING ever prompts… a present operator may [approve]; `autonomous`
@@ -5752,9 +5753,9 @@ An `awaiting_refused` intervention note is recorded, symmetric with the attended
 `acceptEdits`, `allow`), ADR-0121's terminal is unchanged.
 
 **Consequences.** An autonomous loop can no longer be silently stranded by a model reaching for
-await_user — the harness-level twin of the text-death protections the Mind maintains for the same
+await_user — the harness-level twin of the text-death protections the host framework maintains for the same
 class of failure, but one no downstream prompt fix could fully close. Defense in depth beneath the
-skill-level fix (the Mind's `/start` now chains straight to `/boot`): the model is steered not to
+skill-level fix (the host framework's `/start` now chains straight to `/boot`): the model is steered not to
 ask, and if it asks anyway the harness refuses to strand. `unattended()` is reused as the single
 predicate — no new mode plumbing. The residual risk is thrash (a nudge still recommends await_user,
 the model calls it, gets refused); it is bounded by ADR-0115's progress-charged nudge budget and by
@@ -5766,8 +5767,8 @@ ADR-0121 contracts still green (14 passed); full suite 3624 passed / 9 skipped.
 ## ADR-0134: UserPromptSubmit fires at the user-message boundary, its context folded into the turn
 
 **Context.** `UserPromptSubmit` sat in `settings_loader._SKIP_EVENTS` — a real Claude Code event
-recognised but not implemented, so a Mind that wired it (claude-mind's
-`user-prompt-retrieval-inject.sh`, which retrieves memory/RAG for the user's prompt) read
+recognised but not implemented, so a host framework that wired it (with a
+`user-prompt-retrieval-inject.sh` hook that retrieves memory/RAG for the user's prompt) read
 `event not implemented` and its retrieval silently never ran. Claude Code fires it once when the
 user submits a prompt; its stdout is injected as context for that turn (a retrieval/RAG seam),
 and — separately — an exit 2 blocks and erases the prompt. Unlike the other two skipped events,
@@ -5793,7 +5794,7 @@ never-persisted mechanism as `PRE_LLM_CALL` context, a different seam and timing
 even when no `PRE_LLM_CALL` hooks exist (that block is skipped independently).
 
 **Alternatives rejected.** Reusing the `PRE_LLM_CALL` seam — wrong on three axes: it sends
-`user_text` not `prompt` (the coach hook reads `prompt` and would get nothing), parses
+`user_text` not `prompt` (one host framework hook reads `prompt` and would get nothing), parses
 `{"context"}` not `additionalContext`, and fires before *every* model call rather than once at
 the prompt boundary. Implementing the exit-2 prompt-block now — deferred as a documented
 follow-up: the block touches the prompt-erase path, and the real consumer
@@ -5801,9 +5802,9 @@ follow-up: the block touches the prompt-erase path, and the real consumer
 it. Keeping it deferred in `_SKIP_EVENTS` — leaves a named parity gap unimplemented when the
 firing point is already owned and the risk is containable (the gate makes the no-hook path free).
 
-**Consequences.** An interactive Mind session (e.g. the operator cockpit) whose settings wire
+**Consequences.** An interactive host framework session (e.g. the operator cockpit) whose settings wire
 `UserPromptSubmit` now gets its retrieval/RAG context folded into the turn at the user-message
-boundary, matching Claude Code; autonomous Bodies, where the hook self-skips, are unaffected; a
+boundary, matching Claude Code; autonomous worker sessions, where the hook self-skips, are unaffected; a
 session with no such hook pays one boolean per turn. The `_run_context_shell` refactor is
 behaviour-preserving (the full context-injection suite is green). Tests:
 `tests/test_user_prompt_submit.py` (the seam in isolation — reads `prompt` from stdin, injects
@@ -5814,7 +5815,7 @@ event now registers instead of being skipped).
 
 ## ADR-0135: The recipe gate's verification budget scales with the number of files written
 
-**Context.** ADR-0114 closed several recipe-gate false-stalls measured live on coach's 35B, but a
+**Context.** ADR-0114 closed several recipe-gate false-stalls measured live on a served agent's 35B, but a
 sibling class remained, surfaced 2026-09-11 by a ripple-refactor probe (SOAK-9): change
 `apply_discount(price, pct)` from a percentage (0–100) to a fraction (0.0–1.0) and update every call
 site so the applied discount is unchanged. The model did it correctly — grep'd for the callers, found
@@ -5845,7 +5846,7 @@ rather than credited to the sibling that imports it — consistent with the gate
 default (ADR-0114 exempts `__init__.py`/`conftest.py` by name; crediting a general imported-only module
 would need import-graph awareness the cursor deliberately lacks). Tests: `tests/test_recipe.py`
 (`test_cursor_nudge_cap_scales_with_files_written`, `test_cursor_nudge_cap_floored_at_default`);
-full suite 3623 passed / 9 skipped (main + the two new tests). A/B-confirmed live on coach's 35B:
+full suite 3623 passed / 9 skipped (main + the two new tests). A/B-confirmed live on a served agent's 35B:
 the identical probe, workspace and model stalled `recipe_stalled` / exit 1 on the unpatched build
 (16 iterations) and finished `done` / exit 0 with the hidden oracle passing on the patched build
 (12 iterations) — the one-line `can_nudge` change the only difference.
@@ -5861,7 +5862,7 @@ matches a test-runner head (`pytest`, `jest`, `vitest`, …), but it classified 
 `uv run pytest`, the exact command zak-code's own CI runs, presented `uv` as the head and was NOT
 credited as a suite. `_executed_targets` has stripped `<runner> run` wrappers via `_RUNNERS` all
 along; `_runs_test_suite` never got the same treatment (the gap this ADR closes). Field run
-2026-09-11 (coach, zc-03, the 35B pod) surfaced it: a dogfood task — add a method to zak-code's own
+2026-09-11 (a served agent on a worker machine, the 35B pod) surfaced it: a dogfood task — add a method to zak-code's own
 `RecipeCursor` and verify with `uv run pytest tests/test_recipe.py` — the model did exactly that
 and the suite passed, but `_suite_verified` was never set. The gate fell back to per-file runs;
 `resolve_run_command` emitted a bare `py -m zakcode.agent.recipe` for the package file, which died
@@ -5890,13 +5891,13 @@ trusts, so reusing it keeps one source of truth.
 `completed`, instead of falling to per-file runs that fail on the project's own dependencies.
 Tests: `tests/test_recipe.py::test_runs_test_suite_recognizes_env_manager_wrappers` (the six
 managers, `python -m pytest` through a wrapper, `cd sub &&` composition, and the non-suite
-negatives). Field test (A/B on zc-03, the same dogfood task): unpatched exited 1 `recipe_stalled`;
+negatives). Field test (A/B on a worker machine, the same dogfood task): unpatched exited 1 `recipe_stalled`;
 patched, the model's `uv run pytest` was credited, the turn reached `done`, and the 79-test
 workspace suite passed — a real zak-code improvement verified through zak-code's own gate.
 
 ## ADR-0137: The suite depends on nothing the developer's machine happens to have
 
-**Context.** Measured on zc-03, a box where Zak Code is INSTALLED (its own config at
+**Context.** Measured on a worker machine, a box where Zak Code is INSTALLED (its own config at
 ``/etc/zakcode`` and ``~/.zakcode``): a plain ``uv run pytest`` at d0281a7 reported **154
 failed / 3484 passed**. The same tree on a box without an install is green. Two independent
 machine dependencies produce that, and neither is a bug in the code under test.
@@ -6204,7 +6205,7 @@ misses a shell edit: a ``sed -i`` followed by the suite would be read as a basel
 never took. Same root cause, but a different file, a different gate, and the opposite fix
 direction — letting a rail fire MORE, rather than arming an obligation — so it carries its own
 false-fire risk and deserves its own measurement. That measurement says leave it: across the six
-live probe runs the coach called ``write_file``/``edit_file`` between six and nine times EACH, so
+live probe runs the served agent called ``write_file``/``edit_file`` between six and nine times EACH, so
 ``_turn_edit_calls`` was never zero and the hole never opened. An earlier draft of this ADR said
 this change subsumed that limitation. It does not — this commit touches ``recipe.py`` only.
 
@@ -6227,7 +6228,7 @@ pytest tests/test_text_tools.py::test_truncate_basic  -> True
 So "you must run what you wrote" is discharged by "you ran something" — down to a single test
 function.
 
-Measured 2026-09-11 on the 35B coach, in BOTH arms of a two-arm probe on zak-code's own tree.
+Measured 2026-09-11 on the 35B served agent, in BOTH arms of a two-arm probe on zak-code's own tree.
 The task was three helpers in `src/zakcode/providers/text_tools.py` with tests. The model wrote
 them, ran `uv run pytest tests/test_text_tools.py -v 2>&1 | tail -30`, saw `67 passed`, and
 closed: *"All done — 67/67 tests pass."* The FULL suite on that tree was **2 failed, 3671
@@ -6503,10 +6504,10 @@ model that insists on the zero still may.
 
 ---
 
-## ADR-0145: The discovery ledger — accumulation lives in the mind, because the vessel's slice is a projection
+## ADR-0145: The discovery ledger — accumulation lives in the agent, because the vessel's slice is a projection
 
-**Context.** The vessel (Ayoai-Environment-Server, g-368-15) now emits a `discoveryPerception`
-slice on the observation envelope: per `ayoKey`, `{touchCount, distanceStatus, discovered}` for
+**Context.** The environment server now emits a `discoveryPerception`
+slice on the observation envelope: per entity key, `{touchCount, distanceStatus, discovered}` for
 every entity inside the character's 27-stud bubble. The feature it is meant to serve is
 "objects unlock through exploration" — a permanent, monotone property of a character.
 
@@ -6552,7 +6553,7 @@ Fail-open throughout, by inheritance from the path it sits on: a corrupt, versio
 unwritable ledger costs the ledger something and costs the perception nothing. The fold is
 wrapped so that even a defect in it cannot swallow a perception.
 
-**Alternatives rejected.** *Accumulating vessel-side* — that is what guard-4871 forbids (the
+**Alternatives rejected.** *Accumulating vessel-side* — that is what the host framework forbids (the
 reactive layer is execution, not memory), and it is also what makes the slice trustworthy: a
 projection cannot drift from its source. *Widening the slice to `sightRadius`* — the 27-stud
 bound is the tightest tier already computed in the same loop, so the projection reuses a bound
@@ -6682,16 +6683,16 @@ margin was 5.8% against a metric that varies by 40% — a positive arm that migh
 **PRODUCTION CONFIRMATION — measured on a real deployment 2026-09-12, and it is the strongest
 evidence in this ADR because it could not come from the bench.** This ADR's claim is a *negative*
 about the instrument: the bench cannot see the compaction path. A negative about coverage is only
-as good as the other side of it, and the other side is a deployment that exercises the path. Coach
-(`zc-03`, `/opt/coach-mind`) has a 1,174-transcript corpus, and **64 tool results carry
+as good as the other side of it, and the other side is a deployment that exercises the path. A served
+agent on a worker machine has a 1,174-transcript corpus, and **64 tool results carry
 `[tool output elided at compaction`** — the marker `Compactor.elision_note` writes and nothing else
 produces. **Compaction fires routinely in production while firing zero times in 20 instrumented
 bench runs.** The blindness is not hypothetical.
 
 Two disciplines this measurement had to obey, both of which changed what it could claim. The
-aggregates were computed ON THE BOX and only counts crossed the wire — coach carries third-party
+aggregates were computed ON THE BOX and only counts crossed the wire — the deployment carries third-party
 health content that must never leave it. And the population was checked before any rate: of 10,437
-records, 5,310 are real `/opt/coach-mind` usage and **5,021 (~48%) are pytest residue**, so every
+records, 5,310 are real deployment usage and **5,021 (~48%) are pytest residue**, so every
 count over the whole corpus is about half test traffic. That is sufficient for the EXISTENCE claim
 above (one genuine elision would be) and insufficient for any rate, so no rate is stated here.
 
@@ -6705,13 +6706,13 @@ was never consulted. The re-measurement, from zakcode's OWN session store on the
 ```
 /etc/zakcode/sessions        185 files (zakcode Session records: build, last_stop_reason,
                              permission_grants, model)   -> 2 marker files, 31 occurrences
-  of those, cwd /opt/coach-mind    134 files             -> ALL 31 occurrences
+  of those, cwd <workspace>        134 files             -> ALL 31 occurrences
 /etc/zakcode/transcripts   1,175 files (Claude Code format)  -> 35 files, 64 occurrences
-/opt/coach-mind/.zakcode      32 files (traces)              -> 0
+<workspace>/.zakcode          32 files (traces)              -> 0
 ```
 
 **The claim survives and its strength changes.** zakcode's compactor fired **31 times across 2 of
-134 real `/opt/coach-mind` sessions** — genuine production work, not pytest and not a sandbox —
+134 real deployment sessions** — genuine production work, not pytest and not a sandbox —
 against zero firings in 20 instrumented bench runs. So the blindness this ADR describes is real and
 measured from both sides. What is retracted is the prevalence the original wording implied:
 "fires routinely" reads as broad, and 2 of 134 sessions is 1.5%. The correct statement is that the
@@ -6722,9 +6723,9 @@ carried into a merged ADR without a second reading, and the re-reading was promp
 coincidence — an unrelated census returned 64 as well, which looked like double-counting. The
 coincidence was innocent; the provenance error it exposed was not.
 
-**And the retraction that had to precede it.** I recorded earlier in this campaign that coach was
-unreachable, because `/opt/coach-mind` is absent on this box. That was a single signal about the
-WRONG box, never corroborated against the host the notes name. zc-03 answers, and the path is
+**And the retraction that had to precede it.** I recorded earlier in this campaign that the deployment was
+unreachable, because the workspace path is absent on this box. That was a single signal about the
+WRONG box, never corroborated against the host the notes name. The worker machine answers, and the path is
 there. A negative conclusion from one signal — asserted while writing the guardrails about exactly
 that — cost this ADR its confirming evidence for most of a campaign.
 
@@ -6958,12 +6959,12 @@ iteration variance when it binds (ADR-0148). So for the hardest small-model case
 is **not** the lever — context accumulation is, and the mechanism that manages it is the expensive
 one.
 
-**FALSIFIED AS A PRODUCTION RECOMMENDATION, measured on coach 2026-09-12.** The caveat above says a
+**FALSIFIED AS A PRODUCTION RECOMMENDATION, measured on a served deployment 2026-09-12.** The caveat above says a
 user asking for a chart or a web lookup needs precisely the tools unused here. That was reasoning;
-it is now a reading. Coach called **20 distinct tools, not 8, and SEVEN of the seventeen I proposed
+it is now a reading. The deployment called **20 distinct tools, not 8, and SEVEN of the seventeen I proposed
 denying are among them**: `web_fetch` 48, `schedule_wakeup` 28, `web_search` 26, `save_image` 4,
 `await_user` 2, `secret_names` 1, `deep_think` 1 — ~110 calls against a surface this ADR measured as
-dead. Applying this trim to coach would break it.
+dead. Applying this trim to the deployment would break it.
 
 Two things that does NOT overturn. The measurement stands exactly as taken: on a ten-task coding
 suite those seventeen are dead weight and removing them cuts the per-iteration prompt 43-45% where
@@ -6972,10 +6973,10 @@ operator-set and per-deployment precisely so a coding harness and an assistant c
 surfaces. What changes is the caveat's standing: it stops being a hedge a reader may skip and
 becomes the measured reason the trim must not be a default.
 
-A third reading makes the scope gap sharper than "different workload". Coach also calls tools that
+A third reading makes the scope gap sharper than "different workload". The deployment also calls tools that
 are **not in the bench's 25 at all** — `echo` 297, `use_skill` 208, `read` 33, `task` 4 — because
 skills are enabled there. A deny-list computed against the bench registry does not even *describe*
-coach's tool surface, let alone prune it correctly. The same population caveat as ADR-0146 applies:
+the deployment's tool surface, let alone prune it correctly. The same population caveat as ADR-0146 applies:
 ~48% of the corpus is pytest residue, so these counts support the existence claims made and no rate.
 
 
@@ -7360,7 +7361,7 @@ ADR-0153 concluded the tasks are too easy. This ADR measures a different and lar
 instrument: not how hard the tasks are, but **which of the engine's paths any of them touch.**
 
 Censusing every `kind="..."` the engine can emit, against every intervention recorded in the bench's
-results corpus, against a census of coach's own trace store:
+results corpus, against a census of the deployment's own trace store:
 
 ```
 engine can emit   : 52
@@ -7379,7 +7380,7 @@ union coverage    : 19/52 = 37%
 agree on five.** The bench is not a small version of production; it is a different slice of the
 engine, and the two together still leave 63% of the intervention surface untouched.
 
-**The most-fired intervention in production has never fired in the bench.** `plan` leads coach's
+**The most-fired intervention in production has never fired in the bench.** `plan` leads the deployment's
 census at 13 of 64, and it does not appear once in any recorded bench run.
 
 **And the exclusion list was hiding the risk, not bounding it.** `intervention_coverage.py` marks
@@ -7390,7 +7391,7 @@ harness's configuration and was silently read as a statement about importance. S
 real users hit converts the most dangerous gap into a footnote, so the tool now takes
 `--compare <production-census>` and prints PRODUCTION ONLY as the ranked risk surface.
 
-**Population, stated because it bounds everything above.** Coach's trace store is 16 files / 407
+**Population, stated because it bounds everything above.** The deployment's trace store is 16 files / 407
 event records — small, so these are EXISTENCE claims and no rate is asserted. Existence is the whole
 argument here: one production firing of a path the bench never reaches is enough to show the bench
 cannot regression-test it. A larger census would sharpen the ranking, not the conclusion.
@@ -7404,7 +7405,7 @@ entry there is a path that real users take and no test here defends.
 ## ADR-0155: The bench's prompt floor is three to five times smaller than production's, and the skill catalogue is the reason
 
 ADR-0154 found seven of the eight production-only intervention paths gated behind `enable_skills`,
-so `ZBENCH_SKILLS_ROOT` was built to seed a mind's `.claude/skills` into the workspace and turn the
+so `ZBENCH_SKILLS_ROOT` was built to seed a host framework's `.claude/skills` into the workspace and turn the
 flag on. The pre-registered expectation was that the flag would be necessary but not sufficient —
 the tasks are self-contained coding requests that imply no skill — and that is what happened: 145
 skills seeded, `use_skill` exposed (tool surface 25 → 27), `interventions={}`, not one skill-gated
@@ -7425,7 +7426,7 @@ are paged — the prompt itself documents that a body too large for the window i
 section — and the CATALOGUE is not.** Every skill's name and description is inlined unconditionally,
 on every call, whether or not any skill is used.
 
-**And production confirms the bench floor is fiction.** Coach carries 65 skills (7 in
+**And production confirms the bench floor is fiction.** The deployment carries 65 skills (7 in
 `.zakcode/skills`, 58 in `.claude/skills`, 2.42 MB of `SKILL.md`), and across 307 `usage` records
 its prompt tokens read **min 28,950, median 49,999, max 106,418**. The minimum is the fair floor
 proxy — the median and max carry accumulated conversation. So production's SMALLEST prompt is three
@@ -7434,23 +7435,23 @@ times the bench's per-iteration floor, and its median is over five times.
 **This retires the transferable half of ADR-0149.** That ADR measured the tool schema at 6,732
 tokens — 70% of the bench's floor — and a deny-list saving 43-45% per iteration. Against
 production's floor of ~29,000 the same schema is ~23%, so the saving cannot transfer at anything
-like that size. Coach had already falsified the deny-list itself (seven of the seventeen "never
+like that size. The deployment had already falsified the deny-list itself (seven of the seventeen "never
 called" tools are in live use). Two independent reasons, one measured on each side: what survives
 from ADR-0149 is the MECHANISM — saving tracks floor share — and not the number.
 
 **The small-model lever is the catalogue, and this is the first measurement that points at it.** On
 a 32,768-token model a 145-skill catalogue consumes ~89% of the window before any work begins; at
-coach's 65 it would still dominate. Unlike a tool trim, paging or filtering the catalogue costs no
+the deployment's 65 it would still dominate. Unlike a tool trim, paging or filtering the catalogue costs no
 capability: it is a lookup the model needs only when choosing a skill, and the machinery to deliver
 text on demand already exists one level down for bodies. That is a concrete engine target with a
 measured payoff, arrived at by building an arm for an unrelated purpose and pricing it.
 
 **CORRECTION, immediately after merge: the causal claim in this ADR's title is measured for the
-BENCH and only partly true for PRODUCTION.** The decomposition was never run on coach, and running
-it changes the size of the claim. Coach's 65 skills carry **37,013 bytes of `description:` lines**.
-Converting with the ratio measured on this exact content rather than a rule of thumb — the Mind's
+BENCH and only partly true for PRODUCTION.** The decomposition was never run on the deployment, and running
+it changes the size of the claim. The deployment's 65 skills carry **37,013 bytes of `description:` lines**.
+Converting with the ratio measured on this exact content rather than a rule of thumb — the host framework's
 catalogue added 83,380 chars and 19,520 input tokens per iteration, so 4.27 chars/token — that is
-**~8,670 tokens, about 30% of coach's 28,950-token floor**. A composed estimate of the rest (base
+**~8,670 tokens, about 30% of the deployment's 28,950-token floor**. A composed estimate of the rest (base
 prompt ~2,500 tokens, tool schemas ~6,300) leaves roughly a third of that floor unaccounted for
 here; rules injection and a larger deployed tool set are the obvious candidates and neither was
 measured.
@@ -7458,11 +7459,11 @@ measured.
 So the accurate statement is: **the skill catalogue is 98% of the system-prompt growth in the
 bench arm (measured directly) and roughly a third of production's floor (measured, with the
 remainder unattributed).** "The skill catalogue is why" is right about the bench experiment and
-overstated about coach. The conclusions that do not move: production's floor is 3-5x the bench's,
+overstated about the deployment. The conclusions that do not move: production's floor is 3-5x the bench's,
 the catalogue is a large unpaged component of it, and paging it is a capability-free saving.
 
 The mechanism is also sharper than "skills are expensive". The cost is almost entirely
-`description:` text — 94,367 of the Mind's 98,923 catalogue chars, averaging **651 chars per
+`description:` text — 94,367 of the host framework's 98,923 catalogue chars, averaging **651 chars per
 skill**. A deployment's floor therefore scales with how verbosely its skills describe themselves,
 which is an authoring property nobody currently measures, not a fixed cost of having skills.
 
@@ -7507,10 +7508,10 @@ window" is wrong. 89% is the whole per-iteration prompt (29,096 of 32,768); the 
 share is **69%**. The conclusion is unchanged and the arithmetic was not — a share of the total got
 labelled as a share of one component, which is the same error as the first addendum, one level down.
 
-**Caveats that travel with the numbers.** 145 is this Mind's full set and is unusually large;
-coach's 65 is the real deployment figure and was measured, not assumed. Coach's median and max
+**Caveats that travel with the numbers.** 145 is the host framework's full set and is unusually large;
+the deployment's 65 is the real deployment figure and was measured, not assumed. The deployment's median and max
 include conversation history, so only the minimum bounds its floor. The bench figure is tokens per
-iteration and coach's is tokens per call; they are comparable in magnitude, not to the digit.
+iteration and the deployment's is tokens per call; they are comparable in magnitude, not to the digit.
 
 **THIRD ADDENDUM: measured. The "too cryptic" guess was right; the recommendation survives on the
 pre-registered test but cannot be called safe without its bound; and the first run measured its own
@@ -7531,7 +7532,7 @@ run survived only because FULL was pre-registered as a control whose expected re
 FULL at 0/30 is impossible under any true state of the world, so the run VOIDed instead of confirming
 the guess. Had the two cheap arms shipped alone, a request-shape bug would have been published as a
 capability finding about small models. A control that fails in the same direction as your hypothesis
-is not a control; it is a second copy of your hypothesis (`guard-6562`). The eval now aborts on an
+is not a control; it is a second copy of your hypothesis. The eval now aborts on an
 empty completion as an INSTRUMENT failure rather than scoring it as a wrong answer — at a scoreboard
 those two are the same row, so every arm degrades together and nothing looks anomalous.
 
@@ -7539,7 +7540,7 @@ those two are the same row, so every arm degrades together and nothing looks ano
 Corrected shape gave FULL 15/30, FIRST 13/30, NAMES 6/30, reproduced byte-identically across two
 separate invocations (measurement noise is zero at temperature 0, so repetition buys nothing — only
 population does). But FIRST-vs-FULL rested on 4 discordant pairs split 3-1, p=0.6250, and *both* the
-tolerance band and the VOID threshold were decided by a single question each — `guard-5645`'s shape
+tolerance band and the VOID threshold were decided by a single question each —
 exactly. So the whole catalogue was run instead, pre-registered first
 (`bench/results/choosability-full-preregistration.log`).
 
@@ -7607,11 +7608,11 @@ sibling path: `providers/routing.py` caps descriptions at `_SKILL_DESC_CAP = 100
 side-call — *more* aggressive than the first-sentence shape measured here. The catalogue is also a
 property of the WORKSPACE, not of zakcode: `default_skill_dirs` merges bundled (1 skill) with the
 project's `.zakcode/skills` and `.claude/skills`, so this cost is paid only where zakcode runs as a
-Mind runtime — 145 here, and 65 on coach (58 in `.claude/skills` + 7 in `.zakcode/skills`, re-verified
-on zc-03). An ordinary repo carries one skill and none of this applies.
+host framework runtime — 145 here, and 65 on the deployment (58 in `.claude/skills` + 7 in `.zakcode/skills`, re-verified
+on a worker machine). An ordinary repo carries one skill and none of this applies.
 
 **Caveat on the near-miss structure.** FULL's misses are dominated by sibling confusions
-(`aspirations-complete-review` → `aspirations-precheck`), and 36% of the catalogue sits in a family of
+(`orchestrate-complete-review` → `orchestrate-precheck`), and 36% of the catalogue sits in a family of
 three or more. That caps what any catalogue shape can achieve and is why FULL tops out at 62% rather
 than higher. Re-scoring to a laxer "right family" metric would raise every arm and is exactly the
 post-hoc move pre-registration forbids; exact match stands as registered. Whether better-separated
@@ -7696,18 +7697,18 @@ could not see such a change land correctly or incorrectly — relevant to any fu
 
 **FIFTH ADDENDUM: the retraction REPLICATES on the real deployment, and the prediction that catalogue
 SIZE drives choosability is FALSIFIED.** Every measurement above comes from one catalogue
-(ayoai-mind, 145 skills), so the fourth addendum's retraction could have been a property of that
-catalogue rather than of catalogues. The standing directive is to test hypotheses against coach, the
-actual deployment, so the arms were re-run there — ON zc-03, with coach's skill text never crossing
+(the host framework, 145 skills), so the fourth addendum's retraction could have been a property of that
+catalogue rather than of catalogues. The standing directive is to test hypotheses against the deployment, the
+actual deployment, so the arms were re-run there — on a worker machine, with the deployment's skill text never crossing
 the wire and only scores returned (`bench/results/choosability-coach-preregistration.log`, written
 before the run).
 
 Identical extraction, rendering, scoring, clustering and bootstrap as the 420-query run, and the
-script refuses to report a comparison if the configured model differs from the one the ayoai-mind
+script refuses to report a comparison if the configured model differs from the one the host framework
 runs used. 64 skills x 3 queries = 192 queries, 576 requests.
 
 ```
-                     coach (64 skills)          ayoai-mind (145 skills)
+                     deployment (64 skills)      host framework (145 skills)
 FULL                 112/192  58.3%             253/420  60.2%
 FIRST                 95/192  49.5%             216/420  51.4%
 NAMES                 43/192  22.4%              95/420  22.6%
@@ -7721,7 +7722,7 @@ generalises. The effect reproduces to within a tenth of a point across catalogue
 size and domain, which is a stronger result than either run alone.
 
 **And a pre-registered prediction was FALSIFIED, which is the more useful half.** P1 stated that all
-arms would score HIGHER on coach because a 64-way choice is easier than a 145-way one, and named the
+arms would score HIGHER on the deployment because a 64-way choice is easier than a 145-way one, and named the
 consequence in advance: *if they do not, catalogue SIZE is not the driver*. They did not — all three
 arms scored slightly LOWER (58.3/49.5/22.4 against 60.2/51.4/22.6) on a catalogue 38% the size.
 
@@ -7731,8 +7732,8 @@ That is also why shortening descriptions could not help — it was attacking a q
 drive the outcome.
 
 **The next hypothesis, stated as a hypothesis because two catalogues cannot establish a
-relationship:** sibling density rather than size. Coach carries 39% of its skills in families of
-three or more against ayoai-mind's 36%, and coach scored slightly lower on every arm — consistent in
+relationship:** sibling density rather than size. The deployment carries 39% of its skills in families of
+three or more against the host framework's 36%, and the deployment scored slightly lower on every arm — consistent in
 direction, on n=2, which is suggestive and nothing more. It is testable: a catalogue's family
 structure is measurable without any model call, so a third and fourth deployment would settle it
 cheaply. Recorded here so the claim is not later cited as though it were measured.
@@ -7781,13 +7782,13 @@ driven by Claude Code.**
 
 **The differentiator is not correctness, it is cost and latency.** $0 marginal against $1.0080, and
 1,701s against 73s — **23x slower, and free.** That is the shape of the user's redirect stated as a
-measurement rather than an aspiration: zakcode's value is not beating Claude Code at task success,
+measurement rather than a goal: zakcode's value is not beating Claude Code at task success,
 it is matching task success on a model that costs nothing to run. On `06` — the exploration task —
 zakcode took 16 iterations against Claude Code's 17 turns, essentially identical; the wall-clock gap
 is per-step latency on a local 35b, not extra steps.
 
 **Method note: this run was lost once and nearly twice.** The box has 4 GB of RAM. Running the
-choosability TOPK eval, the coach replication and this arm concurrently drove it into OOM; the
+choosability TOPK eval, the deployment replication and this arm concurrently drove it into OOM; the
 reaper took the TOPK run after ~57 minutes with a ZERO-BYTE log, and took the waiter watching both.
 This arm had already written its results and survived. The earlier decision to parallelise was
 justified on the grounds that shared load costs latency and not correctness — true of the pod, false
@@ -7930,7 +7931,7 @@ matters for real users" — tested with the session-only pin, which came back 3/
 refuting it. That test was the wrong cell: pinning the session id while letting the workspace vary
 is a configuration no user is ever in. The workspace-only cell is the user's, and it restores the
 original reading. **A cell that isolates a variable is not automatically the cell that answers the
-question** — the arm has to match the population the claim is about, which is guard-6563's
+question** — the arm has to match the population the claim is about, a
 registered-for-one-population failure arriving through the experimental-design door.
 
 ### ADR-0157 SECOND ADDENDUM — the fix is shipped and measured (2026-09-12)
@@ -7989,40 +7990,40 @@ was never reconciled to it.
 The test carries a NEGATIVE CONTROL: two different session ids must produce the SAME prompt with
 the flag on, and DIFFERENT prompts with it off. Asserting only that the line disappeared would pass
 against a builder that never rendered the id at all — an invariance assertion that is green when
-broken (guard-2903).
+broken.
 
 ### ADR-0157 THIRD ADDENDUM — the deterministic configuration reproduces across machines (2026-09-12)
 
 The second addendum showed one box producing the same bytes six times. That leaves open whether
-the property belongs to the box or to the loop. The user pointed out that zc-01 and zc-02 can be
+the property belongs to the box or to the loop. The user pointed out that two other worker machines can be
 commanded too, and that all three boxes share the same pod — so they add no model throughput, but
 they allow exactly this test: does the deterministic configuration produce the same bytes on a
 *different machine* against the same pod? Pre-registered in
 `bench/results/determinism-crossbox-preregistration.log` (cells, reference digests and decision
-rules written before any run), executed on zc-01 (2 GB / 2 vCPU; same platform string
+rules written before any run), executed on a second worker machine (2 GB / 2 vCPU; same platform string
 `Linux-6.8.0-139-generic-x86_64-with-glibc2.39`; the repo rsynced with `src` at main `7ed0b90`;
 the same lock; the same `zds-qwen3.6-35b` on the same pod), during co-tenancy with a running
 retrieval experiment on that pod.
 
-| cell (all `ZAKCODE_TEMPERATURE=0`, `02-median-bug`, every file digested) | zc-03 | zc-01 | across |
+| cell (all `ZAKCODE_TEMPERATURE=0`, `02-median-bug`, every file digested) | machine A | machine B | across |
 |---|---|---|---|
 | X1 bench pin-both (constant workspace + constant session id) | 3/3 identical | 3/3 identical | **all 6 files equal** |
 | X3 real-user cell + `ZAKCODE_STABLE_PROMPT_IDENTITY=1` (fresh uuid4) | 6/6 identical | 3/3 identical | **all 6 files equal** |
 
 `stats.py` is `7bff3055…` in every one of the 15 runs across the two machines; the other five
 files (`test_stats.py` and four pytest cache files) match too. Turn counts were 6 in every run.
-Wall time per run on zc-01 varied threefold (32–93 s, the pod was shared); the bytes did not.
+Wall time per run on machine B varied threefold (32–93 s, the pod was shared); the bytes did not.
 The pre-registered rule for "X1 holds, X2 holds, X3 holds" was this addendum, scoped as written
 there: **reproducible across machines that share the platform string, on this task, against the
 same pod.** A different OS, libc or CPU string is not covered — those reach the prompt through
 the environment block and were deliberately held constant here.
 
-**The first attempt was void, and the instrument said the opposite.** On zc-01 every child crashed
+**The first attempt was void, and the instrument said the opposite.** On machine B every child crashed
 at startup in 1.7 s: that box's user config (`~/.zakcode/.env`) sets `ZAKCODE_LOCAL_ONLY=true`,
 and the bench runner sets `api_base=None` on purpose (belt-and-suspenders against paid endpoints),
 so the two composed into `LocalOnlyViolation` — a refusal neither side produces alone. The arm
 then digested the untouched seed files of three crashes and printed
-`PRIMARY (every file): IDENTICAL across all runs`. That is the guard-2903 vacuity one level above
+`PRIMARY (every file): IDENTICAL across all runs`. That is the vacuity-invariance failure one level above
 the empty-digest case the arm already refused: the digest set was non-empty, it just never
 measured the agent. Two changes: the arm now records whether each run produced a report at all
 and refuses a verdict (rc=5, last stderr line printed) when one did not, with a positive control
@@ -8053,7 +8054,7 @@ arm B (the fix) gave **byte-identical 3/3**, 14 turns every run. G1 held; G2 had
 states than A, not one" and failed in the favourable direction. Rule applied as written: the fix
 generalizes to the hardest known task.
 
-**A second, smaller model.** The pod's `zds-qwen3.8-27b`, zc-01's own default
+**A second, smaller model.** The pod's `zds-qwen3.8-27b`, the worker machine's own default
 (`determinism-model27b-preregistration.log`): the provider probe reproduced 5/5 at temperature 0 on
 both prompt shapes with a live positive control (temperature 1.0 diverged 3/3); `02-median-bug` and
 `06-plugin-conventions` reproduced 3/3; `07-ttl-cache` and `08-mutation-leak` each **split once
@@ -8101,7 +8102,7 @@ is a separate design question this addendum does not open.
 
 **Confirmation cells, pre-registered before launch** (`determinism-model27b-preregistration.log`,
 C1–C3, rules R1–R4) on the shipped per-workspace key (#405), real-user cell, 27B, N=3, request
-dumps on, zc-01, with the TOPK re-measurement loading the same pod throughout:
+dumps on, a worker machine, with the TOPK re-measurement loading the same pod throughout:
 
 | cell | runs | distinct byte-states | turns | verify |
 |---|---|---|---|---|
@@ -8145,7 +8146,7 @@ timing-line residual on a task long enough for it to move bytes.
 ### ADR-0157 SIXTH ADDENDUM — the ceiling is the endpoint's: the seed is withdrawn and the claim restated (2026-09-12)
 
 Four more pre-registered cells (`determinism-model27b-preregistration.log`: C3–C5, C4b), real-user
-cell, N=3, request dumps on, zc-01, with the TOPK re-measurement streaming other-key requests
+cell, N=3, request dumps on, a worker machine, with the TOPK re-measurement streaming other-key requests
 into the 35B engine throughout:
 
 | cell | task, model | key | distinct byte-states | `cache.py` | verify | where the odd run leaves |
@@ -8187,7 +8188,7 @@ side and costs nothing. It is not a reproduction guarantee.
 **Restated claim (this supersedes the "reproduces 3/3" reading of the fourth addendum).** With
 `ZAKCODE_TEMPERATURE=0` and `ZAKCODE_STABLE_PROMPT_IDENTITY=1`, zakcode sends byte-identical
 requests for byte-identical work, and every remaining run-to-run difference begins inside the
-endpoint. On zakpod1 today: byte-identical 3/3 in 3 of 7 constant-key cells, the deliverable
+endpoint. On the inference pod today: byte-identical 3/3 in 3 of 7 constant-key cells, the deliverable
 identical in 4 of 7, and the 35B's variation on the long task confined to the tests it wrote. The
 lever beyond this ADR is on the pod — engine-side determinism (one slot, a fixed batch
 composition) — and it is measurable with these same cells the day it is switched on.
@@ -8203,7 +8204,7 @@ length and family size are not.** 2026-09-12.
 
 ADR-0155 and its five addenda spent three passes attacking the skill catalogue — shortening
 descriptions (retracted, −8.8pp), then testing whether catalogue size drives choosability (falsified
-on coach: a 38%-size catalogue scored slightly lower on every arm). This ADR closes the question of
+on the deployment: a 38%-size catalogue scored slightly lower on every arm). This ADR closes the question of
 *what does* drive it, on two independent catalogues, with every prediction fixed before data.
 
 ### Three drivers falsified, one supported
@@ -8213,7 +8214,7 @@ on coach: a 38%-size catalogue scored slightly lower on every arm). This ADR clo
 | catalogue **size** | falsified | ADR-0155 fifth addendum |
 | description **length** | retracted | −8.8pp, CI (+5.5, +12.4) |
 | family / sibling **size** | falsified | this ADR — the 15-member family scores 60.0% (the overall mean); four 5-member families score 33–40%; 2-member families beat solo skills on both axes |
-| description **fidelity** | **supported, replicated** | ρ +0.637 (ayoai-mind), ρ +0.534 (coach) |
+| description **fidelity** | **supported, replicated** | ρ +0.637 (host framework), ρ +0.534 (deployment) |
 
 **Fidelity** is per-skill token coverage of a skill's queries by its own name+description — does the
 description say what the skill does, in words a query would use. Pre-registered in
@@ -8222,8 +8223,8 @@ description say what the skill does, in words a query would use. Pre-registered 
 
 | catalogue | skills | ρ coverage→FULL accuracy | lowest tertile | highest tertile | spread |
 |---|---|---|---|---|---|
-| ayoai-mind | 140 | **+0.637** | 35.5% | 85.1% | 50 |
-| coach (on-box, aggregates only) | 64 | **+0.534** | 38.1% | 72.7% | 34.6 |
+| host framework | 140 | **+0.637** | 35.5% | 85.1% | 50 |
+| deployment (on-box, aggregates only) | 64 | **+0.534** | 38.1% | 72.7% | 34.6 |
 
 Every pre-registered prediction held on both: the sanity check (coverage predicts BM25 recall —
 near-tautological, since BM25 *is* lexical overlap), the real test (coverage predicts the *model's*
@@ -8343,7 +8344,7 @@ addendum.
 **The defect.** Every choosability script read a skill's description with the regex
 `^description:\s*(.+)$`. A YAML block scalar puts only its *indicator* on that line (`>-`, `|`),
 so **11 of the 140 catalogue skills rendered as `- name: >-`** — a name and no description — in
-every arm this ADR and its first addendum report, and one coach skill did the same on-box. Nothing
+every arm this ADR and its first addendum report, and one deployment skill did the same on-box. Nothing
 downstream noticed: the catalogue parsed, the arms ran, the FULL control sat comfortably above its
 VOID floor. The 11 were found by reading the rendered catalogue, not by any check.
 
@@ -8383,13 +8384,13 @@ loader. Predictions: (a) the 11 skills' TOPK accuracy rises from 0.091 toward th
 (b) every TOPK−FULL difference moves toward zero by 1–2 points; (c) whether TOPK20 beats FULL is
 *not* predicted — R3 is re-decided by the same primary (TOPK20−FULL, paired bootstrap over skills,
 95% CI) with the same 5-point non-inferiority bar for a cost-only reading; (d) the FULL control
-moves by less than 3 points. Results land as the third addendum; the coach recompute lands beside
+moves by less than 3 points. Results land as the third addendum; the deployment recompute lands beside
 them.
 
 **Instrument correction that travels.** A regex over front matter is not a YAML reader. Every
 bench catalogue now goes through the shared reader and refuses on an indicator (`RuntimeError:
-catalogue instrument failure`), with a parity test pinning the coach's inline copy to it; the
-same class — a catalogue that *parses* and is wrong — is guard-2903's fifth shape.
+catalogue instrument failure`), with a parity test pinning the deployment's inline copy to it; the
+same class — a catalogue that *parses* and is wrong — is a fifth shape of the vacuity-invariance failure.
 
 ### ADR-0158 THIRD ADDENDUM — re-measured on the fixed instrument: no accuracy lever, a cost lever within the margin, and the control moved with the defect (2026-09-12)
 
@@ -8405,7 +8406,7 @@ same class — a catalogue that *parses* and is wrong — is guard-2903's fifth 
 | **TOPK20 (pre-registered primary)** | 268/420 = 63.8% | 77.4% | 82.4% | 16,712 (16%) | **−0.5 (−4.0, +3.3)** | −1.4 (−5.2, +2.1) |
 | TOPK40 | 275/420 = 65.5% | 85.2% | 76.9% | 33,224 (31%) | +1.2 (−2.4, +5.0) | −1.9 |
 
-The acc ÷ recall column is the quotient guard-6584 warns about — the un-retrieved skills are not a
+The acc ÷ recall column is the quotient the overstated-retrieval finding warns about — the un-retrieved skills are not a
 random sample of the catalogue, so it overstates what the model does with a shortlist — and it is
 kept only because R1 is defined on it.
 
@@ -8440,11 +8441,11 @@ margin by one point on one sample, and the catalogue block is one input to a tas
 shortlist ships is an end-to-end question — task outcomes under a shortlisted catalogue — which is
 pre-registered separately before it runs, never inferred from this table.
 
-**Coach recompute, fixed reader** (`fidelity-coach-preregistration.log`, pre-registered 17:14, run
+**Deployment recompute, fixed reader** (`fidelity-coach-preregistration.log`, pre-registered 17:14, run
 18:47–18:49 on-box; aggregates only cross the wire): FULL 110/192 = 57.3% (prior 58.3%); ρ
 coverage→BM25 recall +0.689; **ρ coverage→FULL accuracy +0.514** (prior +0.534, inside the ±0.05
 band — (a) holds); tertiles 39.7 / 60.3 / 71.2, spread +31.5 against the floor of 25; the one
-repaired coach skill's coverage 0.023 → 0.278 with its FULL accuracy unchanged at 0.667 ((b)
+repaired deployment skill's coverage 0.023 → 0.278 with its FULL accuracy unchanged at 0.667 ((b)
 holds); coverage changed on exactly 1 of 64 skills ((c) holds). Verdict, as the script prints it:
 *replicates — fidelity holds on both catalogues measured; "both", never "generalizes".*
 
@@ -8527,7 +8528,7 @@ installs" (D20, issue #14). Two writers never asked: `SessionStore()` defaulted 
 `Path.home() / ".zakcode" / "sessions"`, and the hook-transcript projection of a store-less loop
 (ADR-0061) fell back to `Path.home() / ".zakcode"`. The test suite's autouse fixture isolates
 `ZAKCODE_HOME` and nothing else, so every pytest run wrote real session files and full transcripts
-into the developer's real home. Measured on one box (g-115-9776, 2026-09-11): 7,180 transcript files
+into the developer's real home. Measured on one box (2026-09-11): 7,180 transcript files
 / 31 MB, 34,630 of 34,630 records carrying a `/tmp/pytest-of-root/…` cwd. On the box that fixed it:
 7,811 files / 33 MB, of which 1,257 were written on 09-11 and 594 on 09-12 by suite runs alone.
 
@@ -8556,7 +8557,7 @@ reproducibility check, not three samples.** 2026-09-12.
 
 ADR-0158 closed on an end-to-end question: does the catalogue's context budget matter to a small model
 at all? The extreme was tested before any shortlist was built: NONE (the bench default, no catalogue,
-no `use_skill`/`save_skill`) against FULL (`ZBENCH_SKILLS_ROOT` seeding Ayoai-Mind's 145 skills — a
+no `use_skill`/`save_skill`) against FULL (`ZBENCH_SKILLS_ROOT` seeding the host framework's 145 skills — a
 93,207-character system prompt against 9,827, 27 tools against 25) on `zds-qwen3.8-27b`, temperature
 0, stable identity, pinned workspace, five tasks that never need a skill, three runs each.
 Pre-registered 19:51 in `catalogue-budget-preregistration.log`; launched 19:52; complete 22:06; rules
@@ -8629,7 +8630,7 @@ before any cell ran.
   `.claude/rules`; both agents run as they ship.
 * **CC arm:** Claude Code 2.1.267 on this box, `claude-fable-5-1`,
   `claude -p <prompt> --allowedTools Read,Write,Edit,Bash,Glob,Grep --output-format json`, N=2 per task.
-* **Zakcode arms:** `zds-qwen3.6-35b` and `zds-qwen3.8-27b` on zc-01 against the shared pod, temperature 0,
+* **Zakcode arms:** `zds-qwen3.6-35b` and `zds-qwen3.8-27b` on a worker machine against the shared pod, temperature 0,
   `ZAKCODE_STABLE_PROMPT_IDENTITY=1`, pinned workspace, no catalogue, no rules, N=3 per task
   (`/root/zb-h2h.sh`, one arm at a time on the 2 GB box).
 * **Per-task verdicts, no pooled score:** PARITY = CC ≥1/2 and zakcode ≥2/3; GAP = CC ≥1/2 and zakcode ≤1/3;
@@ -8700,14 +8701,14 @@ need to be. The as-ships runs spent their extra turns (17–22) re-running pytes
 **B1 holds: this is a discovery gap.** The 35B obeys a repository convention it can see and does not go
 looking for one it cannot. Results JSON:
 `bench/results/determinism-zakcode-pinworkspace-temp0-06b-plugin-conventions-agentsmd.H2H-35B-06b-agentsmd.json`;
-the variant task dir lives only on zc-01.
+the variant task dir lives only on the worker machine.
 
 ### ADR-0156 was a basin, not a capability
 
 ADR-0156 recorded the 35B passing 06 at N=1 (16 iterations, 596 s, default temperature, no identity pin, this
 box). Tonight, under temperature 0 and a pinned prompt, the same model lands in an `import yaml` basin three
 times out of three and once more in the mechanism cell. Neither result is wrong; N=1 at default temperature
-samples a basin, N=3 at temperature 0 pins one (rb-10837). The comparison ADR-0156 drew — "a 35B matched Opus 5
+samples a basin, N=3 at temperature 0 pins one. The comparison ADR-0156 drew — "a 35B matched Opus 5
 3/3" — was true of the basins it sampled and is not a property of the model on this task.
 
 ### Instrument corrections made while writing this
@@ -8718,7 +8719,7 @@ samples a basin, N=3 at temperature 0 pins one (rb-10837). The comparison ADR-01
   `stop_reason` has its own key; `bench/head_to_head.py` prints both. The 12 JSONs in this ADR carry stop
   reasons in `verify_out`; the reason above comes from the hand run and from `sources`.
 * ADR-0160's R6 ("0 `use_skill` calls") was computed by a parser reading an OpenAI-shaped `tool_calls` key
-  that this dump format never carries (messages carry `blocks`), so its zero was structural (guard-2298).
+  that this dump format never carries (messages carry `blocks`), so its zero was structural.
   Re-counted over `blocks` on all 30 CAT runs: `use_skill` 0, `save_skill` 0. R6 stands; the instrument did
   not deserve the credit.
 
@@ -8733,7 +8734,7 @@ samples a basin, N=3 at temperature 0 pins one (rb-10837). The comparison ADR-01
    log as ARM C: fold `CONTRIBUTING.md` into the discovered project context (`discover_context`), re-run 06 as it
    ships on both models plus m01–m05 as a byte-identity control, ship default-on only if C1 and C3 hold.
 3. **No pooled score, no "N% of Claude Code".** Six tasks at N=2/3 support per-task verdicts and nothing
-   finer; the next instrument step is more tasks, not more repeats (rb-10837).
+   finer; the next instrument step is more tasks, not more repeats.
 
 ## ADR-0162: fold `CONTRIBUTING.md` into the discovered project context — the first deterministic lever that closes a measured gap against Claude Code
 
@@ -8770,7 +8771,7 @@ Rules (22:47, before any code ran): **C1** 35B on 06 as it ships ≥2/3 → the 
 tonight's H2H bytes → the change leaked into a workspace without the file, refuse until explained; **C4** the 27B
 stays 3/3 on 06 (bytes predicted to change, outcome to hold). Refinement (22:53, before the chain): the context
 header renders only when something was discovered, and m02's workspace carries a README, so C3 covers m01, m03,
-m04, m05 and **C3b** covers m02 (bytes may change, outcome must hold). Chain on zc-01, 22:54–23:11, same
+m04, m05 and **C3b** covers m02 (bytes may change, outcome must hold). Chain on a worker machine, 22:54–23:11, same
 environment as ADR-0161's zakcode arms.
 
 | cell | pass | turns | median s | bytes vs ADR-0161 cell | rule |
@@ -8788,7 +8789,7 @@ Every cell is byte-identical within itself. Positive control from the request du
 ADR-0161 mechanism cell's prompt did not. The four m-task workspaces without a discoverable file produced the
 same bytes as three hours earlier, so the fold touches nothing it should not; m02's bytes moved only because
 its README already renders the context header, whose wording names the new kind — a reminder that at
-temperature 0 output identity is sensitive to any prompt byte (rb-10837), and why C3b was split out before the run.
+temperature 0 output identity is sensitive to any prompt byte, and why C3b was split out before the run.
 
 With this build the ADR-0161 instrument reads **12 of 12 model×task cells at PARITY** with Claude Code on
 Fable 5.1, with every zakcode cell reproducible byte-for-byte and $0 marginal. The 27B also finishes 06 in
@@ -8800,10 +8801,10 @@ Fable 5.1, with every zakcode cell reproducible byte-for-byte and $0 marginal. T
    added; the file is folded like a guide, after the guides, under the existing caps.
 2. **What this is evidence of.** One task, two models, one convention file. It shows that a listed-but-unread
    rule file is a discovery problem a deterministic fold solves, on these models; it does not show that every
-   repo's `CONTRIBUTING.md` helps, and a long one is capped at 8,192 characters like any guide. The coach's
-   repository on zc-03 carries no `CONTRIBUTING.md`, so its prompt is unchanged by this ADR.
+   repo's `CONTRIBUTING.md` helps, and a long one is capped at 8,192 characters like any guide. The deployment's
+   repository carries no `CONTRIBUTING.md`, so its prompt is unchanged by this ADR.
 3. **What comes next.** The head-to-head instrument is saturated (12/12); its next step is more tasks that
-   Claude Code passes and a small model might not — not more repeats (rb-10837). Candidates are the shapes
+   Claude Code passes and a small model might not — not more repeats. Candidates are the shapes
    ADR-0161 exposed: a rule that lives in a file the model would have to find, and a task whose correct
    answer requires reading a test the model did not write.
 
@@ -8835,7 +8836,7 @@ one measurement it could not defer.
   `verify_command`, and a provider-rejected tool call is retried at temperature ≥0.5 (the one sampling
   path under the byte-deterministic configuration).
 * **And one instrument finding outranks all of it: `loop.py` carries two turn drivers.** The bench calls
-  `run_turn` → `_run_turn` (buffered, 1,376 lines); the CLI, the server and the client — the coach —
+  `run_turn` → `_run_turn` (buffered, 1,376 lines); the CLI, the server and the client — the deployment —
   call `astream_turn` (streaming, 1,738 lines). Every bench number from ADR-0147 to ADR-0162 came from
   the driver production does not run. A static census finds the same 36 intervention kinds in both,
   but the streaming driver reaches the provider through different helpers.
@@ -8867,7 +8868,7 @@ finding that heads the review); **D3** a stream cell without a report is a refus
 Twenty-one streaming runs, every file byte-identical to its buffered cell, same outcomes, same turn counts
 — including m04's 4/3/4 pattern, which reproduces across drivers and is therefore the pod's, not the
 driver's — same stop reasons, no refusal. Every bench number from ADR-0147 to ADR-0162 transfers to the
-driver the coach runs. The knob stays (`ZBENCH_DRIVER=stream`, recorded in each report as `driver`), so
+driver the deployment runs. The knob stays (`ZBENCH_DRIVER=stream`, recorded in each report as `driver`), so
 the driver-parity cell can be re-run whenever `loop.py` changes.
 
 **Latency.** The chain's streaming cells ran 2–5× slower per run than the buffered references taken thirty
@@ -9014,10 +9015,10 @@ reads `slug.py` first and the config fourth; and no run in any arm — 24 here, 
 project's lint, so nothing but the verifier could catch the docstring. J1's build control missed by the letter
 (every no-survey cell's program text differs from its ADR-0165 twin) with the main conversation's first
 request byte-identical across the two builds, so the difference is the pod's basin between 01:00 and 03:25
-UTC (rb-10827); J2–J5 are scored within the chain, as the rule says. By the pre-registered letter a J3 miss
+UTC; J2–J5 are scored within the chain, as the rule says. By the pre-registered letter a J3 miss
 **reopens the survey default**. Two arms follow: **K**, basin sampling of the survey on 10/35B
 (`bench/results/survey-basin-10-preregistration.log`; `--no-pin`, N=6 per arm, interleaved in threes) —
-pinned N=3 is one sample of one basin and cannot score an outcome rate (rb-10849); and **L**, review lever L4
+pinned N=3 is one sample of one basin and cannot score an outcome rate; and **L**, review lever L4
 (#429): the project's own `Makefile` targets derived into the R1 verify gate, the check the model cannot skip
 that F9 names as the durable fix.
 
@@ -9025,7 +9026,7 @@ that F9 names as the durable fix.
 `bench/results/survey-basin-10-preregistration.log` (K1–K4, stamped 04:20 UTC): NOSURVEY vs SURVEY on
 `10-rule-in-pyproject`, `--no-pin`, N=6 per arm interleaved in threes, build 8ea8bacece34 (#429's, with
 `verify_auto` off in both). **K2 by the letter: 5/6 vs 5/6 — a basin, not a rate; the survey default stays
-ON.** The J3 miss was one pinned basin (rb-10849's warning realized). K4's mechanism reproduces in every
+ON.** The J3 miss was one pinned basin (the warning realized). K4's mechanism reproduces in every
 sampled basin: opening listing calls 3 → 0 in every run, first read `pyproject.toml` 6/6 without the survey and
 `__init__.py`/`slug.py` 6/6 with it, turns medians 13.0 vs 13.5, wall medians 196 vs 217 s, all twelve outputs
 distinct. The failure class is not arm J's docstring rule — 0 of 12 runs failed the lint — but an
@@ -9152,7 +9153,7 @@ is the trigger.
 The lever is deterministic and zakcode-owned. A module with no `if __name__ == "__main__":` block is a
 library: running it executes nothing on purpose, and `-m` is the wrong verification for it — the
 verification a library admits is that it imports. The prompt-side alternative (tell the model that
-runpy warnings are benign) was not tried: rb-10615 measured that a correct instruction in the system
+runpy warnings are benign) was not tried: prior measurement showed that a correct instruction in the system
 prompt is not a control on this model class (0/3 with, 0/3 without).
 
 ### Decision
@@ -9178,7 +9179,7 @@ positives. 84 recipe tests pass.
 ### Measurement — arms H and I (pre-registered before each launch: `bench/results/recipe-import-verify-preregistration.log`)
 
 06 on the 35B, `--no-pin` basin sampling (ADR-0164 addendum's instrument), survey default-on in both
-arms, dumps on, zc-01; blocks OLD ×3, NEW ×3, OLD ×3, NEW ×3 with the bench source swapped only between
+arms, dumps on, a worker machine; blocks OLD ×3, NEW ×3, OLD ×3, NEW ×3 with the bench source swapped only between
 blocks (recipe.py sha256 printed at every swap: old `a2bd86df2301`, new `571b595aa176`).
 
 **Arm H (OLD = main before #422, NEW = #422), stamped in the log at 02:3x:**
@@ -9251,9 +9252,9 @@ decision on the model's behalf emitted no trace note, which is why no run report
 injection this ADR found in 12 of 12 runs. The form classifier uses the recipe's per-segment runner-head
 detection, not a substring test (pytest's own `tmp_path` contains "pytest"). (2) Review lever L7 (repair
 rather than bounce a truncated `write_file`) measured at its "measure first" step:
-`bench/undecodable_bounces.py` over every wire dump on zc-01 — 127 runs, 1,817 tool calls, 43 cells on
+`bench/undecodable_bounces.py` over every wire dump on a worker machine — 127 runs, 1,817 tool calls, 43 cells on
 both models — finds **zero** bounces (positive control: 397 shell results carry `[exit code:`). ADR-0081's
-trigger was a 27B writing a long module in one call on coach; no bench task is that size, so the lever has
+trigger was a 27B writing a long module in one call on the deployment; no bench task is that size, so the lever has
 no trigger to measure here and joins L4–L6 as "needs a task of that shape". The instrument reads the
 largest dump per run, not the last — the wrong-file zero ADR-0165 recorded, made again and caught by the
 positive control.
@@ -9262,17 +9263,17 @@ positive control.
 
 **Date:** 2026-09-13 · **Status:** accepted · **Review:** `docs/DETERMINISM-REVIEW.md` §5 (L3, L7) ·
 **Instruments:** `bench/unread_edits.py` (#427), `bench/undecodable_bounces.py` (#426) · **Corpus:** every
-provider request dump on zc-01 — 43 cells, 127 runs, 1,817 tool calls, the 27B and the 35B, 2026-09-12 → 13.
+provider request dump on a worker machine — 43 cells, 127 runs, 1,817 tool calls, the 27B and the 35B, 2026-09-12 → 13.
 
 ### Context
 
 Two of the review's levers were written as enforcement the loop could add without asking the model:
 **L3**, `edit_file` refuses a path the session has not read (Claude Code's rule; a `write_file` of the
 same path counts as knowing it), and **L7**, repair rather than bounce a `write_file` whose JSON the
-output limit cut off (ADR-0081's step 0b bounce, measured on coach when a 27B wrote a long module in one
+output limit cut off (ADR-0081's step 0b bounce, measured on the deployment when a 27B wrote a long module in one
 call). Both were ranked "measure first": a refusal costs a turn, so L3 pays only if unread edits happen
 and fail; a repair pays only if bounces happen. Neither frequency had been measured. The dumps every arm
-since #402 leaves on zc-01 carry every tool call the model made and every result it saw, so both counts
+since #402 leaves on a worker machine carry every tool call the model made and every result it saw, so both counts
 cost no pod time.
 
 ### Decision
@@ -9290,7 +9291,7 @@ or written, and an edit after only a read succeeds 157/157 — the read grounds 
 Code's refusal exists for a behaviour these models do not exhibit here. Behind L7's zero: the pod
 requests carry `max_tokens` 8192, and the largest `write_file` argument in the corpus is 10.6k characters
 (27B; 9.5k on the 35B) — a third of the limit. The trigger is a single write past ~25k characters, which
-coach produced and no bench task asks for. Both levers stay in the table as "needs a task of that shape",
+the deployment produced and no bench task asks for. Both levers stay in the table as "needs a task of that shape",
 with L4–L6.
 
 ### What the dumps also settled
@@ -9304,18 +9305,18 @@ with L4–L6.
 - A dump reader must take the LARGEST wire dump per run: the turn-end side requests (structured output,
   system + user only) are 2–3 KB and often sort last. `undecodable_bounces.py`'s first draft took the
   last file and scored 18 of 127 runs as zero tool calls — the wrong-file zero ADR-0165's mechanism
-  reader had already made; the built-in control caught it (rb-10853).
+  reader had already made; the built-in control caught it.
 
 - `determinism_arm.py`'s per-run rows now carry `trace_interventions`; until this change only `run_task.py`'s
   single-run report did, so an arm cell could never show a kind as recorded — the #425 kinds included
-  (guard-6374's shape: a field is not wired until the consumer reads it).
+  (the unwired-consumer shape: a field is not wired until the consumer reads it).
 
 ### Consequences
 
 - The lever table is measured end to end: L2 and L8 shipped (ADR-0164 addendum, ADR-0166), L1 has its
   control, L3–L7 have no trigger on the bench's task sizes. The next lever is a task shape, not a
   code change: a module the model cannot write in one call, or a contract only a large workspace
-  states — the shapes coach meets and the bench does not.
+  states — the shapes production meets and the bench does not.
 - Every "measure first" lever is answerable from the dumps before it costs pod time, and every such
   count ships with its own positive control printed beside the zero.
 - The cheapest open measurement with an outcome to buy: ADR-0165's baselines on 09/10 predate the
@@ -9334,7 +9335,7 @@ carry no `knobs`, so the ratchet's signature filter still excludes them by desig
 
 **Date:** 2026-09-13 · **Status:** accepted (ships default-on; arm M pre-registered) · **Review:**
 `docs/DETERMINISM-REVIEW.md` F11 · **Pre-registration:** `bench/results/plan-unchanged-10-preregistration.log` ·
-**Instrument:** `bench/plan_resends.py` · **Trigger corpus:** every provider dump on zc-01 — 163 runs, 313
+**Instrument:** `bench/plan_resends.py` · **Trigger corpus:** every provider dump on a worker machine — 163 runs, 313
 `update_plan` calls, 2026-09-12 → 13.
 
 ### Context
@@ -9354,7 +9355,7 @@ turn ends `doom_loop` before `utils/__init__.py` exports the function.
 The tool's receipt was the lie in the loop. ADR-0124 made the result a receipt rather than the plan; the receipt
 still said "updated" for an edit that changed nothing, because nothing compared the network across the replace.
 
-### Trigger, measured before building (rb-10855)
+### Trigger, measured before building
 
 Identical consecutive `update_plan` arguments occur in exactly **3 of 163** dumped runs — the three arm-K doom
 loops — and in none of the other 72 runs that used a plan. The rail below, replayed over every recorded plan
@@ -9476,7 +9477,7 @@ Full suite 3833 passed, mypy clean. The N3 read rests on a single ON trigger —
 starvation the pre-registration warned of (ON drew 1/9 triggers vs OFF 4/9), too thin to conclude the
 FIX breaks the loop. That is the **paired arm's** job: pin one workspace, toggle only the flag, run OFF
 then ON back to back so both members of a pair share a basin — the clean N3 test, pre-registered
-separately (`bench/results/plan-paired-10-preregistration.log`). Lesson (rb-10863 extended): a
+separately (`bench/results/plan-paired-10-preregistration.log`). Lesson: a
 deterministic harness action is only as good as the harness state it reads — a title-keyed memory and
 a submission-keyed guard each silently defeated a correct lever on the exact plan shape the weak model
 emits; measure the lever on the model's REAL output, not a clean fixture.
@@ -9523,7 +9524,7 @@ resends → the lever fires even less), NOT measured. The opt-out (`plan_autoadv
 **Date:** 2026-09-14 · **Status:** accepted (ships default-on; re-measure pre-registered) · **Instrument:**
 `bench/tasks/14o-agents-md-longguide-over`, `14u-agents-md-longguide-under` (builders assert the cliff with the
 same `.strip()[:8192]` the fold applies) · **Results:** `bench/results/13-agents-md-nameorder-results.log`
-(thrust-11 section) · **Trigger:** thrust 11 of the model-fixed head-to-head on zc-01, 2026-09-14.
+(thrust-11 section) · **Trigger:** thrust 11 of the model-fixed head-to-head on a worker machine, 2026-09-14.
 
 ### Context
 
@@ -9552,7 +9553,7 @@ stays rejected. Both caps are now pinned by a test that names this ADR.
 
 Pre-registered re-measure (zakcode on 14o under this build, N=12, same pod, same 35B): the note must lift 14o
 above 0/12; the target is parity with 14u and 13 (12/12). If it stays near 0/12 the cue is insufficient on a 35B
-(the rb-10615 prediction: an instruction in the prompt is not a control) and the next lever is
+(the prior prediction: an instruction in the prompt is not a control) and the next lever is
 MANDATORY-section-preserving truncation — keep sections whose headings carry MANDATORY / MUST / REQUIRED inside
 the cap ahead of the rest. 14u and 13 must remain 12/12: their inputs are byte-identical under this change, so
 any movement there is a regression, not noise.
@@ -9562,7 +9563,7 @@ any movement there is a regression, not noise.
 **Date:** 2026-09-14 · **Status:** accepted (ships default-on; re-measure pre-registered) · **Instrument:**
 `bench/tasks/14o-agents-md-longguide-over` under the ADR-0169 build · **Results:**
 `bench/results/13-agents-md-nameorder-results.log` (thrust-12 section) · **Trigger:** thrust 12 of the model-fixed
-head-to-head on zc-01, 2026-09-14 15:14–15:18 UTC.
+head-to-head on a worker machine, 2026-09-14 15:14–15:18 UTC.
 
 ### Context
 
@@ -9571,7 +9572,7 @@ named cue is what the workspace survey already gives un-folded files, which the 
 5/6). Re-measured on `14o` (the MANDATORY rule past the 8,192-char cap), N=12, same pod and model, only `prompt.py`
 changed on the bench box: **0/12**, 4 turns every run, ~18 s, `*.py` identical to the pre-fix runs. The model did
 not read the file; it did not do anything differently at all. The cue at the end of a folded guide is inert on a
-35B — the rb-10615 shape (an instruction in a small model's prompt is not a control), now measured at N=12. The
+35B — the prior finding's shape (an instruction in a small model's prompt is not a control), now measured at N=12. The
 same rule INSIDE the fold (14u, char 6,657 of 7,637) scores 12/12. So the lever is not where the rule is
 described; it is whether the rule is in the fold.
 
@@ -9618,7 +9619,7 @@ MANDATORY / REQUIRED / FORBIDDEN / PROHIBITED / DO NOT / SHALL (NOT), or the sam
 `__underscores__` (any case). Priority 2: everything else, document order. Kept sections still render in document
 order; the note now says "sections that name or emphasize a rule or mandate are kept first". A section with only a
 heading has no body and cannot be promoted by it. The 14o / 14u / 13 / 14x folds keep exactly the same sections
-(no filler section carries an emphasized mandate); on the Mind repo's 47K CLAUDE.md the tier promotes four more
+(no filler section carries an emphasized mandate); on the host framework repo's 47K CLAUDE.md the tier promotes four more
 sections (Mode System, Tool Usage + Write Permissions, Knowledge Retrieval, User Control Commands — the ones that
 say MUST NOT / NEVER), which is the intended reading of that file.
 
@@ -9640,7 +9641,7 @@ first) is the next lever, decided on thrust 14's smarter-vs-bigger measurement.
 
 **Context.** ADR-0170/0171 fold a guide past the per-file cap by whole sections, keeping first the sections whose
 own heading names a rule or mandate, then those whose body emphasizes one, then the rest in document order. Thrust
-17 took the policy to a real document — the Ayoai-Mind repository's CLAUDE.md, 47,511 chars, 39 sections, verbatim —
+17 took the policy to a real document — a host framework repository's CLAUDE.md, 47,511 chars, 39 sections, verbatim —
 and it held: the 8,186-char fold kept `### Naming Rules` and the 35B applied a real convention 12/12 (4 turns, 22 s
 per run) where Claude Code's native fold of the whole file scored 11/12 with one dilution miss at 164 s per run. The
 same probe showed what the fold drops: `### ID Formats` and `### File Formats` — plain topical headings with
@@ -9691,9 +9692,9 @@ not — a task-conditional fold is a different decision and is not taken here. R
 an unemphasized lowercase rule under a plain heading with no mandate-naming ancestor still folds in document
 order.
 
-**Addendum (2026-09-15, thrust 19 — the pre-registered re-measure; Zak-Code #485).** Thrust 19 (zc-01, 2026-09-15 01:28-01:51 UTC, N=12 per cell, ADR-0172 build only, Zak-Code #485): 15i 1/12 → 12/12 (turns 5-7, mean 6.0; Fisher p = 9.6e-06 against the ADR-0171 measurement) — the outline-path tier delivered the omitted convention, as pre-registered; 14p held 12/12 on a byte-identical fold (4 turns, 30 s per run — the pod control). But 15 — the thrust-17 timestamp cell, its rule in BOTH folds — fell 12/12 → 8/12 (p = 0.093), every miss the microseconds isoformat default: the ADR-0172 fold trades five orientation sections (Project Purpose, Architecture, the two Design Principles, Cognitive Primitives, Knowledge Retrieval) for eight more convention sections, and the timestamp bullet is one rule among many more. Dilution, or day-to-day variance: a paired same-pod-state re-measure of cell 15 on both folds (thrust 19b, ONLY prompt.py swapped and restored) is pre-registered to separate them — DILUTION if ADR-0172 ≤ 9/12 again and ADR-0171 ≥ 11/12, NOISE if within 2. If dilution holds it is the promotion's cost measured on adherence, and together with the Session Binding residual (thrust 20) it points to a task-conditional fold rather than a denser one.
+**Addendum (2026-09-15, thrust 19 — the pre-registered re-measure; Zak-Code #485).** Thrust 19 (a worker machine, 2026-09-15 01:28-01:51 UTC, N=12 per cell, ADR-0172 build only, Zak-Code #485): 15i 1/12 → 12/12 (turns 5-7, mean 6.0; Fisher p = 9.6e-06 against the ADR-0171 measurement) — the outline-path tier delivered the omitted convention, as pre-registered; 14p held 12/12 on a byte-identical fold (4 turns, 30 s per run — the pod control). But 15 — the thrust-17 timestamp cell, its rule in BOTH folds — fell 12/12 → 8/12 (p = 0.093), every miss the microseconds isoformat default: the ADR-0172 fold trades five orientation sections (Project Purpose, Architecture, the two Design Principles, Cognitive Primitives, Knowledge Retrieval) for eight more convention sections, and the timestamp bullet is one rule among many more. Dilution, or day-to-day variance: a paired same-pod-state re-measure of cell 15 on both folds (thrust 19b, ONLY prompt.py swapped and restored) is pre-registered to separate them — DILUTION if ADR-0172 ≤ 9/12 again and ADR-0171 ≥ 11/12, NOISE if within 2. If dilution holds it is the promotion's cost measured on adherence, and together with the Session Binding residual (thrust 20) it points to a task-conditional fold rather than a denser one.
 
-**Addendum (2026-09-15, the fold is not monotone in its cap — a probe finding, no code change; rb-10979).**
+**Addendum (2026-09-15, the fold is not monotone in its cap — a probe finding, no code change).**
 Probing the size lever for the thrust-20 residual (the Session Binding path, a tier-2 section at document index
 10 of the real guide) with `MAX_CONTEXT_FILE_CHARS` raised in place on a git-inited copy of the 15s workspace:
 the 12K, 16K, 24K and 32K folds all omit it — every tier-0/1 section and the tier-2 sections before it come
@@ -9778,7 +9779,7 @@ task still relies on the mandate tiers (15i) or the note. Tests pin the promoted
 matching, the ubiquitous-word filter, mandate order within the task tier, byte-identity without a task, and the
 loop's first-message keying.
 
-**Addendum (2026-09-15, thrust 21 — the pre-registered re-measure; Zak-Code #488).** One variable (prompt.py + the bench loop.py's `_build_system` hunk), probes and a dumped run confirming the fold reached the model. 15s task fold on the 35B 12/12 at 6.1 turns / 34.4 s (t20 on the ADR-0172 fold: 12/12 at 7.1 / 48.8 — the fetch removed, −30% wall time; the ≤ 5.0-turn bound MISSED: the dumped run shows the residual turn is a grep to confirm the layout string the fold already carries); 14p 12/12 at 4.3 / 22.2 on its changed fold; 15i 12/12 at 6.1 / 43.0 on a byte-identical fold. The smaller-model leg FALSIFIED the pass-rate half of this ADR's case: zds-qwen3.8-27b on the task fold 12/12 at 5.8 / 35.1 s AND on the ADR-0172 fold 12/12 at 7.0 / 46.5 s — the 27B fetches the omitted section exactly as the 35B does when the note names a heading sharing a distinctive word with the task (rb-10984). Verdict by the pre-registered rule: NEUTRAL — kept as a process saving (a quarter of the wall time on the cell class it targets, byte-identical folds and behaviour elsewhere), not as a correctness lever. The cell-15 cost of ADR-0172 remains open and is untouched by this tier.
+**Addendum (2026-09-15, thrust 21 — the pre-registered re-measure; Zak-Code #488).** One variable (prompt.py + the bench loop.py's `_build_system` hunk), probes and a dumped run confirming the fold reached the model. 15s task fold on the 35B 12/12 at 6.1 turns / 34.4 s (t20 on the ADR-0172 fold: 12/12 at 7.1 / 48.8 — the fetch removed, −30% wall time; the ≤ 5.0-turn bound MISSED: the dumped run shows the residual turn is a grep to confirm the layout string the fold already carries); 14p 12/12 at 4.3 / 22.2 on its changed fold; 15i 12/12 at 6.1 / 43.0 on a byte-identical fold. The smaller-model leg FALSIFIED the pass-rate half of this ADR's case: zds-qwen3.8-27b on the task fold 12/12 at 5.8 / 35.1 s AND on the ADR-0172 fold 12/12 at 7.0 / 46.5 s — the 27B fetches the omitted section exactly as the 35B does when the note names a heading sharing a distinctive word with the task. Verdict by the pre-registered rule: NEUTRAL — kept as a process saving (a quarter of the wall time on the cell class it targets, byte-identical folds and behaviour elsewhere), not as a correctness lever. The cell-15 cost of ADR-0172 remains open and is untouched by this tier.
 
 **Addendum (2026-09-15, thrust 22 — the smaller-model map; Zak-Code #490).** The shipped pair measured on zds-qwen3.8-27b, the smallest model the pod serves, on every guide cell whose 35B behaviour is known (N=12 each, temp 0, no swaps): 13 12/12, 14p 12/12, 15i 12/12, the no-guide control 15n 0/12, and 15 8/12 — one under its pre-registered floor and exactly the 35B's first ADR-0172 dozen, with the same failure (the microseconds isoformat default; p = 0.7 against the 35B's pooled 18/24). With thrust 21's 15s (12/12 on both folds at 27B) the 27B matches the 35B cell for cell, at equal or fewer turns and less wall time on every cell (16.5 / 20.2 / 31.2 / 37.2 / 12.7 s against the 35B's ~20 / 22 / 37 / 43 / 15 s) and with the same output-state counts: under the deterministic fold, model size is irrelevant to guide adherence from 35B to 27B on this class, and the smaller model does not search more. The one cost on the map — ADR-0172's cell-15 dilution — is model-independent: pooled over both models the ADR-0172 fold scores 26/36 on cell 15 against ADR-0171's 24/24 (p = 0.004), a fold-SHAPE effect rather than a capacity effect, which the pre-registered composition cell (thrust 23: the ADR-0171 fold, the shared core, and both halves as literal folds of the real guide, composed in the fold's own format and validated by rebuilding both live folds byte for byte) decomposes. The 15 / 15i pair on both models is the regression set for every fold change from here.
 
@@ -9817,7 +9818,7 @@ task is about it) — probed on cell 15 before this was built: it demotes the se
 to `Tool Usage + Write Permissions` (3.6K, an emphasized body, tier 1) and two conventions whose bodies mention
 "journal" stay, while the orientation sections — plain — still lose; the fold still opens with the conventions wall, so
 it does not produce the shape the composition measured. Raising the cap (thrust 14: the whole guide bought nothing at
-+78% wall time; rb-10979: the fold is not monotone in its cap). Keeping the whole opening regardless of size (a 5.4K
++78% wall time; the fold is not monotone in its cap). Keeping the whole opening regardless of size (a 5.4K
 second section would take the fold). A head that ignores mandate headings (greedy over the whole guide, it sweeps small
 sections from anywhere — Priority Values, Autonomous Loop Rules — not the opening). A per-model choice (the cost is
 model-independent).
@@ -9835,16 +9836,16 @@ been measured as the same thing.
 
 ## ADR-0175: the fold reads the house style — Constraints-class headings, bold runs that open with a mandate word, guides sectioned by `#` headings
 
-**Context.** ADR-0170 through ADR-0174 built the fold's tiers on synthetic guides and ONE real document, the Mind
+**Context.** ADR-0170 through ADR-0174 built the fold's tiers on synthetic guides and ONE real document, the host framework
 repository's CLAUDE.md, and each ADR rejected "widening the heading vocabulary" as a fit to one file until a cell
-needed it. A census of the author's other guides (39 CLAUDE.md files across the Ayoai repositories, 2026-09-15)
+needed it. A census of the author's other guides (39 CLAUDE.md files across the author's repositories, 2026-09-15)
 supplied the cells: the house style keeps its hard rules under `## Constraints` — 28 of the 39 — a heading that
 names none of the fold's mandate words; the rules inside are bolded whole sentences (`**Never block the Vert.x
 event loop.**`), which the emphasis pattern missed because it required the closing marker right after the word;
 and one guide sections itself with `#` headings, which the splitter (`##` to `######`) does not see, so its
 12,085 chars folded as three blocks and the fold kept 1,496 of its 8,192 budget. Five of the 39 guides are over
 the cap; the shipped fold drops the rules heading in four of them (Constraints in Environment-Processor,
-Environment-Server, Operator and DeployAyoaiOperator). The premise of the campaign is that what a small model must
+Environment-Server, Operator and Deploy-Operator). The premise of the campaign is that what a small model must
 obey has to be in the fold: on the author's own fleet, four times in five it was not.
 
 **Decision.** Three deterministic readings of the house style, each pinned by a test. (1) The mandate-heading
@@ -9856,7 +9857,7 @@ in the preamble; a single-`#` guide is unchanged. Measured on the census: the ov
 heading go from four in five to one in five (the remaining one is an 8K sub-section with no sub-headings — an
 oversized-section residual, not this decision); the Operator fold goes from 1,496 to 6,741 chars and keeps its
 `# Constraints`; every bench fold — 13 / 14o / 14p / 14u / 15 / 15i / 15s, with and without a task — is
-byte-identical to ADR-0174 (the Mind guide has one `#`, and none of its headings carry the new words).
+byte-identical to ADR-0174 (the host framework guide has one `#`, and none of its headings carry the new words).
 
 **Alternatives rejected.** `requirements?` and `limitations?` (a dependency list and a product-limits section are
 not rules for the agent; unmeasured either way, left out until a cell needs them). Splitting on every `#`
@@ -9866,14 +9867,14 @@ vocabulary**:` — open most bullets in these guides; only the mandate word carr
 oversized section by paragraphs (ADR-0170's false-completeness hazard; a separate decision when a cell needs it).
 
 **Consequences.** Pre-registered re-measure (thrust 25) on a second real guide, the Environment-Processor
-CLAUDE.md (14,010 chars, `## Constraints` at 79%, the aspiration key names stated only there; the guide is the
+CLAUDE.md (14,010 chars, `## Constraints` at 79%, the goal-store key names stated only there; the guide is the
 author's private documentation and is not committed — the cell pins its md5): 16p on the ADR-0174 fold
 (Constraints out) against the ADR-0175 fold (Constraints in) on both models, with a no-guide control. Residuals,
 stated: an oversized section with no sub-headings still folds whole or not at all; the vocabulary is English and
 fixed; a guide whose rules live under a heading outside this list and without emphasis still folds in document
 order — the census is the instrument that finds the next one.
 
-**Addendum (2026-09-15, thrust 25 — the pre-registered re-measure on a second real guide, both models; Zak-Code #495 is the ADR, the result rides in the t25-result PR).** The IN arms hit on both models: cell 16p 12/12 on the 35B (7.2 turns) and 12/12 on the 27B (7.5) with the Constraints section in the fold, against 8/12 (35B, 9.0 turns) and 4/12 (27B, 7.5) on the ADR-0174 fold that drops it, and 0/12 with no guide; pooled 24/24 vs 12/24 (p = 8e-05). The OUT arms missed their ≤ 2 prediction, and nine dumped rule-out runs on the 35B showed why: every pass (4/4, 9-12 turns) greps the workspace for the task word after its project-file reads, hits the rule body inside the on-disk guide and reads it; every miss (5/5, 6 turns) never opens the guide. The fetch is the model's own search for the task's vocabulary — taken in 12 of 21 rule-out runs on the 35B and 4 of 12 on the 27B, a near-tie — not the fold's omission note (rb-10984 amended: a rule body carrying the task word is grep-reachable under any heading). So this ADR's value on the house style is correctness on the runs that do not search (more of them on the smaller model) and process on the ones that do (9.0 → 7.2 turns, −22% wall time, turn spread 7 → 3). SHIPS as measured; the census's four-in-five is now a measured cost — a guide whose rules sit under `## Constraints` outside the fold passes only when the model happens to grep. Residual unchanged: the oversized section with no sub-headings. Hygiene finding from the commit: the bench JSON's `sources` field embeds the first 4,096 chars of every workspace file, so the private guide's opening was redacted from the seven committed 16p JSONs (guard-6761; harness fix g-353-107).
+**Addendum (2026-09-15, thrust 25 — the pre-registered re-measure on a second real guide, both models; Zak-Code #495 is the ADR, the result rides in the t25-result PR).** The IN arms hit on both models: cell 16p 12/12 on the 35B (7.2 turns) and 12/12 on the 27B (7.5) with the Constraints section in the fold, against 8/12 (35B, 9.0 turns) and 4/12 (27B, 7.5) on the ADR-0174 fold that drops it, and 0/12 with no guide; pooled 24/24 vs 12/24 (p = 8e-05). The OUT arms missed their ≤ 2 prediction, and nine dumped rule-out runs on the 35B showed why: every pass (4/4, 9-12 turns) greps the workspace for the task word after its project-file reads, hits the rule body inside the on-disk guide and reads it; every miss (5/5, 6 turns) never opens the guide. The fetch is the model's own search for the task's vocabulary — taken in 12 of 21 rule-out runs on the 35B and 4 of 12 on the 27B, a near-tie — not the fold's omission note (amended: a rule body carrying the task word is grep-reachable under any heading). So this ADR's value on the house style is correctness on the runs that do not search (more of them on the smaller model) and process on the ones that do (9.0 → 7.2 turns, −22% wall time, turn spread 7 → 3). SHIPS as measured; the census's four-in-five is now a measured cost — a guide whose rules sit under `## Constraints` outside the fold passes only when the model happens to grep. Residual unchanged: the oversized section with no sub-headings. Hygiene finding from the commit: the bench JSON's `sources` field embeds the first 4,096 chars of every workspace file, so the private guide's opening was redacted from the seven committed 16p JSONs (harness fix).
 
 ## ADR-0176: an oversized mandate section is admitted abridged — its shortest mandate-carrying items under a marker, within a share of the cap
 
@@ -9882,12 +9883,12 @@ ADR-0175's fleet census left one over-cap guide whose rules still fold out under
 guide (25,221 chars, 30 sections) keeps its test-authoring rules under a 7,087-char `### Test-authoring gotchas`
 sub-section with no sub-headings — one 5.5K bullet list and four short paragraphs, seven mandate-word lines.
 Promoted by its heading, it never fits behind the sections before it and is the first name in the omitted list.
-Thrust 26 measured the cost before any build (rb-10930): a rule stated only there ("Assert on before/after DELTAS
+Thrust 26 measured the cost before any build: a rule stated only there ("Assert on before/after DELTAS
 for shared static counters, never absolutes.") scored 3/12 on the 35B and 2/12 on the 27B against a no-guide
 control of 1/12 — indistinguishable from the default (pooled 5/24 vs 1/12, p = 0.65) — every run at 6-8 turns: no
 run fetched the section, so neither the omission note (which names "Test-authoring gotchas") nor the thrust-25
 workspace grep reached it. The model had a confident default (the imitation absolute, 11/12 in the control), and a
-model with a default does not search. rb-10979's remedies (a per-section share cap, folding by sub-sections,
+model with a default does not search. The prior finding's remedies (a per-section share cap, folding by sub-sections,
 excluding index sections) do not reach a section with no sub-headings.
 
 **Decision.** In `_fit_sections`, a section that (a) names or emphasizes a mandate or is about the task, (b) is
@@ -9908,8 +9909,8 @@ heading to none, every other guide's fold unchanged; cell 17's fold carries the 
 **Alternatives rejected.** Document-order admission within the share (the first 2K bullet alone fills the share
 and the rule behind it stays out — measured on the same section). Abridging any mandate section that did not fit
 (a small one that ran out of budget is a priority decision the tiers already made, and abridging it would change
-the Mind guide's fold: an 841-char emphasized section sits just past its budget there). Abridging table-bearing
-sections (rb-10979's index hazard: the Mind guide's Convention Index is a 9.6K table under a vocabulary heading
+the host framework guide's fold: an 841-char emphasized section sits just past its budget there). Abridging table-bearing
+sections (the prior finding's index hazard: the host framework guide's Convention Index is a 9.6K table under a vocabulary heading
 whose rows name rules without stating any; abridged in, it would evict real rule sections). Line-level units (a
 sentence out of a wrapped item is the false-completeness hazard at a finer grain). A larger share (starves the rest
 of the fold; the head tier already takes a quarter).
@@ -9953,7 +9954,7 @@ context against 6/24 without it and a 1/12 no-guide control, while the 35B read 
 pre-registered decomposition showed the FORM is not the miss (whole section 6/12, abridged 7/12 and 9/12), and
 twelve dumped 27B runs showed why: every pass and two of the three misses narrate "delta" — the plan says delta,
 the code says absolute (the third miss wrote no test at all). The rule is in context, read and narrated; what
-fails is carrying it into the code. The Mind's rb-10851 bounds the remedy: a harness-injected verification
+fails is carrying it into the code. A prior finding bounds the remedy: a harness-injected verification
 message reads as a defect report to a small model — never inject a warning at exit 0, never credit a gate on
 run text.
 
@@ -9973,7 +9974,7 @@ disagree, the guide wins") — it targets the decision to comply, which the dump
 the fallback if the check costs the 35B or loops. Firing in attended sessions too — sixteen tests encode "a write,
 then the answer, no round trip" for attended turns and the evidence is unattended; attended use gets its own
 measurement. Keying the rail on the completion's text (a claim of compliance) — text-keyed gates are the hazard
-rb-10851 names. Firing on every turn regardless of edits — a turn that changed nothing has nothing to check.
+that finding names. Firing on every turn regardless of edits — a turn that changed nothing has nothing to check.
 
 **Consequences.** Pre-registered measurement (thrust 28): cell 17 (abridged fold) on the 27B and the 35B under
 the rail, with 16p on the 27B as the regression control (the check must not turn a correct file into a wrong
@@ -10039,7 +10040,7 @@ measurement.
 **Consequences.** Pre-registered as thrust 30 beside a CONCURRENT no-rail baseline on both models (thrust 28's
 control was historical): cell 17 on the 27B and on the 35B with the check (dumped, so the census counts FIXED
 against the pre-check absolutes), 16p on the 27B as the regression control, N = 12, temperature 0; HARM at three
-below the concurrent baseline (guard-6769). Ships on main only under SHIPS; the same six tests carry it. Cost: one
+below the concurrent baseline. Ships on main only under SHIPS; the same six tests carry it. Cost: one
 extra completion per editing turn, plus an edit where a rule has no satisfying line.
 
 **Addendum (2026-09-15, thrust 30 — MISS; reverted, the post-write check retired).** Measured beside CONCURRENT
@@ -10077,7 +10078,7 @@ ADR-0170..0176 census; the block-level line binds the same files at the same mom
 the mandate sections last, nearest the task: the dumped runs show the rule read and narrated — position is not the
 failure. A harness-side form check: not general.
 
-**Consequences.** Pre-registered as thrust 31 beside concurrent no-framing baselines on both models (guard-6772): cell
+**Consequences.** Pre-registered as thrust 31 beside concurrent no-framing baselines on both models: cell
 17 on the 27B and the 35B with and without the line, 16p on the 27B as the regression control, N = 12, temperature 0;
 SHIPS / HARM / MISS / MARGINAL in the results log; reverted under HARM or MISS. Residuals: a guide with no rule that
 applies gains nothing and costs one sentence; a model that binds to a WRONG reading of a rule binds harder — the
@@ -10089,7 +10090,7 @@ line against 6/12 without (one-sided Fisher p = 0.20); on the 35B 9/12 against 1
 16p on the 27B 12/12; turns 6.2-6.4 and 40-41 s on every cell-17 arm — the line costs nothing measurable. The rule named
 SHIPS at ≥ 11, MARGINAL at (a') + 1 and MISS at ≤ (a') around a predicted baseline of 10; the baseline measured 6, and 9
 sat in a gap the rule did not name — found by enumeration before the treated arm landed, and read by the disposition
-fixed then: MARGINAL's, never an upgrade (guard-6776). Pooled over both models the treated arms read 18/24 against 16/24
+fixed then: MARGINAL's, never an upgrade. Pooled over both models the treated arms read 18/24 against 16/24
 untreated (p = 0.75). The decision stands on main unchanged; thrust 32 re-samples the 27B pair at N = 24 per arm,
 interleaved and dumped, and reads the pooled 36 vs 36 by a rule enumerated for coverage: MISS (C ≤ A + 3) retires the
 line, SHIPS (C ≥ A + 9 and C ≥ 27) confirms it, MARGINAL-2 keeps it as a no-cost line with an unproven benefit and moves
@@ -10155,7 +10156,7 @@ read. The write-surface lever (fallback C, thrust 35) is measured on top of it.
 
 **Status.** Accepted (2026-09-17).
 
-**Context.** A served Mind on `vertex_ai_beta` (the coach cockpit, 2026-09-17 12:23 UTC) ended
+**Context.** A served session on `vertex_ai_beta` (a host framework cockpit, 2026-09-17 12:23 UTC) ended
 its turn five iterations in — 2.15M tokens, 74% cached, $3.30, 4m29s, seven plan steps still
 open — with `stop_reason=provider_error` and this text:
 
@@ -10174,7 +10175,7 @@ and refuses it; so do OpenAI ("Unrecognized request argument supplied") and Anth
 inputs are not permitted"). The refusal mapped to a generic `RequestFailed`, which the loop never
 retries, so the turn ended `provider_error` — and `provider_error` was one of the stop reasons a
 TURN_END (Stop) hook was forbidden to veto, filed under "infrastructure — a hard bound". The
-Mind's stop hook, whose entire job is to re-enter the loop, was never consulted. The cockpit sat
+The host framework's stop hook, whose entire job is to re-enter the loop, was never consulted. The cockpit sat
 at its prompt until a human typed "continue", which worked only because the NEXT turn's first
 call carried no thinking override. Three defects, one incident: a spelling sent where it is
 refused; a provider that discards the one sentence naming exactly what it did wrong; and a turn
@@ -10235,7 +10236,7 @@ inside every cycle, so six cycles outlast an outage of well over an hour; an INS
 dead key, a request the server will never take) is given up on in a quarter of an hour instead of
 forever. Past the cap the turn ends `provider_error` exactly as before — hooks unconsulted, the
 error text carrying "persisted through N hook-vetoed re-entries" — and a hook that lets the stop
-stand ends it at once with no wait. The veto's continuation prompt is the hook's own (a Mind's
+stand ends it at once with no wait. The veto's continuation prompt is the hook's own (a host framework's
 "re-enter the loop"), the wait is said out loud (status line, trace note, `_status_sink`), and
 the turn is marked `degraded`. A build that landed while the hook vetoed still restarts the REPL
 first (ADR-0099). Sub-agent loops (`turn_end_vetoable=False`) are unchanged.
@@ -10243,8 +10244,8 @@ first (ADR-0099). Sub-agent loops (`turn_end_vetoable=False`) are unchanged.
 **Why not a wake-up instead of an in-turn veto.** Arming the session's ADR-0094 wake-up on a
 provider error (a self-typed "continue" after a backoff) would recover the REPL without any hook,
 but it delivers only at an idle REPL prompt — a served run's say consumer wakes on a say or a
-nudge and would never see it — and it replaces the single wake-up slot a Mind's deadman net or a
-parked Body's re-poll may be holding. The Stop seam already exists in every consumer, is the
+nudge and would never see it — and it replaces the single wake-up slot a host framework's deadman net or a
+parked worker session's re-poll may be holding. The Stop seam already exists in every consumer, is the
 framework's declared authority over turn ends, and pairs with the in-turn retry the way Claude
 Code pairs them: the harness retries transient errors inside the turn; the framework decides
 whether a turn that still failed goes on. A plain session with no Stop hook keeps today's
@@ -10253,7 +10254,7 @@ blind auto-continue re-sends the request that just failed.
 
 **Consequences.** The incident's request no longer carries `chat_template_kwargs` to Vertex
 (rendering), any other refused body key costs one re-issued call rather than the turn (repair),
-and a Mind whose stop hook blocks the stop turns itself back on after a provider failure instead
+and a host framework whose stop hook blocks the stop turns itself back on after a provider failure instead
 of waiting for a human (veto). ADR-0056's "a server without the key ignores it" is corrected in
 place. Pinned by tests/test_thinking_switch_rendering.py (the renderer's destination matrix; the
 incident's exact request against `vertex_ai_beta` carries no llama.cpp key; the pod request is
@@ -10267,7 +10268,7 @@ alias), and tests/test_turn_end_loop.py (recovery after a veto, the cap and the 
 
 **Status.** Accepted (2026-09-17).
 
-**Context.** On 2026-09-16 a served Mind on Vertex (the serene deployment, cutting over to
+**Context.** On 2026-09-16 a served session on Vertex (a host framework deployment, cutting over to
 `vertex_ai/gemini-3.8-flash`) asked how to make the model reason harder, and there was no answer:
 `ZakpickModel.thinking` is an on/off switch in llama.cpp's body form (rendered per backend since
 ADR-0181), and the real Gemini knob — litellm's `reasoning_effort`, mapped to a `thinkingLevel`
@@ -10311,7 +10312,7 @@ internal spelling into a per-backend vocabulary at the config layer; the level a
 first-class litellm parameter with a mapping per backend, so the harness's job is to place it
 where it is understood and withhold it where it is not — the same shape as ADR-0181, not a new one.
 
-**Consequences.** A Gemini 3 mind can be run at any depth from config, per category; a mixed fleet
+**Consequences.** A Gemini 3 host framework can be run at any depth from config, per category; a mixed fleet
 sets the depth on the categories that take it and leaves the rest inert; the pod request is
 byte-identical to before; the overflow retry still switches thinking off regardless of the depth
 configured. Pinned by tests/test_reasoning_effort.py (the levels are litellm's literal; parsing,
@@ -10333,7 +10334,7 @@ proactive threshold keeps a compaction at four or five slices), so it surfaced o
 cross-window-size — a session built on a 200k-window model resumed on an 8k local one, or a
 multi-megabyte paste (user messages are never clamped; tool outputs are) — where one compaction
 could cost dozens of sequential calls and then raise `ContextWindowExceeded` from inside
-`compact_now`. Fresh-eyes finding on PR #224, filed 2026-08-26 (g-357-13).
+`compact_now`. Fresh-eyes finding on PR #224, filed 2026-08-26.
 
 **Decision.** Bounded by construction, in three steps, every one sized by characters at the
 slice budget (`_SUMMARY_CHUNK_FRACTION` × window × `_SUMMARY_CHARS_PER_TOKEN`):
@@ -10353,7 +10354,7 @@ slice budget (`_SUMMARY_CHUNK_FRACTION` × window × `_SUMMARY_CHARS_PER_TOKEN`)
 
 **Why not `count_tokens`.** The goal suggested guarding the fold with `summarizer.count_tokens`.
 ADR-0082 already ruled that out for this path: a local model's counter is a guess, and the guess
-is what let the recovery's own summarize call overflow (coach, 2026-08-29, twice). The character
+is what let the recovery's own summarize call overflow (a worker session, 2026-08-29, twice). The character
 budget the slices already use is the one measure that cannot disagree with itself, so the fold is
 guarded by it too.
 
@@ -10379,10 +10380,10 @@ long — it should remove them from working memory more often." Measured at orig
 dependencies — and `_plan_reminder` re-injected that render as the highest-salience ephemeral
 tail message on EVERY iteration for the life of the turn. Cleanup existed only at turn start
 (the complete-plan reset and the issue-#32 staleness guard). So within one long agentic turn
-(dozens of iterations; a Mind session seeds paged-skill skeletons up to 60 steps) a 20-step plan
+(dozens of iterations; a host framework session seeds paged-skill skeletons up to 60 steps) a 20-step plan
 at step 18 paid 17 done rows in tokens and clutter on every call, and a plan that completed
 mid-turn kept re-injecting its checklist until the turn ended. Hard constraint from the goal
-(g-357-58): the network itself must not change mid-turn — the completion gate
+the network itself must not change mid-turn — the completion gate
 (`actionable_remaining`), paged-skill delivery (page ↔ step by TITLE, never rendered text) and
 `update_plan`'s full-replace all depend on the live object — so this is a render-layer change.
 The one real design risk was the round trip: the model authors its next `update_plan` by copying
@@ -10424,7 +10425,7 @@ turn-start behaviour (the complete-plan reset and the staleness guard are untouc
 
 **Consequences.** Measured on representative plans (`render()` vs `render(elide_done=True)`, per
 iteration): a 20-step plan at step 18 goes from 1,797 to 347 characters (21 → 5 lines); a
-60-step Mind skeleton at step 55 from 5,366 to 623 (61 → 8 lines); a 20-step plan at step 2 is
+60-step host framework skeleton at step 55 from 5,366 to 623 (61 → 8 lines); a 20-step plan at step 2 is
 unchanged (one lone done row) and a 60-step skeleton at step 10 shrinks 14%. A plan that
 completes mid-turn was already one line (ADR-0108) and stays so. The model can no longer read
 the titles of folded steps from the reminder — by design; it does not need them to work, and
@@ -10451,7 +10452,7 @@ is being called and when." Measured against the renderer as shipped (docs/UX.md)
 
 1. *The turn seam vanished in the cockpit.* The keyboard door draws a labeled frame and the
    two-blank seam (UX rule 5); the say door — the ONLY door inside a cockpit (ADR-0119) — echoed
-   the operator's message as one dim `▸ (say) …` line behind a single blank. A day-long Mind
+   the operator's message as one dim `▸ (say) …` line behind a single blank. A day-long host framework
    session read as one grey stream with no anchor to scan back to.
 2. *A tool block had no bright ink but its name.* `tool.marker`, the `└` receipt, its count
    and every rail row were `dim`; only the display name was bold. tmux's default terminal
@@ -10632,7 +10633,7 @@ change with this ADR; FEATURE_AUDIT CLI-39.
 
 **Status:** Accepted (2026-09-17)
 
-**Context.** A served Mind (serene: agent sera, gemini-3.5-flash, Zak Code vessel) was
+**Context.** A served host framework session (gemini-3.5-flash, Zak Code vessel) was
 caught in a loop the operator described as "it would call this gate, and then repeat that
 it is fully started, then loop those two things repeatedly": `iteration-close.sh --phase
 productivity-check` → `echo "Return to orchestrator — continue to next phase"` →
@@ -10641,12 +10642,12 @@ hook BLOCKs → the same again, for hours. Later, after a prompt typed into the 
 helped for a few iterations, the same shape came back around `liveness-check.sh`
 ("Verdict: Autonomous Loop Successfully Resurrected & Running Autonomously").
 
-The mechanism, read from the transcript and the code. A Mind's whole autonomous session
+The mechanism, read from the transcript and the code. A host framework's whole autonomous session
 is ONE Zak Code turn: the orchestrator skill runs, the model ends an iteration in text, the
 framework's Stop hook returns `{"decision":"block","reason":…}`, and the loop re-prompts
 with `[harness] Hint: <reason>`. That reason — written for Claude Code, promoted verbatim
-down the Ayoai-Mind → Claude-Mind → ZDS-Mind chain — says *"Your FIRST action MUST be:
-Skill('aspirations') with args='loop'. … Call the Skill tool IMMEDIATELY."* Zak Code's
+down the host framework's promotion chain — says *"Your FIRST action MUST be:
+Skill('orchestrate') with args='loop'. … Call the Skill tool IMMEDIATELY."* Zak Code's
 tool is `use_skill(name, args)` (the registry aliases `Skill`, but the model's tool list
 shows `use_skill`), and the iteration-complete imperative the model had just read says
 `ScheduleWakeup(prompt='<<autonomous-loop-dynamic>>', delaySeconds=600)` where the tool
@@ -10662,20 +10663,20 @@ loop returned. A fix that lives in the model's context is not a fix.
 Two principles decide the shape. First, a deterministic harness delivers what a hook asks
 for instead of asking the model to fetch it — the say inbox already runs a typed
 `/<skill>` this way (ADR-0073), composing the command frame plus page 1 and seeding the
-plan; a hook's "your first action must be Skill('aspirations') with args='loop'" is the
+plan; a hook's "your first action must be Skill('orchestrate') with args='loop'" is the
 same request from the framework. Second, a fence keys on a behavioural predicate the
 model supplies no input to — the framework's own `loop-exhaustion-fence` rule — so "the
 loop is spinning" is structurally distinguishable from "the model feels done", and a fence
 that ends a turn must leave a net, because a loop that ends at its prompt with no net is
-the dead loop every Mind incident is about ("worst case a slow loop, never a dead one").
+the dead loop every host framework incident is about ("worst case a slow loop, never a dead one").
 
 **Decision.**
 
 1. **A veto that names a skill re-entry delivers that skill.** `skill_reentry_in(reason)`
    reads the skill and args a hook's continuation names in either harness's vocabulary
-   (`Skill('aspirations') with args='loop'`, `Skill(worker-loop)`, `use_skill(name=…,
-   args=…)`), skipping negated mentions ("ended without a Skill(aspirations) re-entry",
-   "NOT Skill('aspirations')") and preferring the first mention that carries arguments.
+   (`Skill('orchestrate') with args='loop'`, `Skill(worker)`, `use_skill(name=…,
+   args=…)`), skipping negated mentions ("ended without a Skill(orchestrate) re-entry",
+   "NOT Skill('orchestrate')") and preferring the first mention that carries arguments.
    `_fire_turn_end` then composes the skill through the loop's `compose_skill` seam with
    `source="harness"` — the command frame, the hook's reason folded into the frame's
    `<command-message>` line (`harness_skill_turn_text`; one line, `[harness]`-tagged, the
@@ -10704,7 +10705,7 @@ the dead loop every Mind incident is about ("worst case a slow loop, never a dea
    autonomous-loop sentinel (`<<autonomous-loop-dynamic>>`, 600 s). A held wake-up — the
    framework's own net — is kept.
 4. **The sentinel resolves to the loop skill.** `Session.loop_skill` holds the skill the
-   last hook-named re-entry ran (`"aspirations loop"`), persisted. At the REPL door the
+   last hook-named re-entry ran (`"orchestrate loop"`), persisted. At the REPL door the
    fired sentinel now composes that skill (`source="harness"`, the wake-up note in the
    frame) instead of the ADR-0094 prose line asking the model to remember which skill runs
    the loop — after compacting a `veto_stall`'s context, as a collapsed turn's is. With no
@@ -10717,21 +10718,21 @@ the dead loop every Mind incident is about ("worst case a slow loop, never a dea
    Code's `skill` parameter name, so a `Skill(...)` call the registry already routes by
    alias lands with its argument. And `Agent.__init__` exports `ZAKCODE_SESSION=<session
    id>` into the process environment — Claude Code exports `CLAUDECODE=1` to every hook
-   and shell it spawns, and the Mind's harness detector (`harness-capabilities.sh`) keys on
+   and shell it spawns, and the host framework's harness detector (`harness-capabilities.sh`) keys on
    exactly such a marker to name the vessel's tools; without it Zak Code read as "unknown"
    and got Claude Code's names.
 
 The other half is the framework's (the dev origin): its hook reasons and the
 iteration-complete imperative are to name the vessel's tools through that harness
 capability, so promoted copies stop speaking Claude Code's names to a Zak Code model. This
-ADR makes the re-entry independent of that: a hook that still says `Skill('aspirations')`
+ADR makes the re-entry independent of that: a hook that still says `Skill('orchestrate')`
 gets the skill delivered.
 
 Not decided: delivering a skill named by a `PreToolUse` deny reason (only the Stop seam
 carries a re-entry); counting a `Skill(...)` tool call the model makes under the alias as a
 skill call for the fence (it is — `use_skill` is what runs); a fence for plain-rail vetoes.
 
-**Consequences.** Against the measured spiral: the first BLOCK delivers `/aspirations
+**Consequences.** Against the measured spiral: the first BLOCK delivers `/orchestrate
 loop` — frame, the hook's own words, page 1, plan steps — instead of an instruction in
 another harness's vocabulary; a model that then follows it runs sub-skills (each resets the
 fence); one that still ends in text gets two more deliveries, then the turn ends
@@ -10743,7 +10744,7 @@ rail, the fence, the net, the per-turn reset, the model skill call reset, generi
 unbounded), `tests/test_use_skill.py` (the harness source, the `skill` parameter, the
 marker), `tests/test_skills.py` (the vocabulary line), `tests/test_schedule_wakeup.py`
 (`take_due_prompt`), `tests/test_self_restart.py` (the restart and sentinel doors);
-FEATURE_AUDIT LOOP-92; CLAUDE-MIND-COMPAT rows for the veto seam and the sentinel.
+FEATURE_AUDIT LOOP-92; HOST-FRAMEWORK-COMPAT rows for the veto seam and the sentinel.
 
 ## ADR-0188: function tools on the gpt-5.6 chat route ride with `reasoning_effort="none"`, a remedy the provider names is applied in place, and the sidecar signs the stop it raises
 
@@ -10751,7 +10752,7 @@ FEATURE_AUDIT LOOP-92; CLAUDE-MIND-COMPAT rows for the veto seam and the sentine
 
 **Context.** Two prod findings from one evening (Zachary's Alien 2 runs, vessel debc47de).
 
-*The model.* Every served Mind since the zakpick OpenAI mix landed (2026-09-01) has run on
+*The model.* Every served session since the zakpick OpenAI mix landed (2026-09-01) has run on
 the `gpt-5-mini` FALLBACK, not on the `gpt-5.6-terra` / `-luna` it was pinned to. The first
 tool call of every session 400'd — *"Function tools with reasoning_effort are not supported
 for gpt-5.6-terra in /v1/chat/completions. To use function tools, use /v1/responses or set
@@ -10767,8 +10768,8 @@ depth counts as "with". Measured live against the fleet key (2026-09-17): terra 
 400, terra `low` → 400, terra `none` → 200 with a tool call, luna `none` → 200, `gpt-5-mini`
 `none` → 400 ("does not support 'none'"), `gpt-5-mini` unset → 200.
 
-*The stop.* The framework's `/start` Step 2.5 guard (`live_stop_decision`, g-373-16) keeps a
-`stop-requested` raised after the session started. "Started" is the binding's `started_at`,
+*The stop.* The host framework's `/start` Step 2.5 guard (`live_stop_decision`) keeps a
+the stop-request file raised after the session started. "Started" is the binding's `started_at`,
 which `/start` writes pages into its ceremony; on run B the sidecar raised at 20:29:29, the
 binding said 20:31:43, the clear ran at 20:32:09, and the guard deleted the run's only
 ending as "stale". The race the guard was written against had 3m50s of headroom; a short cap
@@ -10789,15 +10790,15 @@ or a `/run/stop` in the first minutes has none.
    to a model nobody chose. A second refusal maps through the taxonomy as before.
 3. `request_framework_stop` writes its signature INTO the signal it just raised
    (`raised_by: vessel-sidecar` / `raised_at: <utc>`; `SIDECAR_RAISE_MARKER`). The framework
-   guard refuses a signed signal without consulting time (Ayoai-Mind `session.py`, same
+   guard refuses a signed signal without consulting time (the host framework's `session.py`, same
    day); the framework's own writers leave the marker empty, so nothing else changes, and
    the two halves ship independently. Because a signed signal never reads as stale, its
-   lifetime is owned here: `abandon_framework_stop` at grace expiry (unchanged, g-373-92) and
+   lifetime is owned here: `abandon_framework_stop` at grace expiry and
    `retire_expired_sidecar_stop` at server start for a signed raise older than the grace
    that a previous process left behind. A fresher one — a restart inside the window — is
-   left for the mind.
+   left for the host framework.
 
-**Consequences.** The terra/luna mix actually drives the served Minds for the first time.
+**Consequences.** The terra/luna mix actually drives the served sessions for the first time.
 Reasoning depth is OFF for tool calls on this tier by construction; keeping reasoning with
 tools means the Responses API, which is a separate decision. The temperature rule of
 `test_gpt5_temperature.py` and this one are the same defect one parameter apart: a pin is
@@ -10809,22 +10810,22 @@ started stops left alone); FEATURE_AUDIT PROV-25.
 
 **Amended 2026-09-18 (the signature never creates the marker).** The signature was written
 with `Path.write_text`, which creates the file. The ask is live from the moment the setter
-touches it, so a mind that reads it at once can consume it (D3 removes `stop-requested`)
+touches it, so a host framework that reads it at once can consume it (D3 removes the stop-request file)
 before the signature lands, and the signature then put the consumed ask BACK:
 `request_framework_stop` reported success, `framework_stop_complete` read "not yet" for the
-whole grace, and a run whose mind had finished its stop beat on until the window closed.
+whole grace, and a run whose host framework had finished its stop beat on until the window closed.
 Measured as a bare `TimeoutError` on windows-latest in
 `test_a_stop_finished_inside_the_turn_ends_the_run_when_that_turn_ends` (main run
 35380778365: a 30 s grace against the test's 10 s wait, so the window decided the wait) and
 green on re-run, which a race also is. Reproduced with no timing by consuming the ask
-between the setter's verification and the signing: `stop-requested` back on disk at 58
+between the setter's verification and the signing: the stop-request file back on disk at 58
 bytes, `framework_stop_complete` False. The test double polls every 20 ms and signs off in
 microseconds, so a slow runner finds the window; a vessel's consumer is model-paced and
 practically never does. `_sign_signal` now opens the existing marker without `O_CREAT`; a
 consumed ask stays consumed and is logged at INFO. With `O_CREAT` put back exactly the new
 test fails (`test_signing_never_recreates_an_ask_the_mind_already_consumed`) and the
 signature test passes. **Noted, not changed:** the setter's verification reads an absent
-marker as "the setter failed" and reverts the target mode; a mind that consumed the ask
+marker as "the setter failed" and reverts the target mode; a host framework that consumed the ask
 before that read would lose its target mode. No consumer is that fast outside a test double.
 
 ## ADR-0189: a served session services its own wake-up, and a stop raised between turns starts the turn that reads it
@@ -10833,15 +10834,15 @@ before that read would lose its target mode. No consumer is that fast outside a 
 
 **Context.** The first prod run on the ADR-0188 build (Zachary's Alien 2, vessel debc47de,
 2026-09-18) ran on its configured model with zero failovers — and still ended with nothing
-consolidated. The mind's loop turn died `veto_stall` at 02:11:45Z (three vetoes naming the
-`/aspirations loop` re-entry, then a `gave_up`, ADR-0187's fence), 22 minutes before the
+consolidated. The host framework's loop turn died `veto_stall` at 02:11:45Z (three vetoes naming the
+`/orchestrate loop` re-entry, then a `gave_up`, ADR-0187's fence), 22 minutes before the
 run's turn deadline. The fence had armed the loop's deadman's net — `pending_wakeup`
 `<<autonomous-loop-dynamic>>`, due 02:21:45Z — and the net never fired: `WakeupSlot.take_due`
 is serviced by the REPL's idle prompt (ADR-0094, ADR-0187) and by nothing else. A served
 session has no prompt; its consumer beat (`_consume_one_say`) started a turn for a say or a
-nudge (g-373-18) only. The wake-up was still armed at 02:35Z. At 02:33:29Z the sidecar
+nudge only. The wake-up was still armed at 02:35Z. At 02:33:29Z the sidecar
 signed and raised the framework stop (ADR-0188) with no turn in flight — the loop keeps
-beating inside the window for exactly this (g-373-16), but a beat with nothing to beat
+beating inside the window for exactly this, but a beat with nothing to beat
 FOR reads the signal never — so the stop sat on disk until the window closed and was
 retired unconsumed. Verdict on the pre-registered ending prediction: the stop was raised
 and never read.
@@ -10861,18 +10862,18 @@ and never read.
 2. **A framework stop raised with no turn to read it starts the loop's re-entry**
    (`_take_stop_reentry`): `_begin_framework_stop` sets `stop_reentry_pending` once per
    raise; the first idle beat inside the window runs the sentinel turn from (1). Only when
-   the session knows its hook-named re-entry — a mind that never ran the loop has nothing
+   the session knows its hook-named re-entry — a host framework that never ran the loop has nothing
    composable to run, and the raise then behaves exactly as before. A turn in flight is
    left alone: it reads the signal at its own next beat, and if it ends without having done
    so the pending kick fires on the beat after.
-3. **The line between WHEN and WHAT is kept** (guard-1807, Zachary's ruling): the sidecar
+3. **The line between WHEN and WHAT is kept** (Zachary's ruling): the sidecar
    still only decides WHEN — it starts a turn — and the turn it starts is the harness's own
-   composed re-entry of the mind's loop skill, in which Phase -1.4 reads the signal and the
-   mind runs its own graceful stop. No prompt of ours reaches the model.
+   composed re-entry of the host framework's loop skill, in which Phase -1.4 reads the signal and the
+   host framework runs its own graceful stop. No prompt of ours reaches the model.
 
 **Consequences.** The deadman's net the framework arms on every stall now means something in
 a served session: a dead loop resurrects within one beat of its due time, not at the next
-member say. A capped run whose loop is at rest gets its reserve spent on the mind's own
+member say. A capped run whose loop is at rest gets its reserve spent on the host framework's own
 ending instead of an unread signal. The kick costs one composed turn; the compaction on a
 stalled context is the same call the REPL makes on resume. Not changed here: WHY the loop
 turn stalled (a 360k-token context on a model whose registered 922k window kept the
@@ -10886,18 +10887,18 @@ Tests: `tests/test_server_consumer.py` (four wake-up cases) and
 
 **Status:** Accepted (2026-09-18)
 
-**Context.** A served Mind on a small model (serene, gemini-3.5-flash, 2026-09-17) read the
-framework's stop-hook imperative — `Skill('aspirations') with args='loop'` — and answered it in
+**Context.** A served host framework session on a small model (gemini-3.5-flash, 2026-09-17) read the
+framework's stop-hook imperative — `Skill('orchestrate') with args='loop'` — and answered it in
 prose for hours, because its tool list showed `use_skill` and `schedule_wakeup`, not `Skill` and
 `ScheduleWakeup`. ADR-0187 closed the spiral on the harness side (a veto that names a skill is
 delivered; a re-entry nobody runs is fenced), and `Skill` had been an *alias* of `use_skill`
 since ADR-0187's precursor — the call would have resolved. It was never made. Aliases change
 what RESOLVES; a small model calls what it can SEE. A framework-side fix that spelled the
-imperative per detected harness (Ayoai-Mind, 2026-09-17) was reverted the next day on the
-operator's ruling: Zak Code must run outside the Mind, and the Mind must run on both harnesses
+imperative per detected harness (2026-09-17) was reverted the next day on the
+operator's ruling: Zak Code must run outside the host framework, and the host framework must run on both harnesses
 without knowing which — one harness contract, implemented by the vessel (this repo's ADR-0071
 already says it for the hook wire: "the Claude Code contract in full, not just its aliases").
-The 2026-09-18 review (Ayoai-Mind findings board, tag `fresh-eyes-code`) measured the gap:
+The 2026-09-18 review (host framework findings board, tag `fresh-eyes-code`) measured the gap:
 of the fourteen tools the hook map translates, only two accepted Claude Code's name from the
 model (`Skill`, `ScheduleWakeup`); `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `LS`,
 `WebFetch`, `WebSearch`, `Task`, `TodoWrite`, `TodoRead` resolved to nothing.
@@ -10939,7 +10940,7 @@ model (`Skill`, `ScheduleWakeup`); `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Gre
    translation line: `Skill(<name>) with args='<args>'` IS the call), the text-protocol
    examples, the restart continuation, the bash tool's typed-as-command refusal, the renderer.
    The sentinel's fallback line is generic ("invoke the skill that runs it, with the arguments
-   it was started with") — it no longer names a Mind's skill, and `ZAKCODE_SESSION` stays a
+   it was started with") — it no longer names a host framework's skill, and `ZAKCODE_SESSION` stays a
    provenance marker the framework never branches on.
 8. **Deliberately not done.** The file tools' schema key stays `path` (Claude Code's own
    `Glob`/`Grep`/`LS` say `path`; the schema is what a model sees and `path` is unambiguous;
@@ -10947,18 +10948,18 @@ model (`Skill`, `ScheduleWakeup`); `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Gre
    needs). `MultiEdit` is not a registry alias (its `edits` array is not accepted; it remains a
    hook-matcher twin). Bench recipes under `bench/` keep their historical names.
 
-**Consequences.** A Mind's imperatives now name tools the model can see — on every model,
+**Consequences.** A host framework's imperatives now name tools the model can see — on every model,
 without a mapping line and without the framework knowing what runs it; any prompt, skill or hook
 written for Claude Code runs here verbatim. The tool list shows Claude Code's names, so a
 prompt author reads one vocabulary in both places. Cost: 25 source files, ~100 test files
 (mostly literals), the docs that describe current behaviour (`README`, `PARITY`, `CONFIG`,
-`ARCHITECTURE`, `GUARDRAILS`, `TESTING`, `INTEGRATIONS`, `CLAUDE-MIND-COMPAT`); dated records
+`ARCHITECTURE`, `GUARDRAILS`, `TESTING`, `INTEGRATIONS`, `HOST-FRAMEWORK-COMPAT`); dated records
 (earlier ADRs, `IMPROVEMENT-LOG`, `DETERMINISM-REVIEW`, `ROADMAP`) keep the names they were
 written with. The pre-0190 aliases stay for at least one release cycle; retiring them is a
 future ADR with a measured alias-call count. The small-model benefit is the review's
 hypothesis, not yet a measurement: the pre-registered bench (arms: snake canonical vs Claude
 Code canonical vs snake plus an "also callable as Read" description line; N=12; HARM lines per
-the bench rules) runs when zakpod1 is back. Companion: ADR-0191 (background `Bash` with an exit
+the bench rules) runs when the worker machine is back. Companion: ADR-0191 (background `Bash` with an exit
 notification) retires the last harness-capability branch in the framework.
 
 **Amended 2026-09-18 (the streamed path).** The rewrite "where the call enters" was made in
@@ -11003,12 +11004,12 @@ test that every allowance is still needed. Restoring one stale hint fails it by 
 **Context.** Claude Code's `Bash` takes `run_in_background: true`: the command runs
 detached, the tool returns at once with a task id and an output file, and the model is
 re-invoked with a `<task-notification>` when the command exits; `TaskOutput` reads the
-output, `TaskStop` kills it. A Mind's playbooks are written against exactly that
+output, `TaskStop` kills it. A host framework's playbooks are written against exactly that
 ("background the suite, END the turn; the harness notifies"), and its rules forbid polling
 a background job with `ScheduleWakeup` *because* the harness reports on it. Zak Code had no
 background command: a suite run held the turn for its whole duration, and the framework
 carried a per-harness capability table (`background_job_notify`) with a branch in its
-all-blocked skill (an idle sleep whose wake-up IS the re-entry) so a Mind could run on
+all-blocked skill (an idle sleep whose wake-up IS the re-entry) so a host framework could run on
 either harness. That table was the last place the framework had to ask which harness ran
 it — the 2026-09-18 review's finding F5, and the branch ADR-0190's one-contract principle
 (loop-terminal-protocol §4.1) leaves no room for.
@@ -11051,7 +11052,7 @@ it — the 2026-09-18 review's finding F5, and the branch ADR-0190's one-contrac
    read-only like `ScheduleWakeup`: they touch only what the session started.
 6. **A session's end kills what it started** (`Agent.aclose`), as Claude Code does — not
    the restart, and not a served turn's release (`_release_agent` closes only the loop's
-   egress listener; the served mind's tasks run across turns).
+   egress listener; the served host framework's tasks run across turns).
 7. **The foreground path is unchanged**, and the two spawns share one environment builder
    (`_proc.child_environment`: no-color, the egress overlay, the provider-key scrub, the
    workspace venv on PATH, the `.zakcode/env` bash hook) so they never drift.
@@ -11060,11 +11061,11 @@ it — the 2026-09-18 review's finding F5, and the branch ADR-0190's one-contrac
 Code; `ScheduleWakeup`'s "never to poll work the harness already reports on" is now a
 rule the vessel honours rather than a Claude Code fact the framework had to fence. The
 framework's harness-capability table and its all-blocked idle-sleep branch can be deleted
-(the companion framework change, step D of the 2026-09-18 plan); a Mind served by a
+(the companion framework change, step D of the 2026-09-18 plan); a host framework served by a
 vessel older than this ADR gets `unknown tool` for `TaskOutput` and a foreground `Bash`
-that ignores `run_in_background` — the version floor is recorded in CLAUDE-MIND-COMPAT.
+that ignores `run_in_background` — the version floor is recorded in HOST-FRAMEWORK-COMPAT.
 Output files live beside the session store (`~/.zakcode/tasks/<sid>/`;
-`<workspace>/.zakcode/tasks/<sid>/` for a served mind, self-ignored for git); nothing
+`<workspace>/.zakcode/tasks/<sid>/` for a served session, self-ignored for git); nothing
 prunes them yet — a later ADR when the count is measured. Sub-agents are still
 synchronous: `TaskOutput`/`TaskStop` here cover background commands only.
 
@@ -11077,7 +11078,7 @@ process did not spawn or has already reaped — so a pid the OS reused after the
 never kills the process that now owns it. The token is only ever held against another
 process: a record without one, or a platform that cannot read one, keeps the pid's word.
 The `lost` notification says the exit went unobserved and the output file may still be
-complete, so a Mind does not re-run a suite that finished.
+complete, so a host framework does not re-run a suite that finished.
 
 ## ADR-0192: a skill that fits is delivered whole — paging and the seeded skeleton are the shape of a body that cannot
 
@@ -11088,10 +11089,10 @@ decomposes, the model refines"; "no flag"), ADR-0067 paged a sectioned skill thr
 plan "one way, for every window size, no flag", and ADR-0088 packed small sections to a
 12,000-char page budget. The system prompt told the model paging happened only for "a skill
 whose body cannot sit in this model's context window" — the code never checked. Measured
-2026-09-18 on a served Mind (Vinheim prod vessel, env debc47de, gpt-5.6-terra behind a
+2026-09-18 on a served host framework session (prod vessel, env debc47de, gpt-5.6-terra behind a
 922,000-token window, the session read from its store): the one served turn loaded twelve
-skills (`/start`, `/boot`, `/prime`, `/aspirations` four times — three of them the ADR-0187
-re-deliveries — `/aspirations-precheck`, `/aspirations-strategic-scan`, `/aspirations-evolve`,
+skills (`/start`, `/boot`, `/prime`, `/orchestrate` four times — three of them the ADR-0187
+re-deliveries — `/orchestrate-precheck`, `/orchestrate-strategic-scan`, `/orchestrate-evolve`,
 `/curriculum-gates`, `/review-hypotheses`), every one paged and seeded: 45 page
 deliveries, twelve skeleton seedings, 101 `update_plan` calls out of 232 tool calls
 (each carrying the whole plan, which the round-trip restores forever), eight
@@ -11100,7 +11101,7 @@ deliveries, twelve skeleton seedings, 101 `update_plan` calls out of 232 tool ca
 deliveries, 20% `update_plan` payloads, 10% skill loads and 5% plan results against 17%
 command output; the prompt grew from 32k to 360k tokens, empty completions began past
 150k, and the turn died `veto_stall` after 243 calls and $155 with no loop iteration
-completed. The same Mind on Claude Code, whose Skill tool hands the body over whole and
+completed. The same host framework on Claude Code, whose Skill tool hands the body over whole and
 seeds nothing, runs the same iteration in a fraction of the calls. Three defects rode
 along. The fit check reserved the model's whole output cap as answer room — litellm
 registers 128,000 for the gpt-5.6 tier — so the recipe that pinned the window to 131,072
@@ -11110,8 +11111,8 @@ the shape a model retypes from memory) was not a fold to `COLLAPSED_ROW_RE`, so 
 echoes stood as literal steps in a plan that ended at 109 top-level steps. And the fenced
 section marker matched any `# Phase N` at column 0, so the comment line
 `# Phase 6 for non-recurring deep closes rode on LLM memory alone and drifted,` — the
-second line of a comment — seeded a step titled with that sentence, in every Mind whose
-`/aspirations` carries it.
+second line of a comment — seeded a step titled with that sentence, in every host framework session whose
+`/orchestrate` carries it.
 
 **Decision.** One rule, keyed on the window and nothing else: a skill whose whole body
 fits this model's context window beside the system prompt with room to answer — the
@@ -11131,7 +11132,7 @@ never dropped. The fenced marker requires a separator — `:`, `.`, `)`, `(`, a 
 line's end after the id (`_STEP_FENCED_RE`).
 
 **Alternatives rejected.** A per-deployment knob ("page always" for small models): the
-Mind never branches on its harness (Ayoai-Mind loop-terminal-protocol.md §4.1) and the
+host framework never branches on its harness (loop-terminal-protocol.md §4.1) and the
 vessel should not either — the window IS the capability, and a body that fits a 32k
 window is small. Bounding the churn instead (a plan-only stall fence, a served budget):
 worth having as a net, but it would have capped the bill and left the iteration
@@ -11142,7 +11143,7 @@ and the measured worst case was $155 and a dead loop; a small model on a small w
 still gets the skeleton, because it gets paging.
 
 **Consequences.** Claude Code parity at the skill door for every model whose window
-holds the body: the Mind's loop skills run without a harness plan, `update_plan` is
+holds the body: the host framework's loop skills run without a harness plan, `update_plan` is
 the model's tool again, and the `[plan]` reminder rides only a plan the model made. The
 seeding and paging tests keep their subject by opting into "never fits" (an autouse
 fixture in `test_skill_skeleton.py` and `test_skill_paging.py`; `whole_when_fits` opts
@@ -11207,7 +11208,7 @@ steps, each read from the provider's own usage on main-conversation calls (the t
    compaction rewrote the history before the reading, another model answered — is not a
    miss.
 
-Both verdicts live on the session because a served mind builds a loop per turn and must
+Both verdicts live on the session because a served host framework builds a loop per turn and must
 not pay the measurement again each turn; schema v1 stays append-only (an older build drops
 the two fields and keeps the every-call tail). A backend that reports no cache reads —
 most local pods — is never suspected, so the small-model every-call reminder is untouched
@@ -11408,7 +11409,7 @@ second code path for an older one.
 
 **Alternatives rejected.** Assembling the stream into a whole response and asking litellm
 for its cost: it needs every chunk kept, and the provider keeps a bounded sample by design.
-A rate table of our own: the last one was removed (g-369-295) after it mispriced by stem.
+A rate table of our own: the last one was removed after it mispriced by stem.
 Applying an observed hit rate: the call's own count is exact and needs no model of the
 cache. Putting the whole-response path behind the same fences: that figure is litellm's
 price for litellm's parse of the response, it reconciles to the token on the models we run,
@@ -11445,18 +11446,18 @@ as loaded, so the model's own call for it "answers with the ADR-0067 section poi
 pointer that carries the current section's text. ADR-0192 then delivers a body that fits
 the window whole, with no sections: the pointer ADR-0187 leaned on carries nothing again.
 
-Measured 2026-09-18, a served loop on gpt-5.6-luna against a Mind (sample 1,
+Measured 2026-09-18, a served loop on gpt-5.6-luna against a host framework (sample 1,
 `bench/results/served-luna-preregistration.log`): 10 refused stops, 8 harness deliveries,
 11 "[already loaded]" answers against 3 real loads, two turns ended `veto_stall` after
 four refusals in a row, each followed by a 600 s rest — about 330 s of model activity in a
 2,101 s run, and no iteration closed. Two doors were shut by the same sentence. At the
 refused stop the hook's words arrive at the head of the delivered skill — "Your FIRST
-action MUST be: Skill('aspirations') with args='loop' … Do NOT run Bash commands first",
+action MUST be: Skill('orchestrate') with args='loop' … Do NOT run Bash commands first",
 written for a harness that delivers nothing until the model calls the skill tool. The
 model obeyed them to the letter, called the tool, was told the body was already loaded and
 to continue from where it was — it had not started — summarised, and ended; the hook
 refused again. And mid-turn, the framework's own contract closes every iteration on
-`Skill('aspirations') args='loop'`: the pass that had just FINISHED was told to continue
+`Skill('orchestrate') args='loop'`: the pass that had just FINISHED was told to continue
 from where it was. The same model, at the wake-up door, whose note says "carry out these
 instructions from where the plan stands", ran the skill's twelve entry steps in order. So
 the model can carry a skill; the harness was telling it not to.
@@ -11675,7 +11676,7 @@ come through the tool door. Dropping the refusal's "do not retry" — it is the 
 when the operator did not type the command. Refusing to route ANY text that names a
 user-only skill — a model that echoes the operator's own `/start mind` as its whole
 completion is now answered with the pointer, which is the help it needed. A per-turn fence
-on routing the same text twice — a perpetual loop legitimately types `/aspirations loop` at
+on routing the same text twice — a perpetual loop legitimately types `/orchestrate loop` at
 the end of every iteration of one turn; the stuck ladder already bounds a routed call that
 keeps failing. Appending stderr to a stdout message — a hook that speaks on stdout has
 chosen its words, and its stderr is usually noise.
@@ -11705,7 +11706,7 @@ field symptom in the message: the user-only refusal, the routed call, `blocked b
 because the chat route refuses that combination with a 400. What was not noticed is where litellm
 then sends the call. Its `responses_api_bridge_check` moves a gpt-5.4+ chat call onto OpenAI's
 Responses API whenever function tools ride with a non-None effort — and the string `"none"` counts
-— so since 2026-09-17 every tool call of a served luna or terra Mind has gone to `/v1/responses`,
+— so since 2026-09-17 every tool call of a served host framework session has gone to `/v1/responses`,
 not to `/v1/chat/completions`. The bench on the product's own route measured this directly:
 80 of 80 product calls reached `/v1/responses`, each carrying its own effort
 (`bench/results/effort-decision-points-preregistration.log`, batches 1 and 2).
@@ -11715,7 +11716,7 @@ through the product's own provider: a request with no `store` field came back wi
 echoed, and a `GET` on the returned id returned it. The identical request with `store: false`
 echoed `false`, and the `GET` on that id was a 404. Chat completions stores only on request (the
 documented default; not measured here). So a change that was about reasoning depth switched
-provider-side retention on for every served conversation, and nobody decided that. A served Mind's
+provider-side retention on for every served conversation, and nobody decided that. A served host framework's
 prompt carries the framework's skill bodies, the world's own state and whatever the operator's
 vessel put in front of it. Retention of that is a decision, and the decision here is no.
 
@@ -11835,7 +11836,7 @@ silently; the offline wire test watches it instead. Letting a configured depth o
 server-demanded `none` too — measured refusals outrank our predicate, and the cost is a 400 per
 turn. Raising the DEFAULT to `low` on the strength of this bench — refused: the cells are two
 hand-built decisions at ~294 input tokens, while the served samples stall at 17K-token prompts
-with whole skill bodies in context, so whether a served Mind should RUN at low is a question for
+with whole skill bodies in context, so whether a served host framework should RUN at low is a question for
 its own pre-registered served sample.
 
 **Consequences.** Reasoning depth is configurable again for tool calls on this tier, which
@@ -11890,7 +11891,7 @@ second pair. Any gate built on this field is therefore one-directional: a non-ze
 sample confirms the depth was live, and a sample of zeros confirms nothing on its own.
 
 Evidence that it reaches a reader, not merely a model. A green suite and a mutation proof bind at
-the producer and cannot tell you a consumer reads the field (guard-6374@ayoai-mind). So the chain
+the producer and cannot tell you a consumer reads the field. So the chain
 was run end to end from provider-real output: two live calls at `low` and `none`, the `Usage`
 objects the real provider returned, through the real `Session.add_usage` and `SessionStore.save`,
 to a real file on disk, re-read as plain JSON the way a reader reads it. `reasoning_tokens` is
@@ -11951,7 +11952,7 @@ Removing the flag also makes such a report legible, because there is only one be
 Safety of the removal, checked rather than assumed. `Settings` uses `extra="ignore"`, so a stale
 `ZAKCODE_PLAN_AUTOADVANCE` in someone's environment is dropped silently instead of failing startup —
 the same property config.py already documents for deleted fields. Nothing in the fleet sets it: zero
-occurrences across the Mind framework, its deployment config and the live environment, the only hits
+occurrences across the host framework, its deployment config and the live environment, the only hits
 being stale scratch worktrees of this repo.
 
 Four stale comments went with it, and finding them is half of why this ADR exists. `tools/base.py`,
@@ -12429,7 +12430,7 @@ What is left alone. The OPEN checklist still rides in a governed turn; only the 
 withheld. The fence is untouched (ADR-0187): three deliveries with no skill run between them and the
 fourth such veto ends the turn `veto_stall`. A finished plan still never rests its tail (ADR-0193). A
 session with no turn-end hook, or one whose hook never names a skill, never sets the flag, so nothing
-changes outside a hook-governed loop. Claude Code has no such line, so the Mind changes nothing and the
+changes outside a hook-governed loop. Claude Code has no such line, so the host framework changes nothing and the
 two harnesses stay on one contract.
 
 What differs from the bytes the sample ran. The measurement build drew lots and kept HALF the plans in
@@ -12556,7 +12557,7 @@ product's own tracker and gives the same 0 and 0.
 What is left alone, and two limits said plainly. The say-inbox door (a message typed into a running
 turn) is not a lap: it is neither measured nor registered as a loop door. The step back stays once per
 turn. A turn with no hook-named loop skill never sees a boundary, so an ordinary session counts as it
-always did. Claude Code has no such ladder, so the Mind changes nothing and the two harnesses stay on
+always did. Claude Code has no such ladder, so the host framework changes nothing and the two harnesses stay on
 one contract. The limits: a spin that shows one new result per lap cannot be told from a healthy loop by
 its outputs (livelock at the level of the loop is the hook owner's to catch, and the veto fence still
 stands); and a healthy loop that idles, going round with nothing new to show, still climbs, one lap
@@ -12631,7 +12632,7 @@ on PostToolUse Zak Code's own `output` and `is_error`. It carried no `tool_respo
 `src/`, and the contract test named beside the claim asked for neither. A claim nobody tests is a
 claim nobody keeps.
 
-What was measured. The Mind framework hangs a reminder on its PostToolUse[Bash] hook: when the script
+What was measured. The host framework hangs a reminder on its PostToolUse[Bash] hook: when the script
 that closes a lap of its loop has REALLY finished, the hook tells the model what to call next. It
 decides "really finished" by finding the script's closing marker in `tool_response.stdout`, and when
 that field is missing or is not an object it says nothing, on purpose, because a false reminder pulls
@@ -12702,7 +12703,7 @@ Date: 2026-09-21. Retires the compat map's "SessionStart hook stdout is NOT inje
 Builds on ADR-0022 (the SessionStart(compact) event) and ADR-0206 (the append-only transcript). One
 behaviour, no setting.
 
-Context. Claude Code adds a SessionStart hook's stdout to the model's context, and the Mind framework
+Context. Claude Code adds a SessionStart hook's stdout to the model's context, and the host framework
 leans on that hardest right after a compaction. Its recovery chain has four links: a PreCompact hook
 saves the loop's working state to a checkpoint file; the compaction happens; a SessionStart(compact)
 hook prints that state back for the model to read; and the loop skill's entry then restores the rest.
@@ -12718,7 +12719,7 @@ What was measured, all on this box on 2026-09-21.
 2. What the framework prints. Its own SessionStart hook, run the way its settings register it, on a
    copy of that run's finished world, with the stdin main sends: for `compact`, 2,525 characters in
    1.1 s, leading with the one call the model must make first, then the goal that was in flight, then
-   the loop's state; for `startup` and for `resume`, nothing at all. So in a served Mind world this
+   the loop's state; for `startup` and for `resume`, nothing at all. So in a served host framework world this
    change adds exactly one thing, and adds it 19 times a run.
 3. That the framework's own guard admits a served session. The banner is printed only for the session
    the framework believes is its runner. In the live world of run 2 that identity file held the
@@ -12803,7 +12804,7 @@ ADR-0211 drew from a stale "skipped" line, arriving this time as silence.
 
 What was measured, on this box on 2026-09-21.
 
-1. The Mind framework's repository settings file carries about a dozen such variables: a clock pin,
+1. The host framework's repository settings file carries about a dozen such variables: a clock pin,
    two encoding pins, and switches its own scripts branch on. Its own convention names that block as
    the place such a setting travels in, so this is where a framework puts them by design.
 2. Who reads them. Almost every reader is one of the framework's shell scripts — which is to say a
@@ -12896,7 +12897,7 @@ the session still belongs in that daemon's own environment.
 Date: 2026-09-22. Sits beside the gpt-5 temperature rule (ADR-0018's chokepoint) and uses the same
 mechanism for the opposite family. One behaviour, no setting.
 
-Context. A Mind served on `gemini-3.5-flash` printed this into its operator's transcript, over and
+Context. A host framework served on `gemini-3.5-flash` printed this into its operator's transcript, over and
 over, after a harness update that could not have changed it:
 
 ```
@@ -13119,7 +13120,7 @@ that fires while it is being replaced is a net with a hole. But it puts the re-a
 can discover whether there is anything to re-enter, and when there is not, the model has already
 armed its own next firing.
 
-Measured on a served Mind, 2026-09-22, reported by the user from their own terminal. The sentinel
+Measured on a served host framework session, 2026-09-22, reported by the user from their own terminal. The sentinel
 fired; the model re-armed it as instructed; it then ran `session-state-get.sh`, found the agent
 IDLE, correctly refused to start the loop, and wrote a verdict saying so. The wake-up it had armed
 fired again. The same turn ran roughly six times, each between 2.8M and 4.9M tokens and 49s to 105s,
@@ -13180,7 +13181,7 @@ stated, on 27 tests. Four of my eight predictions were wrong on the first run an
 the driver with the mechanism reason rather than fitted to the output.
 
 One of those four was not a wrong prediction but a wrong TEST, and it is the reason this change has
-a positive control at all (guard-4166): a change whose whole effect is that something STOPS
+a positive control at all: a change whose whole effect is that something STOPS
 happening passes an absence-only suite just as well when the mechanism was never alive. The control
 here is a second wake-up turn that ends DIFFERENTLY and keeps its net — one character of difference
 from the cancelling test. It originally also asserted that the outcome had been RECORDED, and the
@@ -13193,7 +13194,7 @@ What this does NOT change. The fired line still says re-arm first, and it should
 a window with no net. Nothing about when a wake-up may be armed, by whom, or for how long. Nothing
 about the doom guard or the stuck ladder, which keep the within-turn case they were built for. And
 it knows nothing about any framework: it never asks what IDLE means or whether a loop exists, only
-whether this wake-up's last two turns ended the same way, so it behaves identically on a Mind and on
+whether this wake-up's last two turns ended the same way, so it behaves identically on a host framework and on
 a bare session.
 
 ---
@@ -13272,7 +13273,7 @@ What this does NOT change. The framework rule that a turn end be a tool call is 
 should be: the alternative on some harnesses is a turn end nobody hears. Nothing about the stuck
 ladder or the doom guard. Nothing about what the model is told on any other call. And it knows
 nothing about any framework — it reads only the shape of the previous completion — so it behaves
-identically on a Mind and on a bare session.
+identically on a host framework and on a bare session.
 
 ---
 
@@ -13437,7 +13438,7 @@ and that stream could not say more than Vinheim drew. Measured on its frames, pe
   "└ ✓ Ran · 14 lines · 2.3s".
 - The plan read "Plan: 0/3 done" whatever the progress. Vinheim reads `finished` and `total` from
   the frame, and `SafeTaskUpdate` never carried them: a contract the consumer read and the
-  producer never wrote (rb-11490).
+  producer never wrote.
 - A turn ended without a line. `SafeDone` carried the stop reason alone, where the terminal draws
   "● done · 6 iterations · … · 1m 15s · 14:03".
 - No frame carried a time, so no duration or stamp could be drawn at all.
@@ -13461,7 +13462,7 @@ Decision.
 
 What stays withheld, and how. This frame is the public boundary: the `/w/<token>` page renders
 it to anyone holding the link. So every new field is safe by what it is made of, never by who
-reads it (guard-6806).
+reads it.
 
 - A receipt is a fixed sentence around integers counted from the output. It is rebuilt in the
   projection (`_safe_receipt`), not taken from the renderer. The renderer's receipts can carry
@@ -13570,7 +13571,7 @@ mono face and every colour. The terminal draws no display face and is untouched.
 Status: accepted. 2026-09-23.
 
 Context. The skill catalogue rides the cached prefix of every call, and nothing bounded it.
-Measured 2026-09-23 on the Ayoai-Mind checkout the fleet's alpha workers run (zc-01, v2.12.80):
+Measured 2026-09-23 on a host framework checkout a fleet's workers run (on a worker machine, v2.12.80):
 the system prompt without tool schemas was 147,258 characters, and the catalogue was 86,142 of
 them, 146 model-visible skills at about 590 characters each. The two workers' first calls that
 night carried 60,776 and 60,778 prompt tokens and took 438.5 s and 424.2 s, most of it prefill
@@ -13587,10 +13588,10 @@ descriptions of the skills invoked least are dropped first. Names always stay.
 ADR-0155 measured what a shortened catalogue costs: first sentences lose 8.8 points of
 choosability and names alone 37.6, both on queries that name no skill. So the question was never
 whether a name-only entry is worse, it is. It was how often production chooses a skill from its
-description at all. Coach's transcripts on zc-03 answer it, once they are filtered: 1,000 of the
+description at all. A worker machine's transcripts answer it, once they are filtered: 1,000 of the
 1,175 files there are pytest sessions leaked before ADR-0159 (their first row's `cwd` is under
 `/tmp/pytest-*`), and one of them, a `greeter` fixture called 68 times, would have read as
-coach's most-chosen skill. The 108 sessions whose `cwd` is `/opt/coach-mind` made 104 `Skill`
+the most-chosen skill. The 108 sessions whose `cwd` is a host framework workspace made 104 `Skill`
 calls. 101 named a skill the conversation had already named, 65 of them in the row just before
 the call. Three were chosen cold, each a different skill.
 
@@ -13620,7 +13621,7 @@ Why lines stay in registration order. Ranking the lines would move every entry w
 counts crossed, and the catalogue sits in the prefix a new session can reuse. Kept in place, a
 change of rank changes the prompt only where a description is gained or lost.
 
-Why names always stay. guard-4706's lesson from the rules render: a block cut to fit reads as
+Why names always stay. The lesson from the rules render: a block cut to fit reads as
 complete, so the model cannot tell what it is missing. Every name stays and the note says how
 many lost their description.
 
@@ -13628,13 +13629,13 @@ Why the floor. On a 131,072-token window the formula alone gives 5,242 character
 the 146 names take. A smaller window is no reason to describe fewer skills than Claude Code
 describes on its standard one.
 
-What it saves. At a 131,072-token window the Ayoai-Mind catalogue goes from 85,714 to 7,882
+What it saves. At a 131,072-token window a host framework's catalogue goes from 85,714 to 7,882
 characters on a box with no counts, about 18,000 tokens off every call, and three skills keep
-their descriptions. Coach's 61 model-visible skills go from 32,169 to 7,570 characters, with ten
-descriptions kept (measured on zc-03, only counts returned).
+their descriptions. A 61-skill deployment goes from 32,169 to 7,570 characters, with ten
+descriptions kept (measured on a worker machine, only counts returned).
 
 What it risks, bounded. A cold choice of a skill whose description was dropped meets its name
-alone. In coach's real sessions that was at most 3 of 104 calls.
+alone. In the deployment's real sessions that was at most 3 of 104 calls.
 
 Known limits. Two processes counting at the same instant can lose one increment; the file is a
 ranking, so there is no cross-process lock. Counts are totals with no decay. A new box has no
@@ -13646,7 +13647,7 @@ registration order, the first misfit ends the list, names stay when names alone 
 1,536 cut, the note's count, the usage record's failure modes and its in-process concurrency,
 and the Agent's wiring (a known window budgets, an injected provider does not, the pinned
 identity ignores counts, a harness re-entry is not counted). Eight mutants were each caught by
-the test written for them, run with `mutation-proof-test.sh` on cc-14.
+the test written for them, run as a mutation proof on a test machine.
 
 How the live run is read. On the next worker that starts on this build, against the two that
 started without it the same night: the first call's prompt tokens should drop by at least 15,000
@@ -13662,7 +13663,7 @@ Status: accepted. 2026-09-23.
 
 Context. `parse_frontmatter` read a SKILL.md's frontmatter one line at a time with each line's
 indentation stripped, so any indented line with a colon in it became a top-level key. Held
-against PyYAML on 2026-09-23, 49 of the 148 skills in the Ayoai-Mind checkout reached the
+against PyYAML on 2026-09-23, 49 of the 148 skills in a host framework checkout reached the
 catalogue with the wrong description:
 
 - 11 were block scalars (`description: >-` then indented lines). The description was the
@@ -13672,7 +13673,7 @@ catalogue with the wrong description:
 - 13 were double-quoted with escapes, and the backslashes reached the model.
 
 55 of the 148 also leaked nested keys into `extras`, and one skill's `triggers` list was read as
-an empty string. On coach's deployment (zc-03, only counts returned) 20 of 58 descriptions were
+an empty string. On a smaller deployment (a worker machine, only counts returned) 20 of 58 descriptions were
 wrong: 1 block scalar, 9 argument descriptions and 10 escapes. 30 skills leaked keys.
 
 ADR-0158's second addendum fixed block scalars in the bench's catalogue reader
@@ -13705,7 +13706,7 @@ are held to.
 What it changes. On both corpora the parser now matches PyYAML on every description, every name
 and every key zakcode acts on (`triggers`, `user_invocable`, `disable_model_invocation`), and no
 nested key leaks. Which skills the model can see does not change on either corpus. Only
-descriptions change, and real descriptions are longer: on the Ayoai-Mind checkout the unbudgeted
+descriptions change, and real descriptions are longer: on a host framework checkout the unbudgeted
 catalogue grows from 85,714 to 112,732 characters. Under ADR-0222's budget at a 131,072-token
 window the listing stays at 7,882 characters with three skills described, so ADR-0222's measured
 saving was against a catalogue a quarter smaller than the real one.
@@ -13716,8 +13717,8 @@ the value. Neither occurs in either corpus. The bench reader is unchanged.
 
 The proof. `tests/test_skill_frontmatter_yaml.py`, 30 tests. Each description case is held to
 PyYAML as well as to its expected string, and so are the chomping cases and the indented mapping.
-Twelve mutants, one per mechanism, were each caught by the tests, run with
-`mutation-proof-test.sh` on cc-14. The corpus comparisons are one-off measurements, not tests:
+Twelve mutants, one per mechanism, were each caught by the tests, run as
+a mutation proof on a test machine. The corpus comparisons are one-off measurements, not tests:
 both corpora are private.
 
 ## ADR-0224: an unreachable provider is named as one, not as a rate limit
@@ -13727,12 +13728,12 @@ Status: accepted. 2026-09-23.
 Context. ADR-0076 retries a dropped or refused connection and any 5xx under the rate-limit
 horizon by returning them as `RateLimited`, so the loop's one retry path handles them. The loop
 then labels every such retry by that class: "provider rate-limited" on a buffered call, "rate
-limited" on a streamed one. At 06:27Z on 2026-09-23 zakpod1's router restarted and refused
-connections for under a minute. All three bodies on it (coach on zc-03, the alpha workers on
-zc-01 and zc-02) recovered on the next attempt, and all three reported "rate limited; retrying".
+limited" on a streamed one. At 06:27Z on 2026-09-23 the inference pod's router restarted
+and refused connections for under a minute. All three worker sessions on it recovered on
+the next attempt, and all three reported "rate limited; retrying".
 Nothing had rate-limited them. A 429 sends an operator to quota and concurrency; an outage sends
 them to the pod. `TimedOut` already has its own subclass for exactly this reason (its
-docstring: the zc-03 coach boot wedges of 2026-08-25). The label is the operator's first
+docstring: the worker boot wedges of 2026-08-25). The label is the operator's first
 diagnostic.
 
 Decision. `_map_error` returns `ProviderUnavailable`, a `RateLimited` subclass, for the
@@ -13750,8 +13751,8 @@ The proof. tests/test_provider.py: the four transport class names and a 5xx stat
 `ProviderUnavailable`, a 429 maps to exactly `RateLimited`, and a timeout stays a `TimedOut`.
 tests/test_loop_retry.py: six refusals, twice the fixed bound, are ridden out on both paths,
 and every notice says "provider unavailable"; a streamed 429 still says "rate limited". Five
-mutants, one per branch and label direction, were each caught, run with
-`mutation-proof-test.sh` on cc-14.
+mutants, one per branch and label direction, were each caught, run as
+a mutation proof on a test machine.
 
 ## ADR-0225: a shell command's default timeout is Claude Code's two minutes
 
@@ -13759,10 +13760,10 @@ Status: accepted. 2026-09-23.
 
 Context. `Bash` ran a command for 60 seconds unless the model asked for longer. Claude Code's
 default is 120 seconds, with the same 600-second ceiling (its schema counts milliseconds:
-default 120000, max 600000). A Mind's own scripts can outlast 60 seconds on a slow box. On
-2026-09-23 an alpha worker on zc-02 ran the framework's goal-selector, the run was killed at 60
+default 120000, max 600000). A host framework's own scripts can outlast 60 seconds on a slow box. On
+2026-09-23 a worker session on a worker machine ran the host's goal selector, the run was killed at 60
 seconds, and the model spent a call retrying it with a longer timeout. It is not frequent: in
-coach's whole CLI log on zc-03, about 6,900 commands, a 60-second limit fired twice (the log
+a worker's whole CLI log on a worker machine, about 6,900 commands, a 60-second limit fired twice (the log
 cannot say whether the model asked for it). Most of that log's timeouts were shorter limits the
 model chose itself.
 
@@ -13774,7 +13775,7 @@ killed, which is what Claude Code does.
 
 The proof. tests/test_builtins.py: with no `timeout` a command gets 120, an explicit 5 is
 honored, 120000 is clamped to 600, and the schema says "default 120". A mutant restoring 60 was
-caught by it, run with `mutation-proof-test.sh` on cc-14.
+caught by it, run as a mutation proof on a test machine.
 
 ## ADR-0226: a timeout ends the call even when a descendant escaped the kill
 
@@ -13784,7 +13785,7 @@ Context. When a command times out, or its turn is cancelled, zakcode kills the c
 process group and then waits to reap it. A descendant that left the group keeps the command's
 pipes open: a command run under `setsid`, or a server that daemonizes itself. The group kill
 cannot reach it. Before Python 3.13, asyncio settles that wait only once every pipe has closed,
-so the wait lasted as long as the descendant did. Measured on cc-14 under 3.11: `setsid sleep
+so the wait lasted as long as the descendant did. Measured on a test machine under 3.11: `setsid sleep
 12 & sleep 60` under a 2-second timeout returned after 12 seconds. With a daemon in place of the
 sleep the call would never have returned, and neither would the turn. Python 3.13 returns at
 the exit (gh-119710), but our ends of the pipes stay open there until the descendant exits.
@@ -13811,7 +13812,7 @@ that starts `setsid sleep 10` under a 1-second timeout raises CommandTimeout wit
 (3 on 3.11, 1 on 3.13). A direct teardown of such a command returns within 6 seconds and leaves
 its output at EOF. The first version of this fix closed the transport only after a timed-out
 wait; CI's 3.13 job failed the EOF test on it, because there the wait had already returned.
-Four mutants were each caught with `mutation-proof-test.sh` on cc-14: under 3.11, restoring the
+Four mutants were each caught in a mutation-proof run on a test machine: under 3.11, restoring the
 unbounded wait (both tests) and dropping the close (the EOF test); under 3.13, dropping the
 close and closing only after a timeout (the EOF test).
 
@@ -13826,7 +13827,7 @@ The built-in set has grown since: `default_registry` registered 25 tools on 2026
 on 2026-09-18, and `tool_search` itself is one more. So every MCP tool starts hidden, and
 `tool_search` can surface none of them. It answers "1 more matched but the tool budget (25) is
 full of built-in / in-use tools", activates nothing, and the model cannot use any MCP tool.
-Reproduced on cc-14 with the real built-in set and a fake MCP server. The facade test for this
+Reproduced on a test machine with the real built-in set and a fake MCP server. The facade test for this
 path activated the hidden tool by hand instead of searching, so it passed throughout. The
 facade's parameter is named `mcp_tool_budget`; only the counting disagreed with the name.
 
@@ -13843,7 +13844,7 @@ exceed it. Shrinking the always-exposed built-ins is a separate change.
 The proof. tests/test_tool_search.py. The facade test now uses the production shape: the real
 built-in set, the default budget, and a `tool_search` call, which must surface the matching
 tool and leave the other hidden. `test_builtins_never_use_up_the_budget` replaces a test that
-asserted the old behavior. Two mutants were caught with `mutation-proof-test.sh` on cc-14:
+asserted the old behavior. Two mutants were caught in a mutation-proof run on a test machine:
 counting every active tool again (three tests) and removing eviction (the eviction test).
 
 ## ADR-0228: the tools that create documents and images load on request
@@ -13852,7 +13853,7 @@ Status: accepted. 2026-09-23.
 
 Context. Every model call carries the schema of every exposed tool. On 2026-09-23 the 27
 built-ins came to 26,970 JSON characters on every call. Nine of them work on documents, PDFs and
-images, and none of the nine had been called in coach's CLI log (17 MB) or in the three alpha
+images, and none of the nine had been called in a worker's CLI log (17 MB) or in other
 workers' logs; they appear there only on two lines that list tool names. Claude Code keeps
 rarely used tools out of the list until a search loads them. OpenDev's lazy discovery cut the
 startup context cost of MCP schemas from 40% to under 5% (arXiv 2603.05344, section 3.5), and
@@ -13894,7 +13895,7 @@ The proof. tests/test_on_request_tools.py: the five start hidden while the worki
 exposed; a sub-agent's registry keeps them; `tool_search` loads one by name in a session
 without MCP; the prompt names them until one is loaded, and names none when nothing can load
 them; and the reader each kind of upload names is exposed. Five mutants each turned the suite red
-under `mutation-proof-test.sh` on cc-14: leaving the five exposed, letting the MCP budget limit
+under a mutation-proof run on a test machine: leaving the five exposed, letting the MCP budget limit
 built-ins, dropping the prompt line, showing the line without `tool_search`, and hiding
 `read_docx`. The MCP facade test in tests/test_tool_search.py now derives how much room
 discovery has instead of assuming the built-ins fill the budget.
@@ -13903,10 +13904,10 @@ discovery has instead of assuming the built-ins fill the budget.
 
 Status: accepted. 2026-09-23.
 
-Context. A Mind keeps its world and meta under `.mind-data/`, a directory the checkout's
-.gitignore excludes, and zakcode adds both as extra workspace roots from the Mind's
+Context. A host framework keeps its world and meta under `.mind-data/`, a directory the checkout's
+.gitignore excludes, and zakcode adds both as extra workspace roots from the framework's
 local-paths.conf. On 2026-09-23 a worker on a 27B model read `world/program.md`, the path the
-Mind's guide writes with its virtual `world/` prefix. The file is `.mind-data/world/program.md`.
+host framework's guide writes with its virtual `world/` prefix. The file is `.mind-data/world/program.md`.
 The not-found answer (ADR-0040) listed six look-alikes from the checkout whose names contain
 `program.md`, and not the file itself. `suggest` judged every root by the checkout's ignore
 rules. A root nested in the checkout is relative to it, so the checkout's `.mind-data/` rule hid
@@ -13925,7 +13926,7 @@ file-count and two-second budgets still bound the walk, and the checkout is walk
 tier also puts an exact name found elsewhere above a longer name that only contains it; for a
 bare name, that is the file the model meant.
 
-Measured on zc-02's Mind layout with the patched module beside the installed build. Before,
+Measured on a worker machine's host framework layout with the patched module beside the installed build. Before,
 `world/program.md` and `world/forged-skills.yaml` each got a look-alike under agents/ first,
 and `meta/reflection-strategy.yaml` got nothing. After, each got its real file first:
 `.mind-data/world/program.md`, `.mind-data/world/forged-skills.yaml` and
@@ -13935,33 +13936,33 @@ The proof. tests/test_path_suggestions.py: in a checkout that ignores `.mind-dat
 `build/`, with the world declared as a root, the first suggestion for `world/program.md` is
 `.mind-data/world/program.md`, the look-alike is still listed and `build/program.md` stays
 hidden. Undeclared, the world stays hidden. Read's not-found output leads with the real file.
-Three mutants each turned the test red under `mutation-proof-test.sh` on cc-14: judging every
+Three mutants each turned the test red under a mutation-proof run on a test machine: judging every
 root by the checkout's rules, dropping the suffix tier, and turning soft ignore rules off.
 
-## ADR-0230: a Mind's product repositories are workspace roots
+## ADR-0230: a host framework's product repositories are workspace roots
 
 Status: accepted. 2026-09-23.
 
-Context. A Mind's `agents/<name>/local-paths.conf` names the directories its agent works in:
+Context. A host framework's `agents/<name>/local-paths.conf` names the directories its agent works in:
 `WORLD_PATH`, `META_PATH`, and `AGENT_WRITE_PATH`, the product repositories the agent changes,
-several separated by `;`. The Mind's own write hook allows all three. zakcode added the first two
-as extra workspace roots and skipped the third. On 2026-09-23 two 27B workers, one on zc-01 and
-one on zc-02, each had a Read of a file in their product repository refused as outside all
-workspace roots. The parser also kept a value's quotes, which the Mind writes so a shell can
+several separated by `;`. The host framework's own write hook allows all three. zakcode added the first two
+as extra workspace roots and skipped the third. On 2026-09-23 two 27B workers, each on a worker machine,
+each had a Read of a file in their product repository refused as outside all
+workspace roots. The parser also kept a value's quotes, which the host framework writes so a shell can
 source the file; a quoted `WORLD_PATH` then read as a relative path and was dropped.
 
-Decision. The parser follows the Mind's contract. It strips quotes, and each `;`-separated
+Decision. The parser follows the host framework's contract. It strips quotes, and each `;`-separated
 `AGENT_WRITE_PATH` entry that is an existing absolute directory becomes a root beside the world
-and meta. On zc-02 the real conf now yields both product directories after the world and meta.
+and meta. On a worker machine the real conf now yields both product directories after the world and meta.
 
-What it risks. The file tools can read and write in those repositories, which the Mind already
+What it risks. The file tools can read and write in those repositories, which the host framework already
 grants its agent. A not-found search and bash's "No such file" hint walk them too, after the
 checkout, the world and the meta, within their existing budgets.
 
 The proof. tests/test_m3_multi_root_portability.py: a quoted `WORLD_PATH`, and a quoted
 `AGENT_WRITE_PATH` naming two repositories, a missing one and a trailing separator, parse to the
-three existing directories. On a Mind workspace, Read returns a file in the product repository.
-Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: ignoring the
+three existing directories. On a host framework workspace, Read returns a file in the product repository.
+Three mutants each turned the tests red under a mutation-proof run on a test machine: ignoring the
 key, keeping the quotes, and not splitting on `;`.
 
 ## ADR-0231: a batch that lays out a plan before its first change runs whole
@@ -13994,7 +13995,7 @@ the session's.
 The proof. tests/test_loop_planning.py: on both paths, a batch of `update_plan` then a write runs
 whole, with no refusal, and leaves the plan on the board; the TodoWrite alias does the same; a
 write placed before the plan, an empty plan, and steps that are not objects are each still
-withheld. Three mutants each turned the tests red under `mutation-proof-test.sh` on cc-14: the
+withheld. Three mutants each turned the tests red under a mutation-proof run on a test machine: the
 plan never clearing the gate, a plan anywhere in the batch clearing it, and an empty or malformed
 plan counting.
 
@@ -14007,7 +14008,7 @@ its own prompt, so it shares no prefix with the conversation and prefills everyt
 handed. Then the first call after the compaction reads 0 cached tokens: it did after each of the
 7 compactions checked on two bodies. On 2026-09-23, over 11 compactions on three bodies, the
 summarizer took 204 to 462 seconds (once 1,108) and the first call after it 166 to 680 seconds.
-alpha@zc-01 compacted five times in about two hours.
+One worker compacted five times in about two hours.
 
 Tool outputs were 85 to 95 percent of the characters the summarizer re-read. The regions it was
 handed ran from 104,000 to 315,000 characters, so most compactions took two summarizer calls, one
@@ -14035,7 +14036,7 @@ The proof. tests/test_compact_loop.py: a 40,008-character output reaches the sum
 head, a note that 38,008 characters were left out, and its tail, while a short output arrives
 whole; three 20,000-character outputs that overflowed an 8,192-character slice now take one
 summarizer call, and the messages it was handed keep every character. Three mutants each turned
-the tests red under `mutation-proof-test.sh` on cc-14: no clipping, keeping only the head, and
+the tests red under a mutation-proof run on a test machine: no clipping, keeping only the head, and
 writing the clipped copy back into the conversation.
 
 ## ADR-0233: a compaction does not move the system prompt, because the session's task is pinned
@@ -14045,7 +14046,7 @@ Status: accepted. 2026-09-23.
 The guide fold (ADR-0173) is keyed on the session's task: the text of its first user message.
 `_session_task` read that from the history on every call, and a compaction summarizes the message
 away. After a compaction the task was the first user message the compaction kept, or none, and
-the fold kept different sections of the guide. Measured on a Mind's workspace (149 skills, a
+the fold kept different sections of the guide. Measured on a host framework's workspace (149 skills, a
 47,709-byte CLAUDE.md): the system prompt built with the `/start` turn as the task, and the one
 built with no task or with a short hook message as the task, share their first 51,617 of about
 61,200 characters and differ after that. So at every compaction the model saw a different part
@@ -14081,7 +14082,7 @@ region through today's summarizer took 89 seconds for 5,896 prompt tokens and a
 The proof. `tests/test_loop_prompt_session.py`: a session whose first ask keys the fold compacts
 through `compact_now`. The summary replaces the ask, the system prompt is unchanged, and a
 session restored from its JSON keeps the task. The positive control clears the pin and the
-prompt moves. Under `mutation-proof-test.sh` on cc-14, removing the pin turned exactly that
+prompt moves. Under a mutation-proof run on a test machine, removing the pin turned exactly that
 test red.
 
 ## ADR-0234: a command's output reaches the model within Claude Code's limits
@@ -14090,13 +14091,13 @@ Status: accepted. 2026-09-23.
 
 The shell tool returned up to 64 KB of a command's output and cut the rest from the end, for a
 command that succeeded and one that failed alike. On a 131k window that is about a sixth of the
-context in one result. Measured on the 131k P40 pod over 16 hours of two worker Bodies
-(alpha@zc-01 and alpha@zc-02, on a build from before this change): five outputs hit the cap, a
-goal selector's JSON twice, an aspirations dump, and a `cat` twice, and three more ran 31,000 to
+context in one result. Measured on the 131k P40 pod over 16 hours of two worker sessions
+(each on a worker machine, on a build from before this change): five outputs hit the cap, a
+the host's goal selector's JSON twice, a goal-store dump, and a `cat` twice, and three more ran 31,000 to
 54,000 characters. At four of the ten compactions in that window these outputs were most of what
 the compaction kept, 57 to 98 percent of its characters. The first call after a compaction reads
 nothing from the cache on that pod (ADR-0233), and those calls took a median of 511 and 536
-seconds on the two Bodies, most of it prefill, against 46 and 39 for their other calls.
+seconds on the two workers, most of it prefill, against 46 and 39 for their other calls.
 
 Claude Code's public tools reference states its limits. A command that succeeded is returned
 whole up to about 30,000 characters. Past that the model gets the path of a file in the session
@@ -14123,7 +14124,7 @@ the roots opens, and no other tool reaches that directory.
 With no session to save into (a bare tool context) a long success keeps its first two thirds and
 last third of 30,000 characters and tells the model to run the command again, narrower.
 
-What it risks. A model that needs more than a preview spends a call to read it. The Mind's goal
+What it risks. A model that needs more than a preview spends a call to read it. The host framework's goal
 selector puts its pick first, a listing and a report put what matters at the start, and the
 preview says where the rest is. `TaskOutput` still returns
 the last 64,000 characters of a background command, and the PowerShell tool still cuts at 64 KB;
@@ -14134,7 +14135,7 @@ shown by its whole first lines and the path; Read opens a page of the saved file
 positive control reads a file one directory up, and the same path from a context with no
 session, and is refused both times; a 41,000-character failure shows its first and last lines;
 outputs within their limits are whole and save nothing; with no session a long success keeps
-its start and end. Under `mutation-proof-test.sh` on cc-14, skipping the save turned the three
+its start and end. Under a mutation-proof run on a test machine, skipping the save turned the three
 tests that read the file red, and removing Read's allowance turned exactly the Read test red.
 
 ## ADR-0235: a plan step keeps the note and outcome the model already gave it
@@ -14143,16 +14144,16 @@ Status: accepted. 2026-09-23.
 
 `update_plan` told the model to send the whole plan on every call, and the model sent all of it:
 every step's title and status, and every note and outcome again. Measured over 24 hours of
-transcripts on the three Bodies on the 131k P40 pod (Qwen3.8-27B, thinking off on the two
-workers): alpha@zc-01 made 43 `update_plan` calls, alpha@zc-02 17 and coach@zc-03 15, averaging
+transcripts on three workers on the 131k P40 pod (Qwen3.8-27B, thinking off on two of them):
+worker A made 43 `update_plan` calls, worker B 17 and worker C 15, averaging
 2,812, 2,272 and 2,399 characters of arguments over 14.6, 10.7 and 10.4 steps. A response that
-did nothing but update the plan took 27.3, 18.6 and 9.5 percent of each Body's model time; on
-zc-01 its median was 146 seconds and 805 completion tokens, against about 40 seconds for its
+did nothing but update the plan took 27.3, 18.6 and 9.5 percent of each worker's model time; on
+worker A its median was 146 seconds and 805 completion tokens, against about 40 seconds for its
 other calls, because the pod decodes at 3 to 5 tokens a second at that context. Notes were 26.0,
 19.5 and 33.9 percent of the argument characters and outcomes 15.4, 28.0 and 23.1, titles 20 to
-29 and statuses under 3. Most of it was a repeat: on zc-01, 406 of 489 notes and 157 of 211
-outcomes were the same as that step's in the call before (37 of 79 and 59 of 98 on zc-02, 56 of
-101 and 43 of 78 on coach). A left-out outcome already carried over (ADR-0110), but the model was
+29 and statuses under 3. Most of it was a repeat: on worker A, 406 of 489 notes and 157 of 211
+outcomes were the same as that step's in the call before (37 of 79 and 59 of 98 on worker B, 56 of
+101 and 43 of 78 on worker C). A left-out outcome already carried over (ADR-0110), but the model was
 never told; a left-out note did not, so leaving one out lost the step's done-condition.
 
 Decision. A step keeps what it already says.
@@ -14183,8 +14184,8 @@ full replace needs. Claude Code's TodoWrite carries no notes or outcomes at all:
 list of steps, each with its status and a present-tense form of its title.
 
 What it risks. The saving holds only as far as the model follows the description. The ceiling on
-zc-01 is about a third of the argument characters, the repeated notes and outcomes and their
-keys; it is measured live on coach and on a worker running this build, beside the Bodies still on
+worker A is about a third of the argument characters, the repeated notes and outcomes and their
+keys; it is measured live on one worker running this build, beside the workers still on
 the old one. A model can no longer clear a note by leaving it out, only replace it, and a step it
 renames starts with no note, as it already starts with no outcome or evidence. A done-condition
 given earlier now counts at the ADR-0116 null-close check when the closing call leaves it out:
@@ -14198,7 +14199,7 @@ holds the model's blank where the harness wrote an outcome; a new note in the sh
 edit and then the note that stands; a kept done-condition spares a null close the challenge, with
 the positive control that a step never given one is still challenged; a parent and a same-titled
 child keep separate fields; the map survives a save and restore, an older session loads without
-it, and clearing the plan forgets it. Under `mutation-proof-test.sh` on cc-14, dropping the note
+it, and clearing the plan forgets it. Under a mutation-proof run on a test machine, dropping the note
 carry-over turned five of these red, reading the submission literally in the signature turned
 five red, and reading the map after the replace turned two red, this file's walk and the
 existing one in `test_plan_autoadvance.py`.
@@ -14211,7 +14212,7 @@ The shell tool killed a foreground command at its timeout, the two-minute defaul
 own up to ten minutes, and answered "Command timed out". Claude Code does not: probed 2026-09-23,
 a foreground call past its timeout, the default or an explicit 3 seconds, kept running as a
 background task, and the session was told when it ended. The difference cost real work. Measured
-2026-09-23 on the two worker Bodies on the P40 pod (zc-01 and zc-02, Qwen3.8-27B), a Mind's
+2026-09-23 on two worker sessions on the P40 pod (Qwen3.8-27B), a host framework's
 closing step runs 12 to 15 minutes when its test gate fires, longer than any timeout the tool
 accepts. The models' calls to it were killed 8 times; then both wrote the step's result
 themselves instead of waiting for it. `run_in_background` (ADR-0191) was there, but a model has
@@ -14261,7 +14262,7 @@ timeout returns at once, recorded and persisted and still running, with its outp
 file, then finishes into that file, completes under TaskOutput and is reported once; a
 `run_in_background` result names the same wait; a moved command keeps its own exit code; a
 cancelled call kills the command and records nothing; a command ending in `&` returns while its job
-runs on. Under `mutation-proof-test.sh` on cc-14, five mutants each turned red the tests that guard
+runs on. Under a mutation-proof run on a test machine, five mutants each turned red the tests that guard
 them. The tool killing at the timeout turned the moved test and the `&` test red, and the two that
 list the output directory, which the kill path never creates. `run_foreground` killing at the
 timeout turned the moved test and the moved exit code red; a cancel that skips the tree kill, the
@@ -14282,7 +14283,7 @@ under a different token as killed: Windows hands a freed pid to the next process
 box is reachable from this one); the next failure carries taskkill's reason. Proof:
 `tests/test_proc.py` runs the Windows branch on a real child with taskkill replaced by a stand-in,
 and a non-zero exit is logged once with its last stderr line while the child is dead; a zero exit
-logs nothing. Under `mutation-proof-test.sh` on cc-14, the warning removed, the fallback kill
+logs nothing. Under a mutation-proof run on a test machine, the warning removed, the fallback kill
 removed and the POSIX group kill removed each turned their test red, and green again on restore.
 
 ## ADR-0237: a plan update rides with the next step's first call
@@ -14290,16 +14291,16 @@ removed and the POSIX group kill removed each turned their test red, and green a
 Status: accepted. 2026-09-23.
 
 A response that only updates the plan costs a whole model call, and on a slow backend it is the
-most expensive kind. Measured 2026-09-23 on the three Bodies on the 131k P40 pod (Qwen3.8-27B),
-from each session's traces: on the two worker Bodies still on the older build, responses that
-only called `update_plan` were 31 of 232 calls on zc-01 and 24 of 184 on zc-02, 22.3 and 17.8
+most expensive kind. Measured 2026-09-23 on three workers on the 131k P40 pod (Qwen3.8-27B),
+from each session's traces: on the two worker sessions still on the older build, responses that
+only called `update_plan` were 31 of 232 calls on one worker and 24 of 184 on another, 22.3 and 17.8
 percent of their model time, with a median of 146 and 104 seconds against 35 and 38 for a work
 call. A worker running the build with ADR-0235 spent 8 of its 18 calls that way during `/start`,
-47.7 percent of its time. Coach on zc-03 paired the update with work in 10 responses and sent it
-alone in 9, so the model can do it. Over a day of transcripts, 43 of 53 solo plan calls on zc-01
-were followed by a response that only ran Bash, 19 of 24 on zc-02, and 3 of 9 on coach: work
+47.7 percent of its time. A third worker paired the update with work in 10 responses and sent it
+alone in 9, so the model can do it. Over a day of transcripts, 43 of 53 solo plan calls on one worker
+were followed by a response that only ran Bash, 19 of 24 on another, and 3 of 9 on the third: work
 that the update could have ridden with. None of those calls carried a paged skill's next section
-(no page was delivered on any Body in three days), so the round trip bought nothing.
+(no page was delivered on any worker in three days), so the round trip bought nothing.
 
 Nothing told the model it could pair them. The system prompt, the tool description, the receipt
 of each update and the plan the loop re-shows every call all said to call `update_plan` to mark
@@ -14329,7 +14330,7 @@ This change names the one pairing the measurement shows is costly and whose orde
 already makes safe.
 
 What it risks. The saving holds only as far as the model follows the sentence. It is measured
-live: coach and a worker running this build, beside the Bodies still on the old one, counting
+live: workers running this build, beside the workers still on the old one, counting
 plan-only responses and their share of model time. A model that pairs the update with the wrong
 call now credits that call to the next step, which it would have done one response later anyway.
 The `[plan]` message rides the uncached tail, so the sentence adds 133 characters of prefill to
@@ -14339,15 +14340,15 @@ The proof. `tests/test_plan_advance_rides_along.py`: the sentence is in the tool
 receipt's rail, the system prompt and the `[plan]` message; on both the buffered and the streaming
 path, a response of `update_plan` then a write credits the write to the step the update starts,
 and the reverse order to the step it closes; a paged section says its update goes alone, and the
-last section does not. Under `mutation-proof-test.sh` on cc-14, five mutants each turned exactly
+last section does not. Under a mutation-proof run on a test machine, five mutants each turned exactly
 one test red: the sentence dropped from the tool description, the system prompt or the `[plan]`
 message, the surfaces test; dropped from the receipt, the receipt test; and "alone" dropped from
 the page, the paged test.
 
-Measured live on 2026-09-23, from each session's traces on the three Bodies. Five sessions on
+Measured live on 2026-09-23, from each session's traces on three workers. Five sessions on
 builds without this change sent 128 of 915 responses with only `update_plan` in them, 8.8 to 52.6
-percent of each session's model time, and paired the update with work in 13, all of them coach's.
-Four sessions on builds with it, coach and three workers, sent 1 of 232 responses that way and
+percent of each session's model time, and paired the update with work in 13, all of them one worker's.
+Four sessions on builds with it, sent 1 of 232 responses that way and
 paired the update with the next step's call in 77. The one plan-only response took 0.4 percent of
 its session's model time.
 
@@ -14359,19 +14360,19 @@ ADR-0232 held each tool output to 2,000 characters in the summarizer's copy. A s
 reach the conversation two ways. Loaded through `use_skill`, it is a tool output, so it was held.
 As the turn's own message (an operator's typed `/<skill>`, or the harness's re-entry of a loop's
 skill, ADR-0187), it is user text, which the summarizer read whole. Measured 2026-09-23 over 22
-compactions on the three Bodies on the 131k P40 pod, rendering each summarized part the way the
+compactions on three workers on the 131k P40 pod, rendering each summarized part the way the
 summarizer renders it after ADR-0232: skill bodies were 474,294 of 1,257,956 characters, 38
 percent. Seven of the 22 compactions held one, and in those it was 38 to 81 percent of the
-input. On alpha@zc-01 the loop skill arrived as the harness's re-entry four times, 84,476
+input. On one worker the loop skill arrived as the harness's re-entry four times, 84,476
 characters each, and three of those copies were summarized.
 
 Each of those three was the only copy. The compaction that summarized it came 15 to 49 rows
-after its delivery, the kept tail held the last six messages, and the Body ended its turn 7, 19
+after its delivery, the kept tail held the last six messages, and the worker ended its turn 7, 19
 and 11 rows after the compaction, which brought the next re-entry and the next whole copy. The
 summaries were 5,057 to 6,412 characters, with 9 to 17 mentions of "Phase" each: the summarizer
 spent part of each one outlining the procedure.
 
-The first call after a compaction on that Body read 48,611 to 72,936 uncached tokens in 323 to
+The first call after a compaction on that worker read 48,611 to 72,936 uncached tokens in 323 to
 561 seconds, 6.7 to 7.9 milliseconds a token. At the 2.55 characters a token measured on this
 framework's prompt text, an 84,476-character body is about 33,000 tokens: about 250 seconds of
 each such summarizer call.
@@ -14394,18 +14395,18 @@ Decision. Two parts, both at compaction.
   line does not come from the plan.
 
 What it risks. The summary no longer outlines the skill. That outline was a digest of an
-84,476-character procedure inside a summary of about 6,000 characters, and the Body ended its
+84,476-character procedure inside a summary of about 6,000 characters, and the worker ended its
 turn within 19 rows of each one. The note tells the model the instructions are gone and how to
 get them back. Reloading costs a call and the body's tokens, which the next re-entry costs
 anyway. Whether the model reloads mid-lap or ends its turn as before is measured live, on the
-Bodies running this build.
+workers running this build.
 
 Rejected: re-attaching the skill after the summary, as Claude Code does. Its public skills guide
 says a compaction re-attaches the most recent invocation of each skill, the first 5,000 tokens
 of each and 25,000 combined, newest first. The first 5,000 tokens of a procedure are its opening
 steps, not the step a model is on mid-lap, and a head of a skill is a broken skill (ADR-0065).
 The whole loop skill is about 33,000 tokens; added to the 49,000 to 73,000 of a post-compaction
-prompt on that Body, it would leave little room before the next compaction at about 104,800.
+prompt on that worker, it would leave little room before the next compaction at about 104,800.
 Also rejected: holding every long user message. An operator's paste is the operator's words,
 and nothing measured asks for it.
 
@@ -14418,8 +14419,8 @@ the operator wrote arrives whole and the session keeps the body. After `compact_
 the only copy of a whole skill (listed without pages, as a load leaves it), the summarizer never
 sees the body's middle and the note names the skill and says to load it with Skill. A newer copy
 in the kept tail keeps the note silent. A skill only the operator may run gets the operator's
-wording. A paged skill gets its section line and no second one. Under `mutation-proof-test.sh`
-on cc-14, seven mutants each turned the tests red: no hold on a skill turn (the render and note
+wording. A paged skill gets its section line and no second one. Under a mutation-proof run
+on a test machine, seven mutants each turned the tests red: no hold on a skill turn (the render and note
 tests), holding every user message (the render test), no note line (the note and operator
 tests), a note that ignores what was summarized (the kept-tail test), a whole skill counted as
 paged (the note test), no paged skip (the paged test), and the operator's wording lost (the
@@ -14436,11 +14437,11 @@ collector reclaiming the session makes aiohttp report "Unclosed client session",
 "Unclosed connector", through the event loop's exception handler, which logs at ERROR. A CLI
 prints that in its own output, between the model's replies.
 
-Measured 2026-09-23 on the fleet's CLI logs, counting lines only. Coach on zc-03 runs litellm
+Measured 2026-09-23 on the fleet's CLI logs, counting lines only. One worker machine runs litellm
 1.91.1. Its CLI log holds 83 of these lines across 17 launches: 74 inside one long session and 7
 in the 8.6 hours of the current one. None sat next to an exit, and every one was followed by more
 of the session: they come while it runs, not at shutdown, at about the rate of the hourly expiry.
-The worker Bodies on zc-01 and zc-02 run 1.102.1 and logged 2 each. litellm 1.97.0 added a closer
+The workers on other machines run 1.102.1 and logged 2 each. litellm 1.97.0 added a closer
 for evicted clients; in 1.102.1 it shuts one after a 900-second grace, but it holds the client
 weakly, so a collection inside the grace still reclaims it unclosed and the line still prints.
 
@@ -14472,14 +14473,14 @@ loopback stub caches a client whose transport is httpx's. The control restores l
 and must find aiohttp's, which also fails the day litellm stops honoring the switch's name. The
 tests read the transport rather than wait for the collector, because litellm's own logging queue
 holds a finished call's client for a while, so when the collector reaches it is not the test's to
-decide. Under `mutation-proof-test.sh` on cc-14, setting the switch back to False turned the first
+decide. Under a mutation-proof run on a test machine, setting the switch back to False turned the first
 test red on the assertion naming `LiteLLMAiohttpTransport`, and the restore returned it to green.
 
-Measured live on 2026-09-23. Every Zak Code process on a box writes to one log, and on zc-03 the
-only one is coach. Its log recorded 8 `Unclosed client session` errors from 05:32 to 14:23, on a
-build without this change, about one an hour. Coach restarted at 14:29 on the build that merged
-this change, and logged none in the five hours to 19:27. Over the same day the worker Body on
-zc-02, whose builds all predate the change, logged 3, the last at 18:51.
+Measured live on 2026-09-23. Every Zak Code process on a box writes to one log, and on one worker machine the
+only process is the served agent's. Its log recorded 8 `Unclosed client session` errors from 05:32 to 14:23, on a
+build without this change, about one an hour. The served agent restarted at 14:29 on the build that merged
+this change, and logged none in the five hours to 19:27. Over the same day the worker session on
+another machine, whose builds all predate the change, logged 3, the last at 18:51.
 
 ## ADR-0240: the compaction threshold leaves room for one answer, not a fifth of the window
 
@@ -14488,11 +14489,11 @@ Status: accepted. 2026-09-23.
 The per-call check compacted once the count passed 0.8 of the window. On the pod's 131,072 tokens
 that is 104,857, which keeps 26,215 tokens above the threshold for the one call the check guards.
 That call needs room for its answer and for the count's own error, and nothing else. Measured
-2026-09-23 over the 945 main calls the three Bodies made since 2026-09-21, the largest completion
-was 4,468 tokens (p99 1,448 to 3,607 per Body), and none reached 6,553.
+2026-09-23 over the 945 main calls the three workers made since 2026-09-21, the largest completion
+was 4,468 tokens (p99 1,448 to 3,607 per worker), and none reached 6,553.
 
-A compaction is the most expensive thing a Body does on this pod. Of the 29 compactions on the
-three Bodies on 2026-09-23, 26 were followed by a call that read no cached tokens: 28,881 to 77,648
+A compaction is the most expensive thing a worker does on this pod. Of the 29 compactions on the
+three workers on 2026-09-23, 26 were followed by a call that read no cached tokens: 28,881 to 77,648
 uncached tokens in 169 to 716 seconds, median 450, against medians of 35 to 150 seconds for the
 same sessions' other calls. The summarizer call comes on top of that (ADR-0232, ADR-0238).
 
@@ -14537,7 +14538,7 @@ a count between the reserve's threshold and the 0.9 cap compacts only because th
 passed, and a model's output cap moves its threshold. The anchored count floors what arrived since
 its anchor at 3 characters a token. A last test reads `bench/run_task.py` and checks that its
 recording probe accepts every keyword `should_compact` takes, since a probe missing one raises on
-the loop's first check. Under `mutation-proof-test.sh` on cc-14, seven mutants each turned the
+the loop's first check. Under a mutation-proof run on a test machine, seven mutants each turned the
 tests red: the reserve dropped from the formula, the floor dropped, the cap dropped, the loop
 passing no reserve, the bare estimate for the anchored delta, the probe without the new keyword,
 and the old 0.8 default. The full suite passed, 4,706 tests.
@@ -14553,7 +14554,7 @@ their usage to the session and to the shared budget. The summarizer returned onl
 calls reached neither `/cost` nor a `max_cost_usd` or `max_tokens` ceiling, and no trace row said
 what they took.
 
-Measured 2026-09-23 on a worker Body (a 27B model on a 131,072-token window): 355 seconds passed
+Measured 2026-09-23 on a worker session (a 27B model on a 131,072-token window): 355 seconds passed
 between the last trace row before a compaction and its boundary in the transcript. The PreCompact
 hooks and the summarizer both ran in that window, and nothing split it. The first main call after
 the compaction then read 49,236 prompt tokens, none from the cache, in 513 seconds.
@@ -14593,7 +14594,7 @@ counts and the seconds of a slow summarizer and a slow PreCompact hook; that eve
 of an oversized history is counted; that a failed call counts with no tokens and no session
 record; that an elision's row shows zeros; and that a second compaction's row counts only its own
 calls. `tests/test_cli_throughput.py` pairs replies around a summarizer record, and
-`tests/test_contracts.py` checks the tag's sum rule. Under `mutation-proof-test.sh` on cc-14,
+`tests/test_contracts.py` checks the tag's sum rule. Under a mutation-proof run on a test machine,
 twelve mutants each turned the tests red: no session record, no budget record, no reset at
 PreCompact, no hook seconds, a failed call not counted, the row without the record, no prompt
 tokens, no call seconds, the throughput pairing reading side calls, the loop's record untagged,
@@ -14601,7 +14602,7 @@ the tag surviving a mixed sum, and the session dropping the tag. The full suite 
 4,714 tests.
 
 **Amendment (2026-09-25) — the row carries the summary's size, because the completion is mostly
-thinking.** Measured over the trace rows this ADR added, on three worker Bodies driving a 27B
+thinking.** Measured over the trace rows this ADR added, on three worker sessions driving a 27B
 reasoning model through llama.cpp: 17 completed compactions billed 2,000-9,749 completion tokens
 each (median about 6,500) and took 345-1,541 seconds, generating at 5.7-9.3 tokens per second — a
 median compaction spends about fifteen minutes on the summarizer's output alone. But the summary
@@ -14621,13 +14622,13 @@ Status: accepted. 2026-09-23.
 
 ADR-0082 hands the summarizer the transcript as one user message of labeled text, so that a small
 model summarizes it instead of carrying it on. It still carries it on. Measured 2026-09-23 on the
-pod (a 27B model, three worker Bodies): of 34 compactions, 9 came back as something other than a
+pod (a 27B model, three workers): of 34 compactions, 9 came back as something other than a
 summary. Eight were 56 to 442 characters long, where the 25 summaries ran 810 to 13,007. Read
 with every letter masked, they were a one-line status, the transcript's next turn opening with
 its own `[assistant]` label, a first-person plan for the next step, or a tool call written out as
 text. The ninth was longer, and it was the transcript's next turn, opening with `...` and an
 `[assistant]` label. This record first said 8 of 34; the length count had missed that one. Each
-was installed as the summary, and those Bodies went on from the harness's position note and the
+was installed as the summary, and those workers went on from the harness's position note and the
 kept messages alone. The instruction sat in the system prompt and in one line above the transcript,
 some 40,000 tokens before the point where the model starts writing.
 
@@ -14677,7 +14678,7 @@ counted, the rejection on the row and the reason on the status line; that a shor
 long transcript is asked for again while a short summary of a short one stands; that an empty
 response is not a summary; that a summary may open with the previous summary's `[system]` label;
 and that two non-summaries fall back to eliding the old tool outputs. Under
-`mutation-proof-test.sh` on cc-14, fifteen mutants each turned the tests red: no closing
+a mutation-proof run on a test machine, fifteen mutants each turned the tests red: no closing
 instruction on the whole transcript, a slice, a fold or the clamped fold; the tags not read; no
 role-label check; `[system]` counted as a turn; no floor; the floor without its source
 threshold; no empty reason; no resample; no raised temperature; only accepted responses counted;
@@ -14701,10 +14702,10 @@ and the facade's difficulty classifier, `deep_think` sampler, context classifier
 judge. `zakcode throughput` (ADR-0104) pairs replies with usage records from the tail, so each
 untagged record moved every reply before it onto its neighbour's record.
 
-Measured 2026-09-23 on the three zc boxes, nine sessions from the last day, 1,110 usage records.
+Measured 2026-09-23 on three worker machines, nine sessions from the last day, 1,110 usage records.
 A session's records less its trace's usage rows, which are written for main calls only, leaves
 the side calls. Three records had no main call behind them, one in one session and two in
-another. The worker Bodies rarely meet this: a skill turn skips the plan critique, and the critic
+another. The workers rarely meet this: a skill turn skips the plan critique, and the critic
 runs once, when a finished plan ends the turn. An interactive session with a plan meets it at
 every turn that finishes one.
 
@@ -14725,7 +14726,7 @@ The proof. A planning turn in `tests/test_loop_planning.py` records its plan cri
 plan review tagged, and `throughput`'s pairing gives each reply its own call's record. The
 quality gate, the difficulty classifier and `deep_think` each record a tagged usage in their
 tests, and the facade's context classifier and context judge hand theirs to the session tagged.
-Under `mutation-proof-test.sh` on cc-14, seven mutants, one per site with its tag removed, each
+Under a mutation-proof run on a test machine, seven mutants, one per site with its tag removed, each
 turned its test red. The full suite passed, 4,725 tests.
 
 ## ADR-0244: a turn-end hook may continue a turn the recipe gate gave up on
@@ -14738,12 +14739,12 @@ end was one of the few a TURN_END hook could not refuse. The reason given was th
 would stall the same way again. That was true only because the gate stayed armed on the same
 files.
 
-Measured 2026-09-23 on zc-01. Session `d61e3b21`, a served worker Body, ran one turn of 201
+Measured 2026-09-23 on a worker machine. Session `d61e3b21`, a served worker session, ran one turn of 201
 iterations and two compactions. It wrote two shell scripts, and the harness ran them three
 times: one ran green, the other failed twice. The gate gave up and the turn ended
-`recipe_stalled`. The Body's stop hook, whose whole job is to keep that loop going, was never
-asked, and the session's trace holds no later turn. A census of the three zc boxes' traces over
-seven days finds that one end and no other. It is rare, and each one costs a Body its loop.
+`recipe_stalled`. The worker's stop hook, whose whole job is to keep that loop going, was never
+asked, and the session's trace holds no later turn. A census of the three worker machines' traces over
+seven days finds that one end and no other. It is rare, and each one costs a worker its loop.
 ADR-0181 decided the same question for `provider_error`: an end that is a fact about the moment
 belongs to the hook that decides whether the loop goes on.
 
@@ -14784,7 +14785,7 @@ The proof. `tests/test_recipe.py` drives the gate to its give-up with a turn-end
 registered. The buffered and streaming loops re-enter, end `completed` and degraded, and note
 the stand-down with the released path, and a runnable written after the veto gets a nudge of
 its own before the turn stalls again. A cursor test walks two stand-downs and a verified run
-after them. Under `mutation-proof-test.sh` on cc-14, fourteen mutants each turned at least one
+after them. Under a mutation-proof run on a test machine, fourteen mutants each turned at least one
 of these tests red: the vetoable set; the hook consult, the stand-down call and the degraded
 mark at each of the two sites; each of the stand-down's five resets; the `written_paths` union;
 and the de-duplication of what the stand-down returns. The full suite passed, 4,729 tests.
@@ -14797,10 +14798,10 @@ A skill's catalog entry, its name and description, is read at startup and goes i
 prompt. Its body was read at its first load and then kept for the life of the process:
 `Skill.body()` cached the text and never looked at the file again. Claude Code's documentation
 says a change to a skill's `SKILL.md` is detected within the current session. A zakcode process
-that runs for hours, as a Mind's Body does while its loop merges framework updates into the
+that runs for hours, as a host framework's worker session does while its loop merges framework updates into the
 workspace, kept serving the text it read first.
 
-Measured 2026-09-23 on zc-02. The worker Body's process started at 13:13:51Z. At 14:36:33Z its
+Measured 2026-09-23 on a worker machine. The worker session's process started at 13:13:51Z. At 14:36:33Z its
 workspace merged an edit that took the loop skill's `SKILL.md` from 84,571 characters to 62,682,
 front matter included. Session `0794bdc9` loaded the skill three more times, at 15:47:26Z,
 18:17:45Z and 18:44:18Z, and each load delivered 84,073 characters. None of the three can have
@@ -14847,7 +14848,7 @@ text. `tests/test_skill_paging.py` delivers page 2 of a second load from the edi
 page 2 of a load whose file changed while page 1 was worked from the loaded text.
 `tests/test_whole_when_fits.py` pages a skill edited past the window at its next load, delivers
 it whole once edited back, and keeps an unchanged skill's decision when it is loaded with
-arguments. Under `mutation-proof-test.sh` on cc-14, eleven mutants each turned their intended
+arguments. Under a mutation-proof run on a test machine, eleven mutants each turned their intended
 tests red: six in `Skill.body()` (no stamp check; no first-read guard; size or mtime left out of
 the stamp; the stamp not saved; a vanished file served from the cache) and five in the loop (a
 decision made once per name; the pages kept; the fit kept; the door's text compared instead of
@@ -14864,7 +14865,7 @@ the model's shell state is a different path there. After `S=/work/scratch`, `cat
 is `/work/scratch/stub.sh` to the model's shell and `/stub.sh` to the harness's, where `S` was
 never set.
 
-Measured 2026-09-24 on zc-01, zakcode 69f771e, model Qwen3.8-27B. Each of the worker Body's calls
+Measured 2026-09-24 on a worker machine, zakcode 69f771e, model Qwen3.8-27B. Each of the worker session's calls
 runs in a fresh shell, so every call that touches its scratch directory opens with `S=<scratch>`
 and writes through `"$S/..."`. At 18:35Z it wrote a fixture that fails by design,
 `cat > "$S/fake-aws-exec-fail.sh"`, whose body ends `exit 254`. The turn was still open when the
@@ -14887,7 +14888,7 @@ arms from the literal write.
 Rejected: resolving the variable from an assignment earlier in the same command. It would have
 fixed the path here and then run the fixture, which exits 254 by design, and injected that as a
 failed verification. A pending target can be a fixture that is meant to fail, and a variable path
-is where a Body keeps its fixtures. Resolution also needs a shell's rules for quoting, prefix
+is where a worker keeps its fixtures. Resolution also needs a shell's rules for quoting, prefix
 assignments and heredoc bodies, and an assignment the scan misreads would run the wrong file.
 Also rejected: expanding through the harness process's environment. The Bash tool's children
 also get the workspace settings env, so the process environment is not the one either shell saw.
@@ -14901,7 +14902,7 @@ arms, and the same write through a literal path does.
 `test_harness_never_runs_a_file_the_model_reached_through_a_variable` runs the loop end to end. The
 model writes `"$S/stub.sh"` through a real shell and finishes, the turn completes, and no
 `[harness] I ran` message appears. Both failed before the change, the second with
-`recipe_stalled`, as on zc-01.
+`recipe_stalled`, as on the worker machine.
 
 ## ADR-0247: a batch the plan-first gate withholds still runs its wake-up call
 
@@ -14912,11 +14913,11 @@ every call in that batch with the same "Not executed" result. `ScheduleWakeup` i
 (ADR-0094: it touches only the session's own record), so a batch holding it alone is never gated;
 a batch holding it beside one Bash call is, and the wake-up call is refused with the Bash.
 
-Measured 2026-09-24 on zc-03, zakcode 17b3de8, model Qwen3.8-27B, coach's Mind session
-d15fe395. The loop had re-armed its autonomous-loop sentinel at 17:45:43Z and never reached a
+Measured 2026-09-24 on a worker machine, zakcode 17b3de8, model Qwen3.8-27B, a served agent's
+host framework session d15fe395. The loop had re-armed its autonomous-loop sentinel at 17:45:43Z and never reached a
 prompt again while running; a `/stop` typed at 21:23Z completed at 06:38:40Z, its turn-end hook
 allowing the end. At that instant the harness fired the 13-hour-old wake-up ("re-enter the loop ...
-Do not stop to wait for instructions") into a session whose Mind now read IDLE, mode assistant.
+Do not stop to wait for instructions") into a session whose host framework now read IDLE, mode assistant.
 At 06:43:41Z the model answered correctly: `ScheduleWakeup(stop=true)`, batched with one Bash call. The plan-first gate withheld the batch,
 both results read `Not executed: this is multi-step work — lay out a plan with update_plan before
 making changes.`, and the model spent the next half hour planning a loop re-entry it must not
@@ -14930,14 +14931,14 @@ Decision.
   the refusal message exists for still holds. Both twins.
 - The iteration is still refunded: a wake-up is bookkeeping, not work.
 
-Consequences. The rb-4345 shape the Mind prescribes — re-arm the net FIRST when a sentinel
+Consequences. The shape the host framework prescribes — re-arm the net FIRST when a sentinel
 fires — no longer depends on the model sending that call alone. A plan is still required before
 the workspace changes; nothing about that moved.
 
 Rejected: running every READ_ONLY-tier call in a withheld batch. A `use_skill` load seeds a
 plan skeleton and turns pages, and a plan tool authors the very plan the gate is waiting for;
 those side effects belong to the executing path, and the measured defect needed none of them.
-Also rejected: leaving it to the Mind's stop to cancel the net (it now does, at its D7.05). The
+Also rejected: leaving it to the host framework's stop to cancel the net (it now does). The
 harness owes a correct answer to a correct call whatever the framework above it does.
 
 The proof. `tests/test_loop_planning.py::test_a_withheld_batch_still_runs_its_wakeup_call` arms
@@ -14953,15 +14954,15 @@ ADR-0120 bounds every gap of a streaming call at `stream_stall_timeout` (600s), 
 per-gap bound is what catches a backend that sent headers and then nothing. The first gap is
 different in kind: it covers the prefill, and a prefill is as long as its prompt. On a hosted
 API that is seconds. On the fleet's pod (Tesla P40s, llama.cpp, 68-92 tok/s cold — measured
-from `/slots` deltas 2026-09-24) a full-context prompt is 20-25 minutes, and a Mind session
+from `/slots` deltas 2026-09-24) a full-context prompt is 20-25 minutes, and a host framework session
 runs at full context for most of its life.
 
-Measured 2026-09-24 on zc-03, coach (Mind session 4be0f443), zakcode 5ded437, zakpod1: a
+Measured 2026-09-24 on a worker machine, a served agent (host framework session 4be0f443), zakcode 5ded437, the inference pod: a
 streaming call issued at 18:40:09Z with a 112,249-token prompt, its slot cache just evicted by
 another session's request on the same engine, was cut off at 18:50:18Z — 609s, the stall
 default — with zero chunks received. The retry resumed against the half-built cache (the pod
 reports the prompt as cached on the retry), which is why every retry looks quick and the
-first attempt looks wedged. On 2026-09-23 the same pod aborted eleven Body calls with zero
+first attempt looks wedged. On 2026-09-23 the same pod aborted eleven worker calls with zero
 chunks, seven of them at exactly the 600s default (#661 measured the notices). Each expiry
 costs the whole 600s, one of the call's three interrupt retries, and the operator a wrong
 diagnosis: the backend was not stuck, it was working. A call whose cold prefill outlasts the
@@ -14979,7 +14980,7 @@ Decision.
   always run under. Every later gap keeps `stream_stall_timeout`.
 - Every call teaches the rate: the wait to its first chunk over the uncached share of its
   prompt, or, when the first chunk never comes, the bound it outlasted. The pod reports its
-  cache reads (138 of coach's last 143 calls carried one), so a retry that resumes from a
+  cache reads (138 of the served agent's last 143 calls carried one), so a retry that resumes from a
   half-built cache still measures the COLD rate. An observation is charged at least one
   prefill batch (512 tokens), so a fully cached call's scheduling overhead never reads as a
   rate. The rate only rises: the bound must cover the worst this backend has shown.
@@ -15085,21 +15086,21 @@ identically: a wake-up that has demonstrated, twice, that it re-enters nothing h
 case, and the second identical turn "is already the proof". That reasoning has one premise —
 that the turn was the MODEL's — and a provider outage breaks it.
 
-Measured 2026-09-25 on three worker Bodies (LXD containers on zakcode 432d2c3, a Mind's
-worker loop, TURN_END hook the Mind's stop hook) during a 12-hour power-off of the pod that
-serves their model. Each cycle in every Body's log ran the same way: the sentinel fired; the
+Measured 2026-09-25 on three worker sessions (LXD containers on zakcode 432d2c3, a host
+framework's worker loop, TURN_END hook the host framework's stop hook) during a 12-hour power-off of the pod that
+serves their model. Each cycle in every worker's log ran the same way: the sentinel fired; the
 turn's context was compacted first (ADR-0187, "a stalled turn's context is compacted") and the
 summarizer's own call failed — "compaction summarizer failed; eliding tool outputs instead";
 the composed skill turn's first call spent the whole 900-second retry budget on "provider
 unavailable"; the turn aborted `provider_error`; the hook vetoed and asked for the skill again;
 three more identical budgets; the fence ended the turn `veto_stall` and `_arm_stall_net` left a
-600-second sentinel behind (the `veto_stall_net` record is in turns 5, 6 and 7 of one Body's
+600-second sentinel behind (the `veto_stall_net` record is in turns 5, 6 and 7 of one worker's
 trace). Roughly 75 minutes per cycle, 0 tokens, no assistant text. The first sentinel cycle was
 recorded; the second ended with the identical fingerprint — `veto_stall`, empty text, because
 the provider had refused every call both times — and the repeat guard cancelled the net
-(`wake_repeat`, 08:27:55Z). When the pod came back, all three Bodies sat at their prompts,
+(`wake_repeat`, 08:27:55Z). When the pod came back, all three workers sat at their prompts,
 `MainThread` in `next_input`, until an operator typed `/start` into each of them at 12:48Z. The
-Bodies were built for exactly this: a loop whose wake-up "fires only if the re-entry chain breaks", and a stop
+Workers were built for exactly this: a loop whose wake-up "fires only if the re-entry chain breaks", and a stop
 hook that re-arms the sentinel on every veto. Every part did its job, and the guard read an
 outage as a verdict.
 
@@ -15179,7 +15180,7 @@ non-streamed request from a worker, the proxy's `200` after 2 s to 17 minutes, a
 request — same client, same prompt size — sent again exactly one request timeout later, then
 again. A client that had received the answer would not ask again; each repeat is an answer
 that reached the proxy's log and not the client, and each cost the client the whole ceiling
-before it asked. The seven chains on 2026-09-24 (three workers and the coach) were all
+before it asked. The seven chains on 2026-09-24 (three workers and the served agent) were all
 summarizer-sized, 11,942 to 37,158 prompt tokens with answers of 4 to 17 minutes: the
 compaction summarizer, re-reading the older history in full, is the largest buffered call a
 session makes and the one that pays the ceiling three times over (the loop's fixed interrupt
@@ -15227,14 +15228,14 @@ Slice 1 of the Recipe Cursor). The echo is capped at 4,000 characters so one lar
 take the context window. Until now the cap was applied by cutting the file at its head, and the
 syntax note was computed on the cut text.
 
-Measured over seven days of transcripts on the pod — three worker Bodies editing a large
+Measured over seven days of transcripts on the pod — three worker sessions editing a large
 repository, and the determinism bench editing small ones:
 
-- Bodies: 83 frames, 56 cut at the cap. Of 62 `Edit` calls grounded, 44 (71%) got a frame that
+- Workers: 83 frames, 56 cut at the cap. Of 62 `Edit` calls grounded, 44 (71%) got a frame that
   did not contain the edited text: the head of a long file, which the edit did not touch, under
   a preamble that says "this is the real, current content. Use it; do not assume what the files
   contain".
-- Every `[syntax: FAIL]` in the week sat on a cut frame: 14 on one Body, 11 on another (one file
+- Every `[syntax: FAIL]` in the week sat on a cut frame: 14 on one worker, 11 on another (one file
   told eleven times "unterminated triple-quoted string literal (detected at line 63)"), 17 on
   the bench. 0 of 181 whole-file `.py` frames failed. The messages are the shapes a file cut
   mid-way produces ("'(' was never closed", "unterminated string literal", "expected '('").
@@ -15414,14 +15415,14 @@ run against a sabotaged copy of the change and went red.
 Status: accepted. 2026-09-27.
 
 `/sidecar/health` reports `last_run_stop_reason` from `.run-stop-reason` in the workspace: the
-session the ending belongs to, then the reason (g-369-28). The env-server's BudgetMeterVerticle
-polls it every 60 s and ends the environment when it reads `duration_cap`. Since g-369-86 the
+session the ending belongs to, then the reason. The env-server's BudgetMeterVerticle
+polls it every 60 s and ends the environment when it reads `duration_cap`. Previously the
 server has cleared that marker at every process start, and the reason was a reboot. A reboot
 of an EFS-persistent workspace brings back the marker and `.current-session` in matching state.
 The session fence passes that stale ending, and the first poll ended a brand-new run.
 
-A process start is not always a run start. `mind-serve@` runs with `Restart=always`
-(g-369-157). When a run ends, `on_run_end` brings the process down and systemd starts it again
+A process start is not always a run start. `mind-serve@` runs with `Restart=always`.
+When a run ends, `on_run_end` brings the process down and systemd starts it again
 seconds later on the same boot and workspace. That start cleared the ending the run had just
 recorded, before any poll could read it. Measured on DEV run 1790433482000_g373155u2
 (2026-09-26):
@@ -15443,7 +15444,7 @@ Decision.
    - a marker with no third line (written before this change, or by a provisioner);
    - every marker, when no boot id can be read.
    The doubtful cases take the clear because the two failures are unequal. A stale ending ends
-   a live run (g-369-86); a lost one only delays the environment's end.
+   a live run; a lost one only delays the environment's end.
 3. The reader takes the reason from the second line by position. A two-line marker reads as
    before.
 
@@ -15460,8 +15461,8 @@ What it does not do.
   kept ending is what lets the env-server end the environment within one poll. (Amended
   below: a start that keeps the ending now comes up ended.)
 - It does not change how a new run starts on a provisioned vessel. Provisioning already moves
-  `.current-session` and `.run-stop-reason` aside at every genuine run start (provision-env.sh,
-  g-369-157), so that run starts with no marker at all. This change governs the starts no
+  `.current-session` and `.run-stop-reason` aside at every genuine run start (provision-env.sh),
+  so that run starts with no marker at all. This change governs the starts no
   provisioning precedes.
 - It does not help an env-server wait that misses the restart window after any other ending.
   Those endings are cleared exactly as before.
@@ -15487,9 +15488,9 @@ fresh run clock and started its say consumer, so it had opened a run of its own.
 1790481966000_g373159:
 - the capped run ended at 04:22:32.773 and the restart kept its ending at 04:22:45.248;
 - the env-server read the ending and sent POST /run/stop, which the sidecar logged at 04:23:20.065;
-- that stop reached the open run and raised a second framework stop, on a mind that had finished
+- that stop reached the open run and raised a second framework stop, on a host framework session that had finished
   its own stop at 04:22:29;
-- the mind ran an 8-iteration graceful-stop turn (653,630 tokens) while the vessel was being torn
+- the host framework ran an 8-iteration graceful-stop turn (653,630 tokens) while the vessel was being torn
   down, and the signed stop pair it raised was never consumed.
 
 Now a start that keeps this boot's `duration_cap` comes up ENDED. `run_ended` is set, the stop
@@ -15508,7 +15509,7 @@ unaffected, because provisioning moves the marker aside at every genuine run sta
 The proof, `tests/test_server_sidecar.py`: a capped run ends through the real writer, the restart
 runs the real lifespan on the same boot, and the env-server's own stop is answered `ended`, with no
 stop raised, no run clock armed and no second `on_run_end`. The control is a restart after a
-`stopped` ending, which opens its own run, so the same stop raises the mind's graceful stop. Each of
+`stopped` ending, which opens its own run, so the same stop raises the host framework's graceful stop. Each of
 four sabotaged copies turned the test red: starting as before, starting the consumer beside the
 ended state, calling `on_run_end` from the ended start, and reporting any cleared ending as kept.
 

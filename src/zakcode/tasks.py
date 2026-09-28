@@ -873,7 +873,7 @@ class TaskNetwork(BaseModel):
     def _flag_duplicate_siblings(self, advisories: list[str]) -> None:
         """Advise on same-titled sibling steps (ADR-0050 — the duplicate-subtask check).
 
-        The ayoai-processor's ``HTNPlanner.check_subtasks`` DROPPED a duplicate task key at
+        The production HTN planner's ``HTNPlanner.check_subtasks`` DROPPED a duplicate task key at
         one decomposition level as a loop indicator (``moveTo → moveTo → moveTo``); the
         open-domain analog is an identical title among siblings. Dropping a model-authored
         step would violate fail-open authoring, so it is advised, never dropped.
@@ -1094,13 +1094,13 @@ class TaskNetwork(BaseModel):
         """
         return repr([(t.id, t.kind, t.title) for t in self._iter()])
 
-    # ── structural quality (ADR-0050 — the ayoai-processor evaluate_candidate port) ─────
+    # ── structural quality (ADR-0050 — the HTN planner evaluate_candidate port) ─────
 
     def quality(self) -> tuple[float, list[str]]:
         """Deterministic structural quality of the plan in ``[0, 1]``, with named deficiencies.
 
-        A port of the ayoai-processor's ``HTNPlanner.evaluate_candidate`` — the production
-        HTN planner whose decomposition discipline this substrate mirrors — re-grounded for
+        A port of ``HTNPlanner.evaluate_candidate`` from a production HTN planner whose
+        decomposition discipline this substrate mirrors, re-grounded for
         the open domain with the same three terms and weights (0.5 / 0.3 / 0.2):
 
         * **completeness** — there, ``1 - unresolved/total``; here the unresolved node is
