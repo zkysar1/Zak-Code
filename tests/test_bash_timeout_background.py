@@ -156,7 +156,8 @@ async def test_a_cancelled_call_still_kills_the_command_and_records_nothing(
             # nowhere else, so everywhere else this falls back to $$.
             {
                 "command": (
-                    f"{{ cat /proc/$$/winpid 2>/dev/null || echo $$; }} > {pid_file.name}; sleep 30"
+                    f"{{ cat /proc/$$/winpid 2>/dev/null || echo $$; }} > {pid_file.name}; "
+                    "sleep 30; :"
                 ),
                 "timeout": 60,
             },
