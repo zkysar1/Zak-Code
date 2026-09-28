@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from zakcode._subprocess import new_group_kwargs, terminate_process_tree
+from zakcode._subprocess import create_group_subprocess_exec, terminate_process_tree
 from zakcode.mcp.jsonrpc import MCPProtocolError
 
 #: How long to wait for a child to exit after we ask it to terminate, before moving on.
@@ -74,7 +74,9 @@ class StdioTransport:
         # When a custom env is given, merge it onto the current environment so the
         # child still inherits PATH etc. (callers pass only the keys they want to set).
         full_env = {**os.environ, **self._env} if self._env is not None else None
-        self._proc = await asyncio.create_subprocess_exec(
+        # Own process group/session: a launcher (npx/uvx) starts the real server as a
+        # grandchild, so close() must be able to kill the whole tree. (audit4 #3)
+        self._proc = await create_group_subprocess_exec(
             self._command,
             *self._args,
             stdin=asyncio.subprocess.PIPE,
@@ -82,9 +84,6 @@ class StdioTransport:
             stderr=asyncio.subprocess.PIPE,
             env=full_env,
             cwd=self._cwd,
-            # Own process group/session: a launcher (npx/uvx) starts the real server as a
-            # grandchild, so close() must be able to kill the whole tree. (audit4 #3)
-            **new_group_kwargs(),
         )
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 

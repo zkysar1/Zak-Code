@@ -17,7 +17,6 @@ a tmp workspace.
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -141,17 +140,6 @@ async def test_a_moved_command_keeps_its_own_exit_code(tmp_path: Path) -> None:
     assert (status, tasks.status(moved)[1]) == ("completed", 7)
 
 
-@pytest.mark.xfail(
-    sys.platform == "win32",
-    reason=(
-        "On Windows the kill misses the command: under Git Bash each program runs in a new"
-        " Windows process whose parent is not the shell that started it, so taskkill /T cannot"
-        " reach it from our shell. Measured on the CI runner: after terminate_process_tree, the"
-        " command's inner bash and its sleep were still running."
-    ),
-    raises=AssertionError,
-    strict=True,
-)
 async def test_a_cancelled_call_still_kills_the_command_and_records_nothing(
     tmp_path: Path,
 ) -> None:
