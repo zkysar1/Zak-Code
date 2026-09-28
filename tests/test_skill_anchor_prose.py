@@ -67,10 +67,10 @@ def test_a_generic_name_still_anchors_on_two_description_words() -> None:
 def test_a_distinctive_name_still_anchors_on_its_stem() -> None:
     assert implied_skill_anchored("research the vendor's rate limits", *_RESEARCH)
     assert implied_skill_anchored(
-        "add an aspiration for the report",
-        "create-aspiration",
-        "Create a new aspiration in the world queue",
-    )  # `create` is generic, `aspiration` is not — the distinctive stem carries it
+        "add an objective for the report",
+        "create-objective",
+        "Create a new objective in the world queue",
+    )  # `create` is generic, `objective` is not — the distinctive stem carries it
 
 
 def test_generic_is_judged_on_whole_name_words_not_stems() -> None:
@@ -80,7 +80,7 @@ def test_generic_is_judged_on_whole_name_words_not_stems() -> None:
         _name_is_generic("start") and _name_is_generic("reset") and _name_is_generic("test-report")
     )
     assert not _name_is_generic("research")  # shares the stem `rese` with `reset`; not generic
-    assert not _name_is_generic("create-aspiration") and not _name_is_generic("forge-skill")
+    assert not _name_is_generic("create-objective") and not _name_is_generic("forge-skill")
     assert not _name_is_generic("")
 
 

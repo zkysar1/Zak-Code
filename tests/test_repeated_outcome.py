@@ -35,7 +35,7 @@ from zakcode.tools.base import (
 
 PROBE_OUTPUT = (
     "---\n---\nNo mind refs in packed-refs\n---\n"
-    "[runner-claim] acquire: HELD (backend=local) — another machine owns a live claim\n"
+    "[lease-probe] acquire: HELD (backend=local) — another machine owns a live claim\n"
     "ACQUIRE_RC=4\n[exit code: 0]"
 )
 

@@ -151,7 +151,7 @@ def _seed_jsonl(workspace: Path, name: str, records: list[dict[str, object]]) ->
 
 
 def test_hypotheses_fall_open_to_real_pipeline_store(tmp_path: Path) -> None:
-    # PEARL sidecar: the mind-api daemon (AYOAI_WORLD=<workspace>/knowledge) names
+    # A sidecar framework's daemon (its world variable pointed at <workspace>/knowledge) names
     # its pipeline store ``pipeline.jsonl``, and the note-hypothesis.sh tool writes
     # ``prediction`` + ``stage`` — the reader must surface it, not only the legacy
     # lean ``hypotheses.jsonl`` name.
@@ -186,7 +186,7 @@ def test_guardrails_fall_open_to_real_store(tmp_path: Path) -> None:
         "guardrails.jsonl",
         [
             {
-                "id": "guard-001",
+                "id": "gr-001",
                 "rule": "Never trust a single popular-science source for a physics claim.",
                 "category": "black-holes",
                 "trigger_condition": "when researching physics topics",

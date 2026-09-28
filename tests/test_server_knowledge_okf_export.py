@@ -1,6 +1,6 @@
 """GET /knowledge/export conforms to the OKF transfer-bundle export shape.
 
-PEARL-SDK-ACCESS-ARCHITECTURE §10.5 / g-335-45. The download boundary must hand
+PEARL-SDK-ACCESS-ARCHITECTURE §10.5. The download boundary must hand
 back "a portable, human-readable wiki (Markdown nodes + a manifest), not a
 database dump". The contract it targets is the framework's own
 ``core/config/conventions/transfer-bundle-export-shape.md``, whose invariants
@@ -256,7 +256,7 @@ def test_empty_base_still_produces_a_valid_bundle(tmp_path: Path) -> None:
     assert json.loads(_frontmatter(body["files"]["index.md"])["type"]) == "index"
 
 
-# ── the PROJECTED lesson shape (g-115-4606) ────────────────────────────────
+# ── the PROJECTED lesson shape ──────────────────────────────────────────────
 #
 # Every lesson fixture above is hand-authored as {title, content}. The Mind's
 # KnowledgeProjection builds each lesson as exactly {title, lesson}

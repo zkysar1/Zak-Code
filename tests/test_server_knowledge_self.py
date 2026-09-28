@@ -6,7 +6,7 @@ to break by accident:
   * EMPTINESS IS THE SIGNAL, SO EMPTY IS NOT A 404. ``{}`` means "no identity
     published"; a populated object means published. Collapsing the two would tell
     a caller the route is absent when the real answer is "nothing published yet"
-    (guard-5493). ``published`` states which case it is so the caller never has to
+    ``published`` states which case it is so the caller never has to
     infer it from truthiness.
 
   * ``self`` IS AN OBJECT, AND THE COERCION THAT KEEPS IT ONE IS ORDER-DEPENDENT.

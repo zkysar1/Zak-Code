@@ -127,7 +127,7 @@ def test_knowledge_hypotheses_and_guardrails(tmp_path: Path) -> None:
 def test_knowledge_export_returns_full_bundle(tmp_path: Path) -> None:
     """/export is the OKF transfer bundle, NOT the internal viewer JSON.
 
-    CONTRACT CHANGE (g-335-45, PEARL §10.5): this route used to return
+    CONTRACT CHANGE (PEARL §10.5): this route used to return
     ``_read_knowledge_bundle`` verbatim — a database dump. §10.5 requires a
     "portable, human-readable wiki (Markdown nodes + a manifest)". The browse
     routes still speak the viewer shape (they back a live UI); only this

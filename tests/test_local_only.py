@@ -27,7 +27,7 @@ from zakcode.providers.endpoints import (
 from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.routing import ZakpickModel
 
-POD = "http://zakpod1:9090/v1"
+POD = "http://localbox:9090/v1"
 
 
 # ── classification: where does a call actually go? ────────────────────────────

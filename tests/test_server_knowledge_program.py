@@ -7,7 +7,7 @@ reader is most likely to break by accident:
   * EMPTINESS IS THE SIGNAL, SO EMPTY IS NOT A 404. ``{}`` means "nothing
     published"; a populated object means published. Collapsing the two would tell
     a caller the route is absent when the real answer is "nothing published yet"
-    (guard-5493). ``published`` states which case it is so the caller never has to
+    ``published`` states which case it is so the caller never has to
     infer it from truthiness.
 
     THIS MATTERS MORE HERE THAN IT DID FOR ``self``. ``project_program`` fails
