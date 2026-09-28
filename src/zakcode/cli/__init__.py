@@ -899,7 +899,8 @@ def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
 
 
 #: Turn ends after which an unattended session is continued (ADR-0090): the turn collapsed
-#: with nobody at the prompt to notice.
+#: with nobody at the prompt to notice. The same set gates the continuation after a build
+#: restart (ADR-0263): a restart continues only what the old build would have continued.
 _KICK_STOP_REASONS = frozenset({"doom_loop", "gave_up", "degenerated", "stuck"})
 
 
@@ -917,6 +918,16 @@ def _unattended_continuation(
     then
     46 minutes at the prompt with 20 of 23 steps open. An attended session, a plan with
     nothing open, and a turn that ended any other way are left alone.
+
+    ``stop_reason`` is how the last turn ended; after a restart it is the one the session
+    document recorded before the exec. Only a collapse is continued, restart or not
+    (ADR-0263): a restart is an upgrade, so the session does at the new build's prompt what
+    it would have done at the old one's. A turn that ended any other way stays ended — a
+    finished answer, an operator's stop that the turn-end hooks allowed, a spent budget, a
+    question — and whatever would have woken it (a due wake-up, a say, an exit note)
+    persists across the exec and reaches the fresh process through its own door. Measured
+    2026-09-28: a worker session its operator had stopped restarted into a pending build
+    at a later idle prompt, and was told to carry on with its plan.
     """
     unattended = getattr(getattr(agent, "loop", None), "unattended", None)
     if unattended is None or not unattended():
@@ -924,12 +935,12 @@ def _unattended_continuation(
     network = agent.session.task_network
     if network.is_empty() or network.is_complete():
         return None
+    if stop_reason not in _KICK_STOP_REASONS:
+        return None
     if restarted is not None:
         why = f"this session was restarted into build {restarted} (a zakcode update)"
-    elif stop_reason in _KICK_STOP_REASONS:
-        why = f"the previous turn ended {stop_reason!r} and its context was compacted"
     else:
-        return None
+        why = f"the previous turn ended {stop_reason!r} and its context was compacted"
     done, total = network.progress()
     return (
         f"[harness] {why}. {total - done} of {total} plan steps are still open and nobody is "
@@ -950,8 +961,9 @@ def _restart_kick(
     resumes the loop exactly where it was, whatever the plan's state — a loop whose plan
     happened to be complete at that boundary would otherwise sit at the prompt forever.
     ``boundary`` (``"skill"`` or ``"stop-hook"``) words the preface for what actually
-    happened. Any other restart falls back to the open-plan kick (ADR-0090). Not a
-    restart at all: nothing.
+    happened. Any other restart falls back to the open-plan kick (ADR-0090), which follows
+    only a turn that collapsed (ADR-0263): after a turn that ended on purpose the session
+    waits at the prompt, as it would have on the old build. Not a restart at all: nothing.
     """
     if restarted is None:
         return None
@@ -978,7 +990,9 @@ def _restart_kick(
             "at a turn boundary where a Stop hook had asked it to continue. Nothing was "
             f"lost; do exactly what it asked:\n{carried}"
         )
-    return _unattended_continuation(agent, restarted=restarted, stop_reason=None)
+    # How the last turn ended, as the old process saved it just before the exec.
+    last = str(getattr(getattr(agent, "session", None), "last_stop_reason", "") or "")
+    return _unattended_continuation(agent, restarted=restarted, stop_reason=last)
 
 
 def _restart_now(done: Any, mux: Any) -> bool:
@@ -2883,7 +2897,8 @@ def chat(
     repl_mux.append(mux)
 
     # ADR-0090: an unattended session (nobody types) that a restart put back at the prompt
-    # with plan steps open continues its plan; `kicks` bounds the same for collapsed turns.
+    # with plan steps open continues its plan if its last turn collapsed (ADR-0263); `kicks`
+    # bounds the same for collapsed turns.
     kicks = 0
     kick = _restart_kick(agent, restarted=restarted, carried=carried, boundary=boundary)
     if kick is not None:

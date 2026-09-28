@@ -15846,3 +15846,57 @@ handle was handed on, so a green cannot be vacuous. A Windows-only test checks t
 name refuses an unknown name and a job without the pid, and kills only the named job. A POSIX test
 checks that the hand-off has nothing to do there, and two tests check that the CLI hands the jobs
 on before the exec and still restarts when the hand-off fails.
+
+## ADR-0263: a build restart continues only a turn that collapsed
+
+Status: accepted. 2026-09-28.
+
+ADR-0090 continues an unattended session at an idle prompt in two cases: after a turn that
+collapsed (`doom_loop`, `gave_up`, `degenerated`, `stuck`), and after a restart into a new build.
+The first case looks at how the turn ended. The second never did. ADR-0090 rejected continuing
+after a `completed` turn, because a finished answer with plan steps left over is legitimate, yet a
+restart after a `completed` turn got the continuation anyway. A restart happens at the first idle
+prompt after an install, so any turn end can come before it.
+
+Measured 2026-09-28 on a worker session. Its operator sent a stop through the say inbox, and a new
+build was installed while the stop ran. The stop finished, and the last turn before the restart
+ended `completed` (its session document recorded `last_stop_reason: completed`). At that idle
+prompt the session restarted into the new build, and the restart told it "2 of 44 plan steps are
+still open and nobody is at the prompt: continue with the plan's current step ... Do not stop to
+wait for instructions." It went back to work its operator had just stopped.
+
+Decision.
+
+1. After a restart, the open-plan continuation reads how the last turn ended from the session
+   document (`last_stop_reason`, saved before the exec since ADR-0033) and fires only for the
+   collapse set: the same condition the prompt applies. A restart is an upgrade (ADR-0034), so the
+   session does at the new build's prompt what it would have done at the old one's.
+2. A carried continuation (ADR-0099, ADR-0101) is unchanged and is delivered whatever the stop
+   reason: a turn whose turn-end hook asked it to continue keeps its own stop reason.
+3. Every other turn end stays ended across the restart. Whatever would have woken the session at
+   the old prompt, such as a due wake-up, a say or a background command's exit note, persists
+   across the exec and reaches the fresh process through its own door.
+
+Rejected: treating operator input since the last continuation as attendance. The say inbox also
+carries the input that starts work, zakcode cannot tell a stop from a start without knowing the
+host's commands, and a collapse long after the operator's last line would lose its continuation.
+Rejected: carrying across the exec a flag saying the turn-end hooks allowed the stop. It covers the
+measured case, but a `completed` turn in a session with no turn-end hook is the same case, and
+ADR-0090 already decided it. The stop reason is already recorded and already crosses the exec.
+Rejected: excluding only `completed`. A spent budget and a question to the user end a turn on
+purpose too, and a provider failure or a stalled veto has its own wake-up, which a continuation on
+top would double. One set, the one the prompt uses. Unchanged: the once-in-a-row bound. A fresh
+process does not know the old one's count, so a restart after a second collapse still continues
+once. The new build is a new chance, and restarts come only with installs.
+
+The proof. One test runs the whole hand-off: the old process saves the document and execs (the exec
+is patched), and the fresh process loads it. After a `completed` turn with 2 of 44 steps open the
+restart continues nothing; after a `stuck` turn in the same place it continues. Another test checks
+every turn end the agent loop records: each collapse is continued after a restart, and every other
+end, and an empty one, is not, which is also what the prompt does; a carried continuation after a
+`completed` turn is still delivered. Both tests fail on the code before this change (2 failed, 32
+passed in the module). A mutation that restores the old behavior for restarts turns exactly those
+two red. A mutation that drops the recorded stop reason at the restart turns the collapse cases red,
+including the fallback in the existing carried-continuation test. Existing tests that called the
+restart continuation with no stop reason now pass the collapse they describe, so each still fails
+only on the condition it names.
