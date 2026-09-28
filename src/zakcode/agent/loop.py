@@ -7206,9 +7206,27 @@ class AgentLoop:
         # Wall time the message has already been held (ADR-0255); read only once a hold has
         # begun, since _say_held_since is stamped at the first hold.
         held_s = time.monotonic() - self._say_held_since if self._say_waited else 0.0
+        # Operator-only slash commands bypass the hold: the model never invokes
+        # these skills itself, so holding them for a step seam only delays the
+        # operator's control input (e.g. the run's ending message).
+        _operator_exempt = False
+        if mid_step:
+            _peek: str | None = None
+            if typed and self._typed_lines:
+                _peek = self._typed_lines[0]
+            elif not typed:
+                try:
+                    _peek = path.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    _peek = None
+            if _peek is not None and _peek.startswith("/"):
+                _cmd_parts = _peek.split("\n", 1)[0].strip().split(None, 1)
+                if _cmd_parts and _cmd_parts[0][1:].lower() in self._user_only_skills():
+                    _operator_exempt = True
         if (
             mid_step
             and not step_seam
+            and not _operator_exempt
             and self._say_waited < _SAY_PATIENCE
             and held_s < _SAY_PATIENCE_S
         ):

@@ -537,6 +537,17 @@ class Settings(BaseSettings):
             "agents/<name>/); None = raise no framework stop, interrupt as before."
         ),
     )
+    # The host-neutral ending (ADR-0264): delivering the ending as input through the say
+    # inbox so no subprocess, signal file or agent-session layout is assumed.  Replaces
+    # `run_stop_agent` one-for-one.  When BOTH are set, this wins; when only the agent
+    # setting is present a deprecation warning is logged at startup.
+    run_stop_message: str | None = Field(
+        default=None,
+        description=(
+            "Line delivered to the session as operator input when the run starts to end; "
+            "None = raise no message, interrupt as before."
+        ),
+    )
     # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs
     # ruling): the TURN_END seam (Claude Code's Stop hook) is structurally ALWAYS ON
     # for the main Agent loop when the workspace's adopted hooks register one, and

@@ -318,6 +318,40 @@ async def test_say_holds_mid_step_and_lands_at_the_step_seam(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_operator_only_say_bypasses_hold_mid_step(tmp_path: Path) -> None:
+    """An operator-only slash command (e.g. the run's ending message) bypasses
+    the ADR-0052 hold and is delivered at the first boundary, not deferred to
+    the step seam.  Contrast with test_say_holds_mid_step_and_lands_at_the_step_seam:
+    the same scenario with a plain message waits for the seam."""
+    inbox = say_path(tmp_path)
+    provider = _Recording(
+        [
+            _plan_call([{"title": "A", "status": "in_progress", "note": "x"}]),
+            _JUDGE_OK,  # judge on the structural authoring (silent)
+            _tool_call("poke"),  # the say arrives mid-step
+            _step_call(1),  # boundary: regular says are held here; operator-only is not
+            _step_call(2),
+            _DONE,
+        ]
+    )
+    loop, session = _loop(
+        provider, tmp_path, tools=[_SayWhileRunning(inbox, "/stop probe"), _EchoArg()]
+    )
+    # Make "stop" an operator-only skill so the exemption fires.
+    loop._user_only_skills = lambda: {"stop"}  # type: ignore[assignment]
+    result = await loop.arun_turn("one-step job")
+
+    assert result.stop_reason == "completed"
+    assert not say_pending(inbox)
+    framed = [m for m in session.messages if m.role == "user" and "/stop probe" in m.text]
+    assert len(framed) == 1
+    # The operator-only command was NOT held: it landed at seen[3] (the first boundary
+    # after the poke), unlike a regular say which would wait for the step seam or the
+    # patience cap.
+    assert any("/stop probe" in m.text for m in provider.seen[3] if m.role == "user")
+
+
+@pytest.mark.asyncio
 async def test_say_patience_cap_delivers_even_when_the_step_never_ends(tmp_path: Path) -> None:
     """The hold is bounded: a step that never completes cannot starve the message —
     after _SAY_PATIENCE held boundaries it is delivered mid-step anyway."""

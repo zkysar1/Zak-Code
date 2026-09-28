@@ -120,6 +120,7 @@ from zakcode.session.say_inbox import (
     read_say,
     request_interrupt,
     say_path,
+    say_pending,
     take_interrupt,
     write_say,
 )
@@ -1734,6 +1735,10 @@ def create_app(
         root.mkdir(parents=True, exist_ok=True)
         observation: dict[str, Any] = dict(request.observation)
         merged_changes = False
+        # PEEK the pending frame once: used by the change-carry below AND by the
+        # sticky-kind logic, both of which need it only when superseding.
+        pending: dict[str, Any] | None = None
+        pending_observation: Any = None
         if superseded:
             # Changes are EVENTS, not state. Two envelopes can land inside one ReAct
             # iteration, and plain latest-wins drops the unread one's change list wholesale,
@@ -1769,7 +1774,22 @@ def create_app(
             # Staged alongside the payload so whatever reads this file can tell a narrowed
             # CHANGE from a periodic full picture — the same distinction the wake below
             # turns on, and useless to a reader that has to guess it.
-            "kind": request.kind,
+            #
+            # STICKY KIND: when the message-based ending path is active, there is no
+            # signal-file wake.  The host reads the frame on its own tick, and a
+            # heartbeat superseding an unread change must not hide that change.  So the
+            # staged `kind` is promoted to `change` whenever the pending frame was a
+            # change and this one is not.
+            "kind": (
+                KIND_CHANGE
+                if (
+                    superseded
+                    and request.kind != KIND_CHANGE
+                    and isinstance(pending_observation, dict)
+                    and (pending or {}).get("kind") == KIND_CHANGE
+                )
+                else request.kind
+            ),
             "changedSlices": list(request.changedSlices),
             # The frame travels WITH the payload so whatever reads this file cannot
             # present untrusted world text to the model unframed (P1).
@@ -1792,7 +1812,12 @@ def create_app(
         # role it plays for the run-end stop, and the repo's no-knobs ruling is against a
         # second setting that answers an identical question. None = not a seed workspace,
         # which is left entirely untouched.
-        agent = resolved_settings.run_stop_agent
+        #
+        # When the host-neutral ending (`run_stop_message`) is active there is no agent
+        # address and no signal-file wake: the host reads the staged frame on its own
+        # tick, and the sticky kind above ensures a superseding heartbeat cannot hide an
+        # unread change.  `wake` answers `not-attempted`, which is the honest truth.
+        agent = None if resolved_settings.run_stop_message else resolved_settings.run_stop_agent
         woke = False
         wake_attempted = False
         mode: str | None = None
@@ -2054,7 +2079,13 @@ def create_app(
         except OSError:  # includes FileNotFoundError — nothing pending
             return False
 
+    # The last AgentDone.stop_reason seen from any turn — used by the DONE check
+    # in the host-neutral ending path.  Declared here (before _run_turn_for_say)
+    # so mypy can resolve the nonlocal binding.
+    last_turn_stop_reason: str | None = None
+
     async def _run_turn_for_say(text: str, *, wakeup: bool = False, verbatim: bool = False) -> None:
+        nonlocal last_turn_stop_reason
         sid = _current_session_id()
         session: Session | None = None
         if sid is not None:
@@ -2110,10 +2141,16 @@ def create_app(
                 message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
 
             async def _run() -> None:
+                nonlocal last_turn_stop_reason
+                from zakcode.events import AgentDone as _AgentDone
+
                 assert agent is not None
                 async for event in agent.astream_turn(message):
                     with contextlib.suppress(Exception):
                         bus.publish(event)
+                    # Capture the turn's stop_reason for the DONE check.
+                    if isinstance(event, _AgentDone):
+                        last_turn_stop_reason = event.stop_reason
 
             async def _watch_interrupt() -> None:
                 while True:
@@ -2131,6 +2168,7 @@ def create_app(
                     turn.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await turn
+                    last_turn_stop_reason = "interrupted"
                     from zakcode.events import AgentStatus
 
                     with contextlib.suppress(Exception):
@@ -2168,6 +2206,10 @@ def create_app(
                 if agent is not None:
                     await _release_agent(agent)
                 inflight.discard(session.id)
+                # Host-neutral ending: check SEEN and DONE after every turn.
+                if run_ending_until is not None:
+                    _check_run_ending_seen()
+                    _check_run_ending_done(last_turn_stop_reason)
 
     #: A framework stop was raised and no turn has yet been started to read it
     #: (ADR-0189). Consumed by the first idle beat after the raise.
@@ -2341,6 +2383,19 @@ def create_app(
     # is in flight. Opened once by `_begin_framework_stop`, read by `_keep_beating`.
     framework_stop_until: float | None = None
     run_ended = asyncio.Event()
+    # ── host-neutral ending (run_stop_message) ──────────────────────────────────
+    # Monotonic deadline for the message-based ending; None until the ending starts.
+    # Parallel to `framework_stop_until` but for the new path.
+    run_ending_until: float | None = None
+    # Whether OUR line is in (or has passed through) the inbox. The slot may be full
+    # when the ending starts, so the write can land beats later; until it does, an
+    # empty slot or someone else's say proves nothing about our line.
+    run_ending_written = False
+    # Whether the line has been taken by some turn (read from the inbox).
+    run_ending_taken = False
+    # Whether a DONE condition has been observed: taken + completed stop_reason +
+    # nothing in flight.
+    run_ending_done = False
 
     def _arm_run_deadlines() -> None:
         nonlocal run_deadline, turn_deadline, effective_reserve, last_say_at
@@ -2567,6 +2622,143 @@ def create_app(
             # loop's re-entry. Idempotent with the window: set once per raise.
             stop_reentry_pending = True
 
+    async def _begin_graceful_ending() -> None:
+        """Start the ending through whichever path is configured.
+
+        ``run_stop_message`` wins when both are set.  The legacy
+        ``run_stop_agent`` path is reached only when the message is unset.
+        Idempotent: each underlying function opens one window at most.
+        """
+        if resolved_settings.run_stop_message:
+            _begin_run_ending()
+        else:
+            await _begin_framework_stop()
+
+    def _any_ending_window_open() -> bool:
+        """True while either ending path has an open window."""
+        return run_ending_until is not None or framework_stop_until is not None
+
+    def _begin_run_ending() -> None:
+        """Queue the configured line through the say inbox and open the ending window.
+
+        The host-neutral replacement for ``_begin_framework_stop``: the ending travels
+        as operator input so no subprocess, signal file or agent-session layout is
+        assumed.  Idempotent: the window is opened once and every later caller is a
+        no-op, the same rule the legacy path follows.
+
+        The slot may be full (the operator's say goes first).  A refused write is
+        retried on each beat inside the window — see ``_retry_run_ending_write``.
+        """
+        nonlocal run_ending_until, run_ending_written
+        if run_ending_until is not None:
+            return
+        run_ending_until = time.monotonic() + _framework_stop_grace()
+        inbox = say_path(resolved_settings.workspace_root)
+        if write_say(inbox, _own_line()):
+            run_ending_written = True
+            logger.info("run ending: queued the configured line into the say inbox")
+        else:
+            logger.info(
+                "run ending: say inbox occupied — will retry on the next beat "
+                "(the operator's message goes first)"
+            )
+
+    def _own_line() -> str:
+        """The configured ending line as the inbox stores it (``read_say`` strips).
+
+        Every comparison with the slot's text uses this form: a configured line with its
+        own surrounding whitespace would otherwise never equal what the slot holds, so a
+        pending copy of OUR line would read as someone else's say.
+        """
+        return (resolved_settings.run_stop_message or "").strip()
+
+    def _retry_run_ending_write() -> None:
+        """Best-effort retry of the say write when the slot was full on the first attempt.
+
+        Called on each beat while the window is open. No-op once the line has been
+        written: writing it again after a turn consumed it would deliver the ending twice.
+        """
+        nonlocal run_ending_written
+        if run_ending_written or run_ending_taken:
+            return
+        inbox = say_path(resolved_settings.workspace_root)
+        if say_pending(inbox):
+            return  # the operator's say is still there — do not clobber it
+        if write_say(inbox, _own_line()):
+            run_ending_written = True
+            logger.info("run ending: queued the configured line (retry)")
+
+    def _check_run_ending_seen() -> None:
+        """Record TAKEN when the inbox no longer holds our line.
+
+        Called at every boundary where the inbox could have been read.  The line
+        could have been consumed by a turn (between-turn poll or mid-turn delivery);
+        either way, the inbox is now empty or holds someone else's text.  Only once the
+        line was WRITTEN: before that, an empty slot or a different say is the operator's
+        traffic, not evidence that our line was read.
+        """
+        nonlocal run_ending_taken
+        if run_ending_taken or run_ending_until is None or not run_ending_written:
+            return
+        inbox = say_path(resolved_settings.workspace_root)
+        if not say_pending(inbox):
+            run_ending_taken = True
+            return
+        # The slot holds something — check whether it is still ours.
+        try:
+            text = inbox.read_text(encoding="utf-8").strip()
+        except OSError:
+            return
+        if text != _own_line():
+            # Someone else wrote a say; ours was taken.
+            run_ending_taken = True
+
+    def _check_run_ending_done(last_stop_reason: str | None) -> None:
+        """Record DONE when the host's stop has finished.
+
+        DONE needs three conditions simultaneously:
+        1. The line was TAKEN by some turn.
+        2. The last turn's ``stop_reason`` is ``completed``.
+        3. Nothing is in flight.
+        """
+        nonlocal run_ending_done
+        if run_ending_done or not run_ending_taken:
+            return
+        if last_stop_reason != "completed":
+            return
+        if inflight:
+            return
+        run_ending_done = True
+
+    def _retract_own_line() -> bool:
+        """Delete the pending say only when it holds exactly our line; True when it did.
+
+        A PEEK, never a consume: reading the say (which deletes it) and writing a
+        different one back would open a window in which the operator's say is lost.
+        NEVER deletes a different pending say.
+        """
+        inbox = say_path(resolved_settings.workspace_root)
+        if not say_pending(inbox):
+            return False
+        try:
+            text = inbox.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if text != _own_line():
+            return False
+        with contextlib.suppress(OSError):
+            inbox.unlink()
+        return True
+
+    def _abandon_run_ending() -> None:
+        """Retract the configured line from the inbox if it still holds exactly ours.
+
+        Called at every overrun site so a say the host never took does not survive the
+        run and confuse the next boot.
+        """
+        if _retract_own_line():
+            logger.info("run ending: retracted the configured line (never taken)")
+
     def _keep_beating() -> bool:
         """Whether the say consumer gets another beat.
 
@@ -2585,6 +2777,12 @@ def create_app(
         wedged mind can never hold a paid vessel open -- which is why the grace is
         checked FIRST and the filesystem read only after.
         """
+        # Host-neutral ending (run_stop_message): the DONE check replaces the
+        # filesystem read the legacy path uses.
+        if run_ending_until is not None:
+            if time.monotonic() >= run_ending_until:
+                return False
+            return not run_ending_done
         if framework_stop_until is not None:
             if time.monotonic() >= framework_stop_until:
                 return False
@@ -2683,6 +2881,21 @@ def create_app(
                 continue
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
+            # Host-neutral ending: check overrun.
+            if (
+                run_ending_until is not None
+                and _framework_stop_grace() > 0
+                and time.monotonic() >= run_ending_until
+            ):
+                taken = "taken" if run_ending_taken else "never taken"
+                logger.warning(
+                    "run ending ran past its %.0fs window (%s) — interrupting the running turn",
+                    _framework_stop_grace(),
+                    taken,
+                )
+                _abandon_run_ending()
+                request_interrupt(interrupt_path(resolved_settings.workspace_root))
+                return
             if (
                 framework_stop_until is not None
                 and _framework_stop_grace() > 0
@@ -2697,20 +2910,26 @@ def create_app(
                 return
         if run_stop_reason is None:
             run_stop_reason = "duration_cap"
-        await _begin_framework_stop()
-        if framework_stop_until is not None:
+        await _begin_graceful_ending()
+        ending_until = run_ending_until or framework_stop_until
+        if ending_until is not None:
             # The mind is now ending itself. Keep watching, but only to BOUND it: the
             # interrupt stops being the ending and becomes the backstop for an overrun.
             # A stop that lands inside its window never sees an interrupt, which is the
             # whole point — an interrupted turn cannot consolidate.
             logger.info(
-                "run cap reached mid-turn: the mind's own stop has %.0fs left",
-                max(0.0, framework_stop_until - time.monotonic()),
+                "run cap reached mid-turn: the ending has %.0fs left",
+                max(0.0, ending_until - time.monotonic()),
             )
-            while not inflight or time.monotonic() < framework_stop_until:
+            while not inflight or time.monotonic() < ending_until:
                 await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
-            logger.warning("run cap: framework stop overran its window — interrupting")
-            _retire_unconsumed_framework_stop()
+            if run_ending_until is not None:
+                taken = "taken" if run_ending_taken else "never taken"
+                logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
+                _abandon_run_ending()
+            else:
+                logger.warning("run cap: framework stop overran its window — interrupting")
+                _retire_unconsumed_framework_stop()
         else:
             logger.info("run cap reached mid-turn: interrupting")
         request_interrupt(interrupt_path(resolved_settings.workspace_root))
@@ -2746,10 +2965,10 @@ def create_app(
                     # fires (it skips whenever nothing is `inflight`), so the raise has
                     # to happen here too or the cap path ends with no graceful stop at
                     # all. Idempotent when the watcher already opened the window.
-                    await _begin_framework_stop()
+                    await _begin_graceful_ending()
                     # No window (not a framework seed, or the raise failed) => the
                     # ending is exactly what it was before this change: break now.
-                    if framework_stop_until is None or not _keep_beating():
+                    if not _any_ending_window_open() or not _keep_beating():
                         break
                 # The ABANDONED case, which the cap above cannot bound: a member who
                 # walks away mid-conversation pays the full price they agreed to for a
@@ -2770,8 +2989,8 @@ def create_app(
                         resolved_settings.run_idle_timeout,
                     )
                     run_stop_reason = "idle"
-                    await _begin_framework_stop()
-                    if framework_stop_until is None or not _keep_beating():
+                    await _begin_graceful_ending()
+                    if not _any_ending_window_open() or not _keep_beating():
                         break
                 try:
                     ran = await _consume_one_say()
@@ -2785,6 +3004,12 @@ def create_app(
                     # beat interval already keys on, so the idle window and the beat
                     # cadence can never disagree about what counts as activity.
                     last_say_at = time.monotonic()
+                # Host-neutral ending: retry the say write if the slot was busy, and
+                # check SEEN/DONE after each beat whether a turn ran or not.
+                if run_ending_until is not None:
+                    _retry_run_ending_write()
+                    _check_run_ending_seen()
+                    _check_run_ending_done(last_turn_stop_reason)
                 await asyncio.sleep(_ACTIVE_BEAT_SECONDS if ran else _IDLE_BEAT_SECONDS)
         finally:
             # BEFORE `_end_run()`, always, on every exit path — the consolidation turn
@@ -2800,6 +3025,8 @@ def create_app(
             # the pair only when a turn was running as the grace ran out. Measured on
             # prod 2026-09-18: loop at rest, stop signed 02:33:29Z, window closed
             # 02:39:20Z, the signed pair still on EFS after the vessel was torn down.
+            if run_ending_until is not None and time.monotonic() >= run_ending_until:
+                _abandon_run_ending()
             if framework_stop_until is not None and time.monotonic() >= framework_stop_until:
                 _retire_unconsumed_framework_stop()
         if run_stop_reason is None:
@@ -2831,6 +3058,18 @@ def create_app(
                 resolved_settings.run_stop_agent,
                 grace_s=resolved_settings.run_consolidation_reserve,
             )
+        # Host-neutral ending: drop a pending say that holds exactly our configured
+        # line, so a run never opens on its own ending left by a previous process.
+        # A DIFFERENT pending say is kept — it is the operator's, not ours.
+        if resolved_settings.run_stop_message and _retract_own_line():
+            logger.info("startup: dropped a pending say equal to run_stop_message")
+        # Precedence: when both settings are present, the message wins. The agent
+        # setting alone logs a deprecation warning.
+        if resolved_settings.run_stop_agent and not resolved_settings.run_stop_message:
+            logger.warning(
+                "run_stop_agent is deprecated and will be removed in a future release; "
+                "set run_stop_message to the host's stop command instead"
+            )
         if kept_cap:
             # That run is over, and this process is its restart, not a new run. So it starts
             # ENDED: no say consumer, hence no fresh run clock, and /run/stop answers
@@ -2857,18 +3096,21 @@ def create_app(
         if (
             not resolved_settings.run_consolidation_message
             and not resolved_settings.run_stop_agent
+            and not resolved_settings.run_stop_message
             and on_run_end is None
         ):
             return 0.0
-        # `run_stop_agent` earns the reserve for the same reason a digest turn does, and
-        # it is the SAME seconds: the reserve was always the budget for "the ending". It
-        # used to buy an injected recap prompt; with the ending handed back to the
-        # framework it buys the mind's own consolidation + handoff. Omitting it here
-        # would arm a graceful stop and then cancel the loop before it could finish —
-        # the severed ending, reintroduced one layer down.
+        # `run_stop_agent` / `run_stop_message` earns the reserve for the same reason a
+        # digest turn does, and it is the SAME seconds: the reserve was always the budget
+        # for "the ending".  Omitting it here would arm a graceful stop and then cancel
+        # the loop before it could finish — the severed ending, reintroduced one layer down.
         reserve = (
             resolved_settings.run_consolidation_reserve
-            if (resolved_settings.run_consolidation_message or resolved_settings.run_stop_agent)
+            if (
+                resolved_settings.run_consolidation_message
+                or resolved_settings.run_stop_agent
+                or resolved_settings.run_stop_message
+            )
             else 0.0
         )
         return _IDLE_BEAT_SECONDS + reserve
@@ -2914,7 +3156,7 @@ def create_app(
             # A human ending the run IS the framework's /stop. Raise it before the loop
             # winds down so the mind consolidates and hands off, rather than being
             # cancelled mid-thought; `_graceful_stop_budget` holds the door for it.
-            await _begin_framework_stop()
+            await _begin_graceful_ending()
             run_stopping.set()
         return {"stopping": True, "reason": run_stop_reason}
 
