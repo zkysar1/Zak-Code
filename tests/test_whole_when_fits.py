@@ -306,7 +306,7 @@ def test_a_fenced_phase_comment_needs_a_separator_after_its_number() -> None:
         "# Phase 1 — SELECT (reuse the scorer)\nselect()\n\n"
         "# do_verify emits the imperative. Previously\n"
         "# Phase 6 for non-recurring deep closes rode on LLM memory alone and drifted,\n"
-        "# observed miss g-115-2404.\nverify()\n\n"
+        "# observed miss.\nverify()\n\n"
         "#     Phase 3.9 note cites. The ONLY status that means done.\n"
         "# Step 2.95 — UNIT CLAIM\nclaim()\n\n"
         "# Phase -0.5e': Quiescence Wake-Verify (Change 2)\nwake()\n```\n"

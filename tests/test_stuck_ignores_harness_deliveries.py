@@ -49,14 +49,14 @@ from zakcode.wakeup import LOOP_SENTINEL, WakeupSlot
 #: The loader's reply to a skill that is already in context, as ``SkillLoader`` writes it.
 POINTER = (
     "[arguments: loop]\n\n[already loaded] Nothing new was loaded: the full instructions for "
-    "skill 'aspirations' are already in your context THIS turn, unchanged — in the /command "
+    "skill 'orchestrate' are already in your context THIS turn, unchanged — in the /command "
     "message you were given, or an earlier Skill result — and you have run no tool on them "
     "since they arrived. Loading a skill does not run it. Carry those instructions out now, "
     "starting from their first step: your next action is that step's tool call, not another "
     "Skill call and not a summary."
 )
 PROBE_OUTPUT = (
-    "[runner-claim] acquire: HELD (backend=local) — another machine owns a live claim\n"
+    "[lease-probe] acquire: HELD (backend=local) — another machine owns a live claim\n"
     "ACQUIRE_RC=4\n[exit code: 0]"
 )
 LADDER = [
@@ -99,7 +99,7 @@ def test_the_loaders_pointer_never_climbs_the_ladder(name: str) -> None:
             )
         tracker.reset()
         n += 1
-        assert _observe(tracker, n, name, POINTER, skill="aspirations", args="loop") is (
+        assert _observe(tracker, n, name, POINTER, skill="orchestrate", args="loop") is (
             StuckAction.CONTINUE
         )
         assert SIG_REPEATED_OUTCOME not in tracker.last_signals
@@ -109,7 +109,7 @@ def test_control_the_same_pointer_climbs_a_tracker_that_does_not_exempt_it() -> 
     """Without the exemption the pointer IS a repeated outcome: the defect, pinned."""
     tracker = StuckTracker()
     actions = [
-        _observe(tracker, i, "Skill", POINTER, skill="aspirations", args="loop")
+        _observe(tracker, i, "Skill", POINTER, skill="orchestrate", args="loop")
         for i in range(1, 7)
     ]
     # Same arguments every time, so the repeated-batch signal joins in from the second call;
@@ -132,7 +132,7 @@ def test_the_exemption_is_per_call_not_per_batch() -> None:
     tracker = _loop_tracker()
     actions: list[StuckAction] = []
     for i in range(1, 4):
-        skill = ToolCall(id=f"s{i}", name="Skill", arguments={"skill": "aspirations"})
+        skill = ToolCall(id=f"s{i}", name="Skill", arguments={"skill": "orchestrate"})
         probe = ToolCall(id=f"p{i}", name="Bash", arguments={"command": f"probe {i}"})
         tracker.observe(
             [skill, probe],
@@ -280,7 +280,7 @@ async def test_six_pointers_between_distinct_work_end_the_turn_clean(
     script: list[Any] = []
     for door in range(1, 7):
         script.append(call_tool("work", {"n": door}, id=f"w{door}"))
-        script.append(call_tool("Skill", {"skill": "aspirations", "args": "loop"}, id=f"s{door}"))
+        script.append(call_tool("Skill", {"skill": "orchestrate", "args": "loop"}, id=f"s{door}"))
     script.append(reply("done"))
     loop = _loop(tmp_path, script)
     await _run(loop, "run the loop", path)

@@ -526,7 +526,7 @@ async def test_bash_enoent_same_words_in_another_order_lead_the_hint(tmp_path) -
         (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
-        {"command": "bash core/scripts/blocker-create.sh --goal g-006-22"}, ctx
+        {"command": "bash core/scripts/blocker-create.sh --goal item-6-22"}, ctx
     )
     assert res.is_error
     assert res.fix is not None
@@ -819,7 +819,7 @@ def test_json_first_line_fix_predicate() -> None:
         "json.decoder.JSONDecodeError: Expecting value: line 1 column 2 (char 1)\n"
     )
     fix = _json_first_line_fix(
-        "bash core/scripts/aspirations-query.sh --full 2>&1 | python3 -c 'x'", err
+        "bash core/scripts/objectives-query.sh --full 2>&1 | python3 -c 'x'", err
     )
     assert fix is not None and "json.load(sys.stdin)" in fix and "not JSONL" in fix
     heredoc = "cat out.json | python3 - <<'PY'\nimport json\nPY"
@@ -923,7 +923,7 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
 
     scripts = tmp_path / "core" / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("pipeline.py", "_pipeline_fields.py", "pipeline-read.sh", "aspirations.py"):
+    for name in ("pipeline.py", "_pipeline_fields.py", "pipeline-read.sh", "objectives.py"):
         (scripts / name).write_text("", encoding="utf-8")
     (scripts / "__init__.py").write_text("", encoding="utf-8")
     err = (
@@ -937,7 +937,7 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
     assert hint is not None
     assert "never resolved" in hint and "core/scripts" in hint
     assert "pipeline-read.sh" in hint and "pipeline" in hint and "not a module" in hint
-    assert "aspirations" not in hint and "__init__" not in hint
+    assert "objectives" not in hint and "__init__" not in hint
     # A PYTHONPATH prefix, a cd prefix, sys.path.append, and escaped quotes inside a
     # double-quoted program all name the same root.
     for other in (
@@ -974,7 +974,7 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
     # Nothing close under an existing root: the hint lists what the root holds.
     far = err.replace("pipeline_read", "totally_other")
     got = fix(cmd, far, tmp_path, [])
-    assert got is not None and "it holds:" in got and "aspirations" in got
+    assert got is not None and "it holds:" in got and "objectives" in got
     assert "pipeline-read.sh" not in got  # the listing is importable names only
     # A package that DOES exist elsewhere keeps the run-from hint, whatever root was declared.
     pkg = tmp_path / "lib" / "pipeline_read"
@@ -1030,8 +1030,8 @@ def test_interpreter_mismatch_fix_predicate() -> None:
 
     # A shell script fed to Python -- a coordinating session's verbatim shape
     # (2026-08-29), the py launcher, options before the path, a cd/env prefix.
-    hint = fix("cd /w && MIND_AGENT=coach python3 core/scripts/aspirations-update-goal.sh --a b")
-    assert hint is not None and "bash core/scripts/aspirations-update-goal.sh" in hint
+    hint = fix("cd /w && MIND_AGENT=coach python3 core/scripts/objectives-update-goal.sh --a b")
+    assert hint is not None and "bash core/scripts/objectives-update-goal.sh" in hint
     assert fix("py -3 core/scripts/x.sh") is not None
     assert fix("python3 -u ./x.sh; echo done") is not None
     # Python fed to a shell.
@@ -1092,7 +1092,7 @@ _APPORT = (
     '  File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 114, '
     "in apport_excepthook\n"
     '    report["ExecutableTimestamp"] = str(int(os.stat(binary).st_mtime))\n'
-    "FileNotFoundError: [Errno 2] No such file or directory: '/opt/coach-mind/-c'\n"
+    "FileNotFoundError: [Errno 2] No such file or directory: '/opt/host-framework/-c'\n"
     "\n"
     "Original exception was:\n"
 )
@@ -1203,10 +1203,10 @@ def test_script_path_missing_predicate(tmp_path) -> None:
     (other / "world" / "scripts").mkdir(parents=True)
     (other / "world" / "scripts" / "efs-ssh.sh").write_text("", encoding="utf-8")
     assert _script_path_missing("bash world/scripts/efs-ssh.sh 'echo ok'", root, [other]) is None
-    missing = _script_path_missing("python3 core/scripts/aspirations-read-goal.sh g-1-1", root, [])
-    assert (
-        missing is not None and "aspirations-read-goal.sh" in missing and "was not run" in missing
+    missing = _script_path_missing(
+        "python3 core/scripts/objectives-read-goal.sh goal-1-1", root, []
     )
+    assert missing is not None and "objectives-read-goal.sh" in missing and "was not run" in missing
 
 
 def test_script_path_preflight_steps_over_leading_env_assignments(tmp_path) -> None:
@@ -1217,7 +1217,7 @@ def test_script_path_preflight_steps_over_leading_env_assignments(tmp_path) -> N
 
     root = _script_workspace(tmp_path)
     fleet = (
-        "cd . && MIND_AGENT=coach AYOAI_AGENT=coach STORAGE_BACKEND=local "
+        "cd . && MIND_AGENT=coach HOST_AGENT=coach STORAGE_BACKEND=local "
         "bash core/scripts/loop-orchestrator-entry-battery.sh 2>&1; echo RC=$?"
     )
     missing = _script_path_missing(fleet, root, [])

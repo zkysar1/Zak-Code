@@ -993,8 +993,8 @@ class _ComposingAgent(_FakeAgent):
         return SimpleNamespace(
             invoked=True,
             turn_text=(
-                "<command-message>aspirations is running</command-message>\n"
-                "<command-name>/aspirations</command-name>\n"
+                "<command-message>orchestrate is running</command-message>\n"
+                "<command-name>/orchestrate</command-name>\n"
                 "<command-args>loop</command-args>\n"
                 "page 1 of the loop skill"
             ),
@@ -1017,17 +1017,17 @@ def test_the_loop_sentinel_runs_the_hook_named_reentry(tmp_path: Path) -> None:
     assert write_say(say_path(tmp_path), "hello")
     assert asyncio.run(app.state.consume_one_say()) is True
     session = _current(store, tmp_path)
-    session.loop_skill = "aspirations loop"
+    session.loop_skill = "orchestrate loop"
     store.save(session)
     _arm(store, tmp_path, LOOP_SENTINEL, due_in=-1.0)
 
     assert asyncio.run(app.state.consume_one_say()) is True
 
-    assert composed == [("aspirations", "loop", "harness")]
+    assert composed == [("orchestrate", "loop", "harness")]
     text = _current(store, tmp_path).messages[2].text
-    assert text.startswith("<command-message>aspirations is running — [harness] ")
+    assert text.startswith("<command-message>orchestrate is running — [harness] ")
     assert LOOP_WAKE_NOTE.split(":")[0] in text
-    assert "\n<command-name>/aspirations</command-name>" in text
+    assert "\n<command-name>/orchestrate</command-name>" in text
 
 
 def test_the_loop_sentinel_without_a_known_loop_skill_fires_as_its_line(tmp_path: Path) -> None:

@@ -191,7 +191,7 @@ def test_the_call_line_argument_matches_the_terminal(
         {"file_path": "C:\\Users\\zak\\" + "a" * 120 + ".txt"},
         {"query": "how do I " + "q" * 150},
         {"url": "https://example.com/" + "p" * 100},
-        {"name": "aspirations"},
+        {"name": "orchestrate"},
         {"other": "free text value"},
         {"count": 3, "flag": True},
         {},

@@ -19,7 +19,7 @@ from zakcode.permissions import scan_command_danger
         "rm -f .git/objects/pack/*",
         "rm -rf .git/refs/mind",
         "rm -rf .git",
-        "rm -rf /opt/coach-mind/.git/refs/mind && echo done",
+        "rm -rf /opt/host-framework/.git/refs/mind && echo done",
         'rm -rf "$repo/.git"',
         "rm -rf ./.git",
         "mv .git .git.bak",

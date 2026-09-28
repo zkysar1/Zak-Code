@@ -1,4 +1,4 @@
-"""A CHANGE envelope reaching ``POST /observe`` WAKES a sleeping mind (g-373-10 leg b).
+"""A CHANGE envelope reaching ``POST /observe`` WAKES a sleeping mind.
 
 The mind half of this already existed and was inert. ``perception-received`` was a valid
 signal name (``session.py`` VALID_SIGNALS), was declared in the framework's session
@@ -372,12 +372,12 @@ def test_framework_agent_mode_separates_unreadable_from_reader(tmp_path: Path) -
     assert framework_agent_mode(tmp_path, AGENT) == AUTONOMOUS_MODE
 
 
-# ── wake DISPOSITION reaches the caller (g-373-56) ────────────────────────────────────
+# ── wake DISPOSITION reaches the caller ────────────────────────────────────────────────
 #
 # Everything above pins WHETHER the marker lands. None of it pinned whether the CALLER can
 # find out. Fail-open keeps the frame and keeps the 200 — correctly — so a dropped wake had
 # exactly one egress, a log line, and the response said accepted:true either way. Measured
-# on a live vessel (g-373-10, alpha/cc-09): the workspace seed's 8-entry VALID_SIGNALS
+# on a live vessel: the workspace seed's 8-entry VALID_SIGNALS
 # refused `perception-received`, every POST returned 200 accepted:true, and every wake was
 # lost in silence. Anyone measuring the bridge by watching for 200s reported GREEN.
 
@@ -462,7 +462,7 @@ def test_a_delivered_wake_says_delivered(tmp_path: Path) -> None:
 
 
 def test_a_heartbeat_reports_not_attempted_never_dropped(tmp_path: Path) -> None:
-    """A failed wake must not read as an UN-ATTEMPTED one (guard-1091).
+    """A failed wake must not read as an UN-ATTEMPTED one.
 
     This is why the field is three states and not a boolean. A heartbeat wakes nothing and
     is perfectly healthy; if that collapsed into `dropped`, every quiescent round would
@@ -489,7 +489,7 @@ def test_reader_mode_reports_not_attempted_not_dropped(tmp_path: Path) -> None:
 def test_the_health_surface_counts_a_dropped_wake(tmp_path: Path) -> None:
     """The always-reports-clear class closes only if a MONITOR can see it, not just a caller.
 
-    Both counters read explicit zeros before the first frame (guard-3169), so a bridge that
+    Both counters read explicit zeros before the first frame, so a bridge that
     has never been called stays distinguishable from one delivering cleanly.
     """
     _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))

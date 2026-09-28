@@ -239,7 +239,7 @@ class _Resolver:
 async def _run_skill_call(tmp_path: Path, tool: str, arguments: dict[str, Any]) -> _Resolver:
     registry = ToolRegistry()
     registry.register(UseSkillTool(), aliases=["use_skill"])
-    resolver = _Resolver({"aspirations": "# Aspirations\n\n## Steps\n\n1. Loop.\n"})
+    resolver = _Resolver({"orchestrate": "# Orchestrate\n\n## Steps\n\n1. Loop.\n"})
     provider = ScriptedProvider([call_tool(tool, arguments), reply("done")])
     loop = _loop(provider, tmp_path, registry, skill_resolver=resolver)
     await loop.arun_turn("go")
@@ -251,13 +251,13 @@ async def _run_skill_call(tmp_path: Path, tool: str, arguments: dict[str, Any]) 
 
 
 async def test_skill_loads_under_claude_codes_call_shape(tmp_path: Path) -> None:
-    resolver = await _run_skill_call(tmp_path, "Skill", {"skill": "aspirations", "args": "loop"})
-    assert resolver.loaded == [("aspirations", "loop")]
+    resolver = await _run_skill_call(tmp_path, "Skill", {"skill": "orchestrate", "args": "loop"})
+    assert resolver.loaded == [("orchestrate", "loop")]
 
 
 async def test_skill_loads_under_the_pre_0190_call_shape(tmp_path: Path) -> None:
-    resolver = await _run_skill_call(tmp_path, "use_skill", {"name": "aspirations", "args": "loop"})
-    assert resolver.loaded == [("aspirations", "loop")]
+    resolver = await _run_skill_call(tmp_path, "use_skill", {"name": "orchestrate", "args": "loop"})
+    assert resolver.loaded == [("orchestrate", "loop")]
 
 
 def test_skill_schema_names_the_parameter_skill() -> None:

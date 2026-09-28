@@ -32,29 +32,29 @@ from zakcode.wakeup import LOOP_SENTINEL
 # ── the framework's own words (stop-hook.sh, verbatim shapes) ────────────────
 
 REDUCER_REASON = (
-    "Turn ended without a Skill(aspirations) re-entry (autocompact OR a text summary "
-    "terminated the turn). Your FIRST action MUST be: Skill('aspirations') with args='loop'. "
+    "Turn ended without a Skill(orchestrate) re-entry (autocompact OR a text summary "
+    "terminated the turn). Your FIRST action MUST be: Skill('orchestrate') with args='loop'. "
     "Do NOT manually select goals. Do NOT run Bash commands first. Call the Skill tool "
-    "IMMEDIATELY. Agent: sera. Prefix all Bash with AYOAI_AGENT=sera."
+    "IMMEDIATELY. Agent: sera. Prefix all Bash with HOST_AGENT=sera."
 )
 WORKER_REASON = (
     "Worker Body turn ended without a Skill(worker-loop) re-entry (a text summary or "
     "autocompact terminated the turn). Your FIRST action MUST be: Skill('worker-loop') — NOT "
-    "Skill('aspirations'), which is the REDUCER-only re-entry (guard-517/guard-463). Do NOT "
+    "Skill('orchestrate'), which is the REDUCER-only re-entry. Do NOT "
     "emit a text summary first."
 )
 PLAIN_REASON = "Not done: verify your work."
 
-ASPIRATIONS_TURN = (
-    "<command-message>aspirations is running</command-message>\n"
-    "<command-name>/aspirations</command-name>\n"
+ORCHESTRATE_TURN = (
+    "<command-message>orchestrate is running</command-message>\n"
+    "<command-name>/orchestrate</command-name>\n"
     "<command-args>loop</command-args>\n\n"
-    "# Aspirations\n\n## Phase -1.5: Enter\n\nread the state\n\n## Phase 0: Select\n\npick a goal\n"
+    "# Orchestrate\n\n## Phase -1.5: Enter\n\nread the state\n\n## Phase 0: Select\n\npick a goal\n"
 )
 #: The same skill without sections: nothing is seeded into the plan, so a text-only
 #: completion reaches the Stop-hook seam directly instead of the open-plan gate first —
 #: the fence tests count vetoes, not plan nudges.
-FLAT_TURN = ASPIRATIONS_TURN.split("# Aspirations", 1)[0] + "# Aspirations\n\nEnter the loop.\n"
+FLAT_TURN = ORCHESTRATE_TURN.split("# Orchestrate", 1)[0] + "# Orchestrate\n\nEnter the loop.\n"
 
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ def _composer(
     calls: list[tuple[str, str, str]],
     *,
     outcome: str = "deliver",
-    turn_text: str = ASPIRATIONS_TURN,
+    turn_text: str = ORCHESTRATE_TURN,
 ):
     """A fake ``compose_skill_turn`` with the ``source`` seam, scripted per outcome."""
 
@@ -134,7 +134,7 @@ def _composer(
 
 async def _legacy_composer(name: str, args: str = "", *, fuzzy: bool = True) -> _Composed:
     """A composer WITHOUT the ``source`` seam (a stand-in predating ADR-0187)."""
-    return _Composed(name=name, turn_text=ASPIRATIONS_TURN)
+    return _Composed(name=name, turn_text=ORCHESTRATE_TURN)
 
 
 def _veto(reason: str) -> TurnEndResult:
@@ -169,7 +169,7 @@ def _delivered(loop: AgentLoop) -> list[Message]:
     return [
         m
         for m in loop.session.messages
-        if m.role == "user" and m.text.startswith("<command-message>aspirations is running")
+        if m.role == "user" and m.text.startswith("<command-message>orchestrate is running")
     ]
 
 
@@ -179,21 +179,21 @@ def _delivered(loop: AgentLoop) -> list[Message]:
 @pytest.mark.parametrize(
     ("reason", "expected"),
     [
-        (REDUCER_REASON, ("aspirations", "loop")),
+        (REDUCER_REASON, ("orchestrate", "loop")),
         (WORKER_REASON, ("worker-loop", "")),
-        ('Call Skill(skill="aspirations", args="loop") now.', ("aspirations", "loop")),
+        ('Call Skill(skill="orchestrate", args="loop") now.', ("orchestrate", "loop")),
         ("Run Skill(skill='worker-loop') as your first action.", ("worker-loop", "")),
         (
-            "Skill(aspirations-spark) first, then Skill(aspirations) with args='loop'.",
-            ("aspirations", "loop"),
+            "Skill(orchestrate-spark) first, then Skill(orchestrate) with args='loop'.",
+            ("orchestrate", "loop"),
         ),
         (
-            "Call Skill(aspirations) with args='loop' as your VERY NEXT tool call.",
-            ("aspirations", "loop"),
+            "Call Skill(orchestrate) with args='loop' as your VERY NEXT tool call.",
+            ("orchestrate", "loop"),
         ),
         (PLAIN_REASON, None),
         ("Continue.", None),
-        ("NOT Skill('aspirations') — this Body is closed.", None),
+        ("NOT Skill('orchestrate') — this Body is closed.", None),
         ("", None),
     ],
 )
@@ -203,23 +203,23 @@ def test_skill_reentry_in_reads_both_harnesses_vocabulary(reason: str, expected)
 
 def test_harness_skill_turn_text_folds_the_note_into_the_frame() -> None:
     text = harness_skill_turn_text(
-        ASPIRATIONS_TURN, "a turn-end hook asked for it:\n  " + PLAIN_REASON
+        ORCHESTRATE_TURN, "a turn-end hook asked for it:\n  " + PLAIN_REASON
     )
     first, rest = text.split("\n", 1)
     # One line, [harness]-tagged, the note flattened; the rest of the turn byte-identical.
     assert first == (
-        "<command-message>aspirations is running — [harness] a turn-end hook asked for it: "
+        "<command-message>orchestrate is running — [harness] a turn-end hook asked for it: "
         "Not done: verify your work.</command-message>"
     )
-    assert rest == ASPIRATIONS_TURN.split("\n", 1)[1]
+    assert rest == ORCHESTRATE_TURN.split("\n", 1)[1]
     # Not a composed turn, or nothing to say: unchanged.
     assert harness_skill_turn_text("plain text", "note") == "plain text"
-    assert harness_skill_turn_text(ASPIRATIONS_TURN, "   ") == ASPIRATIONS_TURN
+    assert harness_skill_turn_text(ORCHESTRATE_TURN, "   ") == ORCHESTRATE_TURN
 
 
 def test_the_veto_note_speaks_before_the_hooks_words() -> None:
     """ADR-0196. The hook's words were written for a harness that delivers nothing until the
-    model calls the skill tool — "Your FIRST action MUST be: Skill('aspirations') … Do NOT
+    model calls the skill tool — "Your FIRST action MUST be: Skill('orchestrate') … Do NOT
     run Bash commands first" — and here the harness has just made that call. Relayed bare, a
     literal model obeys them (2026-09-18, gpt-5.6-luna: skill tool → "already loaded" →
     a summary → the stop, four vetoes running). So the harness says what happened and what
@@ -235,8 +235,8 @@ def test_the_veto_note_speaks_before_the_hooks_words() -> None:
     # A reason holding braces is text, never a format field.
     assert _VETO_SKILL_NOTE.format(reason="{x} {0}").endswith("{x} {0}")
     # Folded into the frame it stays one line, [harness]-tagged, the frame still first.
-    first = harness_skill_turn_text(ASPIRATIONS_TURN, note).split("\n", 1)[0]
-    assert first.startswith("<command-message>aspirations is running — [harness] a turn-end hook")
+    first = harness_skill_turn_text(ORCHESTRATE_TURN, note).split("\n", 1)[0]
+    assert first.startswith("<command-message>orchestrate is running — [harness] a turn-end hook")
     assert first.endswith("</command-message>")
 
 
@@ -258,7 +258,7 @@ async def test_a_veto_naming_a_skill_delivers_that_skill(tmp_path: Path) -> None
     assert result.stop_reason == "completed"
     assert len(hook.payloads) == 2
     # The composer ran the skill the hook named, with its args, as the HARNESS (not a human).
-    assert calls == [("aspirations", "loop", "harness")]
+    assert calls == [("orchestrate", "loop", "harness")]
     # The re-entry message IS the composed turn: frame first (provenance, elision, the
     # transcript all key on it), the hook's reason folded into the frame's message line,
     # then the body — never a rail asking the model to fetch it.
@@ -267,18 +267,18 @@ async def test_a_veto_naming_a_skill_delivers_that_skill(tmp_path: Path) -> None
     assert not any(  # the hook's reason never rides a rail of its own
         m.role == "user"
         and m.text.startswith("[harness] Hint:")
-        and "Skill('aspirations')" in m.text
+        and "Skill('orchestrate')" in m.text
         for m in loop.session.messages
     )
     # …and the provider saw exactly that message on the re-entry call.
-    assert loop.session.loop_skill == "aspirations loop"  # the sentinel wake-up resolves to it
+    assert loop.session.loop_skill == "orchestrate loop"  # the sentinel wake-up resolves to it
     # The skill's sections were seeded into the plan, like a turn-opening skill.
     titles = [t.title for t in loop.session.task_network.tasks]
     assert any("Enter" in t for t in titles) and any("Select" in t for t in titles)
     # At turn end the body is elided (ADR-0045) — the frame stays, with the hook's words.
     head = delivered[0].text.split("\n", 1)[0]
     assert head.startswith(
-        "<command-message>aspirations is running — [harness] a turn-end hook refused the stop "
+        "<command-message>orchestrate is running — [harness] a turn-end hook refused the stop "
         "and asked for this skill. The harness has made that skill call for you"
     )
     assert "The hook's words: Turn ended without" in head
@@ -305,12 +305,12 @@ async def test_the_provider_sees_the_delivered_skill_on_the_re_entry_call(tmp_pa
         m
         for m in provider.seen[1]
         if m.role == "user"
-        and m.text.startswith("<command-message>aspirations is running — [harness]")
+        and m.text.startswith("<command-message>orchestrate is running — [harness]")
     ]
     assert len(composed) == 1
     assert "<command-args>loop</command-args>" in composed[0].text
     assert "## Phase -1.5: Enter" in composed[0].text
-    assert "Skill('aspirations') with args='loop'" in composed[0].text  # the hook's own words
+    assert "Skill('orchestrate') with args='loop'" in composed[0].text  # the hook's own words
     # The skeleton's rail ("I added the sections … to your plan") FOLLOWS the body it
     # points into — the order a typed slash gets — never precedes it.
     users = [m.text for m in provider.seen[1] if m.role == "user"]
@@ -367,7 +367,7 @@ async def test_a_skill_that_cannot_be_delivered_falls_back_to_the_rail(
         for m in loop.session.messages
         if m.role == "user" and m.text.startswith("[harness] Hint:")
     ]
-    assert len(rails) == 1 and "Skill('aspirations') with args='loop'" in rails[0].text
+    assert len(rails) == 1 and "Skill('orchestrate') with args='loop'" in rails[0].text
     assert loop.session.loop_skill == ""
 
 
@@ -389,9 +389,9 @@ async def test_no_composer_means_the_rail(tmp_path: Path) -> None:
 async def test_the_fence_ends_a_turn_whose_model_never_runs_the_delivered_skill(
     tmp_path: Path,
 ) -> None:
-    """The measured spiral (2026-09-17, serene): text → BLOCK naming Skill('aspirations') →
-    text → BLOCK …, for hours. Three deliveries are honoured; the fourth such veto ends the
-    turn as ``veto_stall`` with a wake-up behind it."""
+    """The measured spiral (2026-09-17, a served workspace): text → BLOCK naming
+    Skill('orchestrate') → text → BLOCK …, for hours. Three deliveries are honoured; the fourth
+    such veto ends the turn as ``veto_stall`` with a wake-up behind it."""
     vetoes = _VETO_STALL_THRESHOLD + 3
     hook = RecordingHook([_veto(REDUCER_REASON)] * vetoes)
     provider = ScriptedProvider(_texts(vetoes + 1))
@@ -413,7 +413,7 @@ async def test_the_fence_ends_a_turn_whose_model_never_runs_the_delivered_skill(
     # resolves to the very skill the hook asked for (Session.loop_skill).
     held = loop.wakeup_slot.pending()
     assert held is not None and held.prompt == LOOP_SENTINEL
-    assert loop.session.loop_skill == "aspirations loop"
+    assert loop.session.loop_skill == "orchestrate loop"
 
 
 @pytest.mark.asyncio
@@ -442,7 +442,7 @@ async def test_a_model_skill_call_starts_the_fence_over(tmp_path: Path) -> None:
             texts[1],  # veto 2 (count 2)
             LLMResult(
                 tool_calls=[
-                    ToolCall(id="s1", name="Skill", arguments={"name": "aspirations-execute"})
+                    ToolCall(id="s1", name="Skill", arguments={"name": "orchestrate-execute"})
                 ]
             ),
             texts[2],  # veto 3 → the skill ran: count 1

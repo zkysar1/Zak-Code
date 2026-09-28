@@ -324,7 +324,7 @@ def test_agent_config_is_agent_editable_by_default() -> None:
 
 
 def test_settings_deny_rules_reprotect_agent_config() -> None:
-    # The Ayoai constitutional-anchor pattern: a settings.local.json Edit/Write deny over
+    # The constitutional-anchor pattern: a settings.local.json Edit/Write deny over
     # itself. Ingested Edit/Write denies compile write-only (ADR-0030): the anchor is
     # un-editable in autonomous but stays READABLE — exactly the framework's intent (agents
     # read the anchor to verify it; only editing is forbidden).

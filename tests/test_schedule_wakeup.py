@@ -112,7 +112,6 @@ def test_the_loop_sentinel_fires_as_the_re_entry_line() -> None:
     assert fired_line(f"  {LOOP_SENTINEL} ") == LOOP_LINE
     # Generic since ADR-0190: no framework's skill is named — the loop's own is.
     assert "invoke the skill that runs it" in LOOP_LINE and "Re-arm" in LOOP_LINE
-    assert "aspirations" not in LOOP_LINE
     assert fired_line("  poll CI  ") == "[harness] scheduled wake-up: poll CI"
 
 
