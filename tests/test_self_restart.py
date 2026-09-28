@@ -339,7 +339,7 @@ def test_an_unattended_restart_with_open_steps_continues_the_plan(tmp_path: Path
     """Field incident (2026-08-29): a doom-loop end, the restart into the next build, then 46
     minutes at the prompt with 20 of 23 steps open — nobody types at a worker session."""
     line = cli._unattended_continuation(
-        _unattended_agent(tmp_path), restarted="new-build", stop_reason=None
+        _unattended_agent(tmp_path), restarted="new-build", stop_reason="doom_loop"
     )
     assert line is not None
     assert line.startswith("[harness] this session was restarted into build new-build")
@@ -353,6 +353,83 @@ def test_a_collapsed_turn_continues_and_any_other_end_does_not(tmp_path: Path) -
         assert line is not None and f"the previous turn ended {reason!r}" in line
     for reason in ("completed", "interrupted", "budget_exhausted", None):
         assert cli._unattended_continuation(agent, restarted=None, stop_reason=reason) is None
+
+
+# ── a restart continues only a turn that collapsed (ADR-0263) ─────────────────
+
+
+#: Every turn end the agent loop records other than a collapse or ``restart`` (which always
+#: carries its continuation), and a document that never recorded one. The prompt does not
+#: continue any of them, so a restart must not either.
+_ENDS_THAT_STAY_ENDED = (
+    "completed",
+    "awaiting_user",
+    "budget_exhausted",
+    "budget_unpriced",
+    "max_iterations",
+    "provider_error",
+    "veto_stall",
+    "verification_failed",
+    "recipe_stalled",
+    "",
+)
+
+
+def test_a_restart_continues_only_a_turn_that_collapsed(tmp_path: Path) -> None:
+    """The restart's open-plan kick follows exactly the turn ends the prompt itself continues
+    (ADR-0090). Before ADR-0263 it followed every turn end, whatever it was."""
+    agent = _unattended_agent(tmp_path)
+    for reason in ("doom_loop", "gave_up", "degenerated", "stuck"):
+        agent.session.last_stop_reason = reason
+        line = cli._restart_kick(agent, restarted="new-build", carried=None)
+        assert line is not None and "2 of 3 plan steps are still open" in line
+    for reason in _ENDS_THAT_STAY_ENDED:
+        agent.session.last_stop_reason = reason
+        assert cli._restart_kick(agent, restarted="new-build", carried=None) is None, reason
+        assert cli._unattended_continuation(agent, restarted=None, stop_reason=reason) is None
+    # A carried continuation is not a kick: a Stop hook that vetoed a completed stop set it
+    # aside (ADR-0099), and the turn kept its own stop reason. It is still delivered.
+    agent.session.last_stop_reason = "completed"
+    carried = cli._restart_kick(agent, restarted="new-build", carried="invoke the loop again")
+    assert carried is not None and carried.endswith("invoke the loop again")
+
+
+def test_an_operator_stop_holds_across_the_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Field incident (2026-09-28): an operator stopped a worker session with 2 of 44 plan
+    steps open; the turn-end hooks allowed the stop and the turn ended ``completed``. A build
+    installed earlier restarted the session at a later idle prompt, and the restart told it
+    to carry on with its plan. The whole hand-off runs here: the old process saves the
+    document and execs, the fresh process loads it. A turn that collapsed in the same place
+    is still continued, so the test can tell a kick that never fires from one that should
+    not."""
+    from zakcode.tasks import Task
+
+    monkeypatch.setenv("ZAKCODE_RESTARTED_INTO", "unset-by-teardown")
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: None)
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    store = SessionStore(tmp_path / "sessions")
+    for last, continued in (("completed", False), ("stuck", True)):
+        session = Session(cwd=str(tmp_path), model="m", build="old-build")
+        session.task_network.tasks = [
+            Task(title=f"step {i}", status="done" if i <= 42 else "pending")  # type: ignore[arg-type]
+            for i in range(1, 45)
+        ]
+        session.task_network.normalize()
+        session.last_stop_reason = last  # what the loop records as the turn ends
+        old = SimpleNamespace(session=session, loop=SimpleNamespace(store=store))
+        cli._restart_into_new_build(_console(), old)
+        assert os.environ["ZAKCODE_RESTARTED_INTO"] == "new-build"
+        loaded = store.load(session.id)
+        assert loaded.last_stop_reason == last  # the recorded end crossed the exec
+        fresh = SimpleNamespace(session=loaded, loop=SimpleNamespace(unattended=lambda: True))
+        kick = cli._restart_kick(fresh, restarted="new-build", carried=None)
+        if continued:
+            assert kick is not None and "2 of 44 plan steps are still open" in kick
+        else:
+            assert kick is None
 
 
 # ── a restart taken at a Stop-hook boundary carries the hook's continuation (ADR-0099) ──
@@ -381,14 +458,17 @@ def test_restart_exports_the_carried_continuation(
 def test_restart_kick_prefers_the_carried_continuation(tmp_path: Path) -> None:
     """The carried line resumes the loop whatever the plan's state — a complete plan gets
     no ADR-0090 kick and would otherwise idle forever; without a carried line the
-    open-plan kick stands, and a non-restart gets nothing."""
+    open-plan kick stands (after a collapsed turn, ADR-0263), and a non-restart gets
+    nothing."""
     complete = _unattended_agent(tmp_path, statuses=("done", "done"))
+    complete.session.last_stop_reason = "doom_loop"
     line = cli._restart_kick(complete, restarted="new-build", carried="invoke the loop again")
     assert line is not None
     assert line.startswith("[harness] this session was restarted into build new-build")
     assert "Stop hook" in line and line.endswith("invoke the loop again")
     assert cli._restart_kick(complete, restarted="new-build", carried=None) is None
     open_plan = _unattended_agent(tmp_path)
+    open_plan.session.last_stop_reason = "doom_loop"
     fallback = cli._restart_kick(open_plan, restarted="new-build", carried=None)
     assert fallback is not None and "2 of 3 plan steps are still open" in fallback
     assert cli._restart_kick(open_plan, restarted=None, carried="ignored") is None
@@ -441,14 +521,17 @@ def test_restart_kick_words_a_skill_boundary_restart(tmp_path: Path) -> None:
 
 
 def test_no_continuation_when_attended_or_nothing_is_open(tmp_path: Path) -> None:
+    # A collapse every time, so each None below comes from the condition it names.
+    kw: dict[str, Any] = {"restarted": "new-build", "stop_reason": "doom_loop"}
+    assert cli._unattended_continuation(_unattended_agent(tmp_path), **kw) is not None
     attended = _unattended_agent(tmp_path, unattended=False)
-    assert cli._unattended_continuation(attended, restarted="new-build", stop_reason=None) is None
+    assert cli._unattended_continuation(attended, **kw) is None
     finished = _unattended_agent(tmp_path, statuses=("done", "done", "cancelled"))
-    assert cli._unattended_continuation(finished, restarted="new-build", stop_reason=None) is None
+    assert cli._unattended_continuation(finished, **kw) is None
     empty = _unattended_agent(tmp_path, statuses=())
     assert cli._unattended_continuation(empty, restarted="b", stop_reason="doom_loop") is None
     bare = SimpleNamespace(session=finished.session)  # a thin remote agent: no loop at all
-    assert cli._unattended_continuation(bare, restarted="new-build", stop_reason=None) is None
+    assert cli._unattended_continuation(bare, **kw) is None
 
 
 def test_after_a_collapse_the_continuation_is_queued_once_in_a_row(
