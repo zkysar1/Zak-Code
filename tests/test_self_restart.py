@@ -270,6 +270,39 @@ def test_a_failed_exec_keeps_serving_and_says_so(
     assert "restart failed" in out.getvalue()
 
 
+def test_restart_hands_background_jobs_on_before_the_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Background tasks keep running across the exec, so their jobs go to the fresh process
+    # FIRST: on Windows it kills their whole trees through them (elsewhere a no-op).
+    agent, _store = _agent(tmp_path)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    order: list[str] = []
+
+    def hand_off() -> int:
+        order.append("hand-off")
+        return 0
+
+    monkeypatch.setattr(cli, "prepare_restart", hand_off)
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: order.append("exec"))
+    cli._restart_into_new_build(_console(), agent)
+    assert order == ["hand-off", "exec"]
+
+
+def test_a_failed_hand_off_still_restarts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    agent, _store = _agent(tmp_path)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+
+    def boom() -> int:
+        raise OSError("no handle")
+
+    monkeypatch.setattr(cli, "prepare_restart", boom)
+    execs: list[str] = []
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: execs.append(path))
+    cli._restart_into_new_build(_console(), agent)
+    assert execs == [sys.executable]
+
+
 # ── an unattended session continues at the prompt (ADR-0090) ─────────────────
 
 

@@ -23,6 +23,13 @@ assignment), the child is created ``CREATE_SUSPENDED``, assigned to the job, the
 via ``NtResumeProcess`` (asyncio's ``Popen`` closes the thread handle, so ``ResumeThread``
 is not available). ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` is deliberately NOT set: a
 background task must keep running after the zakcode process exits.
+
+A task can also outlive the zakcode process that started it without being orphaned: a
+restart into a new build (``os.execv``) keeps the session and its background tasks. Each job
+therefore gets a random name, and the restart hands the live jobs' handles to the new process
+(:func:`pass_jobs_to_restart`). That keeps the jobs, and so their names, open after the old
+process is gone, and the new process kills a task's tree by name
+(:func:`terminate_job_by_name`) where it would otherwise only have ``taskkill /T``.
 """
 
 from __future__ import annotations
@@ -35,7 +42,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import uuid
 import weakref
+from collections.abc import Iterable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -63,6 +72,13 @@ if sys.platform == "win32":
     _PROCESS_SUSPEND_RESUME = 0x0800
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_TERMINATE = 0x0001
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    # -- Job access rights, handle flags, errors ------------------------------
+    _JOB_OBJECT_QUERY = 0x0004
+    _JOB_OBJECT_TERMINATE = 0x0008
+    _HANDLE_FLAG_INHERIT = 0x00000001
+    _ERROR_ALREADY_EXISTS = 183
 
     # -- ctypes signatures (explicit argtypes/restype for every function) ----
 
@@ -85,6 +101,27 @@ if sys.platform == "win32":
     _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     _kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
+    _kernel32.OpenJobObjectW.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+        ctypes.c_wchar_p,
+    ]
+    _kernel32.OpenJobObjectW.restype = ctypes.c_void_p
+
+    _kernel32.SetHandleInformation.argtypes = [
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+    ]
+    _kernel32.SetHandleInformation.restype = ctypes.wintypes.BOOL
+
+    _kernel32.IsProcessInJob.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.wintypes.BOOL),
+    ]
+    _kernel32.IsProcessInJob.restype = ctypes.wintypes.BOOL
+
     # NtResumeProcess — undocumented but stable (ntoskrnl). Resumes all threads of a process.
     # We need this because asyncio's Popen closes the thread handle from CreateProcess, so
     # ResumeThread is not available. A process handle with PROCESS_SUSPEND_RESUME is enough.
@@ -100,10 +137,13 @@ if sys.platform == "win32":
         a background task must outlive the zakcode process.
         """
 
-        __slots__ = ("_handle",)
+        __slots__ = ("_handle", "name")
 
-        def __init__(self, handle: int) -> None:
+        def __init__(self, handle: int, name: str = "") -> None:
             self._handle = handle
+            #: The job's random name (:func:`job_name_of`); a process that inherited a handle
+            #: to this job can open it by this name after we are gone.
+            self.name = name
 
         @property
         def handle(self) -> int:
@@ -181,7 +221,15 @@ if sys.platform == "win32":
                 ) from None
 
         try:
-            job = _kernel32.CreateJobObjectW(None, None)
+            # Named, so a process we restart into can open it again (pass_jobs_to_restart).
+            # The name is random: if it already exists the object is not ours, and a child
+            # must never be put into a job we did not create.
+            name = f"Local\\zakcode-job-{uuid.uuid4().hex}"
+            ctypes.set_last_error(0)
+            job = _kernel32.CreateJobObjectW(None, name)
+            if job and ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+                _kernel32.CloseHandle(job)
+                job = None
             if not job:
                 logger.warning(
                     "job-object: CreateJobObjectW failed (error %d), pid %d uses taskkill fallback",
@@ -210,7 +258,7 @@ if sys.platform == "win32":
                 _kernel32.CloseHandle(job)
                 raise
 
-            ref = _JobRef(job)
+            ref = _JobRef(job, name)
             proc._job_ref = ref  # type: ignore[attr-defined]
             # When the Process is garbage-collected, close the job handle. This does NOT kill
             # anything (no kill-on-close), so a background task that outlives us is unaffected.
@@ -219,6 +267,74 @@ if sys.platform == "win32":
         finally:
             if owns_handle:
                 _kernel32.CloseHandle(proc_handle)
+
+
+def job_name_of(proc: asyncio.subprocess.Process) -> str | None:
+    """The name of ``proc``'s Windows job object; ``None`` off Windows or when the spawn got
+    no job. A background task records it, so that a zakcode restarted into a new build can
+    still kill the task's whole tree (:func:`terminate_job_by_name`)."""
+    ref = getattr(proc, "_job_ref", None)
+    if ref is None or not ref.handle:
+        return None
+    return ref.name or None
+
+
+def pass_jobs_to_restart(procs: Iterable[asyncio.subprocess.Process]) -> int:
+    """Hand the children's job handles to the process this one is about to restart into.
+
+    zakcode restarts into a new build with ``os.execv``. On Windows the C runtime does that
+    by starting the new process and exiting this one, and the new process inherits every
+    handle marked inheritable. Marking each child's job handle keeps its job, and so its
+    name, open once this process is gone. Without it the job's last handle closes with us,
+    the name goes too, and the new process has only ``taskkill /T``, which misses the
+    programs Git Bash starts. Returns how many handles were marked; always 0 off Windows,
+    where ``killpg`` needs nothing but the pid.
+
+    A handle passed on this way stays open in the new process until that process exits, so
+    it holds an empty job at most once for each task that was running at a restart.
+    """
+    marked = 0
+    if sys.platform == "win32":
+        for proc in procs:
+            ref = getattr(proc, "_job_ref", None)
+            if ref is None or not ref.handle:
+                continue
+            flag = _HANDLE_FLAG_INHERIT
+            if _kernel32.SetHandleInformation(ref.handle, flag, flag):
+                marked += 1
+    return marked
+
+
+def terminate_job_by_name(name: str, pid: int) -> bool:
+    """Kill every process in the job called ``name``, provided the job holds ``pid``.
+
+    The other half of :func:`pass_jobs_to_restart`: after a restart the new process has the
+    task's pid and job name from its saved record, but no handle of its own. The job opens
+    by name only while some process still holds a handle to it, which the restart's hand-off
+    ensures, and a random name cannot belong to anything else; the pid check guards that
+    too. ``False`` when the job cannot be opened, does not hold ``pid`` or cannot be
+    terminated, and always off Windows. The caller then falls back to ``taskkill``.
+    """
+    if sys.platform == "win32" and name:
+        job = _kernel32.OpenJobObjectW(_JOB_OBJECT_QUERY | _JOB_OBJECT_TERMINATE, False, name)
+        if not job:
+            return False
+        try:
+            proc_handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not proc_handle:
+                return False
+            try:
+                in_job = ctypes.wintypes.BOOL(False)
+                if not _kernel32.IsProcessInJob(proc_handle, job, ctypes.byref(in_job)):
+                    return False
+                if not in_job.value:
+                    return False
+            finally:
+                _kernel32.CloseHandle(proc_handle)
+            return bool(_kernel32.TerminateJobObject(job, 1))
+        finally:
+            _kernel32.CloseHandle(job)
+    return False
 
 
 def find_bash() -> str | None:
