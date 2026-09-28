@@ -18,6 +18,8 @@ These tests verify:
 3. On POSIX the spawn path is unchanged (``start_new_session=True``, ``killpg``).
 4. The fallback to ``taskkill`` still works when no job is present.
 5. A failed resume kills the child and raises ``OSError`` (never leaves it suspended).
+6. On Windows, a background task started before a restart (so this process holds neither
+   its process object nor its job handle) is still killed with its whole tree when stopped.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,7 +42,7 @@ from zakcode._subprocess import (
     create_group_subprocess_shell,
     terminate_process_tree,
 )
-from zakcode.background import pid_alive, process_start_token
+from zakcode.background import _PROCS, BackgroundTasks, pid_alive, process_start_token
 
 
 async def _until(
@@ -374,3 +377,69 @@ async def test_failed_resume_kills_child_and_raises(
     # reference back (the OSError prevented it). The invariant is: no child is left
     # suspended — either it was resumed or it was killed.
     monkeypatch.setattr(mod._ntdll, "NtResumeProcess", _real_resume)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Windows-only — a stop after a restart still kills the Git Bash tree
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows restart-path kill test")
+async def test_stop_after_a_restart_kills_the_git_bash_tree(tmp_path: Path) -> None:
+    """A task started before a zakcode restart is stopped by its pid alone: the new process
+    has the task on its saved table but no process object and no job handle for it.
+
+    The restart is simulated the way the new process sees it: the old job handle is closed
+    (the old process's handles close when it exits; there is no kill-on-close, so the task
+    keeps running) and this process no longer holds the child. Then ``BackgroundTasks.stop``
+    runs, in both the exec and the no-exec form, and no process carrying the command may
+    be left 5 s later. The survivors are counted, so a failure says how many got away.
+    """
+    from zakcode._subprocess import find_bash
+
+    bash = find_bash()
+    if bash is None:
+        pytest.skip("Git Bash not found on this Windows machine")
+    if not _has_powershell():
+        pytest.skip("PowerShell not found; needed for process listing")
+
+    tasks = BackgroundTasks(SimpleNamespace(background_tasks=[]), tasks_dir=tmp_path / "tasks")
+    for label, needle, user_cmd in [
+        ("exec", "47.25", "sleep 47.25"),
+        ("noexec", "49.75", "sleep 49.75; :"),
+    ]:
+        task = await tasks.start(user_cmd, cwd=str(tmp_path))
+        proc = _PROCS[task.id]
+        try:
+            await _until(
+                lambda n=needle: len(_find_carriers(n)) > 0,
+                timeout=10.0,
+                what=f"{label}: no process carrying '{needle}' found before the stop",
+            )
+            # The restart, as the new process sees it.
+            job_ref = getattr(proc, "_job_ref", None)
+            if job_ref is not None:
+                job_ref.close()
+            _PROCS.pop(task.id, None)
+
+            stopped, why = await tasks.stop(task.id)
+            assert stopped, f"{label}: stop refused: {why}"
+
+            deadline = time.monotonic() + 5.0
+            survivors = _find_carriers(needle)
+            while survivors and time.monotonic() < deadline:
+                await asyncio.sleep(0.25)
+                survivors = _find_carriers(needle)
+            assert not survivors, (
+                f"{label}: {len(survivors)} process(es) carrying '{needle}' still alive 5 s "
+                "after a stop by pid"
+            )
+        finally:
+            # Leave nothing running for the next test, whatever happened above.
+            with contextlib.suppress(Exception):
+                for pid in _find_carriers(needle):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False
+                    )
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
