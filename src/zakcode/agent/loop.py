@@ -114,6 +114,7 @@ from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor, is_summary
 from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
+from zakcode.agent.pinned_inputs import change_notice
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.agent.recipe import (
     RecipeCursor,
@@ -2283,6 +2284,7 @@ class AgentLoop:
         sampler: Sampler | None = None,
         skill_resolver: SkillResolver | None = None,
         rule_registry: Any | None = None,
+        prompt_input_items: dict[str, dict[str, str]] | None = None,
         turn_end_vetoable: bool = False,
         completion_review_attempts: int = 0,
         fire_session_start: bool = True,
@@ -2319,6 +2321,12 @@ class AgentLoop:
         # tool reads to return ONE rule body by name. Threaded into every ToolContext;
         # ``None`` (rules disabled) makes read_rule return a clean "not enabled" error.
         self._rule_registry = rule_registry
+        # ADR-0260: what the Agent read each workspace input from, item by item (the rules,
+        # the skills, the identity, the output style; the guides come from the prompt builder).
+        # Compared with the session's record at the first turn, so the model hears what changed
+        # while its pinned prompt keeps the old text.
+        self._prompt_input_items = dict(prompt_input_items or {})
+        self._input_changes_said = False
         # Runtime model failover seam (PKG-AUTO): on a NON-rate-limit provider failure
         # the loop asks this callback for a replacement ``(provider, description)`` —
         # once per turn, and on the streaming path only before any event reached the
@@ -3216,6 +3224,11 @@ class AgentLoop:
             summary, trigger=trigger, before=before, pre_tokens=pre_tokens
         )
         self._forget_prompt_anchor()
+        # ADR-0260: the prompt catches up with the workspace here. The rewritten conversation
+        # is re-processed anyway, so reading the inputs again costs only the stretch from the
+        # first changed one to the conversation, and a change announced at a restart no longer
+        # depends on a message the summary may have dropped.
+        self.session.prompt_inputs.clear()
         forget = getattr(self._skill_resolver, "forget_loads", None)
         if callable(forget):
             forget()
@@ -3487,13 +3500,18 @@ class AgentLoop:
         ]
 
     def _build_system(self, restrict_to: set[str] | None = None) -> str:
+        task = self._session_task()
         return self.prompt_builder.build(
             self.settings,
             tools=self._tool_specs(restrict_to),
             session_id=self.session.id,
-            task=self._session_task(),
+            task=task,
             # A stuck NARROW step (restrict_to) withholds tools; it does not advertise more.
             on_request=self._on_request_names() if restrict_to is None else None,
+            # ADR-0260: the session's pinned workspace inputs, once there is a task for the
+            # guides to fold on. A build before the first user message (a startup size check)
+            # reads the workspace and pins nothing.
+            pins=self.session.prompt_inputs if task else None,
         )
 
     def _session_task(self) -> str | None:
@@ -6766,6 +6784,33 @@ class AgentLoop:
         said, self._session_start_said = self._session_start_said, []
         self._say_session_start(said, self._session_start_source)
 
+    def _say_input_changes(self) -> None:
+        """Tell the model, once per loop, what changed in the workspace inputs its session
+        pinned (ADR-0260).
+
+        A restart into a new build, a resume and a served turn each start a new loop on a
+        session whose system prompt keeps the text it began with, so a rule, guide, skill or
+        identity edited on disk since would otherwise never reach the model. The check runs at
+        the first turn, after the user message, so the guides fold on the session's task as
+        the prompt does; the notice is persisted like the SessionStart words and read once.
+        """
+        if self._input_changes_said:
+            return
+        self._input_changes_said = True
+        items = dict(self._prompt_input_items)
+        items["guides"] = self.prompt_builder.guide_items(self.settings, task=self._session_task())
+        notice = change_notice(self.session, items)
+        if notice is None:
+            return
+        self.session.add_message(Message.user(notice))
+        self._note(
+            "intervention",
+            f"workspace inputs changed since the session began ({len(notice)} chars)",
+            kind="inputs_changed",
+            chars=len(notice),
+        )
+        self._persist()
+
     # ── public API ───────────────────────────────────────────────────────────
 
     async def arun_turn(self, user_text: str) -> TurnResult:
@@ -7355,6 +7400,7 @@ class AgentLoop:
         self._anchor_request(user_text)  # ADR-0110: a fresh plan knows what it is for
         self.session.add_message(Message.user(user_text))
         self._say_held_session_start()  # ADR-0211 (both turn paths)
+        self._say_input_changes()  # ADR-0260 (both turn paths)
         await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040): the operator disputes the previous answer — ask for
         # the re-measurement up front, before the apology reflex gets a first token.
@@ -8976,6 +9022,7 @@ class AgentLoop:
         self._anchor_request(user_text)  # ADR-0110 — see _run_turn (buffered twin)
         self.session.add_message(Message.user(user_text))
         self._say_held_session_start()  # ADR-0211 (both turn paths)
+        self._say_input_changes()  # ADR-0260 (both turn paths)
         await self._fire_user_prompt_submit(user_text)  # ADR-0134 (both turn paths)
         # Contested-claim rail (ADR-0040) — see _run_turn (buffered twin).
         if _contests_prior_claim(user_text) and self._previous_assistant_text():

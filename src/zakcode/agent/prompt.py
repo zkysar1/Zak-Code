@@ -286,6 +286,7 @@ class SystemPromptBuilder:
         session_id: str | None = None,
         task: str | None = None,
         on_request: list[str] | None = None,
+        pins: dict[str, str] | None = None,
     ) -> str:
         """Render the full system prompt.
 
@@ -307,38 +308,91 @@ class SystemPromptBuilder:
             on_request: Names of hidden tools the model can load with ``tool_search``
                 (ADR-0228), listed after the tool summary so it knows they exist. ``None``
                 or empty omits the line.
+            pins: The session's pinned workspace inputs (ADR-0260), keyed by the names
+                :meth:`_inputs` returns and filled in place: an input already pinned is built
+                from that text, and one not yet pinned is read here and pinned. ``None``
+                builds from what this builder read from the workspace.
 
         Returns:
             The complete system prompt with the stable tier first, then
             :data:`DYNAMIC_BOUNDARY`, then the dynamic context tier.
         """
-        stable = self._build_stable(tools, on_request)
-        context = self._build_context(settings, extra_context, session_id=session_id, task=task)
+        inputs = self._inputs(settings, task)
+        if pins is not None:
+            inputs = {name: pins.setdefault(name, text) for name, text in inputs.items()}
+        stable = self._build_stable(tools, on_request, inputs)
+        context = self._build_context(settings, extra_context, inputs, session_id=session_id)
         return f"{stable}\n\n{DYNAMIC_BOUNDARY}\n\n{context}"
+
+    def _inputs(self, settings: Settings, task: str | None) -> dict[str, str]:
+        """The text each workspace input contributes to the prompt, as this builder read it.
+
+        The keys are the names a session pins them under (ADR-0260). The identity, the rules,
+        the output style and the skills catalog (``extra_instructions``) were read when the
+        builder was made; the guides and the survey are read at the first build and reused.
+        """
+        return {
+            "identity": (self.identity or "").strip(),
+            "rules": (self.rules or "").strip(),
+            "output_style": (self.output_style or "").strip(),
+            "extra_instructions": (self.extra_instructions or "").strip(),
+            "guides": self._render_context(self._guides(settings, task)),
+            "survey": self._survey(settings),
+        }
+
+    def _guides(self, settings: Settings, task: str | None) -> list[tuple[Path, str]]:
+        """The project guides, read once per workspace, README setting and task (ADR-0259)."""
+        key = (str(settings.workspace_root), settings.context_include_readme, task)
+        if key not in self._context_cache:
+            self._context_cache[key] = discover_context(
+                settings.workspace_root, include_readme=settings.context_include_readme, task=task
+            )
+        return self._context_cache[key]
+
+    def _survey(self, settings: Settings) -> str:
+        """The workspace survey, read once per workspace; ``""`` when the survey is off."""
+        if not settings.context_workspace_survey:
+            return ""
+        key = str(settings.workspace_root)
+        if key not in self._survey_cache:
+            self._survey_cache[key] = workspace_survey(Path(settings.workspace_root))
+        return self._survey_cache[key]
+
+    def guide_items(self, settings: Settings, task: str | None = None) -> dict[str, str]:
+        """Each guide the prompt carries, labelled by its path from the workspace, with the
+        text it contributes: what a session compares to say which guide changed (ADR-0260)."""
+        root = Path(settings.workspace_root).resolve()
+        return {
+            f"guide {os.path.relpath(path, root)}": content
+            for path, content in self._guides(settings, task)
+        }
 
     # ── stable tier ────────────────────────────────────────────────────────────
 
     def _build_stable(
-        self, tools: list[ToolSpec] | None, on_request: list[str] | None = None
+        self,
+        tools: list[ToolSpec] | None,
+        on_request: list[str] | None,
+        inputs: dict[str, str],
     ) -> str:
         # The operator identity (self.md) REPLACES the default line when set, staying first
         # in the cacheable tier (highest framing precedence). Falls back to _IDENTITY.
-        identity = self.identity.strip() if self.identity and self.identity.strip() else _IDENTITY
+        identity = inputs["identity"] or _IDENTITY
         sections = [identity, _BEHAVIOR, _TOOL_GUIDANCE, _EVIDENCE, _PLANNING, _SKILLS, _SAFETY]
         tool_section = self._summarize_tools(tools, on_request)
         if tool_section:
             sections.append(tool_section)
         # Always-on rules sit in the cacheable tier (constant per session), after the
         # tool summary and before any sub-agent specialization text.
-        if self.rules and self.rules.strip():
-            sections.append(self.rules.strip())
+        if inputs["rules"]:
+            sections.append(inputs["rules"])
         # The active output style is operator-selected standing guidance too; it sits beside
         # the rules in the cacheable tier (constant per session) so it shapes generation and
         # stays prompt-cache safe.
-        if self.output_style and self.output_style.strip():
-            sections.append(self.output_style.strip())
-        if self.extra_instructions and self.extra_instructions.strip():
-            sections.append(self.extra_instructions.strip())
+        if inputs["output_style"]:
+            sections.append(inputs["output_style"])
+        if inputs["extra_instructions"]:
+            sections.append(inputs["extra_instructions"])
         return "\n\n".join(sections)
 
     #: Cheat-sheet group labels keyed by required permission tier — an axis already on every
@@ -408,27 +462,15 @@ class SystemPromptBuilder:
         self,
         settings: Settings,
         extra_context: str | None,
+        inputs: dict[str, str],
         *,
         session_id: str | None = None,
-        task: str | None = None,
     ) -> str:
         sections = [self._environment_section(settings, session_id=session_id)]
-
-        guides_key = (str(settings.workspace_root), settings.context_include_readme, task)
-        if guides_key not in self._context_cache:
-            self._context_cache[guides_key] = discover_context(
-                settings.workspace_root, include_readme=settings.context_include_readme, task=task
-            )
-        context_files = self._render_context(self._context_cache[guides_key])
-        if context_files:
-            sections.append(context_files)
-
-        if settings.context_workspace_survey:
-            key = str(settings.workspace_root)
-            if key not in self._survey_cache:
-                self._survey_cache[key] = workspace_survey(Path(settings.workspace_root))
-            if self._survey_cache[key]:
-                sections.append(self._survey_cache[key])
+        if inputs["guides"]:
+            sections.append(inputs["guides"])
+        if inputs["survey"]:
+            sections.append(inputs["survey"])
 
         if extra_context and extra_context.strip():
             sections.append("Additional context:\n" + extra_context.strip())
