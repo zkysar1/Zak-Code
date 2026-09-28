@@ -1053,7 +1053,7 @@ class Agent:
         # Cross-session MEMORY is NOT a harness concern (see docs/PERSISTENCE-BOUNDARY.md): the
         # substrate records the transcript (SessionStore, for /resume) and exposes generic seams —
         # register_context (PRE_LLM_CALL injection), register_lifecycle, register_turn_end, and the
-        # tool registry — that claude-mind (or any framework) attaches its own recall/remember to.
+        # tool registry — that a host framework attaches its own recall/remember to.
         # The harness ships no store, no recall, no remember/recall tools.
 
         # An opt-in convenience ON that same generic seam: a deterministic, within-session
@@ -1995,7 +1995,7 @@ class Agent:
         from zakcode.providers.text_tools import defang_untrusted
 
         # Claude Code's command-expansion frame — the INVOCATION-PROVENANCE signal. A skill
-        # body alone cannot tell the model WHO invoked it, and frameworks (claude-mind) ship
+        # body alone cannot tell the model WHO invoked it, and host frameworks ship
         # skills whose own rules forbid model self-invocation ("Claude MUST NOT invoke
         # /start"); without this frame a model obeying those rules refuses the human's own
         # keystroke (live 2026-08-19: `/start sera` answered "user-only command, run it

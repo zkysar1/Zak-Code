@@ -4522,8 +4522,8 @@ class AgentLoop:
         """Per page, the candidate steps that are its section — each step counted for ONE
         page: by its verbatim title first (the page's, or a packed section's), else by
         marker token, the first page in order taking it. A token is not unique: a worker
-        skill's page 7 packs "Phase 0.5 PARK …" beside page 3's
-        "Phase 0.5 — REDUCER-LIVENESS POLL", and a step matching both reopened page 7 —
+        skill's page 7 packs a "Phase 0.5 …" section beside page 3's own
+        "Phase 0.5 — …" title, and a step matching both reopened page 7 —
         never held — while the plan stood at page 4, so the closure page arrived at
         SELECT (measured 2026-08-29; ADR-0092)."""
         candidates = self._candidate_steps(name)
@@ -6471,7 +6471,7 @@ class AgentLoop:
 
         Wires the quality engine's judged decomposition (:func:`zakcode.quality.score_plan` —
         built in increment 5, never called from the loop until now) into the moment the
-        ayoai-processor's dual planner proved judgment matters: right after a candidate
+        production HTN planner's dual planner proved judgment matters: right after a candidate
         decomposition is produced, before work proceeds on it. The deterministic structural
         score (:meth:`~zakcode.tasks.TaskNetwork.quality`, the ``evaluate_candidate`` port)
         rides every edit for free; this is its semantic complement — coverage / granularity /

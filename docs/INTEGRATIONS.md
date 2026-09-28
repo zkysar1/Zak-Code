@@ -3,7 +3,7 @@
 Zak Code ships **no learning policy of its own** — it does not decide what to
 remember, when to forge a skill, or how to consolidate a session. Instead it
 exposes a set of **substrate seams** so an external self-learning framework (for
-example, a [Claude-Mind](https://github.com/zkysar1/Claude-Mind)-style "mind") can
+example, a host framework) can
 provide that policy *on top of* Zak Code's storage and event mechanism.
 
 This document is the contract: what each seam is, how to plug into it, and what is
@@ -85,7 +85,7 @@ agent.hook_manager.register_lifecycle(HookEvent.SESSION_START, my_prime_fn)
 `LifecyclePayload` (`event`, `session_id`, `cwd`, `data`) on **stdin**:
 
 ```python
-HookSpec(event=HookEvent.SESSION_START, command=["bash", "core/scripts/prime.sh"])
+HookSpec(event=HookEvent.SESSION_START, command=["bash", "scripts/prime.sh"])
 ```
 
 The tool-gate pair (`PreToolUse` / `PostToolUse`) is also available and can **veto**
@@ -99,7 +99,7 @@ loop** with `reason` as the next instruction — the mechanism a perpetual / aut
 framework uses to keep itself running. Always on for the main loop when a `Stop` hook is
 registered (sub-agent loops are never vetoable); vetoes are unbounded — the hook stands
 down, and the cost budget is the hard bound. A `reason` that names a skill re-entry
-(`Skill('aspirations') with args='loop'`, `Skill(skill=…, args=…)`) is **delivered as
+(`Skill('orchestrate') with args='loop'`, `Skill(skill=…, args=…)`) is **delivered as
 that skill** (ADR-0187): the loop composes it — command frame with the reason folded in,
 page 1, plan steps — instead of relaying the instruction; after three such vetoes with no
 skill run between them the next ends the turn `veto_stall` and arms the autonomous-loop
@@ -146,7 +146,7 @@ whole loop, dependency-free.
 
 The skills loader discovers Agent-Skills-format `SKILL.md` files from, in increasing
 precedence: bundled → `~/.config/zakcode/skills` → `<workspace>/.zakcode/skills` →
-**`<workspace>/.claude/skills`** (the last for Claude-Code / Claude-Mind
+**`<workspace>/.claude/skills`** (the last for Claude-Code
 compatibility). The frontmatter parser reads `name`/`description`/`version`/
 `allowed-tools` and **tolerates any extra keys** (`user-invocable`, `triggers`,
 `forged`, …). The `name` + `description` catalog goes into the cacheable prompt tier;
@@ -169,7 +169,7 @@ files its skills read via the file tools rather than relying on always-on inject
 
 ### 5. Memory — bring your own (the harness ships none)
 
-Cross-session **memory is claude-mind's job, not the harness's** (see
+Cross-session **memory is the host framework's job, not the harness's** (see
 [`docs/PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)). The harness records the transcript
 (`SessionStore`, powering `/resume`) and exposes the **generic seams** a framework attaches its own
 recall/store to — it ships no store, no recall, and no `remember`/`recall` tools. To add memory:
@@ -198,7 +198,7 @@ Mistral can rely on tools working regardless of the model's native capability.
 
 ---
 
-## Mapping a Claude-Mind-style framework onto the seams
+## Mapping a host framework onto the seams
 
 | Framework need | Zak Code seam |
 | --- | --- |

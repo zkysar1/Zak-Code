@@ -1,7 +1,7 @@
 # Improvement Log — working plan, decisions, assumptions
 
 **What this is.** The living working document for the 2026-06 improvement engagement
-(omni's audit → external work package). Maintained by the implementing agent (Claude
+(the framework operator's audit → external work package). Maintained by the implementing agent (Claude
 Code) across sessions; context windows compact, this file does not. Anything decided,
 assumed, parked, or learned lands here **in the same session it happens**.
 
@@ -15,7 +15,7 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
 
 - **Date:** 2026-06-10 (final update — ladder complete)
 - **State:** the FULL external work package is implemented, fresh-eyes-reviewed per
-  phase, and open as a stacked PR chain: **#3** (consolidation + env truth, omni
+  phase, and open as a stacked PR chain: **#3** (consolidation + env truth, the operator
   LGTM'd + amendments landed) → **#4** (tri-provider metadata) → **#5** (provider
   resilience) → **#6** (autonomous permissions) → **#7** (skill extras + logging) →
   **#8** (tooling). Merge in order; GitHub auto-retargets each as its base merges.
@@ -26,36 +26,36 @@ update *Status snapshot*, append to *Decisions*/*Assumptions*, and tick the PR l
   coverage artifact, local commit on `pr-5-tooling`) needs the `workflow` OAuth
   scope — agent correctly cannot self-grant; Zachary runs
   `gh auth refresh -h github.com -s workflow` (one device code), then `git push`.
-- **Waiting on:** PR reviews (omni/Zachary); the workflow-scope grant
+- **Waiting on:** PR reviews (the operator/Zachary); the workflow-scope grant
 - **Toolchain note:** this box had no uv until 2026-06-10; installed standalone
   uv 0.11.20 at `%USERPROFILE%\.local\bin` (on user PATH; winget is broken in the
   agent sandbox — use the GitHub-release zip if reinstalling)
 
 ## Mission & boundary
 
-Source of scope: omni's audit email (2026-06-10), full doc at
-`Zak-Data-Solutions-Mind/agents/omni/reports/zak-code-improvement-audit-2026-06-10.md`
+Source of scope: the framework operator's audit email (2026-06-10), full doc at
+the framework's audit reports
 (13 acceptance tests + 5 unknowns — **not yet obtained**, see Q1).
 
 **The split rule:** if the acceptance test can be written as a pytest assertion against
-the zak-code repo alone, the work is EXTERNAL (ours); if it requires a running Mind
-agent or knowledge of Mind file schemas, it is INTERNAL (omni's / the fleet's).
+the zak-code repo alone, the work is EXTERNAL (ours); if it requires a running host framework
+agent or knowledge of framework file schemas, it is INTERNAL (the operator's / the fleet's).
 
 **Ours (external):** provider metadata (Groq + OpenAI; Anthropic parked — see D1);
 `autonomous` permission mode + per-tool trust tiers + grant persistence; rate-limit
 retry / provider-failure resilience; skill-frontmatter extras; logging; bare-pytest
 fix; P2 tooling (coverage, version sync, task runner, Windows CI, config docs).
 
-**NOT ours — do not touch (collision boundary with omni's parallel work):**
+**NOT ours — do not touch (collision boundary with the operator's parallel work):**
 - `src/zakcode/server/app.py` permission auto-escalation (REST/SSE ask→autonomous)
 - Any turn-end / stop-reason-veto hook (`HookEvent` gains no new members from us)
 - settings.json hook ingestion, identity discovery (`agents/<agent>/self.md`),
   working-memory / session-summary seams
 - Flagged overlap: PR-2 edits `agent/loop.py` (provider-call seam, lines ~816/~1018);
-  omni's TurnEnd work touches the same file's end-of-turn region. Keep our diff
+  the operator's TurnEnd work touches the same file's end-of-turn region. Keep our diff
   confined to the call sites; rebase conflicts are mechanical.
 
-**Delivery rules:** branch per PR, no direct pushes to main, review by Zachary/omni.
+**Delivery rules:** branch per PR, no direct pushes to main, review by Zachary/the operator.
 Every PR: `uv run ruff check . && uv run ruff format --check . && uv run mypy &&
 uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 
@@ -63,12 +63,12 @@ uv run pytest` green, docs updated in the same change (CLAUDE.md rule 5).
 
 | PR | Scope | Size | Status |
 |---|---|---|---|
-| PR-0 | Consolidation: reabsorb zds-llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
+| PR-0 | Consolidation: reabsorb llm-provider into the core (ADR-0007) + bare-pytest `pythonpath` + vendor-SDK import-ban contract test + **env truth** (`load_dotenv`, `.env.example` rewrite, GROQ key panel — pulled forward per D10) | M | **implemented**, awaiting review |
 | PR-1 | Provider metadata: Groq + OpenAI + **Anthropic statics** (registry entries, key panel, `.env.example` lines — key-free, satisfy acceptance 1/3/4), response-shape tests (Anthropic thinking / `reasoning_content`, Groq usage), mock cost-extraction tests (acceptance 10) | M | **implemented** (branch `pr-1-provider-metadata`, stacked on PR-0) |
 | PR-2 | Provider-failure resilience: RateLimited retry w/ backoff + graceful `provider_error` stop. **fallback_model wiring REMOVED — audit assigns it internal (P0-3b)** | M | **implemented + fresh-eyes reviewed** (PR #5; review fixes in `8f8c245`: streaming refund symmetry, `error` on AgentDone/ChatResponse, per-attempt accumulators, retry-layering docs) | 
 | PR-3 | `PermissionMode.AUTONOMOUS` (D12 hard-deny semantics) + `tool_trust_overrides` + grant persistence (Q5 approved) + subprocess provider-key env scrub w/ opt-out | M-L | **implemented** (branch `pr-3-autonomous-permissions`; 13 new tests incl. acceptance names `test_autonomous_mode` / `test_trust_tiers` / `test_grant_persistence`; 1442 green). Implementation notes: effective-mode = per-tool override else session mode; autonomous (session OR per-tool) → dangerous = hard DENY and confirm_tools fail closed; grants re-decide so they can never override a static DENY; restore filters by `_MODE_LOOSENESS` rank (deny grants always kept); scrub list = `secrets.provider_key_env_names` (exact names + `*_API_KEY` suffix), applied LAST in `_proc.run_capturing` via `ToolContext.scrub_env`; RISKS row → Mitigating |
 | PR-4 | Skill-frontmatter extras preservation + logging instrumentation | S-M | **implemented** (branch `pr-4-skills-logging`; acceptance 9 `test_skill_extras` passes by name; extras round-trip through `save_skill`; logging = targeted not exhaustive (D16): registry.execute traceback (the biggest silent swallow), permission denials w/ mode, loop iteration/turn-end lines, provider call latency+tokens+cost at debug — never message contents; 1450 green) |
-| PR-6 | **PKG-AUTO** (omni's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | **implemented** (branch `feat-pkg-auto`, PR #17 — see the 2026-06-11 D21 entry below for deltas vs spec) |
+| PR-6 | **PKG-AUTO** (the operator's spec, 2026-06-10; Q6 resolution): `default_model: "auto"` sentinel — startup detection (cheap read-only probes: `/api/tags`, `/v1/models`; never a chat call) + cached, re-probed on failure; resolution = local if viable, else first viable external per configurable preference list (default groq → openai → anthropic), nothing viable → loud startup failure with key-panel diagnosis; resolution logged + in info panel with reason; runtime re-resolution (once per turn) on non-rate-limit ProviderError before the provider_error stop; **fallback_model RELEASED to external** (supersedes D11a) as the explicit-config override of the auto chain; resolver architected as a pluggable interface `(task category, capabilities) → model` with v1 = availability only — Zachary's "zakpick" vision (deep-think/quick-classify/embeddings/planner/coder/writer routing) must land later without API breakage; mocked-detection acceptance matrix + mid-session-fallback + explicit-bypass tests; consider cost-ceiling config; rider: quiet litellm botocore import warnings deliberately | M-L | **implemented** (branch `feat-pkg-auto`, PR #17 — see the 2026-06-11 D21 entry below for deltas vs spec) |
 | PR-5 | P2 tooling: coverage, version-sync test, task runner, Windows CI cell, docs/CONFIG.md | S (batched) | **implemented** (branch `pr-5-tooling`): `poe check` one-command gate (acceptance 12), `poe cov` + CI coverage artifact (acceptance 13), `test_version_sync` (P2-2), windows-latest 3.11 CI cell with job-level timeout (GNU `timeout` absent there — split pytest steps), `docs/CONFIG.md` + BOTH-direction completeness tests (fields↔doc), CLAUDE.md gains the one-command gate. **Deferred:** the starlette/httpx2 testclient deprecation warning (test-only, harmless; blind dep churn in the last phase loses) — D17. 1453 green |
 
 Sequencing: PR-0 → PR-1 → PR-2 → PR-3 → PR-4 → PR-5. PR-1/2/3 are file-disjoint
@@ -178,7 +178,7 @@ Three layers:
 
 - **Skill frontmatter extras:** `SkillFrontmatter` gains `extras: dict[str, str]`
   capturing unrecognized keys (today dropped at `skills/__init__.py:92-95` — loses
-  Mind's `minimum_mode`, `companion_scripts`, …). `_serialize_frontmatter` /
+  a host framework's `minimum_mode`, `companion_scripts`, …). `_serialize_frontmatter` /
   `save_skill` round-trip them. Recognized keys keep their typed fields.
 - **Logging instrumentation:** consistent `zakcode.*` loggers — provider calls (model,
   latency, tokens, retry count), permission decisions (mode, tier, verdict), tool
@@ -199,7 +199,7 @@ Three layers:
 
 ## Acceptance-test map (the audit's 13, verbatim names → our PRs)
 
-Source: `Zak-Data-Solutions-Mind/agents/omni/reports/zak-code-improvement-audit-2026-06-10.md`.
+Source: the framework's audit reports (2026-06-10 improvement audit).
 
 | # | Test | PR | Status |
 |---|---|---|---|
@@ -218,7 +218,7 @@ Source: `Zak-Data-Solutions-Mind/agents/omni/reports/zak-code-improvement-audit-
 | 13 | coverage report generated | PR-5 | |
 
 Audit unknowns: #1 (Groq pricing) RESOLVED — litellm covers it. #2 (TurnEnd × recipe
-ordering) — internal/omni. #3 (thinking through litellm) — PR-1 tests will surface.
+ordering) — internal/the operator. #3 (thinking through litellm) — PR-1 tests will surface.
 #4 (grant persistence format) — proposing JSON-in-session-store; Zachary to approve.
 #5 (3 "known-failing" tests: `test_trusted_plugins_env_is_comma_split`,
 `test_discover_valid_plugin`, `test_discovered_register_is_callable`) — all three
@@ -249,7 +249,7 @@ this; re-verify*.
 > **Freshness:** the review snapshotted the `pr-5-tooling` tree; PKG-AUTO (#17), TurnEnd
 > (#12/#18), provider-retry fixes (#13/#15), and the UX track (#9-#11) merged afterward.
 > Items #1 (failover) and #30 (outer-loop continuation) are likely partly addressed —
-> re-verify against `main` before building. Everything else stands. Coordinate with omni.
+> re-verify against `main` before building. Everything else stands. Coordinate with the operator.
 
 ## Resilience cluster engagement (PKG-PARITY P1, 2026-06-11)
 
@@ -269,9 +269,9 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   blocking/major**; actioned the CONFIG.md drift + a streaming-budget test gap + a
   recovery diagnostic-log; deferred a strict context non-progress guard (D23) and the
   buffered/streaming DRY refactor (consistent with the file's established twin structure).
-- **Baseline note (flag for omni):** `tests/test_model_auto.py` (PKG-AUTO #17) fails on a
+- **Baseline note (flag for the operator):** `tests/test_model_auto.py` (PKG-AUTO #17) fails on a
   dev box with a local `.env` because it doesn't isolate `ZAKCODE_FALLBACK_MODEL`; it is
-  CI-green. Not touched (omni's file); validated my work in a clean env. A 2-line
+  CI-green. Not touched (the operator's file); validated my work in a clean env. A 2-line
   `monkeypatch.delenv` per test would harden it.
 
 - **D23 (2026-06-11, agent):** deferred the strict "only retry if the compacted prompt is
@@ -286,10 +286,10 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
 - **D1 (2026-06-10, Zachary):** Skip Anthropic for now — no API key available.
   P0-1 "tri-provider" becomes **Groq + OpenAI** (+ existing local Ollama/BitNet).
   All Anthropic sub-items parked (see *Parked*). Unparks when a key exists.
-- **D2 (2026-06-10, Zachary):** `zds-llm-provider` stays a cleanly-bounded in-repo
+- **D2 (2026-06-10, Zachary):** `llm-provider` stays a cleanly-bounded in-repo
   package and **BitNet local-inference support keeps working**. Clarification of what
   it is: NOT an external service — it's the extracted vendor-agnostic provider
-  *library* (`packages/zds-llm-provider`, editable path dep) holding the Provider ABC,
+  *library* (`packages/llm-provider`, editable path dep) holding the Provider ABC,
   message/usage types, error taxonomy, plus two concrete providers: `BitNetProvider`
   (HTTP client for a local OpenAI-compatible llama.cpp/BitNet server — the "local
   inference engine on the other computer") and `ClaudeCodeProvider` (text bridge).
@@ -299,13 +299,13 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   with Anthropic parked — Groq hosts reasoning models that emit it via litellm.
 - **D4 (2026-06-10, agent, pending confirmation):** `fallback_model` wiring treated
   as EXTERNAL (pytest-assertable against this repo alone) and lands in PR-2. The
-  audit email mentioned it under the internal P0-3 narrative — confirm with omni
+  audit email mentioned it under the internal P0-3 narrative — confirm with the operator
   that the TurnEnd work doesn't also wire it (Q2).
-- **D5 (2026-06-10, omni's email):** PR-based delivery against acceptance tests; no
+- **D5 (2026-06-10, the operator's email):** PR-based delivery against acceptance tests; no
   direct pushes to main.
 - **D6 (2026-06-10, Zachary):** this log exists and is the cross-session source of
   truth for the engagement.
-- **D7 (2026-06-10, Zachary → agent executed):** **reabsorb zds-llm-provider into the
+- **D7 (2026-06-10, Zachary → agent executed):** **reabsorb llm-provider into the
   core** (ADR-0007). Owner found the split confusing and delegated the strategic call
   optimizing for lowest cognitive load; evidence (single consumer, never published,
   uncollected tests, shim indirection) pointed one way. The vendor-agnostic boundary
@@ -322,37 +322,37 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
 - **D9 (2026-06-10, agent — superseded by D10):** PR-0 was to stay a pure
   zero-behavior-change move with env truth riding PR-1. Owner overrode same day.
 - **D11 (2026-06-10, agent — audit reconciliation, supersedes D4 and refines D1/D3):**
-  with the full audit doc in hand: (a) `fallback_model` wiring is **internal/omni**
+  with the full audit doc in hand: (a) `fallback_model` wiring is **internal/the operator**
   (audit P0-3b: "interacts with provider selection strategy that may evolve") —
   removed from PR-2; D4's external call was wrong. (b) AUTONOMOUS mode follows the
   audit's written semantics — auto-allow everything; catastrophic patterns escalate
   to ASK (a present prompter may approve; headless fails closed to deny) — near-`allow`
-  but it is the documented contract omni's REST/SSE escalation meets; flag the overlap
+  but it is the documented contract the operator's REST/SSE escalation meets; flag the overlap
   in the PR for review. (c) Trust tiers take the audit's shape:
   `tool_trust_overrides: dict[tool_name, PermissionMode]` — per-tool MODE override,
   both directions. (d) Anthropic STATIC metadata (registry entries, panel detection,
   mock-response cost/thinking tests) is key-free and returns to PR-1 satisfying
   acceptance 1/3/4/10; only live-Anthropic items stay parked under D1.
-- **D12 (2026-06-10, omni — PR #3 review rulings, all recorded verbatim-in-substance):**
+- **D12 (2026-06-10, the operator — PR #3 review rulings, all recorded verbatim-in-substance):**
   (a) **AUTONOMOUS semantics: the sharper version wins** — a `DANGEROUS_PATTERNS`
   match in autonomous mode is a deterministic hard DENY, never a prompt, with or
   without a prompter; returned as a structured tool-error the model can adapt to,
   and logged. The distinction vs `allow`: `allow`+prompter can interactively approve
   a catastrophic command; `autonomous` never can. Two invariants: per-tool trust
   overrides cannot loosen the dangerous floor in autonomous mode; persisted grants
-  resolve ASK→ALLOW only and never override a DENY. omni corrected the audit doc to
+  resolve ASK→ALLOW only and never override a DENY. the operator corrected the audit doc to
   match; supersedes D11(b). (b) **Grant persistence**: JSON-in-session-doc blessed
   technically (pydantic-default degradation fail-safe — older builds drop grants →
   re-ask, never looser; document it); record shape
   `{tool, args_scope, mode_at_grant, timestamp}`; a session resumed under a tighter
   mode does not honor looser-mode grants. Zachary's formal OK still pending (Q5).
-  (c) **Sequencing**: our PR-2 lands first; omni starts internal TurnEnd work after
+  (c) **Sequencing**: our PR-2 lands first; the operator starts internal TurnEnd work after
   it merges. (d) **Unknown #5 fully closed**: `_fails.txt` was a local gitignored
-  scratch dump, never repo-tracked; omni corrected the audit, deleted the file; all
+  scratch dump, never repo-tracked; the operator corrected the audit, deleted the file; all
   three tests pass everywhere.
 - **D14 (2026-06-10, Zachary):** blanket approval of all standing recommendations
   ("fully approved") — closes **Q5**: grant persistence as a JSON object in the
-  session document is formally approved (with omni's D12(b) constraints). Also a
+  session document is formally approved (with the operator's D12(b) constraints). Also a
   standing goal: complete the whole ladder autonomously, fresh-eyes review between
   phases, agent makes long-term strategic decisions.
 - **D15 (2026-06-10, agent — PR-2 design):** retry ONLY `RateLimited` (waiting is the
@@ -363,7 +363,7 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   partial streamed text of a failed turn is NOT persisted (session stays at the last
   message boundary); `TurnResult.error` carries the redacted detail; streaming
   surfaces failure as `AgentStatus` (AgentDone schema unchanged — client contract).
-- **D18 (2026-06-10, omni stack review + restack):** verdict clean — zero
+- **D18 (2026-06-10, the operator's stack review + restack):** verdict clean — zero
   blocking/major across #4–#8; #6 security core independently attacked and held.
   Mechanical restack onto main executed (PR #3's squash made the old base
   unreachable for clean merges); all five branches rebased + force-pushed. All
@@ -378,30 +378,30 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   reasoning-drop documented as deliberate (no StreamThinkingDelta yet); (7) refund
   comment states the real invariant (partial output discarded); (8) mid-stream
   refund test added; (9) save_skill boolean named. Suite: **1455 green** at tip.
-- **D19 (2026-06-10, omni — Q6 resolved → PKG-AUTO):** Zachary's Q6 answer became
+- **D19 (2026-06-10, the operator — Q6 resolved → PKG-AUTO):** Zachary's Q6 answer became
   the next external package (see PR-6 ladder row for the full spec). Two contract
-  points to honor: **fallback_model is now external** (omni released P0-3b — wire
+  points to honor: **fallback_model is now external** (the operator released P0-3b — wire
   it as the explicit override of the auto chain; supersedes D11a), and the
   resolver must be a pluggable interface so "zakpick" (task-category model
-  routing) lands later without API breakage. Sequencing: restack → omni merges
-  the stack → PKG-AUTO starts → omni starts the internal TurnEnd seam post-#5.
+  routing) lands later without API breakage. Sequencing: restack → the operator merges
+  the stack → PKG-AUTO starts → the operator starts the internal TurnEnd seam post-#5.
 - **D25 (2026-06-11, Zachary → agent, ultracode):** commissioned a full parity review
   of Zak-Code vs **claw-code + Hermes + goose** ("get to par with these three
   harnesses"). Ran as a 104-agent / ~5.7M-token workflow; output is
   `docs/PARITY-GAP-ANALYSIS.md` + the *Parity backlog* section above. Verdict:
   at-par-or-ahead on core engineering, behind on provider-resilience wiring and
   operability breadth; 30 verified items (11 P1), 18 already-ahead. Originally
-  numbered D22 to clear omni's commit-referenced D20 (per-user config home, #16) and
+  numbered D22 to clear the operator's commit-referenced D20 (per-user config home, #16) and
   D21 (PKG-AUTO, #17); renumbered D22→D25 in the 06-12 collision cleanup — three
   entries claimed D22, and #21's claude-polish keeps it because its squash-commit
-  subject (5fbfb21) cites D22 immutably; omni's TurnEnd entry became D24.
+  subject (5fbfb21) cites D22 immutably; the operator's TurnEnd entry became D24.
   Clean-room rule enforced on every claw-code reader; `[CLEAN-ROOM]` items must be
   re-expressed, never copied; study material extracted to
   `C:\ZakNoCloud\_zakcode_research\` (read-only, gitignored, never in-repo). The
   review snapshotted the pre-merge `pr-5-tooling` tree, so parity-#1 (failover) and
   parity-#30 (outer-loop continuation) are likely partly addressed by the
   since-merged PKG-AUTO (#17) and TurnEnd (#18) — flagged in the doc; re-verify
-  before building; coordinate with omni so the `fallback_model` seam isn't wired twice.
+  before building; coordinate with the operator so the `fallback_model` seam isn't wired twice.
 - **D16 (2026-06-10, agent — PR-4 logging scope):** the audit's P1-5 names "67 bare
   except handlers"; instrumenting all 67 mechanically would add noise without value.
   Delivered the TARGETED set instead: `registry.execute`'s wrapped tool exceptions
@@ -444,7 +444,7 @@ After PR #19 (parity analysis), Zachary commissioned the **provider-resilience c
   `test_rate_limit_retry`). Reconcile names/semantics when the doc arrives (Q1).
 - **A3 — CONFIRMED 2026-06-10:** No `_fails.txt` anywhere in the repo, no xfail
   markers, and the full suite is green (see Baseline). Nothing to triage.
-- **A4:** omni's parallel internal work = `server/app.py` + loop turn-end region +
+- **A4:** the operator's parallel internal work = `server/app.py` + loop turn-end region +
   hook ingestion/identity/memory seams. Our changes stay out of those.
 - **A5:** GROQ_API_KEY and OPENAI_API_KEY arrive 2026-06-10 (Zachary fetching). All
   PR-1 tests are mock-shaped and key-free regardless; keys only matter for optional
@@ -460,7 +460,7 @@ ALL GREEN. `uv sync --extra server` then:
 | `ruff format --check .` | 195 files already formatted |
 | `mypy` | no issues in 96 source files |
 | `pytest -q` (main suite) | **1310 passed, 5 skipped**, 38.66s |
-| `pytest packages/zds-llm-provider/tests -q` (run manually — uncollected by config) | **92 passed**, 0.57s |
+| `pytest packages/llm-provider/tests -q` (run manually — uncollected by config) | **92 passed**, 0.57s |
 
 The 5 skips are structural, not failures: 2× Windows symlink-privilege
 (`test_builtins_edge.py:80,94`), 3× live-provider opt-ins
@@ -510,7 +510,7 @@ cost-accounting test instead of a fallback table.
 
 ## Open questions
 
-- **Q1 — CLOSED 2026-06-10:** audit doc obtained (Mind repo cloned via gh after
+- **Q1 — CLOSED 2026-06-10:** audit doc obtained (host-framework repo cloned via gh after
   device-flow auth). Reconciled into the Acceptance-test map + D11.
 - **Q2 — CLOSED 2026-06-10:** audit answers it — `fallback_model` is internal (P0-3b).
   Removed from PR-2 (D11a).
@@ -520,7 +520,7 @@ cost-accounting test instead of a fallback table.
 - **Q4 (Zachary):** when an Anthropic key exists, say so → unpark the LIVE Anthropic
   items (statics already return in PR-1 per D11d).
 - **Q5 — CLOSED 2026-06-10 (D14):** Zachary approved the grant-persistence format
-  (JSON in the session document, with omni's D12(b) constraints).
+  (JSON in the session document, with the operator's D12(b) constraints).
 - **Q6 (Zachary):** should the FRESH-INSTALL default model flip from local
   (`ollama_chat/llama3.1`) to a cloud model (e.g. `groq/llama-3.3-70b-versatile`)?
   Reverted to local for now (D13) — say the word and it's a one-line change.
@@ -535,10 +535,10 @@ cost-accounting test instead of a fallback table.
   Toolchain: installed uv 0.11.20 standalone (no uv/winget on this box; user PATH
   updated). Baseline recorded: **everything green** — 1310+92 tests pass, ruff/mypy
   clean. Groq pricing probe: litellm DB covers Groq (A1 resolved, no fallback table).
-  Mind repo confirmed unreachable with this box's git credentials (Q1 open).
+  Host-framework repo confirmed unreachable with this box's git credentials (Q1 open).
 - **2026-06-10 (later):** Env cleanup: Zak-Code had NO `.env` at all (the "divergence"
   was a misremember); keys found as Windows env vars and live-validated (D8); clean
-  `.env` written; `load_dotenv` gap discovered → PR-1 scope. zds-llm-provider resolved
+  `.env` written; `load_dotenv` gap discovered → PR-1 scope. llm-provider resolved
   (D7/ADR-0007): consumer scan came back empty, owner delegated the call, **package
   reabsorbed** on branch `pr-0-consolidation` — moves via git mv, imports rewritten,
   tests merged (1403 green), vendor-SDK import-ban contract test added, docs updated
@@ -568,8 +568,8 @@ cost-accounting test instead of a fallback table.
   `TurnResult.error`, `degraded=True`, `AgentStatus` on the stream, session left at
   the last message boundary. 9 new tests (acceptance #8 `test_rate_limit_retry` by
   name); design rationale in D15. Suite: **1425 green**. loop.py diff confined to
-  the two call sites + helpers, per the omni sequencing agreement.
-- **2026-06-10 (PR #3 review):** omni's verdict: **LGTM pending two amendments** —
+  the two call sites + helpers, per the operator's sequencing agreement.
+- **2026-06-10 (PR #3 review):** the operator's verdict: **LGTM pending two amendments** —
   every premise independently reproduced (ADR-0007 evidence, move correctness, test
   arithmetic, Groq pricing to the digit). Amendments landed in this commit:
   RISKS.md row for `.env` keys reaching agent-spawned subprocesses (+ scrub as a
@@ -577,7 +577,7 @@ cost-accounting test instead of a fallback table.
   tests/ deliberately unscanned). Scope question resolved by reverting
   `.env.example`'s default model to local (D13/Q6). Rulings recorded as D12 —
   headline: AUTONOMOUS = deterministic hard-deny on dangerous patterns (the sharper
-  design wins), PR-2 lands before omni's TurnEnd work, unknown #5 fully closed
+  design wins), PR-2 lands before the operator's TurnEnd work, unknown #5 fully closed
   (`_fails.txt` was local gitignored scratch).
 - **2026-06-10 (PR-1):** Implemented on `pr-1-provider-metadata` (stacked on PR-0):
   4 Anthropic + 4 Groq registry entries (Claude windows pinned at the standard 200k,
@@ -589,22 +589,22 @@ cost-accounting test instead of a fallback table.
   test_provider_key_status or test_anthropic_cost"` → 4 passed. Suite: **1416 green**.
   Acceptance 1/2/3/4/10 done; audit unknown #3 partially answered: litellm DOES
   normalize thinking to `reasoning_content`, now captured (loop persistence of
-  ThinkingBlock deliberately deferred — flag for omni/owner if wanted).
+  ThinkingBlock deliberately deferred — flag for the operator/owner if wanted).
 - **2026-06-10 (evening):** GitHub access solved: this box had no git-CLI credential
   (the earlier sign-in was GitHub Desktop's own slot). Installed gh 2.94.0 from the
   release zip, device-flow auth as zkysar1, `gh auth setup-git`. **Pushed
-  `pr-0-consolidation`, opened PR #3.** Cloned the private Mind repo; read the full
+  `pr-0-consolidation`, opened PR #3.** Cloned the private host-framework repo; read the full
   audit. Reconciled (D11): fallback_model OUT of PR-2 (internal); autonomous-mode
   semantics per audit text; trust tiers as `tool_trust_overrides`; Anthropic statics
   back into PR-1 (key-free). Added the Acceptance-test map. Unknown #5's three
   named tests pass on Windows — ubuntu CI on PR #3 is the cross-platform probe.
-- **2026-06-11 (omni):** Post-#9 spec-consistency fix from the PR #9 review record
+- **2026-06-11 (the operator):** Post-#9 spec-consistency fix from the PR #9 review record
   (review posted after the merge — found nothing blocking): the terminal tool-wait
   spinner showed the bare verb (`read...`) while UX.md and the web client both
   specify `running read...`. render.py now passes `"running " + verb`;
   `test_spinner_label_matches_ux_spec` pins all three surfaces in agreement.
   Suite: **1466 green**, ruff + mypy clean.
-- **2026-06-11 (omni):** Internal TurnEnd package, loop.py-free rungs (PR-T1/T5/T6/T7
+- **2026-06-11 (the operator):** Internal TurnEnd package, loop.py-free rungs (PR-T1/T5/T6/T7
   of the ratified TurnEnd Seam Design v1.0): `HookEvent.TURN_END` + veto-capable
   dispatch speaking Claude Code's Stop-hook wire protocol (decision-block JSON on
   exit 0, native exit-2, fail-open on timeout/crash/non-zero, process-tree kill,
@@ -612,14 +612,14 @@ cost-accounting test instead of a fallback table.
   DANGEROUS_PATTERNS hard-deny in autonomous mode, key scrub on ALL workspace hooks,
   appends to a passed hook_manager); `agent_identity_dir` identity discovery for
   `agents/<agent>/self.md`; SESSION_END/PRE_COMPACT payloads enriched with
-  session_summary. Omni review amendment: settings.json ingestion is OPT-IN
+  session_summary. Operator review amendment: settings.json ingestion is OPT-IN
   (`ZAKCODE_SETTINGS_HOOKS`, default false) instead of CLI-unconditional -- a
   workspace configured for Claude Code would otherwise have its hooks half-fire
   here with a different stdin schema before the T2/T3 loop integration lands.
   Veto dispatch is inert until T2/T3 (deferred behind PKG-AUTO to avoid loop.py
   collisions). Suite: **1504 green**, ruff clean, mypy at main parity.
-- **2026-06-11 (omni, D20):** Per-user config home `~/.zakcode` (issue #14, PR #16 —
-  spec omni, implementation dev). One obvious place per the `~/.claude` precedent;
+- **2026-06-11 (the operator, D20):** Per-user config home `~/.zakcode` (issue #14, PR #16 —
+  spec by the operator, implementation by dev). One obvious place per the `~/.claude` precedent;
   v1 = a single user-level `.env`; precedence defaults -> user .env -> workspace
   .env -> process env (workspace loaded first, then user, both override=False);
   `ZAKCODE_HOME` overrides the directory; the config home is never a workspace
@@ -630,7 +630,7 @@ cost-accounting test instead of a fallback table.
   providers package `__init__` — the one place guaranteed to run before litellm
   (the load_settings placement we first agreed on provably fired too late).
   Suite 1518 green.
-- **2026-06-11 (dev, D21 — PKG-AUTO implemented; rulings from omni's relay):**
+- **2026-06-11 (dev, D21 — PKG-AUTO implemented; rulings from the operator's relay):**
   `default_model: "auto"` lands per the PR-6 row (PR #17, entry drafted by
   implementer per the new log convention). Shape: `providers/resolve.py` —
   `AvailabilityResolver` behind a pluggable `ModelResolver` protocol
@@ -639,12 +639,12 @@ cost-accounting test instead of a fallback table.
   probed fresh on the failover path; local wins, then `auto_model_preference`
   (new Settings field, default groq->openai->anthropic); nothing viable raises
   `ModelResolutionError` whose message IS the per-source diagnosis incl. key
-  provenance from D20's `env_source`. **Omni ruling folded in:** tool reliability
+  provenance from D20's `env_source`. **Operator ruling folded in:** tool reliability
   is capability metadata — `Capabilities.tools_unreliable`, set on
   `groq/llama-3.3-70b-versatile` (#13 root cause); the resolver skips
   tools-unreliable models whenever tools are required, which lands gpt-oss-120b
   first within groq without a hardcoded sort. **failed_generation salvage:
-  parked** (omni ruling — fragile coupling for marginal gain). Runtime: loop ctor
+  parked** (operator ruling — fragile coupling for marginal gain). Runtime: loop ctor
   gains `model_failover` (the ONE loop.py seam, flagged for T2/T3 planning: both
   paths' `except ProviderError` sites ask the callback once per turn, streaming
   only before any event reached the client); `fallback_model` is the explicit
@@ -653,7 +653,7 @@ cost-accounting test instead of a fallback table.
   opt-in — flipping the default is a one-line decision left open deliberately);
   cost-ceiling config deferred ("consider" in spec; no consumer yet). Rider
   (litellm warnings) had already landed in #16.
-- **2026-06-11 (omni, review fixes on #17):** streaming failover now resets the
+- **2026-06-11 (the operator, review fixes on #17):** streaming failover now resets the
   RateLimited retry budget for the replacement provider (buffered-path parity —
   `_call_provider` resets its attempt counter per call; the streaming twin's
   counter is outer-scoped and survived the failover `continue`); `.env.example`
@@ -662,7 +662,7 @@ cost-accounting test instead of a fallback table.
   example; stray UTF-8 BOM stripped from this file. Everything else verified
   clean: spec 10/10 clauses, loop seam 7/7 safety points, hermeticity (incl.
   the construction-time probe binding), key handling. 1541 green.
-- **2026-06-11 (omni, D24 — TurnEnd T2/T3/T4: loop break-site veto gates;
+- **2026-06-11 (the operator, D24 — TurnEnd T2/T3/T4: loop break-site veto gates;
   logged as D22 at merge, renumbered in the 06-12 collision cleanup):**
   the Stop-hook seam goes live in the loop. `AgentLoop` ctor gains
   `turn_end_veto_budget: int = 0`; at the three VETOABLE break sites
@@ -814,7 +814,7 @@ cost-accounting test instead of a fallback table.
 - **2026-06-14 (dev, branch `claude/sdk-task-decomposition-024ug1` — first-layer task
   decomposition / HTN planning):** built the missing proactive-planning layer on the owner's
   ask to bolster near-term task decomposition (keep the domain-agnostic core + skills
-  abstraction; this is the "what's next" layer, NOT ayoai-mind's long-horizon planning). Full
+  abstraction; this is the "what's next" layer, NOT the development framework's long-horizon planning). Full
   rationale + owner-chosen forks in **ADR-0008**. Summary for a future agent:
 
   - **`src/zakcode/tasks.py` (NEW, pure, top-level next to `messages.py`/`usage.py`):**
@@ -934,7 +934,7 @@ cost-accounting test instead of a fallback table.
   - **R6 structured handoff:** `subagent._HANDOFF` appended to every sub-agent prompt via
     `prompt_builder_for` (the child's final message is the only thing returned, so require a
     self-contained summary — addresses the lossy-boundary failure mode).
-  - **R7:** deferred per its own recommendation (facts ledger belongs to the mind).
+  - **R7:** deferred per its own recommendation (facts ledger belongs to the host framework).
   - Updated 6 pre-existing tests that asserted the old PLAN toolset / prompt-suffix (intended
     changes). New tests in `test_loop_planning.py` (R3 + R5) and `test_subagent_planning.py` (R4 + R6).
     **1790 green, ruff + mypy clean.** Docs: CONFIG.md, .env.example, ARCHITECTURE.md, ADR-0008, report.
@@ -952,7 +952,7 @@ cost-accounting test instead of a fallback table.
   over the active set (sticky vs `tool_search` re-activation), propagates into sub-agent
   `subset()`s, exposure-only (never loosens the permission gate; trusted internal `execute()`
   callers unaffected). **Deliberately operator-controlled, NOT model-decided** (a model-chosen
-  filter is defeated by the injection it defends against — a wrapping orchestrator like Mind
+  filter is defeated by the injection it defends against — a wrapping orchestrator like a host framework
   declares each task's scope). 15 new tests (`tests/test_tool_exposure.py`), 1841 suite green
   (clean env), ruff+mypy clean. Docs: SELF-REMEDIATION Step 4 ✅ SHIPPED, CONFIG.md, `.env.example`,
   RISKS prompt-injection row.
@@ -1031,14 +1031,14 @@ cost-accounting test instead of a fallback table.
   ruff+format+mypy clean, 1893 passed, 5 skipped.** Resolves GitHub issue #33.
 - **2026-06-15 (dev+research, branch `feat/primitiveness-criteria` — HTN cross-system survey →
   decomposition guidance):** the user asked whether Zak Code's task decomposition could learn from
-  the HTN implemented in `Ayoai/Ayoai-Environment-Processor` (and elsewhere). Ran three parallel
-  read-only survey agents over: the Processor (dual **HTN + A\*** over a STRIPS world-model), the
-  higher mind **`Ayoai-Mind`** (aspirations→goals, 22-criterion goal-selector, scope classes), and
-  the omni continual-learning framework's `/decompose` skill. **Finding:** the lean
+  the HTN implemented in an external processing system (and elsewhere). Ran three parallel
+  read-only survey agents over: the processor (dual **HTN + A\*** over a STRIPS world-model), the
+  higher-level host framework, **the development framework** (a goal hierarchy, a 22-criterion goal selector, scope classes), and
+  the operator's continual-learning framework's `/decompose` skill. **Finding:** the lean
   full-replace + nesting-inferred-`kind` + ephemeral-plan + issue-#32 design already structurally
   handles most borrowable patterns (idempotency back-refs, hierarchical-cycle detection,
   stale-blocker TTL) — a validation of "simple beats agentic," not a gap. The single additive,
-  philosophy-fitting idea — convergent across `/decompose` AND ayoai-mind — was implemented:
+  philosophy-fitting idea — convergent across `/decompose` AND the development framework — was implemented:
   sharpen the primitiveness **stopping-rule** with the two criteria a single-action floor omits — a
   **clear done-condition** and **no hidden 'figure out how'** — in `_PLANNING` (prompt.py) + the
   `update_plan` tool description. Model-facing guidance only: no schema/infra, cache-stable. Pinned
@@ -1265,17 +1265,17 @@ cost-accounting test instead of a fallback table.
   green: 2086 passed, ruff + mypy clean.**
 - **2026-06-20 (dev, REMOVE the cross-session memory subsystem):** the user drew the boundary
   (`docs/PERSISTENCE-BOUNDARY.md`): the harness records the transcript (`SessionStore`, `/resume`) and
-  exposes generic seams; it does NOT remember/recall/learn — "memory" is claude-mind's, and claude-mind
-  has its own framework, so the harness should host no memory infrastructure (not even inert). Plan-mode
+  exposes generic seams; it does NOT remember/recall/learn — "memory" is the host framework's, and the host framework
+  has its own infrastructure, so the harness should host no memory infrastructure (not even inert). Plan-mode
   approved (3 Explore agents mapped the full surface), then executed as one atomic PR. **Deleted**
   `src/zakcode/memory/` (`MemoryProvider`, `SqliteMemoryProvider`, `MemoryRecallHook`),
   `tools/builtins/memory.py` (`remember`/`recall`), `agent/lessons.py` (`LessonWriter`). **Removed** the
   `enable_memory` flag, `memory_provider` injection, the three `memory_*` config fields, the
   `--no-memory` CLI flag, and the server's shared store. **Kept unchanged:** `SessionStore` and every
   generic seam (`register_context` / `register_lifecycle` / `register_turn_end`, the tool registry, DI)
-  — how a Mind attaches its own memory. Tests: deleted `test_memory.py` + `test_lessons.py`, pruned the
+  — how a host framework attaches its own memory. Tests: deleted `test_memory.py` + `test_lessons.py`, pruned the
   memory tests from 4 mixed files, added `test_substrate_no_memory.py` (bare harness ships no
   remember/recall + no memory attr; the recall/lifecycle seams survive). Docs: `PERSISTENCE-BOUNDARY`
   (→ removed), `INTEGRATIONS` §5 (→ bring-your-own), CONFIG/ARCHITECTURE/PARITY/ROADMAP/README/.env.
-  **Deferred:** an `ON_TURN_RECOVERED` lifecycle seam if a Mind later wants recovery lessons. **`uv run
+  **Deferred:** an `ON_TURN_RECOVERED` lifecycle seam if a host framework later wants recovery lessons. **`uv run
   poe check` green: 2042 passed, ruff + mypy clean.**
