@@ -105,12 +105,12 @@ def test_summary_drops_the_model_s_tool_call_and_thinking_markup(tmp_path: Path)
     leaked = (
         "<think>should I summarize?</think>Phase 3 complete. Loaded 2 tree nodes.\n"
         '<tool_call>\n<function=update_plan>\n<parameter=tasks>\n[{"title": "Step 0"}]\n'
-        "</parameter>\n</function>\n</tool_call>\nUnfinished: the aspirations loop."
+        "</parameter>\n</function>\n</tool_call>\nUnfinished: the orchestrate loop."
     )
     provider = _SummarizerProvider([leaked], tokens=100)
     loop = _loop(provider, tmp_path)
     text = asyncio.run(loop._summarize_for_compaction(_history(2)))
-    assert text == "Phase 3 complete. Loaded 2 tree nodes.\n\nUnfinished: the aspirations loop."
+    assert text == "Phase 3 complete. Loaded 2 tree nodes.\n\nUnfinished: the orchestrate loop."
 
 
 def test_summary_carries_the_harness_position_note(

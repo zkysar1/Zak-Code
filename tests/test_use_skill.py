@@ -1175,16 +1175,16 @@ async def test_harness_source_composes_a_user_invocable_false_skill(tmp_path: Pa
     """A framework's loop orchestrator is ``user-invocable: false`` (only the model, or another
     skill, runs it). The harness delivering it on a Stop hook's say-so is neither a human's
     keystroke (refused) nor the model's choice: it composes."""
-    _write_skill_with(tmp_path, "aspirations", "user-invocable: false", body="# Loop\n\nRun it.")
+    _write_skill_with(tmp_path, "orchestrate", "user-invocable: false", body="# Loop\n\nRun it.")
     agent = _agent(tmp_path, enable_skills=True)
-    denied = await agent.compose_skill_turn("aspirations", "loop")
+    denied = await agent.compose_skill_turn("orchestrate", "loop")
     assert denied.invoked and denied.denied_reason and "not user-invocable" in denied.denied_reason
-    composed = await agent.compose_skill_turn("aspirations", "loop", source="harness")
+    composed = await agent.compose_skill_turn("orchestrate", "loop", source="harness")
     assert composed.invoked and composed.denied_reason is None and composed.error is None
     assert composed.turn_text is not None
     assert composed.turn_text.startswith(
-        "<command-message>aspirations is running</command-message>\n"
-        "<command-name>/aspirations</command-name>\n<command-args>loop</command-args>\n\n"
+        "<command-message>orchestrate is running</command-message>\n"
+        "<command-name>/orchestrate</command-name>\n<command-args>loop</command-args>\n\n"
     )
     assert "Run it." in composed.turn_text
 
@@ -1230,19 +1230,19 @@ async def test_the_operators_own_command_survives_the_models_redundant_skill_cal
 
 
 async def test_harness_source_is_unbudgeted_but_counts_as_loaded(tmp_path: Path) -> None:
-    _write_skill(tmp_path, "aspirations", body="Loop body.")
+    _write_skill(tmp_path, "orchestrate", body="Loop body.")
     agent = _agent(
         tmp_path,
         enable_skills=True,
     )
     agent.settings.skill_invocation_budget = 1
     for _ in range(3):
-        load = await agent._load_skill_body("aspirations", source="harness")
+        load = await agent._load_skill_body("orchestrate", source="harness")
         assert load.body is not None and load.denied_reason is None
     assert agent._skill_invocations_this_turn == 0  # never drawn from the budget
     # The model's own use_skill of the skill the harness just delivered gets the pointer,
     # not a second copy of the body.
-    again = await agent._load_skill_body("aspirations", source="tool")
+    again = await agent._load_skill_body("orchestrate", source="tool")
     assert again.body is not None and again.body.startswith("[already loaded]")
 
 

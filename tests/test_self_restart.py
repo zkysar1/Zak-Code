@@ -455,9 +455,9 @@ def _no_restart_marker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 _LOOP_TURN = (
-    "<command-message>aspirations is running</command-message>\n"
-    "<command-name>/aspirations</command-name>\n<command-args>loop</command-args>\n\n"
-    "# Aspirations\n\nEnter the loop.\n"
+    "<command-message>orchestrate is running</command-message>\n"
+    "<command-name>/orchestrate</command-name>\n<command-args>loop</command-args>\n\n"
+    "# Orchestrate\n\nEnter the loop.\n"
 )
 
 
@@ -490,31 +490,31 @@ def _composing_agent(tmp_path: Path, *, loop_skill: str = "", last_stop_reason: 
 def test_a_stop_hook_restart_delivers_the_skill_the_hook_named(tmp_path: Path) -> None:
     agent, calls, _ = _composing_agent(tmp_path)
     carried = (
-        "Your FIRST action MUST be: Skill('aspirations') with args='loop'. Do NOT run Bash first."
+        "Your FIRST action MUST be: Skill('orchestrate') with args='loop'. Do NOT run Bash first."
     )
     line = cli._restart_kick(agent, restarted="new-build", carried=carried, boundary="stop-hook")
-    assert calls == [("aspirations", "loop", "harness")]
+    assert calls == [("orchestrate", "loop", "harness")]
     assert line is not None
     head, _, rest = line.partition("\n")
     assert head.startswith(
-        "<command-message>aspirations is running — [harness] this session was restarted"
+        "<command-message>orchestrate is running — [harness] this session was restarted"
     )
     assert "the hook said: Your FIRST action MUST be" in head
-    assert rest.startswith("<command-name>/aspirations</command-name>")
+    assert rest.startswith("<command-name>/orchestrate</command-name>")
     # A continuation naming no skill keeps the prose line, byte for byte.
     plain = cli._restart_kick(agent, restarted="new-build", carried="invoke the loop again")
     assert plain is not None and plain.startswith("[harness] this session was restarted")
-    assert calls == [("aspirations", "loop", "harness")]
+    assert calls == [("orchestrate", "loop", "harness")]
 
 
 def test_the_loop_sentinel_resolves_to_the_last_hook_named_skill(tmp_path: Path) -> None:
-    agent, calls, compactions = _composing_agent(tmp_path, loop_skill="aspirations loop")
+    agent, calls, compactions = _composing_agent(tmp_path, loop_skill="orchestrate loop")
     line = cli._loop_sentinel_turn(_console(), agent)
-    assert calls == [("aspirations", "loop", "harness")]
+    assert calls == [("orchestrate", "loop", "harness")]
     assert line is not None
     head = line.split("\n", 1)[0]
     assert head.startswith(
-        "<command-message>aspirations is running — [harness] the wake-up armed as the "
+        "<command-message>orchestrate is running — [harness] the wake-up armed as the "
         "autonomous-loop sentinel fired"
     )
     assert "Re-arm a wake-up with ScheduleWakeup first" in head
@@ -523,10 +523,10 @@ def test_the_loop_sentinel_resolves_to_the_last_hook_named_skill(tmp_path: Path)
 
 def test_the_loop_sentinel_compacts_a_stalled_turns_context_first(tmp_path: Path) -> None:
     agent, calls, compactions = _composing_agent(
-        tmp_path, loop_skill="aspirations loop", last_stop_reason="veto_stall"
+        tmp_path, loop_skill="orchestrate loop", last_stop_reason="veto_stall"
     )
     line = cli._loop_sentinel_turn(_console(), agent)
-    assert line is not None and calls == [("aspirations", "loop", "harness")]
+    assert line is not None and calls == [("orchestrate", "loop", "harness")]
     assert compactions == ["resume"]  # the spiral is dropped before the loop re-enters
 
 
@@ -536,5 +536,5 @@ def test_the_loop_sentinel_is_prose_when_no_skill_is_known(tmp_path: Path) -> No
     assert calls == []
     # …and a stand-in without the seam resolves nothing either (the ADR-0094 line stands).
     bare = SimpleNamespace(session=Session(cwd=str(tmp_path), model="m"))
-    bare.session.loop_skill = "aspirations loop"
+    bare.session.loop_skill = "orchestrate loop"
     assert cli._loop_sentinel_turn(_console(), bare) is None

@@ -95,11 +95,11 @@ def test_prompt_lists_operator_only_commands_under_their_own_heading() -> None:
 def test_implied_skill_needs_a_shared_content_word() -> None:
     """ADR-0036: the deterministic floor under "never guess"."""
     forge = ("forge-skill", "Forge a new skill from a description")
-    create = ("create-aspiration", "Create a new aspiration in the world queue")
+    create = ("create-objective", "Create a new objective in the world queue")
     assert implied_skill_anchored("finish forging this skill", *forge)  # forging ~ forge
-    assert implied_skill_anchored("add an aspiration for the report", *create)
+    assert implied_skill_anchored("add an objective for the report", *create)
     assert implied_skill_anchored("run the notifier", "notify-user", "Send the operator a message")
-    # The field guess: "then make one" shares no content word with create-aspiration.
+    # The field guess: "then make one" shares no content word with create-objective.
     assert not implied_skill_anchored("then make one", *create)
     assert not implied_skill_anchored("what is the weather", *forge)
     assert not implied_skill_anchored("this skill", *forge)  # stopwords never anchor
@@ -315,26 +315,26 @@ async def test_agent_side_call_names_a_catalogued_skill(
 async def test_agent_side_call_drops_an_unanchored_guess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The field guess (ADR-0036): 'then make one' → create-aspiration is catalogued but
+    """The field guess (ADR-0036): 'then make one' → create-objective is catalogued but
     shares no content word with the request, so the skill is dropped and the category kept."""
 
     class _Registry2:
         def catalog(self) -> list[tuple[str, str]]:
-            return [*CATALOG, ("create-aspiration", "Create a new aspiration in the queue")]
+            return [*CATALOG, ("create-objective", "Create a new objective in the queue")]
 
         def model_catalog(self) -> list[tuple[str, str]]:
             return self.catalog()
 
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     monkeypatch.setattr(agent, "skill_registry", _Registry2())
-    stub = _Stub('{"difficulty": "quick", "skill": "create-aspiration"}')
+    stub = _Stub('{"difficulty": "quick", "skill": "create-objective"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
     assert await agent._classify_difficulty("then make one", 0.0) == DifficultyVerdict(
         "quick_code", None
     )
     # …while a request that names the thing in its own words keeps the skill.
-    assert await agent._classify_difficulty("make an aspiration for it", 0.0) == (
-        DifficultyVerdict("quick_code", "create-aspiration")
+    assert await agent._classify_difficulty("make an objective for it", 0.0) == (
+        DifficultyVerdict("quick_code", "create-objective")
     )
 
 

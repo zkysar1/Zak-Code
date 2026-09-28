@@ -75,7 +75,7 @@ def test_workspace_summary_returns_journal_findings_and_session(tmp_path: Path) 
 def test_workspace_summary_degrades_when_nothing_written(tmp_path: Path) -> None:
     # No research/ dir, no .current-session — safe to poll before the loop's first turn.
     body = _client(tmp_path).get("/workspace/summary").json()
-    # "findings" joined this payload in g-373-28 (the client renders the findings
+    # "findings" joined this payload (the client renders the findings
     # themselves, not just the count). Degrades to [] exactly where finding_count
     # degrades to 0, so polling before the loop's first turn is still safe.
     assert body == {"journal": "", "finding_count": 0, "findings": [], "session_id": None}
@@ -99,7 +99,7 @@ def test_finding_count_counts_directory_files_excluding_dotfiles(tmp_path: Path)
     assert body["finding_count"] == 2
 
 
-# ── g-373-28: the findings THEMSELVES, newest first ──────────────────────────
+# ── the findings THEMSELVES, newest first ─────────────────────────────────────
 # The count alone left the client showing "2 findings logged" and nothing to read.
 # These pin the two accepted shapes, and pin that the ORDER's provenance is reported
 # rather than smoothed over: a directory has real mtimes, a flat list has none.
@@ -179,11 +179,11 @@ def test_findings_list_is_capped_while_the_count_is_not(tmp_path: Path) -> None:
 def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
     (tmp_path / ".current-session").write_text("sess-777\n", encoding="utf-8")
     body = _client(tmp_path).get("/sidecar/health").json()
-    # last_run_stop_reason joined this payload in g-369-28 so the env-server can end the
+    # last_run_stop_reason joined this payload so the env-server can end the
     # ENVIRONMENT when a bounded run finishes, instead of idling until the generic
     # idle-monitor reaps it and marks the run failed. None until this session's run ends.
     #
-    # observation_intake joined in g-373-03: the perception bridge was unobservable from
+    # observation_intake joined: the perception bridge was unobservable from
     # either end, so a 4xx read exactly like a delivered frame. It rides THIS payload
     # rather than a new endpoint because the env-server already polls this one.
     #
@@ -191,7 +191,7 @@ def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
     # polls, so a subset assertion would let a field be dropped or renamed without a
     # single test going red — and every counter is asserted PRESENT-and-zero because a
     # counter that only appears after the first failure cannot tell "healthy" from
-    # "nobody called it" (guard-3169).
+    # "nobody called it".
     assert body == {
         "status": "ok",
         "active_session_id": "sess-777",
@@ -216,7 +216,7 @@ def test_sidecar_health_active_session_none_before_first_turn(tmp_path: Path) ->
         "status": "ok",
         "active_session_id": None,
         "last_run_stop_reason": None,
-        # g-373-03 — see the note on the sibling test above.
+        # See the note on the sibling test above.
         "observation_intake": {
             "accepted": 0,
             "superseded": 0,
@@ -240,7 +240,7 @@ def test_sidecar_health_reports_this_sessions_run_ending(tmp_path: Path) -> None
 
 
 def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> None:
-    """A marker from an EARLIER session must NOT be reported (rb-5759).
+    """A marker from an EARLIER session must NOT be reported.
 
     This is the whole reason the marker carries a session id. A bare reason marker is
     write-once and never false — until the next run, when a stale ``duration_cap`` still
@@ -252,7 +252,7 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
     next run"). It self-invalidates across session rotation inside a LIVING server only.
     Across a reboot of the same persistent workspace both halves come back matching —
     ``.current-session`` is persistent and only advances at the driver's next iteration —
-    so the comparison below is stale-to-stale and passes. That is g-369-86, and it ended
+    so the comparison below is stale-to-stale and passes. That ended
     a production world 5.1 minutes after boot. The reboot case is covered by
     ``test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot`` and by the
     clear-at-run-start it pins; this test still owns the rotation case.
@@ -278,7 +278,7 @@ def test_sidecar_health_suppresses_a_prior_sessions_ending(tmp_path: Path) -> No
 def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
 ) -> None:
-    """A marker that survived a REBOOT must not end the run that just started (g-369-86).
+    """A marker that survived a REBOOT must not end the run that just started.
 
     The session fence cannot catch this on its own, and the gap took down a production
     world. ``.current-session`` is persistent and only advances at the driver's NEXT
@@ -311,10 +311,10 @@ def test_sidecar_health_drops_a_prior_runs_ending_across_a_reboot(
         body = client.get("/sidecar/health").json()
         assert body["last_run_stop_reason"] is None, (
             "a prior run's ending survived a reboot and would terminate this run at "
-            "birth — the g-369-86 production incident"
+            "birth — the production incident"
         )
 
-    # Assert the CLEANUP itself, not only its visible effect (guard-3218): a reader that
+    # Assert the CLEANUP itself, not only its visible effect: a reader that
     # merely suppressed the value would leave the landmine for the next consumer.
     assert not (tmp_path / ".run-stop-reason").exists()
 
@@ -355,14 +355,14 @@ def test_a_bounded_runs_ending_is_kept_across_a_restart_on_the_same_boot_only(
 ) -> None:
     """The run ends, the process exits, and it starts again: the ending must still be on
     ``/sidecar/health`` for the env-server's next poll when the start is a RESTART on the
-    same boot, and cleared when it is a reboot (g-373-159, ADR-0256).
+    same boot, and cleared when it is a reboot (ADR-0256).
 
     mind-serve@ runs with Restart=always, so every bounded run ends in exactly this restart,
     seconds after ``on_run_end`` brings the process down, while the env-server polls every
     60s. Clearing at every process start deleted the ending before any poll could read it,
     and the environment idled on to its own session cap (measured on DEV: a 12m37s tail
     after a ``duration_cap`` ending). The boot is the discriminator: the SAME ending, met by
-    a start under another boot, is the g-369-86 landmine, so both cases run the same code.
+    a start under another boot is the landmine, so both cases run the same code.
     Both halves are production code. The real writer records the ending when the capped
     run ends, and entering the TestClient runs the real lifespan that the restart runs.
     """
@@ -380,7 +380,7 @@ def test_a_bounded_runs_ending_is_kept_across_a_restart_on_the_same_boot_only(
         agent_factory=_factory,
     )
     asyncio.run(ended.state.consume_say_loop())  # returns because the cap ended the run
-    # Read by position (guard-6956): session (none was ever current), reason, boot.
+    # Read by position: session (none was ever current), reason, boot.
     recorded = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
     assert recorded == ["", "duration_cap", "boot-A"], recorded
 
@@ -394,7 +394,7 @@ def test_a_start_with_no_readable_boot_id_clears_even_a_boot_stamped_ending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With no boot id to read (not Linux, or /proc unreadable), no ending can be proved to
-    be this boot's, so the start clears it. A stale ending ends a live run (g-369-86), while
+    be this boot's, so the start clears it. A stale ending ends a live run, while
     a lost one only delays the environment's end, so the doubtful case takes the clear."""
     monkeypatch.setattr("zakcode.server.app._boot_id", lambda: None)
     (tmp_path / ".run-stop-reason").write_text("\nduration_cap\nboot-A", encoding="utf-8")
@@ -450,7 +450,7 @@ def _plant_signal_setter(root: Path) -> None:
 def test_a_restart_that_keeps_this_boots_cap_starts_ended_and_raises_no_second_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str, opens_a_run: bool
 ) -> None:
-    """A start that keeps this boot's cap is that run's restart, not a new run (g-373-161).
+    """A start that keeps this boot's cap is that run's restart, not a new run.
 
     Keeping the ending (ADR-0256) let the env-server read it, and it then ended the
     environment with POST /run/stop. But the restarted process had armed a fresh run clock

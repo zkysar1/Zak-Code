@@ -766,7 +766,7 @@ def test_a_section_the_plan_moved_past_is_not_restored(tmp_path: Path) -> None:
     assert (note["page"], note["skipped"]) == (3, 1)
 
 
-# ── the second field run's defects (2026-08-28, /aspirations-precheck) ────────
+# ── the second field run's defects (2026-08-28) ──────────────────────────────
 
 
 def _keep_first(rewrite: int = 0) -> list[dict[str, Any]]:

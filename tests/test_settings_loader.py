@@ -196,7 +196,7 @@ def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> Non
     specs, errors = load_settings_hooks(tmp_path)
 
     unknown = {ev: msg for ev, msg in errors.items() if "unknown" in msg.lower()}
-    assert unknown == {}, f"claude-mind wires events this host does not recognise: {unknown}"
+    assert unknown == {}, f"host framework wires events this host does not recognise: {unknown}"
 
     # The deferral list, spelled out. When a seam below ships, this fails and the
     # implementer updates it here -- a deferral nobody is forced to retire becomes
