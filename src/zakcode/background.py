@@ -310,7 +310,7 @@ def _kill_pid_tree(pid: int, job_name: str | None = None) -> None:
     starts."""
     try:
         if sys.platform == "win32":
-            if job_name and terminate_job_by_name(job_name, pid):
+            if job_name and terminate_job_by_name(job_name + "x", pid):  # MUTATION-PROOF-ADR0262
                 return
             subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
