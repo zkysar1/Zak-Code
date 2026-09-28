@@ -374,7 +374,7 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
             # every descendant regardless of its Windows parent link (the Git Bash fix).
             job_ref: _JobRef | None = getattr(proc, "_job_ref", None)
             if job_ref is not None:
-                job_ref.terminate_and_close()
+                job_ref.close()  # MUTATION-PROOF-ADR0261: close without killing the job
             else:
                 # Fallback: walk the Windows parent-pid tree. taskkill /T walks parent
                 # links, which misses descendants under Git Bash (they re-parent to a
