@@ -271,6 +271,11 @@ class SystemPromptBuilder:
         # One survey per workspace per builder: the prefix must not move between the turns of
         # a session (see ``workspace_survey``).
         self._survey_cache: dict[str, str] = {}
+        # The project guides are read once per builder too (ADR-0259). The loop builds the
+        # system prompt before every call, so a guide edited on disk mid-session (a pull or a
+        # merge in the workspace) would change the prompt head, and an engine that caches by
+        # exact prefix would then re-process the whole conversation.
+        self._context_cache: dict[tuple[str, bool, str | None], list[tuple[Path, str]]] = {}
 
     def build(
         self,
@@ -409,11 +414,12 @@ class SystemPromptBuilder:
     ) -> str:
         sections = [self._environment_section(settings, session_id=session_id)]
 
-        context_files = self._render_context(
-            discover_context(
+        guides_key = (str(settings.workspace_root), settings.context_include_readme, task)
+        if guides_key not in self._context_cache:
+            self._context_cache[guides_key] = discover_context(
                 settings.workspace_root, include_readme=settings.context_include_readme, task=task
             )
-        )
+        context_files = self._render_context(self._context_cache[guides_key])
         if context_files:
             sections.append(context_files)
 

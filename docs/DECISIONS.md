@@ -15626,3 +15626,47 @@ and is counted. Every candidate cut off gives the named error, with no synthesis
 fallback picks a finished candidate over a longer fragment. The Agent's sampler raises
 `SampleCutOff` for both spellings of the finish reason, after recording the call's cost. Each was
 run with its mechanism removed and went red.
+
+## ADR-0259: the project guides are read once per session
+
+Status: accepted. 2026-09-28.
+
+The loop builds the system prompt before every model call. The stable tier and the workspace
+survey were built to hold still for a whole session, but `discover_context` ran on every build and
+re-read `AGENTS.md`, `CLAUDE.md`, `ZAK.md` and the README from disk. A guide edited mid-session
+therefore changed the system prompt. An engine that caches by exact prefix, as llama.cpp does,
+holds one prefix running from the system prompt through the whole conversation, so the edit cost
+the conversation's entire cached state, not only the context tier.
+
+Measured on 2026-09-28 on a self-hosted pod serving worker loops, each a long single-turn session
+whose workspace merges its upstream between tasks. One loop's call re-processed 993 prompt tokens.
+Its workspace then merged a change to its `CLAUDE.md`. Five seconds later its next call, 114,564
+tokens, shared only its first 17.5% with the engine's cached tokens (llama.cpp's own slot-selection
+line), and it re-processed the prompt at about 200 tokens per second: 1,209 s on an engine it had
+to itself, with only a shell command between the two calls. Over the preceding day a monitor on
+the fleet flagged 26 calls with under 50% prefix reuse outside a proxy restart. Eight of them came
+mid-turn. Seven of those reused nothing, and all seven completed 8 to 22 minutes after a merge that
+changed a guide, with only ordinary tool calls in between. The eighth kept 48% and followed no
+merge. The other 18 were the first call of a new turn, a separate case this decision does not
+touch. Of the nine guide-changing merges that day, seven were followed by such a call. One of the
+other two was on a paused loop that made no call afterwards, and the other has no flagged call.
+
+Decision. `SystemPromptBuilder` reads the guides once per workspace, README setting and task, as
+it already did for the survey, and every later build in the session reuses them. A guide edited
+mid-session takes effect in the next session. A sub-agent gets its own builder, so it reads the
+guides when it starts.
+
+Rejected: refreshing the guides at each compaction. Compaction already rewrites the conversation,
+so the refresh would cost little, but a long session's instructions would then change at a moment
+nobody chose. It can be added if a fleet needs guide updates without a restart. Also rejected:
+re-reading the guides every build and keeping the old text when nothing changed. That leaves the
+whole cost wherever a guide does change, which is the measured case.
+
+Not covered here: the stable tier's tool summary still moves when a stuck step narrows the tools or
+`tool_search` loads a hidden tool. Either would cost the same re-processing. Neither has been
+measured in production yet.
+
+The proof. In `tests/test_prompt_cache.py`, two builds with a guide edited between them give
+byte-identical prompts. A second test is the positive control: a new builder reads the edited
+guide. With the cache check replaced by a re-read on every build, the first test went red and the
+control stayed green.
