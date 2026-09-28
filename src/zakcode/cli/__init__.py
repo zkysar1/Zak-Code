@@ -36,6 +36,7 @@ from rich.table import Table
 from rich.text import Text
 
 from zakcode import __version__
+from zakcode.background import prepare_restart
 from zakcode.build_info import (
     build_commit,
     build_dir,
@@ -1097,6 +1098,11 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
     else:
         os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
         os.environ.pop("ZAKCODE_RESTART_BOUNDARY", None)
+    # Background tasks keep running across the exec. Hand their jobs on so the fresh process
+    # can still kill their whole trees (Windows; nothing to do elsewhere). A failure here
+    # only costs that, never the restart.
+    with contextlib.suppress(Exception):
+        prepare_restart()
     sys.stdout.flush()
     sys.stderr.flush()
     try:

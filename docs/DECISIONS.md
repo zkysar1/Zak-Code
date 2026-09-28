@@ -15795,3 +15795,54 @@ outlives the job handle being closed (no kill-on-close). A Windows-only test mon
 `NtResumeProcess` to fail and verifies `create_group_subprocess_exec` raises `OSError` (a child
 is never left suspended). POSIX-only tests verify `create_group_subprocess_exec` puts the child in
 its own session (`os.getsid(pid) == pid`) and that `terminate_process_tree` kills via `killpg`.
+
+## ADR-0262: a restart hands running background tasks' job objects to the new process
+
+Status: accepted. 2026-09-28.
+
+ADR-0261 kills a child's tree through its job object, but only in the process that spawned the
+child. A background task outlives a restart into a new build (ADR-0034's `os.execv`), and the fresh
+process has the task on its saved table with its pid and nothing else. Its stop therefore went
+through `_kill_pid_tree`, which on Windows is `taskkill /PID <pid> /T /F`, the call ADR-0261
+measured missing the programs Git Bash starts. Measured: a probe that closed the task's job handle
+and dropped its process object, as the fresh process sees it, then stopped the task, found 1
+process still carrying the exec-form command (`sleep 47.25`) 5 s later (CI run 36412817319). Linux
+was unaffected: `killpg` needs only the pid.
+
+A job object lives as long as a handle to it is open, and the old process's handles close when it
+exits. The job's processes keep running (there is no kill-on-close), but nothing can reach the job
+any more.
+
+Decision.
+
+1. Every job gets a random name at spawn (`Local\zakcode-job-<uuid>`). If the name already exists,
+   the object is not ours and the child is not put into it; the spawn degrades as for any other job
+   failure. The task record keeps the name (`BackgroundTask.job_name`).
+2. Just before the restart's `os.execv`, `prepare_restart` marks each running task's job handle
+   inheritable (`pass_jobs_to_restart`). On Windows the C runtime implements exec by starting the
+   new process and exiting this one, and the new process inherits inheritable handles, which keeps
+   each job, and so its name, open.
+3. The fresh process kills a restarted task by name: `terminate_job_by_name` opens the job and
+   terminates it only when `IsProcessInJob` confirms that it holds the task's pid. A name that no
+   longer opens (no hand-off happened: a crash, a manual relaunch) or a job without that pid falls
+   back to `taskkill`, as before.
+4. A failed hand-off never blocks the restart; it only costs the fallback.
+
+Rejected: recording the job handle's value and using it in the fresh process. The value is right
+only if the handle was inherited. After a crash it can name anything the new process holds,
+including a job that also contains the task, such as one a CI runner puts every process in, and
+terminating that would kill everything. The random name, checked against the pid, cannot.
+Rejected: giving the task's own processes an inheritable handle to their job at spawn, which would
+keep the name alive across a crash as well. It changes the spawn every child goes through, which
+ADR-0261 has just measured, to cover a case the restart itself does not create. Accepted cost: a
+handle passed on stays open in the new process until that process exits, so it holds an empty job
+at most once for each task that was running at a restart.
+
+The proof. A Windows-only test performs a real restart: a helper process starts a Git Bash task,
+hands its job on and `os.execv`s itself, and the fresh process, holding only the saved record,
+stops the task. No process carrying the command may be left 5 s later, in both the exec and the
+no-exec form. The test also checks that both stages imported the code under test and that one
+handle was handed on, so a green cannot be vacuous. A Windows-only test checks that the kill by
+name refuses an unknown name and a job without the pid, and kills only the named job. A POSIX test
+checks that the hand-off has nothing to do there, and two tests check that the CLI hands the jobs
+on before the exec and still restarts when the hand-off fails.

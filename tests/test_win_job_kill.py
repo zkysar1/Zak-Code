@@ -18,6 +18,10 @@ These tests verify:
 3. On POSIX the spawn path is unchanged (``start_new_session=True``, ``killpg``).
 4. The fallback to ``taskkill`` still works when no job is present.
 5. A failed resume kills the child and raises ``OSError`` (never leaves it suspended).
+6. On Windows, a background task started before a restart into a new build (a real
+   ``os.execv``: the new process holds neither its process object nor its job handle) is
+   still killed with its whole tree when stopped. The kill by job name acts only on the job
+   that holds the task's pid, and off Windows the hand-off has nothing to do.
 """
 
 from __future__ import annotations
@@ -34,9 +38,13 @@ from pathlib import Path
 
 import pytest
 
+import zakcode
 from zakcode._subprocess import (
     create_group_subprocess_exec,
     create_group_subprocess_shell,
+    job_name_of,
+    pass_jobs_to_restart,
+    terminate_job_by_name,
     terminate_process_tree,
 )
 from zakcode.background import pid_alive, process_start_token
@@ -374,3 +382,206 @@ async def test_failed_resume_kills_child_and_raises(
     # reference back (the OSError prevented it). The invariant is: no child is left
     # suspended — either it was resumed or it was killed.
     monkeypatch.setattr(mod._ntdll, "NtResumeProcess", _real_resume)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Windows-only — a stop after a restart still kills the Git Bash tree
+# ---------------------------------------------------------------------------
+
+
+#: The restart test's helper, run as its own process in two stages. Stage "start" starts a
+#: background task as the shell tool does and saves its record, waits for the test to say
+#: go, then hands the task's job on and replaces itself with ``os.execv``, as the CLI's
+#: restart does. Stage "stop" is the fresh process: it rebuilds the task table from the
+#: saved record, holding no process object and no handle of its own, and stops the task.
+#: Each stage writes where it imported zakcode from, so the test can check that the
+#: child ran the code under test.
+_RESTART_AND_STOP = """\
+import asyncio
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import zakcode
+from zakcode.background import BackgroundTask, BackgroundTasks, prepare_restart
+
+
+async def main(stage: str, work: Path) -> None:
+    (work / f"imported-{stage}").write_text(zakcode.__file__, encoding="utf-8")
+    if stage == "start":
+        tasks = BackgroundTasks(SimpleNamespace(background_tasks=[]), tasks_dir=work / "tasks")
+        task = await tasks.start(sys.argv[3], cwd=str(work))
+        (work / "task.json").write_text(task.model_dump_json(), encoding="utf-8")
+        while not (work / "go").exists():
+            await asyncio.sleep(0.1)
+        (work / "handed-on").write_text(str(prepare_restart()), encoding="utf-8")
+        os.execv(sys.executable, [sys.executable, __file__, "stop", str(work)])
+    record = (work / "task.json").read_text(encoding="utf-8")
+    task = BackgroundTask.model_validate_json(record)
+    tasks = BackgroundTasks(SimpleNamespace(background_tasks=[task]), tasks_dir=work / "tasks")
+    stopped, why = await tasks.stop(task.id)
+    (work / "stopped").write_text(f"{stopped} {why}", encoding="utf-8")
+
+
+asyncio.run(main(sys.argv[1], Path(sys.argv[2])))
+"""
+
+
+def _tail(path: Path) -> str:
+    """The end of a helper's log, for a failure message."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-600:]
+    except OSError:
+        return "(no log)"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows restart-path kill test")
+async def test_stop_after_a_restart_kills_the_git_bash_tree(tmp_path: Path) -> None:
+    """A task started before a zakcode restart is stopped by the process that replaced the
+    one that started it. That process has the task on its saved table but no process object
+    and no job handle for it: only the pid and the job's name.
+
+    The restart is real: a helper process starts the task, hands its job on and ``os.execv``s
+    itself, as the CLI's restart does, and the fresh process stops the task. Both the exec
+    and the no-exec form are covered, and no process carrying the command may be left 5 s
+    later. The survivors are counted, so a failure says how many got away.
+    """
+    from zakcode._subprocess import find_bash
+
+    if find_bash() is None:
+        pytest.skip("Git Bash not found on this Windows machine")
+    if not _has_powershell():
+        pytest.skip("PowerShell not found; needed for process listing")
+    if " " in sys.executable or " " in str(tmp_path):
+        pytest.skip("os.execv on Windows does not quote an argument that contains a space")
+
+    script = tmp_path / "restart_and_stop.py"
+    script.write_text(_RESTART_AND_STOP, encoding="utf-8")
+    src = Path(zakcode.__file__).resolve().parent.parent
+    path = os.pathsep.join(p for p in (str(src), os.environ.get("PYTHONPATH", "")) if p)
+    env = {**os.environ, "PYTHONPATH": path}
+    for label, needle, user_cmd in [
+        ("exec", "47.25", "sleep 47.25"),
+        ("noexec", "49.75", "sleep 49.75; :"),
+    ]:
+        work = tmp_path / label
+        work.mkdir()
+        log_path = work / "stages.log"
+        with log_path.open("wb") as log:
+            first = subprocess.Popen(
+                [sys.executable, str(script), "start", str(work), user_cmd],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        try:
+            await _until(
+                lambda n=needle: len(_find_carriers(n)) > 0,
+                timeout=20.0,
+                what=f"{label}: no process carrying '{needle}' before the restart",
+            )
+            (work / "go").write_text("", encoding="utf-8")
+            try:
+                await _until(lambda w=work: (w / "stopped").exists(), timeout=30.0)
+            except AssertionError:
+                raise AssertionError(
+                    f"{label}: the restarted process never stopped the task: {_tail(log_path)}"
+                ) from None
+
+            # Both stages ran the code under test, and the hand-off really happened: the
+            # controls that keep the green below from being vacuous.
+            for stage in ("start", "stop"):
+                imported = Path((work / f"imported-{stage}").read_text(encoding="utf-8"))
+                assert imported.resolve().is_relative_to(src), f"{label}: {stage} ran {imported}"
+            assert (work / "handed-on").read_text(encoding="utf-8") == "1", _tail(log_path)
+            result = (work / "stopped").read_text(encoding="utf-8")
+            assert result.startswith("True"), f"{label}: stop refused: {result}"
+
+            deadline = time.monotonic() + 5.0
+            survivors = _find_carriers(needle)
+            while survivors and time.monotonic() < deadline:
+                await asyncio.sleep(0.25)
+                survivors = _find_carriers(needle)
+            assert not survivors, (
+                f"{label}: {len(survivors)} process(es) carrying '{needle}' still alive 5 s "
+                "after the restarted process stopped the task"
+            )
+        finally:
+            # Leave nothing running for the next test, whatever happened above.
+            with contextlib.suppress(Exception):
+                for pid in _find_carriers(needle):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False
+                    )
+            with contextlib.suppress(OSError):
+                first.kill()
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Windows-only — the kill by name acts only on the job that holds the pid
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job-by-name test")
+async def test_terminate_job_by_name_acts_only_on_the_job_that_holds_the_pid() -> None:
+    """The restart path's kill opens the job by name and kills it only when that job holds
+    the task's pid. A name that does not exist, or another job's pid, leaves everything
+    running; the right pair kills that job and nothing else."""
+    procs = [
+        await create_group_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(2)
+    ]
+    a, b = procs
+    try:
+        name_a = job_name_of(a)
+        assert name_a, "the spawn gave the child no named job"
+        assert name_a != job_name_of(b)
+        assert not terminate_job_by_name("Local\\zakcode-job-" + "0" * 32, a.pid)
+        assert not terminate_job_by_name(name_a, b.pid), "job A does not hold B's pid"
+        await asyncio.sleep(0.3)
+        assert pid_alive(a.pid) and pid_alive(b.pid)
+
+        assert terminate_job_by_name(name_a, a.pid)
+        await _until(lambda: not pid_alive(a.pid), timeout=5.0, what="job A's child still alive")
+        assert pid_alive(b.pid), "killing job A killed B too"
+    finally:
+        for p in procs:
+            with contextlib.suppress(ProcessLookupError):
+                p.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(p.wait(), timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: off Windows the restart hand-off has nothing to do
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX restart hand-off test")
+async def test_off_windows_the_restart_hand_off_is_a_no_op() -> None:
+    """``killpg`` needs only the pid, so off Windows a child has no job name, nothing is handed
+    on, and the kill by name refuses without touching the child."""
+    proc = await create_group_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import time; time.sleep(30)",
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert job_name_of(proc) is None
+        assert pass_jobs_to_restart([proc]) == 0
+        assert terminate_job_by_name("anything", proc.pid) is False
+        assert pid_alive(proc.pid)
+    finally:
+        await terminate_process_tree(proc)

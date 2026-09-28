@@ -61,6 +61,9 @@ from zakcode._subprocess import (
     create_group_subprocess_exec,
     create_group_subprocess_shell,
     find_bash,
+    job_name_of,
+    pass_jobs_to_restart,
+    terminate_job_by_name,
     terminate_process_tree,
 )
 from zakcode.config import zakcode_home
@@ -104,6 +107,10 @@ class BackgroundTask(BaseModel):
     #: the OS reused after the task exited (a restart in between, no exit file) is never
     #: mistaken for it. ``None`` where the platform cannot say, or on an older record.
     start_token: str | None = None
+    #: Windows: the name of the task's job object. A restart into a new build hands the job
+    #: on (:func:`prepare_restart`), so the new process can still kill the task's whole tree
+    #: by this name. ``None`` elsewhere, when the spawn got no job, or on an older record.
+    job_name: str | None = None
     #: Its exit was reported to the session (a notification is delivered once).
     notified: bool = False
     #: ``TaskStop`` asked for it: a missing exit code then means "killed", not "lost".
@@ -292,12 +299,19 @@ def notification_block(task: BackgroundTask, status: str, code: int | None) -> s
     )
 
 
-def _kill_pid_tree(pid: int) -> None:
+def _kill_pid_tree(pid: int, job_name: str | None = None) -> None:
     """Kill a task's whole process group by pid — the path for a task THIS process did not
     spawn (a restart in between). The spawn used :func:`create_group_subprocess_exec` (or
-    ``_shell``), so the group is the task's own."""
+    ``_shell``), so the group is the task's own.
+
+    On Windows the task's job, which the restart handed on (:func:`prepare_restart`), kills
+    the whole tree by name. ``taskkill /T`` is only the fallback, for a task whose job did
+    not survive (no restart hand-off, or no job at spawn): it misses the programs Git Bash
+    starts."""
     try:
         if sys.platform == "win32":
+            if job_name and terminate_job_by_name(job_name, pid):
+                return
             subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
@@ -308,6 +322,16 @@ def _kill_pid_tree(pid: int) -> None:
             os.killpg(pid, signal.SIGKILL)
     except (ProcessLookupError, OSError):
         pass
+
+
+def prepare_restart() -> int:
+    """Let the process this one restarts into still kill the running tasks' whole trees.
+
+    The CLI calls this just before it replaces itself with a new build. The tasks keep
+    running across the restart; on Windows their job handles are handed on
+    (:func:`zakcode._subprocess.pass_jobs_to_restart`), and elsewhere there is nothing to
+    do. Returns how many were handed on."""
+    return pass_jobs_to_restart(list(_PROCS.values()))
 
 
 async def _watch(task_id: str, proc: asyncio.subprocess.Process, exit_file: str) -> None:
@@ -524,6 +548,7 @@ class BackgroundTasks:
             pid=proc.pid,
             started_at=datetime.fromtimestamp(self._clock(), tz=UTC).isoformat(),
             start_token=process_start_token(proc.pid),
+            job_name=job_name_of(proc),
         )
         _PROCS[task_id] = proc
         watcher = asyncio.create_task(_watch(task_id, proc, str(exit_file)))
@@ -571,7 +596,7 @@ class BackgroundTasks:
         if proc is not None:
             await terminate_process_tree(proc)
         else:
-            _kill_pid_tree(task.pid)
+            _kill_pid_tree(task.pid, task.job_name)
         return True, "stopped"
 
     async def kill_all(self) -> int:
