@@ -20,7 +20,8 @@ The user config home is `~/.zakcode` (`%USERPROFILE%\.zakcode` on Windows); the
 terminal client's `sessions/` and `transcripts/`, both re-rooted with it (ADR-0159), so a
 test run or a portable install never touches the real home. A served workspace
 (`zakcode webapp`) keeps its sessions under its own `<workspace>/.zakcode/sessions/`
-instead (ADR-0032).
+instead (ADR-0032). The terminal client also writes per-session status files under
+`<config home>/status/` for live process monitoring (`zakcode status`; ADR-0266).
 
 Provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `TAVILY_API_KEY`) are deliberately **not** settings — litellm reads them from the

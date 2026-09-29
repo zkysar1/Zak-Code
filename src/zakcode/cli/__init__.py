@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -293,6 +293,173 @@ def _window_rows(settings: Settings) -> list[tuple[str, str]]:
 def version() -> None:
     """Print the Zak Code version (and the commit, for a VCS install)."""
     typer.echo(f"zakcode {version_line(__version__)}")
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds into a compact, human-readable duration string."""
+    if seconds < 0:
+        seconds = 0
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    h = s // 3600
+    m = (s % 3600) // 60
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h{m:02d}m"
+
+
+def _parse_utc(stamp: Any) -> float | None:
+    """Epoch seconds for a status file's ``YYYY-MM-DDTHH:MM:SSZ`` stamp, or ``None``."""
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _resolved_path(path: str) -> str:
+    """``path`` made absolute with symlinks resolved, or unchanged when it cannot be."""
+    try:
+        return str(Path(path).resolve())
+    except (OSError, RuntimeError):
+        return path
+
+
+def _state_detail(row: dict[str, Any], now: float) -> str:
+    """Build a per-state detail string for the status line.
+
+    A model call that has produced output says how long the first output took, which
+    tells a slow prompt read from slow generation. An idle session names its armed
+    wake-up relative to ``now`` (an overdue one is the thing to notice) and how its last
+    turn ended.
+    """
+    st = row.get("state", "?")
+    if st == "model_call":
+        call = row.get("call") or {}
+        phase = call.get("phase", "waiting")
+        model = call.get("model") or row.get("model", "")
+        if phase == "waiting":
+            return f"waiting for {model}" if model else "waiting"
+        progress = f"{call.get(f'{phase}_chars', 0)} chars"
+        started = _parse_utc(call.get("started_at"))
+        first_output = _parse_utc(call.get("first_output_at"))
+        if started is not None and first_output is not None:
+            progress += f", first output after {_format_duration(first_output - started)}"
+        return f"{phase} {model} ({progress})" if model else f"{phase} ({progress})"
+    if st == "tool":
+        tool = row.get("tool") or {}
+        name = tool.get("name", "?")
+        running = tool.get("running", 1)
+        if running > 1:
+            return f"{name} (+{running - 1} concurrent)"
+        return name
+    if st == "working":
+        turn = row.get("turn") or {}
+        mc = turn.get("model_calls", 0)
+        tc = turn.get("tool_calls", 0)
+        return f"{mc} calls, {tc} tools"
+    parts: list[str] = []
+    if st == "idle":
+        due = _parse_utc((row.get("wakeup") or {}).get("due_at"))
+        if due is not None:
+            if due >= now:
+                parts.append(f"wake-up in {_format_duration(due - now)}")
+            else:
+                parts.append(f"wake-up overdue by {_format_duration(now - due)}")
+    if st in ("idle", "exited"):
+        last = row.get("last_turn") or {}
+        if last.get("stop_reason"):
+            parts.append(f"last turn {last['stop_reason']}")
+    return ", ".join(parts)
+
+
+@app.command()
+def status(
+    all_sessions: bool = typer.Option(
+        False, "--all", "-a", help="Include stale and exited sessions."
+    ),
+    workspace_filter: str | None = typer.Option(
+        None, "-w", "--workspace", help="Show only sessions in this workspace directory."
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Show live process status for running sessions.
+
+    Reads the per-session status files that a running ``zakcode cli`` writes.  Each line
+    shows the session id, pid, what the process is doing right now, and for how long.  A
+    session whose status file has not been updated for 120 seconds is marked ``stale``
+    (the process is probably gone); ``--all`` includes those and ``exited`` sessions.
+
+    Use ``-w DIR`` to show only sessions whose workspace is that directory.
+    """
+    from zakcode.session.status_file import STALE_THRESHOLD_SECONDS, read_status_files, status_dir
+
+    sdir = status_dir()
+    entries = read_status_files()
+    if not entries:
+        if output_json:
+            typer.echo("[]")
+        else:
+            typer.echo(f"No status files in {sdir}")
+        return
+
+    # Both sides resolved, so a relative, symlinked or differently-rooted spelling of the
+    # same directory still matches (on Windows a POSIX-style path resolves onto the drive).
+    abs_workspace_filter: str | None = None
+    if workspace_filter is not None:
+        abs_workspace_filter = _resolved_path(workspace_filter)
+
+    now = time.time()
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        # Classify liveness by staleness alone (ADR-0266): never by probing the pid.
+        updated = _parse_utc(entry.get("updated_at"))
+        if entry.get("state") == "exited":
+            liveness = "exited"
+        elif updated is None:
+            liveness = "unknown"
+        else:
+            liveness = "stale" if now - updated > STALE_THRESHOLD_SECONDS else "live"
+
+        if not all_sessions and liveness in ("stale", "exited"):
+            continue
+        if abs_workspace_filter is not None:
+            entry_ws = entry.get("workspace") or ""
+            if not entry_ws or _resolved_path(entry_ws) != abs_workspace_filter:
+                continue
+
+        entry["_liveness"] = liveness
+        rows.append(entry)
+
+    if output_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        msg = "No live sessions."
+        if entries:
+            msg += " Pass --all to include stale/exited."
+        typer.echo(msg)
+        return
+
+    for row in rows:
+        sid = row.get("session", "?")[:8]
+        pid = row.get("pid", "?")
+        lv = row.get("_liveness", "?")
+        st = row.get("state", "?")
+        since = _parse_utc(row.get("since"))
+        dur = _format_duration(now - since) if since is not None else "?"
+        detail = _state_detail(row, now)
+        tag = f" [{lv}]" if lv != "live" else ""
+        line = f"{sid}  pid {pid}  {st} for {dur}"
+        if detail:
+            line += f"  {detail}"
+        line += tag
+        typer.echo(line)
 
 
 #: Files a `uv tool install` from a local checkout rewrites in that checkout; safe to
@@ -1117,11 +1284,15 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
     # only costs that, never the restart.
     with contextlib.suppress(Exception):
         prepare_restart()
+    from zakcode.session.status_file import get_writer
+
+    get_writer().set_restarting()  # the fresh process's first write replaces this (ADR-0266)
     sys.stdout.flush()
     sys.stderr.flush()
     try:
         os.execv(sys.executable, [sys.executable, "-m", "zakcode", *args])
     except OSError as exc:
+        get_writer().set_idle(agent.session.id)  # still serving, so no longer "restarting"
         notice_error(console, "restart failed — still on the previous build", str(exc))
 
 
@@ -2771,6 +2942,22 @@ def chat(
             # `-s <id>` resumes: replay the tail so the human sees where they were,
             # exactly as the in-REPL /resume does.
             _render_transcript(console, agent.session)
+
+    # Start the live status file writer: one JSON file per session that an outside observer
+    # can read to learn what the process is doing (ADR-0266). Fire-and-forget: a status
+    # file that cannot be started costs the file, never the session.
+    from zakcode.build_info import running_build as _running_build
+    from zakcode.session.status_file import get_writer as _get_status_writer
+
+    with contextlib.suppress(Exception):
+        _wakeup = getattr(agent.session, "pending_wakeup", None)
+        _get_status_writer().start(
+            session_id=agent.session.id,
+            workspace=str(agent.settings.workspace_root),
+            model=agent.provider.model_id() if hasattr(agent, "provider") else "",
+            build=_running_build(),
+            wakeup_due_at=_wakeup.due_at if _wakeup is not None else None,
+        )
 
     # One event loop for the whole session (never one per turn) — see
     # _SESSION_LOOP / _shutdown_session_loop.
