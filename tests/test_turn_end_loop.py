@@ -337,7 +337,7 @@ async def test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary(
     monkeypatch.setattr(loop_module, "install_changed", lambda: ("old-build", "new-build"))
     stub = UseSkillStub()
     provider = ScriptedProvider(
-        [_re_entry("c1", name="worker-loop", args="loop"), LLMResult(text="never reached")]
+        [_re_entry("c1", name="work-loop", args="loop"), LLMResult(text="never reached")]
     )
     loop = _make_loop(provider, tmp_path, registry=_registry(stub))
     hook = RecordingHook([_veto("keep looping")])
@@ -356,7 +356,7 @@ async def test_a_lone_use_skill_call_takes_a_newer_build_at_the_skill_boundary(
     assert hook.payloads == []  # not a vetoable break: the Stop hook never ran
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop", args="loop") now.')
+    assert loop.restart_continuation.startswith('Call Skill(skill="work-loop", args="loop") now.')
     # The un-executed call is answered, so the transcript replays on the new build.
     answered = [
         b
@@ -380,7 +380,7 @@ async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
 
     monkeypatch.setattr(loop_module, "install_changed", lambda: None)
     stub = UseSkillStub()
-    provider = ScriptedProvider([_re_entry("c1", name="worker-loop"), _TEXT_DONE])
+    provider = ScriptedProvider([_re_entry("c1", name="work-loop"), _TEXT_DONE])
     loop = _make_loop(provider, tmp_path, registry=_registry(stub))
     result = await loop.arun_turn("hi")
     assert result.stop_reason == "completed" and stub.executed == 1
@@ -390,7 +390,7 @@ async def test_a_skill_boundary_restart_needs_a_newer_build_and_a_lone_call(
     stub2 = UseSkillStub()
     mixed = LLMResult(
         tool_calls=[
-            ToolCall(id="c2", name="Skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="c2", name="Skill", arguments={"name": "work-loop"}),
             ToolCall(id="c3", name="echo", arguments={"text": "still working"}),
         ]
     )
@@ -429,7 +429,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     paired = LLMResult(
         tool_calls=[
             ToolCall(id="p1", name="update_plan", arguments={"tasks": []}),
-            ToolCall(id="s1", name="Skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="s1", name="Skill", arguments={"name": "work-loop"}),
         ]
     )
     provider = ScriptedProvider([paired, LLMResult(text="never reached")])
@@ -439,7 +439,7 @@ async def test_a_skill_boundary_restart_runs_the_plan_bookkeeping_first(
     assert plan.executed == 1 and skill.executed == 0
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop") now.')
+    assert loop.restart_continuation.startswith('Call Skill(skill="work-loop") now.')
     answered = {
         b.tool_use_id: b
         for m in loop.session.messages
@@ -486,7 +486,7 @@ async def test_a_skill_boundary_restart_runs_the_deadman_wakeup_arm_first(
                 name="ScheduleWakeup",
                 arguments={"prompt": "re-enter", "delaySeconds": 600},
             ),
-            ToolCall(id="s1", name="Skill", arguments={"name": "worker-loop"}),
+            ToolCall(id="s1", name="Skill", arguments={"name": "work-loop"}),
         ]
     )
     provider = ScriptedProvider([paired, LLMResult(text="never reached")])
@@ -496,7 +496,7 @@ async def test_a_skill_boundary_restart_runs_the_deadman_wakeup_arm_first(
     assert wakeup.executed == 1 and skill.executed == 0
     assert loop.restart_boundary == "skill"
     assert loop.restart_continuation is not None
-    assert loop.restart_continuation.startswith('Call Skill(skill="worker-loop") now.')
+    assert loop.restart_continuation.startswith('Call Skill(skill="work-loop") now.')
     answered = {
         b.tool_use_id: b
         for m in loop.session.messages

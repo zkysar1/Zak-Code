@@ -214,11 +214,11 @@ def test_a_hooks_own_wake_up_is_not_this_guards_to_cancel() -> None:
     session.sentinel_turn_open = True
     assert slot.note_turn_end(print_it) is False  # first sighting: recorded only
 
-    slot.arm("re-poll the reducer's claim", 600)  # a hook's own prompt, armed during turn 2
+    slot.arm("re-poll the queue's claim", 600)  # a hook's own prompt, armed during turn 2
     session.sentinel_turn_open = True
     assert slot.note_turn_end(print_it) is True  # it DID repeat, and is reported as such
     held = slot.pending()
-    assert held is not None and held.prompt == "re-poll the reducer's claim"
+    assert held is not None and held.prompt == "re-poll the queue's claim"
 
 
 def test_the_same_words_under_a_different_stop_reason_are_not_a_repeat() -> None:
@@ -396,11 +396,11 @@ def test_a_hooks_own_wake_up_outranks_the_provider_hold() -> None:
     not overruled by the backoff, but the streak still counts for the next hold."""
     session = Session(cwd=".", model=MODEL)
     slot = _slot(session)
-    slot.arm("re-poll the reducer's claim", 3600)
+    slot.arm("re-poll the queue's claim", 3600)
     session.sentinel_turn_open = True
     slot.note_turn_end(turn_fingerprint("provider_error", ""), provider_failed=True)
     held = slot.pending()
-    assert held is not None and held.prompt == "re-poll the reducer's claim"
+    assert held is not None and held.prompt == "re-poll the queue's claim"
     assert held.delay_seconds == 3600
     assert session.sentinel_provider_repeats == 1
 

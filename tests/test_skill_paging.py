@@ -1245,7 +1245,7 @@ SHARED = """# /shared — a later page packs a section that shares an earlier pa
 
 ## Phase 1: Poll
 
-Poll the reducer. Then read the verdict it returned and carry it into the next section.
+Poll the queue. Then read the verdict it returned and carry it into the next section.
 
 ## Phase 2: Select
 
@@ -1262,8 +1262,8 @@ Park instead.
 
 
 def test_a_token_two_sections_share_maps_a_step_to_the_first_page(tmp_path: Path) -> None:
-    """/worker-loop's last page packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 —
-    REDUCER-LIVENESS POLL"; a rewritten Phase 0.5 step matched BOTH, so closing it reopened
+    """/work-loop's last page packs "Phase 0.5 PARK …" beside page 3's "Phase 0.5 —
+    QUEUE-LIVENESS POLL"; a rewritten Phase 0.5 step matched BOTH, so closing it reopened
     the never-held last page and the closure section arrived while the plan stood at
     SELECT (2026-08-29). ADR-0092: a step is one page's, the
     first in order, so the page delivered is the one under way."""
@@ -1281,7 +1281,7 @@ def test_a_token_two_sections_share_maps_a_step_to_the_first_page(tmp_path: Path
         if n == 2:  # every title rewritten, every note the model's own
             return _plan(
                 [
-                    {"title": "Phase 1: Poll — rc=0, reducer live", "status": "done", "note": "ok"},
+                    {"title": "Phase 1: Poll — rc=0, queue live", "status": "done", "note": "ok"},
                     {"title": "Phase 2: Select a goal", "status": "in_progress", "note": "now"},
                     {"title": "Phase 3: Close (+1 more)", "status": "pending", "note": "later"},
                 ]
@@ -1375,7 +1375,7 @@ def test_overlap_finds_the_page_a_paraphrase_means() -> None:
     # A marker word alone, or another skill's step, is no page's.
     assert best("phase") is None
     assert best("Step") is None
-    assert best("Phase 0.5: REDUCER-LIVENESS POLL") is None
+    assert best("Phase 0.5: QUEUE-LIVENESS POLL") is None
     assert best("Phase 1 — SELECT (reuse the existing scorer)") is None
     # One shared word is not enough unless it is all the step says.
     assert best("RUNNING branch entry") is None
@@ -1420,9 +1420,9 @@ def test_a_paraphrased_branch_plan_delivers_no_page_the_model_closed(tmp_path: P
         {"title": "IDLE", "status": "cancelled", "note": "Agent was RUNNING, not IDLE"},
         {"title": "UNINITIALIZED", "status": "cancelled", "note": "Agent existed"},
         {
-            "title": "Phase 0.5: REDUCER-LIVENESS POLL",
+            "title": "Phase 0.5: QUEUE-LIVENESS POLL",
             "status": "in_progress",
-            "note": "poll the reducer",
+            "note": "poll the queue",
         },
     ]
 
