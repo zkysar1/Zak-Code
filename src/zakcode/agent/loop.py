@@ -186,6 +186,7 @@ from zakcode.session.observation_inbox import (
     render_observation,
 )
 from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
+from zakcode.session.status_file import get_writer as _status_writer
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
     COLLAPSED_ROW_RE,
@@ -5156,13 +5157,18 @@ class AgentLoop:
             if extra_body:
                 call_kw["extra_body"] = extra_body
             call_started = time.monotonic()
-            result = await self.provider.acomplete(
-                messages,
-                system=system,
-                tools=tools,
-                prompt_cache_key=self._prompt_cache_key(),
-                **call_kw,
-            )
+            _status_writer().set_model_call_start(self.session.id, model=self.provider.model_id())
+            try:
+                result = await self.provider.acomplete(
+                    messages,
+                    system=system,
+                    tools=tools,
+                    prompt_cache_key=self._prompt_cache_key(),
+                    **call_kw,
+                )
+            finally:
+                # Returned or raised, this call is over; a retry starts its own (ADR-0266).
+                _status_writer().set_model_call_end(self.session.id)
             # Per-request usage on the decision trace: the one point every
             # buffered completion passes, so a trace_dir session yields
             # per-request prompt/completion/latency stats without parsing
@@ -5324,6 +5330,7 @@ class AgentLoop:
         error block through here, so the blocker-without-evidence guard sees ONE truth: did
         anything the model tried actually fail this turn.
         """
+        _status_writer().set_tool_start(self.session.id, call.name)
         plan_shape = (
             self.session.task_network.structure_signature() if call.name == "update_plan" else None
         )
@@ -5471,6 +5478,7 @@ class AgentLoop:
         # live in the session transcript. It used to be written by the buffered batch alone, so a
         # served (streamed) run's trace carried no tool ledger at all.
         self._note("tool", call.name, ok=not block.is_error)
+        _status_writer().set_tool_end(self.session.id)
         return block
 
     async def _execute_tool_call_gated(
@@ -6828,19 +6836,24 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (this turn's events only).
         self._trace = TurnTrace()
         self._turn_count += 1
+        _status_writer().set_turn_start(self.session.id)
         lease = self._busy_lease()
         if lease is not None:
             await lease.acquire()
         try:
             return await self._run_turn(user_text)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # Cancellation is a control signal, not a stop reason. The session has
             # only ever been mutated + persisted at message boundaries (see
             # _run_turn), so on-disk state is consistent here. Best-effort persist
             # once more, swallowing a save error so the original CancelledError is
             # what propagates, then re-raise.
+            self._status_leave_turn(exc)
             with contextlib.suppress(Exception):
                 self._persist()
+            raise
+        except BaseException as exc:
+            self._status_leave_turn(exc)  # an unwinding turn must not stay "working" (ADR-0266)
             raise
         finally:
             self._complete_transcript()  # the record holds the whole turn (ADR-0206)
@@ -7178,6 +7191,23 @@ class AgentLoop:
         if not self._consume_say_inbox:
             return None
         return BusyLease(busy_path(self.workspace_root), self.session.id)
+
+    def _status_leave_turn(self, exc: BaseException) -> None:
+        """Close the live status file's turn when the turn unwinds by ``exc`` (ADR-0266).
+
+        A turn that ends normally goes idle with its stop reason at its own end. A turn that
+        unwinds by an exception never gets there, and without this the file would keep
+        saying ``working`` (or ``model_call``, ``tool``) while the process sits idle, which
+        is exactly the lie the file exists to prevent. Cancellation, a closed stream and
+        Ctrl-C read as ``interrupted``; anything else reads as ``error``.
+
+        Called from the ``except`` clauses of :meth:`arun_turn` and :meth:`astream_turn`,
+        never from their ``finally``: there the only view of an in-flight exception is
+        ``sys.exc_info()``, and that also reports an exception the CALLER is handling, so a
+        turn run from inside an ``except`` block would read as an error when it ended well.
+        """
+        interrupted = isinstance(exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt))
+        _status_writer().leave_turn(self.session.id, "interrupted" if interrupted else "error")
 
     async def _deliver_midturn_say(self) -> str | None:
         """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
@@ -8978,6 +9008,7 @@ class AgentLoop:
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()
+        _status_writer().set_idle(self.session.id, stop_reason=stop_reason)
         return TurnResult(
             assistant_messages=turn_assistant,
             tool_results=turn_tool_results,
@@ -9033,6 +9064,7 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (streaming twin of arun_turn).
         self._trace = TurnTrace()
         self._turn_count += 1
+        _status_writer().set_turn_start(self.session.id)
         lease = self._busy_lease()
         if lease is not None:
             await lease.acquire()
@@ -9369,6 +9401,9 @@ class AgentLoop:
                     if call_extra_body:
                         call_kw["extra_body"] = call_extra_body
                     saw_thinking = False  # a reasoning channel arrived on THIS attempt
+                    _status_writer().set_model_call_start(
+                        self.session.id, model=self.provider.model_id()
+                    )
                     try:
                         async for ev in self.provider.astream(
                             call_messages,
@@ -9400,12 +9435,14 @@ class AgentLoop:
                                 # the long-reasoning models this event exists to
                                 # serve, whose thinking phase runs for minutes before
                                 # any text arrives.
+                                _status_writer().on_thinking_delta(self.session.id, ev.text)
                                 yield AgentThinkingDelta(text=ev.text)
                                 continue
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
                                 text_parts.append(ev.text)
                                 stream_text_len += len(ev.text)
+                                _status_writer().on_text_delta(self.session.id, ev.text)
                                 yield AgentTextDelta(text=ev.text)
                                 # Periodic degeneration probe (ADR-0018): cut a runaway
                                 # repetition loop within seconds instead of streaming it
@@ -9418,6 +9455,9 @@ class AgentLoop:
                                     if degen_unit is not None:
                                         break
                             elif isinstance(ev, StreamToolCallDelta):
+                                _status_writer().on_tool_call_delta(
+                                    self.session.id, ev.arguments_delta
+                                )
                                 accumulator.add(ev)
                             elif isinstance(ev, StreamUsage):
                                 attempt_usage = attempt_usage + ev.usage
@@ -9597,6 +9637,9 @@ class AgentLoop:
                     break
 
                 if provider_failure is not None:
+                    # The failed call is over: what follows is the turn's own handling,
+                    # possibly a long retry sleep, not a wait on the provider (ADR-0266).
+                    _status_writer().set_model_call_end(self.session.id)
                     # Graceful turn end (see _run_turn's twin): state is consistent at a
                     # message boundary. A MID-STREAM failure's partial TEXT is persisted
                     # (2026-08-26, vertex_ai 429 storm: a mid-stream kill on iteration 42
@@ -9675,6 +9718,7 @@ class AgentLoop:
                     )
                     break
                 provider_error_vetoes = 0  # a completed call resets the consecutive count
+                _status_writer().set_model_call_end(self.session.id)
 
                 tool_calls = accumulator.finalize()
                 # Where a streamed call enters (ADR-0190): the buffered path rewrites names and
@@ -10889,13 +10933,18 @@ class AgentLoop:
                     self.session.add_message(Message.user(_control_rail(stuck.step_back_message())))
                     self._persist()
                     yield AgentStatus(message="recovering: stepping back to re-check assumptions")
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # Cancellation is a control signal, not a stop reason. State has only
             # been mutated + persisted at message boundaries, so it is consistent.
             # Best-effort persist (swallow save errors) then re-raise so the
             # CancelledError propagates rather than becoming a normal AgentDone.
+            self._status_leave_turn(exc)
             with contextlib.suppress(Exception):
                 self._persist()
+            raise
+        except BaseException as exc:
+            # Includes GeneratorExit: a consumer that closes the stream mid-turn.
+            self._status_leave_turn(exc)  # an unwinding turn must not stay "working" (ADR-0266)
             raise
         finally:
             self._complete_transcript()  # the record holds the whole turn (ADR-0206)
@@ -10930,6 +10979,7 @@ class AgentLoop:
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
         self._dump_trace()
+        _status_writer().set_idle(self.session.id, stop_reason=stop_reason)
         yield AgentDone(
             stop_reason=stop_reason,
             iterations=iterations,

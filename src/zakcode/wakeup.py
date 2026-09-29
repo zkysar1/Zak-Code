@@ -296,5 +296,12 @@ class WakeupSlot:
         return self.hold_for_provider()
 
     def _changed(self) -> None:
+        from zakcode.session.status_file import get_writer
+
+        # The live status file shows the armed wake-up (ADR-0266); every change passes here.
+        wakeup = self.pending()
+        get_writer().set_wakeup(
+            getattr(self._session, "id", None), wakeup.due_at if wakeup is not None else None
+        )
         if self._on_change is not None:
             self._on_change()

@@ -15974,3 +15974,61 @@ types mid-turn adds work to the same ask, and a review of the combined result st
 an operator-only command replaces the ask with a control action. Rejected: a setting that turns the
 review off for unattended runs. The review is right for their ordinary turns; only the turn an
 operator command takes over is wrong to review.
+
+## ADR-0266: live process status file
+
+Status: accepted. 2026-09-28.
+
+A small JSON file per session lets an outside observer determine what a running process is doing,
+since when, and whether it is making forward progress. The file lives at
+`<zakcode_home>/status/<session_id>.json` and is written atomically (temp file + `os.replace`).
+
+Schema (v1). Top-level keys: `v` (schema version), `pid`, `build` (frozen build identity string),
+`session`, `workspace`, `model`, `state`, `since`, `updated_at`, `turn`, `call`, `tool`, `wakeup`,
+`last_turn`. States: `idle`, `working`, `model_call`, `tool`, `restarting`, `exited`. The `working`
+state means the turn is open between steps (after turn start, after a model call ends, or after a
+tool ends). Only turn end goes to `idle`. During a model call the `call` object tracks `phase`
+(`waiting`, `thinking`, `text`, `tool_call`), `model` (the provider used for this call),
+`first_output_at`, and character counts per phase. During a tool execution the `tool` object names
+it and tracks `running` (concurrent tool count). `wakeup.due_at` records an armed scheduled
+wake-up. `last_turn` records the previous turn's `ended_at` and `stop_reason`.
+
+Session binding. `start()` records the owning session id; every transition method takes the
+caller's session id and is a no-op when it differs. A nested sub-agent run (which creates its own
+`Session`) therefore cannot clobber the top-level status. This is a deliberate limit: the nested
+agent does not get its own status file but shows as the parent's `tool` state. The wake-up field is
+bound the same way, so a nested run's wake-up slot cannot write it either.
+
+Privacy is a hard rule. The file never contains model text, thinking text, prompts, user input,
+tool arguments, tool output, or file contents. Only enums, numbers, timestamps, the tool name, the
+model name, and paths.
+
+Liveness is judged by staleness. A daemon thread refreshes `updated_at` every 30 seconds. A reader
+treats a file not refreshed within 120 seconds as stale (the process is gone or wedged). No pid
+probes: `os.kill(pid, 0)` is unsafe on Windows (it terminates the target). Streaming progress
+writes are throttled to at most once every 5 seconds, except that first output and phase changes
+write immediately. Writes are serialized by a lock: the refresher thread and the loop share one
+temp file name, and two overlapping writes could otherwise put a half-written file in place.
+
+The `zakcode status` command reads these files and classifies each session as live, stale, or
+exited. Each line shows `<session 8 chars>  pid <pid>  <state> for <duration>  <detail>`. Duration
+is formatted compactly (42s, 11m, 3h05m). The detail names a model call's phase and character count
+with the time its first output took (which tells a slow prompt read from slow generation), the
+running tool, an open turn's call and tool counts, and for an idle session the armed wake-up
+relative to now (an overdue one stands out) and how the last turn ended. Flags: `--all` (include
+stale and exited), `--json` (machine-readable output), `-w`/`--workspace` (only sessions whose
+workspace is that directory; both paths are resolved before they are compared).
+
+Old status files are pruned at startup (7-day threshold). The writer is fully fire-and-forget:
+every public method swallows every error, so a status write can never raise into the agent loop or
+slow a turn. The atexit handler writes the `exited` state. When an exception unwinds `arun_turn` or
+`astream_turn`, their `except` clauses close the file's turn as `interrupted` (cancellation, a
+closed stream, Ctrl-C) or `error`, so the file never stays in a transient state after the turn is
+gone. Not their `finally`: there `sys.exc_info()` also reports an exception the caller is handling,
+so a turn run from inside an `except` block would read as an error when it ended well. A restart
+whose exec fails returns the file from `restarting` to `idle`, since the process keeps serving.
+
+The `serve` command does not start the writer. Sessions inside the server are created dynamically
+and the process-global singleton does not fit multi-session serve mode. The transitions wired in
+the agent loop are safe no-ops (every method returns immediately when `start()` has not been
+called or the session id does not match).
