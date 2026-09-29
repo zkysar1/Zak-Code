@@ -5158,14 +5158,17 @@ class AgentLoop:
                 call_kw["extra_body"] = extra_body
             call_started = time.monotonic()
             _status_writer().set_model_call_start(self.session.id, model=self.provider.model_id())
-            result = await self.provider.acomplete(
-                messages,
-                system=system,
-                tools=tools,
-                prompt_cache_key=self._prompt_cache_key(),
-                **call_kw,
-            )
-            _status_writer().set_model_call_end(self.session.id)
+            try:
+                result = await self.provider.acomplete(
+                    messages,
+                    system=system,
+                    tools=tools,
+                    prompt_cache_key=self._prompt_cache_key(),
+                    **call_kw,
+                )
+            finally:
+                # Returned or raised, this call is over; a retry starts its own (ADR-0266).
+                _status_writer().set_model_call_end(self.session.id)
             # Per-request usage on the decision trace: the one point every
             # buffered completion passes, so a trace_dir session yields
             # per-request prompt/completion/latency stats without parsing
@@ -9634,6 +9637,9 @@ class AgentLoop:
                     break
 
                 if provider_failure is not None:
+                    # The failed call is over: what follows is the turn's own handling,
+                    # possibly a long retry sleep, not a wait on the provider (ADR-0266).
+                    _status_writer().set_model_call_end(self.session.id)
                     # Graceful turn end (see _run_turn's twin): state is consistent at a
                     # message boundary. A MID-STREAM failure's partial TEXT is persisted
                     # (2026-08-26, vertex_ai 429 storm: a mid-stream kill on iteration 42

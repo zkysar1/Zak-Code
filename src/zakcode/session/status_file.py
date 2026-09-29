@@ -19,18 +19,43 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ParamSpec
 
 from zakcode.config import zakcode_home
 
 logger = logging.getLogger(__name__)
+
+_P = ParamSpec("_P")
+
+
+def _never_raises(method: Callable[_P, None]) -> Callable[_P, None]:
+    """Make a writer transition swallow every error, logging it at debug.
+
+    The transitions run inside the agent loop: per streamed token, and from a turn's
+    ``except`` clauses, where an error would REPLACE the exception the turn is
+    actually leaving by. The file is an observer's convenience; it must never cost
+    the loop anything.
+    """
+
+    @functools.wraps(method)
+    def guarded(*args: _P.args, **kwargs: _P.kwargs) -> None:
+        try:
+            method(*args, **kwargs)
+        except Exception:  # noqa: BLE001 — the writer must never raise
+            name = getattr(method, "__name__", "transition")
+            logger.debug("status: %s failed", name, exc_info=True)
+
+    return guarded
+
 
 # ── constants ────────────────────────────────────────────────────────────────
 
@@ -253,6 +278,7 @@ class StatusFileWriter:
 
     # ── state transitions ────────────────────────────────────────────────
 
+    @_never_raises
     def set_idle(self, session_id: str, *, stop_reason: str | None = None) -> None:
         """Transition to ``idle``.  If ``stop_reason`` is given, fill ``last_turn``."""
         with self._lock:
@@ -270,6 +296,7 @@ class StatusFileWriter:
             self._data["turn"] = None
         self._write()
 
+    @_never_raises
     def set_turn_start(self, session_id: str) -> None:
         """A new turn is starting — state goes to ``working``."""
         with self._lock:
@@ -289,6 +316,7 @@ class StatusFileWriter:
             self._running_tools = 0
         self._write()
 
+    @_never_raises
     def leave_turn(self, session_id: str, reason: str) -> None:
         """The turn unwound by an exception — record ``reason`` and go ``idle``.
 
@@ -311,6 +339,7 @@ class StatusFileWriter:
             self._data["turn"] = None
         self._write()
 
+    @_never_raises
     def set_model_call_start(self, session_id: str, *, model: str = "") -> None:
         """The loop is entering a model call (waiting for the provider).
 
@@ -340,6 +369,7 @@ class StatusFileWriter:
                 self._data["turn"]["model_calls"] = self._data["turn"].get("model_calls", 0) + 1
         self._write()
 
+    @_never_raises
     def on_thinking_delta(self, session_id: str, text: str) -> None:
         """A thinking delta arrived during a model call."""
         with self._lock:
@@ -358,6 +388,7 @@ class StatusFileWriter:
         else:
             self._throttled_write()
 
+    @_never_raises
     def on_text_delta(self, session_id: str, text: str) -> None:
         """A text delta arrived during a model call."""
         with self._lock:
@@ -375,6 +406,7 @@ class StatusFileWriter:
         else:
             self._throttled_write()
 
+    @_never_raises
     def on_tool_call_delta(self, session_id: str, text: str) -> None:
         """A tool-call argument delta arrived during a model call."""
         with self._lock:
@@ -392,6 +424,7 @@ class StatusFileWriter:
         else:
             self._throttled_write()
 
+    @_never_raises
     def set_model_call_end(self, session_id: str) -> None:
         """The model call finished — state goes to ``working`` (turn still open)."""
         with self._lock:
@@ -404,6 +437,7 @@ class StatusFileWriter:
             self._data["call"] = None
         self._write()
 
+    @_never_raises
     def set_tool_start(self, session_id: str, name: str) -> None:
         """A tool is starting execution.  Concurrent tools are counted."""
         with self._lock:
@@ -424,6 +458,7 @@ class StatusFileWriter:
                 self._data["turn"]["tool_calls"] = self._data["turn"].get("tool_calls", 0) + 1
         self._write()
 
+    @_never_raises
     def set_tool_end(self, session_id: str) -> None:
         """A tool finished execution.  When no tools remain, go to ``working``."""
         with self._lock:
@@ -441,6 +476,7 @@ class StatusFileWriter:
             self._data["updated_at"] = now_iso
         self._write()
 
+    @_never_raises
     def set_wakeup(self, session_id: str | None, due_at_epoch: float | None) -> None:
         """Update the pending wake-up: ``due_at_epoch`` as ISO-8601, or clear it.
 
@@ -454,6 +490,7 @@ class StatusFileWriter:
             self._data["updated_at"] = _now_iso()
         self._write()
 
+    @_never_raises
     def set_restarting(self) -> None:
         """The process is about to ``os.execv`` into a new build."""
         with self._lock:
@@ -465,6 +502,7 @@ class StatusFileWriter:
             self._data["updated_at"] = now_iso
         self._write()
 
+    @_never_raises
     def set_exited(self) -> None:
         """Normal interpreter exit — write the final state."""
         self._stop_event.set()

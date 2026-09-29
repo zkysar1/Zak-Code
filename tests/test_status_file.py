@@ -1725,3 +1725,80 @@ class TestIntegrationUnwind:
             assert data["last_turn"]["stop_reason"] == "interrupted"
         finally:
             rw._stop_event.set()
+
+
+# ── the writer never raises into the loop; a failed call is over ─────────────
+
+
+class TestNeverRaises:
+    def test_no_transition_raises_even_when_its_own_work_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A transition raising inside the loop would end the turn: per streamed token,
+        # or from a turn's except clause, where it would REPLACE the exception the turn
+        # is leaving by. Break the writer's own clock and every transition still returns.
+        w = _make_writer(tmp_path)
+        try:
+            w.set_turn_start(SID)
+            w.set_model_call_start(SID)
+
+            def broken_clock() -> str:
+                raise RuntimeError("clock unavailable")
+
+            monkeypatch.setattr("zakcode.session.status_file._now_iso", broken_clock)
+            w.on_text_delta(SID, "first output")
+            w.on_thinking_delta(SID, "x")
+            w.on_tool_call_delta(SID, "x")
+            w.set_model_call_end(SID)
+            w.set_tool_start(SID, "Bash")
+            w.set_tool_end(SID)
+            w.set_wakeup(SID, 1719849600.0)
+            w.leave_turn(SID, "error")
+            w.set_idle(SID, stop_reason="completed")
+            w.set_turn_start(SID)
+            w.set_restarting()
+            w.set_exited()
+        finally:
+            w._stop_event.set()
+
+
+class TestAFailedModelCallIsOver:
+    """A failed call ends the model call: a retry sleep is not a wait on the provider."""
+
+    @pytest.mark.parametrize("streamed", [True, False], ids=["streamed", "buffered"])
+    def test_a_provider_error_ends_the_model_call_before_the_turn_ends(
+        self, tmp_path: Path, streamed: bool
+    ) -> None:
+        import asyncio
+
+        from zakcode.providers.base import ProviderError
+
+        loop = _answer_loop(tmp_path)
+
+        async def fail_stream(messages: Any, **kw: Any) -> Any:
+            raise ProviderError("the pod is down")
+            yield  # an async generator, as astream is
+
+        async def fail_complete(messages: Any, **kw: Any) -> Any:
+            raise ProviderError("the pod is down")
+
+        loop.provider.astream = fail_stream
+        loop.provider.acomplete = fail_complete
+        rw = _integration_writer(tmp_path, loop.session.id)
+        try:
+            with patch("zakcode.agent.loop._status_writer", return_value=rw):
+
+                async def run() -> None:
+                    if streamed:
+                        async for _ in loop.astream_turn("hello"):
+                            pass
+                    else:
+                        await loop.arun_turn("hello")
+
+                asyncio.run(run())
+            start = rw.transitions.index("model_call_start:test-answer")
+            idle = next(i for i, t in enumerate(rw.transitions) if t.startswith("idle:"))
+            assert "model_call_end:working" in rw.transitions[start:idle]
+            assert _read(rw)["state"] == "idle"
+        finally:
+            rw._stop_event.set()
