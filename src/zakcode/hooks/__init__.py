@@ -19,10 +19,10 @@ can *block* or *mutate*; ``PostToolUse`` is observe-and-warn (the tool already r
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
@@ -314,7 +314,7 @@ def _carry_wakeup(carried: dict[str, Any], result: TurnEndResult) -> dict[str, A
 #: model-visible name; the rows that still differ are the two tools whose SHAPE is Zak Code's
 #: own (the plan pair, the batch delegator) and a second spelling Claude Code has used
 #: (``MultiEdit`` for Edit, ``Agent`` for Task). A hook ``matcher`` written for Claude Code
-#: fires on every spelling listed here (``fnmatch`` is case-sensitive on POSIX); the first
+#: fires on every spelling listed here (:meth:`HookSpec.matches`, ADR-0267); the first
 #: spelling is the wire name (:func:`wire_payload`, ADR-0071).
 _CLAUDE_CODE_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "Skill": ("Skill",),
@@ -471,12 +471,45 @@ def _unwire_arguments(tool_name: str, mutated: dict[str, Any] | None) -> dict[st
     return {inverse.get(key, key): value for key, value in mutated.items()}
 
 
+#: Claude Code's hook-matcher contract on the tool events, the only events that read their
+#: matcher (ADR-0267). Every matcher here was written for it:
+#:
+#: * ``""`` and ``"*"`` fire on every tool.
+#: * A matcher made only of name characters (letters, digits, ``_``, ``-``), spaces and the
+#:   separators ``|`` and ``,`` is a list of exact names, so ``"Edit|Write"`` and
+#:   ``"Edit, Write"`` fire on Edit and on Write, and ``"Edit"`` fires on no other tool.
+#: * Anything else is a regular expression, searched for in each spelling of the tool
+#:   (``"Notebook.*"``, ``"mcp__.*"``), like JavaScript's ``RegExp.test``.
+#:
+#: Matching is case-sensitive on every platform. The contract was a shell glob before, so a
+#: list matched no tool at all, silently, and a regex only by accident.
+_EVERY_TOOL = ("", "*")
+_NAME_LIST = re.compile(r"[A-Za-z0-9_|, -]+")
+_NAME_SEPARATOR = re.compile(r"[|,]")
+
+
+def invalid_matcher(matcher: str) -> str | None:
+    """Why ``matcher`` can never fire, or None when it can (ADR-0267).
+
+    Only one matcher is dead on arrival: a pattern that is not a valid regular expression.
+    :meth:`HookSpec.matches` treats it as matching nothing, as Claude Code does, and the
+    settings loader reports it, so a gate that could never run is named when it loads.
+    """
+    if matcher in _EVERY_TOOL or _NAME_LIST.fullmatch(matcher):
+        return None
+    try:
+        re.compile(matcher)
+    except re.error as exc:
+        return f"matcher {matcher!r} is not a valid regular expression ({exc}), so it never fires"
+    return None
+
+
 class HookSpec(BaseModel):
     """A configured shell hook: when to fire, what to run, and how long to wait."""
 
     event: HookEvent
     command: list[str] = Field(..., description="argv array; run WITHOUT a shell.")
-    matcher: str = "*"  # glob over the tool name; '*' = every tool
+    matcher: str = "*"  # Claude Code's matcher over the tool name (ADR-0267); '*' = every tool
     timeout: float = DEFAULT_HOOK_TIMEOUT
     # Env-var names to scrub from the child environment before spawning.  Populated
     # by the settings_loader for workspace-sourced hooks (TE-R1: provider-key hygiene
@@ -495,7 +528,16 @@ class HookSpec(BaseModel):
             *_PRE_0190_SPELLINGS.get(canonical, ()),
             *aliases,
         )
-        return any(fnmatch.fnmatch(name, self.matcher) for name in names)
+        if self.matcher in _EVERY_TOOL:
+            return True
+        if _NAME_LIST.fullmatch(self.matcher):
+            wanted = {part.strip() for part in _NAME_SEPARATOR.split(self.matcher)} - {""}
+            return any(name in wanted for name in names)
+        try:
+            pattern = re.compile(self.matcher)
+        except re.error:
+            return False  # named at load by invalid_matcher(): this hook can never fire
+        return any(pattern.search(name) for name in names)
 
 
 #: An in-process hook: ``(payload) -> HookResult | None`` (None == allow/no-op).

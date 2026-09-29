@@ -29,7 +29,13 @@ import sys
 from pathlib import Path
 
 from zakcode._subprocess import resolve_executable
-from zakcode.hooks import DEFAULT_HOOK_TIMEOUT, HookEvent, HookManager, HookSpec
+from zakcode.hooks import (
+    DEFAULT_HOOK_TIMEOUT,
+    HookEvent,
+    HookManager,
+    HookSpec,
+    invalid_matcher,
+)
 
 logger = logging.getLogger("zakcode.hooks.settings_loader")
 
@@ -155,6 +161,13 @@ def load_settings_hooks(
                 matcher = entry.get("matcher", "*")
                 if not isinstance(matcher, str):
                     matcher = "*"
+                # A tool gate whose matcher can never fire is reported instead of registered
+                # dead (ADR-0267). Every other event ignores its matcher, so it is not judged.
+                tool_event = hook_event in (HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE)
+                dead = invalid_matcher(matcher) if tool_event else None
+                if dead:
+                    errors[f"{event_name}/{i}"] = dead
+                    continue
                 inner_hooks = entry.get("hooks")
                 if not isinstance(inner_hooks, list):
                     continue

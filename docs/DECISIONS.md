@@ -16035,3 +16035,55 @@ The `serve` command does not start the writer. Sessions inside the server are cr
 and the process-global singleton does not fit multi-session serve mode. The transitions wired in
 the agent loop are safe no-ops (every method returns immediately when `start()` has not been
 called or the session id does not match).
+
+## ADR-0267: hook matchers follow Claude Code's matcher contract
+
+Status: accepted. 2026-09-29.
+
+Every hook matcher Zak Code reads comes from a settings file in Claude Code's format
+(`.claude/settings.json`, `.claude/settings.local.json`, `.zakcode/settings.json`), so it was
+written for Claude Code and means what Claude Code takes it to mean. Zak Code read it as a shell
+glob. The two readings agree on a single tool name and on `*`, and nowhere else:
+
+- `Edit|Write`, which Claude Code documents as "Edit or Write", matched no tool at all, with no
+  error and no warning. A framework that wired one gate over several tools had no gate, and no
+  signal that it had none.
+- A regular expression such as `Notebook.*` or `mcp__.*` matched only by accident.
+- `""`, which Claude Code documents as every tool, matched none.
+- On Windows a glob is case-insensitive. Claude Code's matcher is not.
+
+The contract is now Claude Code's, stated once beside `HookSpec` and applied by
+`HookSpec.matches`:
+
+1. `""` and `*` fire on every tool.
+2. A matcher made only of name characters (letters, digits, `_`, `-`), spaces and the separators
+   `|` and `,` is a list of exact tool names, each part trimmed and an empty part naming nothing.
+   `Edit|Write` and `Edit, Write` fire on Edit and on Write and on nothing else, and `Edit` alone
+   does not fire on a tool whose name merely contains it. (Claude Code accepts the commas and
+   spaces on the tool events, the only events whose matcher is read here.)
+3. Anything else is a regular expression, searched for in the tool's name the way JavaScript's
+   `RegExp.test` searches: unanchored, so `^(Read|Write)$` anchors itself and `mcp__.*` finds
+   every MCP tool.
+
+Matching is case-sensitive on every platform. Each rule applies to every spelling a matcher
+already reached (the tool's own name, its Claude Code spellings, its pre-ADR-0190 names and the
+registry's aliases), so a single name written in its own case keeps exactly its reach. Only on
+Windows, where the glob ignored case, does a name written in the wrong case stop matching.
+
+A matcher that is not a valid regular expression can never fire. Claude Code logs it and matches
+nothing. Zak Code matches nothing too, and the settings loader reports it in the errors it already
+returns (logged as a warning at load and at every re-read) instead of registering a hook that could
+never run. Only the tool events are judged: every other event ignores its matcher, so a hook there
+keeps firing whatever its matcher says.
+
+Compatibility. A matcher written as a glob keeps its reach when it is also a regular expression
+that reaches the same tools. `Edit*` now reads as "Edi" followed by any number of "t", and among
+the built-in tools only Edit is spelled with "Edi". A glob that is not a valid regular expression,
+such as `*_file`, now matches nothing and is reported at load. That is the one reach this decision
+removes, on purpose: a settings file is written for one contract, and a second reading that only
+Zak Code applies is the kind of divergence that let `Edit|Write` fail silently.
+
+Tests: `tests/test_claude_code_hook_contract.py` pins the list, the searched regular expression,
+`""`, case, the reach of `Edit*` over the built-in tools, and the load-time report beside a
+non-tool event that keeps its hook. Each of the three new branches (the name list, the search, the
+load-time report) was sabotaged in turn and its test went red.

@@ -29,6 +29,7 @@ from pathlib import Path
 
 from zakcode._subprocess import find_bash, resolve_executable
 from zakcode.hooks import (
+    _CLAUDE_CODE_TOOL_NAMES,
     HookEvent,
     HookManager,
     HookPayload,
@@ -215,6 +216,68 @@ def test_matcher_fires_on_claude_code_tool_names() -> None:
     # The tool's own (Zak Code) name still matches, and "*" still matches everything.
     assert _spec("Skill").matches("Skill")
     assert _spec("*").matches("anything")
+
+
+def test_matcher_reads_as_claude_code_reads_it() -> None:
+    # ADR-0267. A list of names fires on each named tool, in every spelling, and on no other.
+    both = _spec("Edit|Write")
+    assert both.matches("Edit") and both.matches("Write") and both.matches("edit_file")
+    assert not both.matches("Read") and not both.matches("Bash")
+    # On the tool events Claude Code also splits a list on commas and trims spaces, and an
+    # empty part names nothing.
+    assert _spec("Edit, Write").matches("Write") and _spec("Edit | Write").matches("Edit")
+    assert not _spec("Edit, Write").matches("Read")
+    assert _spec("Edit||Write").matches("Write") and not _spec("|").matches("Read")
+    # Anything else is a regular expression, searched for in each spelling of the tool, so it
+    # may match any part of a name, as JavaScript's RegExp.test does.
+    assert _spec("mcp__.*").matches("mcp__files__read_text")
+    assert _spec("read.*").matches("mcp__files__read_text")
+    assert _spec("^(Read|Write)$").matches("write_file")
+    assert not _spec("^(Read|Write)$").matches("Edit")
+    # "" fires on every tool, as "*" does; matching is case-sensitive on every platform.
+    assert _spec("").matches("anything")
+    assert not _spec("BASH").matches("Bash")
+
+
+def test_a_glob_written_matcher_keeps_its_reach_over_the_counterpart_tools() -> None:
+    # "Edit*" is a regular expression now ("Edi", then any number of "t"). Over the tools
+    # Claude Code has a counterpart for it still fires on exactly one, Edit, the only one
+    # spelled with "Edi".
+    fired = [name for name in _CLAUDE_CODE_TOOL_NAMES if _spec("Edit*").matches(name)]
+    assert fired == ["Edit"]
+    assert all(_spec("*").matches(name) for name in _CLAUDE_CODE_TOOL_NAMES)
+
+
+def test_a_tool_matcher_that_can_never_fire_is_reported_at_load(tmp_path: Path) -> None:
+    # ADR-0267. A shell glob such as "*_file" is not a valid regular expression: Claude Code
+    # matches nothing with it, and the loader says so instead of registering a gate that never
+    # runs. An event that ignores its matcher keeps its hook.
+    from zakcode.hooks.settings_loader import load_settings_hooks
+
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    hook = {"type": "command", "command": "echo hi"}
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "*_file", "hooks": [hook]},
+                        {"matcher": "Edit|Write", "hooks": [hook]},
+                    ],
+                    "SessionStart": [{"matcher": "*_file", "hooks": [hook]}],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    specs, errors = load_settings_hooks(tmp_path)
+    assert "not a valid regular expression" in errors.get("PreToolUse/0", "")
+    assert [(spec.event, spec.matcher) for spec in specs] == [
+        (HookEvent.PRE_TOOL_USE, "Edit|Write"),
+        (HookEvent.SESSION_START, "*_file"),
+    ]
+    assert specs[0].matches("Write") and not specs[0].matches("Read")
 
 
 # ── (7) Claude Code's $CLAUDE_PROJECT_DIR (the project root) ──────────────────────
