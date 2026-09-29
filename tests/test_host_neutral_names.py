@@ -51,6 +51,7 @@ BLOCKED = frozenset(
         "5faf316d15b3ac52",
         "2402136c3cb55cb6",
         "1ac9eb18dd2f08db",
+        "0b1c4cfb78cf16c6",
         "e4ff23a43add67fd",
     }
 )

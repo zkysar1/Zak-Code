@@ -535,12 +535,12 @@ def test_the_summarizer_reads_a_skill_turn_by_its_head_and_tail() -> None:
     body = "RULES " + "s" * 40_000 + " RETURN"
     asked = "fix the parser " + "q" * 5_000
     history = [
-        _skill_turn("worker-loop", body),
+        _skill_turn("work-loop", body),
         Message.assistant_text("on it"),
         Message.user(asked),
     ]
     rendered = AgentLoop._render_for_summary(history)
-    assert "<command-name>/worker-loop</command-name>" in rendered and " RETURN" in rendered
+    assert "<command-name>/work-loop</command-name>" in rendered and " RETURN" in rendered
     assert "s" * (_SUMMARY_OUTPUT_CHARS * 2 // 3) not in rendered
     assert "characters of this skill's instructions left out ...]" in rendered
     assert asked in rendered  # what the operator wrote is never held
@@ -552,15 +552,15 @@ def test_the_note_says_when_the_turn_s_skill_was_summarized_away(tmp_path: Path)
     compactions of three, and each time the session ended its turn 7 to 19 rows later."""
     provider = _SummarizerProvider(["the summary"], tokens=100_000)
     loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
-    loop._skill_pages["worker-loop"] = None  # a whole skill is listed without pages (ADR-0192)
-    loop.session.messages.extend([_skill_turn("worker-loop", "step " * 6_000), *_history(5)])
+    loop._skill_pages["work-loop"] = None  # a whole skill is listed without pages (ADR-0192)
+    loop.session.messages.extend([_skill_turn("work-loop", "step " * 6_000), *_history(5)])
 
     assert asyncio.run(loop.compact_now(trigger="auto")) is True
 
     (prompt,) = provider.seen[0]
     assert "step " * 1_000 not in prompt.text  # the body's middle never reached the summarizer
     assert (
-        "- /worker-loop: its instructions (30,000 characters) were in the part summarized "
+        "- /work-loop: its instructions (30,000 characters) were in the part summarized "
         "above, so they are no longer in your context; if the skill is needed again, load it "
         "with Skill"
     ) in loop.session.messages[0].text
@@ -570,9 +570,9 @@ def test_the_note_is_silent_while_the_newest_copy_is_kept(tmp_path: Path) -> Non
     # The loop's next lap delivered the skill again, and that copy is in the kept tail.
     provider = _SummarizerProvider(["the summary"], tokens=100_000)
     loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
-    lap_two = _skill_turn("worker-loop", "lap two " * 3_000)
+    lap_two = _skill_turn("work-loop", "lap two " * 3_000)
     loop.session.messages.extend(
-        [_skill_turn("worker-loop", "lap one " * 3_000), *_history(5), lap_two]
+        [_skill_turn("work-loop", "lap one " * 3_000), *_history(5), lap_two]
     )
 
     assert asyncio.run(loop.compact_now(trigger="auto")) is True

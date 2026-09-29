@@ -328,7 +328,7 @@ def test_a_wakeup_the_model_arms_is_on_disk_before_the_turn_ends(tmp_path: Path)
 def test_idle_wait_delivers_a_due_wakeup_as_a_harness_line(tmp_path: Path) -> None:
     clock = _Clock(1_000.0)
     _, slot = _slot(clock)
-    slot.arm("poll the reducer", 60)
+    slot.arm("poll the queue", 60)
     mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False, wakeup_probe=slot.take_due)
 
     # Not due: the wait keeps waiting (the asker's stop event ends it).
@@ -338,7 +338,7 @@ def test_idle_wait_delivers_a_due_wakeup_as_a_harness_line(tmp_path: Path) -> No
     assert mux.try_input() is None
 
     clock.now = 1_060.0
-    assert mux.try_input() == ("harness", "[harness] scheduled wake-up: poll the reducer")
+    assert mux.try_input() == ("harness", "[harness] scheduled wake-up: poll the queue")
     assert slot.pending() is None  # consumed
     assert mux.try_input() is None
 
@@ -408,11 +408,11 @@ def test_a_due_wakeup_fires_while_another_process_turn_holds_the_workspace(
     # session's own wake-up does not: both doors hand it over under the marker.
     assert mux.try_input() == ("harness", LOOP_LINE)
     assert say_pending(inbox) and slot.pending() is None
-    slot.arm("poll the reducer", 60)
+    slot.arm("poll the queue", 60)
     stop = threading.Event()  # bounds the wait: a regression here otherwise spins until the
     threading.Timer(2.0, stop.set).start()  # marker ages out (120 s) and the say arrives
     woke = mux.next_input(idle=True, stop=stop)
-    assert woke == ("harness", "[harness] scheduled wake-up: poll the reducer")
+    assert woke == ("harness", "[harness] scheduled wake-up: poll the queue")
     assert say_pending(inbox)
 
     # Positive control: the marker is what held the say back — aged out, the say arrives.
@@ -433,6 +433,6 @@ def test_take_due_prompt_hands_over_the_raw_prompt_and_consumes_the_slot() -> No
     assert slot.take_due_prompt() == LOOP_SENTINEL
     assert session.pending_wakeup is None  # consumed, like take_due
     assert slot.take_due_prompt() is None
-    slot.arm("poll the reducer", 60)
+    slot.arm("poll the queue", 60)
     clock.now = 1_200.0
-    assert slot.take_due() == "[harness] scheduled wake-up: poll the reducer"  # still renders
+    assert slot.take_due() == "[harness] scheduled wake-up: poll the queue"  # still renders

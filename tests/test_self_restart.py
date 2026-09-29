@@ -484,7 +484,7 @@ def test_restart_exports_the_boundary_beside_the_continuation(
     process words the restart honestly; a carry with no boundary recorded is a Stop-hook
     carry (ADR-0099), and a stale boundary is cleared with the continuation."""
     agent, _store = _agent(tmp_path)
-    agent.loop.restart_continuation = 'Call Skill(skill="worker-loop") now.'
+    agent.loop.restart_continuation = 'Call Skill(skill="work-loop") now.'
     agent.loop.restart_boundary = "skill"
     monkeypatch.setenv("ZAKCODE_RESTART_CONTINUATION", "stale from an earlier restart")
     monkeypatch.setenv("ZAKCODE_RESTART_BOUNDARY", "stale")
@@ -507,7 +507,7 @@ def test_restart_kick_words_a_skill_boundary_restart(tmp_path: Path) -> None:
     """The preface says a skill call did not run — not that a Stop hook asked to continue
     — and ends on the call itself; the Stop-hook wording is unchanged for its boundary."""
     complete = _unattended_agent(tmp_path, statuses=("done", "done"))
-    carried = 'Call Skill(skill="worker-loop") now.'
+    carried = 'Call Skill(skill="work-loop") now.'
     line = cli._restart_kick(complete, restarted="new-build", carried=carried, boundary="skill")
     assert line is not None
     assert line.startswith("[harness] this session was restarted into build new-build")

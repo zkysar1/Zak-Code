@@ -29,18 +29,18 @@ from zakcode.session.store import RESUME_COMPACT_STOP_REASONS, Session
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
 from zakcode.wakeup import LOOP_SENTINEL
 
-# ── the framework's own words (stop-hook.sh, verbatim shapes) ────────────────
+# ── a Stop hook's reasons, in the shapes a host framework words them ─────────
 
-REDUCER_REASON = (
+ORCHESTRATE_REASON = (
     "Turn ended without a Skill(orchestrate) re-entry (autocompact OR a text summary "
     "terminated the turn). Your FIRST action MUST be: Skill('orchestrate') with args='loop'. "
     "Do NOT manually select goals. Do NOT run Bash commands first. Call the Skill tool "
     "IMMEDIATELY. Agent: sera. Prefix all Bash with HOST_AGENT=sera."
 )
 WORKER_REASON = (
-    "Worker Body turn ended without a Skill(worker-loop) re-entry (a text summary or "
-    "autocompact terminated the turn). Your FIRST action MUST be: Skill('worker-loop') — NOT "
-    "Skill('orchestrate'), which is the REDUCER-only re-entry. Do NOT "
+    "Worker session turn ended without a Skill(work-loop) re-entry (a text summary or "
+    "autocompact terminated the turn). Your FIRST action MUST be: Skill('work-loop') — NOT "
+    "Skill('orchestrate'), which is the COORDINATOR-only re-entry. Do NOT "
     "emit a text summary first."
 )
 PLAIN_REASON = "Not done: verify your work."
@@ -179,10 +179,10 @@ def _delivered(loop: AgentLoop) -> list[Message]:
 @pytest.mark.parametrize(
     ("reason", "expected"),
     [
-        (REDUCER_REASON, ("orchestrate", "loop")),
-        (WORKER_REASON, ("worker-loop", "")),
+        (ORCHESTRATE_REASON, ("orchestrate", "loop")),
+        (WORKER_REASON, ("work-loop", "")),
         ('Call Skill(skill="orchestrate", args="loop") now.', ("orchestrate", "loop")),
-        ("Run Skill(skill='worker-loop') as your first action.", ("worker-loop", "")),
+        ("Run Skill(skill='work-loop') as your first action.", ("work-loop", "")),
         (
             "Skill(orchestrate-spark) first, then Skill(orchestrate) with args='loop'.",
             ("orchestrate", "loop"),
@@ -225,13 +225,13 @@ def test_the_veto_note_speaks_before_the_hooks_words() -> None:
     a summary → the stop, four vetoes running). So the harness says what happened and what
     to do FIRST, in the words the wake-up door was measured to work with, and the hook's
     words follow as the hook's."""
-    note = _VETO_SKILL_NOTE.format(reason=REDUCER_REASON)
+    note = _VETO_SKILL_NOTE.format(reason=ORCHESTRATE_REASON)
     told = note.index("The harness has made that skill call for you")
     act = note.index("Carry them out now, from their first step")
     dont = note.index("Do not call the skill tool for it again")
     quoted = note.index("The hook's words: ")
     assert told < act < dont < quoted < note.index("Your FIRST action MUST be")
-    assert note.endswith(REDUCER_REASON)  # every word of the hook still reaches the model
+    assert note.endswith(ORCHESTRATE_REASON)  # every word of the hook still reaches the model
     # A reason holding braces is text, never a format field.
     assert _VETO_SKILL_NOTE.format(reason="{x} {0}").endswith("{x} {0}")
     # Folded into the frame it stays one line, [harness]-tagged, the frame still first.
@@ -246,7 +246,7 @@ def test_the_veto_note_speaks_before_the_hooks_words() -> None:
 @pytest.mark.asyncio
 async def test_a_veto_naming_a_skill_delivers_that_skill(tmp_path: Path) -> None:
     calls: list[tuple[str, str, str]] = []
-    hook = RecordingHook([_veto(REDUCER_REASON), None])
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON), None])
     # The delivered skill seeds plan steps, so the model's next text-only finish meets the
     # open-plan gate before the Stop hook again: script the nudges it takes to fall through.
     provider = ScriptedProvider(_texts(2 + _MAX_PLAN_NUDGES))
@@ -296,7 +296,7 @@ async def test_the_provider_sees_the_delivered_skill_on_the_re_entry_call(tmp_pa
             self.seen.append(list(messages))
             return await super().acomplete(messages, system=system, tools=tools, **kw)
 
-    hook = RecordingHook([_veto(REDUCER_REASON), None])
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON), None])
     provider = Seeing(_texts(2 + _MAX_PLAN_NUDGES))
     loop = _loop(provider, tmp_path, _composer([]))
     loop.hook_manager.register_turn_end(hook)
@@ -327,9 +327,9 @@ async def test_the_streaming_twin_names_the_delivered_skill(tmp_path: Path) -> N
     loop = _loop(provider, tmp_path, _composer(calls))
     loop.hook_manager.register_turn_end(hook)
     events = [e async for e in loop.astream_turn("go")]
-    assert calls == [("worker-loop", "", "harness")]
+    assert calls == [("work-loop", "", "harness")]
     statuses = [e.message for e in events if isinstance(e, AgentStatus)]
-    assert "turn_end hook vetoed stop; /worker-loop delivered" in statuses
+    assert "turn_end hook vetoed stop; /work-loop delivered" in statuses
 
 
 @pytest.mark.asyncio
@@ -355,7 +355,7 @@ async def test_a_skill_that_cannot_be_delivered_falls_back_to_the_rail(
 ) -> None:
     calls: list[tuple[str, str, str]] = []
     compose = _legacy_composer if outcome == "legacy" else _composer(calls, outcome=outcome)
-    hook = RecordingHook([_veto(REDUCER_REASON), None])
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON), None])
     provider = ScriptedProvider([_TEXT, LLMResult(text="done")])
     loop = _loop(provider, tmp_path, compose)
     loop.hook_manager.register_turn_end(hook)
@@ -373,7 +373,7 @@ async def test_a_skill_that_cannot_be_delivered_falls_back_to_the_rail(
 
 @pytest.mark.asyncio
 async def test_no_composer_means_the_rail(tmp_path: Path) -> None:
-    hook = RecordingHook([_veto(REDUCER_REASON), None])
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON), None])
     provider = ScriptedProvider([_TEXT, LLMResult(text="done")])
     loop = _loop(provider, tmp_path, None)
     loop.hook_manager.register_turn_end(hook)
@@ -393,7 +393,7 @@ async def test_the_fence_ends_a_turn_whose_model_never_runs_the_delivered_skill(
     Skill('orchestrate') → text → BLOCK …, for hours. Three deliveries are honoured; the fourth
     such veto ends the turn as ``veto_stall`` with a wake-up behind it."""
     vetoes = _VETO_STALL_THRESHOLD + 3
-    hook = RecordingHook([_veto(REDUCER_REASON)] * vetoes)
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON)] * vetoes)
     provider = ScriptedProvider(_texts(vetoes + 1))
     calls: list[tuple[str, str, str]] = []
     loop = _loop(provider, tmp_path, _composer(calls, turn_text=FLAT_TURN))
@@ -419,22 +419,22 @@ async def test_the_fence_ends_a_turn_whose_model_never_runs_the_delivered_skill(
 @pytest.mark.asyncio
 async def test_the_fence_keeps_a_wakeup_the_framework_already_held(tmp_path: Path) -> None:
     vetoes = _VETO_STALL_THRESHOLD + 1
-    hook = RecordingHook([_veto(REDUCER_REASON)] * vetoes)
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON)] * vetoes)
     provider = ScriptedProvider(_texts(vetoes + 1))
     loop = _loop(provider, tmp_path, _composer([], turn_text=FLAT_TURN))
     loop.hook_manager.register_turn_end(hook)
-    loop.wakeup_slot.arm("poll the reducer", 900)
+    loop.wakeup_slot.arm("poll the queue", 900)
     result = await loop.arun_turn("go")
     assert result.stop_reason == "veto_stall"
     held = loop.wakeup_slot.pending()
-    assert held is not None and held.prompt == "poll the reducer"  # the framework's net wins
+    assert held is not None and held.prompt == "poll the queue"  # the framework's net wins
 
 
 @pytest.mark.asyncio
 async def test_a_model_skill_call_starts_the_fence_over(tmp_path: Path) -> None:
     """A use_skill call between vetoes is the model following the loop: the count restarts."""
     vetoes = 6
-    hook = RecordingHook([_veto(REDUCER_REASON)] * (vetoes + 1))
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON)] * (vetoes + 1))
     texts = _texts(6)
     provider = ScriptedProvider(
         [
@@ -476,7 +476,7 @@ async def test_generic_vetoes_stay_unbounded(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_the_fence_applies_to_the_streaming_twin(tmp_path: Path) -> None:
     vetoes = _VETO_STALL_THRESHOLD + 1
-    hook = RecordingHook([_veto(REDUCER_REASON)] * vetoes)
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON)] * vetoes)
     provider = ScriptedProvider(_texts(vetoes + 1))
     loop = _loop(provider, tmp_path, _composer([], turn_text=FLAT_TURN))
     loop.hook_manager.register_turn_end(hook)
@@ -490,7 +490,8 @@ async def test_the_fence_applies_to_the_streaming_twin(tmp_path: Path) -> None:
 async def test_the_fence_is_per_turn(tmp_path: Path) -> None:
     """A new turn starts with a clean count: honoured vetoes in one turn do not tax the next."""
     hook = RecordingHook(
-        [_veto(REDUCER_REASON)] * _VETO_STALL_THRESHOLD + [None, _veto(REDUCER_REASON), None]
+        [_veto(ORCHESTRATE_REASON)] * _VETO_STALL_THRESHOLD
+        + [None, _veto(ORCHESTRATE_REASON), None]
     )
     provider = ScriptedProvider(_texts(_VETO_STALL_THRESHOLD + 1) + [_TEXT, LLMResult(text="done")])
     loop = _loop(provider, tmp_path, _composer([], turn_text=FLAT_TURN))
