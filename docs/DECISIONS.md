@@ -16017,7 +16017,10 @@ with the time its first output took (which tells a slow prompt read from slow ge
 running tool, an open turn's call and tool counts, and for an idle session the armed wake-up
 relative to now (an overdue one stands out) and how the last turn ended. Flags: `--all` (include
 stale and exited), `--json` (machine-readable output), `-w`/`--workspace` (only sessions whose
-workspace is that directory; both paths are resolved before they are compared).
+workspace is that directory; both paths are resolved before they are compared). `--all` shapes
+only the human view: `--json` always lists every session with its `_liveness`, because hiding stale
+and exited sessions there prints `[]` for a box whose one process died, and `[]` also means "no
+session", so a script could not tell the two apart.
 
 Old status files are pruned at startup (7-day threshold). The writer is fully fire-and-forget:
 every public method swallows every error, so a status write can never raise into the agent loop or

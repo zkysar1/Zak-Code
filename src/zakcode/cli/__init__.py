@@ -380,12 +380,17 @@ def _state_detail(row: dict[str, Any], now: float) -> str:
 @app.command()
 def status(
     all_sessions: bool = typer.Option(
-        False, "--all", "-a", help="Include stale and exited sessions."
+        False,
+        "--all",
+        "-a",
+        help="Include stale and exited sessions (the JSON view always does).",
     ),
     workspace_filter: str | None = typer.Option(
         None, "-w", "--workspace", help="Show only sessions in this workspace directory."
     ),
-    output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+    output_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON: every session, with its liveness."
+    ),
 ) -> None:
     """Show live process status for running sessions.
 
@@ -393,6 +398,9 @@ def status(
     shows the session id, pid, what the process is doing right now, and for how long.  A
     session whose status file has not been updated for 120 seconds is marked ``stale``
     (the process is probably gone); ``--all`` includes those and ``exited`` sessions.
+
+    ``--json`` always lists every session, each with its ``_liveness``: a script reading
+    it must be able to tell "no session here" from "the session's process is gone".
 
     Use ``-w DIR`` to show only sessions whose workspace is that directory.
     """
@@ -425,7 +433,10 @@ def status(
         else:
             liveness = "stale" if now - updated > STALE_THRESHOLD_SECONDS else "live"
 
-        if not all_sessions and liveness in ("stale", "exited"):
+        # Only the human view hides stale and exited sessions. Hiding them from the JSON
+        # view would print [] for a box whose one process died, and [] also means "no
+        # session", so a script could not tell the two apart (ADR-0266).
+        if not all_sessions and not output_json and liveness in ("stale", "exited"):
             continue
         if abs_workspace_filter is not None:
             entry_ws = entry.get("workspace") or ""
