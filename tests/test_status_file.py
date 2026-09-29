@@ -795,6 +795,26 @@ class TestStatusCLI:
         assert data[0]["session"] == "json-sess-1"
         assert data[0]["_liveness"] == "live"
 
+    def test_json_lists_stale_and_exited_sessions_without_all(self) -> None:
+        # A script must tell "no session" ([]) from "the process is gone": the JSON view
+        # lists every session with its liveness, --all or not.
+        _write_status(self.sdir, "live-sess-1", "idle", _now_iso())
+        _write_status(self.sdir, "stale-sess-1", "idle", _old_iso())
+        _write_status(self.sdir, "exited-sess-1", "exited", _now_iso())
+        result = self.runner.invoke(self.app, ["status", "--json"])
+        assert result.exit_code == 0
+        liveness = {row["session"]: row["_liveness"] for row in json.loads(result.output)}
+        assert liveness == {
+            "live-sess-1": "live",
+            "stale-sess-1": "stale",
+            "exited-sess-1": "exited",
+        }
+        # The human view still hides them without --all.
+        human = self.runner.invoke(self.app, ["status"]).output
+        assert "live-ses" in human
+        assert "stale-se" not in human
+        assert "exited-s" not in human
+
     def test_json_empty(self) -> None:
         result = self.runner.invoke(self.app, ["status", "--json"])
         assert result.exit_code == 0
