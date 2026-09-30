@@ -16087,3 +16087,59 @@ Tests: `tests/test_claude_code_hook_contract.py` pins the list, the searched reg
 `""`, case, the reach of `Edit*` over the built-in tools, and the load-time report beside a
 non-tool event that keeps its hook. Each of the three new branches (the name list, the search, the
 load-time report) was sabotaged in turn and its test went red.
+
+## ADR-0268: a stuck NARROW step refuses at the execution seam and leaves the prompt alone
+
+Status: accepted. 2026-09-29.
+
+The stuck ladder's NARROW rung (ADR-0015) limits the next response to read-only tools. It did that
+three ways at once. It sent a narrowed tool schema, it rebuilt the system prompt with a narrowed
+tool summary and no on-request list, and it refused any other tool at the execution seam. The tool
+definitions render first in the prompt, so the narrowed call shared no prefix with the call before
+it, and a local engine re-read the whole context. One measured session on a llama.cpp engine
+re-processed 95,729 prompt tokens in 939 s for that single call, where the call before it had
+reused its prefix. Going back to the full schema was cheap only because the engine's RAM prompt
+cache still held the old prefix. Claude's prompt cache orders a request the same way (tools, then
+the system prompt, then messages), so a change to the tools invalidates everything after them there
+too.
+
+Before changing it, we measured whether a refusal at the seam alone holds a model as well as the
+narrowed schema does. The request the loop sends on a NARROW step was captured from a real run
+against a scripted endpoint. Each arm then sent it to one local 27B model 20 times, one call at a
+time on an idle slot:
+
+- N, the narrowed call as sent before this decision: 20 of 20 first responses called only
+  read-only tools.
+- F, the same call with the full schema and system prompt of the call before it: 20 of 20.
+- FA, F with a rail that lists the allowed read-only tools: 19 of 20. The one miss called Bash, and
+  called it again after the seam refused it.
+- FD, F with a rail that names the refused tools: 20 of 20.
+
+No response in any arm was text only. The rule was fixed before the run: adopt the seam alone, with
+the better of FA and FD, if it held at least 14 of 20 and came within 4 of N. FD met it. The limits
+were stated in advance too: one scenario, a context of about 11k tokens, one engine, 20 trials an
+arm. 19 against 20 is inside the noise.
+
+The NARROW step now restricts at the execution seam alone:
+
+1. Both twins send the full tool definitions and build the system prompt as they would without the
+   step. `_build_system()` and `_tool_specs()` no longer take a restriction.
+2. The seam's refusal is unchanged. A call to a tool that is not read-only returns an error naming
+   the read-only tools, and the tool never runs.
+3. The rail names the refused tools in the schema's order, which is the FD wording: "for your NEXT
+   response only read-only tools are available; Write, Edit and Bash are refused (the full toolset
+   returns after that)". With nothing to refuse, it reads as before.
+
+The narrowed call now re-processes only its new tail, the rail and the latest results. The cost
+moves to the model. For one response it sees tools it may not use, so a wrong call costs a refused
+round trip instead of being impossible to express. With this rail that happened 0 times in 20.
+
+Rejected: keeping the narrowed schema, which re-reads the whole context on every NARROW step.
+Narrowing only the system prompt's tool summary, which still changes the prompt near its top.
+Listing the allowed tools instead of the refused ones, which measured 19 of 20 and is the longer
+list on a large toolset.
+
+Tests: `tests/test_stuck.py` pins that the narrowed call sends the same tool definitions and system
+prompt as the call before it, in both twins and on both climbs of the ladder; that a write-tier call
+on the narrowed step is refused at the seam and never runs; and that the rail names the refused
+tools. Restoring the narrowed schema turns the first test red.
