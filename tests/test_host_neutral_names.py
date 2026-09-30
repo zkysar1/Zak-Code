@@ -5,16 +5,21 @@ settings, the served API). Nothing in ``src``, ``tests`` or ``docs`` should name
 host, its machines or its internal record ids, so this test fails when one comes back.
 
 The words are stored as hashes, so this file does not itself spell out the names it keeps out.
-A token is a run of letters, digits, ``-`` and ``_``, lower-cased; a compound token is also
-checked part by part. Record ids and machine names are shapes rather than words, so they are
-matched by pattern.
+A token is a run of letters, digits, ``-`` and ``_``, lower-cased, and its parts are the pieces
+between those separators. Every run of consecutive parts is checked, spelled once with ``-`` and
+once with ``_``, so a kept-out compound is found inside a longer token whichever separator
+either one uses. Record ids and machine names are shapes rather than words, so they are matched
+by pattern.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+from functools import cache
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCANNED = ("src", "tests", "docs")
@@ -32,8 +37,10 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 
-# sha256 of each kept-out word, first 16 hex digits. The last entry is a canary that names
-# nothing: the positive control below plants it to prove the scan can see.
+# sha256 of each kept-out word, first 16 hex digits. Store a compound with one kind of
+# separator, either kind: a word spelled with both is never matched. The last three entries
+# are canaries that name nothing, and the positive controls below plant them to prove the
+# scan can see.
 BLOCKED = frozenset(
     {
         "ddff93cc887d1c20",
@@ -78,9 +85,14 @@ BLOCKED = frozenset(
         "77bd5dd94c37c5b1",
         "c04b347d824bd044",
         "e4ff23a43add67fd",
+        "2c8879d54cb150a4",
+        "ee29cde05b6f320e",
     }
 )
 CANARY = "hostneutral" + "canary"
+# Two compound canaries, one stored with each separator.
+CANARY_HYPHEN = "hostneutral" + "-canary"
+CANARY_UNDERSCORE = "canary" + "_hostneutral"
 PATTERNS = {
     "a record id": re.compile(r"\b(?:g-\d{3}-\d+|guard-\d{3,}|rb-\d{3,}|asp-\d{3})\b"),
     "a machine name": re.compile(r"\b(?:zc|cc)-\d{2}\b"),
@@ -109,14 +121,31 @@ def _digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
+@cache
+def _is_blocked(token: str) -> bool:
+    """Whether a run of consecutive parts of ``token``, joined with ``-`` or ``_``, is stored.
+
+    ``a-b_c`` tries ``a``, ``b``, ``c``, ``a-b``, ``a_b``, ``b-c``, ``b_c``, ``a-b-c`` and
+    ``a_b_c``. A stored word uses at most one kind of separator, so when its parts are
+    consecutive parts of the token, one of these spells it exactly. Cached, because the same
+    tokens recur in every file and a long one has many runs to hash.
+    """
+    parts = re.split(r"[-_]", token)
+    return any(
+        _digest(sep.join(parts[i:j])) in BLOCKED
+        for i in range(len(parts))
+        for j in range(i + 1, len(parts) + 1)
+        for sep in "-_"
+    )
+
+
 def findings(text: str) -> list[tuple[int, str]]:
     """(line number, what) for each line that names the host."""
     out = []
     for n, line in enumerate(text.splitlines(), 1):
         low = line.lower()
         for tok in TOKEN.findall(low):
-            parts = [tok, *re.split(r"[-_]", tok)] if ("-" in tok or "_" in tok) else [tok]
-            if any(_digest(p) in BLOCKED for p in parts):
+            if _is_blocked(tok):
                 out.append((n, "a blocked word"))
                 break
         out.extend((n, what) for what, rx in PATTERNS.items() if rx.search(low))
@@ -159,3 +188,15 @@ def test_the_scan_sees_a_planted_name(tmp_path: Path) -> None:
     assert findings("see g-000-00 there") == [(1, "a record id")]
     assert findings("ran on zc-00") == [(1, "a machine name")]
     assert findings("a host framework, a worker machine, ADR-0236, PR #706") == []
+
+
+@pytest.mark.parametrize(
+    ("stored", "other"),
+    [(CANARY_HYPHEN, "_"), (CANARY_UNDERSCORE, "-")],
+    ids=["stored-with-hyphen", "stored-with-underscore"],
+)
+def test_a_compound_is_found_inside_a_longer_token(stored: str, other: str) -> None:
+    # Planted with the separator it is not stored with, between two more parts, so only the
+    # run spelled with the stored separator matches it.
+    planted = other.join(["my", *re.split(r"[-_]", stored), "file"])
+    assert findings(f"see {planted} here") == [(1, "a blocked word")]
