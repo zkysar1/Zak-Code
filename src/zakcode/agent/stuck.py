@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Sequence
 from enum import Enum
 from hashlib import blake2b
 
@@ -483,13 +484,23 @@ class StuckTracker:
             "all-failing tool call)."
         )
 
-    def narrow_message(self) -> str:
-        """The corrective hint injected on a :attr:`StuckAction.NARROW`."""
+    def narrow_message(self, refused: Sequence[str] = ()) -> str:
+        """The corrective hint injected on a :attr:`StuckAction.NARROW`.
+
+        ``refused`` names the tools the execution seam turns away on the next response. The
+        schema and the system prompt still list them, unchanged (ADR-0268), so the rail says
+        which ones are refused. Measured on a local model, naming the refused tools held 20
+        first responses of 20 to read-only tools; naming the allowed ones held 19.
+        """
+        available = "only read-only tools are available"
+        if refused:
+            names = list(refused)
+            listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+            available += f"; {listed} {'is' if len(names) == 1 else 'are'} refused"
         return (
-            "You are still stuck, so for your NEXT response only read-only tools are "
-            "available (the full toolset returns after that). Use them to investigate: "
-            "read the file, the error, or the directory, and find the real cause before "
-            "attempting another change."
+            f"You are still stuck, so for your NEXT response {available} (the full toolset "
+            "returns after that). Use them to investigate: read the file, the error, or the "
+            "directory, and find the real cause before attempting another change."
         )
 
     def step_back_message(self) -> str:

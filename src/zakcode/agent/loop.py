@@ -3479,16 +3479,15 @@ class AgentLoop:
             return self.budget.try_consume(1)
         return True
 
-    def _tool_specs(self, restrict_to: set[str] | None = None) -> list[ToolSpec]:
+    def _tool_specs(self) -> list[ToolSpec]:
         # Only EXPOSED tools — active AND passing the operator's exposure filter (Step 4) — so
         # the system-prompt tool summary matches the schemas sent via ``definitions()``:
         # lazily-registered MCP tools stay out until surfaced (M5), and a filtered-out tool is
-        # never named. ``restrict_to`` (a stuck NARROW step) further limits the summary to those
-        # canonical names, so the prompt does not advertise tools withheld from that iteration.
+        # never named. A stuck NARROW step does not change it (ADR-0268).
         specs: list[ToolSpec] = []
         for name in self.registry.exposed_names():
             tool = self.registry.get(name)
-            if tool is not None and (restrict_to is None or tool.spec.name in restrict_to):
+            if tool is not None:
                 specs.append(tool.spec)
         return specs
 
@@ -3503,15 +3502,14 @@ class AgentLoop:
             n for n in registry.names() if not registry.is_active(n) and registry.exposure_allows(n)
         ]
 
-    def _build_system(self, restrict_to: set[str] | None = None) -> str:
+    def _build_system(self) -> str:
         task = self._session_task()
         return self.prompt_builder.build(
             self.settings,
-            tools=self._tool_specs(restrict_to),
+            tools=self._tool_specs(),
             session_id=self.session.id,
             task=task,
-            # A stuck NARROW step (restrict_to) withholds tools; it does not advertise more.
-            on_request=self._on_request_names() if restrict_to is None else None,
+            on_request=self._on_request_names(),
             # ADR-0260: the session's pinned workspace inputs, once there is a task for the
             # guides to fold on. A build before the first user message (a startup size check)
             # reads the workspace and pins nothing.
@@ -6087,11 +6085,12 @@ class AgentLoop:
         NARROW step so the model is forced to investigate before mutating again.
 
         Derived from each active tool's required tier (not a hardcoded list), so any
-        read-only MCP/plugin tool is included too. The NARROW step both withholds the other
-        tools from the schema/prompt AND rejects them at the execution seam (see
-        :meth:`_execute_tool_call`'s ``restrict_to``), so it enforces on every protocol. May
-        be empty, in which case every tool call that iteration is rejected with guiding
-        feedback — a hard circuit-breaker that pushes the model to respond in text.
+        read-only MCP/plugin tool is included too. The NARROW step rejects every other tool
+        at the execution seam (see :meth:`_execute_tool_call`'s ``restrict_to``), so it
+        enforces on every protocol; the schema and prompt still list them, unchanged
+        (ADR-0268). May be empty, in which case every tool call that iteration is rejected
+        with guiding feedback — a hard circuit-breaker that pushes the model to respond in
+        text.
         """
         names: list[str] = []
         for name in self.registry.active_names():
@@ -6099,6 +6098,13 @@ class AgentLoop:
             if tool is not None and tool.spec.required_permission is PermissionTier.READ_ONLY:
                 names.append(name)
         return names
+
+    def _narrow_rail(self, stuck: StuckTracker) -> str:
+        """The NARROW rung's rail. It names the offered tools the execution seam will refuse
+        on the next response, in the order the schema lists them (ADR-0268)."""
+        readonly = set(self._readonly_tool_names())
+        refused = [name for name in self.registry.exposed_names() if name not in readonly]
+        return _control_rail(stuck.narrow_message(refused))
 
     def _is_mutating(self, call: ToolCall) -> bool:
         """Whether ``call`` would change the workspace/system (not a READ_ONLY-tier tool).
@@ -7646,23 +7652,22 @@ class AgentLoop:
             # keeps its place in the conversation ahead of the world's report.
             await self._deliver_observation()
             # Recompute exposed tools each iteration so a tool activated mid-turn
-            # (e.g. via tool_search) is offered in the same turn. During a stuck-recovery
-            # NARROW step this iteration is limited to read-only tools: the schema, the
-            # system-prompt tool summary, AND the execution seam are all narrowed to
-            # ``restrict_now`` so the restriction is enforced on every protocol.
+            # (e.g. via tool_search) is offered in the same turn. A stuck-recovery NARROW
+            # step limits this iteration to read-only tools at the execution seam alone
+            # (``restrict_now``), which enforces it on every protocol. The schema and the
+            # system prompt stay as the call before sent them (ADR-0268): the tool
+            # definitions render first in the prompt, so changing them for one call made a
+            # local engine re-read the whole context.
+            restrict_now: set[str] | None = None
             if restrict_readonly_next:
-                readonly = set(self._readonly_tool_names())
-                restrict_now: set[str] | None = readonly
-                tool_defs = self.registry.definitions(allowed=sorted(readonly))
+                restrict_now = set(self._readonly_tool_names())
                 restrict_readonly_next = False
-            else:
-                restrict_now = None
-                tool_defs = self.registry.definitions()
+            tool_defs = self.registry.definitions()
             # Auto-compaction is checked before EVERY call, not only at turn start
             # (ADR-0074): a runner's whole session is one turn, and the reactive overflow
             # recovery below is the backstop, not the mechanism.
             await self._maybe_compact()
-            system = self._build_system(restrict_now)
+            system = self._build_system()
             call_messages = await self._messages_for_call(user_text, iterations)
             # zakpick: pick the main generator's model by classified difficulty. Re-select only
             # when the category CHANGES, so a failover/escalation swap of self.provider within a
@@ -8963,7 +8968,7 @@ class AgentLoop:
                 self._note(
                     "intervention", "limiting to read-only tools", kind="stuck", **stuck.evidence()
                 )
-                self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
+                self.session.add_message(Message.user(self._narrow_rail(stuck)))
                 restrict_readonly_next = True
                 self._persist()
             elif action is StuckAction.STEP_BACK:
@@ -9267,16 +9272,13 @@ class AgentLoop:
                     yield AgentStatus(message="perception delivered mid-turn")
                 # Recompute exposed tools each iteration (see _run_turn) so mid-turn tool
                 # activations are offered in the same turn; a stuck NARROW step limits this
-                # iteration to read-only tools across the schema, the system-prompt summary,
-                # AND the execution seam (``restrict_now``).
+                # iteration to read-only tools at the execution seam alone (``restrict_now``),
+                # and the schema and system prompt stay as they were (ADR-0268).
+                restrict_now: set[str] | None = None
                 if restrict_readonly_next:
-                    readonly = set(self._readonly_tool_names())
-                    restrict_now: set[str] | None = readonly
-                    tool_defs = self.registry.definitions(allowed=sorted(readonly))
+                    restrict_now = set(self._readonly_tool_names())
                     restrict_readonly_next = False
-                else:
-                    restrict_now = None
-                    tool_defs = self.registry.definitions()
+                tool_defs = self.registry.definitions()
                 # Every call, not turn start (ADR-0074); waits surfaced live (ADR-0100).
                 compaction = asyncio.ensure_future(self._maybe_compact())
                 async for waiting in self._statuses_until(compaction):
@@ -9284,7 +9286,7 @@ class AgentLoop:
                 compact_note = compaction.result()
                 if compact_note:
                     yield AgentStatus(message=compact_note)
-                system = self._build_system(restrict_now)
+                system = self._build_system()
                 call_messages = await self._messages_for_call(user_text, iterations)
 
                 # Emit a task_update whenever the plan changed since the last iteration (e.g.
@@ -10915,7 +10917,7 @@ class AgentLoop:
                         kind="stuck",
                         **stuck.evidence(),
                     )
-                    self.session.add_message(Message.user(_control_rail(stuck.narrow_message())))
+                    self.session.add_message(Message.user(self._narrow_rail(stuck)))
                     restrict_readonly_next = True
                     self._persist()
                     yield AgentStatus(

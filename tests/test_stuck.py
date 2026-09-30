@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode.agent.loop import AgentLoop
 from zakcode.agent.stuck import (
     SIG_ALL_ERRORS,
@@ -210,6 +212,18 @@ def test_ladder_messages_distinct() -> None:
     assert t.nudge_message() != t.narrow_message() != t.step_back_message()
 
 
+def test_narrow_message_names_the_refused_tools() -> None:
+    # ADR-0268: the narrowed step's schema still lists every tool, so the rail names the ones
+    # the seam refuses, in the order given — the wording that held 20 of 20 when measured.
+    t = StuckTracker()
+    assert (
+        "for your NEXT response only read-only tools are available; Write, Edit and Bash are "
+        "refused (the full toolset returns after that)."
+    ) in t.narrow_message(["Write", "Edit", "Bash"])
+    assert "available; mutate is refused (the full" in t.narrow_message(["mutate"])
+    assert "refused" not in t.narrow_message()  # nothing to refuse: the plain rail
+
+
 def test_step_back_message_attacks_the_premise() -> None:
     # The step-back prompt is modeled on the operator intervention that recovered a real
     # field turn: it must demand (1) a step back, (2) restating the goal, (3) verifying the
@@ -266,17 +280,20 @@ def _registry(*tools: Tool) -> ToolRegistry:
 
 
 class _ScriptByCallProvider(Provider):
-    """Calls a per-iteration factory to produce each LLMResult; records the tools offered."""
+    """Calls a per-iteration factory to produce each LLMResult; records the tools offered and
+    the system prompt sent."""
 
     def __init__(self, factory: Any) -> None:
         self._factory = factory
         self.calls = 0
         self.tools_seen: list[Any] = []
+        self.systems_seen: list[str | None] = []
 
     async def acomplete(
         self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
     ) -> LLMResult:
         self.tools_seen.append(tools)
+        self.systems_seen.append(system)
         self.calls += 1
         return self._factory(self.calls)
 
@@ -385,26 +402,37 @@ def test_loop_step_back_recovers_the_turn(tmp_path: Path) -> None:
     assert result.degraded is True
 
 
-def test_loop_narrow_restricts_offered_tools(tmp_path: Path) -> None:
-    # The NARROW step (streak 4) must restrict the NEXT iteration (the 5th call) to read-only
-    # tools — the write-tier 'mutate' is dropped from the offered schema, 'look' remains.
-    # The restriction is single-shot: after the step-back reset the full set returns, and
-    # the second climb's NARROW restricts the 10th call the same way.
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+def test_loop_narrow_keeps_the_prompt_the_call_before_sent(tmp_path: Path, streaming: bool) -> None:
+    # ADR-0268: the NARROW step (streak 4) limits the NEXT iteration (the 5th call) to
+    # read-only tools at the execution seam alone. The 5th call sends the same tool
+    # definitions and the same system prompt as the 4th, so a local engine keeps its cached
+    # prefix: the definitions render first, and changing them for one call made the engine
+    # re-read the whole context. The second climb's NARROW (the 10th call) holds the same way.
     registry = _registry(_LookTool(), _MutateTool())
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
-    result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
-    assert result.stop_reason == "stuck"
-    assert "mutate" in _tool_names(provider.tools_seen[0])  # full set early on
-    assert _tool_names(provider.tools_seen[4]) == {"look"}  # 5th call: read-only only
-    assert "mutate" in _tool_names(provider.tools_seen[5])  # restriction lifted after
-    assert _tool_names(provider.tools_seen[9]) == {"look"}  # second climb narrows again
+    loop = _loop(provider, tmp_path, registry)
+    if streaming:
+        done = next(e for e in _drain(loop, "keep failing") if isinstance(e, AgentDone))
+        assert done.stop_reason == "stuck"
+    else:
+        assert asyncio.run(loop.arun_turn("keep failing")).stop_reason == "stuck"
+    assert provider.calls == 10
+    assert _tool_names(provider.tools_seen[4]) == {"look", "mutate"}  # nothing withheld
+    assert provider.systems_seen[4]  # a real prompt, so the comparison below is not vacuous
+    for narrowed in (4, 9):  # the 5th and 10th calls
+        assert provider.tools_seen[narrowed] == provider.tools_seen[narrowed - 1]
+        assert provider.systems_seen[narrowed] == provider.systems_seen[narrowed - 1]
+    # The schema still lists 'mutate', so the rail names it as refused.
+    rails = [m.text for m in loop.session.messages if "only read-only tools" in m.text]
+    assert len(rails) == 2 and all("; mutate is refused (" in r for r in rails)
 
 
-def test_loop_narrow_enforces_dispatch_not_just_schema(tmp_path: Path) -> None:
-    # review2 #3: NARROW must ENFORCE, not merely advise. A model that ignores the narrowed
-    # schema and still emits the write-tier 'mutate' on the narrowed iteration must have it
-    # REJECTED (an error result), never executed — on any protocol. mutate executes on the 4
-    # un-narrowed iterations (streak 1-4) but is rejected on the 5th (narrowed) iteration.
+def test_loop_narrow_refuses_a_write_tool_at_the_seam(tmp_path: Path) -> None:
+    # review2 #3: NARROW must ENFORCE, not merely advise. The narrowed iteration still offers
+    # the write-tier 'mutate' in its schema (ADR-0268), so a model that calls it must have it
+    # REJECTED at the execution seam (an error result), never executed — on any protocol.
+    # mutate executes on the 4 un-narrowed iterations (streak 1-4) but is rejected on the 5th.
     mutate = _MutateTool()
     registry = _registry(_LookTool(), mutate)
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
