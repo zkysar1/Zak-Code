@@ -29,7 +29,7 @@ to break by accident:
     why the order is worth stating rather than leaving to look incidental.
 
   * THE CONSUMER HOLDS NO PROJECTION LOGIC. The cut is made at the source by the
-    Mind's KnowledgeProjection (PEARL §10.3). This route serves what it is given,
+    host's KnowledgeProjection (PEARL §10.3). This route serves what it is given,
     verbatim — a second redactor here would diverge from the real one.
 """
 

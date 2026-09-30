@@ -10,7 +10,7 @@ and then walked away from is simply ABSENT from the next envelope.
 So "which objects has exploring unlocked?" cannot be answered from any single envelope.
 Unlocking is monotone and the evidence for it is not: entities LEAVE the reported population as
 part of normal operation (walking away), which is exactly the shape where reading the current
-frame under-reports the accumulated truth. Accumulating across frames is the MIND's job, and
+frame under-reports the accumulated truth. Accumulating across frames is the agent's job, and
 this module is where it happens.
 
 What the ledger holds, and why it holds nothing else: exactly one entry per unlocked ayoKey,

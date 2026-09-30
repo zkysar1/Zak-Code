@@ -2,10 +2,10 @@
 
 PEARL-SDK-ACCESS-ARCHITECTURE §10.5. The download boundary must hand
 back "a portable, human-readable wiki (Markdown nodes + a manifest), not a
-database dump". The contract it targets is the framework's own
-``core/config/conventions/transfer-bundle-export-shape.md``, whose invariants
-are numbered 1-7; each is pinned below by number so a future edit that breaks
-one fails against the invariant it broke, not against an opaque snapshot.
+database dump". The contract it targets is the host framework's own
+transfer-bundle export shape, whose invariants are numbered 1-7; each is pinned
+below by number so a future edit that breaks one fails against the invariant it
+broke, not against an opaque snapshot.
 
 The two invariants worth the most here are 3 and 4:
 
@@ -151,8 +151,8 @@ def test_type_is_the_first_frontmatter_key(tmp_path: Path) -> None:
 def test_types_route_by_section(tmp_path: Path) -> None:
     files = _export(tmp_path, RICH)["files"]
     got = {p: json.loads(_frontmatter(d)["type"]) for p, d in files.items()}
-    # "node", not "concept" — matches the Mind's already-shipped OKF writer
-    # (knowledge-export.py write_okf_bundle). One declared format must have ONE
+    # "node", not "concept" — matches the host's already-shipped OKF writer.
+    # One declared format must have ONE
     # spelling of its required discriminator, or a consumer routes half the
     # bundle to its default. See the _OKF_BODY_FIELDS comment in app.py.
     assert got["nodes/biosignatures.md"] == "node"
@@ -258,9 +258,9 @@ def test_empty_base_still_produces_a_valid_bundle(tmp_path: Path) -> None:
 
 # ── the PROJECTED lesson shape ──────────────────────────────────────────────
 #
-# Every lesson fixture above is hand-authored as {title, content}. The Mind's
+# Every lesson fixture above is hand-authored as {title, content}. The host's
 # KnowledgeProjection builds each lesson as exactly {title, lesson}
-# (knowledge_projection.py -> bundle.lessons), and .knowledge-bundle.json is the
+# (the host's lesson projection -> bundle.lessons), and .knowledge-bundle.json is the
 # only thing this path ever reads — so the suite was green against a shape the
 # real producer never emits, while every real lesson rendered as a blank page.
 # A fixture that does not match its producer is not coverage; these pin the

@@ -37,7 +37,7 @@ reader is most likely to break by accident:
     last", not "program is absent from the tuple". A and C differ only in ORDER.
 
   * THE CONSUMER HOLDS NO PROJECTION LOGIC. The marker cut is made at the source
-    by the Mind's KnowledgeProjection (PEARL §10.3). This route serves what it is
+    by the host's KnowledgeProjection (PEARL §10.3). This route serves what it is
     given, verbatim — a second redactor here would diverge from the real one.
 """
 

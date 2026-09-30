@@ -50,7 +50,7 @@ def _payload(tmp_path: Path, **kw: object) -> HookPayload:
     base: dict = {
         "event": HookEvent.PRE_TOOL_USE,
         "tool_name": "bash",
-        "arguments": {"command": "load-conventions.sh"},
+        "arguments": {"command": "load-guides.sh"},
         "cwd": str(tmp_path),
         "session_id": "sid-123",
     }
@@ -127,10 +127,10 @@ def test_resolve_executable_resolves_bash_when_present() -> None:
 def test_hookpayload_serializes_tool_input_and_session_id(tmp_path: Path) -> None:
     p = _payload(tmp_path)
     wire = json.loads(p.model_dump_json(by_alias=True))
-    assert wire["tool_input"] == {"command": "load-conventions.sh"}  # not "arguments"
+    assert wire["tool_input"] == {"command": "load-guides.sh"}  # not "arguments"
     assert wire["session_id"] == "sid-123"
     assert "arguments" not in wire
-    assert p.arguments == {"command": "load-conventions.sh"}  # in-process attribute unchanged
+    assert p.arguments == {"command": "load-guides.sh"}  # in-process attribute unchanged
 
 
 # ── end-to-end shell hooks (1 + 2 + 4 + 5 together) ──────────────────────────────
@@ -152,21 +152,21 @@ async def test_shell_hook_receives_claude_code_stdin(tmp_path: Path) -> None:
     )
     res = await mgr.run(_payload(tmp_path))
     assert res.blocked
-    assert "sid-123:load-conventions.sh" in res.message
+    assert "sid-123:load-guides.sh" in res.message
 
 
 async def test_shell_hook_updated_input_rewrites_command(tmp_path: Path) -> None:
     body = (
         "import sys, json; sys.stdin.read()\n"
         "print(json.dumps({'hookSpecificOutput': {'permissionDecision': 'allow',\n"
-        "    'updatedInput': {'command': 'export X=1; load-conventions.sh'}}}))\n"
+        "    'updatedInput': {'command': 'export X=1; load-guides.sh'}}}))\n"
     )
     mgr = HookManager(
         [HookSpec(event=HookEvent.PRE_TOOL_USE, command=_script(tmp_path, "inj.py", body))]
     )
     res = await mgr.run(_payload(tmp_path))
     assert not res.blocked
-    assert res.mutated_arguments == {"command": "export X=1; load-conventions.sh"}
+    assert res.mutated_arguments == {"command": "export X=1; load-guides.sh"}
 
 
 async def test_shell_hook_runs_at_workspace_cwd(tmp_path: Path) -> None:
@@ -371,7 +371,7 @@ def test_wire_payload_uses_claude_code_tool_name_and_file_path(tmp_path: Path) -
     # bash keeps `command` under its CC name; a tool with no counterpart keeps its own shape.
     wire = json.loads(wire_payload(_payload(tmp_path)))
     assert wire["tool_name"] == "Bash"
-    assert wire["tool_input"] == {"command": "load-conventions.sh"}
+    assert wire["tool_input"] == {"command": "load-guides.sh"}
     wire = json.loads(wire_payload(_payload(tmp_path, tool_name="deep_think", arguments={"q": 1})))
     assert wire["tool_name"] == "deep_think"
     assert wire["tool_input"] == {"q": 1}

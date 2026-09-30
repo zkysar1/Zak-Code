@@ -67,7 +67,7 @@ Forge it.
 
 #: The framework's real /start description (2026-09-10), so the anchor floor sees what the field
 #: sees: "Start yourself in assistant mode" shares ``assi`` and ``mode`` with it.
-MIND_START_MD = START_MD.replace(
+HOST_START_MD = START_MD.replace(
     "Creates or resumes an agent.",
     "Creates or resumes an agent in reader (read-only), assistant (user-directed), or "
     "autonomous mode (perpetual loop). USER-ONLY: the user types /start {agent-name} "
@@ -262,7 +262,7 @@ async def test_side_call_still_drops_the_everyday_word_for_a_user_only_command(
 ) -> None:
     """The ADR-0109 incident string: one everyday word is not a request for /start."""
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
-    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path, MIND_START_MD))
+    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path, HOST_START_MD))
     stub = _Stub('{"difficulty": "quick", "skill": "start"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
     verdict = await agent._classify_difficulty(
@@ -277,7 +277,7 @@ async def test_side_call_keeps_a_user_only_command_the_request_describes(
 ) -> None:
     """The field request of 2026-09-10 describes /start in its own words (assistant, mode)."""
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
-    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path, MIND_START_MD))
+    monkeypatch.setattr(agent, "skill_registry", _registry(tmp_path, HOST_START_MD))
     stub = _Stub('{"difficulty": "deep", "skill": "start"}')
     monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
     verdict = await agent._classify_difficulty(

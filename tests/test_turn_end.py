@@ -407,7 +407,7 @@ def test_has_hooks_turn_end_in_process() -> None:
 
 
 async def test_wire_fidelity_stop_hook_contract(tmp_path: Path) -> None:
-    """Contract pin: a script that reads stdin exactly like a framework's stop-hook.sh
+    """Contract pin: a script that reads stdin exactly like a framework's on-stop.sh
     (json.load(sys.stdin).get('session_id'), .get('last_assistant_message'))
     and emits the decision-block JSON. The full round trip must work."""
     body = (
@@ -415,7 +415,7 @@ async def test_wire_fidelity_stop_hook_contract(tmp_path: Path) -> None:
         "payload = json.load(sys.stdin)\n"
         "sid = payload.get('session_id', '')\n"
         "lam = payload.get('last_assistant_message', '')\n"
-        "# Mind's stop-hook reads these two fields and decides.\n"
+        "# The host's on-stop hook reads these two fields and decides.\n"
         "# Here we always block, echoing the fields back as proof.\n"
         "print(json.dumps({\n"
         '    "decision": "block",\n'

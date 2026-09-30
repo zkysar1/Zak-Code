@@ -237,7 +237,7 @@ schema-filter machinery. Backed by [[agentdojo]].
 > loosens the permission gate; trusted internal `execute()` callers are unaffected), and is set
 > before a task runs. **Deliberately operator-controlled, not model-decided** — a model-chosen
 > filter would be defeated by the very injection it defends against; a wrapping orchestrator
-> (e.g. the Mind framework) declares each task's scope. See `tests/test_tool_exposure.py`.
+> (e.g. the host framework) declares each task's scope. See `tests/test_tool_exposure.py`.
 
 **Step 5 — *(Optional, last)* a gray-zone risk check that proposes, never enforces.**
 Only if Steps 1–4 leave a real residual: a check that runs **only** in the narrow gray band,

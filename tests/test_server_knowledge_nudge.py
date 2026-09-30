@@ -2,7 +2,7 @@
 
 /nudge queues a single viewer suggestion into ``<workspace>/.nudge`` (atomic, single-slot,
 length-capped) — never a chat message. The /knowledge/* routes are read-only browses over the
-pre-projected ``.knowledge-bundle.json`` the Mind's KnowledgeProjection wrote (§10.3 — filter at
+pre-projected ``.knowledge-bundle.json`` the host's KnowledgeProjection wrote (§10.3 — filter at
 the source); the daemon holds no projection logic and fails open to an empty base before the first
 export. All are plain JSON (no streaming), so Starlette's TestClient drives them directly.
 """
