@@ -16324,3 +16324,55 @@ red: removing the bound check, removing the stamp, removing the reset from eithe
 moving the check after the read (the held frame is consumed and lost), and a zero interval.
 Removing the reset from the buffered prologue also turns the existing announce-once-across-turns
 test red.
+
+## ADR-0272: an MCP config file that cannot be read is reported under /mcp, and the session starts without it
+
+Status: accepted. 2026-09-30.
+
+`discover_config` reads the project `.zakcode/mcp.json`, then the user
+`~/.config/zakcode/mcp.json`, and it raised `McpConfigError` for the first present file that
+failed to load. `Agent.__init__` called it unguarded, so one broken MCP file kept every session
+that enables MCP from starting. Measured on main: with a project file of broken JSON, and with one
+holding bytes that are not UTF-8 (reported like broken JSON since #732), `zakcode cli` printed a
+traceback and "chat exited", and `zakcode cli -p` exited 1 with the traceback.
+
+Claude Code 2.1.283, measured the same day on the same two kinds of project `.mcp.json`, starts
+in both cases, interactive and `-p`. For broken JSON, `claude mcp list` and the interactive
+`/mcp` view show an "MCP config diagnostics" block that names the file and says the config is not
+valid JSON, the servers from its other scopes still load, and `-p` prints nothing about it.
+
+Decision.
+
+1. `discover_config` returns `(servers, errors)`. A present file that cannot be read or parsed is
+   skipped the way an empty one is, so the next location is still consulted, and its
+   `McpConfigError` message goes into `errors` under the file's path.
+2. The Agent merges those file errors into `mcp_config_errors`, beside the per-server errors that
+   `build_extension_manager` already collects without raising. `/mcp` lists both, so the session
+   starts and the user can see there why servers are missing.
+3. `load_mcp_config` stays strict: it raises for a file it cannot read, and the error names the
+   file. Only discovery, which decides whether a session starts, stops passing the error up.
+4. The existence check sits inside the loader's guard. In a directory the user cannot enter,
+   `Path.is_file()` itself raises `PermissionError` (measured as an unprivileged user: with the
+   check outside the guard, discovery still raised after points 1 and 2), so that file is now
+   reported the same way.
+
+One difference from Claude Code is kept on purpose: bytes that are not UTF-8. Claude Code decodes
+them into replacement characters and parses the result, so it offered a server for approval under
+a name that is not the one in the file. zakcode keeps reporting such a file as unreadable and loads
+none of its servers, because a command or argument decoded into different characters would start
+something other than what the file says.
+
+No knob: skipping a broken file is the only behaviour.
+
+Rejected: a clean one-line error in place of the traceback. The session would still not start,
+unlike Claude Code. Rejected: a startup line about the file. Claude Code's measured startup screen
+did not show one, and `/mcp` is where zakcode already lists server errors.
+
+Tests: `tests/test_mcp_config.py` (a broken project file of either kind is skipped and reported
+while the user file still loads, every broken file is reported, empty discovery is `([], {})`,
+and a file whose existence check is denied raises the named error), `tests/test_mcp_facade.py`
+(an Agent built the way the chat CLI builds it starts over a broken file and records its error,
+and the same path wires a valid file), and `tests/test_cli_mcp.py` (`/mcp` prints the file and
+the parse error). Four sabotages each turned tests red: discovery raising again (5 tests), the
+Agent dropping file errors (2), the fall-through return dropping errors (3), and the existence
+check moved back outside the guard (1). The valid-file controls stayed green under all four.

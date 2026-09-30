@@ -1005,14 +1005,18 @@ class Agent:
             self._mcp_tool_budget = (
                 mcp_tool_budget if mcp_tool_budget is not None else DEFAULT_TOOL_BUDGET
             )
-            servers = (
-                mcp_servers
-                if mcp_servers is not None
-                else discover_config(self.settings.workspace_root)
-            )
-            self.extension_manager, self.mcp_config_errors = build_extension_manager(
+            # A config FILE that cannot be read is skipped and reported, never raised: one
+            # bad file must not stop the session from starting. /mcp lists its error (keyed
+            # by the file's path) beside the per-server ones.
+            file_errors: dict[str, str] = {}
+            if mcp_servers is not None:
+                servers = mcp_servers
+            else:
+                servers, file_errors = discover_config(self.settings.workspace_root)
+            self.extension_manager, server_errors = build_extension_manager(
                 servers, allowlist=mcp_command_allowlist
             )
+            self.mcp_config_errors = {**file_errors, **server_errors}
 
         # tool_search lets the model surface tools kept out of its list: the rarely-used
         # built-ins, hidden from the start (ADR-0228), and MCP tools the budget hid. It holds

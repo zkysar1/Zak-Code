@@ -73,6 +73,29 @@ def test_render_mcp_list_shows_servers(tmp_path: Path) -> None:
     assert "/mcp connect" in out  # hint to connect
 
 
+def test_render_mcp_lists_a_config_file_that_could_not_be_read(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    # The session starts without the broken file, so /mcp is where the user learns why its
+    # servers are missing: the file's path, then the parse error.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # no user config
+    config = tmp_path / ".zakcode" / "mcp.json"
+    config.parent.mkdir()
+    config.write_text("{not json", encoding="utf-8")
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        enable_mcp=True,
+    )
+    buf = StringIO()
+    # Wide enough that a long temp path is never folded mid-token.
+    _render_mcp(Console(file=buf, width=500), agent, "")
+    out = buf.getvalue()
+    assert str(config) in out
+    assert "invalid JSON" in out
+
+
 def test_render_mcp_connect_registers_tools(tmp_path: Path) -> None:
     agent = _agent(tmp_path)
     manager = ExtensionManager()

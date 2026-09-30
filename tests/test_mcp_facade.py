@@ -7,6 +7,7 @@ Agents with a scripted model string. Discovery is exercised with an injected
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +113,34 @@ def test_agent_enable_mcp_records_config_errors(tmp_path: Path) -> None:
     )
     assert agent.extension_manager is not None
     assert "bad" in agent.mcp_config_errors
+
+
+# The chat CLI builds its Agent with enable_mcp=True and no mcp_servers, so discovery reads
+# the workspace's .zakcode/mcp.json. A broken file used to raise out of Agent() and the chat
+# never started; now the session starts and the file's error is recorded for /mcp.
+def test_agent_starts_when_a_discovered_config_file_is_unreadable(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # no user config
+    config = tmp_path / ".zakcode" / "mcp.json"
+    config.parent.mkdir()
+    config.write_text("{not json", encoding="utf-8")
+    agent = Agent(settings=_settings(tmp_path), enable_mcp=True)
+    assert agent.extension_manager is not None
+    assert agent.extension_manager.server_names == []
+    assert list(agent.mcp_config_errors) == [str(config)]
+
+
+def test_agent_discovers_a_readable_config_file(tmp_path: Path, monkeypatch: Any) -> None:
+    # Positive control for the test above: the same discovery path wires a valid file.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    config = tmp_path / ".zakcode" / "mcp.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"mcpServers": {"srv": {"command": "npx"}}}), encoding="utf-8")
+    agent = Agent(settings=_settings(tmp_path), enable_mcp=True)
+    assert agent.extension_manager is not None
+    assert agent.extension_manager.server_names == ["srv"]
+    assert agent.mcp_config_errors == {}
 
 
 async def test_agent_connect_mcp_registers_tools_into_registry(tmp_path: Path) -> None:
