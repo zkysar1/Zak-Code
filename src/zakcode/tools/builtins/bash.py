@@ -310,7 +310,7 @@ def _command_roots(command: str, root: Path) -> list[tuple[Path, str]]:
 def _importable_names(root: Path) -> tuple[list[str], list[str]]:
     """What ``import <name>`` could resolve to directly under ``root`` — module stems and
     package directories — and, separately, every other file by its full name, so a shell
-    script mistaken for a module surfaces as ``pipeline-read.sh`` rather than as nothing."""
+    script mistaken for a module surfaces as ``ledger-read.sh`` rather than as nothing."""
     modules: list[str] = []
     others: list[str] = []
     try:
@@ -630,7 +630,7 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
         return _wrong_prefix_hint(path, name, found, roots)
     if parent is not None:
         # The directory is real and the file is not: a typo'd name (its siblings share
-        # the leading token: `wm-list.sh` beside `wm-read.sh`), a directory guessed at
+        # the leading token: `memo-list.sh` beside `memo-read.sh`), a directory guessed at
         # the wrong place (`ls world/` for `.project-data/world`), or a deliberate check of
         # an optional file — which gets no hint, because there is no lead.
         same_words = _reordered_siblings(parent, name)
@@ -702,8 +702,8 @@ def _wrong_prefix_hint(
     path: str, name: str, found: list[tuple[Path, str]], roots: list[Path]
 ) -> str:
     """The hint for a same-named file found elsewhere — with its neighbours sharing the
-    leading token, which are usually the family the model wanted (`reasoning-bank.py`
-    found beside `reasoning-bank-add.sh`)."""
+    leading token, which are usually the family the model wanted (`lesson-store.py`
+    found beside `lesson-store-add.sh`)."""
     hits = [rel if r == roots[0] else (r / rel).as_posix() for r, rel in found]
     first_root, first_rel = found[0]
     kin = _prefix_siblings((first_root / first_rel).parent, name)
@@ -779,7 +779,7 @@ def _existing_parent(path: str, roots: list[Path]) -> Path | None:
 
 
 def _prefix_siblings(directory: Path, name: str) -> list[str]:
-    """Files in ``directory`` sharing ``name``'s leading token (`wm` of `wm-list.sh`)."""
+    """Files in ``directory`` sharing ``name``'s leading token (`memo` of `memo-list.sh`)."""
     token = _TOKEN_SPLIT_RE.split(name, 1)[0].lower()
     if len(token) < 2:
         return []
@@ -792,12 +792,12 @@ def _prefix_siblings(directory: Path, name: str) -> list[str]:
 
 def _reordered_siblings(directory: Path, name: str) -> list[str]:
     """Files in ``directory`` made of exactly ``name``'s words in another order
-    (`create-blocker.sh` for a guessed `blocker-create.sh`).
+    (`create-ticket.sh` for a guessed `ticket-create.sh`).
 
-    Measured 2026-08-30: a session guessed `scripts/blocker-create.sh`; the
-    leading-token family offered `blocker-create-gate.sh`, `blocker-recheck.sh` — none
+    Measured 2026-08-30: a session guessed `scripts/ticket-create.sh`; the
+    leading-token family offered `ticket-create-gate.sh`, `ticket-recheck.sh` — none
     of them the script — and the session spent six more commands (`ls`, three `grep -rl`,
-    two reads) finding `create-blocker.sh` on its own. Same multiset of tokens, extension
+    two reads) finding `create-ticket.sh` on its own. Same multiset of tokens, extension
     included, is a stronger lead than a shared first word and is listed first.
     """
     want = sorted(t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t)
@@ -859,8 +859,8 @@ def _tool_typed_as_command(command: str, registry: Any) -> str | None:
 #: fleet: measured 2026-08-30 (eight worker sessions, 24 h) 165 of 454 script invocations
 #: were ``cd … && AGENT=<name> STORAGE_BACKEND=local bash <workspace>/scripts/x.sh``
 #: — 36 %, invisible to the start-of-command anchor — and five of them named a script
-#: that does not exist (``loop-orchestrator-entry-battery.sh``,
-#: ``runner-heartbeat-tick.sh``, ``goal-scorer.sh``, ``wm-list.sh``, ``parse-flags.sh``),
+#: that does not exist (``loop-round-start-battery.sh``,
+#: ``runner-pulse-tick.sh``, ``goal-scorer.sh``, ``memo-list.sh``, ``parse-flags.sh``),
 #: each reaching bash as a 127 the model then spent a ~7-minute step on.
 _SCRIPT_INVOCATION_RE = re.compile(
     r"(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+)\s*(?:\w+=[^\s;&|]*\s+)*(bash|sh|python3?|source|\.)\s+"

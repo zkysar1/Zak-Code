@@ -330,7 +330,7 @@ async def test_pre_hook_env_prepend_keeps_an_approved_install_runnable(tmp_path:
 
     def rewrite(payload: HookPayload) -> HookResult:
         cmd = payload.arguments["command"]
-        return HookResult(mutated_arguments={"command": f"MIND_AGENT=coach {cmd}"})
+        return HookResult(mutated_arguments={"command": f"HOST_AGENT=sera {cmd}"})
 
     hooks = HookManager(in_process={HookEvent.PRE_TOOL_USE: [rewrite]})
     prompter = _ScriptedPrompter(PermissionOutcome.ALLOW_ONCE)  # the operator approves
@@ -342,7 +342,7 @@ async def test_pre_hook_env_prepend_keeps_an_approved_install_runnable(tmp_path:
     await _collect(loop, "go", stream=False)
     assert len(prompter.requests) == 1  # the undeclared install was prompted, once
     assert tool.calls, "the operator-approved install must run despite the env-prepend rewrite"
-    assert tool.calls[0]["command"] == "MIND_AGENT=coach pip install espn-api"
+    assert tool.calls[0]["command"] == "HOST_AGENT=sera pip install espn-api"
 
 
 async def test_post_hook_message_appended_to_result(tmp_path: Path) -> None:

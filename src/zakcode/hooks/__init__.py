@@ -1242,7 +1242,7 @@ class HookManager:
           ``{"hookSpecificOutput": {"updatedInput": {...}, "permissionDecision":
           "allow"|"deny"|"ask", "permissionDecisionReason": str}}``. ``updatedInput`` rewrites
           the tool arguments (e.g. a host framework's hook prepending
-          ``export PATH=...; export MIND_SID=...`` to a Bash command); ``permissionDecision ==
+          ``export PATH=...; export HOST_SID=...`` to a Bash command); ``permissionDecision ==
           "deny"`` blocks the call — Claude Code blocks via this JSON on **exit 0**, not exit 2 —
           so it is surfaced for the caller to honor.
         """

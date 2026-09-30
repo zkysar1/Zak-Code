@@ -520,7 +520,7 @@ class Settings(BaseSettings):
             "(reason + digest text) as JSON on stdin; None = nothing runs."
         ),
     )
-    # The ending belongs to the MIND, not to us (ADR-0047 / Vinheim ruling): this
+    # The ending belongs to the host framework, not to us (ADR-0047 / Vinheim ruling): this
     # conductor decides WHEN a run ends, never WHAT the agent does at the end. When the
     # workspace is a framework seed, naming its agent here makes the run's ending the
     # framework's OWN graceful stop — consolidate, handoff, drop to `assistant`, IDLE —

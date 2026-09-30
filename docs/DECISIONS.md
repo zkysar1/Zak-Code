@@ -3592,7 +3592,7 @@ away; a pre-record document takes its open work as held.
 **Context.** A paged skill's next section arrives only in the reply to the `update_plan`
 call that closes the current one; nothing is pushed. The page footer said the next section
 "arrives in the next message", and a field model read that as a promise: the worker closed its
-work unit (the framework's iteration-close ran) and ended its turn with "Awaiting the final park
+work unit (the framework's round-close ran) and ended its turn with "Awaiting the final park
 instruction (section 23) from the harness" (worker-w, 2026-08-29 ~08:20). A worker session has
 no one at the prompt, so that stop is a dead worker — only the coincidence of a build update
 (ADR-0034 restarts at the idle prompt) revived it; the day's earlier stall (worker-w3,
@@ -3819,7 +3819,7 @@ because Python echoes the filename; the command is the reliable signal.
 `test_bash_python_on_a_shell_script_names_the_interpreter`).
 
 **Amended (same day).** The hint chain ran only on a non-zero exit, and the coordinating session's next
-attempt was `python3 scripts/recurring-close.sh … 2>&1 | tail -40` — exit 0, `tail`'s —
+attempt was `python3 scripts/repeat-close.sh … 2>&1 | tail -40` — exit 0, `tail`'s —
 so the SyntaxError arrived with no hint and was read as a broken script once more. When the
 command matches the mismatch predicate AND the output carries the wrong interpreter's own
 error text (Python's `SyntaxError` / `IndentationError`; a shell's `syntax error near
@@ -3966,8 +3966,8 @@ model's to see.
 
 **Context.** On a worker machine (2026-08-29, eight workers on a 27B local model) 15 of the day's 73
 failed shell commands were ENOENT, and every one was a guessed path:
-`scripts/reasoning-bank.py` (the writer is a host framework shell script),
-the host framework's store scripts (e.g. `scripts/wm-list.sh`, `scripts/goal-write.sh`),
+`scripts/lesson-store.py` (the writer is a host framework shell script),
+the host framework's store scripts (e.g. `scripts/memo-list.sh`, `scripts/goal-write.sh`),
 `scripts/tests/test_skills_registry.py`, and
 `world/forged-skills.yaml` for `<data root>/world/forged-skills.yaml`. Each was followed
 by the model's own find → retry ritual, or by a second guess. The file tools already
@@ -3987,12 +3987,12 @@ directory the model was guessing at. Stdin markers and apport's `-c` artefact ar
 file the model meant.
 
 Precision, from the live smoke on a worker machine the same day: an exact hit also names the family
-beside it sharing the leading token (`scripts/reasoning-bank.py` found, and
-`reasoning-bank-add.sh` / `reasoning-bank-read.sh` beside it — the wrapper is what the
+beside it sharing the leading token (`scripts/lesson-store.py` found, and
+`lesson-store-add.sh` / `lesson-store-read.sh` beside it — the wrapper is what the
 model wanted; the module is a silent no-op as a script). When the guessed path's
 DIRECTORY exists and the file does not, the hint is the directory's own siblings with
-the same leading token (`wm-list.sh` → `wm-read.sh, wm-set.sh`), never the global token
-match (which offered `history-list.sh` and `domain-term-blocklist.txt` on "list"); and
+the same leading token (`memo-list.sh` → `memo-read.sh, memo-set.sh`), never the global token
+match (which offered `changes-list.sh` and `domain-term-blocklist.txt` on "list"); and
 with no such sibling it is silent — a deliberate check of an optional file
 (`cat <session>/iteration-checkpoint.json`) is not a wrong guess, and the same-named
 file under another agent's directory is noise, not a lead.
@@ -4037,7 +4037,7 @@ root) and then `touch`ed, `grep`ped and `ls`ed under it — the file was about t
   the prefix diagnosis**: an exact or nearest-name hit keeps the first word and the
   prefix note rides beside it in parentheses, and the note stands alone only when
   there is no file lead at all. The first draft inverted that order and demoted the
-  `reasoning-bank.py` family hint to a footnote — the two existing tests caught it.
+  `lesson-store.py` family hint to a footnote — the two existing tests caught it.
 
 Pinned by `test_enoent_regexes_capture_the_coreutils_and_grep_shapes`,
 `test_bash_enoent_invented_prefix_names_the_real_directory`,
@@ -4410,8 +4410,8 @@ AGENT_NAME=agent STORAGE_BACKEND=local bash scripts/x.sh`, the
 host framework's hook-injection prefix that every worker copies into every command — was never
 checked. Measured over the same fleet's next 24 h: 165 of 454 script invocations (36 %)
 carried leading assignments, and five of them named a script that does not exist
-(`loop-orchestrator-entry-battery.sh`, `runner-heartbeat-tick.sh`, `goal-scorer.sh`,
-`wm-list.sh`, `parse-flags.sh`) — each a bare 127 the model spent a ~7-minute step on,
+(`loop-round-start-battery.sh`, `runner-pulse-tick.sh`, `goal-scorer.sh`,
+`memo-list.sh`, `parse-flags.sh`) — each a bare 127 the model spent a ~7-minute step on,
 the coordinating session's first loop entry among them. The regex now accepts any run of `\w+=…`
 tokens between the anchor and the interpreter; an assignment alone, or one followed by a
 non-interpreter (`FOO=1 ls x.sh`), is still not an invocation. Lesson for the next shape:
@@ -5768,7 +5768,7 @@ ADR-0121 contracts still green (14 passed); full suite 3624 passed / 9 skipped.
 
 **Context.** `UserPromptSubmit` sat in `settings_loader._SKIP_EVENTS` — a real Claude Code event
 recognised but not implemented, so a host framework that wired it (with a
-`user-prompt-retrieval-inject.sh` hook that retrieves memory/RAG for the user's prompt) read
+`prompt-context-inject.sh` hook that retrieves memory/RAG for the user's prompt) read
 `event not implemented` and its retrieval silently never ran. Claude Code fires it once when the
 user submits a prompt; its stdout is injected as context for that turn (a retrieval/RAG seam),
 and — separately — an exit 2 blocks and erases the prompt. Unlike the other two skipped events,
@@ -5798,7 +5798,7 @@ even when no `PRE_LLM_CALL` hooks exist (that block is skipped independently).
 `{"context"}` not `additionalContext`, and fires before *every* model call rather than once at
 the prompt boundary. Implementing the exit-2 prompt-block now — deferred as a documented
 follow-up: the block touches the prompt-erase path, and the real consumer
-(`user-prompt-retrieval-inject.sh`) is injection-only and never exits 2, so injection fully serves
+(`prompt-context-inject.sh`) is injection-only and never exits 2, so injection fully serves
 it. Keeping it deferred in `_SKIP_EVENTS` — leaves a named parity gap unimplemented when the
 firing point is already owned and the risk is containable (the gate makes the no-hook path free).
 
@@ -10635,11 +10635,11 @@ change with this ADR; FEATURE_AUDIT CLI-39.
 
 **Context.** A served host framework session (gemini-3.5-flash, Zak Code vessel) was
 caught in a loop the operator described as "it would call this gate, and then repeat that
-it is fully started, then loop those two things repeatedly": `iteration-close.sh --phase
+it is fully started, then loop those two things repeatedly": `round-close.sh --phase
 productivity-check` → `echo "Return to orchestrator — continue to next phase"` →
 "Verdict: Autonomous Loop Successfully Started & Goal Completed" → the framework's Stop
 hook BLOCKs → the same again, for hours. Later, after a prompt typed into the say box had
-helped for a few iterations, the same shape came back around `liveness-check.sh`
+helped for a few iterations, the same shape came back around `alive-check.sh`
 ("Verdict: Autonomous Loop Successfully Resurrected & Running Autonomously").
 
 The mechanism, read from the transcript and the code. A host framework's whole autonomous session
@@ -10790,7 +10790,7 @@ or a `/run/stop` in the first minutes has none.
    to a model nobody chose. A second refusal maps through the taxonomy as before.
 3. `request_framework_stop` writes its signature INTO the signal it just raised
    (`raised_by: vessel-sidecar` / `raised_at: <utc>`; `SIDECAR_RAISE_MARKER`). The framework
-   guard refuses a signed signal without consulting time (the host framework's `session.py`, same
+   guard refuses a signed signal without consulting time (the host framework's session module, same
    day); the framework's own writers leave the marker empty, so nothing else changes, and
    the two halves ship independently. Because a signed signal never reads as stale, its
    lifetime is owned here: `abandon_framework_stop` at grace expiry and
@@ -11543,7 +11543,7 @@ stdlib loop. Nothing chose that; it came with the install.
 
 Measured 2026-09-18. In sample 1 of the served-loop measurement
 (`bench/results/served-luna-preregistration.log`) the first served turn logged
-`lifecycle hook […sessionstart-orchestrator.sh] timed out after 95.0s`, and the first model
+`lifecycle hook […session-start.sh] timed out after 95.0s`, and the first model
 call came 99 s into the run. The same hook through the same runner from a plain asyncio
 script took 0.7 s with no daemon running and 0.5 s with one. Everything the hook writes was
 on disk within 0.9 s of its start. A process snapshot during the stall shows the hook's own
@@ -13121,7 +13121,7 @@ can discover whether there is anything to re-enter, and when there is not, the m
 armed its own next firing.
 
 Measured on a served host framework session, 2026-09-22, reported by the user from their own terminal. The sentinel
-fired; the model re-armed it as instructed; it then ran `session-state-get.sh`, found the agent
+fired; the model re-armed it as instructed; it then ran `session-phase-get.sh`, found the agent
 IDLE, correctly refused to start the loop, and wrote a verdict saying so. The wake-up it had armed
 fired again. The same turn ran roughly six times, each between 2.8M and 4.9M tokens and 49s to 105s,
 each ending with the identical verdict. Nothing stopped it; it stopped on its own.

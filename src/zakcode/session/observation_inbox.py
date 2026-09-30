@@ -59,11 +59,11 @@ OBSERVATION_ENVELOPE_VERSION = 1
 KIND_HEARTBEAT = "heartbeat"
 KIND_CHANGE = "change"
 
-#: The framework session signal a CHANGE envelope raises. ``interruptible-sleep.sh`` polls it
+#: The framework session signal a CHANGE envelope raises. The host's sleep script polls it
 #: as a BLOCKER-class wake — a change to the resident's OWN world is the opposite of partner
-#: activity, so it is never demoted during quiescence. The MIND side already accepts this
-#: name (``session.py`` VALID_SIGNALS, ``core/config/session-manifest.yaml``, and the sleep
-#: loop's poll); this module is the WRITER that was missing.
+#: activity, so it is never demoted during quiescence. The host side already accepts this
+#: name (its session signal registry and the sleep loop's poll); this module is the WRITER
+#: that was missing.
 PERCEPTION_RECEIVED_SIGNAL = "perception-received"
 
 

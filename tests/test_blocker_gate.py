@@ -37,12 +37,12 @@ from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.write_file import WriteFileTool
 
 SERENE_BLOCKERS = [
-    "I am blocked because the MIND_SID environment variable, necessary for the /start "
+    "I am blocked because the HOST_SID environment variable, necessary for the /start "
     "skill, is not available in this execution environment.",
-    "I cannot force the recovery without the MIND_SID.",
+    "I cannot force the recovery without the HOST_SID.",
     "I cannot proceed with the --recover or --force options because the agent's session "
-    "ID (MIND_SID) is not available.",
-    "Please provide the MIND_SID or ensure it's set correctly in the environment.",
+    "ID (HOST_SID) is not available.",
+    "Please provide the HOST_SID or ensure it's set correctly in the environment.",
 ]
 
 
@@ -117,7 +117,7 @@ def test_unmeasured_blocker_is_nudged_once_then_the_turn_continues(tmp_path: Pat
     provider = _Script(
         [
             LLMResult(text=SERENE_BLOCKERS[0]),
-            LLMResult(text="Probed: `echo $MIND_SID` prints a value. Continuing — bound sera."),
+            LLMResult(text="Probed: `echo $HOST_SID` prints a value. Continuing — bound sera."),
         ]
     )
     loop = _loop(provider, tmp_path)

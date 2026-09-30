@@ -126,7 +126,7 @@ agent.hook_manager.register_context(lambda payload: retrieve_relevant(payload.us
 
 Shell context hooks get the `LLMContextPayload` (`user_text`, `cwd`, `iteration`) on
 stdin and return the text to inject on stdout (plain, or `{"context": "..."}`) — a
-direct home for a `retrieve.sh`-style retrieval script.
+direct home for a `lookup.sh`-style retrieval script.
 
 **Built-in convenience (opt-in).** `Agent(enable_context_gathering=True)` registers a
 deterministic gatherer (`zakcode.context`) on this seam: it injects relevant
@@ -203,7 +203,7 @@ Mistral can rely on tools working regardless of the model's native capability.
 | Framework need | Zak Code seam |
 | --- | --- |
 | prime context at session start | `SessionStart` lifecycle hook |
-| retrieve relevant memory per turn | `PreLLMCall` context hook (shell `retrieve.sh`) |
+| retrieve relevant memory per turn | `PreLLMCall` context hook (shell `lookup.sh`) |
 | encode / consolidate after a session | `SessionEnd` lifecycle hook |
 | serialize before compaction | `PreCompact` lifecycle hook |
 | learn which skill to use for a task | `OnSkillSelected` lifecycle hook (record) + `PreLLMCall` (bias) |

@@ -42,7 +42,7 @@ Some intro prose that mentions /fresh-eyes-code in passing.
 
 ## Phase 0: Load Conventions
 
-**Step 0 is the load** — run `load-conventions.sh` (bold prose: a word follows the number).
+**Step 0 is the load** — run `load-guides.sh` (bold prose: a word follows the number).
 
 ## Phase 1: Establish Session Context
 
@@ -138,14 +138,14 @@ START = """# /start — Create or resume an agent
 
 `/start <name> [--mode <mode>] [--recover]`
 
-**Step 0: Load Conventions** — `Bash: load-conventions.sh` with each name listed.
+**Step 0: Load Conventions** — `Bash: load-guides.sh` with each name listed.
 
 **Step 0.5: Parse Mode + Recovery Flags** — Extract the following:
 - `recover` — present when `--recover` was passed
 
 **Step 0.7: Recovery Branch (only if `recover = true`)** — Runs BEFORE Step 1's check.
 
-**Phase 6 spark is NOT wrapped by recurring-close.sh** (bold prose: a word follows the number).
+**Phase 6 spark is NOT wrapped by repeat-close.sh** (bold prose: a word follows the number).
 
 **Step 1 — Check Requested Agent's State:**
 

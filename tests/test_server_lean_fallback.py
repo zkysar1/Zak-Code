@@ -180,7 +180,7 @@ def test_hypotheses_fall_open_to_real_pipeline_store(tmp_path: Path) -> None:
 
 def test_guardrails_fall_open_to_real_store(tmp_path: Path) -> None:
     # note-guardrail.sh writes {rule, category, trigger_condition, source} to
-    # <workspace>/knowledge/guardrails.jsonl via the real guardrails-add.sh daemon.
+    # the workspace's knowledge dir (the file seeded below) through the host's own writer.
     _seed_jsonl(
         tmp_path,
         "guardrails.jsonl",

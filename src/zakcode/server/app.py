@@ -436,9 +436,9 @@ def _default_provider_factory(settings: Settings) -> ProviderFactory:
 
 
 def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFactory:
-    """Build the production factory: a real :class:`~zakcode.Agent` per request, running a MIND.
+    """Build the production factory: a real :class:`~zakcode.Agent` per request.
 
-    Each request's agent loads the env's MIND from ``settings.workspace_root`` — the operator
+    Each request's agent loads its host setup from ``settings.workspace_root`` — the operator
     identity (``self.md``), always-on rules, and skills — so ``zakcode webapp`` behaves like the
     CLI. The topology is one container per customer env, selected by the workspace root;
     sub-agents / MCP / plugins are deliberately NOT enabled here (a separate posture decision,
@@ -462,7 +462,7 @@ def _default_agent_factory(settings: Settings, store: SessionStore) -> AgentFact
     contract); with none at all, ``ask`` fails closed (writes/shell denied).
 
     Cross-session memory is NOT a harness concern (see docs/PERSISTENCE-BOUNDARY.md): a served
-    MIND attaches its own recall via the generic hook/tool seams; the factory wires none.
+    host framework attaches its own recall via the generic hook/tool seams; the factory wires none.
     """
     from zakcode import Agent
 
@@ -1798,7 +1798,7 @@ def create_app(
         tmp = target.with_name(f".observation.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(staged, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, target)
-        # THE FRAME IS ON DISK BEFORE THE MIND IS TOLD TO LOOK. A wake that overtakes its
+        # THE FRAME IS ON DISK BEFORE THE AGENT IS TOLD TO LOOK. A wake that overtakes its
         # own payload wakes a loop to an empty inbox, which is worse than not waking it.
         #
         # ONLY A CHANGE WAKES. A heartbeat is timer-driven and says nothing new, so waking

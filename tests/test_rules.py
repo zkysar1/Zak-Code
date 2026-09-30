@@ -67,9 +67,9 @@ def test_discover_rules_project_overrides_by_name(tmp_path: Path) -> None:
 
 
 def test_claude_rules_dir_is_discovered(tmp_path: Path) -> None:
-    _write(tmp_path / ".claude" / "rules" / "cm.md", "CLAUDE_MIND_RULE_MARKER")
+    _write(tmp_path / ".claude" / "rules" / "host.md", "HOST_RULE_MARKER")
     registry, _errors = discover_rules(tmp_path)
-    assert "CLAUDE_MIND_RULE_MARKER" in registry.render()
+    assert "HOST_RULE_MARKER" in registry.render()
 
 
 # ── render + caps ────────────────────────────────────────────────────────────

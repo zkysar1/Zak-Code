@@ -64,15 +64,15 @@ def test_parse_frontmatter_block_style_lists() -> None:
         "triggers:\n"
         '  - "/start"\n'
         "companion_scripts:\n"
-        "  - session-state-get.sh\n"
-        "  - session-mode-get.sh\n"
+        "  - session-phase-get.sh\n"
+        "  - session-role-get.sh\n"
         "minimum_mode: any\n"
         "---\n"
         "Body.\n"
     )
     assert fm.allowed_tools == ["read_file", "bash"]  # typed field takes the block form too
     assert fm.extras["triggers"] == ["/start"]
-    assert fm.extras["companion_scripts"] == ["session-state-get.sh", "session-mode-get.sh"]
+    assert fm.extras["companion_scripts"] == ["session-phase-get.sh", "session-role-get.sh"]
     assert fm.extras["minimum_mode"] == "any"  # scalar AFTER a block is not swallowed
     assert body == "Body."
 

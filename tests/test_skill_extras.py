@@ -23,7 +23,7 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 
-MIND_SKILL = """\
+HOST_SKILL = """\
 ---
 name: deep-focus
 description: Enter deep focus mode.
@@ -43,7 +43,7 @@ Body of the skill.
 
 def test_skill_extras() -> None:
     """Unknown frontmatter keys are preserved in ``extras``, typed fields untouched."""
-    fm, body = parse_frontmatter(MIND_SKILL)
+    fm, body = parse_frontmatter(HOST_SKILL)
     assert fm.name == "deep-focus"
     assert fm.allowed_tools == ["read_file", "bash"]
     assert fm.version == "1.2.0"

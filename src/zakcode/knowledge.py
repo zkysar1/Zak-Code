@@ -142,7 +142,7 @@ def _read_raw_hypotheses(workspace_root: Path) -> list[dict[str, Any]]:
         sidecar framework runs the daemon with the world variable pointed at
         ``<workspace>/knowledge`` (the PEARL sidecar layout). The daemon names its
         pipeline store ``pipeline.jsonl``, so reading only ``hypotheses.jsonl``
-        would miss every hypothesis a real ``pipeline-add.sh`` call produced.
+        would miss every hypothesis a real store-append call produced.
     Both live UNDER ``knowledge/`` and hold only the research agent's own domain
     records (it never writes the framework ``system/`` subtree), so the redaction
     guarantee is preserved: this fallback still never reads a framework ``world/``
@@ -246,8 +246,8 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
 
 # ── OKF transfer-bundle export (PEARL §10.5) ─────────────────────────────────
 # `/knowledge/export` returns a PORTABLE, HUMAN-READABLE WIKI — "Markdown nodes
-# plus a manifest, not a database dump" (§10.5). The shape is the framework's
-# own OKF-aligned contract (core/config/conventions/transfer-bundle-export-shape.md):
+# plus a manifest, not a database dump" (§10.5). The shape is the host framework's
+# own OKF-aligned transfer-bundle contract:
 #
 #   1. bundle = the unit of distribution — a self-contained directory tree,
 #      carried here as a path -> file-content map so the whole chain stays JSON
@@ -274,8 +274,8 @@ OKF_BUNDLE_VERSION = 1
 # Fields this producer renders into the BODY rather than the frontmatter; every
 # other field on a record falls through to frontmatter under invariant 4.
 _OKF_BODY_FIELDS = {
-    # "node", not "concept": the framework's own OKF writer (knowledge-export.py
-    # writeokf_bundle) already ships `type: node` for tree records, and both
+    # "node", not "concept": the host framework's own OKF writer already ships
+    # `type: node` for tree records, and both
     # producers emit into `nodes/`. The convention deliberately does not
     # enumerate type values (invariant 5 — consumers tolerate unknown ones), so
     # neither spelling is non-conforming; but two producers of ONE declared
@@ -286,7 +286,7 @@ _OKF_BODY_FIELDS = {
     "guardrail": ("rule",),
     # "lesson" leads the tuple because it is the ONLY prose key a projected
     # lesson actually carries: the framework's KnowledgeProjection builds each record
-    # as exactly {title, lesson} (knowledge_projection.py, bundle.lessons), and
+    # as exactly {title, lesson} (the host's lesson projection, bundle.lessons), and
     # .knowledge-bundle.json is the only thing this path ever reads. Omitting it
     # cost both halves at once — the prose fell through to FRONTMATTER as an
     # unmodelled field while the body expression below resolved to "", so every

@@ -43,7 +43,7 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "bash core/scripts/stop-hook.sh",
+                                "command": "bash core/scripts/on-stop.sh",
                                 "timeout": 60,
                             }
                         ]
@@ -58,7 +58,7 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
     # argv[0] is resolved to a real executable path (dodges the Windows WSL stub).
     from zakcode._subprocess import resolve_executable
 
-    assert specs[0].command == [resolve_executable("bash"), "core/scripts/stop-hook.sh"]
+    assert specs[0].command == [resolve_executable("bash"), "core/scripts/on-stop.sh"]
     assert specs[0].timeout == 60.0
     # TE-R1: workspace-sourced hooks carry drop_env.
     assert len(specs[0].drop_env) >= 0  # At minimum the list exists.
@@ -164,7 +164,7 @@ def test_load_settings_user_prompt_submit_registers(tmp_path: Path) -> None:
 #: a live framework tree (2026-09-03). Pinning the literal set is the point: any of
 #: these that neither registers nor skips is a hook the framework configured and this
 #: host silently dropped -- the ADR-0025 failure class, one layer up.
-_CLAUDE_MIND_EVENTS = (
+_HOST_FRAMEWORK_EVENTS = (
     "PreToolUse",
     "PostToolUse",
     "SessionStart",
@@ -176,7 +176,7 @@ _CLAUDE_MIND_EVENTS = (
 )
 
 
-def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> None:
+def test_host_framework_hooks_block_yields_no_unknown_events(tmp_path: Path) -> None:
     """The partition IS the contract: every configured event registers or reports.
 
     Both halves are asserted together on purpose. "Zero unknown-event errors"
@@ -189,7 +189,7 @@ def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> Non
         {
             "hooks": {
                 ev: [{"hooks": [{"type": "command", "command": "echo hi"}]}]
-                for ev in _CLAUDE_MIND_EVENTS
+                for ev in _HOST_FRAMEWORK_EVENTS
             }
         },
     )
@@ -204,7 +204,7 @@ def test_claude_mind_hooks_block_yields_no_unknown_events(tmp_path: Path) -> Non
     # already graduated this way (ADR-0134); StopFailure and UserPromptExpansion remain.
     assert set(errors) == {"StopFailure", "UserPromptExpansion"}
 
-    registered = [ev for ev in _CLAUDE_MIND_EVENTS if ev not in errors]
+    registered = [ev for ev in _HOST_FRAMEWORK_EVENTS if ev not in errors]
     assert len(specs) == len(registered), (
         f"{len(registered)} events reported no error but only {len(specs)} specs loaded"
     )
