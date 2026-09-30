@@ -1173,12 +1173,15 @@ def _restart_kick(
     return _unattended_continuation(agent, restarted=restarted, stop_reason=last)
 
 
-def _restart_now(done: Any, mux: Any) -> bool:
+def _restart_now(done: Any, mux: Any, agent: Any) -> bool:
     """Whether the turn that just ended hands the session to the new build BEFORE the REPL
-    consults any input door (ADR-0101, amended 2026-09-26).
+    consults any input door or queues a continue-once kick (ADR-0101, amended 2026-09-26;
+    ADR-0099, amended 2026-09-30).
 
-    The loop ends a turn with stop reason ``restart`` for one reason: a newer build is
-    installed and it chose this boundary for the exec. The idle wait that used to follow
+    The loop ends a turn for a restart in two ways, both because a newer build is installed:
+    at a skill re-entry, with stop reason ``restart``; or at a Stop hook's veto, where the
+    turn keeps its own stop reason and the hook's continuation is set aside for the fresh
+    process (``restart_boundary == "stop-hook"``). The idle wait that used to follow
     served whatever already waited at a door first — a due wake-up, a background command's
     exit note — because those are polled every 0.3 s while the install probe fires every
     5 s. The model then ran one more turn on the build it was leaving, reached the same
@@ -1186,14 +1189,36 @@ def _restart_now(done: Any, mux: Any) -> bool:
     turns of
     361–488 s each, one of them opened by a wake-up whose premise was hours stale.
 
+    The Stop-hook case lost one step earlier: a turn that ended ``stuck`` got its
+    continue-once kick (ADR-0090) queued before the restart was even considered. Measured
+    2026-09-27 on a worker session: the veto-restart log line, then "continuing once", then
+    a new model call, and the build it had been told to leave kept running.
+
     A typed-ahead line is the one door still served first: it lives only in this process's
     queue and would die with the exec. Every other door persists — the wake-up on the
     session, a say in its file, an exit note on the task record — and reaches the fresh
     process through its own doors.
     """
-    if getattr(done, "stop_reason", None) != "restart":
+    boundary = getattr(getattr(agent, "loop", None), "restart_boundary", None)
+    if getattr(done, "stop_reason", None) != "restart" and boundary != "stop-hook":
         return False
     return bool(mux.queue.empty())
+
+
+def _after_turn(console: Console, agent: Any, mux: _InputMux, done: Any, kicks: int) -> int:
+    """What the REPL does between a turn's end and its next input. Returns the updated count
+    of continue-once kicks in a row (ADR-0090).
+
+    A restart the turn ended for comes FIRST (:func:`_restart_now`), before the kick is
+    queued and before any door is consulted: either would run one more turn on the build
+    being left behind. A successful exec never returns here. When the exec failed or nothing
+    had changed, the REPL goes on as it does after that stop reason with no restart pending:
+    the kick after a collapse, nothing after any other end; the idle probe tries the new
+    build again at the next idle prompt.
+    """
+    if _restart_now(done, mux, agent):
+        _restart_into_new_build(console, agent)
+    return _continue_after_collapse(console, agent, mux, done, kicks)
 
 
 def _continue_after_collapse(
@@ -3439,13 +3464,9 @@ def chat(
             # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
             # turn, in-process only — it never gated or slowed the turn that just ran.
             _maybe_render_status_line(console, agent)
-            kicks = _continue_after_collapse(console, agent, mux, renderer.last_done, kicks)
-            if _restart_now(renderer.last_done, mux):
-                # The loop ended THIS turn for the restart (ADR-0101): take it here, before
-                # any door is consulted — the idle wait would serve a due wake-up or an exit
-                # note first and run one more turn on the build being left behind.
-                _restart_into_new_build(console, agent)
-                continue  # reached only when the exec failed or nothing changed — keep serving
+            # A restart this turn ended for (ADR-0099, ADR-0101) is taken here, before any
+            # door is consulted or any continue-once kick is queued; see _after_turn.
+            kicks = _after_turn(console, agent, mux, renderer.last_done, kicks)
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
             continue

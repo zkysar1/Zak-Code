@@ -182,13 +182,29 @@ def test_mux_without_a_probe_keeps_waiting(tmp_path: Path) -> None:
 # ── a turn that ended for the restart ────────────────────────────────────────
 
 
+#: An agent whose loop set no restart aside as its turn ended.
+_NOTHING_SET_ASIDE = SimpleNamespace(loop=SimpleNamespace(restart_boundary=None))
+#: One whose Stop hook vetoed the stop with a newer build installed (ADR-0099).
+_STOP_HOOK_RESTART = SimpleNamespace(loop=SimpleNamespace(restart_boundary="stop-hook"))
+
+
 def test_a_turn_that_ended_for_a_restart_restarts_before_any_door(tmp_path: Path) -> None:
     # The loop chose this boundary (ADR-0101). A due wake-up or a background command's exit
     # note waiting at a door must not open one more turn on the build being left behind.
     mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
-    assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux) is True
-    assert cli._restart_now(SimpleNamespace(stop_reason="completed"), mux) is False
-    assert cli._restart_now(None, mux) is False
+    assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux, _NOTHING_SET_ASIDE)
+    assert not cli._restart_now(SimpleNamespace(stop_reason="completed"), mux, _NOTHING_SET_ASIDE)
+    assert not cli._restart_now(None, mux, _NOTHING_SET_ASIDE)
+
+
+def test_a_stop_hook_restart_is_taken_whatever_the_turn_ended_on(tmp_path: Path) -> None:
+    # ADR-0099: at a vetoed stop the turn keeps its own stop reason, a collapse or not, so
+    # what says it ended for a restart is the loop's record of the restart it set aside.
+    mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
+    for reason in ("stuck", "completed"):
+        done = SimpleNamespace(stop_reason=reason)
+        assert cli._restart_now(done, mux, _STOP_HOOK_RESTART) is True, reason
+        assert cli._restart_now(done, mux, _NOTHING_SET_ASIDE) is False, reason
 
 
 def test_a_typed_ahead_line_is_served_before_the_restart(tmp_path: Path) -> None:
@@ -196,7 +212,8 @@ def test_a_typed_ahead_line_is_served_before_the_restart(tmp_path: Path) -> None
     # the fresh process on its own, so the typed line is the one input still taken first.
     mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
     mux.queue.put(("line", "one more thing"))
-    assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux) is False
+    assert not cli._restart_now(SimpleNamespace(stop_reason="restart"), mux, _NOTHING_SET_ASIDE)
+    assert not cli._restart_now(SimpleNamespace(stop_reason="stuck"), mux, _STOP_HOOK_RESTART)
 
 
 # ── the handoff ──────────────────────────────────────────────────────────────
@@ -472,6 +489,110 @@ def test_restart_kick_prefers_the_carried_continuation(tmp_path: Path) -> None:
     fallback = cli._restart_kick(open_plan, restarted="new-build", carried=None)
     assert fallback is not None and "2 of 3 plan steps are still open" in fallback
     assert cli._restart_kick(open_plan, restarted=None, carried="ignored") is None
+
+
+# ── a Stop-hook restart comes before the continue-once kick and every door (ADR-0099) ──
+
+
+class _Execd(Exception):
+    """Stands in for a successful exec: the process is replaced, so nothing after it runs."""
+
+
+def _stop_hook_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[SimpleNamespace, SessionStore]:
+    """An unattended session with plan steps open whose last turn's Stop hook vetoed the
+    stop while a newer build was installed, so the loop set the hook's continuation aside
+    (ADR-0099). The exports the restart writes are undone at teardown."""
+    for name in ("ZAKCODE_RESTART_CONTINUATION", "ZAKCODE_RESTART_BOUNDARY"):
+        monkeypatch.setenv(name, "unset-by-teardown")
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    agent = _unattended_agent(tmp_path)
+    store = SessionStore(tmp_path / "sessions")
+    store.save(agent.session)
+    agent.loop.store = store
+    agent.loop.restart_continuation = "invoke the loop again"
+    agent.loop.restart_boundary = "stop-hook"
+    return agent, store
+
+
+def test_a_stop_hook_restart_comes_before_the_continue_once_kick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Field incident (2026-09-27): a worker's turn ended ``stuck`` at a vetoed stop with a
+    newer build installed. The REPL queued the continue-once kick first, the kick ran one
+    more whole turn on the old build, and the restart waited behind it."""
+    agent, _store = _stop_hook_restart(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    mux = SimpleNamespace(queue=queue.Queue())
+    queued_at_exec: list[int] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        queued_at_exec.append(mux.queue.qsize())
+        raise _Execd
+
+    monkeypatch.setattr(cli.os, "execv", execv)
+    with pytest.raises(_Execd):
+        cli._after_turn(_console(), agent, mux, SimpleNamespace(stop_reason="stuck"), 0)
+    assert queued_at_exec == [0]  # nothing was left queued to run on the old build
+    assert os.environ["ZAKCODE_RESTART_CONTINUATION"] == "invoke the loop again"
+    assert os.environ["ZAKCODE_RESTART_BOUNDARY"] == "stop-hook"
+
+
+def test_a_stop_hook_restart_is_taken_before_a_due_wakeup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that ended ``completed`` at a vetoed stop gets no kick, so the idle wait came
+    next, and it served a due wake-up before its 5 s install probe: one more turn on the old
+    build. The restart is taken as the turn ends now, and the wake-up waits on the saved
+    session for the fresh process."""
+    from zakcode.wakeup import Wakeup
+
+    agent, store = _stop_hook_restart(tmp_path, monkeypatch)
+    agent.session.pending_wakeup = Wakeup(
+        prompt="re-poll", due_at=1.0, armed_at=0.0, delay_seconds=60
+    )  # long overdue
+    store.save(agent.session)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    execs: list[str] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append(path)
+        raise _Execd
+
+    monkeypatch.setattr(cli.os, "execv", execv)
+    # No door on this mux: consulting one before the exec would raise, not pass.
+    mux = SimpleNamespace(queue=queue.Queue())
+    with pytest.raises(_Execd):
+        cli._after_turn(_console(), agent, mux, SimpleNamespace(stop_reason="completed"), 0)
+    assert execs == [sys.executable]
+    handed_on = store.load(agent.session.id).pending_wakeup
+    assert handed_on is not None and handed_on.prompt == "re-poll"
+
+
+def test_a_stop_hook_restart_that_does_not_happen_leaves_the_turn_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the exec fails, or nothing has changed by the time it would run, the turn gets
+    what it would have had with no restart set aside: the continue-once kick after a
+    collapse, nothing after a turn that ended on purpose."""
+    monkeypatch.setattr(cli, "_announce_resume", lambda console, a: None)
+
+    def refused(path: str, argv: list[str]) -> None:
+        raise OSError("exec denied")
+
+    monkeypatch.setattr(cli.os, "execv", refused)
+    for changed in (("old-build", "new-build"), None):
+        agent, _store = _stop_hook_restart(tmp_path, monkeypatch)
+        monkeypatch.setattr(cli, "install_changed", lambda changed=changed: changed)
+        mux = SimpleNamespace(queue=queue.Queue())
+        stuck = SimpleNamespace(stop_reason="stuck")
+        assert cli._after_turn(_console(), agent, mux, stuck, 0) == 1, changed
+        kind, line = mux.queue.get_nowait()
+        assert kind == "harness" and "the previous turn ended 'stuck'" in line
+        ended = SimpleNamespace(stop_reason="completed")
+        assert cli._after_turn(_console(), agent, mux, ended, 0) == 0, changed
+        assert mux.queue.empty()
 
 
 # ── a restart taken at a skill re-entry carries the call it did not make (ADR-0101) ──

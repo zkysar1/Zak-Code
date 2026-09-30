@@ -7610,6 +7610,11 @@ class AgentLoop:
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         self._turn_cut_writes = 0  # cut-off write/edit run (ADR-0081 escalation): per-turn
+        # A restart set aside at a turn's end (ADR-0099, ADR-0101) belongs to that turn: the
+        # REPL takes it as the turn ends. One left over from a turn whose exec failed must
+        # not make this turn look like it ended for a restart.
+        self.restart_continuation = None
+        self.restart_boundary = None
         plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
         open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
@@ -9227,6 +9232,11 @@ class AgentLoop:
         self._turn_read_failed.clear()  # anomaly rail (ADR-0020): per-turn memory
         self._turn_struggle = False  # struggle flag (ADR-0024): per-turn
         self._turn_cut_writes = 0  # cut-off write/edit run (ADR-0081 escalation): per-turn
+        # A restart set aside at a turn's end (ADR-0099, ADR-0101) belongs to that turn: the
+        # REPL takes it as the turn ends. One left over from a turn whose exec failed must
+        # not make this turn look like it ended for a restart.
+        self.restart_continuation = None
+        self.restart_boundary = None
         plan_nudges = 0  # CONSECUTIVE no-progress plan-gate nudges (bounded by _MAX_PLAN_NUDGES)
         open_at_nudge: int | None = None  # open step count at the last nudge (progress = it fell)
         investigation_steps: list[Task] = []  # decompose-on-stuck (ADR-0057): steps added
