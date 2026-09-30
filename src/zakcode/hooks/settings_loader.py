@@ -51,6 +51,9 @@ _EVENT_MAP: dict[str, HookEvent] = {
     "OnSkillSelected": HookEvent.ON_SKILL_SELECTED,
     "Stop": HookEvent.TURN_END,
     "UserPromptSubmit": HookEvent.USER_PROMPT_SUBMIT,
+    # Zak Code's own event (ADR-0270). Declared in .zakcode/settings.json, which Claude Code
+    # never reads, so a Claude Code session never meets an event it does not know.
+    "ObservationReceived": HookEvent.OBSERVATION_RECEIVED,
 }
 
 #: Real Claude Code events deferred FOR SCOPE — recognised and skipped with a warning (not silently

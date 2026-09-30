@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -67,6 +68,8 @@ from zakcode.artifacts import (
 from zakcode.background import BackgroundTasks
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
+from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
+from zakcode.hooks.settings_loader import SettingsHooks
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
@@ -1411,6 +1414,30 @@ def create_app(
         "last_observed_at": None,
     }
 
+    # The workspace's ObservationReceived hooks (ADR-0270). The settings files are the switch,
+    # read the way the agent reads them (ADR-0079): three stats per change frame, a re-parse
+    # only when a file changed, so a hook a host adds after this process started is used
+    # from its next change frame on. The route runs on worker threads and frames can arrive
+    # together, so the refresh and the copy a frame runs are taken under one lock. Without
+    # it a frame arriving while another re-reads a changed file finds the signature already
+    # advanced and runs the old list. A probe of this refresh-and-copy on 8 threads at once,
+    # 60 rounds, got the old list 420 times in 480 without the lock and never with it.
+    _observation_settings = SettingsHooks(
+        _workspace_root, permission_mode=str(resolved_settings.permission_mode)
+    )
+    _observation_hooks = HookManager()
+    _observation_hooks_lock = threading.Lock()
+
+    def _observation_hook_manager() -> HookManager:
+        """The workspace's settings-file hooks as they are on disk now, in a manager this
+        frame owns."""
+        with _observation_hooks_lock:
+            _changed, errors = _observation_settings.refresh(_observation_hooks)
+            specs = list(_observation_hooks.shell_hooks)
+        for key, err in errors.items():
+            logger.warning("settings.json hook %s: %s", key, err)
+        return HookManager(specs)
+
     def _frame_age_seconds(observed_at: Any) -> float | None:
         """Age of a frame at DELIVERY, in seconds, or None when unparseable.
 
@@ -1814,14 +1841,50 @@ def create_app(
         # which is left entirely untouched.
         #
         # When the host-neutral ending (`run_stop_message`) is active there is no agent
-        # address and no signal-file wake: the host reads the staged frame on its own
-        # tick, and the sticky kind above ensures a superseding heartbeat cannot hide an
-        # unread change.  `wake` answers `not-attempted`, which is the honest truth.
+        # address and no signal-file wake. A host that declares an ObservationReceived hook
+        # still hears about each change through it (below). One that declares none reads
+        # the staged frame on its own tick, the sticky kind above ensures a superseding
+        # heartbeat cannot hide an unread change, and `wake` answers `not-attempted`, which
+        # is the honest truth.
         agent = None if resolved_settings.run_stop_message else resolved_settings.run_stop_agent
         woke = False
         wake_attempted = False
         mode: str | None = None
-        if request.kind == KIND_CHANGE and agent:
+        # THE WORKSPACE'S OWN HOOK COMES FIRST (ADR-0270). A host that wants to hear about a
+        # change declares an ObservationReceived hook, and the hook decides what this route
+        # otherwise decides for it below: whether the host runs a loop worth waking, and how
+        # to wake it. The route keeps what belongs to the envelope (only a change is handed
+        # over, after it is staged) and reads the hook's exit code as the disposition. It
+        # runs whichever ending the run uses, and a workspace that declares it never also
+        # gets the signal-file wake: one wake per change.
+        delivered: bool | None = None
+        if request.kind == KIND_CHANGE:
+            try:
+                hooks = _observation_hook_manager()
+                if hooks.has_lifecycle_hooks(HookEvent.OBSERVATION_RECEIVED):
+                    # The route is sync and runs on a worker thread, which has no event loop.
+                    delivered = asyncio.run(
+                        hooks.deliver_observation(
+                            LifecyclePayload(
+                                event=HookEvent.OBSERVATION_RECEIVED,
+                                session_id=_current_session_id() or "",
+                                cwd=str(root),
+                                data={"kind": request.kind, "observation_path": str(target)},
+                            )
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 — fail-open: the frame is staged
+                # Hooks that could not be read or run are a dropped wake. Never a 500: the
+                # frame is on disk, and the vessel must see it accepted.
+                logger.warning("ObservationReceived hooks could not be read or run: %s", exc)
+                delivered = False
+        if delivered is not None:
+            wake_attempted = True
+            woke = delivered
+        elif request.kind == KIND_CHANGE and agent:
+            # The signal-file wake, for a workspace that declares no hook but names its
+            # resident agent (run_stop_agent). It goes when that setting does.
+            #
             # AUTONOMOUS-ONLY, and this is a contract rather than an optimisation: `reader`
             # and `assistant` run no perpetual loop, so there is no sleeping reader for the
             # marker to reach and it would simply sit there until a later /start cleared it.
@@ -1852,6 +1915,9 @@ def create_app(
         # UN-ATTEMPTED one (a failed measurement is not a measurement of zero).
         # A heartbeat, a non-seed workspace and a reader-mode agent all legitimately attempt
         # nothing and are healthy; only `dropped` is a defect, and only now is it nameable.
+        # Through a hook the three states read the same way from its exit code: `delivered`
+        # is every hook exiting 0 (the host took the frame, whatever it then did with it),
+        # `dropped` is any hook failing, and no hook at all attempted nothing.
         #
         # `accepted` STAYS TRUE and is deliberately NOT flipped, though the goal's wording
         # suggested it: `accepted` reports the FRAME, which was staged, and the intake
