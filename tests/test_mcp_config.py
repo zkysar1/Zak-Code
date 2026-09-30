@@ -130,11 +130,16 @@ def test_load_valid_file(tmp_path: Path) -> None:
     assert [s.name for s in servers] == ["s"]
 
 
-def test_load_invalid_json_raises(tmp_path: Path) -> None:
+#: Two ways a present file is unreadable: broken JSON, and bytes that are not UTF-8.
+@pytest.mark.parametrize(
+    "broken", [b"{not json", b'{"mcpServers": {}}\xff'], ids=["not-json", "not-utf8"]
+)
+def test_load_invalid_json_raises(tmp_path: Path, broken: bytes) -> None:
     p = tmp_path / "mcp.json"
-    p.write_text("{not json", encoding="utf-8")
-    with pytest.raises(McpConfigError):
+    p.write_bytes(broken)
+    with pytest.raises(McpConfigError) as info:
         load_mcp_config(p)
+    assert str(p) in str(info.value)  # the error names the file
 
 
 def test_load_non_object_top_level_raises(tmp_path: Path) -> None:

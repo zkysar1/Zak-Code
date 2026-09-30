@@ -154,7 +154,9 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
         return []
     try:
         raw = p.read_text(encoding="utf-8")
-    except OSError as exc:
+    # Bytes that are not UTF-8 make the file unreadable too. Raised bare, the error named no
+    # file (tests/test_mcp_config.py).
+    except (OSError, UnicodeDecodeError) as exc:
         raise McpConfigError(f"could not read MCP config {p}: {exc}") from exc
     try:
         data = json.loads(raw)

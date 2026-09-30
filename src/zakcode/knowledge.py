@@ -209,7 +209,8 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     out = _empty_bundle()
     try:
         data: Any = json.loads((workspace_root / KNOWLEDGE_BUNDLE_FILE).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    # Bytes that are not UTF-8 are unreadable too, so they fail open like broken JSON.
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         data = None
     if isinstance(data, dict):
         # Coerce each expected section to a list so a corrupt field cannot 500 a browse.

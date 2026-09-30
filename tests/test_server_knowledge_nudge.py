@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -169,6 +170,10 @@ def test_knowledge_fails_open_when_bundle_absent(tmp_path: Path) -> None:
     assert list(empty["files"]) == ["index.md"]
 
 
-def test_knowledge_fails_open_on_malformed_bundle(tmp_path: Path) -> None:
-    (tmp_path / ".knowledge-bundle.json").write_text("{not valid json", encoding="utf-8")
+#: Two ways a bundle is unreadable: broken JSON, and bytes that are not UTF-8.
+@pytest.mark.parametrize(
+    "broken", [b"{not valid json", b'{"tree": []}\xff'], ids=["not-json", "not-utf8"]
+)
+def test_knowledge_fails_open_on_malformed_bundle(tmp_path: Path, broken: bytes) -> None:
+    (tmp_path / ".knowledge-bundle.json").write_bytes(broken)
     assert _client(tmp_path).get("/knowledge/tree").json() == {"nodes": [], "count": 0}
