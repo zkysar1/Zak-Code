@@ -27,28 +27,30 @@ def _body(row: str, path: Path, line_no: int = 1) -> str:
 
 def _store(tmp_path: Path, records: int = 1, filler: int = 5000) -> Path:
     rows = [
-        json.dumps({"id": f"rec-{i:03d}", "title": "Yahoo league data", "body": "x" * filler})
+        json.dumps({"id": f"rec-{i:03d}", "title": "Widgetco league data", "body": "x" * filler})
         for i in range(records)
     ]
     (tmp_path / "records.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
     (tmp_path / "notes.md").write_text(
-        "the Yahoo league id lives in prep-tasks\n", encoding="utf-8"
+        "the Widgetco league id lives in prep-tasks\n", encoding="utf-8"
     )
     return tmp_path
 
 
 async def test_a_long_match_line_is_clipped_around_the_match(tmp_path: Path) -> None:
     ws = _store(tmp_path)
-    result = await GrepTool().execute({"pattern": "Yahoo league"}, ToolContext(workspace_root=ws))
+    result = await GrepTool().execute(
+        {"pattern": "Widgetco league"}, ToolContext(workspace_root=ws)
+    )
     assert not result.is_error
     rows = result.output.splitlines()
     long_row = next(r for r in rows if "records.jsonl" in r)
     short_row = next(r for r in rows if "notes.md" in r)
-    assert "Yahoo league data" in long_row
+    assert "Widgetco league data" in long_row
     body = _body(long_row, ws / "records.jsonl")
     assert len(body) <= _MAX_LINE_CHARS + 60  # the window plus the tail marker
     assert "chars; Read the line for the rest]" in long_row
-    assert short_row.endswith("the Yahoo league id lives in prep-tasks")  # short lines untouched
+    assert short_row.endswith("the Widgetco league id lives in prep-tasks")  # short lines untouched
     assert result.data is not None and result.data["count"] == 2 and result.data["capped"] == 0
 
 
@@ -65,7 +67,7 @@ async def test_the_window_keeps_the_match_when_it_sits_deep_in_the_line(tmp_path
 async def test_the_whole_output_is_capped_with_a_count(tmp_path: Path) -> None:
     ws = _store(tmp_path, records=400, filler=400)  # 400 rows x ~300 chars > the cap
     result = await GrepTool().execute(
-        {"pattern": "Yahoo league", "glob": "*.jsonl"}, ToolContext(workspace_root=ws)
+        {"pattern": "Widgetco league", "glob": "*.jsonl"}, ToolContext(workspace_root=ws)
     )
     assert not result.is_error
     assert len(result.output) <= _MAX_OUTPUT_CHARS + 200

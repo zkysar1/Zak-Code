@@ -61,7 +61,7 @@ _URL_CRED_RE = re.compile(r"://[^/\s]+@")
 # The token layer above knows PROVIDER PREFIXES. Most credentials have none: an OAuth
 # access/refresh token is an opaque 200-char string, a client secret is 32 hex chars. The
 # most common way one enters a transcript is a credential FILE read verbatim —
-# ``cat .yahoo_token.json`` — and measured 2026-09-10 that passed the seam untouched, into
+# ``cat .widgetco_token.json`` — and measured 2026-09-10 that passed the seam untouched, into
 # the model, the CLI log and the session file (weeks of prior runs, once we looked).
 #
 # ADR-0116 kept the ``key = value`` layer OFF the seam for a real reason: over source code it
@@ -80,7 +80,7 @@ _CRED_KEY = (
     r"|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?token|private[_-]?key"
     r"|access[_-]?key|secret|token|password|passwd|bearer|authorization|credentials?"
 )
-# The key may be the SUFFIX of an env-style name (``YAHOO_CLIENT_SECRET``, ``TAVILY_API_KEY``):
+# The key may be the SUFFIX of an env-style name (``WIDGETCO_CLIENT_SECRET``, ``TAVILY_API_KEY``):
 # a leading ``\b`` alone never matches after the ``_``, so the prefix is consumed explicitly.
 _CRED_ASSIGN_RE = re.compile(
     r"(?i)(?P<pre>(?:\\?[\"'])?\b(?:[A-Za-z0-9]+[_-])*(?:"
