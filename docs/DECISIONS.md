@@ -4146,6 +4146,30 @@ by `tests/test_turn_end_loop.py::test_turn_end_veto_is_deferred_across_a_build_r
 and `tests/test_self_restart.py` (`test_restart_kick_prefers_the_carried_continuation`,
 `test_restart_exports_the_carried_continuation`).
 
+**Amended 2026-09-30 (a Stop-hook restart is taken at the turn's end too, before the
+continue-once kick).** ADR-0101's 2026-09-26 amendment took the restart as the turn ends
+only for stop reason `restart`, the skill boundary. A Stop-hook restart keeps the turn's own
+stop reason, so it still waited for the idle probe and lost two races. After a turn that
+ended `stuck` (or any other collapse) the REPL queued the ADR-0090 continue-once kick first,
+and the kick ran a whole turn on the old build: measured 2026-09-27 on a worker session, the
+veto-restart log line, then "continuing once", then a new model call, with a build installed
+about nine hours earlier still not running. After a turn that ended on purpose, a due
+wake-up or an exit note won the door race the 2026-09-26 amendment describes. The REPL now
+reads the loop's record of the set-aside restart (`restart_boundary == "stop-hook"`):
+`_restart_now` takes that turn as it takes a `restart` one, and `_after_turn` runs the
+restart before `_continue_after_collapse`. When the exec fails, or nothing has changed by
+the time it would run, the REPL goes on as it does after that stop reason with no restart
+pending: the kick after a collapse, nothing after any other end; the idle probe tries the
+new build again at the next idle prompt. The loop clears the
+set-aside continuation and boundary at the start of every turn, so one left over from a
+turn whose exec failed never makes a later turn look like a restart, and never rides a
+later restart as a continuation no hook asked for. Pinned by `tests/test_self_restart.py`
+(`test_a_stop_hook_restart_is_taken_whatever_the_turn_ended_on`,
+`test_a_stop_hook_restart_comes_before_the_continue_once_kick`,
+`test_a_stop_hook_restart_is_taken_before_a_due_wakeup`,
+`test_a_stop_hook_restart_that_does_not_happen_leaves_the_turn_as_it_was`) and
+`tests/test_turn_end_loop.py::test_a_new_turn_forgets_a_restart_an_earlier_turn_set_aside`.
+
 ## ADR-0100: A rate-limit wait is said while it happens, and the server's retry hint is read
 
 **Context.** Measured 2026-08-29 on a worker machine, right after the ADR-0099 cycle: the fleet's

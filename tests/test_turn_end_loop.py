@@ -316,6 +316,27 @@ async def test_turn_end_veto_is_deferred_across_a_build_restart(
     assert loop2.restart_continuation is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+async def test_a_new_turn_forgets_a_restart_an_earlier_turn_set_aside(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The REPL takes a set-aside restart as the turn that set it ends (ADR-0099). When that
+    exec failed, the NEXT turn must not look as if it too ended for a restart: the REPL
+    would try the exec again and hand the fresh process a continuation no hook asked for.
+    The test above is the positive control: a restart set aside during a turn survives it."""
+    loop = _make_loop(ScriptedProvider([_TEXT_DONE]), tmp_path)
+    loop.restart_continuation = "invoke the loop again"
+    loop.restart_boundary = "stop-hook"
+    if streaming:
+        events = [ev async for ev in loop.astream_turn("hi")]
+        assert [ev for ev in events if isinstance(ev, AgentDone)][-1].stop_reason == "completed"
+    else:
+        assert (await loop.arun_turn("hi")).stop_reason == "completed"
+    assert loop.restart_continuation is None
+    assert loop.restart_boundary is None
+
+
 def _re_entry(call_id: str, **arguments: str) -> LLMResult:
     """A perpetual loop's unit boundary: the lone use_skill call that loads the next body."""
     return LLMResult(tool_calls=[ToolCall(id=call_id, name="Skill", arguments=arguments)])
