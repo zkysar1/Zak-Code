@@ -269,7 +269,7 @@ def launch_cockpit(
         # cloned repo) BEFORE any pane exists that the operator could type into.
         # From this moment on, everything in the inbox is live operator input —
         # a message typed while the agent is still booting is DELIVERED once it
-        # listens, never discarded (2026-08-25 serene report: the first message
+        # listens, never discarded (2026-08-25 field report: the first message
         # typed during boot was eaten and Enter looked dead).
         with contextlib.suppress(OSError):
             say_path(workspace).unlink()
@@ -336,7 +336,7 @@ def launch_cockpit(
         )
         # Focus lands on the MESSAGE BOX — the one place to type. Focusing the
         # screen pane sent the operator's first keystrokes into the booting chat
-        # (2026-08-25 serene report: "was not able to type anything at first").
+        # (2026-08-25 field report: "was not able to type anything at first").
         _tmux("select-pane", "-t", f"{session}:0.1")
         notice_info(console, f"cockpit session '{session}' created")
     if attach and os.environ.get("TMUX"):

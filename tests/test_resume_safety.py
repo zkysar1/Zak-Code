@@ -1,6 +1,6 @@
 """Resume safety (ADR-0033): build + stop-reason stamps and the compaction notice.
 
-Field incident 2026-08-26 (serene): `zakcode update` printed "running chat sessions keep
+Field incident 2026-08-26: `zakcode update` printed "running chat sessions keep
 the old build until restarted"; the process was not restarted, and the next `/resume`
 replayed a transcript that had already collapsed once. Two facts a resume needs were not
 recorded anywhere — which build wrote the document, and how its last turn ended. These
@@ -46,7 +46,7 @@ def test_build_mismatch_names_both_builds() -> None:
 
 
 def test_unstamped_transcript_on_a_stamped_build_is_flagged() -> None:
-    # Every pre-ADR-0033 document is unstamped — the serene transcript's exact shape.
+    # Every pre-ADR-0033 document is unstamped — the field transcript's exact shape.
     session = Session(cwd=".", model="m", last_stop_reason="completed")
     notice = session.resume_notice(running_build="0c28c8b")
     assert notice is not None and "older build" in notice

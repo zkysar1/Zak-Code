@@ -360,13 +360,13 @@ def test_say_box_prompt_falls_back_to_input_without_tty(
 
 
 def test_cockpit_session_name_is_stable_sanitized_and_per_workspace(tmp_path: Path) -> None:
-    a = tmp_path / "serene.mind"
-    b = tmp_path / "other" / "serene.mind"
+    a = tmp_path / "acme.app"
+    b = tmp_path / "other" / "acme.app"
     name_a = cockpit._cockpit_session_name(a)
     assert name_a == cockpit._cockpit_session_name(a)  # stable
     assert name_a != cockpit._cockpit_session_name(b)  # same basename, different workspace
     assert "." not in name_a and " " not in name_a  # tmux-safe
-    assert name_a.startswith("zakcode-serene-mind-")
+    assert name_a.startswith("zakcode-acme-app-")
 
 
 def test_launch_cockpit_derives_session_name(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
@@ -526,7 +526,7 @@ def test_root_dispatch_covers_every_chat_option() -> None:
 
 
 # ── first touch: focus the box; never eat the operator's boot-time message ────────
-# 2026-08-25 serene report, reproduced live: focus landed on the screen
+# 2026-08-25 field report, reproduced live: focus landed on the screen
 # pane ("couldn't type at first") and the first message typed while the agent
 # booted was discarded by the stale-say guard ("Enter did nothing").
 

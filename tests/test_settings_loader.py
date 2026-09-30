@@ -43,7 +43,7 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "bash core/scripts/on-stop.sh",
+                                "command": "bash tools/scripts/on-stop.sh",
                                 "timeout": 60,
                             }
                         ]
@@ -58,7 +58,7 @@ def test_load_settings_stop_maps_to_turn_end(tmp_path: Path) -> None:
     # argv[0] is resolved to a real executable path (dodges the Windows WSL stub).
     from zakcode._subprocess import resolve_executable
 
-    assert specs[0].command == [resolve_executable("bash"), "core/scripts/on-stop.sh"]
+    assert specs[0].command == [resolve_executable("bash"), "tools/scripts/on-stop.sh"]
     assert specs[0].timeout == 60.0
     # TE-R1: workspace-sourced hooks carry drop_env.
     assert len(specs[0].drop_env) >= 0  # At minimum the list exists.

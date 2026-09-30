@@ -88,10 +88,10 @@ def test_long_repeated_paragraphs_are_not_convicted() -> None:
 
 # ── the near-duplicate branch (ADR-0033) ──────────────────────────────────────────
 
-#: Verbatim tail of the 2026-08-26 serene collapse (gemini-2.5-flash-lite on quick_code):
+#: Verbatim tail of the 2026-08-26 field collapse (gemini-2.5-flash-lite on quick_code):
 #: never the same line twelve times — the exact branch measured 3 of 15 — while 10–11 of
 #: the last 15 lines share most of their words with one short sentence.
-SERENE_WALL = """Let's retry this, focusing on the core task of adding the skill.
+FIELD_WALL = """Let's retry this, focusing on the core task of adding the skill.
 
 I will restart from the last successful step, which was the previous successful command execution.
 
@@ -130,9 +130,9 @@ registered the skill and it should now be available.
 
 def test_convicts_the_mutating_apology_spiral() -> None:
     # The full wall AND the point the streaming probe would have reached mid-spiral.
-    unit = repeated_tail(SERENE_WALL)
+    unit = repeated_tail(FIELD_WALL)
     assert unit is not None and "the skill correctly" in unit
-    mid_stream = SERENE_WALL[: SERENE_WALL.index("I will try to create the skill again.I")]
+    mid_stream = FIELD_WALL[: FIELD_WALL.index("I will try to create the skill again.I")]
     unit = repeated_tail(mid_stream)
     assert unit is not None and "the skill correctly" in unit
 

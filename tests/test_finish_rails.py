@@ -1,6 +1,6 @@
 """ADR-0117: a finish is not a finish while the answer defers the ask or the plan hides a gap.
 
-Two serene turns (gemini-2.5-flash, 2026-09-08): one ended a 50-iteration plan on "which will
+Two field turns (gemini-2.5-flash, 2026-09-08): one ended a 50-iteration plan on "which will
 enable further debugging in a future session"; the next ended one iteration in on "I will now
 re-attempt to debug …". The deferral rail and the widened intent gate are deterministic and
 always on; the fresh-eyes plan review is the judged complement — the last gate before a finish

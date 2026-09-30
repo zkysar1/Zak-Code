@@ -30,9 +30,9 @@ def test_identity_paths_with_agent_dir_relative(
 ) -> None:
     """Relative agent_identity_dir is resolved against workspace_root."""
     _fake_home(monkeypatch, tmp_path / "home")
-    paths = identity_paths(tmp_path / "ws", agent_identity_dir="agents/omni")
+    paths = identity_paths(tmp_path / "ws", agent_identity_dir="agents/assistant")
     assert len(paths) == 4
-    assert paths[0] == tmp_path / "ws" / "agents" / "omni" / "self.md"
+    assert paths[0] == tmp_path / "ws" / "agents" / "assistant" / "self.md"
     # Original three still present.
     assert paths[1] == tmp_path / "ws" / ".zakcode" / "self.md"
 
@@ -42,7 +42,7 @@ def test_identity_paths_with_agent_dir_absolute(
 ) -> None:
     """Absolute agent_identity_dir is used as-is."""
     _fake_home(monkeypatch, tmp_path / "home")
-    abs_dir = tmp_path / "external" / "agents" / "omni"
+    abs_dir = tmp_path / "external" / "agents" / "assistant"
     paths = identity_paths(tmp_path / "ws", agent_identity_dir=abs_dir)
     assert len(paths) == 4
     assert paths[0] == abs_dir / "self.md"
@@ -55,14 +55,14 @@ def test_load_identity_from_agent_dir(tmp_path: Path, monkeypatch: pytest.Monkey
     ws.mkdir()
     # Create both a workspace self.md and an agent-dir self.md.
     (ws / "self.md").write_text("workspace identity", encoding="utf-8")
-    agent_dir = ws / "agents" / "omni"
+    agent_dir = ws / "agents" / "assistant"
     agent_dir.mkdir(parents=True)
     (agent_dir / "self.md").write_text(
-        "---\nname: omni\n---\nI am the omni agent.", encoding="utf-8"
+        "---\nname: assistant\n---\nI am the assistant agent.", encoding="utf-8"
     )
-    text, err = load_identity(ws, agent_identity_dir="agents/omni")
+    text, err = load_identity(ws, agent_identity_dir="agents/assistant")
     assert err is None
-    assert text == "I am the omni agent."
+    assert text == "I am the assistant agent."
 
 
 def test_load_identity_agent_dir_fallthrough(
@@ -74,9 +74,9 @@ def test_load_identity_agent_dir_fallthrough(
     ws.mkdir()
     (ws / "self.md").write_text("workspace identity", encoding="utf-8")
     # Agent dir exists but has no self.md.
-    agent_dir = ws / "agents" / "omni"
+    agent_dir = ws / "agents" / "assistant"
     agent_dir.mkdir(parents=True)
-    text, err = load_identity(ws, agent_identity_dir="agents/omni")
+    text, err = load_identity(ws, agent_identity_dir="agents/assistant")
     assert err is None
     assert text == "workspace identity"
 
@@ -87,9 +87,9 @@ def test_load_identity_agent_dir_truncation(
     """MAX_IDENTITY_CHARS truncation applies to agent-dir self.md too."""
     _fake_home(monkeypatch, tmp_path / "home")
     ws = tmp_path / "ws"
-    agent_dir = ws / "agents" / "omni"
+    agent_dir = ws / "agents" / "assistant"
     agent_dir.mkdir(parents=True)
     (agent_dir / "self.md").write_text("x" * (MAX_IDENTITY_CHARS + 100), encoding="utf-8")
-    text, err = load_identity(ws, agent_identity_dir="agents/omni")
+    text, err = load_identity(ws, agent_identity_dir="agents/assistant")
     assert err is None
     assert text is not None and len(text) == MAX_IDENTITY_CHARS

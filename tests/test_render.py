@@ -915,7 +915,7 @@ async def test_pinned_footer_states() -> None:
     assert "struggled" not in out
     # Work left OWING is the one degraded path that is a real struggle, and it says how much
     # is left (ADR-0115): "done — struggled" alone read as finished to a user watching a
-    # 14-step plan stop at 9/14 (serene, 2026-09-08).
+    # 14-step plan stop at 9/14 (field, 2026-09-08).
     out = await footer_for(
         AgentDone(
             stop_reason="completed", iterations=5, usage=_usage(5, 5), degraded=True, open_steps=5

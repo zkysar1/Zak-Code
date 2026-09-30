@@ -743,7 +743,7 @@ def _closing_script(n: int) -> list[LLMResult]:
     """A model that stops to narrate after EVERY step of an ``n``-step plan, and closes the
     next step each time it is nudged: plan, judge, then (done, plan-with-one-more-closed) x n,
     then the final answer. Under the old flat cap of two nudges this ended "done — struggled"
-    with ``n - 2`` steps open (the serene incident, 2026-09-08)."""
+    with ``n - 2`` steps open (the field incident, 2026-09-08)."""
     titles = [f"S{i}" for i in range(n)]
 
     def plan(closed: int) -> LLMResult:

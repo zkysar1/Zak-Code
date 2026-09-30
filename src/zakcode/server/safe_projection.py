@@ -1,4 +1,4 @@
-"""SafeEventProjection — Layer 4 of the Pearl watch-surface security model.
+"""SafeEventProjection — Layer 4 of the watch-surface security model.
 
 The public watch stream (``GET /watch/{session_id}``) must never leak tool arguments,
 tool output, filesystem paths, cost/token data, trace internals, or credential-shaped

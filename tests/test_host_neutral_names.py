@@ -73,6 +73,10 @@ BLOCKED = frozenset(
         "584baf18f79ef70c",
         "8b5dbf88a3e16e2a",
         "4d443e7a57383271",
+        "26e3b2a5dc54dd58",
+        "cfb12585da56e4c0",
+        "77bd5dd94c37c5b1",
+        "c04b347d824bd044",
         "e4ff23a43add67fd",
     }
 )

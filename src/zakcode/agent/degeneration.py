@@ -59,7 +59,7 @@ _PERIOD_WINDOW = 400
 #: Full repetitions of the period inside that window required to convict.
 _PERIOD_REPEATS = 8
 
-#: Near-duplicate branch (ADR-0033) — measured on the 2026-08-26 serene transcript, where
+#: Near-duplicate branch (ADR-0033) — measured on the 2026-08-26 field transcript, where
 #: the exact branch topped out at 3 identical lines of 15 while 10–11 of those 15 shared
 #: >= 60% of their words with ONE short sentence. Two healthy look-alikes score just as
 #: high on word overlap and are acquitted by the two extra predicates:

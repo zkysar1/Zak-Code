@@ -278,7 +278,7 @@ def test_future_intent_matcher_is_surgical() -> None:
     assert not _announces_future_work("I'll let you know if anything changes.")
     assert not _announces_future_work("I will need you to provide the API key first.")
     # ADR-0117: any verb is an announcement unless it is a non-action continuation — the
-    # closed verb list missed "I will now re-attempt to debug …" (serene, 2026-09-08).
+    # closed verb list missed "I will now re-attempt to debug …" (field, 2026-09-08).
     assert _announces_future_work(
         "I will now re-attempt to debug the google-drive-list script by inserting print statements."
     )
@@ -403,7 +403,7 @@ def test_streaming_completion_announcing_work_is_nudged(tmp_path: Path) -> None:
 
 
 def test_hedged_future_intent_is_still_an_announcement() -> None:
-    # The 2026-08-26 serene spiral: "I will TRY TO create" never matched because the verb
+    # The 2026-08-26 field spiral: "I will TRY TO create" never matched because the verb
     # had to follow "will" directly.
     for text in (
         "Let's try again. I will try to create the skill correctly.",
@@ -512,7 +512,7 @@ def test_streaming_claimed_change_without_a_write_is_challenged(tmp_path: Path) 
 def test_two_text_only_completions_after_a_nudge_latch_the_struggle_flag(
     tmp_path: Path,
 ) -> None:
-    # The serene spiral ran five text-only completions on the cheap model with nothing
+    # The field spiral ran five text-only completions on the cheap model with nothing
     # escalating: a second no-tool-call completion in one turn (necessarily after a nudge or
     # veto) on a planless turn now latches the deep coder.
     loop = _loop(

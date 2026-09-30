@@ -1,7 +1,7 @@
 """Autonomous permission mode, per-tool trust overrides, grant persistence (audit P0-2a/b/d).
 
 Acceptance names from the audit: ``test_autonomous_mode``, ``test_trust_tiers``,
-``test_grant_persistence``. Semantics per D12 (omni's PR #3 rulings): autonomous never
+``test_grant_persistence``. Semantics per D12 (PR #3 rulings): autonomous never
 prompts — dangerous commands hard-deny deterministically, attended or headless; per-tool
 overrides cannot loosen the dangerous floor in an autonomous session; grants resolve
 ASK→ALLOW only and a session resumed under a tighter mode ignores looser-mode grants.

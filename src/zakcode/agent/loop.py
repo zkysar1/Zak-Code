@@ -624,7 +624,7 @@ _LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
 _MAX_EMPTY_RETRIES = 2
 #: Worded as a DIRECTIVE, not an invitation (ADR-0033): the earlier "say what you tried,
 #: what failed, and what should happen next" handed a struggling small model a licence to
-#: apologize and narrate, and the 2026-08-26 serene transcript answered it with exactly that
+#: apologize and narrate, and the 2026-08-26 field transcript answered it with exactly that
 #: — an apology spiral. One tool call, the answer, or one blocking sentence; nothing else.
 _EMPTY_COMPLETION_NUDGE = (
     "Your response was empty. Reply with exactly ONE of these:\n"
@@ -832,7 +832,7 @@ def _broken_record_nudge(count: int) -> str:
 #: (use / run / create / write / …), and every real miss was a verb off the list: "I will
 #: try to create" (the 2026-08-26 spiral, ×20 — the hedge was added, ADR-0033), then "I will
 #: now re-attempt to debug the script by inserting print statements" ended a one-iteration
-#: turn on serene (2026-09-08) with "debug" and "re-attempt" on neither list. An allowlist
+#: turn (field, 2026-09-08) with "debug" and "re-attempt" on neither list. An allowlist
 #: fails on the next verb the model picks; the DENYLIST names the shapes that are not work
 #: — "I will need you to", "I'll let you know", "I will be here", "I will not", "let me know",
 #: "I'll summarize" — so a new verb is an announcement by default. A false positive costs one
@@ -889,7 +889,7 @@ def _ends_on_plan_status(text: str) -> bool:
 
 #: Deferral rail (ADR-0117): the completion's conclusion leaves part of the request for LATER
 #: — "will enable further debugging in a future session", "remains unresolved", "still
-#: present, but now debuggable", "to be addressed in a follow-up". The serene turn of
+#: present, but now debuggable", "to be addressed in a follow-up". The field turn of
 #: 2026-09-08 ended on exactly that after 50 iterations, plan closed, nothing asking it to
 #: stop. Nothing in the harness had a word for "the answer defers the ask": the plan gate
 #: saw a finished plan, the verdict rail saw a real conclusion, and the intent gate looks for
@@ -939,7 +939,7 @@ _DEFERRAL_NUDGE = (
 #: Claim-vs-action guard (ADR-0033): a completion that REPORTS a change to a file, skill,
 #: script or directory ("I have updated the skill registry … I have registered the
 #: skill") in a turn that ran no file-changing tool call is a fabricated done — the
-#: 2026-08-26 serene transcript ended on exactly that sentence with nothing written. Judged
+#: 2026-08-26 field transcript ended on exactly that sentence with nothing written. Judged
 #: on the tail like the false-done guard; one nudge per turn; a model reporting work from an
 #: EARLIER turn can say so and finish. The lookahead ties the verb to a file-ish object in
 #: the same sentence, so "I have added some context below" is conversation, not a claim.
@@ -970,7 +970,7 @@ def _claims_file_work(text: str) -> bool:
 #: Blocker-without-evidence guard (ADR-0036): a completion that declares itself BLOCKED
 #: ("I am blocked because … is not available", "I cannot proceed without …", "please
 #: provide …") in a turn where NO tool call failed is a conclusion the model reasoned its
-#: way to, not one it measured. Field incident 2026-08-27 (serene): the model read a hook's
+#: way to, not one it measured. Field incident 2026-08-27: the model read a hook's
 #: source, decided the session id it injects "is not available in this execution
 #: environment", and ended three turns on that sentence — the skill's own one-line check
 #: (`if [ -z "$SID" ] …`) was never run, and would have passed. First-person framing only,
@@ -1512,7 +1512,7 @@ def _claims_blocker(text: str) -> bool:
 #: starts with the command-expansion frame and carries the skill's WHOLE BODY as the user
 #: message. That body is documentation, not a request: the compound-ask seeder must not read
 #: its ``/other-skill`` mentions as asks, and the coverage backstop must not demand a second
-#: ``use_skill`` load of the skill that IS the turn. Field incident 2026-08-27 (serene):
+#: ``use_skill`` load of the skill that IS the turn. Field incident 2026-08-27:
 #: ``/start sera`` seeded ``run /start, /stop, /boot, /prime`` from the start skill's prose —
 #: a plan telling the model to STOP the agent it was starting — and re-loaded the 1,200-line
 #: skill through ``use_skill`` to satisfy the backstop. Only a frame at the very START of the
@@ -1612,7 +1612,7 @@ _SKILL_REENTRY_NEGATED_RE = re.compile(
 #: model runs no skill at all, before the next such veto ends the turn as ``veto_stall``
 #: (ADR-0187). Three: one delivery is the fix for a model that could not map the tool name,
 #: a second covers a body that landed mid-thought, a third is the spiral — measured
-#: 2026-09-17 (serene, gemini-3.5-flash): productivity-check → ``echo`` → "Verdict: …" →
+#: 2026-09-17 (gemini-3.5-flash): productivity-check → ``echo`` → "Verdict: …" →
 #: BLOCK → the same, for hours, with the hook naming ``Skill('<loop-skill>')`` every time.
 #: Vetoes whose reason names no skill are not counted and never trip it: a generic Stop
 #: hook keeps Claude Code's unbounded contract.
@@ -1678,7 +1678,7 @@ def harness_skill_turn_text(turn_text: str, note: str) -> str:
 
 #: Text-only stall (ADR-0033): a turn whose model answers a nudge or veto with ANOTHER
 #: no-tool-call completion — no plan open — is stalled in words. Two in a row latch the
-#: struggle flag so zakpick hands the turn to the deep coder; the serene spiral produced
+#: struggle flag so zakpick hands the turn to the deep coder; the field spiral produced
 #: five such completions on the cheap model with nothing in the harness escalating.
 _TEXT_ONLY_STALL = 2
 
@@ -1760,7 +1760,7 @@ _MAX_LENGTH_CONTINUATIONS = 3
 #: the iteration cap holds regardless). Until ADR-0115 this was a flat per-turn cap and the
 #: no-progress guard already ended nudging on an unchanged plan — so the cap only ever bit on
 #: PRODUCTIVE nudges, and a 14-step plan finished "done — struggled" with five steps open after
-#: its two nudges were spent on steps that got done (serene, gemini-2.5-flash, 2026-09-08).
+#: its two nudges were spent on steps that got done (gemini-2.5-flash, 2026-09-08).
 _MAX_PLAN_NUDGES = 2
 
 #: Appended to a tool output from which credential-shaped tokens were scrubbed (ADR-0116):
@@ -7031,7 +7031,7 @@ class AgentLoop:
         A hook's "your FIRST action MUST be Skill('<loop-skill>') with args='loop'" is the
         framework asking for the loop skill; handing the model that instruction left the
         re-entry to the model's ability to map another harness's tool name — measured
-        2026-09-17 (serene, gemini-3.5-flash): hours of ``echo`` + "Verdict: …" text
+        2026-09-17 (gemini-3.5-flash): hours of ``echo`` + "Verdict: …" text
         against that exact reason. Delivering the skill makes the re-entry the harness's act.
         """
         compose = self._compose_skill

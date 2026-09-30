@@ -586,7 +586,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
 - **Context:** A field turn burned 17 iterations trying to add a knowledge-tree
   node: every attempt varied the METHOD (`tree` as a shell command, `tree.sh`, `tree.py`
   with guessed flags) while sharing one wrong PREMISE — that `world/knowledge/tree/`
-  existed relative to the cwd (the real tree lived under an external `.mind-data/` root).
+  existed relative to the cwd (the real tree lived under an external `.agent-data/` root).
   The ladder nudged, narrowed to read-only, and stopped; the read-only rung even had the
   right tools in hand and still probed the wrong assumed path. The operator then typed
   "take a step back, and think about what the right path is, and try again" — and the
@@ -3982,7 +3982,7 @@ under the workspace roots (up to three, workspace-relative), else the closest na
 ADR-0040's `suggest`, else nothing: a genuinely absent file stays a plain error, no
 speculative hint. The basename locator (shared with the exit-127 hint) now descends into
 hidden data dirs and prunes only VCS, virtualenv, dependency and cache dirs; it used to
-prune every dot-dir, so on a host-framework deployment neither hint could see `.mind-data/`, the
+prune every dot-dir, so on a host-framework deployment neither hint could see `.agent-data/`, the
 directory the model was guessing at. Stdin markers and apport's `-c` artefact are never a
 file the model meant.
 
@@ -4015,7 +4015,7 @@ the loop makes deliberately.
 **Addendum (2026-08-29, same day, after the first deploy).** The post-deploy census
 on a worker machine found four ENOENTs in the first hour that the hint did not touch, and none
 of them was a file the file search could lead on: a worker session invented the prefix
-`.mind-data/agents/agent/sessions/<sid>/` (the agents dir lives at the workspace
+`.agent-data/agents/agent/sessions/<sid>/` (the agents dir lives at the workspace
 root) and then `touch`ed, `grep`ped and `ls`ed under it — the file was about to be
 *created*, so no same-named file existed anywhere. Three widenings, one rule:
 
@@ -4027,11 +4027,11 @@ root) and then `touch`ed, `grep`ped and `ls`ed under it — the file was about t
   optional-file check gets no hint by design.
 - **Absolute guesses.** The suffix match compared the guessed path *as written*
   against root-relative hits, so an absolute wrong-prefix guess
-  (`cat <root>/world/x.yaml`) never matched `.mind-data/world/x.yaml`. The guess is
+  (`cat <root>/world/x.yaml`) never matched `.agent-data/world/x.yaml`. The guess is
   now normalised to root-relative first (`_guess_relative`).
 - **Invented directory prefixes.** When the guessed *directory* does not exist, the
   hint names the first missing path component and where a directory of that name
-  really is (`'.mind-data/agents' is the first missing part … but a directory named
+  really is (`'.agent-data/agents' is the first missing part … but a directory named
   'agents' does exist: agents`); a directory guessed at the wrong place with a real
   parent (`ls world/`) gets the same directory lookup. **A file-level lead outranks
   the prefix diagnosis**: an exact or nearest-name hit keeps the first word and the
@@ -5580,7 +5580,7 @@ the next turn). Field re-test: the same request on this build, expected to end a
 
 **Context.** Field run 2026-09-10, a host framework workspace on a local 35B model, a domain question
 answered from the knowledge store. The host framework's world lives under a gitignored root
-(`.mind-data/`), so every `list_dir` on its tree came back as one line — `[... 5 ignored
+(`.agent-data/`), so every `list_dir` on its tree came back as one line — `[... 5 ignored
 entries hidden; include_ignored=true to show ...]`. The tool said exactly what to do. The model
 read that line four times without acting on it, the no-progress rail fired and seeded
 investigative steps (misdiagnosed as "`bash` keeps failing"), and only then did it pass the flag:
@@ -13907,20 +13907,20 @@ discovery has instead of assuming the built-ins fill the budget.
 
 Status: accepted. 2026-09-23.
 
-Context. A host framework keeps its world and meta under `.mind-data/`, a directory the checkout's
+Context. A host framework keeps its world and meta under `.agent-data/`, a directory the checkout's
 .gitignore excludes, and zakcode adds both as extra workspace roots from the framework's
 local-paths.conf. On 2026-09-23 a worker on a 27B model read `world/program.md`, the path the
-host framework's guide writes with its virtual `world/` prefix. The file is `.mind-data/world/program.md`.
+host framework's guide writes with its virtual `world/` prefix. The file is `.agent-data/world/program.md`.
 The not-found answer (ADR-0040) listed six look-alikes from the checkout whose names contain
 `program.md`, and not the file itself. `suggest` judged every root by the checkout's ignore
-rules. A root nested in the checkout is relative to it, so the checkout's `.mind-data/` rule hid
+rules. A root nested in the checkout is relative to it, so the checkout's `.agent-data/` rule hid
 the whole root. The ignore module already says a root's .gitignore must not hide another root's
 files, but that held only for a root outside the checkout.
 
 Decision. `suggest` loads each root's ignore rules from that root. The checkout's rules still
 apply to the checkout; a declared extra root is searched under its own, since declaring it says
 it is wanted. A hit whose path ends with the path asked for (`world/program.md` for
-`.mind-data/world/program.md`) now ranks above every other name. Bash's "No such file" hint
+`.agent-data/world/program.md`) now ranks above every other name. Bash's "No such file" hint
 already ranks that lead first (ADR-0097). Without the tier, a shorter look-alike
 (`notes/old-program.md`) sorted first by length.
 
@@ -13932,12 +13932,12 @@ bare name, that is the file the model meant.
 Measured on a worker machine's host framework layout with the patched module beside the installed build. Before,
 `world/program.md` and `world/forged-skills.yaml` each got a look-alike under agents/ first,
 and `meta/reflection-strategy.yaml` got nothing. After, each got its real file first:
-`.mind-data/world/program.md`, `.mind-data/world/forged-skills.yaml` and
-`.mind-data/meta/reflection-strategy.yaml`. A not-found took about 1.15 seconds instead of 0.65.
+`.agent-data/world/program.md`, `.agent-data/world/forged-skills.yaml` and
+`.agent-data/meta/reflection-strategy.yaml`. A not-found took about 1.15 seconds instead of 0.65.
 
-The proof. tests/test_path_suggestions.py: in a checkout that ignores `.mind-data/` and
+The proof. tests/test_path_suggestions.py: in a checkout that ignores `.agent-data/` and
 `build/`, with the world declared as a root, the first suggestion for `world/program.md` is
-`.mind-data/world/program.md`, the look-alike is still listed and `build/program.md` stays
+`.agent-data/world/program.md`, the look-alike is still listed and `build/program.md` stays
 hidden. Undeclared, the world stays hidden. Read's not-found output leads with the real file.
 Three mutants each turned the test red under a mutation-proof run on a test machine: judging every
 root by the checkout's rules, dropping the suffix tier, and turning soft ignore rules off.

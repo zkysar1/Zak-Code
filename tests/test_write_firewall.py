@@ -87,7 +87,7 @@ async def test_edit_refuses_change_that_breaks_python(tmp_path: Path) -> None:
 
 
 # ── self-diagnosing refusals (ADR-0118) ───────────────────────────────────────
-# Field incident 2026-09-09 (serene): every write of a mangled .py was refused with a bare
+# Field incident 2026-09-09: every write of a mangled .py was refused with a bare
 # "unterminated string literal (line 47)". The model could not see its own content, read
 # the refusal as "the tool succeeded and then the environment complained", and handed the
 # user a one-line fix to apply by hand. The refusal now shows the line, names the likely

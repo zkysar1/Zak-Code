@@ -1,6 +1,6 @@
 """Blocker-without-evidence guard + route-label unwrapping (ADR-0036).
 
-Field incident 2026-08-27 (serene): the model read a hook's source, decided the session id
+Field incident 2026-08-27: the model read a hook's source, decided the session id
 it injects "is not available in this execution environment", and ended three turns on that
 sentence. No tool call had failed — the skill's own one-line check was never run, and would
 have passed. A blocker nobody measured is a conclusion, not a finding: one nudge asks for
@@ -36,7 +36,7 @@ from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.write_file import WriteFileTool
 
-SERENE_BLOCKERS = [
+FIELD_BLOCKERS = [
     "I am blocked because the HOST_SID environment variable, necessary for the /start "
     "skill, is not available in this execution environment.",
     "I cannot force the recovery without the HOST_SID.",
@@ -47,7 +47,7 @@ SERENE_BLOCKERS = [
 
 
 def test_blocker_claims_are_first_person_only() -> None:
-    for text in SERENE_BLOCKERS:
+    for text in FIELD_BLOCKERS:
         assert _claims_blocker(text), text
     assert _claims_blocker("I'm stuck: the API key is missing.")
     # Answers that mention absence are not blocker claims.
@@ -116,7 +116,7 @@ def _rails(loop: AgentLoop) -> list[str]:
 def test_unmeasured_blocker_is_nudged_once_then_the_turn_continues(tmp_path: Path) -> None:
     provider = _Script(
         [
-            LLMResult(text=SERENE_BLOCKERS[0]),
+            LLMResult(text=FIELD_BLOCKERS[0]),
             LLMResult(text="Probed: `echo $HOST_SID` prints a value. Continuing — bound sera."),
         ]
     )
@@ -148,7 +148,7 @@ def test_a_blocker_a_failed_tool_call_demonstrated_is_not_nudged(tmp_path: Path)
 def test_streaming_unmeasured_blocker_is_nudged_and_announced(tmp_path: Path) -> None:
     provider = _Stream(
         [
-            SERENE_BLOCKERS[1],
+            FIELD_BLOCKERS[1],
             "Probed it: the id is present. Proceeding with the recovery step.",
         ]
     )
@@ -184,7 +184,7 @@ def test_route_label_unwraps_adapters_to_the_model() -> None:
 
 
 # ── refusal-is-not-a-blocker (ADR-0118) ───────────────────────────────────────
-# Field incident 2026-09-09 (serene): every write of a mangled .py was REFUSED by the write
+# Field incident 2026-09-09: every write of a mangled .py was REFUSED by the write
 # firewall (nothing landed), the model read the refusals as the environment "reporting
 # syntax errors on valid code", declared an environmental blocker, and asked the user to
 # apply a one-line fix by hand. A refusal of the model's own content is not a measured

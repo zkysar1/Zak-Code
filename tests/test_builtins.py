@@ -378,8 +378,8 @@ async def test_registry_execute_dispatch(ctx: ToolContext) -> None:
 async def test_bash_127_names_the_workspace_script(tmp_path) -> None:
     """A bare script name not on PATH gets a fix naming the real workspace path —
     one error instead of the model's error -> find -> retry ritual (measured on a
-    a framework agent 2026-08-25: dozens of identical 127s on core/scripts names)."""
-    scripts = tmp_path / "core" / "scripts"
+    a framework agent 2026-08-25: dozens of identical 127s on tools/scripts names)."""
+    scripts = tmp_path / "tools" / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "ledger-read.sh").write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
@@ -387,8 +387,8 @@ async def test_bash_127_names_the_workspace_script(tmp_path) -> None:
     assert res.is_error
     assert res.data is not None and res.data["exit_code"] == 127
     assert res.fix is not None
-    assert "core/scripts/ledger-read.sh" in res.fix
-    assert "bash core/scripts/ledger-read.sh" in res.fix
+    assert "tools/scripts/ledger-read.sh" in res.fix
+    assert "bash tools/scripts/ledger-read.sh" in res.fix
 
 
 async def test_bash_127_unknown_command_gets_no_fix(tmp_path) -> None:
@@ -417,15 +417,15 @@ async def test_bash_126_names_the_chmod_escape(tmp_path) -> None:
 
 
 def _mind_workspace(tmp_path: Path) -> Path:
-    """A workspace with framework scripts under core/scripts, domain data under a
-    HIDDEN .mind-data/ (which the basename locator used to prune), and a .git/
+    """A workspace with framework scripts under tools/scripts, domain data under a
+    HIDDEN .agent-data/ (which the basename locator used to prune), and a .git/
     that must never be offered as a lead."""
-    scripts = tmp_path / "core" / "scripts"
+    scripts = tmp_path / "tools" / "scripts"
     scripts.mkdir(parents=True)
     for name in ("lesson-store-add.sh", "lesson-store-read.sh", "memo-read.sh", "memo-set.sh"):
         (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
     (scripts / "changes-list.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    world = tmp_path / ".mind-data" / "world"
+    world = tmp_path / ".agent-data" / "world"
     world.mkdir(parents=True)
     (world / "forged-skills.yaml").write_text("skills: []\n", encoding="utf-8")
     objects = tmp_path / ".git" / "objects"
@@ -436,45 +436,45 @@ def _mind_workspace(tmp_path: Path) -> Path:
 
 async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
     """`cat world/forged-skills.yaml` on a workspace whose data lives at
-    .mind-data/world/forged-skills.yaml. Measured 2026-08-29 (eight sessions):
+    .agent-data/world/forged-skills.yaml. Measured 2026-08-29 (eight sessions):
     15 of the day's 73 failed commands were ENOENT, every one a guessed path."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
     res = await BashTool().execute({"command": "cat world/forged-skills.yaml"}, ctx)
     assert res.is_error
     assert res.data is not None and res.data["exit_code"] != 0
     assert res.fix is not None
-    assert ".mind-data/world/forged-skills.yaml" in res.fix
+    assert ".agent-data/world/forged-skills.yaml" in res.fix
     assert ".git/" not in res.fix
     # A stray `world/` dir at the root does not silence it: the hit ENDS with the guess,
     # which is the wrong-prefix signature, not an optional-file check.
     (tmp_path / "world").mkdir()
     res = await BashTool().execute({"command": "cat world/forged-skills.yaml"}, ctx)
-    assert res.fix is not None and ".mind-data/world/forged-skills.yaml" in res.fix
+    assert res.fix is not None and ".agent-data/world/forged-skills.yaml" in res.fix
 
 
 async def test_bash_wrong_prefix_hint_says_cd_will_not_help(tmp_path) -> None:
     """Measured 2026-08-30: refused for `bash world/scripts/yahoo/discover.sh`
-    with the lead naming `.mind-data/world/scripts/yahoo/discover.sh`, the model
+    with the lead naming `.agent-data/world/scripts/yahoo/discover.sh`, the model
     replied `cd <workspace root> && <same command>` -- it read "(or `cd` there
     first)" as a cwd problem -- and only after a second refusal used the path
     already named. When the guess is the real path minus its leading directory,
     say exactly that."""
     root = _mind_workspace(tmp_path)
-    script = root / ".mind-data" / "world" / "scripts" / "yahoo" / "discover.sh"
+    script = root / ".agent-data" / "world" / "scripts" / "yahoo" / "discover.sh"
     script.parent.mkdir(parents=True)
     script.write_text("echo discovered\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute({"command": "bash world/scripts/yahoo/discover.sh"}, ctx)
     assert res.is_error and res.data is not None and res.data.get("script_path_missing") is True
-    assert "missing its leading '.mind-data/'" in res.output
-    assert "'.mind-data/world/scripts/yahoo/discover.sh' exactly as written" in res.output
+    assert "missing its leading '.agent-data/'" in res.output
+    assert "'.agent-data/world/scripts/yahoo/discover.sh' exactly as written" in res.output
     assert "a `cd` will not help" in res.output
     assert "or `cd` there first" not in res.output
     # The generic wording survives for a same-named file in an UNRELATED directory.
     ctx2 = ToolContext(workspace_root=_mind_workspace(tmp_path / "other"))
-    (tmp_path / "other" / "core" / "scripts").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "other" / "core" / "scripts" / "discover.sh").write_text("", encoding="utf-8")
-    res = await BashTool().execute({"command": "bash tools/discover.sh"}, ctx2)
+    (tmp_path / "other" / "tools" / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "other" / "tools" / "scripts" / "discover.sh").write_text("", encoding="utf-8")
+    res = await BashTool().execute({"command": "bash ext/discover.sh"}, ctx2)
     assert res.is_error and "or `cd` there first" in res.output
     assert "will not help" not in res.output
 
@@ -488,7 +488,7 @@ async def test_bash_enoent_offers_the_nearest_names_for_an_invented_script(tmp_p
     )
     assert res.is_error
     assert res.fix is not None
-    assert "core/scripts/lesson-store-add.sh" in res.fix
+    assert "tools/scripts/lesson-store-add.sh" in res.fix
     assert "lesson-store.py" in res.fix
 
 
@@ -504,11 +504,11 @@ async def test_bash_enoent_with_no_lead_gets_no_fix(tmp_path) -> None:
 
 
 async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path) -> None:
-    """`bash core/scripts/memo-list.sh`: the directory is real, the name is invented.
+    """`bash tools/scripts/memo-list.sh`: the directory is real, the name is invented.
     The family sharing its leading token (memo-read.sh, memo-set.sh) is the answer --
     not the global token match (`changes-list.sh` on 'list') a live smoke produced."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
-    res = await BashTool().execute({"command": "bash core/scripts/memo-list.sh"}, ctx)
+    res = await BashTool().execute({"command": "bash tools/scripts/memo-list.sh"}, ctx)
     assert res.is_error
     assert res.fix is not None
     assert "memo-read.sh" in res.fix and "memo-set.sh" in res.fix
@@ -516,22 +516,22 @@ async def test_bash_enoent_typo_in_a_real_directory_names_its_siblings(tmp_path)
 
 
 async def test_bash_enoent_same_words_in_another_order_lead_the_hint(tmp_path) -> None:
-    """`bash core/scripts/ticket-create.sh` when the script is `create-ticket.sh`: the
+    """`bash tools/scripts/ticket-create.sh` when the script is `create-ticket.sh`: the
     leading-token family (ticket-create-gate.sh, ticket-recheck.sh) is not the answer
     and used to be the whole hint -- measured 2026-08-30, six more commands to
     find the real file. The reordered name leads, as a pasteable path."""
     root = _mind_workspace(tmp_path)
-    scripts = root / "core" / "scripts"
+    scripts = root / "tools" / "scripts"
     for name in ("create-ticket.sh", "ticket-create-gate.sh", "ticket-recheck.sh"):
         (scripts / name).write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
-        {"command": "bash core/scripts/ticket-create.sh --goal item-6-22"}, ctx
+        {"command": "bash tools/scripts/ticket-create.sh --goal item-6-22"}, ctx
     )
     assert res.is_error
     assert res.fix is not None
     assert "same words in another order" in res.fix
-    assert res.fix.index("core/scripts/create-ticket.sh") < res.fix.index("ticket-create-gate.sh")
+    assert res.fix.index("tools/scripts/create-ticket.sh") < res.fix.index("ticket-create-gate.sh")
     assert "ticket-recheck.sh" in res.fix
 
 
@@ -553,18 +553,18 @@ async def test_bash_enoent_optional_file_in_a_real_directory_is_silent(tmp_path)
 
 async def test_bash_enoent_exact_hit_lists_the_family_beside_it(tmp_path) -> None:
     """`python3 world/scripts/lesson-store.py add` when a `lesson-store.py` module
-    does exist under core/scripts: the hit is named AND its siblings sharing the
+    does exist under tools/scripts: the hit is named AND its siblings sharing the
     leading token, because the wrapper (`lesson-store-add.sh`) is what the model
     wanted — the module itself is a silent no-op when run as a script."""
     root = _mind_workspace(tmp_path)
-    (root / "core" / "scripts" / "lesson-store.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tools" / "scripts" / "lesson-store.py").write_text("x = 1\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
         {"command": "python3 world/scripts/lesson-store.py add --entry x"}, ctx
     )
     assert res.is_error
     assert res.fix is not None
-    assert "core/scripts/lesson-store.py" in res.fix
+    assert "tools/scripts/lesson-store.py" in res.fix
     assert "lesson-store-add.sh" in res.fix and "lesson-store-read.sh" in res.fix
 
 
@@ -573,7 +573,7 @@ def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
 
     root = _mind_workspace(tmp_path)
     shapes = [
-        "python3: can't open file '/opt/mind/.mind-data/world/scripts/lesson-store.py': "
+        "python3: can't open file '/opt/mind/.agent-data/world/scripts/lesson-store.py': "
         "[Errno 2] No such file or directory",
         'Traceback (most recent call last):\n  File "<string>", line 14, in <module>\n'
         "FileNotFoundError: [Errno 2] No such file or directory: 'world/forged-skills.yaml'",
@@ -588,7 +588,7 @@ def test_enoent_fix_predicate_reads_every_measured_shape(tmp_path) -> None:
     nearest = _enoent_fix(shapes[0], root, [])
     assert nearest is not None and "lesson-store-add.sh" in nearest
     exact = _enoent_fix(shapes[2], root, [])
-    assert exact is not None and ".mind-data/world/forged-skills.yaml" in exact
+    assert exact is not None and ".agent-data/world/forged-skills.yaml" in exact
     # apport's own crash names '<cwd>/-c' — never a hint about a file called -c.
     assert (
         _enoent_fix(
@@ -613,22 +613,22 @@ def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
                 return m.group(1)
         return None
 
-    p = "/opt/mind/.mind-data/agents/coach/sessions/82a/light-prime-done"
+    p = "/opt/mind/.agent-data/agents/coach/sessions/82a/light-prime-done"
     assert captured(f"touch: cannot touch '{p}': No such file or directory") == p
     assert captured(f"grep: {p}: No such file or directory") == p
     assert (
         captured(
-            "ls: cannot access '/opt/mind/.mind-data/agents/coach/sessions/': "
+            "ls: cannot access '/opt/mind/.agent-data/agents/coach/sessions/': "
             "No such file or directory"
         )
-        == "/opt/mind/.mind-data/agents/coach/sessions/"
+        == "/opt/mind/.agent-data/agents/coach/sessions/"
     )
     assert (
         captured(
-            "mkdir: cannot create directory '/opt/mind/.mind-data/agents': "
+            "mkdir: cannot create directory '/opt/mind/.agent-data/agents': "
             "No such file or directory"
         )
-        == "/opt/mind/.mind-data/agents"
+        == "/opt/mind/.agent-data/agents"
     )
     assert captured("stat: cannot statx 'w/x.yaml': No such file or directory") == "w/x.yaml"
     assert captured("rm: cannot remove 'w/x.yaml': No such file or directory") == "w/x.yaml"
@@ -641,27 +641,27 @@ def test_enoent_regexes_capture_the_coreutils_and_grep_shapes() -> None:
 
 
 async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) -> None:
-    """`touch /ws/.mind-data/agents/coach/sessions/<sid>/light-prime-done` --
-    measured 2026-08-29: the model invented `.mind-data/agents/...`; `agents/`
+    """`touch /ws/.agent-data/agents/coach/sessions/<sid>/light-prime-done` --
+    measured 2026-08-29: the model invented `.agent-data/agents/...`; `agents/`
     lives at the workspace root. Nothing anywhere is named light-prime-done
     (the file was about to be CREATED), so the file search has no lead -- the
     first missing path component does."""
     root = _mind_workspace(tmp_path)
     (root / "agents" / "coach" / "sessions" / "abc").mkdir(parents=True)
     ctx = ToolContext(workspace_root=root)
-    bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
+    bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
     # as_posix(): bash eats a WindowsPath's backslashes, and `touch C:Usersx` SUCCEEDS
     # in the cwd (measured on CI, 2026-08-29) — so the absolute form here must be posix.
     res = await BashTool().execute({"command": f"touch {bad.as_posix()}"}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
-    assert "'.mind-data/agents' is the first missing part" in res.fix
+    assert "'.agent-data/agents' is the first missing part" in res.fix
     assert "a directory named 'agents' does exist: agents" in res.fix
     assert "light-prime-done" not in res.fix.split("does exist")[1]  # no phantom file lead
 
 
 async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path) -> None:
-    """`grep x /ws/.mind-data/agents/coach/sessions/<sid>/body-manifest.yaml` when another
+    """`grep x /ws/.agent-data/agents/coach/sessions/<sid>/body-manifest.yaml` when another
     session's manifest exists: the same-named file is the more specific lead and keeps
     the first word (it is how the lesson-store.py family case has always read), and
     the invented-prefix diagnosis rides beside it."""
@@ -670,29 +670,29 @@ async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path)
     other.mkdir(parents=True)
     (other / "body-manifest.yaml").write_text("body_state: active\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
-    bad = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
+    bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
     res = await BashTool().execute({"command": f"grep -c body_state {bad.as_posix()}"}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "agents/coach/sessions/xyz/body-manifest.yaml" in res.fix
-    assert "'.mind-data/agents' is the first missing part" in res.fix
+    assert "'.agent-data/agents' is the first missing part" in res.fix
     assert "a directory named 'agents' does exist: agents" in res.fix
 
 
 async def test_bash_enoent_directory_guessed_at_the_wrong_place(tmp_path) -> None:
-    """`ls world/` on a workspace whose data lives under .mind-data/: no file is
+    """`ls world/` on a workspace whose data lives under .agent-data/: no file is
     named `world`, its parent (the root) exists, and nothing at the root shares
     its token -- the directory itself is the lead."""
     ctx = ToolContext(workspace_root=_mind_workspace(tmp_path))
     res = await BashTool().execute({"command": "ls world/"}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
-    assert "a directory named 'world' does: .mind-data/world" in res.fix
+    assert "a directory named 'world' does: .agent-data/world" in res.fix
 
 
 async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> None:
     """An ABSOLUTE wrong-prefix guess (`cat <root>/world/forged-skills.yaml`) must match
-    the hit `.mind-data/world/forged-skills.yaml` the same way the relative form does."""
+    the hit `.agent-data/world/forged-skills.yaml` the same way the relative form does."""
     root = _mind_workspace(tmp_path)
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
@@ -700,7 +700,7 @@ async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> Non
     )
     assert res.is_error
     assert res.fix is not None, res.output
-    assert "a file named 'forged-skills.yaml' does: .mind-data/world/forged-skills.yaml" in res.fix
+    assert "a file named 'forged-skills.yaml' does: .agent-data/world/forged-skills.yaml" in res.fix
 
 
 def test_first_missing_component_and_guess_relative(tmp_path) -> None:
@@ -712,8 +712,8 @@ def test_first_missing_component_and_guess_relative(tmp_path) -> None:
     # Relative: the first component is what is missing.
     assert _first_missing_component("world/x.yaml", roots) == (root, "world")
     # Absolute, deep: the anchor is the deepest EXISTING ancestor.
-    p = root / ".mind-data" / "agents" / "coach" / "sessions" / "abc" / "f"
-    assert _first_missing_component(str(p), roots) == (root / ".mind-data", "agents")
+    p = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "f"
+    assert _first_missing_component(str(p), roots) == (root / ".agent-data", "agents")
     # Only the leaf missing -> None (that is the sibling branch's case).
     assert _first_missing_component("agents/coach/nothing.yaml", roots) is None
     assert _first_missing_component(str(root / "agents" / "coach" / "nothing.yaml"), roots) is None
@@ -790,7 +790,7 @@ def test_locate_basename_sees_hidden_data_dirs_but_not_vcs_or_caches(tmp_path) -
     from zakcode.tools.builtins.bash import _locate_basename
 
     root = _mind_workspace(tmp_path)
-    assert _locate_basename(root, "forged-skills.yaml") == ".mind-data/world/forged-skills.yaml"
+    assert _locate_basename(root, "forged-skills.yaml") == ".agent-data/world/forged-skills.yaml"
     (root / ".venv" / "bin").mkdir(parents=True)
     (root / ".venv" / "bin" / "only-here.sh").write_text("no", encoding="utf-8")
     assert _locate_basename(root, "only-here.sh") is None
@@ -819,7 +819,7 @@ def test_json_first_line_fix_predicate() -> None:
         "json.decoder.JSONDecodeError: Expecting value: line 1 column 2 (char 1)\n"
     )
     fix = _json_first_line_fix(
-        "bash core/scripts/objectives-query.sh --full 2>&1 | python3 -c 'x'", err
+        "bash tools/scripts/objectives-query.sh --full 2>&1 | python3 -c 'x'", err
     )
     assert fix is not None and "json.load(sys.stdin)" in fix and "not JSONL" in fix
     heredoc = "cat out.json | python3 - <<'PY'\nimport json\nPY"
@@ -858,7 +858,7 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _module_not_found_fix as fix
 
     cmd = 'python3 -c "import it"'
-    pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
+    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "yahoo"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "client.py").write_text("X = 1\n", encoding="utf-8")
@@ -866,15 +866,15 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
     # The measured shape: the package lives under a hidden data dir, cwd is the root.
     hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo'", tmp_path, [])
     assert hint is not None
-    assert ".mind-data/world/scripts/yahoo" in hint
-    assert "cd .mind-data/world/scripts && python3" in hint
-    assert "PYTHONPATH=.mind-data/world/scripts" in hint
+    assert ".agent-data/world/scripts/yahoo" in hint
+    assert "cd .agent-data/world/scripts && python3" in hint
+    assert "PYTHONPATH=.agent-data/world/scripts" in hint
     # A dotted name whose top package exists but whose submodule does not: name what it holds.
     hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.oauth'", tmp_path, [])
     assert hint is not None and "has no module 'oauth'" in hint and "client" in hint
     # A dotted name whose submodule DOES exist gets the run-from hint, not the listing.
     hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.client'", tmp_path, [])
-    assert hint is not None and "cd .mind-data/world/scripts" in hint
+    assert hint is not None and "cd .agent-data/world/scripts" in hint
     # A single-file module counts too.
     (tmp_path / "tools" / "lib").mkdir(parents=True)
     (tmp_path / "tools" / "lib" / "helpers.py").write_text("", encoding="utf-8")
@@ -892,18 +892,18 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_module_not_found_names_the_package_parent(tmp_path) -> None:
     """`cd <root> && python3 -c "import yahoo"` after the package moved under
-    .mind-data/world/scripts -- five times in 24 h (2026-08-30), one identical
+    .agent-data/world/scripts -- five times in 24 h (2026-08-30), one identical
     retry, no hint. The hint names the parent to run from and the PYTHONPATH form."""
-    pkg = tmp_path / ".mind-data" / "world" / "scripts" / "yahoo"
+    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "yahoo"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
     res = await BashTool().execute({"command": 'python3 -c "import yahoo.client"'}, ctx)
     assert res.is_error
-    assert res.fix is not None and "cd .mind-data/world/scripts && python3" in res.fix
+    assert res.fix is not None and "cd .agent-data/world/scripts && python3" in res.fix
     # Followed as written, the remedy works.
     res = await BashTool().execute(
-        {"command": 'cd .mind-data/world/scripts && python3 -c "import yahoo; print(1)"'}, ctx
+        {"command": 'cd .agent-data/world/scripts && python3 -c "import yahoo; print(1)"'}, ctx
     )
     assert not res.is_error
 
@@ -915,13 +915,13 @@ async def test_bash_module_not_found_without_a_workspace_package_is_plain(tmp_pa
 
 
 def test_nearest_module_fix_predicate(tmp_path) -> None:
-    """The measured shape (2026-08-30): `sys.path.insert(0, "core/scripts")` then
+    """The measured shape (2026-08-30): `sys.path.insert(0, "tools/scripts")` then
     `from ledger_read import ...` -- a module name invented the way script paths are.
     Nothing by that name exists anywhere, so the closest real names under the root the
     command declared are the lead; without a declared root the error stays plain."""
     from zakcode.tools.builtins.bash import _module_not_found_fix as fix
 
-    scripts = tmp_path / "core" / "scripts"
+    scripts = tmp_path / "tools" / "scripts"
     scripts.mkdir(parents=True)
     for name in ("ledger.py", "_ledger_fields.py", "ledger-read.sh", "objectives.py"):
         (scripts / name).write_text("", encoding="utf-8")
@@ -930,28 +930,30 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
         'Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n'
         "ModuleNotFoundError: No module named 'ledger_read'"
     )
-    cmd = "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); from ledger_read import x\""
+    cmd = (
+        "python3 -c \"import sys; sys.path.insert(0, 'tools/scripts'); from ledger_read import x\""
+    )
     hint = fix(cmd, err, tmp_path, [])
     assert hint is not None
-    assert "never resolved" in hint and "core/scripts" in hint
+    assert "never resolved" in hint and "tools/scripts" in hint
     assert "ledger-read.sh" in hint and "ledger" in hint and "not a module" in hint
     assert "objectives" not in hint and "__init__" not in hint
     # A PYTHONPATH prefix, a cd prefix, sys.path.append, and escaped quotes inside a
     # double-quoted program all name the same root.
     for other in (
-        "PYTHONPATH=core/scripts python3 -c 'import ledger_read'",
-        "PYTHONPATH=core/scripts:$PYTHONPATH python3 -c 'import ledger_read'",
-        'cd core/scripts && python3 -c "import ledger_read"',
-        "python3 -c \"import sys; sys.path.append('core/scripts'); import ledger_read\"",
-        'python3 -c "import sys; sys.path.insert(0, \\"core/scripts\\"); import ledger_read"',
+        "PYTHONPATH=tools/scripts python3 -c 'import ledger_read'",
+        "PYTHONPATH=tools/scripts:$PYTHONPATH python3 -c 'import ledger_read'",
+        'cd tools/scripts && python3 -c "import ledger_read"',
+        "python3 -c \"import sys; sys.path.append('tools/scripts'); import ledger_read\"",
+        'python3 -c "import sys; sys.path.insert(0, \\"tools/scripts\\"); import ledger_read"',
     ):
         got = fix(other, err, tmp_path, [])
         assert got is not None and "ledger-read.sh" in got, other
     # PYTHONPATH splits on the shell's `:` on every platform (and `;`), never inside a drive
-    # letter — os.pathsep is `;` on Windows, where `core/scripts:$PYTHONPATH` read as one entry.
+    # letter — os.pathsep is `;` on Windows, where `tools/scripts:$PYTHONPATH` read as one entry.
     from zakcode.tools.builtins.bash import _split_path_list
 
-    assert _split_path_list("core/scripts:$PYTHONPATH") == ["core/scripts", "$PYTHONPATH"]
+    assert _split_path_list("tools/scripts:$PYTHONPATH") == ["tools/scripts", "$PYTHONPATH"]
     assert _split_path_list("a;b:c;;") == ["a", "b", "c"]
     if os.name == "nt":  # a drive letter's colon is not a separator — only where drives exist
         assert _split_path_list("C:\\w\\scripts;D:/x:lib") == ["C:\\w\\scripts", "D:/x", "lib"]
@@ -984,13 +986,13 @@ def test_nearest_module_fix_predicate(tmp_path) -> None:
 
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_invented_import_names_the_nearest_module(tmp_path) -> None:
-    scripts = tmp_path / "core" / "scripts"
+    scripts = tmp_path / "tools" / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "ledger.py").write_text("X = 1\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
     res = await BashTool().execute(
         {
-            "command": "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); "
+            "command": "python3 -c \"import sys; sys.path.insert(0, 'tools/scripts'); "
             'import ledger_read"'
         },
         ctx,
@@ -1000,7 +1002,7 @@ async def test_bash_invented_import_names_the_nearest_module(tmp_path) -> None:
     # Followed as written, the remedy works.
     res = await BashTool().execute(
         {
-            "command": "python3 -c \"import sys; sys.path.insert(0, 'core/scripts'); "
+            "command": "python3 -c \"import sys; sys.path.insert(0, 'tools/scripts'); "
             'import ledger; print(ledger.X)"'
         },
         ctx,
@@ -1028,9 +1030,9 @@ def test_interpreter_mismatch_fix_predicate() -> None:
 
     # A shell script fed to Python -- a coordinating session's verbatim shape
     # (2026-08-29), the py launcher, options before the path, a cd/env prefix.
-    hint = fix("cd /w && HOST_AGENT=sera python3 core/scripts/objectives-update-goal.sh --a b")
-    assert hint is not None and "bash core/scripts/objectives-update-goal.sh" in hint
-    assert fix("py -3 core/scripts/x.sh") is not None
+    hint = fix("cd /w && HOST_AGENT=sera python3 tools/scripts/objectives-update-goal.sh --a b")
+    assert hint is not None and "bash tools/scripts/objectives-update-goal.sh" in hint
+    assert fix("py -3 tools/scripts/x.sh") is not None
     assert fix("python3 -u ./x.sh; echo done") is not None
     # Python fed to a shell.
     hint = fix("bash tools/check.py --fast")
@@ -1040,7 +1042,7 @@ def test_interpreter_mismatch_fix_predicate() -> None:
     # module run.
     assert fix("python3 -c \"print(open('x.sh').read())\"") is None
     assert fix("python3 tool.py x.sh") is None
-    assert fix("bash core/scripts/x.sh && python3 tool.py") is None
+    assert fix("bash tools/scripts/x.sh && python3 tool.py") is None
     assert fix("python3 -m pytest tests/x.sh") is None
     assert fix('bash -c "python3 x.py"') is None
 
@@ -1124,22 +1126,22 @@ def test_locate_basename_is_bounded_and_prunes(tmp_path) -> None:
 
     (tmp_path / "node_modules" / "deep").mkdir(parents=True)
     (tmp_path / "node_modules" / "deep" / "x.sh").write_text("no", encoding="utf-8")
-    (tmp_path / "core" / "scripts").mkdir(parents=True)
-    (tmp_path / "core" / "scripts" / "x.sh").write_text("yes", encoding="utf-8")
-    assert _locate_basename(tmp_path, "x.sh") == "core/scripts/x.sh"  # pruned dir never wins
+    (tmp_path / "tools" / "scripts").mkdir(parents=True)
+    (tmp_path / "tools" / "scripts" / "x.sh").write_text("yes", encoding="utf-8")
+    assert _locate_basename(tmp_path, "x.sh") == "tools/scripts/x.sh"  # pruned dir never wins
     assert _locate_basename(tmp_path, "missing.sh") is None
-    assert _locate_basename(tmp_path, "core/scripts/x.sh") is None  # basenames only
+    assert _locate_basename(tmp_path, "tools/scripts/x.sh") is None  # basenames only
 
 
 # ── ADR-0106: a script path that does not exist is refused BEFORE anything runs ──────
 
 
 def _script_workspace(tmp_path: Path) -> Path:
-    (tmp_path / "core" / "scripts").mkdir(parents=True)
-    (tmp_path / "core" / "scripts" / "memo-read.sh").write_text(
+    (tmp_path / "tools" / "scripts").mkdir(parents=True)
+    (tmp_path / "tools" / "scripts" / "memo-read.sh").write_text(
         "echo memo-read ran\n", encoding="utf-8"
     )
-    (tmp_path / "core" / "scripts" / "ok.sh").write_text("echo ok ran\n", encoding="utf-8")
+    (tmp_path / "tools" / "scripts" / "ok.sh").write_text("echo ok ran\n", encoding="utf-8")
     return tmp_path
 
 
@@ -1148,7 +1150,7 @@ async def test_bash_refuses_a_missing_script_path_before_running(tmp_path) -> No
     refusal carries the sibling lead the hint would have given."""
     ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
     parse = 'python3 -c "import sys, json; json.loads(sys.stdin.read())"'
-    cmd = f"bash core/scripts/memo-list.sh --json 2>&1 | {parse}"
+    cmd = f"bash tools/scripts/memo-list.sh --json 2>&1 | {parse}"
     res = await BashTool().execute({"command": cmd}, ctx)
     assert res.is_error
     assert res.data is not None and res.data.get("script_path_missing") is True
@@ -1159,12 +1161,12 @@ async def test_bash_refuses_a_missing_script_path_before_running(tmp_path) -> No
 
 async def test_bash_runs_an_existing_script_and_follows_a_literal_cd(tmp_path) -> None:
     ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
-    res = await BashTool().execute({"command": "bash core/scripts/ok.sh"}, ctx)
+    res = await BashTool().execute({"command": "bash tools/scripts/ok.sh"}, ctx)
     assert not res.is_error and "ok ran" in res.output
-    res = await BashTool().execute({"command": "cd core && bash scripts/ok.sh"}, ctx)
+    res = await BashTool().execute({"command": "cd tools && bash scripts/ok.sh"}, ctx)
     assert not res.is_error and "ok ran" in res.output
     # a literal cd into a directory where the script is NOT is refused with that base named
-    res = await BashTool().execute({"command": "cd core && bash core/scripts/ok.sh"}, ctx)
+    res = await BashTool().execute({"command": "cd tools && bash tools/scripts/ok.sh"}, ctx)
     assert res.is_error and res.data is not None and res.data.get("script_path_missing") is True
     assert "under" in res.output
 
@@ -1172,14 +1174,14 @@ async def test_bash_runs_an_existing_script_and_follows_a_literal_cd(tmp_path) -
 async def test_bash_preflight_fails_open_where_it_cannot_resolve(tmp_path) -> None:
     ctx = ToolContext(workspace_root=_script_workspace(tmp_path))
     # a $VAR path is not checked: the shell's own error, as before
-    res = await BashTool().execute({"command": 'X=/nowhere; bash "$X/core/scripts/nope.sh"'}, ctx)
+    res = await BashTool().execute({"command": 'X=/nowhere; bash "$X/tools/scripts/nope.sh"'}, ctx)
     assert res.is_error and res.data is not None and "script_path_missing" not in res.data
     # a cd to an unexpandable target: not checked
     res = await BashTool().execute({"command": 'cd "$HOME" && bash scripts/nope.sh'}, ctx)
     assert res.is_error and res.data is not None and "script_path_missing" not in res.data
     # a heredoc BODY mentioning a script is text, not an invocation
     res = await BashTool().execute(
-        {"command": "python3 - <<'PY'\nprint('bash core/scripts/nope.sh')\nPY"}, ctx
+        {"command": "python3 - <<'PY'\nprint('bash tools/scripts/nope.sh')\nPY"}, ctx
     )
     assert not res.is_error and "nope.sh" in res.output
 
@@ -1188,12 +1190,14 @@ def test_script_path_missing_predicate(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _script_path_missing
 
     root = _script_workspace(tmp_path)
-    assert _script_path_missing("bash core/scripts/ok.sh", root, []) is None
+    assert _script_path_missing("bash tools/scripts/ok.sh", root, []) is None
     assert _script_path_missing("python3 -m pytest tests -q", root, []) is None
-    assert _script_path_missing("bash -c 'echo core/scripts/nope.sh'", root, []) is None
+    assert _script_path_missing("bash -c 'echo tools/scripts/nope.sh'", root, []) is None
     # written earlier in the same command: not checked
     assert (
-        _script_path_missing("echo hi > core/scripts/new.sh && bash core/scripts/new.sh", root, [])
+        _script_path_missing(
+            "echo hi > tools/scripts/new.sh && bash tools/scripts/new.sh", root, []
+        )
         is None
     )
     # an extra workspace root that holds the script satisfies the check
@@ -1202,32 +1206,34 @@ def test_script_path_missing_predicate(tmp_path) -> None:
     (other / "world" / "scripts" / "efs-ssh.sh").write_text("", encoding="utf-8")
     assert _script_path_missing("bash world/scripts/efs-ssh.sh 'echo ok'", root, [other]) is None
     missing = _script_path_missing(
-        "python3 core/scripts/objectives-read-goal.sh goal-1-1", root, []
+        "python3 tools/scripts/objectives-read-goal.sh goal-1-1", root, []
     )
     assert missing is not None and "objectives-read-goal.sh" in missing and "was not run" in missing
 
 
 def test_script_path_preflight_steps_over_leading_env_assignments(tmp_path) -> None:
     """The fleet's dominant shape (36 % of script invocations, measured 2026-08-30):
-    `cd <ws> && VAR=v VAR2=v2 bash core/scripts/x.sh`. The assignments are not a
+    `cd <ws> && VAR=v VAR2=v2 bash tools/scripts/x.sh`. The assignments are not a
     command start, so the anchor alone let every one of these through."""
     from zakcode.tools.builtins.bash import _script_path_missing
 
     root = _script_workspace(tmp_path)
     fleet = (
         "cd . && HOST_ROLE=worker HOST_AGENT=sera STORAGE_BACKEND=local "
-        "bash core/scripts/loop-round-start-battery.sh 2>&1; echo RC=$?"
+        "bash tools/scripts/loop-round-start-battery.sh 2>&1; echo RC=$?"
     )
     missing = _script_path_missing(fleet, root, [])
     assert missing is not None and "loop-round-start-battery.sh" in missing
     assert "was not run" in missing
     # the same prefix on an EXISTING script still runs
-    assert _script_path_missing("HOST_AGENT=sera bash core/scripts/ok.sh", root, []) is None
+    assert _script_path_missing("HOST_AGENT=sera bash tools/scripts/ok.sh", root, []) is None
     # a value carrying a path or an `=` does not confuse the step-over
     assert (
-        _script_path_missing("PYTHONPATH=core/scripts X=a=b python3 core/scripts/nope.py", root, [])
+        _script_path_missing(
+            "PYTHONPATH=tools/scripts X=a=b python3 tools/scripts/nope.py", root, []
+        )
         is not None
     )
     # an assignment alone, or one followed by a non-script, is not an invocation
-    assert _script_path_missing("FOO=core/scripts/nope.sh; echo done", root, []) is None
-    assert _script_path_missing("FOO=1 ls core/scripts/nope.sh", root, []) is None
+    assert _script_path_missing("FOO=tools/scripts/nope.sh; echo done", root, []) is None
+    assert _script_path_missing("FOO=1 ls tools/scripts/nope.sh", root, []) is None

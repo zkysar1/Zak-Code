@@ -901,7 +901,7 @@ class Agent:
         # agents/*/local-paths.conf — the same inference --skill-dir repos already
         # get. Without this, file tools refuse the real world ("resolves outside
         # the workspace root") and a relative Write("world/…") lands in a stray
-        # world/ INSIDE the repo (measured on serene, 2026-08-25: scripts written
+        # world/ INSIDE the repo (measured in the field, 2026-08-25: scripts written
         # to a divergent copy the framework never reads). Structural, no config.
         computed_extra_roots.extend(_mind_external_roots(Path(self.settings.workspace_root)))
 

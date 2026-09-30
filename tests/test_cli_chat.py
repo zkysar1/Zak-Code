@@ -1697,7 +1697,7 @@ def test_answer_line_worker_ends_when_wait_is_abandoned(monkeypatch, tmp_path) -
 
 
 def test_update_local_checkout_reports_real_shas_not_same_commit(tmp_path, monkeypatch) -> None:
-    """2026-08-25 field report (serene): a local-path install pulled 2d3134d→c5a1725
+    """2026-08-25 field report: a local-path install pulled 2d3134d→c5a1725
     yet printed "same commit — you were already current", because PEP 610 metadata
     for a dir install records no commit and both sides read "0.0.1 (local path)".
     The verdict must come from the checkout's own before/after shas."""

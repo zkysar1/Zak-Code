@@ -363,7 +363,7 @@ def test_loop_recovery_ladder_writes_hints(tmp_path: Path) -> None:
 class _RecoversOnStepBackProvider(Provider):
     """Fails with fresh-arg boom calls until the step-back rail arrives, then answers.
 
-    The serene field shape: the model iterated on a wrong premise through nudge and narrow,
+    The field shape: the model iterated on a wrong premise through nudge and narrow,
     but the operator's "take a step back, and think about what the right path is" message
     recovered the very next attempt. This provider is that model: only the step-back
     framing unsticks it.
