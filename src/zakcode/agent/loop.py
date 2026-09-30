@@ -2306,6 +2306,7 @@ class AgentLoop:
         consume_say_inbox: bool = False,
         consume_observation_inbox: bool = False,
         compose_skill: Callable[..., Any] | None = None,
+        refresh_hooks: Callable[[], object] | None = None,
     ) -> None:
         self.provider = provider
         # A loop cannot run on a model whose window nobody knows (ADR-0066): every
@@ -2418,6 +2419,14 @@ class AgentLoop:
         # frame + page 1, skeleton seeded) instead of reaching the model as prose. ``None``
         # (bare loop, sub-agents) delivers every say as text.
         self._compose_skill = compose_skill
+        # Settings-hook refresh (ADR-0079): the Agent wires its ``refresh_settings_hooks``
+        # here and the loop calls it at the top of every iteration, so a hook that reached
+        # the workspace's settings files during the previous batch (a pull, an edit, another
+        # process) gates the tool calls of this very turn. A served session runs one turn for
+        # hours, so a turn-start re-read alone left a new hook waiting that long. Three stats
+        # when nothing changed. ``None`` (bare loop, sub-agents, which run with their own
+        # empty hook set) = nothing to refresh.
+        self._refresh_hooks = refresh_hooks
         # Task-boundary say hold (ADR-0052): boundaries a pending say has waited, and the
         # finished-step count at the previous boundary (a rise means a step just completed
         # — the seam a held message lands on). Reset per turn. ``_say_held_since`` is the
@@ -7673,6 +7682,11 @@ class AgentLoop:
                 stop_reason = "max_iterations"
                 break
             iterations += 1
+            # Before every model call, not only at the turn's start (ADR-0079): a hook written
+            # to the settings files while the previous batch ran gates this call's tools. No
+            # hook is running at this boundary, so replacing the list cannot race a dispatch.
+            if self._refresh_hooks is not None:
+                self._refresh_hooks()
             # Mid-turn say delivery (ADR-0051): a message written to the workspace inbox
             # while the turn runs is folded in at this boundary, so the NEXT provider call
             # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
@@ -9285,6 +9299,9 @@ class AgentLoop:
                     stop_reason = "max_iterations"
                     break
                 iterations += 1
+                # Settings hooks re-read before every model call (ADR-0079, see _run_turn).
+                if self._refresh_hooks is not None:
+                    self._refresh_hooks()
                 # Mid-turn say delivery (ADR-0051, streaming twin): announced so a watching
                 # client shows the operator their message was taken into the running turn.
                 delivered_say = await self._deliver_midturn_say()

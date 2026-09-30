@@ -3287,6 +3287,34 @@ appears after refresh with programmatic hooks preserved and the old slice replac
 appended; a removed file drops only its hooks; a broken edit keeps the previous hooks
 and a later good edit is picked up.
 
+**Amended 2026-09-30 (a hook that lands mid-turn gates the same turn).** Two premises above
+were wrong. The turn boundary is not a point a served session reaches often: a served worker
+runs one turn for many hours, measured 2026-09-30 on two worker machines at turns of 6.4 h,
+9 h, 18 h and 23 h, and one still running after 21 h, so a hook that reached the settings
+files mid-turn waited up to a day. And Claude Code does not snapshot hooks at startup.
+Measured 2026-09-30 on Claude Code 2.1.283 and 2.1.285 in a throwaway workspace, a PreToolUse
+hook added to `.claude/settings.json` while a turn ran fired on the next tool call of the
+same turn. That held when the model's own tool call wrote the file, in print mode and
+interactively, and when another process wrote it while a 25 s tool call ran. No notice
+appeared on screen. So the refresh now also runs at the top of every loop iteration, before
+each model call, on both turn paths: `AgentLoop` calls the `refresh_hooks` callback that the
+Agent wires for the main loop only, since sub-agents run with their own empty hook set. The
+turn-start call stays, so UserPromptSubmit sees the current hooks. Each check still costs
+three stats, and only a change re-parses. The iteration top is the one point where no hook
+is running, so replacing the settings slice cannot race a dispatch. Re-reading at every
+dispatch stays rejected for that reason too: an all-read-only batch runs its calls, and so
+their hooks, concurrently, and the dispatch iterates the live list. An edit that lands while
+a model call is in flight reaches the tool calls of the next model call, not that one's.
+Running the re-read mid-turn exposed one more way it could end a turn. In a directory the
+process can no longer enter, `Path.is_file()` raises PermissionError on Python 3.11 to 3.13,
+and the loader called it outside its guard: measured as an unprivileged user on 3.12, the
+refresh raised. The check now sits inside the guard, so the file is reported like a broken
+edit and the previous hooks stay. Pinned by `tests/test_settings_hooks_refresh.py` on the
+buffered and the streaming path: a hook written while a turn's first tool call is gated
+fires on its second; an unchanged file costs one check per model call and no parse; a broken
+mid-turn edit keeps the previous hooks and is parsed and logged once. A loader test pins the
+refused look.
+
 ## ADR-0080: A compaction forgets the per-turn skill reload dedup
 
 **Context.** ADR-0063 answers a second `use_skill` of a body already delivered THIS turn

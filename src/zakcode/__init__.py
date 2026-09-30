@@ -631,9 +631,10 @@ class Agent:
         # danger-scanned (hard-denied in autonomous mode) and provider keys are scrubbed
         # from hook children. TE-R3(3): with a programmatic hook_manager, the settings.json
         # specs are APPENDED to its shell_hooks.
-        # ADR-0079: the settings-sourced slice is re-read at the next turn boundary whenever a
-        # settings file changes on disk, so a hook a framework pull registers mid-session fires
-        # from the next turn on instead of after the next restart (see refresh below).
+        # ADR-0079: the settings-sourced slice is re-read at a turn's start and before every
+        # model call whenever a settings file changes on disk, so a hook a framework pull
+        # registers mid-turn gates the next tool call instead of waiting for the next turn or
+        # restart (see refresh below).
         from zakcode.hooks.settings_loader import SettingsHooks
 
         self._settings_hooks = SettingsHooks(
@@ -1221,6 +1222,10 @@ class Agent:
             # A say that is a typed ``/<skill> [args]`` RUNS the skill mid-turn (ADR-0073)
             # through the same composition the REPL uses for a typed slash — one way.
             compose_skill=self.compose_skill_turn,
+            # ADR-0079: the MAIN loop re-reads the settings-file hooks before every model call,
+            # so a hook that lands mid-turn gates the next tool call of the same turn. Sub-agent
+            # loops never set this (they run with their own empty hook set).
+            refresh_hooks=self.refresh_settings_hooks,
         )
 
     def _begin_skill_turn(self) -> None:
@@ -2157,9 +2162,10 @@ class Agent:
     def refresh_settings_hooks(self) -> bool:
         """Re-read the workspace's settings.json hooks if any settings file changed (ADR-0079).
 
-        Three stats per turn; a full re-parse only on change. Returns True when the hook
-        list was replaced. A settings file that fails to parse keeps the previous hooks —
-        a bad edit must never silently strip a workspace's gates.
+        Called at a turn's start (so UserPromptSubmit sees the current hooks) and by the main
+        loop before every model call. Three stats per call; a full re-parse only on change.
+        Returns True when the hook list was replaced. A settings file that fails to parse
+        keeps the previous hooks — a bad edit must never silently strip a workspace's gates.
         """
         changed, errs = self._settings_hooks.refresh(self.hook_manager)
         for key, err in errs.items():
