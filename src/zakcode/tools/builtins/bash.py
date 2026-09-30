@@ -187,7 +187,7 @@ def _module_not_found_fix(
     """Name where a package of that name lives in the workspace, else None.
 
     Measured 2026-08-30 (worker sessions): five ``ModuleNotFoundError: No module
-    named 'yahoo'`` in 24 h across four sessions — every one ``cd <workspace> && python3
+    named 'widgetco'`` in 24 h across four sessions — every one ``cd <workspace> && python3
     …`` after the package had been consolidated under a workspace data directory — and
     one identical retry, because the error names the module and nothing names the
     directory Python would have had to be run from. A dotted name whose top package IS

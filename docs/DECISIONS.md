@@ -3517,7 +3517,7 @@ and paging suites, whose expectations did not move.
 ReDoS-proof tokeniser) flagged any target that *started with* `/`, `~` or `$HOME`. The
 docstring said "a root or home path"; the predicate said "any absolute path". Under
 `autonomous` mode the floor is a hard deny, so an unattended agent could not
-`rm -rf /opt/<workspace>/yahoo/__pycache__` — measured 2026-08-29 on a worker session that
+`rm -rf /opt/<workspace>/widgetco/__pycache__` — measured 2026-08-29 on a worker session that
 was refused twice ("recursive remove of a root or home path"), then rewrote its plan to
 "Investigate: why bash keeps failing on cleanup" and spent the rest of its goal on the
 refusal. Every path a host-framework agent cleans — its temp store, a worktree, a build dir, a
@@ -5378,7 +5378,7 @@ each iteration and never persisted; it is the right carrier, the echo was the wr
 **Status.** Accepted (2026-09-10).
 
 **Context.** Measured on a served agent rig, 2026-09-10, in a skill-use test. The skill's
-prerequisites said to check the Yahoo token file; the model ran `cat .yahoo_token.json`; the
+prerequisites said to check the service's token file; the model ran `cat .widgetco_token.json`; the
 tool output — a 230-character opaque OAuth access token and a refresh token — reached the
 model's context, the CLI log and the persisted session store unredacted. Zero redaction
 rails fired. When we then looked at the box's older logs, the same value was present in
@@ -5394,7 +5394,7 @@ whole, because a procedure said to check it.
 ADR-0116 excluded the blanket `key = value` layer for a real reason that still holds: over
 source code it rewrites `api_key = settings.api_key`, and a model that cannot see the file
 it just read cannot edit it. The blanket layer also had a blind spot of its own — a
-JSON-quoted key (`"access_token": "…"`) and an env-style name (`YAHOO_CLIENT_SECRET=`) both
+JSON-quoted key (`"access_token": "…"`) and an env-style name (`WIDGETCO_CLIENT_SECRET=`) both
 slipped its word boundaries — so even the `web_search` screen that uses it could be evaded
 by pasting a credential file.
 
@@ -5436,7 +5436,7 @@ skills it would need for a fantasy-football API, with the instruction *"the exac
 or API calls where you know them"*, the model wrote five well-formed skills — every one
 parsed, every description carried real trigger phrases, the closing rationale correctly
 declined four things that were not skills — and **eleven of eleven endpoints on a host that
-does not exist** (`api.fantasy.yahoo.com`; the real one is `fantasysports.yahooapis.com`).
+does not exist** (`api.league.widgetco.com`; the real one is `leagueapi.widgetco.net`).
 A fresh session then discovered one of those skills, followed it, and stopped only because
 an earlier prerequisite failed first.
 
@@ -5616,7 +5616,7 @@ still hidden, mixed directory unchanged, `include_ignored` unchanged).
 **Context.** Field run 2026-09-10, a host framework workspace on a local 35B model, asked to author a
 skill with exact API calls. The host framework's stores are JSONL — one record per line, and a record can
 carry a whole knowledge article. Three `grep` calls over the agent's directory (`league|fantasy|
-yahoo|free.agent`, then two near-identical `league_id` patterns) each returned 18 matches of
+widgetco|free.agent`, then two near-identical `league_id` patterns) each returned 18 matches of
 ~10 KB: 958, 928 and 924 transcript lines, and in the session store 229 KB, 136 KB and 133 KB
 of tool result. The model re-ran the same search three times, the no-progress rail fired, and
 the session compacted under the weight before the first file was written. `grep` capped the

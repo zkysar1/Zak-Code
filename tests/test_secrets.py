@@ -126,29 +126,29 @@ _HEX32 = "e114adce" * 4
 
 
 def test_credential_values_after_a_secret_key_are_scrubbed_but_identifiers_never() -> None:
-    """ADR-0125. Measured 2026-09-10: ``cat .yahoo_token.json`` passed the seam untouched —
+    """ADR-0125. Measured 2026-09-10: ``cat .widgetco_token.json`` passed the seam untouched —
     the token layer knows provider PREFIXES, and an OAuth token has none. The value layer
     tests the SHAPE of the value, so a credential file is scrubbed and source code is not."""
     from zakcode.secrets import redact_credential_tokens
 
     # A credential file read verbatim: both secrets gone, the non-secret fields intact.
-    yahoo = (
+    token_file = (
         '{"access_token": "' + _OAUTH + '", "refresh_token": "AEFMlG7pZq7pZq7pZq7pZq", '
         '"token_type": "bearer", "expires_at": 1756570800}'
     )
-    out, n = redact_credential_tokens(yahoo)
+    out, n = redact_credential_tokens(token_file)
     assert n == 2 and _OAUTH not in out and "AEFMlG" not in out
     assert '"access_token": "[REDACTED]"' in out  # key and quotes kept, value gone
     assert '"token_type": "bearer"' in out and "1756570800" in out
 
     # A .env file: env-style names carry the key as a SUFFIX; hex and dashed shapes both.
     env = (
-        f"YAHOO_CLIENT_SECRET={_HEX32}\nTAVILY_API_KEY=tvly-Ab3Ab3Ab3Ab3Ab3\n"
+        f"WIDGETCO_CLIENT_SECRET={_HEX32}\nTAVILY_API_KEY=tvly-Ab3Ab3Ab3Ab3Ab3\n"
         "ZAKCODE_MODEL=gpt-4o-mini\n"
     )
     out, n = redact_credential_tokens(env)
     assert n == 2 and _HEX32 not in out and "tvly-" not in out
-    assert "YAHOO_CLIENT_SECRET=[REDACTED]" in out and "ZAKCODE_MODEL=gpt-4o-mini" in out
+    assert "WIDGETCO_CLIENT_SECRET=[REDACTED]" in out and "ZAKCODE_MODEL=gpt-4o-mini" in out
 
     # YAML: an unquoted value that is a credential, beside ones that are words.
     yaml = (
@@ -185,7 +185,7 @@ def test_the_blanket_layer_no_longer_misses_quoted_or_env_style_keys() -> None:
     both slipped its word boundaries, so a pasted credential file was not refused."""
     out, n = redact_secrets('"access_token": "' + _OAUTH + '"')
     assert n >= 1 and _OAUTH not in out
-    out, n = redact_secrets(f"YAHOO_CLIENT_SECRET={_HEX32}")
+    out, n = redact_secrets(f"WIDGETCO_CLIENT_SECRET={_HEX32}")
     assert n >= 1 and _HEX32 not in out
 
 

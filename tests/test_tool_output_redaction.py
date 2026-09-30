@@ -112,7 +112,7 @@ class _CatTool(Tool):
 @pytest.mark.asyncio
 async def test_a_credential_file_read_verbatim_is_scrubbed_at_the_seam() -> None:
     """ADR-0125. Measured on a local rig 2026-09-10: a skill told the model to check the
-    token file, the model ran ``cat .yahoo_token.json``, and a 230-char OAuth token reached
+    token file, the model ran ``cat .widgetco_token.json``, and a 230-char OAuth token reached
     the model, the CLI log and the session store — the seam knew only provider prefixes.
     Weeks of earlier logs held the same value once we looked."""
     provider = _Scripted(

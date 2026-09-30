@@ -196,14 +196,14 @@ async def test_edit_old_string_misses_are_tagged_as_refusals(tmp_path: Path) -> 
 # ── the skill-claim gate (ADR-0126) ───────────────────────────────────────────
 
 _FAKE_DNS = {
-    "fantasysports.yahooapis.com": "ok",
+    "leagueapi.widgetco.net": "ok",
     "github.com": "ok",
-    "api.fantasy.yahoo.com": "nxdomain",  # the host the model invented, eleven times
+    "api.league.widgetco.com": "nxdomain",  # the host the model invented, eleven times
     "slow.example-partner.io": "unknown",  # a lookup that could not complete
 }
 _FABRICATED = (
     "---\nname: waiver-wire\ndescription: weekly pickups\n---\n"
-    "GET https://api.fantasy.yahoo.com/v3/fantasy/league/{league_id}/freeagents\n"
+    "GET https://api.league.widgetco.com/v3/fantasy/league/{league_id}/freeagents\n"
 )
 
 
@@ -216,17 +216,17 @@ def test_skill_hosts_skips_placeholders_locals_ips_and_marked_lines() -> None:
         "https://api.example.com/x https://localhost:8000/y http://10.0.0.250:9090/v1\n"
         "https://{host}/templated https://svc.internal/z https://github.com/a\n"
         "https://made.up.host/q  <!-- unverified -->\n"
-        "https://fantasysports.yahooapis.com/fantasy/v2/league\n"
+        "https://leagueapi.widgetco.net/fantasy/v2/league\n"
     )
-    assert skill_hosts(body) == ["github.com", "fantasysports.yahooapis.com"]
+    assert skill_hosts(body) == ["github.com", "leagueapi.widgetco.net"]
 
 
 def test_a_skill_naming_a_host_that_does_not_exist_is_refused_with_the_remedy() -> None:
     hit = check_skill_claims(".zakcode/skills/waiver-wire/SKILL.md", _FABRICATED, resolve=_resolve)
     assert hit is not None
     message, bad = hit
-    assert bad == ["api.fantasy.yahoo.com"]
-    assert "api.fantasy.yahoo.com" in message and "does not exist" in message
+    assert bad == ["api.league.widgetco.com"]
+    assert "api.league.widgetco.com" in message and "does not exist" in message
     assert "WebSearch" in message and "unverified" in message  # both remedies named
     assert "Never invent a host" in message
 
@@ -236,9 +236,9 @@ def test_the_gate_is_scoped_to_skill_files_and_definitive_answers() -> None:
     assert check_skill_claims("notes/api-ideas.md", _FABRICATED, resolve=_resolve) is None
     assert check_skill_claims("skills/README.md", _FABRICATED, resolve=_resolve) is None
     # A real host passes; a lookup that could not complete never counts against the author.
-    real = _FABRICATED.replace("api.fantasy.yahoo.com", "fantasysports.yahooapis.com")
+    real = _FABRICATED.replace("api.league.widgetco.com", "leagueapi.widgetco.net")
     assert check_skill_claims("skills/w/SKILL.md", real, resolve=_resolve) is None
-    slow = _FABRICATED.replace("api.fantasy.yahoo.com", "slow.example-partner.io")
+    slow = _FABRICATED.replace("api.league.widgetco.com", "slow.example-partner.io")
     assert check_skill_claims("skills/w/SKILL.md", slow, resolve=_resolve) is None
     # Windows separators are the same path.
     assert check_skill_claims("skills\\w\\SKILL.md", _FABRICATED, resolve=_resolve) is not None
@@ -257,7 +257,7 @@ async def test_write_file_refuses_a_fabricated_skill_as_the_models_own_content(
     )
     assert res.is_error
     assert res.data is not None and res.data["refusal"] == "skill_claims"  # a content refusal
-    assert res.data["hosts"] == ["api.fantasy.yahoo.com"]
+    assert res.data["hosts"] == ["api.league.widgetco.com"]
     assert not (tmp_path / ".zakcode/skills/waiver-wire/SKILL.md").exists()  # nothing landed
     # The honest form is written.
     ok = await WriteFileTool().execute(
@@ -295,7 +295,7 @@ async def test_write_file_refuses_an_unloadable_skill_before_reading_its_claims(
     ctx = ToolContext(workspace_root=tmp_path)
     path = ".zakcode/skills/free-agent-scan/SKILL.md"
     res = await WriteFileTool().execute(
-        {"path": path, "content": "# Free Agent Scan\nGET https://api.fantasy.yahoo.com/v3\n"},
+        {"path": path, "content": "# Free Agent Scan\nGET https://api.league.widgetco.com/v3\n"},
         ctx,
     )
     assert res.is_error and res.data is not None and res.data["refusal"] == "skill_format"
@@ -347,7 +347,7 @@ async def test_edit_refuses_only_the_edit_that_introduces_a_dead_host(
         {
             "path": ".zakcode/skills/w/SKILL.md",
             "old_string": "https://github.com/api",
-            "new_string": "https://api.fantasy.yahoo.com/v3",
+            "new_string": "https://api.league.widgetco.com/v3",
         },
         ctx,
     )
@@ -355,7 +355,7 @@ async def test_edit_refuses_only_the_edit_that_introduces_a_dead_host(
     assert b"github.com/api" in skill.read_bytes()  # untouched
     # A file that ALREADY names the dead host may still be edited elsewhere: the
     # pre-existing claim is not this edit's doing (mirrors the parse_note rule, ADR-0118).
-    skill.write_bytes(b"---\nname: w\n---\nGET https://api.fantasy.yahoo.com/v3\nStep two\n")
+    skill.write_bytes(b"---\nname: w\n---\nGET https://api.league.widgetco.com/v3\nStep two\n")
     res = await EditFileTool().execute(
         {"path": ".zakcode/skills/w/SKILL.md", "old_string": "Step two", "new_string": "Step 2"},
         ctx,

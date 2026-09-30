@@ -453,21 +453,21 @@ async def test_bash_enoent_names_where_the_file_actually_is(tmp_path) -> None:
 
 
 async def test_bash_wrong_prefix_hint_says_cd_will_not_help(tmp_path) -> None:
-    """Measured 2026-08-30: refused for `bash world/scripts/yahoo/discover.sh`
-    with the lead naming `.agent-data/world/scripts/yahoo/discover.sh`, the model
+    """Measured 2026-08-30: refused for `bash world/scripts/widgetco/discover.sh`
+    with the lead naming `.agent-data/world/scripts/widgetco/discover.sh`, the model
     replied `cd <workspace root> && <same command>` -- it read "(or `cd` there
     first)" as a cwd problem -- and only after a second refusal used the path
     already named. When the guess is the real path minus its leading directory,
     say exactly that."""
     root = _mind_workspace(tmp_path)
-    script = root / ".agent-data" / "world" / "scripts" / "yahoo" / "discover.sh"
+    script = root / ".agent-data" / "world" / "scripts" / "widgetco" / "discover.sh"
     script.parent.mkdir(parents=True)
     script.write_text("echo discovered\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
-    res = await BashTool().execute({"command": "bash world/scripts/yahoo/discover.sh"}, ctx)
+    res = await BashTool().execute({"command": "bash world/scripts/widgetco/discover.sh"}, ctx)
     assert res.is_error and res.data is not None and res.data.get("script_path_missing") is True
     assert "missing its leading '.agent-data/'" in res.output
-    assert "'.agent-data/world/scripts/yahoo/discover.sh' exactly as written" in res.output
+    assert "'.agent-data/world/scripts/widgetco/discover.sh' exactly as written" in res.output
     assert "a `cd` will not help" in res.output
     assert "or `cd` there first" not in res.output
     # The generic wording survives for a same-named file in an UNRELATED directory.
@@ -858,22 +858,22 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
     from zakcode.tools.builtins.bash import _module_not_found_fix as fix
 
     cmd = 'python3 -c "import it"'
-    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "yahoo"
+    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "widgetco"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "client.py").write_text("X = 1\n", encoding="utf-8")
     err = 'Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n'
     # The measured shape: the package lives under a hidden data dir, cwd is the root.
-    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'widgetco'", tmp_path, [])
     assert hint is not None
-    assert ".agent-data/world/scripts/yahoo" in hint
+    assert ".agent-data/world/scripts/widgetco" in hint
     assert "cd .agent-data/world/scripts && python3" in hint
     assert "PYTHONPATH=.agent-data/world/scripts" in hint
     # A dotted name whose top package exists but whose submodule does not: name what it holds.
-    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.oauth'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'widgetco.oauth'", tmp_path, [])
     assert hint is not None and "has no module 'oauth'" in hint and "client" in hint
     # A dotted name whose submodule DOES exist gets the run-from hint, not the listing.
-    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'yahoo.client'", tmp_path, [])
+    hint = fix(cmd, err + "ModuleNotFoundError: No module named 'widgetco.client'", tmp_path, [])
     assert hint is not None and "cd .agent-data/world/scripts" in hint
     # A single-file module counts too.
     (tmp_path / "tools" / "lib").mkdir(parents=True)
@@ -886,24 +886,24 @@ def test_module_not_found_fix_predicate(tmp_path) -> None:
     assert (
         fix(cmd, err + "ModuleNotFoundError: No module named 'nothing_here'", tmp_path, []) is None
     )
-    assert fix(cmd, "ImportError: cannot import name 'x' from 'yahoo'", tmp_path, []) is None
+    assert fix(cmd, "ImportError: cannot import name 'x' from 'widgetco'", tmp_path, []) is None
 
 
 @pytest.mark.skipif(shutil.which("python3") is None, reason="needs a python3 on PATH")
 async def test_bash_module_not_found_names_the_package_parent(tmp_path) -> None:
-    """`cd <root> && python3 -c "import yahoo"` after the package moved under
+    """`cd <root> && python3 -c "import widgetco"` after the package moved under
     .agent-data/world/scripts -- five times in 24 h (2026-08-30), one identical
     retry, no hint. The hint names the parent to run from and the PYTHONPATH form."""
-    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "yahoo"
+    pkg = tmp_path / ".agent-data" / "world" / "scripts" / "widgetco"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     ctx = ToolContext(workspace_root=tmp_path)
-    res = await BashTool().execute({"command": 'python3 -c "import yahoo.client"'}, ctx)
+    res = await BashTool().execute({"command": 'python3 -c "import widgetco.client"'}, ctx)
     assert res.is_error
     assert res.fix is not None and "cd .agent-data/world/scripts && python3" in res.fix
     # Followed as written, the remedy works.
     res = await BashTool().execute(
-        {"command": 'cd .agent-data/world/scripts && python3 -c "import yahoo; print(1)"'}, ctx
+        {"command": 'cd .agent-data/world/scripts && python3 -c "import widgetco; print(1)"'}, ctx
     )
     assert not res.is_error
 
