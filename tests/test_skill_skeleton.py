@@ -2,7 +2,7 @@
 the model refines.
 
 ADR-0027 asked the model to decompose a long skill body ("FIRST call update_plan …") and
-left it a hint. Field 2026-08-28 (sera, gemini-2.5-flash): a say naming /encode-session
+left it a hint. Field 2026-08-28 (one agent, gemini-2.5-flash): a say naming /encode-session
 mid-sentence had the model load the skill via use_skill — 883 lines, hint attached — and
 go straight to `git status`; no plan was ever written and nothing held it to the skill's
 remaining sections. Now the harness seeds what the body's own headings spell out, at both

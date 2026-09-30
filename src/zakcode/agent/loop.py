@@ -1524,7 +1524,7 @@ def _claims_blocker(text: str) -> bool:
 #: message. That body is documentation, not a request: the compound-ask seeder must not read
 #: its ``/other-skill`` mentions as asks, and the coverage backstop must not demand a second
 #: ``use_skill`` load of the skill that IS the turn. Field incident 2026-08-27:
-#: ``/start sera`` seeded ``run /start, /stop, /boot, /prime`` from the start skill's prose —
+#: ``/start <agent>`` seeded ``run /start, /stop, /boot, /prime`` from the start skill's prose —
 #: a plan telling the model to STOP the agent it was starting — and re-loaded the 1,200-line
 #: skill through ``use_skill`` to satisfy the backstop. Only a frame at the very START of the
 #: message carries invocation meaning (a body-embedded lookalike is just text).

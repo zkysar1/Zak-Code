@@ -1030,7 +1030,7 @@ def test_interpreter_mismatch_fix_predicate() -> None:
 
     # A shell script fed to Python -- a coordinating session's verbatim shape
     # (2026-08-29), the py launcher, options before the path, a cd/env prefix.
-    hint = fix("cd /w && HOST_AGENT=sera python3 tools/scripts/objectives-update-goal.sh --a b")
+    hint = fix("cd /w && HOST_AGENT=demo python3 tools/scripts/objectives-update-goal.sh --a b")
     assert hint is not None and "bash tools/scripts/objectives-update-goal.sh" in hint
     assert fix("py -3 tools/scripts/x.sh") is not None
     assert fix("python3 -u ./x.sh; echo done") is not None
@@ -1219,14 +1219,14 @@ def test_script_path_preflight_steps_over_leading_env_assignments(tmp_path) -> N
 
     root = _script_workspace(tmp_path)
     fleet = (
-        "cd . && HOST_ROLE=worker HOST_AGENT=sera STORAGE_BACKEND=local "
+        "cd . && HOST_ROLE=worker HOST_AGENT=demo STORAGE_BACKEND=local "
         "bash tools/scripts/loop-round-start-battery.sh 2>&1; echo RC=$?"
     )
     missing = _script_path_missing(fleet, root, [])
     assert missing is not None and "loop-round-start-battery.sh" in missing
     assert "was not run" in missing
     # the same prefix on an EXISTING script still runs
-    assert _script_path_missing("HOST_AGENT=sera bash tools/scripts/ok.sh", root, []) is None
+    assert _script_path_missing("HOST_AGENT=demo bash tools/scripts/ok.sh", root, []) is None
     # a value carrying a path or an `=` does not confuse the step-over
     assert (
         _script_path_missing(

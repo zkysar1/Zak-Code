@@ -183,13 +183,13 @@ def _loop(
     )
 
 
-# A typed `/start sera` as Agent.compose_skill_turn hands it to the loop: the command
+# A typed `/start demo` as Agent.compose_skill_turn hands it to the loop: the command
 # frame, then the skill's whole body — which, like the real start skill, mentions OTHER
 # skills in request-shaped prose.
 _COMPOSED_START_TURN = (
     "<command-message>start is running</command-message>\n"
     "<command-name>/start</command-name>\n"
-    "<command-args>sera --mode assistant</command-args>\n\n"
+    "<command-args>demo --mode assistant</command-args>\n\n"
     "# /start — bring an agent up\n\n"
     "If the runner is dead, run /stop <agent-name> first, then /boot and /prime.\n"
     "Never invoke /stop from inside the loop.\n"
@@ -199,7 +199,7 @@ _COMPOSED_START_TURN = (
 def test_typed_skill_turn_never_seeds_from_its_body(tmp_path: Path) -> None:
     """ADR-0036: the body of a typed /skill is documentation — no plan steps from its
     ``/other-skill`` mentions, and no second use_skill load demanded for the skill itself."""
-    provider = _Text("Bringing sera up now.")
+    provider = _Text("Bringing demo up now.")
     loop = _loop(
         tmp_path,
         provider,

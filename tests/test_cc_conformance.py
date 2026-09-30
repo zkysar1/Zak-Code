@@ -310,7 +310,7 @@ async def test_slash_command_composes_an_immediate_turn(tmp_path: Path) -> None:
     # Claude Code parity: typing `/looper loop` RUNS the skill — compose_skill_turn returns
     # the text the CLI executes as THIS turn (no second "describe your task" message), and
     # composing must not itself touch the session, or the body would double-inject when the
-    # turn runs. This is the fix for the live 2026-08-19 report: `/start sera` loaded the
+    # turn runs. This is the fix for the live 2026-08-19 report: `/start <agent>` loaded the
     # skill and then sat at the prompt waiting for another message.
     _write_claude_skill(tmp_path, "looper", "Loop body.")
     agent = _scripted_agent(tmp_path)
@@ -376,18 +376,18 @@ async def test_slash_frame_echoes_the_typed_command_under_triggers_routing(
     # The command-expansion frame is invocation provenance — the only signal telling the model
     # a HUMAN typed the slash. That is what lets a skill whose own rules forbid model
     # self-invocation ("user-invocable only", a framework's /start) run instead of refusing: the
-    # live 2026-08-19 report was `/start sera` answered with "user-only command, please run
+    # live 2026-08-19 report was `/start <agent>` answered with "user-only command, please run
     # this yourself in the terminal" — typed from the terminal. Under `triggers:` routing the
     # frame echoes what the USER TYPED (/start), not the resolved skill's name, while
     # SkillInvocation.name still reports the resolved skill for display/tracking.
     _write_claude_skill(tmp_path, "looper", "Loop body.", frontmatter='triggers: ["/start"]')
     agent = _scripted_agent(tmp_path)
-    result = await agent.compose_skill_turn("start", "sera")
+    result = await agent.compose_skill_turn("start", "demo")
     assert result.invoked and result.name == "looper"
     assert result.turn_text is not None
     assert result.turn_text.startswith("<command-message>start is running</command-message>")
     assert "<command-name>/start</command-name>" in result.turn_text
-    assert "<command-args>sera</command-args>" in result.turn_text
+    assert "<command-args>demo</command-args>" in result.turn_text
 
 
 async def test_user_invocable_false_blocks_human_path_not_model_chaining(tmp_path: Path) -> None:

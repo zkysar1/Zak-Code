@@ -2059,7 +2059,7 @@ def _skill_command_turn(
     Delegates to the CORE :meth:`Agent.compose_skill_turn` (which loads, defangs, and fires
     the observe-only skill-selection signal); this function only renders the outcome. On
     success the REPL streams ``turn_text`` through the same path as any typed message — the
-    slash command IS the turn, so ``/start sera`` runs now instead of waiting for a second
+    slash command IS the turn, so ``/start <agent>`` runs now instead of waiting for a second
     "describe your task" message.
     """
     # The live agent may be any AgentLike (a thin/remote client) with no skills surface; a

@@ -485,7 +485,7 @@ Format: each ADR has Context, Decision, Consequences, and Status.
     signal informative, and it is conformance-pinned in both directions. Vendor-agnostic by
     design: the explicit prompt contract does the work for models with no Claude-Code priors;
     the CC-shaped markers do it for models with them.
-  - **Headless one-shot slash dispatch (2026-08-20, closes #148).** `chat -p "/start sera"`
+  - **Headless one-shot slash dispatch (2026-08-20, closes #148).** `chat -p "/start <agent>"`
     used to hand the slash line to the model as prose — the REPL dispatched, the one-shot
     path did not, and cron/systemd boots are one-shots. Now the one-shot path routes through
     the same `_skill_command_turn` helper (same compose, same rendering, same provenance
@@ -2511,7 +2511,7 @@ most is the one nobody knew to ask for until the run was over.
 **Context.** ADR-0027 asked the model to decompose a long skill body into plan steps
 ("FIRST call update_plan …") and deliberately left the decomposition to the model — skill
 bodies are heterogeneous prose, and the model holds the request context. It was a hint. Field
-2026-08-28 (sera, `gemini-2.5-flash`): a say naming `/encode-session` mid-sentence had the
+2026-08-28 (one agent, `gemini-2.5-flash`): a say naming `/encode-session` mid-sentence had the
 model load the skill through `use_skill` (883 lines, decompose hint attached) and go straight
 to `git status`; no plan was ever written, nothing enforced the hint, and the operator asked
 why "all skills are supposed to get decomposed" had not happened. A turn typed as

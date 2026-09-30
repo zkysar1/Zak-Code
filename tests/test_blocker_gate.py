@@ -117,11 +117,11 @@ def test_unmeasured_blocker_is_nudged_once_then_the_turn_continues(tmp_path: Pat
     provider = _Script(
         [
             LLMResult(text=FIELD_BLOCKERS[0]),
-            LLMResult(text="Probed: `echo $HOST_SID` prints a value. Continuing — bound sera."),
+            LLMResult(text="Probed: `echo $HOST_SID` prints a value. Continuing — bound demo."),
         ]
     )
     loop = _loop(provider, tmp_path)
-    result = asyncio.run(loop.arun_turn("/start sera --mode assistant"))
+    result = asyncio.run(loop.arun_turn("/start demo --mode assistant"))
     assert result.stop_reason == "completed"
     assert provider.calls == 2
     assert any(_BLOCKER_NUDGE in r for r in _rails(loop))

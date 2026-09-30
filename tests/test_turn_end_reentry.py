@@ -35,7 +35,7 @@ ORCHESTRATE_REASON = (
     "Turn ended without a Skill(orchestrate) re-entry (autocompact OR a text summary "
     "terminated the turn). Your FIRST action MUST be: Skill('orchestrate') with args='loop'. "
     "Do NOT manually select goals. Do NOT run Bash commands first. Call the Skill tool "
-    "IMMEDIATELY. Agent: sera. Prefix all Bash with HOST_AGENT=sera."
+    "IMMEDIATELY. Agent: demo. Prefix all Bash with HOST_AGENT=demo."
 )
 WORKER_REASON = (
     "Worker session turn ended without a Skill(work-loop) re-entry (a text summary or "
