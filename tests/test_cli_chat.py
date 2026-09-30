@@ -180,7 +180,7 @@ class SkillAgent(FakeAgent):
         turn_text=(
             "<command-message>start is running</command-message>\n"
             "<command-name>/start</command-name>\n"
-            "<command-args>sera</command-args>\n\nBoot body."
+            "<command-args>demo</command-args>\n\nBoot body."
         ),
     )
 
@@ -189,11 +189,11 @@ class SkillAgent(FakeAgent):
 
 
 def test_chat_headless_slash_dispatches_the_skill(monkeypatch) -> None:
-    # `-p "/start sera"` (the cron/systemd boot shape) runs the SKILL as the task — the same
+    # `-p "/start demo"` (the cron/systemd boot shape) runs the SKILL as the task — the same
     # dispatch + rendering as the REPL — instead of handing the slash line to the model as
     # prose (#148: found on the first live deployment).
     monkeypatch.setattr(zakcode, "Agent", SkillAgent)
-    result = runner.invoke(app, ["cli", "-p", "/start sera"])
+    result = runner.invoke(app, ["cli", "-p", "/start demo"])
     assert result.exit_code == 0
     assert "running skill" in result.stdout and "start" in result.stdout
     assert CANNED_TEXT in result.stdout  # the composed turn actually ran
@@ -230,7 +230,7 @@ def test_chat_headless_slash_on_thin_agent_falls_through(monkeypatch) -> None:
     # A thin/remote AgentLike with NO compose_skill_turn (the --server client) keeps today's
     # behavior: the prompt goes to the model as plain text, no dispatch attempted.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)  # FakeAgent has no compose surface
-    result = runner.invoke(app, ["cli", "-p", "/start sera"])
+    result = runner.invoke(app, ["cli", "-p", "/start demo"])
     assert result.exit_code == 0
     assert CANNED_TEXT in result.stdout
 

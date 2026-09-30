@@ -42,7 +42,7 @@ from zakcode.tools import default_registry
 from zakcode.usage import Usage
 
 MODEL = "fake/scripted"
-#: An ANSWER: the shape sera repeated, padded to the length that separates an answer from
+#: An ANSWER: the shape one agent repeated, padded to the length that separates an answer from
 #: narration. Its content is irrelevant; its LENGTH is the thing under test.
 ANSWER = (
     "The loop will not start because the agent is IDLE. This is the designed behavior: the "

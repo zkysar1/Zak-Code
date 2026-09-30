@@ -1998,7 +1998,7 @@ class Agent:
         # body alone cannot tell the model WHO invoked it, and host frameworks ship
         # skills whose own rules forbid model self-invocation ("Claude MUST NOT invoke
         # /start"); without this frame a model obeying those rules refuses the human's own
-        # keystroke (live 2026-08-19: `/start sera` answered "user-only command, run it
+        # keystroke (live 2026-08-19: `/start <agent>` answered "user-only command, run it
         # yourself in the terminal" — from the terminal). The frame echoes what the USER
         # TYPED (`name`), which under `triggers:` routing may differ from the resolved
         # skill (`load.name`); the system-prompt skills section states the contract

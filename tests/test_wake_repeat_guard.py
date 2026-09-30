@@ -38,7 +38,7 @@ from zakcode.usage import Usage
 from zakcode.wakeup import LOOP_SENTINEL, WakeupSlot, provider_hold_delay, turn_fingerprint
 
 MODEL = "fake/scripted"
-#: The verdict sera repeated, shortened. Any fixed string does; that it is FIXED is the point.
+#: The verdict one agent repeated, shortened. Any fixed string does; that it is FIXED is the point.
 VERDICT = "The loop will not start because the agent is IDLE. This is the designed behavior."
 OTHER = "The loop started: the first goal is selected and the iteration is under way."
 

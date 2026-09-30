@@ -394,7 +394,7 @@ async def test_stream_skill_turn_silence_past_the_bound_still_gives_up(tmp_path:
 
 @pytest.mark.asyncio
 async def test_empty_completion_after_stuck_nudge_ends_gave_up(tmp_path: Path) -> None:
-    # The sera shape (2026-08-25): the model produced text early, then ground through
+    # The 2026-08-25 shape: the model produced text early, then ground through
     # failing tool calls until the stuck ladder nudged it — and answered the nudge
     # with silence. Prior text normally preserves clean-end semantics, but a stuck
     # nudge revokes that: silence after "you appear to be stuck" is a give-up.
