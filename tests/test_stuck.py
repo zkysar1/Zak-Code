@@ -30,7 +30,7 @@ from zakcode.agent.stuck import (
     call_signature,
 )
 from zakcode.config import PermissionTier
-from zakcode.events import AgentDone, AgentStatus
+from zakcode.events import AgentDone, AgentStatus, AgentToolResult
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
@@ -428,21 +428,33 @@ def test_loop_narrow_keeps_the_prompt_the_call_before_sent(tmp_path: Path, strea
     assert len(rails) == 2 and all("; mutate is refused (" in r for r in rails)
 
 
-def test_loop_narrow_refuses_a_write_tool_at_the_seam(tmp_path: Path) -> None:
+@pytest.mark.parametrize("streaming", [False, True], ids=["buffered", "streaming"])
+def test_loop_narrow_refuses_a_write_tool_at_the_seam(tmp_path: Path, streaming: bool) -> None:
     # review2 #3: NARROW must ENFORCE, not merely advise. The narrowed iteration still offers
     # the write-tier 'mutate' in its schema (ADR-0268), so a model that calls it must have it
     # REJECTED at the execution seam (an error result), never executed — on any protocol.
+    # Each protocol dispatches at its own site, and that site is the only limit left on a
+    # narrowed step, so both protocols are driven here.
     # mutate executes on the 4 un-narrowed iterations (streak 1-4) but is rejected on the 5th.
     mutate = _MutateTool()
     registry = _registry(_LookTool(), mutate)
     provider = _ScriptByCallProvider(lambda n: LLMResult(tool_calls=[_c(f"c{n}", "mutate", n=n)]))
-    result = asyncio.run(_loop(provider, tmp_path, registry).arun_turn("keep failing"))
-    assert result.stop_reason == "stuck"
-    assert result.iterations == 10
+    loop = _loop(provider, tmp_path, registry)
+    last: AgentToolResult | ToolResultBlock
+    if streaming:
+        events = _drain(loop, "keep failing")
+        done = next(e for e in events if isinstance(e, AgentDone))
+        stop_reason, iterations = done.stop_reason, done.iterations
+        last = [e for e in events if isinstance(e, AgentToolResult)][-1]
+    else:
+        result = asyncio.run(loop.arun_turn("keep failing"))
+        stop_reason, iterations = result.stop_reason, result.iterations
+        last = result.tool_results[-1]
+    assert stop_reason == "stuck"
+    assert iterations == 10
     # Executed on the un-narrowed iterations (1-4 and, post-step-back, 6-9); REJECTED on
     # both narrowed iterations (5 and 10) — the dispatch gate enforces on every climb.
     assert mutate.executed == 8
-    last = result.tool_results[-1]
     assert last.is_error and isinstance(last.data, dict) and last.data.get("step_restricted")
     # The rejection guides the model toward the read-only tool.
     assert "look" in last.output and "unavailable on this step" in last.output
