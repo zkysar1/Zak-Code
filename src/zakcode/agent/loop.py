@@ -1316,6 +1316,17 @@ _OBSERVATION_FRAME = (
     "[perception — from your vessel, not from a person]\nenvelope={envelope_id}\n{text}"
 )
 
+#: Mid-turn perception is bounded in wall time (ADR-0271). After the first perception a turn
+#: receives, the next one reaches it only once this much time has passed since the last. A
+#: producer that posts about once a second otherwise lands a frame at nearly every iteration
+#: boundary, and one frame can be 16 KB: on a served run, a first turn of about 15 tool calls
+#: took a frame after nearly every call and reached compaction about 70 s in, twice. Holding
+#: loses nothing: the frame stays staged, the intake keeps it latest-wins and carries its change
+#: list forward, and the first boundary past the bound delivers the newest one. Wall time, not a
+#: count: a perpetual loop is ONE turn, so a per-turn allowance would starve it, and a fast tool
+#: loop spends a per-call allowance in seconds. A turn's first perception is never held. No knob.
+_OBSERVATION_INTERVAL_S = 30.0
+
 #: What a SessionStart hook said, handed to the model ONCE, where the hook fired (ADR-0211).
 #: ``[hook]``-tagged: it arrives as a user-role message that no person wrote, and the system
 #: prompt already defines that tag as automated output to act on (ADR-0021). It is deliberately
@@ -2395,6 +2406,9 @@ class AgentLoop:
         # perception is the world reporting itself, is latest-wins, and is worthless once
         # superseded. Sub-agents must never set this.
         self._consume_observation_inbox = consume_observation_inbox
+        # Monotonic moment the last perception reached THIS turn (ADR-0271); the mid-turn bound
+        # measures from it. Reset per turn, so a turn's first perception is never held.
+        self._observation_delivered_at: float | None = None
         #: Lines the operator typed at THIS process's REPL mid-turn (ADR-0078) — delivered
         #: at the next iteration boundary ahead of the workspace say slot, never via it.
         self._typed_lines: deque[str] = deque()
@@ -7315,8 +7329,20 @@ class AgentLoop:
         re-queue, because the next round supplies a fresher envelope within seconds. And it
         is never the turn's message and never occupies the say slot: it arrives as framed,
         untrusted DATA (P1), carrying both the envelope's own frame and the provenance tag.
+
+        Bounded in wall time (ADR-0271): after a turn's first perception, the next reaches the
+        turn only once ``_OBSERVATION_INTERVAL_S`` has passed. That is a rate bound, not a hold
+        for a seam: a frame it holds is never read, so it stays staged and is superseded
+        latest-wins, and the first boundary past the bound (or the next turn's first) delivers
+        the newest one.
         """
         if not self._consume_observation_inbox:
+            return False
+        # Checked BEFORE the read, so a held frame is not consumed (ADR-0271).
+        if (
+            self._observation_delivered_at is not None
+            and time.monotonic() - self._observation_delivered_at < _OBSERVATION_INTERVAL_S
+        ):
             return False
         # Two steps rather than take_observation(), which renders straight to prose: the
         # discovery fold needs the STRUCTURED envelope, and it has to run between the read
@@ -7349,6 +7375,7 @@ class AgentLoop:
         self.session.add_message(
             Message.user(_OBSERVATION_FRAME.format(envelope_id=eid, text=rendered))
         )
+        self._observation_delivered_at = time.monotonic()
         self._persist()
         self._note("intervention", f"perception {eid} delivered mid-turn", kind="observation")
         logger.info("observation inbox: delivered perception %s (%d chars)", eid, len(rendered))
@@ -7619,6 +7646,7 @@ class AgentLoop:
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
+        self._observation_delivered_at = None  # mid-turn perception bound (ADR-0271): per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -9230,6 +9258,7 @@ class AgentLoop:
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
+        self._observation_delivered_at = None  # mid-turn perception bound (ADR-0271): per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written

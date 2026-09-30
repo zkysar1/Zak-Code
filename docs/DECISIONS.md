@@ -16276,3 +16276,51 @@ re-read both ways; and a frame arriving mid-re-read running the new hooks. Thirt
 turned their tests red: the kind gate, the hook-first branch, the session id, the re-read, the
 exit-code read, the run-every-hook loop, the returned exit code, the timeout, the loader mapping,
 the staged path, the fail-open guard, reading the settings outside that guard, and the lock.
+
+## ADR-0271: mid-turn perception is bounded in wall time, and a turn's first is never held
+
+Status: accepted. 2026-09-30.
+
+The main loop folds the staged perception into the conversation at every iteration boundary
+(`AgentLoop._deliver_observation`, called by both loop bodies). The inbox is latest-wins, so
+nothing piles up on disk, but nothing bounded how often a running turn took a frame. A producer
+that posts about once a second lands a new frame at nearly every boundary, and one frame can be
+16,000 characters. Measured on a served run: the producer posted 857 frames in 13 minutes, and a
+long first turn (about 63 KB of instructions, then some 15 tool calls) took a frame after nearly
+every call and reached compaction about 70 s in, on both of two measured starts. Every one of
+those frames was superseded by the next within seconds.
+
+Decision.
+
+1. After the first perception a turn receives, the next one reaches the turn only once
+   `_OBSERVATION_INTERVAL_S` (30 s) has passed since the last. The check sits BEFORE the read, so
+   a held frame is never consumed: it stays staged, the intake keeps superseding it latest-wins
+   and carries its change list forward (`merge_changes`), and the first boundary past the bound
+   delivers the newest one.
+2. The bound is per turn. Each turn starts with no stamp, so its first perception is never held:
+   a frame staged while no turn runs, or one still held when the previous turn ended, reaches the
+   next turn's first call.
+3. Wall time, not a count. A perpetual loop is one turn for the whole run, so an allowance per
+   turn would starve it after its first frame, and a fast tool loop spends an allowance per call
+   in seconds. With the bound, a long turn's view of the world is at most one interval and one
+   call old.
+4. It lives in the one function both loop bodies call, and the stamp is reset in both turn
+   prologues, so the buffered and the streaming path cannot disagree.
+
+No knob: the interval is fixed, like the say hold's wall-time cap (ADR-0255).
+
+Rejected: making the interval a setting (the no-knobs ruling). Rejected: counting boundaries or
+tool calls, for the reason in point 3. Rejected: throttling in the intake, `POST /observe`. The
+route cannot see a turn, so it could neither hand a turn its first frame at once nor tell a
+turn's start from its middle, and latest-wins staging already leaves the reader free to decide
+when to read.
+
+Tests: `tests/test_loop_observation.py`, three cases, each on both loop bodies. Frames staged
+faster than the bound reach a turn once per interval, and the frame taken after the bound is the
+newest (the one in between is superseded, never delivered late). A frame still held when a turn
+ends is left staged and opens the next turn. A frame staged between turns reaches the next turn's
+first call although the previous turn took one moments before. Six sabotages each turned tests
+red: removing the bound check, removing the stamp, removing the reset from either turn prologue,
+moving the check after the read (the held frame is consumed and lost), and a zero interval.
+Removing the reset from the buffered prologue also turns the existing announce-once-across-turns
+test red.

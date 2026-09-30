@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import _OBSERVATION_INTERVAL_S, AgentLoop
 from zakcode.config import load_settings
 from zakcode.messages import Message
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
@@ -221,6 +221,120 @@ async def test_streaming_twin_also_delivers_and_announces(tmp_path: Path) -> Non
     delivered = _all_text(provider.seen[-1])
     assert "a river" in delivered, "the streaming boundary dropped the perception"
     assert any("perception delivered" in str(getattr(e, "message", "")) for e in events)
+
+
+# --- the mid-turn bound (ADR-0271) --------------------------------------------------
+#
+# A producer that posts about once a second lands a frame at nearly every iteration boundary.
+# These pin the bound on BOTH loop bodies (the served runtime streams): after a turn's first
+# perception the next waits out _OBSERVATION_INTERVAL_S, a held frame stays staged and is
+# superseded latest-wins, and the bound never carries across a turn boundary.
+
+
+class _StageEach(Tool):
+    """The producer posting faster than the bound: every call stages the next frame."""
+
+    spec = ToolSpec(name="stage", description="Stage the next observation in the workspace.")
+
+    def __init__(self, root: Path, observations: list[dict[str, Any]]) -> None:
+        self._root = root
+        self._pending = list(observations)
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        observation_path(self._root).write_text(_envelope(self._pending.pop(0)), encoding="utf-8")
+        return ToolResult.ok(output=f"staged, {len(self._pending)} to go")
+
+
+def _stage_call(n: int) -> LLMResult:
+    """A distinct call per frame: three identical outcomes in a row are a stuck signal."""
+    return LLMResult(text="", tool_calls=[ToolCall(id=f"s{n}", name="stage", arguments={"n": n})])
+
+
+class _BoundElapses(Tool):
+    """A call that took the whole bound in wall time: it ages the stamp instead of sleeping."""
+
+    spec = ToolSpec(name="wait", description="One slow unit of work.")
+
+    def __init__(self) -> None:
+        self.loop: AgentLoop | None = None
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        assert self.loop is not None and self.loop._observation_delivered_at is not None
+        self.loop._observation_delivered_at -= _OBSERVATION_INTERVAL_S
+        return ToolResult.ok(output="waited")
+
+
+async def _run(loop: AgentLoop, text: str, *, streaming: bool) -> list[str]:
+    """One turn on either loop body; returns the statuses it announced (none when buffered)."""
+    if not streaming:
+        await loop.arun_turn(text)
+        return []
+    return [str(getattr(e, "message", "")) async for e in loop.astream_turn(text)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_frames_faster_than_the_bound_reach_a_turn_once_per_interval(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The turn takes the first frame at once and holds the rest. Once the bound has passed it
+    takes the NEWEST: the frame staged in between was superseded, never delivered late."""
+    provider = _Recording(
+        [_stage_call(1), _stage_call(2), _stage_call(3), _tool_call("wait"), _DONE]
+    )
+    frames = [{"nearby": [f"frame-{n}"]} for n in ("one", "two", "three")]
+    wait = _BoundElapses()
+    loop, session = _loop(provider, tmp_path, tools=[_StageEach(tmp_path, frames), wait])
+    wait.loop = loop
+
+    statuses = await _run(loop, "begin", streaming=streaming)
+
+    perceived = [m.text for m in session.messages if m.text.startswith("[perception")]
+    assert len(perceived) == 2, "frames staged inside the bound reached the turn"
+    assert "frame-one" in perceived[0]
+    assert "frame-three" in perceived[1], "the frame taken after the bound was not the newest"
+    assert "frame-two" not in _all_text(provider.seen[2]), "a frame inside the bound was delivered"
+    if streaming:
+        assert sum("perception delivered" in s for s in statuses) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_frame_held_when_the_turn_ends_opens_the_next_turn(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """Holding is not dropping: a frame still inside the bound when the turn ends stays staged,
+    and the next turn takes it at its first boundary."""
+    provider = _Recording([_stage_call(1), _stage_call(2), _DONE, _DONE])
+    frames = [{"nearby": ["frame-one"]}, {"nearby": ["frame-two"]}]
+    loop, _ = _loop(provider, tmp_path, tools=[_StageEach(tmp_path, frames)])
+
+    await _run(loop, "begin", streaming=streaming)
+    assert observation_path(tmp_path).exists(), "a held frame was consumed without delivery"
+    assert "frame-two" not in _all_text(provider.seen[-1])
+
+    await _run(loop, "again", streaming=streaming)
+    assert "frame-two" in _all_text(provider.seen[-1]), "the next turn's first call missed it"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_frame_staged_between_turns_reaches_the_next_turns_first_call(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The bound thins frames INSIDE a turn only. The previous turn took a frame moments ago,
+    and a frame staged while no turn runs still reaches the next turn's first call."""
+    provider = _Recording([_tool_call("perceive"), _DONE, _DONE])
+    loop, _ = _loop(
+        provider, tmp_path, tools=[_ObserveWhileRunning(tmp_path, {"nearby": ["a torch"]})]
+    )
+    await _run(loop, "begin", streaming=streaming)
+    assert "a torch" in _all_text(provider.seen[-1]), "control: the first turn took no frame"
+
+    observation_path(tmp_path).write_text(_envelope({"nearby": ["a lantern"]}), encoding="utf-8")
+    await _run(loop, "again", streaming=streaming)
+
+    assert "a lantern" in _all_text(provider.seen[-1]), "the bound carried across a turn boundary"
 
 
 # --- the discovery fold -----------------------------------------------------------
