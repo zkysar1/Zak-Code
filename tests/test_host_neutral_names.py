@@ -163,8 +163,13 @@ def _scanned_files() -> list[Path]:
 
 
 def test_no_file_names_the_host() -> None:
+    files = _scanned_files()
+    # A scan that finds nothing passes by default, so first prove it reached every scanned dir:
+    # a moved test file or a renamed dir would otherwise turn this test green and blind.
+    missing = sorted(set(SCANNED) - {p.relative_to(ROOT).parts[0] for p in files})
+    assert not missing, f"the scan found no files under {missing}"
     bad = []
-    for p in _scanned_files():
+    for p in files:
         rel = p.relative_to(ROOT).as_posix()
         if rel in EXEMPT:
             continue
@@ -182,7 +187,7 @@ def test_each_exemption_is_still_needed() -> None:
         )
 
 
-def test_the_scan_sees_a_planted_name(tmp_path: Path) -> None:
+def test_the_scan_sees_a_planted_name() -> None:
     assert findings(f"a line with {CANARY} in it") == [(1, "a blocked word")]
     assert findings(f"compound {CANARY}_file too") == [(1, "a blocked word")]
     assert findings("see g-000-00 there") == [(1, "a record id")]
