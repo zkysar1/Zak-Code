@@ -118,6 +118,57 @@ def test_knowledge_node_found_and_404(tmp_path: Path) -> None:
     assert client.get("/knowledge/node/nope").status_code == 404
 
 
+def _seed_node(workspace: Path, extra: dict[str, object]) -> None:
+    """A one-node bundle whose row carries ``extra`` beside the viewer fields."""
+    row: dict[str, object] = {
+        "key": "leaf",
+        "title": "Leaf",
+        "summary": "a child",
+        "body": "text",
+        "parent": "",
+        "children": [],
+    }
+    row.update(extra)
+    bundle = json.dumps({"tree": [row]})
+    (workspace / ".knowledge-bundle.json").write_text(bundle, encoding="utf-8")
+
+
+def test_knowledge_node_carries_the_projected_handle(tmp_path: Path) -> None:
+    """A row's ``handle`` reaches the caller unchanged.
+
+    The projection may give an item an opaque ``handle`` so a front end can refer back to that
+    one item (to correct it, say). This route rebuilds the row field by field, so a field it does
+    not name never reaches the caller, and the front end cannot offer the action on a live
+    workspace. Exact equality pins the whole shape: a dropped or renamed key fails here.
+    """
+    _seed_node(tmp_path, {"handle": "0123456789abcdef"})
+    node = _client(tmp_path).get("/knowledge/node/leaf").json()
+    assert node == {
+        "key": "leaf",
+        "title": "Leaf",
+        "summary": "a child",
+        "body": "text",
+        "parent": "",
+        "children": [],
+        "handle": "0123456789abcdef",
+    }
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"handle": None}, {"handle": ""}, {"handle": 123}, {"handle": ["0123456789abcdef"]}],
+    ids=["absent", "null", "empty", "number", "list"],
+)
+def test_knowledge_node_omits_an_unusable_handle(tmp_path: Path, extra: dict[str, object]) -> None:
+    """No usable handle means no ``handle`` key at all, never ``""``, ``None`` or a coerced value.
+
+    A missing key is how a caller tells "this item cannot be addressed" from an address, so the
+    route must not invent one: ``str(None)`` would publish the address ``"None"``.
+    """
+    _seed_node(tmp_path, extra)
+    assert "handle" not in _client(tmp_path).get("/knowledge/node/leaf").json()
+
+
 def test_knowledge_hypotheses_and_guardrails(tmp_path: Path) -> None:
     _seed_bundle(tmp_path)
     client = _client(tmp_path)
