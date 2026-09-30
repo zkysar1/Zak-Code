@@ -136,9 +136,12 @@ def load_settings_hooks(
     project_dir = workspace_root.as_posix()
 
     for settings_path in _settings_candidates(workspace_root):
-        if not settings_path.is_file():
-            continue
         try:
+            # Inside the guard: in a directory the process can no longer enter, is_file() itself
+            # raises PermissionError (Python 3.11 to 3.13). Outside it, that escaped the refresh a
+            # running turn makes before every model call (ADR-0079) and ended the turn.
+            if not settings_path.is_file():
+                continue
             data = json.loads(settings_path.read_text(encoding="utf-8"))
         # A file that is not UTF-8 is unreadable the same way broken JSON is, so it is reported
         # the same way. Raised, it stopped the agent from starting, and at a turn start it escaped
