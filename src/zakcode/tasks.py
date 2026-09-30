@@ -510,7 +510,24 @@ class TaskNetwork(BaseModel):
         # from the record — what the model could not see, it cannot have meant to drop.
         prior_tasks = self.tasks
         self.tasks = self._expand_collapsed_rows(tasks)
-        restored = self._restore_dropped_done(prior_tasks)
+        restored: list[Task] = []
+        if self._folded_done(prior_tasks) and not self._keeps_a_step_of(prior_tasks):
+            # ADR-0269: a plan that keeps NONE of the prior plan's steps (no title in common, no
+            # folded row echoed) is a new plan, as a TodoWrite with a new list is. The prior
+            # plan leaves the board, not the record, as a finished plan does at turn start, and
+            # nothing it folded comes back. Without this, a turn that never ends (a host
+            # framework's perpetual loop) carried every finished step of every earlier plan
+            # into each new one: measured on six such sessions, plans of 65 to 139 steps, and
+            # done steps put back on 551 of 602 updates.
+            finished = sum(1 for leaf in prior_leaves if leaf.status in _TERMINAL)
+            self.record(
+                "reset",
+                detail=f"replaced by a new plan that kept none of its steps "
+                f"({finished}/{len(prior_leaves)} done): "
+                + "; ".join(clip(t.title, 40) for t in prior_leaves[:6]),
+            )
+        else:
+            restored = self._restore_dropped_done(prior_tasks)
         advisories = self.normalize()
         if restored:
             named = "; ".join(f"'{clip(t.title, 40)}'" for t in restored[:4])
@@ -822,6 +839,20 @@ class TaskNetwork(BaseModel):
             out.extend(TaskNetwork._folded_done(node.children))
             i += 1
         return out
+
+    def _keeps_a_step_of(self, prior_tasks: list[Task]) -> bool:
+        """Whether the installed tree keeps any step of ``prior_tasks``: a title in common, at
+        any depth. An echoed fold row counts, because it has already expanded into the prior
+        steps it stands for (ADR-0269)."""
+        prior: set[str] = set()
+
+        def collect(nodes: list[Task]) -> None:
+            for node in nodes:
+                prior.add(self._title_key(node.title))
+                collect(node.children)
+
+        collect(prior_tasks)
+        return any(self._title_key(t.title) in prior for t in self._iter())
 
     def _restore_dropped_done(self, prior_tasks: list[Task]) -> list[Task]:
         """Put back the done steps the prior plan's working-memory render HID (inside a folded
