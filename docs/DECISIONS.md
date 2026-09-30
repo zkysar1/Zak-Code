@@ -10441,6 +10441,9 @@ with no event, a hidden cancelled step is not restored, the request anchor is no
 stale fold row is dropped, and the same-titled child under its parent never expands; a size
 ratchet on the 20-step plan. The paging and skeleton suites are unchanged and green.
 
+**Amended by ADR-0269 (2026-09-30):** a replace that keeps none of the prior plan's steps is a
+new plan, and nothing the prior plan's fold hid is restored into it.
+
 
 ## ADR-0185: the transcript reads at a glance — the operator's line and the tool line stay bright, every receipt opens with its outcome and names its tool, body text wraps at a reading width, and inline markdown renders what models write
 
@@ -16143,3 +16146,63 @@ Tests: `tests/test_stuck.py` pins that the narrowed call sends the same tool def
 prompt as the call before it, in both twins and on both climbs of the ladder; that a write-tier call
 on the narrowed step is refused at the seam and never runs; and that the rail names the refused
 tools. Restoring the narrowed schema turns the first test red.
+
+## ADR-0269: a plan that keeps none of the prior plan's steps is a new plan, and folded history comes back only into the plan it belongs to
+
+Status: accepted. 2026-09-30.
+
+ADR-0184 folds closed runs out of the model's working memory. On the next full replace it restores
+any done step a fold hid that the resend left out, because what the model could not see, it cannot
+have meant to drop. It bounded a plan's life by the turn: a finished plan leaves the board at the
+next turn start. A host framework's perpetual loop never ends its turn. Each unit of work starts its
+own short plan, and the restore put every finished step of every earlier plan back into it, so the
+board only grew.
+
+We measured six long-running agent sessions on a local model pod. Each was a single turn over three
+days. We read every `update_plan` call in each session's transcript, as counts and lengths only:
+
+- The model sent short plans: 4 to 7 steps at the median and 9 to 12 at p90, 1.5k to 2.2k
+  characters at the median. It sent a folded row back in 44 of 602 updates.
+- The boards held 65 to 139 steps.
+- Five updates were far larger. Two sent 41 and 68 steps, 38 and 60 of them done. Three hit the
+  8,192-token output cap and were cut off after 13.6k to 25.8k characters of arguments.
+
+Replaying each session's own updates through the plan code reproduced the live board exactly in
+five of the six sessions. The sixth had turn resets that the replay does not model. In the replay,
+the restore put done steps back on 551 of the 602 updates, 31,058 steps in all. The same updates
+under the rule below give boards of 5 to 12 steps at the median in all six sessions, and 12 to 22
+at p90 in five. In the sixth, p90 stayed at 48: there the history lived on through updates that
+kept a title of the prior plan or sent its folded row back, which is the model's own choice.
+
+The rule:
+
+1. When the prior plan has done steps a fold hid, and the new tree keeps none of the prior plan's
+   steps, the replace is a new plan. "Keeps none" means no title in common at any depth and no
+   folded row sent back; an echoed row has already expanded into the steps it stands for. Nothing
+   folded comes back. The record gets a `reset` line saying how much of the prior plan was done,
+   as the turn-start reset writes one, so `plan_recall`'s history of this plan starts there.
+2. Otherwise the restore runs as ADR-0184 decided. A resend that keeps even one step of the plan
+   keeps its folded history.
+3. Open steps a new plan leaves out are still recorded and named in the tool result (ADR-0113).
+4. The reminder's sentence about folded rows says so: send them back as shown or leave them out,
+   and the harness keeps the steps they stand for; a new plan that keeps none of these steps
+   replaces them.
+
+This is Claude Code's `TodoWrite` contract, where a new list replaces the old one. The fold's round
+trip still holds inside a plan: a resend that keeps any of the plan's steps loses none of its
+finished steps, so the progress fraction and a paged skill's skeleton stay whole.
+
+Rejected: restoring nothing, which treats a left-out folded row like a left-out visible done step.
+That reopens the loss ADR-0184 closed, where a resend of the current plan without its folded row
+drops that plan's own finished steps. Ending a plan only when it completes: plans in these
+sessions rarely completed, and an earlier replay of them with that rule left median boards of 12
+to 67 steps. A step-count or age cap, which is a knob and would cut a long plan's own history.
+Telling the model in prose to clear its plan between units: the host framework's own instructions
+began asking for that partway through these sessions, and none of the six ever sent an empty plan.
+
+Tests: `tests/test_plan_elision.py` pins that a plan keeping none of the prior steps gets none of
+the folded history back and writes its `reset` line before its own events; that keeping one step,
+or sending the folded row back, keeps the history; that a new plan over a plan with nothing folded
+writes no reset line; that `plan_recall` scopes this plan's history to the new plan; and that the
+reminder states the rule. Turning the rule off turns two of these red. Treating every replace as a
+new plan turns six red, four of them ADR-0184's own restore tests.

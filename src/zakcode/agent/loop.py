@@ -3843,10 +3843,12 @@ class AgentLoop:
         if any(COLLAPSED_ROW_RE.match(line.strip()) for line in rendered.splitlines()):
             # ADR-0184: the fold is round-trip-safe, and the model is told so — an echoed row
             # expands back and a left-out one is restored, so it need not retype done work.
+            # ADR-0269: except into a new plan, one that keeps none of these steps; the
+            # sentence says that too, so it stays true and tells the model how to start fresh.
             body += (
                 "\n\nClosed steps are folded into rows like `[x] 1–5 (5 steps done)`: send "
-                "them back as shown (or leave them out) — the harness keeps the steps they "
-                "stand for."
+                "them back as shown or leave them out, and the harness keeps the steps they "
+                "stand for. A new plan that keeps none of these steps replaces them."
             )
         memory = self._plan_memory_lines()
         if memory:

@@ -1,5 +1,7 @@
 """Plan hygiene in working memory (ADR-0184): a long turn stops paying for every finished
 step on every iteration, and the fold is round-trip-safe under update_plan's full-replace.
+A plan that keeps none of the prior plan's steps is a new one, and the fold's history stays
+with the plan it belongs to (ADR-0269).
 
 User directive 2026-09-01: "completed items stay around too long — remove them from working
 memory more often". Measured then: a 20-step plan at step 18 re-injected 17 done rows (title,
@@ -20,6 +22,7 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider
 from zakcode.session.store import Session
 from zakcode.tasks import COLLAPSED_ROW_RE, Task, TaskNetwork
 from zakcode.tools.base import ToolContext, ToolRegistry
+from zakcode.tools.builtins.plan_recall import PlanRecallTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 
 
@@ -220,6 +223,8 @@ def test_the_reminder_carries_the_folded_plan_and_the_round_trip_contract(tmp_pa
     assert "[x] 1–17 (17 steps done)" in reminder.text
     assert "module 3 rewritten" not in reminder.text
     assert "Closed steps are folded into rows like" in reminder.text
+    # ADR-0269: the sentence stays true — a plan that keeps none of the steps replaces them.
+    assert "A new plan that keeps none of these steps replaces them." in reminder.text
     # The UI event stays the whole record — the structured tree and the checklist alike.
     event = loop._task_update_event()
     assert event is not None
@@ -407,3 +412,60 @@ def test_a_same_titled_child_under_its_closed_parent_never_expands_into_it() -> 
     child = net.tasks[0].children
     assert len(child) == 1 and not child[0].children
     assert net.progress() == (1, 2)
+
+
+# ── a new plan (ADR-0269): folded history is restored only into the plan it belongs to ─────
+
+
+def test_a_plan_that_keeps_none_of_the_prior_steps_is_new_and_nothing_folded_comes_back() -> None:
+    # The perpetual-loop shape: each unit of work starts its own short plan. Before ADR-0269 the
+    # 17 folded done steps came back into every such plan, so the board only ever grew.
+    net = _plan(17, 20)
+    result = _run(net, [{"title": "new unit: read", "status": "in_progress"}, {"title": "fix"}])
+    assert [t.title for t in net.tasks] == ["new unit: read", "fix"]
+    assert net.progress() == (0, 2)
+    assert "restored" not in result.output
+    # The prior plan leaves the board, not the record; its open steps are still named (ADR-0113).
+    kinds = [e.kind for e in net.log]
+    reset = kinds.index("reset")
+    assert net.log[reset].detail.startswith(
+        "replaced by a new plan that kept none of its steps (17/20 done): step 1: edit module 1"
+    )
+    assert reset < kinds.index("authored")
+    assert "dropped open step(s) not in this plan" in result.output
+
+
+def test_keeping_one_step_of_the_plan_keeps_its_folded_history() -> None:
+    net = _plan(17, 20)
+    result = _run(net, [{"title": "step 20: edit module 20"}, {"title": "brand new"}])
+    assert net.progress() == (17, 19)
+    assert "restored 17 done step(s)" in result.output
+    assert not any(e.kind == "reset" for e in net.log)
+
+
+def test_an_echoed_fold_row_keeps_the_history_it_stands_for_under_new_steps() -> None:
+    # Sending the folded row back is keeping those steps: the model's list, as sent.
+    net = _plan(17, 20)
+    steps = [{"title": "1–17 (17 steps done)", "status": "done"}]
+    _run(net, steps + [{"title": "brand new", "status": "in_progress"}])
+    assert net.progress() == (17, 18)
+    assert net.tasks[2].outcome == "module 3 rewritten and its tests pass"
+    assert not any(e.kind == "reset" for e in net.log)
+
+
+def test_a_new_plan_over_a_plan_with_nothing_folded_changes_nothing_else() -> None:
+    # A lone closed step is visible, so leaving it out was already the model's call (ADR-0113);
+    # with nothing hidden there is nothing to withhold and no reset line to write.
+    net = _net(Task(title="a", status="done"), Task(title="b", status="in_progress"))
+    _run(net, [{"title": "x", "status": "in_progress"}])
+    assert [t.title for t in net.tasks] == ["x"]
+    assert not any(e.kind == "reset" for e in net.log)
+
+
+def test_plan_recall_scopes_this_plans_history_to_the_new_plan(tmp_path: Path) -> None:
+    net = _plan(17, 20)
+    _run(net, [{"title": "new unit: read", "status": "in_progress"}, {"title": "fix"}])
+    ctx = ToolContext(workspace_root=tmp_path, task_network=net)
+    overview = asyncio.run(PlanRecallTool().execute({}, ctx)).output
+    assert "from earlier plans" in overview
+    assert "step 1: edit module 1" not in overview.split("History (this plan")[1]
