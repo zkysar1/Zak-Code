@@ -15950,6 +15950,9 @@ keeps the single-slot guarantee while ensuring the ending eventually lands.
 Both paths coexist in the same release. The legacy path is unchanged and works as before when only
 `run_stop_agent` is set. Removal of the legacy path is a future release.
 
+**Amended by ADR-0270 (2026-09-30):** point 7 no longer holds for a workspace that declares an
+`ObservationReceived` hook. That hook hears each change whichever ending the run uses.
+
 ## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
 
 Status: accepted. 2026-09-28.
@@ -16206,3 +16209,70 @@ or sending the folded row back, keeps the history; that a new plan over a plan w
 writes no reset line; that `plan_recall` scopes this plan's history to the new plan; and that the
 reminder states the rule. Turning the rule off turns two of these red. Treating every replace as a
 new plan turns six red, four of them ADR-0184's own restore tests.
+
+## ADR-0270: the perception intake hands each change to the workspace's ObservationReceived hook
+
+Status: accepted. 2026-09-30.
+
+`POST /observe` stages every accepted frame for the served agent to read on its own tick, and wakes
+the agent early when a frame reports a change. The early wake had one implementation. When
+`run_stop_agent` named the workspace's resident agent, the route ran two scripts at fixed paths in
+the workspace: one read that agent's mode, and one raised a signal file its sleep polls. That works
+for the one host framework laid out that way and for no other. It is also off whenever the run uses
+the host-neutral ending (ADR-0264, point 7), so moving a served run to that ending silently took
+away its early wake.
+
+Decision.
+
+1. A new hook event, `ObservationReceived`. It is Zak Code's own: Claude Code has no such event.
+   The route fires it once per accepted frame whose `kind` is `change`, after the frame is staged.
+   The hook gets the lifecycle payload with `hook_event_name`, `session_id` (the run's current
+   session, empty before the first turn), `cwd` (the workspace root, where the hook runs) and
+   `data = {kind, observation_path}`. A heartbeat, an unstamped envelope and an unknown kind fire
+   nothing. That is the equality gate the wake always had: a timer frame says nothing new, and a
+   hook fired on it would start a process on every round of every vessel.
+2. It is declared like any other hook, in a settings file. `.zakcode/settings.json` is the place.
+   Zak Code reads it and Claude Code never does, so a Claude Code session in the same workspace
+   never meets an event it does not know.
+3. The hook's exit code is the wake disposition. Every hook exiting 0 is `delivered`. Any hook
+   exiting non-zero, timing out or failing to start is `dropped`. No hook is `not-attempted`. The
+   response field, the `/sidecar/health` counters and the `perception-intake` log line keep their
+   three states and their meaning. `delivered` now says the host took the frame. What the host
+   then does with it, nothing included, is the host's business. Every hook runs, whatever an
+   earlier one did.
+4. The hook comes first. A workspace that declares it never also gets the signal-file wake, so a
+   change wakes the agent once. The hook runs whichever ending the run uses, and the host-neutral
+   ending no longer costs the early wake.
+5. The route reads the settings files the way the agent does (ADR-0079): three stats per change
+   frame, and a re-parse only when a file changed. A hook declared after the server started is used
+   from the next change frame, and one removed stops. The route runs on worker threads and frames
+   can arrive together, so the re-read and the copy a frame runs are taken under one lock. The
+   re-read advances the file signature before it parses, so without the lock a frame arriving
+   mid-parse finds nothing changed and runs the old list. A probe ran the same re-read and copy
+   on 8 threads at once over a changed 300-hook file, 60 times: 420 of the 480 copies were the old
+   list without the lock, and none with it.
+
+The signal-file wake stays as it was for a workspace that declares no hook and names its agent in
+`run_stop_agent`. It goes when that setting does. The frame is staged before the settings files
+are read and the hooks run, and nothing that fails there can change or refuse it. Every failure,
+a settings file that cannot be read included, keeps the frame and the 200 and reports the wake
+`dropped`.
+
+Rejected: firing the event for heartbeats too and letting the host filter them. The staged file
+already carries every heartbeat to the host, so a push adds nothing there, and it costs a process
+per heartbeat on every vessel, including those whose host wants none. Rejected: a setting that
+names the wake script. The settings files are already the one place a workspace says what runs on
+which event, and a second knob beside them can only disagree with them. Rejected: an exit code for
+"the host chose not to wake". A host that declines has handled the frame, which is what exit 0
+says, and a third code would be a protocol with no reader.
+
+Tests: `tests/test_observe_hook.py` pins the payload and its timing (the hook finds the frame
+already staged, runs at the workspace root and gets the current session); the change-only gate over
+heartbeat, unstamped and unknown kinds; `delivered` from exit 0 and `dropped` from a non-zero exit,
+a timeout, a hook that cannot start, and hooks that cannot be read or run at all (a 200, never a
+500); every hook running when one fails; the hook under the host-neutral ending; the hook
+replacing the signal-file wake, with that wake firing first as the control in the same test; the
+re-read both ways; and a frame arriving mid-re-read running the new hooks. Thirteen sabotages each
+turned their tests red: the kind gate, the hook-first branch, the session id, the re-read, the
+exit-code read, the run-every-hook loop, the returned exit code, the timeout, the loader mapping,
+the staged path, the fail-open guard, reading the settings outside that guard, and the lock.

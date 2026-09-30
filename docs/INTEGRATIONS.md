@@ -74,6 +74,7 @@ that fails, times out or prints nothing says nothing.
 | `PreCompact` | before the transcript is compacted (auto or `/compact`) | serialize learning state before context is dropped |
 | `SessionEnd` | on `Agent.aclose()` | "encode" — consolidate the just-finished session |
 | `OnSkillSelected` | when a skill is used (via `Agent.invoke_skill`); `data` = `{skill, query, source}` | learn **habitual skill preferences** — record `(query → skill)` to bias future selection (e.g. via a bandit + the `PreLLMCall` hook) |
+| `ObservationReceived` | Zak Code's own event: once per accepted `change` frame on the served run's `POST /observe`, after the frame is staged; `data` = `{kind, observation_path}`. Declare it in `.zakcode/settings.json` | wake the framework's sleeping loop when its world changes. Its exit code is read: 0 reports the wake `delivered`, anything else `dropped` (ADR-0270) |
 
 Register in-process:
 

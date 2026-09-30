@@ -96,6 +96,13 @@ class HookEvent(StrEnum):
     # exit-2 prompt-blocking is a documented follow-up). Mirrors Claude Code's UserPromptSubmit;
     # the seam a host framework's user-prompt retrieval/inject hook plugs into.
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
+    # Zak Code's own event, which Claude Code does not have (ADR-0270): fired by the served
+    # run's perception intake (``POST /observe``) once per accepted CHANGE frame, after the
+    # frame is staged. Observe-only, like the session events, with one difference: its exit
+    # code is read, because it is the only evidence the intake has that the host took the
+    # frame (see HookManager.deliver_observation). Declare it in ``.zakcode/settings.json``,
+    # the settings file Claude Code never reads.
+    OBSERVATION_RECEIVED = "ObservationReceived"
 
 
 class HookDecision(StrEnum):
@@ -740,6 +747,32 @@ class HookManager:
                 await self._run_lifecycle_shell(spec, payload)
         return said
 
+    async def deliver_observation(self, payload: LifecyclePayload) -> bool | None:
+        """Hand an accepted perception frame to the ``ObservationReceived`` shell hooks.
+
+        Returns ``None`` when no such hook is registered, so the caller attempted nothing;
+        ``True`` when every hook exited 0; ``False`` when any exited non-zero, timed out or
+        could not start (ADR-0270). Every hook runs, whatever an earlier one did.
+
+        The frame is already staged when this runs and no hook can change or refuse it, so
+        the exit code is the only thing read: it is the caller's one piece of evidence that
+        the host took the frame. What the host then does with it (wake a sleeping loop, or
+        nothing at all) is the host's business. Any failure makes the whole delivery a
+        failure, because a failed delivery must never read as a clean one. Shell hooks only:
+        the intake builds this manager from the settings files and registers nothing else.
+        """
+        specs = [s for s in self.shell_hooks if s.event is HookEvent.OBSERVATION_RECEIVED]
+        if not specs:
+            return None
+        delivered = True
+        for spec in specs:
+            code = await self._run_lifecycle_shell(spec, payload)
+            if code != 0:
+                delivered = False
+                if code is not None:  # the runner already logged a hook that never finished
+                    logger.warning("observation hook %r exited %s", spec.command, code)
+        return delivered
+
     # ── TURN_END dispatch (veto-capable) ─────────────────────────────────────
 
     async def run_turn_end(
@@ -1103,14 +1136,16 @@ class HookManager:
         except Exception as exc:  # noqa: BLE001 — a lifecycle hook never breaks a session
             logger.warning("lifecycle hook raised %s: %s", type(exc).__name__, exc)
 
-    async def _run_lifecycle_shell(self, spec: HookSpec, payload: LifecyclePayload) -> None:
+    async def _run_lifecycle_shell(self, spec: HookSpec, payload: LifecyclePayload) -> int | None:
         """Run one lifecycle shell hook for its side effects; its output is never read.
 
         Every lifecycle event but ``SESSION_START`` comes through here (that one goes through
-        :meth:`_run_session_start_shell`, which also returns what the hook said).
+        :meth:`_run_session_start_shell`, which also returns what the hook said). Returns the
+        hook's exit code, or ``None`` when it did not run to its end (no command, a spawn
+        failure, a timeout, an error). Only :meth:`deliver_observation` reads it.
         """
         if not spec.command:
-            return
+            return None
         stdin_bytes = _named_wire(payload, payload.event)
         child_env = _hook_env(spec.drop_env, payload.cwd)
         try:
@@ -1124,7 +1159,7 @@ class HookManager:
             )
         except (OSError, ValueError) as exc:
             logger.warning("lifecycle hook %r failed to start: %s", spec.command, exc)
-            return
+            return None
         try:
             await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=spec.timeout)
         except (TimeoutError, asyncio.CancelledError) as exc:
@@ -1132,8 +1167,11 @@ class HookManager:
             if isinstance(exc, asyncio.CancelledError):
                 raise
             logger.warning("lifecycle hook %r timed out after %ss", spec.command, spec.timeout)
+            return None
         except Exception as exc:  # noqa: BLE001 — never propagate a lifecycle-hook failure
             logger.warning("lifecycle hook %r errored: %s", spec.command, exc)
+            return None
+        return proc.returncode
 
     # ── runners (each fully error-isolated) ───────────────────────────────────
 
