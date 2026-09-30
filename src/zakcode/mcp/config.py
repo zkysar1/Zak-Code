@@ -150,9 +150,11 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
     but malformed file raises :class:`McpConfigError`.
     """
     p = Path(path)
-    if not p.is_file():
-        return []
     try:
+        # Inside the guard: in a directory the user cannot enter, is_file() itself raises
+        # PermissionError, and outside the guard that escaped discovery unreported.
+        if not p.is_file():
+            return []
         raw = p.read_text(encoding="utf-8")
     # Bytes that are not UTF-8 make the file unreadable too. Raised bare, the error named no
     # file (tests/test_mcp_config.py).
@@ -179,13 +181,28 @@ def default_config_paths(workspace_root: str | Path) -> list[Path]:
     ]
 
 
-def discover_config(workspace_root: str | Path) -> list[McpServerConfig]:
-    """Load servers from the first existing default config path (project, then user)."""
+def discover_config(
+    workspace_root: str | Path,
+) -> tuple[list[McpServerConfig], dict[str, str]]:
+    """Load servers from the first default config path that has any (project, then user).
+
+    Returns ``(servers, errors)``. A config file that is present but cannot be read or
+    parsed is skipped the way an empty one is, so the next path is still consulted, and
+    its error is returned under the file's path for the caller to show (``/mcp`` lists
+    it). One bad file therefore never stops a session from starting. Claude Code does the
+    same with a broken project ``.mcp.json``: the session starts, other configs still
+    load, and its MCP view reports the parse error.
+    """
+    errors: dict[str, str] = {}
     for candidate in default_config_paths(workspace_root):
-        servers = load_mcp_config(candidate)
+        try:
+            servers = load_mcp_config(candidate)
+        except McpConfigError as exc:
+            errors[str(candidate)] = str(exc)
+            continue
         if servers:
-            return servers
-    return []
+            return servers, errors
+    return [], errors
 
 
 __all__ = [
