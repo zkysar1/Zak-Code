@@ -35,7 +35,7 @@ def _build(tmp_path: Path) -> tuple[Any, SessionStore]:
 def _stored(store: SessionStore, tmp_path: Path) -> Session:
     session = Session(cwd=str(tmp_path), model="scripted/test")
     session.messages = [
-        Message.user("remember: the pearl holds"),
+        Message.user("remember: the data holds"),
         Message(
             role="assistant",
             blocks=[
@@ -44,7 +44,7 @@ def _stored(store: SessionStore, tmp_path: Path) -> Session:
             ],
         ),
         Message.tool_results([ToolResultBlock(tool_use_id="t1", output="noted")]),
-        Message.assistant_text("The pearl holds — remembered."),
+        Message.assistant_text("The data holds — remembered."),
         Message.system("a system frame is never spoken"),
         Message(role="assistant", blocks=[ToolUseBlock(id="t2", name="bash", input={})]),
     ]
@@ -70,9 +70,9 @@ def test_transcript_is_the_spoken_turns_only(tmp_path: Path) -> None:
     assert body["session_id"] == session.id
     assert body["message_count"] == 6  # the full stored length, not the spoken count
     assert [(m["role"], m["text"]) for m in body["messages"]] == [
-        ("user", "remember: the pearl holds"),
+        ("user", "remember: the data holds"),
         ("assistant", "Let me note that."),
-        ("assistant", "The pearl holds — remembered."),
+        ("assistant", "The data holds — remembered."),
     ]
 
 
@@ -80,7 +80,7 @@ def test_limit_keeps_the_tail(tmp_path: Path) -> None:
     app, store = _build(tmp_path)
     session = _stored(store, tmp_path)
     tail = _get(app, f"/sessions/{session.id}/transcript?limit=1").json()["messages"]
-    assert [m["text"] for m in tail] == ["The pearl holds — remembered."]
+    assert [m["text"] for m in tail] == ["The data holds — remembered."]
     assert _get(app, f"/sessions/{session.id}/transcript?limit=0").json()["messages"] == []
 
 
@@ -91,7 +91,7 @@ def test_current_alias_resolves_the_marker_and_404s_without_one(tmp_path: Path) 
     (tmp_path / ".current-session").write_text(session.id + "\n", encoding="utf-8")
     body = _get(app, "/sessions/current/transcript").json()
     assert body["session_id"] == session.id
-    assert body["messages"][0]["text"] == "remember: the pearl holds"
+    assert body["messages"][0]["text"] == "remember: the data holds"
 
 
 def test_unknown_session_is_404(tmp_path: Path) -> None:

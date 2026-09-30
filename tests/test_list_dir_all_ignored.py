@@ -1,7 +1,7 @@
 """A directory whose every entry is ignored is listed anyway (ADR-0129).
 
 Field 2026-09-10, a framework workspace on a local 35B model: the workspace's world lives under a
-gitignored root (``.mind-data/``). Three ``list_dir`` calls on its knowledge tree came back as
+gitignored root (``.agent-data/``). Three ``list_dir`` calls on its knowledge tree came back as
 ONE line — ``[... 5 ignored entries hidden; include_ignored=true to show ...]`` — the model
 skimmed that note four times, the no-progress rail fired, and five of the turn's twelve
 iterations went to a directory the tool could have simply shown. Claude Code's listing shows

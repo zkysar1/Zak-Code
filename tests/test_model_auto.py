@@ -2,7 +2,7 @@
 
 Hermetic: every probe is an injected fake (no network ever). Covers the detection
 acceptance matrix (local / external / preference order / nothing-viable), the
-tools-unreliable capability skip (omni's D21 ruling), probe caching + fresh-probe
+tools-unreliable capability skip (D21 ruling), probe caching + fresh-probe
 on failover, the explicit bypass, the fallback_model override, and the loop's
 once-per-turn ``model_failover`` seam on both the buffered and streaming paths.
 """

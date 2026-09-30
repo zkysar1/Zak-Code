@@ -582,7 +582,7 @@ class SayInboxPrompter:
                 task.add_done_callback(_REQUEUE_TASKS.discard)
 
 
-# ── PEARL knowledge base (§10.4) + viewer nudge (§Layer-4) ────────────────────
+# ── knowledge base + viewer nudge ──────────────────────────────────────────────
 #: Defense-in-depth length cap on a queued viewer nudge. The gateway is the real
 #: sanitization + rate-limit trust boundary; the server only caps and queues.
 NUDGE_MAX_CHARS = 500
@@ -1175,7 +1175,7 @@ def create_app(
         only tails the fan-out bus. ``?since=<cursor>`` resumes after a known event (each
         frame's SSE ``id`` is its cursor); omit it to replay the retained buffer then tail.
 
-        The literal id ``current`` is a gateway-facing alias (the PEARL watch UI streams
+        The literal id ``current`` is a gateway-facing alias (the watch UI streams
         ``/watch/current`` without knowing the concrete id) resolved here to the active
         loop session named by the ``.current-session`` marker. 404 if the session does
         not exist, or if ``current`` is requested with no active session.
@@ -1609,7 +1609,7 @@ def create_app(
             "observation_intake": dict(_observation_stats),
         }
 
-    # ── PEARL viewer nudge (§Layer-4) ─────────────────────────────────────────────
+    # ── viewer nudge ─────────────────────────────────────────────────────────────
     # Backs the env-server /sidecar/nudge proxy → gateway /nudge → Vinheim NudgeInput.
     @app.post("/nudge")
     def nudge(request: NudgeRequest) -> dict[str, Any]:
@@ -1634,7 +1634,7 @@ def create_app(
         os.replace(tmp, target)
         return {"queued": True}
 
-    # ── PEARL user say (watch/talk unification) ───────────────────────────────────
+    # ── user say (watch/talk unification) ──────────────────────────────────────────
     # Backs the env-server /sidecar/say proxy → gateway /say → the unified session
     # view. Unlike a /nudge suggestion (folded into the preamble), a say IS the next
     # turn's message: the say consumer runs it and publishes a user_message watch
@@ -1897,7 +1897,7 @@ def create_app(
             "wake": wake,
         }
 
-    # ── PEARL knowledge base (§10.4) — read-only browse over the pre-projected bundle ──
+    # ── knowledge base — read-only browse over the pre-projected bundle ───────────
     # Backs the env-server /sidecar/knowledge/* proxy → gateway /knowledge/* → Vinheim
     # KnowledgeExplorer. Every route reads the already-filtered + redacted bundle the
     # workspace's KnowledgeProjection wrote (§10.3 — filter at the source); the daemon
@@ -1968,7 +1968,7 @@ def create_app(
 
         Like every route here it serves the already-filtered + redacted bundle
         verbatim and holds NO projection logic of its own: the cut is made at the
-        source by the framework's KnowledgeProjection (PEARL §10.3), whose allowlist is
+        source by the framework's KnowledgeProjection, whose allowlist is
         the prose before the first '##' plus two dates. Re-filtering identity
         content here would be a second, divergent redactor — a bug, not defence.
         """
@@ -1988,7 +1988,7 @@ def create_app(
 
         Like every route here it serves the already-filtered bundle verbatim and
         holds NO projection logic: the cut is made at the source by the
-        framework's KnowledgeProjection (PEARL §10.3). For `program` that cut is a
+        framework's KnowledgeProjection. For `program` that cut is a
         marker pair in world/program.md rather than self.md's structural
         first-'##' rule — program.md has no enforced section structure, so the
         projection fails CLOSED and publishes {} when no marker is present.
@@ -2004,7 +2004,7 @@ def create_app(
 
     @app.get("/knowledge/export")
     def knowledge_export() -> dict[str, Any]:
-        """The whole projected base as one downloadable bundle (PEARL §10.5).
+        """The whole projected base as one downloadable bundle.
 
         Emits the OKF transfer-bundle export shape — a portable, human-readable
         wiki (Markdown concept docs + a manifest), NOT the internal JSON dump

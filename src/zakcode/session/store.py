@@ -308,7 +308,7 @@ class Session(BaseModel):
 
         Pure — the caller (the CLI's ``-s <id>`` and in-REPL ``/resume``) prints the text and
         runs the compaction. An unstamped document reads as "an older build": every
-        pre-ADR-0033 transcript is one, and the 2026-08-26 serene collapse was exactly a stale
+        pre-ADR-0033 transcript is one, and the 2026-08-26 field collapse was exactly a stale
         transcript resumed on a process that had not been restarted after ``zakcode update``.
         """
         running = running_build or ""

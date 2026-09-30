@@ -80,7 +80,7 @@ def child_environment(
     ``python -m pytest`` / ``pip`` should hit the WORKSPACE's installed deps, not a bare
     system python — the venv's bin dir goes FIRST on PATH, mirroring an activated venv.
     Workspace env hook: when ``<workspace>/.zakcode/env`` exists, ``BASH_ENV`` makes every
-    non-interactive bash source it first, so a workspace can extend PATH (a mind world
+    non-interactive bash source it first, so a workspace can extend PATH (a workspace
     putting its scripts on PATH so bare script names in its playbooks resolve) without
     zakcode learning any domain layout; other shells ignore the variable.
     """
@@ -141,13 +141,13 @@ async def run_capturing(
         # The tool is NAMED bash and models write bash — run REAL bash wherever one
         # exists, on every platform. create_subprocess_shell uses cmd.exe on Windows
         # and /bin/sh on POSIX, and /bin/sh is dash on Debian/Ubuntu: bashisms fail
-        # and Claude-Code-style frameworks (mind worlds) whose playbooks assume bash
+        # and Claude-Code-style frameworks (workspaces) whose playbooks assume bash
         # trip over it. Fall back to the platform shell only when no bash is found.
         #
         # Workspace env hook: an executable-adjacent sibling of .zakcode/banner —
         # when <workspace>/.zakcode/env exists, BASH_ENV makes every non-interactive
-        # bash source it first, so a workspace can extend PATH (e.g. a mind world
-        # putting its core/scripts on PATH so bare script names in its own playbooks
+        # bash source it first, so a workspace can extend PATH (e.g. a workspace
+        # putting its scripts on PATH so bare script names in its own playbooks
         # resolve) without zakcode learning any domain layout.
         bash = find_bash()
         if bash is not None:

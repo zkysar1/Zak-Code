@@ -1,4 +1,4 @@
-"""Knowledge-base reading and export shaping — the SDK side of PEARL §10.4/§10.5.
+"""Knowledge-base reading and export shaping — the SDK side of the knowledge export.
 
 Everything here is pure workspace/bundle logic with no HTTP in it: reading the
 host framework's pre-projected ``.knowledge-bundle.json`` (filter-at-the-source),
@@ -40,7 +40,7 @@ def _empty_bundle() -> dict[str, Any]:
 #: for the wiki map vs the fuller clickable ``body``. Mirrors the framework
 #: projection's summary/body split so the viewer shows a sampler in the tree and the
 #: full note on click. The raw path is workspace-isolated (a research agent writes
-#: only its own domain notes under ``knowledge/tree/``) — unlike the kid-facing PEARL
+#: only its own domain notes under ``knowledge/tree/``) — unlike the viewer-facing
 #: path, which serves the framework's already-redacted projected bundle, this fallback
 #: carries the note
 #: as written and never reads a framework ``system/`` path.
@@ -140,7 +140,7 @@ def _read_raw_hypotheses(workspace_root: Path) -> list[dict[str, Any]]:
       * ``knowledge/hypotheses.jsonl`` — a lean agent's raw export, and
       * ``knowledge/pipeline.jsonl`` — the REAL framework pipeline store, when a
         sidecar framework runs the daemon with the world variable pointed at
-        ``<workspace>/knowledge`` (the PEARL sidecar layout). The daemon names its
+        ``<workspace>/knowledge`` (the sidecar layout). The daemon names its
         pipeline store ``pipeline.jsonl``, so reading only ``hypotheses.jsonl``
         would miss every hypothesis a real store-append call produced.
     Both live UNDER ``knowledge/`` and hold only the research agent's own domain
@@ -195,7 +195,7 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
 
     ``KnowledgeProjection`` runs in-process on the box in the FRAMEWORK (where the
     stores live) and writes an already-filtered + redacted bundle to
-    ``<workspace>/.knowledge-bundle.json`` (PEARL §10.3 — filter at the source). The
+    ``<workspace>/.knowledge-bundle.json`` (filter at the source). The
     daemon serves that artifact read-only and holds NO projection logic, so it can
     never see raw framework internals. Fail-open: a missing / unreadable / malformed /
     non-dict file yields the empty bundle (the loop simply hasn't exported yet).
@@ -244,7 +244,7 @@ def read_knowledge_bundle(workspace_root: Path) -> dict[str, Any]:
     return out
 
 
-# ── OKF transfer-bundle export (PEARL §10.5) ─────────────────────────────────
+# ── OKF transfer-bundle export ────────────────────────────────────────────────
 # `/knowledge/export` returns a PORTABLE, HUMAN-READABLE WIKI — "Markdown nodes
 # plus a manifest, not a database dump" (§10.5). The shape is the host framework's
 # own OKF-aligned transfer-bundle contract:

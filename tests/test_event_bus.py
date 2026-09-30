@@ -1,4 +1,4 @@
-"""Tests for the Pearl watch-surface per-session event bus (zakcode.server.event_bus).
+"""Tests for the watch-surface per-session event bus (zakcode.server.event_bus).
 
 The bus is the fan-out that lets a read-only watcher (GET /watch/{session_id}, P0-3) observe a
 session's events without disturbing the turn-driver. These tests pin its contract: strictly

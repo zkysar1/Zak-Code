@@ -141,7 +141,7 @@ def test_knowledge_tree_still_empty_when_no_bundle_and_no_raw(tmp_path: Path) ->
     assert _client(tmp_path).get("/knowledge/tree").json() == {"nodes": [], "count": 0}
 
 
-# ── real framework store fallback (PEARL mind-api sidecar layout) ────────────────
+# ── real framework store fallback (sidecar layout) ──────────────────────────────
 
 
 def _seed_jsonl(workspace: Path, name: str, records: list[dict[str, object]]) -> None:

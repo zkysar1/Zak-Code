@@ -979,7 +979,7 @@ def _announce_resume(console: Console, agent: Any) -> None:
     A document last saved by another build, or whose last turn collapsed (gave_up /
     degenerated / doom_loop), is compacted before the first prompt so neither the stale
     build's behavior nor the failure spiral carries over into the resumed session — the
-    2026-08-26 serene collapse resumed an old-build transcript on a process that was itself
+    2026-08-26 field collapse resumed an old-build transcript on a process that was itself
     still the old build. The human is told why in one line. Must run on the session event
     loop (the compaction is a provider call that shares the loop every later turn uses).
     """
@@ -3029,7 +3029,7 @@ def chat(
     # session creation. From then on the inbox is LIVE operator input — chat
     # itself never second-guesses it, so a message typed while the agent was
     # still booting (or queued across a chat relaunch) is delivered, never
-    # eaten (2026-08-25 serene report: the boot-time first message was
+    # eaten (2026-08-25 field report: the boot-time first message was
     # discarded as "stale" and Enter looked dead).
     from zakcode.session.say_inbox import interrupt_path, say_path, take_interrupt
 

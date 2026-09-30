@@ -2,7 +2,7 @@
 (e.g. a host framework) run on it unmodified.
 
 The contract, in five parts (each a fix proven here):
-  1. shell hooks run at the **workspace cwd** (so a hook's relative ``bash core/scripts/...``
+  1. shell hooks run at the **workspace cwd** (so a hook's relative ``bash tools/scripts/...``
      resolves), guarded against a bogus cwd;
   2. a hook's stdout ``hookSpecificOutput.updatedInput`` rewrites the tool args, and
      ``permissionDecision: deny`` blocks on exit 0 (Claude Code blocks via JSON, not exit 2);

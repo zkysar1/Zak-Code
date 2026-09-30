@@ -37,7 +37,7 @@ def identity_paths(
 ) -> list[Path]:
     """Candidate ``self.md`` locations, highest precedence first.
 
-    When *agent_identity_dir* is given (e.g. ``"agents/omni"``), its
+    When *agent_identity_dir* is given (e.g. ``"agents/assistant"``), its
     ``self.md`` is prepended as the highest-precedence candidate. A relative
     path is resolved against *workspace_root*; an absolute path is used as-is.
     """

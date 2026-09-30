@@ -1,4 +1,4 @@
-"""Per-session event bus — read-only fan-out for the Pearl watch surface (P0-2).
+"""Per-session event bus — read-only fan-out for the watch surface (P0-2).
 
 The core streaming paths (``POST /chat/stream``, ``WS /ws/{session_id}``) deliver each
 ``AgentEvent`` to the ONE client driving a turn. The watch surface (``GET /watch/{session_id}``,

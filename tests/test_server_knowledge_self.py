@@ -29,7 +29,7 @@ to break by accident:
     why the order is worth stating rather than leaving to look incidental.
 
   * THE CONSUMER HOLDS NO PROJECTION LOGIC. The cut is made at the source by the
-    host's KnowledgeProjection (PEARL §10.3). This route serves what it is given,
+    host's KnowledgeProjection (filter at the source). This route serves what it is given,
     verbatim — a second redactor here would diverge from the real one.
 """
 
@@ -84,7 +84,7 @@ _PUBLISHED = {
 def test_published_identity_is_served_verbatim(tmp_path: Path) -> None:
     _seed_bundle(tmp_path, {"self": _PUBLISHED, "tree": []})
     body = _client(tmp_path).get("/knowledge/self").json()
-    # Verbatim: the consumer re-projects nothing (PEARL §10.3, filter-at-source).
+    # Verbatim: the consumer re-projects nothing (filter at the source).
     assert body["self"] == _PUBLISHED
     assert body["published"] is True
 

@@ -36,7 +36,7 @@ each carrying only facts the next envelope cannot re-supply.
   which is the VESSEL's clock, recorded verbatim and never compared against this machine's.
   They are provenance, not a basis for local time-window arithmetic.
 
-The keys are the vessel's ``ayoKey`` values, kept verbatim: ayoKey is the mind-side identity
+The keys are the vessel's ``ayoKey`` values, kept verbatim: ayoKey is the host-side identity
 for an entity across the border, so rewriting it here would break the only join that exists.
 The inner field names are likewise the envelope's camelCase rather than this package's
 snake_case — they are a foreign schema being recorded, and renaming them would quietly decouple

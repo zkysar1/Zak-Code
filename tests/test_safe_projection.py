@@ -1,4 +1,4 @@
-"""Tests for the Pearl watch-surface Layer-4 filter (zakcode.server.safe_projection).
+"""Tests for the watch-surface Layer-4 filter (zakcode.server.safe_projection).
 
 The projection is the ONLY thing standing between a raw agent event and a kid's browser,
 so these tests pin two properties hard: (1) whitelist-by-construction — every raw event type

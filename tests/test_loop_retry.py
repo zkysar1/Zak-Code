@@ -471,7 +471,7 @@ def test_model_output_rejected_is_retried_immediately(fast_sleep: list[float]) -
 
 def test_buffered_retry_log_names_the_real_cause(fast_sleep: list[float], caplog) -> None:
     """The buffered path's retry log mirrors the streaming notice: a rejected tool
-    call is logged as what it is, never as 'rate-limited' (omni review of #13)."""
+    call is logged as what it is, never as 'rate-limited' (review of #13)."""
     import logging
 
     from zakcode.providers.base import ModelOutputRejected

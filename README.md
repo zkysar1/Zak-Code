@@ -187,7 +187,7 @@ policy, the update path — see [`docs/DEPLOY.md`](docs/DEPLOY.md).
   cacheable prompt tier; sub-agents inherit them.
 - **Bring-your-own memory** — cross-session memory is claude-mind's job, not the harness's
   (see [`docs/PERSISTENCE-BOUNDARY.md`](docs/PERSISTENCE-BOUNDARY.md)). The harness records the
-  transcript (`/resume`) and exposes generic recall/lifecycle/tool seams a Mind attaches its own
+  transcript (`/resume`) and exposes generic recall/lifecycle/tool seams a host framework attaches its own
   store to; it ships no memory store or `remember`/`recall` tools.
 - **Learning substrate** — runtime skill authoring (`save_skill`) + the seams a
   self-learning framework folds into; see [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).

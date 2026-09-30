@@ -115,7 +115,7 @@ def _agent_on(workspace: Path, store: SessionStore | None):
 def _spoken(agent) -> None:
     from zakcode.messages import Message
 
-    agent.session.add_message(Message.user("remember: the pearl holds"))
+    agent.session.add_message(Message.user("remember: the data holds"))
     agent.session.add_message(Message.assistant_text("held"))
 
 

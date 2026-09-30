@@ -96,7 +96,7 @@ def test_parse_local_paths_conf_grants_quoted_values_and_every_product_repo(tmp_
 @pytest.fixture
 def mock_mind_repo(tmp_path):
     """Build a minimal repo structure mirroring a host framework's layout."""
-    repo = tmp_path / "Mind"
+    repo = tmp_path / "Workspace"
     repo.mkdir()
     (repo / ".git").mkdir()
 
@@ -114,7 +114,7 @@ def mock_mind_repo(tmp_path):
     (meta / "config-overrides.yaml").write_text("# overrides", encoding="utf-8")
 
     # Agent config pointing at the external dirs
-    agent_dir = repo / "agents" / "omni"
+    agent_dir = repo / "agents" / "assistant"
     agent_dir.mkdir(parents=True)
     conf = agent_dir / "local-paths.conf"
     conf.write_text(
@@ -229,14 +229,14 @@ def test_mind_workspace_gets_its_own_external_roots(mock_mind_repo):
     external world/meta homes are workspace roots automatically — no --skill-dir,
     no flag. Without this, file tools refused the real world ("resolves outside
     the workspace root") and a relative Write("world/…") landed in a stray world/
-    INSIDE the repo (measured on serene, 2026-08-25)."""
+    INSIDE the repo (measured in the field, 2026-08-25)."""
     from zakcode import Agent
     from zakcode.evals.harness import ScriptedProvider, reply
 
     repo, world, meta, _skill_dir = mock_mind_repo
     agent = Agent(
         provider=ScriptedProvider([reply("hi")]),
-        default_model="scripted/mind-roots",
+        default_model="scripted/multi-roots",
         workspace_root=str(repo),
     )
     resolved = [r.resolve() for r in agent.loop.extra_workspace_roots]
@@ -255,13 +255,13 @@ async def test_mind_workspace_reads_a_file_in_its_product_repo(mock_mind_repo, t
     product = tmp_path / "Product"
     (product / "src").mkdir(parents=True)
     (product / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
-    conf = repo / "agents" / "omni" / "local-paths.conf"
+    conf = repo / "agents" / "assistant" / "local-paths.conf"
     conf.write_text(
         f'WORLD_PATH={world}\nMETA_PATH={meta}\nAGENT_WRITE_PATH="{product}"\n', encoding="utf-8"
     )
     agent = Agent(
         provider=ScriptedProvider([reply("hi")]),
-        default_model="scripted/mind-roots",
+        default_model="scripted/multi-roots",
         workspace_root=str(repo),
     )
     ctx = ToolContext(workspace_root=repo, extra_workspace_roots=agent.loop.extra_workspace_roots)
@@ -277,7 +277,7 @@ def test_plain_workspace_gets_no_extra_roots(tmp_path):
 
     agent = Agent(
         provider=ScriptedProvider([reply("hi")]),
-        default_model="scripted/mind-roots",
+        default_model="scripted/multi-roots",
         workspace_root=str(tmp_path),
     )
     assert agent.loop.extra_workspace_roots == []

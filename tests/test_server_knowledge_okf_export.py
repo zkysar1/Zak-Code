@@ -1,6 +1,6 @@
 """GET /knowledge/export conforms to the OKF transfer-bundle export shape.
 
-PEARL-SDK-ACCESS-ARCHITECTURE §10.5. The download boundary must hand
+The download boundary must hand
 back "a portable, human-readable wiki (Markdown nodes + a manifest), not a
 database dump". The contract it targets is the host framework's own
 transfer-bundle export shape, whose invariants are numbered 1-7; each is pinned

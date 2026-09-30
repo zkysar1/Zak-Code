@@ -37,7 +37,7 @@ reader is most likely to break by accident:
     last", not "program is absent from the tuple". A and C differ only in ORDER.
 
   * THE CONSUMER HOLDS NO PROJECTION LOGIC. The marker cut is made at the source
-    by the host's KnowledgeProjection (PEARL §10.3). This route serves what it is
+    by the host's KnowledgeProjection (filter at the source). This route serves what it is
     given, verbatim — a second redactor here would diverge from the real one.
 """
 
@@ -92,7 +92,7 @@ _PUBLISHED = {
 def test_published_program_is_served_verbatim(tmp_path: Path) -> None:
     _seed_bundle(tmp_path, {"program": _PUBLISHED, "tree": []})
     body = _client(tmp_path).get("/knowledge/program").json()
-    # Verbatim: the consumer re-projects nothing (PEARL §10.3, filter-at-source).
+    # Verbatim: the consumer re-projects nothing (filter at the source).
     assert body["program"] == _PUBLISHED
     assert body["published"] is True
 

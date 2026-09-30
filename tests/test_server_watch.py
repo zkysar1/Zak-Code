@@ -240,7 +240,7 @@ async def test_watch_unknown_session_is_404(live_url: str) -> None:
 async def test_watch_current_alias_resolves_active_session(live_url: str, tmp_path: Path) -> None:
     """``/watch/current`` maps the ``.current-session`` marker to the live session id.
 
-    The PEARL watch UI streams ``/watch/current`` without knowing the concrete id; the box
+    The watch UI streams ``/watch/current`` without knowing the concrete id; the box
     resolves it to the session the sidecar-driver names in the marker. The marker is read
     fresh per request, so writing it after the server starts is enough.
     """

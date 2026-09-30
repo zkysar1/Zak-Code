@@ -253,7 +253,7 @@ def _split_path_list(value: str) -> list[str]:
     """``PYTHONPATH=a:b`` entries. The command is a shell command on every platform, so
     ``:`` separates (``;`` too) — except, where drives exist, the colon of a drive letter
     (``C:\\x``, ``D:/x``): one letter into its entry and followed by a slash. Not
-    ``os.pathsep``: that is ``;`` on Windows, where it read ``core/scripts:$PYTHONPATH`` as
+    ``os.pathsep``: that is ``;`` on Windows, where it read ``tools/scripts:$PYTHONPATH`` as
     one entry (CI, 2026-09-17)."""
     parts: list[str] = []
     cur = ""
@@ -343,7 +343,7 @@ def _nearest_module_fix(command: str, top: str, root: Path) -> str | None:
     """The lead for a module that exists nowhere in the workspace, else None.
 
     Measured 2026-08-30 (a served workspace): ``python3 -c`` with ``sys.path.insert(0,
-    "core/scripts")`` then ``from some_module import …`` — a module name invented the
+    "tools/scripts")`` then ``from some_module import …`` — a module name invented the
     way script paths are invented (ADR-0106 refuses those before running), but an import
     inside ``-c`` is not a path a preflight can stat. The error carries the missing NAME
     and the command carries the root the model believed it lived under, so the same

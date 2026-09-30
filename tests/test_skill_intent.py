@@ -1,6 +1,6 @@
 """Skill intent via the classify side-call (ADR-0035).
 
-Field incident 2026-08-26 (serene): "finish forging this skill" carried no ``/slash`` token,
+Field incident 2026-08-26: "finish forging this skill" carried no ``/slash`` token,
 so the harness never knew the skill-forging skill WAS the task — no plan step was seeded, the
 coverage backstop stayed unarmed — and the model collapsed without reading the skill. These
 tests pin the verdict shape, the prompt's catalog half, the exact-match parse, both loop paths

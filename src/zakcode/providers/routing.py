@@ -404,7 +404,7 @@ class DifficultyVerdict(NamedTuple):
     """The classify side-call's verdict (ADR-0035): the routing category plus, when the
     request is unmistakably an ask to RUN one catalogued skill, that skill's exact name.
 
-    Field incident 2026-08-26 (serene): "finish forging this skill" carried no ``/slash``
+    Field incident 2026-08-26: "finish forging this skill" carried no ``/slash``
     token, so nothing in the harness knew the skill-forging skill WAS the task — no plan
     step was seeded, the coverage backstop stayed unarmed, and the model never read the
     skill before collapsing. The same cheap call that judges scope can name the skill.

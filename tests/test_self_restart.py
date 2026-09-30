@@ -1,6 +1,6 @@
 """Self-restart on update (ADR-0034): the install probe, the idle-only mux door, the exec.
 
-Field incident 2026-08-26 (serene): `zakcode update` landed while a chat sat idle, printed
+Field incident 2026-08-26: `zakcode update` landed while a chat sat idle, printed
 "running chat sessions keep the old build until restarted", and the chat kept running the
 old build for the rest of the evening — the next turn collapsed on code that had already
 been fixed. These tests pin the three pieces: the install-marker comparison (keyed on the

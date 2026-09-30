@@ -788,7 +788,7 @@ class _InterruptibleAgent:
 def test_the_cap_interrupts_a_turn_still_in_flight(tmp_path: Path) -> None:
     """The cap fires MID-TURN, through the interrupt the turn already watches for.
 
-    A Pearl vessel's first say is `/start <agent>` — one long boot turn — so the
+    A vessel's first say is `/start <agent>` — one long boot turn — so the
     between-beats check could never reach its own deadline on the normal path: the
     run sailed past the ceiling and kept billing until the turn happened to end
     (measured live at 1050s against a 480s cap). The watcher raises the workspace
