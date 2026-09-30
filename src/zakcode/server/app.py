@@ -1995,6 +1995,10 @@ def create_app(
 
         ``handle`` is present only when the projection published one for this item: an
         opaque address a front end sends back to refer to exactly this node.
+
+        ``unredacted`` is present, and ``true``, only when the projection marked the text it
+        published as the item's stored text, unchanged, so a front end may offer to correct
+        it. Its absence means a correction must not be offered.
         """
         bundle = read_knowledge_bundle(Path(resolved_settings.workspace_root))
         for n in bundle["tree"]:
@@ -2012,6 +2016,11 @@ def create_app(
                 handle = n.get("handle")
                 if isinstance(handle, str) and handle:
                     node["handle"] = handle
+                # Carried only as a literal true, never defaulted or coerced: a missing key is
+                # how a caller knows not to offer a correction, so false, "true" or 1 must not
+                # become the mark.
+                if n.get("unredacted") is True:
+                    node["unredacted"] = True
                 return node
         raise HTTPException(status_code=404, detail=f"no node {key!r}")
 
