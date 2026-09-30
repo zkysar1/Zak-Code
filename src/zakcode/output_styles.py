@@ -73,7 +73,7 @@ def _read_output_style_name(workspace_root: Path) -> tuple[str | None, str | Non
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             # A bad settings file is data, not a crash: note it and keep going so a valid
             # later file (settings.local.json) can still supply the selection.
             error = f"{path.name}: parse error: {exc}"

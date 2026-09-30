@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from zakcode.hooks import HookEvent, HookManager, HookSpec
 from zakcode.hooks.settings_loader import SettingsHooks, settings_hooks_signature
 
@@ -86,13 +88,21 @@ def test_a_removed_settings_file_drops_only_its_hooks(tmp_path: Path) -> None:
     assert manager.shell_hooks == [prog]
 
 
-def test_a_broken_edit_keeps_the_previous_hooks(tmp_path: Path) -> None:
+#: Two ways an edit leaves a settings file unreadable: broken JSON, and bytes that are not
+#: UTF-8 (an editor saving in another encoding).
+BROKEN = pytest.mark.parametrize(
+    "broken", [b"{not json", b'{"hooks": {}}\xff'], ids=["not-json", "not-utf8"]
+)
+
+
+@BROKEN
+def test_a_broken_edit_keeps_the_previous_hooks(tmp_path: Path, broken: bytes) -> None:
     p = _write(tmp_path, _settings("bash a.sh"))
     hooks = SettingsHooks(tmp_path, permission_mode="ask")
     specs, _ = hooks.load()
     manager = HookManager(shell_hooks=[*specs])
 
-    p.write_text("{not json", encoding="utf-8")
+    p.write_bytes(broken)
     _bump_mtime(p)
     changed, errs = hooks.refresh(manager)
 

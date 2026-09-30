@@ -181,7 +181,7 @@ def load_status_line_spec(
             continue
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             return None, f"parse error in {settings_path}: {exc}"
         if not isinstance(data, dict):
             continue

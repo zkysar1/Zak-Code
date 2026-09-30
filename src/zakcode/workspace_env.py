@@ -75,7 +75,7 @@ def _read_blocks(workspace_root: Path) -> tuple[dict[str, str], list[str], bool]
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             complaints.append(f"{path}: not readable as JSON ({type(exc).__name__})")
             parse_failed = True
             continue

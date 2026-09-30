@@ -140,7 +140,11 @@ def load_settings_hooks(
             continue
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        # A file that is not UTF-8 is unreadable the same way broken JSON is, so it is reported
+        # the same way. Raised, it stopped the agent from starting, and at a turn start it escaped
+        # once after SettingsHooks.refresh had already advanced its signature, so it was never
+        # reported (tests/test_settings_not_utf8.py, tests/test_settings_hooks_refresh.py).
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             errors[str(settings_path)] = f"parse error: {exc}"
             continue
         if not isinstance(data, dict):

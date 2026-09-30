@@ -402,7 +402,7 @@ def load_settings_permissions(
             continue
         try:
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             errors[str(settings_path)] = f"parse error: {exc}"
             continue
         if not isinstance(data, dict):
