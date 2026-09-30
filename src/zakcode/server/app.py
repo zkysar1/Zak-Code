@@ -1992,11 +1992,14 @@ def create_app(
         KnowledgeProjection for a full workspace, or the raw note for a lean-agent
         workspace. Deliberately kept OUT of ``/knowledge/tree`` (the map), which stays
         lightweight; the body is fetched only on a per-node click.
+
+        ``handle`` is present only when the projection published one for this item: an
+        opaque address a front end sends back to refer to exactly this node.
         """
         bundle = read_knowledge_bundle(Path(resolved_settings.workspace_root))
         for n in bundle["tree"]:
             if isinstance(n, dict) and str(n.get("key") or "") == key:
-                return {
+                node: dict[str, Any] = {
                     "key": key,
                     "title": str(n.get("title") or ""),
                     "summary": str(n.get("summary") or ""),
@@ -2004,6 +2007,12 @@ def create_app(
                     "parent": str(n.get("parent") or ""),
                     "children": [str(c) for c in (n.get("children") or []) if c],
                 }
+                # Passed through verbatim, never defaulted or coerced: a missing key is how a
+                # caller knows the item cannot be addressed, and str(None) would be an address.
+                handle = n.get("handle")
+                if isinstance(handle, str) and handle:
+                    node["handle"] = handle
+                return node
         raise HTTPException(status_code=404, detail=f"no node {key!r}")
 
     @app.get("/knowledge/hypotheses")
