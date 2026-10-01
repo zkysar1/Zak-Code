@@ -337,6 +337,114 @@ async def test_a_frame_staged_between_turns_reaches_the_next_turns_first_call(
     assert "a lantern" in _all_text(provider.seen[-1]), "the bound carried across a turn boundary"
 
 
+# --- a command turn's start (ADR-0273) ---------------------------------------------
+#
+# A turn opened by a slash command takes no perception until it has made a tool call other than
+# plan bookkeeping. Before this, a frame staged when such a turn began followed the command into
+# the first call, the model answered the frame (the last user row it read), and the command never
+# ran. Holding loses nothing: the frame stays staged and arrives at the first boundary after work.
+
+_COMMAND_TURN = (
+    "<command-message>probe is running</command-message>\n"
+    "<command-name>/probe</command-name>\n\n"
+    "Check the workspace, then report what you found.\n"
+)
+
+
+class _Work(Tool):
+    """A call that is the command's own work, i.e. anything but plan bookkeeping."""
+
+    spec = ToolSpec(name="work", description="One unit of the command's work.")
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok(output="worked")
+
+
+def _stage(root: Path, *nearby: str) -> None:
+    observation_path(root).write_text(_envelope({"nearby": list(nearby)}), encoding="utf-8")
+
+
+def _plan_call() -> LLMResult:
+    tasks = [{"title": "Check the workspace", "status": "in_progress", "note": "x"}]
+    return LLMResult(
+        text="", tool_calls=[ToolCall(id="p1", name="update_plan", arguments={"tasks": tasks})]
+    )
+
+
+def _first_index(session: Session, predicate: Any) -> int:
+    return next(i for i, m in enumerate(session.messages) if predicate(m))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_command_turn_reads_its_command_before_a_staged_frame(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The frame was staged before the turn opened. The command's first call does not carry it,
+    the command's work is answered from that call, and the frame arrives right after the work."""
+    _stage(tmp_path, "a torch")
+    provider = _Recording([_tool_call("work"), _DONE])
+    loop, session = _loop(provider, tmp_path, tools=[_Work()])
+
+    await _run(loop, _COMMAND_TURN, streaming=streaming)
+
+    assert "probe is running" in _all_text(provider.seen[0]), "control: the command never ran"
+    assert "a torch" not in _all_text(provider.seen[0]), "the frame rode into the command's call"
+    assert "a torch" in _all_text(provider.seen[1]), "the frame never arrived after the work"
+    worked = _first_index(session, lambda m: any(u.name == "work" for u in m.tool_uses))
+    perceived = _first_index(session, lambda m: m.text.startswith("[perception"))
+    assert worked < perceived, "the perception was read before the command's work"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_plan_bookkeeping_does_not_release_the_hold(tmp_path: Path, streaming: bool) -> None:
+    """A plan call is not the command's work (ADR-0110), so the frame waits through it."""
+    _stage(tmp_path, "a torch")
+    provider = _Recording([_plan_call(), _tool_call("work"), _DONE])
+    loop, _ = _loop(provider, tmp_path, tools=[_Work()])
+
+    await _run(loop, _COMMAND_TURN, streaming=streaming)
+
+    assert "a torch" not in _all_text(provider.seen[1]), "a plan call released the hold"
+    assert "a torch" in _all_text(provider.seen[2]), "the frame never arrived after the work"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_command_turn_that_does_no_work_leaves_the_frame_staged(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """Holding is not dropping: the frame outlives a command turn that did no work, and the next
+    turn, which is not a command, takes it at its first call."""
+    _stage(tmp_path, "a torch")
+    provider = _Recording([_DONE])
+    loop, _ = _loop(provider, tmp_path)
+
+    await _run(loop, _COMMAND_TURN, streaming=streaming)
+    assert "a torch" not in _all_text(provider.seen[-1]), "the frame reached a turn with no work"
+    assert observation_path(tmp_path).exists(), "the held frame was consumed without delivery"
+
+    await _run(loop, "again", streaming=streaming)
+    assert "a torch" in _all_text(provider.seen[-1]), "the next turn's first call missed it"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_the_hold_rearms_for_every_command_turn(tmp_path: Path, streaming: bool) -> None:
+    """Work done in one command turn does not release the next one's hold."""
+    provider = _Recording([_tool_call("work"), _DONE, _DONE])
+    loop, _ = _loop(provider, tmp_path, tools=[_Work()])
+    await _run(loop, _COMMAND_TURN, streaming=streaming)
+    calls_before = provider.calls
+
+    _stage(tmp_path, "a lantern")
+    await _run(loop, _COMMAND_TURN, streaming=streaming)
+
+    assert provider.calls > calls_before, "control: the second command turn made no call"
+    assert "a lantern" not in _all_text(provider.seen[calls_before]), "the hold did not re-arm"
+
+
 # --- the discovery fold -----------------------------------------------------------
 #
 # The vessel's discoveryPerception slice is a per-tick projection bounded at the character's

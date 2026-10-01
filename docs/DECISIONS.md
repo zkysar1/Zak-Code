@@ -16377,6 +16377,10 @@ moving the check after the read (the held frame is consumed and lost), and a zer
 Removing the reset from the buffered prologue also turns the existing announce-once-across-turns
 test red.
 
+**Amended by ADR-0273 (2026-10-01):** point 2 no longer holds for a turn opened by a slash
+command: such a turn takes no perception until it has made a tool call other than plan
+bookkeeping.
+
 ## ADR-0272: an MCP config file that cannot be read is reported under /mcp, and the session starts without it
 
 Status: accepted. 2026-09-30.
@@ -16428,3 +16432,58 @@ and the same path wires a valid file), and `tests/test_cli_mcp.py` (`/mcp` print
 the parse error). Four sabotages each turned tests red: discovery raising again (5 tests), the
 Agent dropping file errors (2), the fall-through return dropping errors (3), and the existence
 check moved back outside the guard (1). The valid-file controls stayed green under all four.
+
+## ADR-0273: a turn opened by a slash command takes no perception until it has done work
+
+Status: accepted. 2026-10-01.
+
+ADR-0271 point 2 hands a turn its first perception at once. When a slash command opens the turn
+and a frame is already staged, the frame follows the command into the first call, so the newest
+row that call reads is the frame, not the command. Observed on a served run: four turns, each
+opened by the same command while a frame was staged. In each, the first call read the command
+and then the frame, the model answered the frame in one text reply with no tool call, and none of
+the command's steps ran, although the command was sent three more times. That the frame's place
+caused the reply is inferred from the row order. The tests below pin the order, not a model's
+choice.
+
+Decision.
+
+1. A composed skill turn (ADR-0059: its message opens with a command frame) takes no perception
+   until it has made a tool call other than plan bookkeeping. `_execute_tool_call` records the
+   call as it enters, before its own checks, so a call it refuses (a denial, a restriction, a
+   hook veto) counts: the model has turned to the command, which is what the hold waits for. A
+   batch withheld before it gets there, by the plan-first gate (ADR-0110), does not count.
+2. A plan call does not count. A command turn may open with one (deep work plans first,
+   ADR-0110), and a frame that landed right after it would again be the newest row before the
+   command's first step. `_PLAN_TOOLS` is the set whose calls are already not a step's work.
+3. The hold is checked before the read, like the bound, so a held frame is never consumed: it
+   stays staged and is superseded latest-wins. Once the turn has made such a call, the next
+   boundary delivers the newest frame, and ADR-0271's bound applies from there. A command turn
+   that ends without one leaves the frame staged, and the next turn's first call takes it.
+4. The flag is reset in both turn prologues, beside the bound's stamp, so the buffered and the
+   streaming path cannot disagree and the hold arms again for every command turn.
+5. The harness's own composed turns carry the same frame, so a fired wake-up's loop re-entry
+   (ADR-0187) holds too, and its note's first instruction, re-arming a wake-up, is the call that
+   releases it. A turn not opened by a frame is unchanged: its first call takes a staged frame
+   (ADR-0271 point 2).
+
+No knob: the hold has no time limit. It ends at the turn's first tool call other than plan
+bookkeeping, or with the turn.
+
+Rejected: holding the first perception of every turn. That would undo ADR-0271 point 2 for
+turns where no failure was seen. Rejected: releasing the hold after the first model call. A turn
+that opens with a plan call would take the frame at its second call, before the command's first
+step (point 2). Rejected: asking producers not to post while a command runs. The intake cannot
+see a turn (ADR-0271), each producer would have to know which commands matter, and the order the
+model reads is decided here, in one place.
+
+Tests: `tests/test_loop_observation.py`, four cases, each on both loop bodies. A command turn
+with a frame staged reads its command alone at the first call, and the frame arrives at the call
+after its first tool call, recorded after that call. A plan call leaves the frame held until a
+call that is not one. A command turn that makes no tool call leaves the frame staged, and the
+next turn takes it. A frame staged after one command turn has made a call is still held at the
+next command turn's first call. Six sabotages each turned tests red: removing the hold (8 tests,
+the new ones), letting a plan call release it (2), removing the reset from the buffered prologue
+(1) or from the streaming one (1), checking the hold after the read (6: the held frame is
+consumed), and resetting the flag as already set (8). The 21 earlier tests in the file stayed
+green under all six, and an unmodified copy passed all 29.
