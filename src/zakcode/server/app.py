@@ -621,7 +621,11 @@ SAY_MAX_CHARS = 2000
 #: runaway vessel cannot grow the file the mind reads each turn without limit. The vessel does
 #: its own budgeting and names what it shed in ``droppedSlices``; this is the receiver's
 #: independent floor, because P4 makes the producer's cooperation optional.
-OBSERVATION_MAX_CHARS = 16000
+#: Measured in the producer's units: COMPACT separators, and at least the vessel's default
+#: perception budget (16384 bytes of compact encoding; chars never exceed UTF-8 bytes). With
+#: default separators (', ' and ': ') the same frame re-serializes 3-42% larger, so a frame the
+#: vessel had budgeted was refused at the budget edge.
+OBSERVATION_MAX_CHARS = 16384
 
 #: The envelope version this receiver understands. A different major version is REFUSED
 #: rather than best-effort parsed: the mind acting on a frame it has mis-read is worse than
@@ -1738,7 +1742,9 @@ def create_app(
             logger.warning("perception-intake REFUSED ref=<missing> reason=missing_ref")
             raise HTTPException(status_code=400, detail="externalClientRef required")
 
-        payload = json.dumps(request.observation, ensure_ascii=False, sort_keys=True)
+        payload = json.dumps(
+            request.observation, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         if len(payload) > OBSERVATION_MAX_CHARS:
             _observation_stats["refused_too_large"] += 1
             # Sized, not just named: an operator who can see the overshoot can decide
@@ -1788,7 +1794,9 @@ def create_app(
                 # not grow the staged file past that cap behind its back. On overflow the
                 # newest frame alone stands — lossy, which P4 already obliges the mind to
                 # tolerate, and visible as merged=False in the log line below.
-                merged_payload = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+                merged_payload = json.dumps(
+                    candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                )
                 if len(merged_payload) <= OBSERVATION_MAX_CHARS:
                     observation = candidate
                     merged_changes = True
