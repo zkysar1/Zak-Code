@@ -16506,9 +16506,13 @@ Decision.
 
 1. The intake measures the observation as compact JSON (separators `,` and `:`), the encoding the
    producer budgets.
-2. The cap is 16,384, the producer's default budget. A character never takes fewer than one UTF-8
-   byte, so a frame inside that byte budget is inside the cap. The cap stays a count of
-   characters, as the 413 detail and the refusal log line already say.
+2. The cap is 16,384, the producer's default budget; a deployment may pin a smaller one. A
+   character never takes fewer than one UTF-8 byte, so a frame inside that byte budget is inside
+   the cap, provided this side prints every number as widely as the producer does. The
+   separators were the whole of the measured gap, but the two JSON libraries can print some
+   numbers at different widths (an exponent form against a plain one), so a frame at the very
+   edge of the budget can still be refused. The cap stays a count of characters, as the 413
+   detail and the refusal log line already say.
 3. The supersession merge measures the merged frame the same way, so a merge the cap allows is no
    longer dropped as too large.
 4. The staged file and the rendering the model reads keep their formats. The cap bounds what a
