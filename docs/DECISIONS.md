@@ -16487,3 +16487,45 @@ the new ones), letting a plan call release it (2), removing the reset from the b
 (1) or from the streaming one (1), checking the hold after the read (6: the held frame is
 consumed), and resetting the flag as already set (8). The 21 earlier tests in the file stayed
 green under all six, and an unmodified copy passed all 29.
+
+## ADR-0274: the perception intake measures a frame in the producer's units
+
+Status: accepted. 2026-10-01.
+
+`POST /observe` refused a frame whose observation came to more than `OBSERVATION_MAX_CHARS`
+(16,000) characters, measured with `json.dumps` and its default separators (`, ` and `: `). The
+environment server's perception bridge budgets the whole envelope as compact JSON in UTF-8
+bytes, 16,384 by default, and sheds slices to stay inside that budget. The default separators add
+a character at every separator. Measured on synthetic frames, that is 3% for prose-heavy slices,
+28% for small cell objects and 42% for a 64 by 64 map of integers. So the receiver refused frames
+the producer had already fitted to its budget, at the edge of that budget. Measured on a served
+run: 75 of 380 frames in one session were refused as too large, every one between 16,018 and
+17,340 characters.
+
+Decision.
+
+1. The intake measures the observation as compact JSON (separators `,` and `:`), the encoding the
+   producer budgets.
+2. The cap is 16,384, the producer's default budget. A character never takes fewer than one UTF-8
+   byte, so a frame inside that byte budget is inside the cap. The cap stays a count of
+   characters, as the 413 detail and the refusal log line already say.
+3. The supersession merge measures the merged frame the same way, so a merge the cap allows is no
+   longer dropped as too large.
+4. The staged file and the rendering the model reads keep their formats. The cap bounds what a
+   frame carries; each of those formats scales with it, as it did before.
+
+No knob: the cap is a constant, like the other intake bounds.
+
+Rejected: a larger cap measured as before. It would still count in a different unit from the
+producer's, and a dense enough frame would cross it again. Rejected: counting UTF-8 bytes. It
+matches the producer exactly, but it renames the cap and changes the log line operators read,
+and point 2 already admits every frame the producer budgets.
+
+Tests: `tests/test_observation_intake_observability.py` posts a frame dense with small objects
+whose compact encoding is exactly 16,384 characters, about 28% larger with the default
+separators, and it is accepted and counted. `tests/test_server_observe.py` merges two change
+lists into a frame under the cap in compact encoding but over it with the default separators,
+and both lists survive. Four sabotages each turned tests red: the intake measured with the
+default separators (1 test), the merge measured with them (1), the cap back at 16,000 (2), and
+the original file (2). The other 22 tests in the two files stayed green under all four, and the
+fix passed all 24.

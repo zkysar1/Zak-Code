@@ -13,6 +13,7 @@ server's TestPerceptionBridgeVerticle.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -143,6 +144,31 @@ def test_oversize_is_refused_and_counted(tmp_path: Path) -> None:
     intake = _intake(client)
     assert intake["refused_too_large"] == 1
     assert intake["accepted"] == 0
+
+
+def test_frame_at_the_vessel_budget_is_accepted(tmp_path: Path) -> None:
+    # The vessel budgets the COMPACT encoding of a frame (16384 bytes). A dense frame
+    # at that budget re-serializes ~28% larger with default separators, which the old
+    # 16000-char default-separator measurement refused. The receiver measures in its units now.
+    def compact(obs: dict[str, object]) -> int:
+        return len(json.dumps(obs, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+    budget = 16384
+    cells: list[dict[str, int]] = []
+    frame: dict[str, object] = {"cells": cells, "pad": ""}
+    while compact(frame) < budget - 32:
+        n = len(cells)
+        cells.append({"x": n % 64, "y": n // 64, "v": n % 7})
+    frame["pad"] = "x" * (budget - compact(frame))
+    assert compact(frame) == budget
+    spaced = len(json.dumps(frame, ensure_ascii=False, sort_keys=True))
+    assert spaced > 16000, "the old default-separator measure refused this frame"
+    client = _client(tmp_path)
+    resp = client.post("/observe", json=_envelope(observation=frame))
+    assert resp.status_code == 200, resp.text
+    intake = _intake(client)
+    assert intake["accepted"] == 1
+    assert intake["refused_too_large"] == 0
 
 
 # ── frame age parses BOTH shapes this contract actually carries ───────────────

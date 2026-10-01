@@ -193,6 +193,25 @@ def test_observe_drops_the_carry_rather_than_exceed_the_size_floor(tmp_path: Pat
     assert staged["changesPerception"] == ["b" * half], "newest alone when the merge cannot fit"
 
 
+def test_observe_merge_measures_the_floor_in_compact_units(tmp_path: Path) -> None:
+    """The merge floor is measured in the intake's units.
+
+    Measured with default separators, a merge inside the vessel's budget was dropped as too
+    large: these two change lists merge to a frame under the cap in compact encoding but over
+    it with ', ' and ': ', so both must survive.
+    """
+    rows = [f"c{i:04d}" for i in range(2000)]
+    merged = {"changesPerception": rows}
+    compact = json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    spaced = json.dumps(merged, ensure_ascii=False, sort_keys=True)
+    assert len(compact) <= OBSERVATION_MAX_CHARS < len(spaced), "the case the units decide"
+    client = _client(tmp_path)
+    client.post("/observe", json=_envelope(observation={"changesPerception": rows[:1000]}))
+    second = client.post("/observe", json=_envelope(observation={"changesPerception": rows[1000:]}))
+    assert second.status_code == 200
+    assert _staged(tmp_path)["observation"]["changesPerception"] == rows, "both lists survive"
+
+
 def test_observe_rejects_unknown_envelope_version(tmp_path: Path) -> None:
     """Refuse rather than best-effort parse: acting on a mis-read frame is worse than
     acting on no frame, which P4 already makes safe."""
