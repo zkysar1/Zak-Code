@@ -1324,7 +1324,8 @@ _OBSERVATION_FRAME = (
 #: loses nothing: the frame stays staged, the intake keeps it latest-wins and carries its change
 #: list forward, and the first boundary past the bound delivers the newest one. Wall time, not a
 #: count: a perpetual loop is ONE turn, so a per-turn allowance would starve it, and a fast tool
-#: loop spends a per-call allowance in seconds. A turn's first perception is never held. No knob.
+#: loop spends a per-call allowance in seconds. The bound never holds a turn's first perception
+#: (a turn opened by a slash command holds it until the turn has done work: ADR-0273). No knob.
 _OBSERVATION_INTERVAL_S = 30.0
 
 #: What a SessionStart hook said, handed to the model ONCE, where the hook fired (ADR-0211).
@@ -2410,6 +2411,10 @@ class AgentLoop:
         # Monotonic moment the last perception reached THIS turn (ADR-0271); the mid-turn bound
         # measures from it. Reset per turn, so a turn's first perception is never held.
         self._observation_delivered_at: float | None = None
+        # Whether THIS turn has made a tool call other than plan bookkeeping (ADR-0273). A turn
+        # opened by a slash command takes no perception before it has, so its command, not a
+        # frame staged behind it, is the newest thing the model reads. Reset per turn.
+        self._turn_did_work = False
         #: Lines the operator typed at THIS process's REPL mid-turn (ADR-0078) — delivered
         #: at the next iteration boundary ahead of the workspace say slot, never via it.
         self._typed_lines: deque[str] = deque()
@@ -5353,6 +5358,8 @@ class AgentLoop:
         error block through here, so the blocker-without-evidence guard sees ONE truth: did
         anything the model tried actually fail this turn.
         """
+        if call.name not in _PLAN_TOOLS:
+            self._turn_did_work = True  # releases a command turn's perception hold (ADR-0273)
         _status_writer().set_tool_start(self.session.id, call.name)
         plan_shape = (
             self.session.task_network.structure_signature() if call.name == "update_plan" else None
@@ -7344,8 +7351,17 @@ class AgentLoop:
         for a seam: a frame it holds is never read, so it stays staged and is superseded
         latest-wins, and the first boundary past the bound (or the next turn's first) delivers
         the newest one.
+
+        Held at a command turn's start (ADR-0273): a turn opened by a slash command takes no
+        perception until it has made a tool call other than plan bookkeeping. A frame staged
+        when the turn begins would otherwise follow the command into the first call, where a
+        model can answer the frame instead and never run the command. Like the bound, the hold
+        is checked before the read, so the held frame stays staged.
         """
         if not self._consume_observation_inbox:
+            return False
+        # A command turn's start (ADR-0273), before the read like the bound below.
+        if self._turn_skill is not None and not self._turn_did_work:
             return False
         # Checked BEFORE the read, so a held frame is not consumed (ADR-0271).
         if (
@@ -7661,6 +7677,7 @@ class AgentLoop:
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
         self._observation_delivered_at = None  # mid-turn perception bound (ADR-0271): per turn
+        self._turn_did_work = False  # command-turn perception hold (ADR-0273): per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
@@ -9283,6 +9300,7 @@ class AgentLoop:
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
         self._observation_delivered_at = None  # mid-turn perception bound (ADR-0271): per turn
+        self._turn_did_work = False  # command-turn perception hold (ADR-0273): per turn
         plan_first_nudges = 0  # plan-first gate withholds spent this turn (R5, opt-in)
         cursor = RecipeCursor(
             enabled=True,  # always on; self-arms only when a runnable script is written
