@@ -169,6 +169,83 @@ def test_knowledge_node_omits_an_unusable_handle(tmp_path: Path, extra: dict[str
     assert "handle" not in _client(tmp_path).get("/knowledge/node/leaf").json()
 
 
+def test_knowledge_node_carries_the_unredacted_mark(tmp_path: Path) -> None:
+    """A row marked ``unredacted: true`` reaches the caller with the mark.
+
+    The mark says the text shown is the item's stored text, unchanged, so a front end may offer
+    a correction. Exact equality pins the whole shape beside the handle it travels with.
+    """
+    _seed_node(tmp_path, {"handle": "0123456789abcdef", "unredacted": True})
+    node = _client(tmp_path).get("/knowledge/node/leaf").json()
+    assert node == {
+        "key": "leaf",
+        "title": "Leaf",
+        "summary": "a child",
+        "body": "text",
+        "parent": "",
+        "children": [],
+        "handle": "0123456789abcdef",
+        "unredacted": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [False, None, "true", 1, [True]],
+    ids=["false", "null", "string", "one", "list"],
+)
+def test_knowledge_node_omits_a_mark_that_is_not_literally_true(
+    tmp_path: Path, value: object
+) -> None:
+    """Anything but a literal ``true`` means no ``unredacted`` key at all.
+
+    A missing key tells a front end not to offer a correction, so a value that only looks true
+    must not become the mark: ``1 == True`` in Python, and ``"true"`` is truthy.
+    """
+    _seed_node(tmp_path, {"handle": "0123456789abcdef", "unredacted": value})
+    assert "unredacted" not in _client(tmp_path).get("/knowledge/node/leaf").json()
+
+
+# Every field the projection publishes on a node row, each with a value the route can serve.
+# The export writes these; keep this row in step with it. The test below derives its
+# expectation from this row, so a field added here is checked without extending a list.
+_PUBLISHED_NODE_ROW: dict[str, object] = {
+    "key": "leaf",
+    "title": "Leaf",
+    "summary": "a child",
+    "body": "text",
+    "parent": "root",
+    "children": ["leaf-a"],
+    "last_updated": "2026-09-30T12:00:00",
+    "handle": "0123456789abcdef",
+    "unredacted": True,
+}
+
+# Row fields this route does not serve, each with its reason. A stale entry fails the test
+# below, so the list stays true.
+_NODE_FIELDS_NOT_SERVED: dict[str, str] = {
+    "last_updated": "dropped here today, as on /knowledge/tree; carrying it is a separate change",
+}
+
+
+def test_knowledge_node_serves_every_published_row_field(tmp_path: Path) -> None:
+    """Each field of a fully published row reaches the caller unchanged, except those named.
+
+    The route rebuilds the row field by field, so a field it does not name is dropped without
+    any error. Deriving the expected keys from the row itself means the next field is caught
+    as soon as it is added to ``_PUBLISHED_NODE_ROW``.
+    """
+    bundle = json.dumps({"tree": [_PUBLISHED_NODE_ROW]})
+    (tmp_path / ".knowledge-bundle.json").write_text(bundle, encoding="utf-8")
+    node = _client(tmp_path).get("/knowledge/node/leaf").json()
+    served = {f for f in _PUBLISHED_NODE_ROW if f not in _NODE_FIELDS_NOT_SERVED}
+    assert served  # an empty row must not pass vacuously
+    assert set(_NODE_FIELDS_NOT_SERVED) <= set(_PUBLISHED_NODE_ROW)
+    assert set(node) == served
+    for field in sorted(served):
+        assert node[field] == _PUBLISHED_NODE_ROW[field], field
+
+
 def test_knowledge_hypotheses_and_guardrails(tmp_path: Path) -> None:
     _seed_bundle(tmp_path)
     client = _client(tmp_path)
