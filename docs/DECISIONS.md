@@ -16462,8 +16462,10 @@ Decision.
    that ends without one leaves the frame staged, and the next turn's first call takes it.
 4. The flag is reset in both turn prologues, beside the bound's stamp, so the buffered and the
    streaming path cannot disagree and the hold arms again for every command turn.
-5. A turn not opened by a command is unchanged: its first call takes a staged frame (ADR-0271
-   point 2).
+5. The harness's own composed turns carry the same frame, so a fired wake-up's loop re-entry
+   (ADR-0187) holds too, and its note's first instruction, re-arming a wake-up, is the call that
+   releases it. A turn not opened by a frame is unchanged: its first call takes a staged frame
+   (ADR-0271 point 2).
 
 No knob: the hold has no time limit. It ends at the turn's first tool call other than plan
 bookkeeping, or with the turn.
