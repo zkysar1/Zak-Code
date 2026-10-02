@@ -14746,6 +14746,10 @@ and once through this one. All four came back as summaries, 3,609 to 5,624 chara
 apart. The replay was stopped there, because each call held one of the pod's four engines for
 over ten minutes.
 
+**Amended by ADR-0275 (2026-10-02):** a response the output limit cut off is not a summary,
+whatever its text, and the summarizer asks for room to think and still finish. A response that
+ends on its own before its closing tag still keeps what it wrote.
+
 ## ADR-0243: every side call's usage record says it is one
 
 Status: accepted. 2026-09-23.
@@ -16533,3 +16537,75 @@ and both lists survive. Four sabotages each turned tests red: the intake measure
 default separators (1 test), the merge measured with them (1), the cap back at 16,000 (2), and
 the original file (2). The other 22 tests in the two files stayed green under all four, and the
 fix passed all 24.
+
+## ADR-0275: the summarizer has room to think and finish, and a summary the output limit cut off is asked for again
+
+Status: accepted. 2026-10-02.
+
+Every completion carries the 8,192-token output cap of ADR-0018, and so did the compaction
+summarizer's. A reasoning model's thinking is billed against that cap, and on the pod's 27B model
+thinking is most of what the summarizer writes. ADR-0242 reads a summary from its tags and keeps
+a response that ends before its closing tag. So a summary the cap cut off was installed as the
+summary of the whole older history, and nothing said it was a fragment.
+
+Measured 2026-10-02 over the compaction rows (ADR-0241) of the pod's worker sessions on ten
+machines, from 2026-09-24 on. Of 266 compactions that took one summarizer call, 31 used exactly
+8,192 completion tokens. 27 of those were matched to the summary in their session's transcript,
+read as lengths and character classes only, never as text. 2 of the 27 ended on sentence-final
+punctuation, where 197 of the 207 matched calls that stopped under the cap did. A heading naming
+unfinished, pending or next work, the part a resumed session needs most, was in 140 of the 207
+and in 7 of the 27. The cap was not a distant ceiling: the median one-call compaction used about
+6,500 completion tokens, and 96 of the 266 used 7,000 or more. All 31 were installed; none was
+rejected.
+
+Decision.
+
+1. The summarizer asks for an output cap of 32,768 tokens, the output budget Qwen gives for its
+   thinking mode. The ask is held to a quarter of the window, but never under the 8,192 every
+   call already gets. A slice fills at most half the window by the summarizer's conservative
+   estimate (ADR-0183), so a quarter for the answer leaves the last quarter for the instruction
+   and the estimate's error. Where the quarter applies, a server that refuses a request whose
+   prompt and cap exceed its window still takes this one; below a window of 32,768 the floor
+   keeps the ask where it was. A model's declared output cap bounds the ask, even below 8,192,
+   because a hosted API refuses a cap over its own. Every ask carries it: the whole transcript,
+   each slice, each fold and the resample.
+2. A response whose finish reason says the output limit stopped it (`length`, or `max_tokens`) is
+   not a summary, whatever its text. It is asked for again once, at the rejection-retry
+   temperature, like any other non-summary (ADR-0242). If the second is cut off too, the
+   compaction elides the old tool outputs instead. The status line says the response was cut off
+   at the output limit, and `summarizer_rejected` counts it.
+3. A response that ends on its own before its closing tag still keeps what it wrote. The finish
+   reason tells the two apart, not the tag.
+
+No knob: both numbers are constants.
+
+Rejected: installing a cut summary with a note that it was cut. What a cut summary loses is its
+end, and the end is where the unfinished work is, so the note would only say what is missing.
+With the room, a cut is rare, and a call that reaches 32,768, five times the median, has run
+away; its text is not worth installing. Rejected: continuing a cut summary in a second call, as
+the loop continues a cut answer. The continuation reads the transcript and the fragment again
+and thinks again before it writes, on every cut, where the room removes the cut at its source.
+Rejected: turning the summarizer's thinking
+off. That would end the cuts and most of the summarizer's time, but it is the operator's trade to
+make per category (`ZakpickModel.thinking`), and this change does not make it, as ADR-0242 did
+not.
+
+What it risks. A call that the cap used to stop now runs to its end: on the pod, where the
+summarizer has been measured decoding 6 to 10 tokens a second, each further thousand tokens is
+two to three minutes. A runaway now runs to 32,768 tokens, four times the old bound, an hour or
+more at that rate, and is then asked for once more, where before it stopped within 15 to 25
+minutes and its fragment was installed. How often a summarizer runs away is unmeasured: every
+call in the census stopped by 8,192. A hosted model that refuses a cap of 32,768 and declares
+no output cap of its own, in the registry or in litellm's metadata, would fail the larger ask,
+and its compaction would fall back to eliding tool outputs.
+
+Tests: `tests/test_compact_loop.py`, eleven new cases. A response cut off at the output limit is
+asked for again at the raised temperature; both responses' tokens are counted, the rejection is
+on the row and the reason on the status line. `length` and `max_tokens` decide a cut whatever the
+text, and the same text ended by the model stands. Two cut responses fall back to eliding the old
+tool outputs. The room is pinned for six windows and declared caps, and every ask carries it:
+the slices and folds of a long transcript, a resample, and a call to a model that declares a
+smaller cap. Eight sabotages each turned tests red: the finish-reason check removed (5 tests), the
+finish reason not passed to it (3), the cap not sent (1), a declared cap ignored (3), no floor
+(2), no quarter of the window (3), the declared cap not passed from the call site (1), and the
+budget back at 8,192 (5). Every restore was byte-verified. The full suite passed, 5,112 tests.

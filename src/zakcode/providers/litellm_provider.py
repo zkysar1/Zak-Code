@@ -575,7 +575,9 @@ _OLLAMA_NUM_CTX_CAP = 16_384
 #: while staying far above any legitimate single completion (tool-call batches are small;
 #: a long final answer flows through the agent loop's length-continuation path, itself
 #: bounded). Fixed on purpose: not a knob. Per-call callers (side-calls with tighter
-#: budgets) still override it.
+#: budgets) still override it, and so does the compaction summarizer with a larger one: a
+#: reasoning model's thinking is billed against this cap, and at 8,192 it cut summaries off
+#: before they ended (ADR-0275).
 _MAX_COMPLETION_TOKENS = 8_192
 
 

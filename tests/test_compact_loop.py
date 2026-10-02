@@ -30,6 +30,7 @@ from zakcode.agent.loop import (
     _clamp_middle,
     _pack_parts,
     _summary_of,
+    _summary_output_room,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
@@ -1017,3 +1018,122 @@ def test_a_summary_may_open_with_the_previous_summary_s_label() -> None:
         "",
         "it opened as the transcript's next turn",
     )
+
+
+# ── ADR-0275: room to finish, and a summary cut off is asked for again ────────────────
+
+
+class _CutSummarizer(_ScriptedSummarizer):
+    """Ends its responses with ``finish_reasons`` in order (the last repeats), as a provider
+    reports a completion the output limit stopped, and declares ``max_output``."""
+
+    def __init__(
+        self,
+        texts: list[str],
+        finish_reasons: list[str],
+        *,
+        window: int = 8192,
+        max_output: int | None = None,
+    ) -> None:
+        super().__init__(texts, tokens=100_000, window=window)
+        self._finish_reasons = finish_reasons
+        self._max_output = max_output
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        reason = self._finish_reasons[min(len(self.seen), len(self._finish_reasons)) - 1]
+        return result.model_copy(update={"finish_reason": reason})
+
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            supports_tools=True, context_window=self._window, max_output=self._max_output
+        )
+
+
+#: What a summarizer wrote before the output limit stopped it: no closing tag, mid-sentence.
+_CUT = "<summary>The session fixed the parser, then"
+_WHOLE = "<summary>The session fixed the parser.</summary>"
+
+
+def test_a_summary_cut_off_at_the_output_limit_is_asked_for_again(tmp_path: Path) -> None:
+    # The field shape (a worker on the pod, 2026-09-24): 8,192 completion tokens, and a summary
+    # that stopped mid-sentence was installed as the whole history. Now it is thrown away and
+    # asked for again, and both responses' tokens are counted, since both were spent.
+    provider = _CutSummarizer([_CUT, _WHOLE], ["length", "stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert provider.kwargs[1]["temperature"] == pytest.approx(0.5)
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary and "parser, then" not in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 1
+    assert row["summarizer_completion_tokens"] == 200
+    assert any("(it was cut off at the output limit)" in line for line in said)
+
+
+@pytest.mark.parametrize("reason", ["length", "max_tokens"])
+def test_the_finish_reason_decides_a_cut_not_the_text(reason: str) -> None:
+    # A long, tagged start is only a start when the limit ended it. The same text ended by the
+    # model is a summary that forgot its closing tag, and keeps what it wrote (ADR-0242).
+    text = "<summary>" + "The session did real work. " * 40
+    assert _summary_of(text, 900, reason) == ("", "it was cut off at the output limit")
+    summary, why = _summary_of(text, 900, "stop")
+    assert summary.startswith("The session did real work.") and why == ""
+    assert _summary_of(text, 900)[0] == summary
+
+
+def test_two_cut_summaries_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> None:
+    provider = _CutSummarizer([_CUT], ["length"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend([*_history(2), *_tool_pair("t1", "x" * 6000), *_history(4)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert "SummaryNotWritten" in loop.last_compaction
+    assert "cut off at the output limit" in loop.last_compaction
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 2
+
+
+@pytest.mark.parametrize(
+    ("window", "max_output", "room"),
+    [
+        (131_072, None, 32_768),  # the pod: Qwen's thinking-mode budget, a quarter of the window
+        (200_000, 64_000, 32_768),  # a hosted model with more: the budget, not its whole cap
+        (65_536, None, 16_384),  # a quarter of the window
+        (16_384, None, 8_192),  # a small window asks for no less than every call gets
+        (128_000, 16_384, 16_384),  # never over a declared output cap
+        (128_000, 4_096, 4_096),  # not even where that is under the floor
+    ],
+)
+def test_the_summarizer_asks_for_room_to_think_and_finish(
+    window: int, max_output: int | None, room: int
+) -> None:
+    assert _summary_output_room(window, max_output) == room
+
+
+def test_every_summarizer_ask_carries_its_room(tmp_path: Path) -> None:
+    # The limit can cut any call: the whole transcript, a slice, a fold or a resample.
+    provider = _CutSummarizer(["x" * 5000], ["stop"])
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(40)))
+    slices = [c[0].text for c in provider.seen if c[0].text.startswith("Part ")]
+    folds = [c[0].text for c in provider.seen if c[0].text.startswith(_FOLD_PROMPT)]
+    assert len(slices) >= 2 and folds
+    assert [kw.get("max_tokens") for kw in provider.kwargs] == [8_192] * len(provider.seen)
+
+    pod = _CutSummarizer([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+    asyncio.run(_loop(pod, tmp_path)._summarize_for_compaction(_history(3)))
+    assert [kw.get("max_tokens") for kw in pod.kwargs] == [32_768, 32_768]
+
+    capped = _CutSummarizer([_WHOLE], ["stop"], window=131_072, max_output=4_096)
+    asyncio.run(_loop(capped, tmp_path)._summarize_for_compaction(_history(3)))
+    assert [kw.get("max_tokens") for kw in capped.kwargs] == [4_096]
