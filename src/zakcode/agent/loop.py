@@ -358,8 +358,9 @@ _FOLD_CLOSE = (
     "\n\n[end of part-summaries]\n\nFold them now into one summary, in the third person, inside "
     "<summary></summary>."
 )
-#: The summary inside a response's tags (ADR-0242); a response cut off before its closing tag
-#: keeps what it wrote.
+#: The summary inside a response's tags (ADR-0242); a response that ends before its closing tag
+#: keeps what it wrote. One that the output limit ended is not a summary at all (ADR-0275): the
+#: finish reason decides that, not the tag.
 _SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)(?:</summary>|\Z)", re.S | re.I)
 #: A response that opens as a turn of the transcript it was handed, under the renderer's own
 #: label for a turn of the conversation (ADR-0242). ``[system]`` is left out: on a re-compaction
@@ -377,6 +378,16 @@ _SUMMARY_FLOOR_SOURCE = 20_000
 #: temperature, before the compaction falls back to eliding tool outputs (ADR-0242). Every ask
 #: costs minutes on a local pod.
 _SUMMARY_RESAMPLES = 1
+#: The output cap one summarizer call asks for, its thinking included (ADR-0275). A reasoning
+#: model's thinking is billed against the cap, and it is most of what the summarizer writes.
+#: Measured 2026-10-02 on the pod's 27B model: of 266 one-call compactions since 2026-09-24, 31
+#: stopped at the 8,192-token per-completion default and were installed as summaries. Only 2
+#: of the 27 whose summary was found ended on sentence-final punctuation, where 197 of the 207
+#: under the cap did. 32,768 is the output budget Qwen gives for its thinking mode.
+_SUMMARY_OUTPUT_TOKENS = 32_768
+#: The least a summarizer call asks for: the per-completion default every call already gets
+#: (ADR-0018), so a window too small for more asks for no less than it did before.
+_SUMMARY_OUTPUT_FLOOR = 8_192
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -480,15 +491,23 @@ class SummaryNotWritten(Exception):
     (ADR-0242). The compaction falls back to eliding tool outputs, as for any failed summary."""
 
 
-def _summary_of(text: str, source_chars: int) -> tuple[str, str]:
+def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) -> tuple[str, str]:
     """The summary in a summarizer's response, or ``""`` and why it has none (ADR-0242).
 
     The summary is what the response puts inside its ``<summary>`` tags, else the whole
-    response, with thinking and tool-call markup stripped. It is not a summary when it is
-    empty, when it opens as a turn of the transcript it was handed, or when it is shorter than
-    :data:`_SUMMARY_FLOOR_CHARS` for a request of :data:`_SUMMARY_FLOOR_SOURCE` characters or
-    more. ``source_chars`` is the length of that request.
+    response, with thinking and tool-call markup stripped. It is not a summary when the output
+    limit cut it off (``finish_reason``, ADR-0275), when it is empty, when it opens as a turn of
+    the transcript it was handed, or when it is shorter than :data:`_SUMMARY_FLOOR_CHARS` for a
+    request of :data:`_SUMMARY_FLOOR_SOURCE` characters or more. ``source_chars`` is the length
+    of that request.
+
+    A cut summary is the start of one, and what it leaves out is its end: in the 2026-10-02
+    census, a section on unfinished work was in 140 of the 207 summaries that finished and 7
+    of the 27 that were cut. Installed, it read as the whole history to the model that resumed
+    from it.
     """
+    if finish_reason in _LENGTH_FINISH_REASONS:
+        return "", "it was cut off at the output limit"
     cleaned = _strip_model_markup(text)
     tagged = _SUMMARY_TAG_RE.search(cleaned)
     summary = (tagged.group(1) if tagged else cleaned).strip()
@@ -499,6 +518,21 @@ def _summary_of(text: str, source_chars: int) -> tuple[str, str]:
     if source_chars >= _SUMMARY_FLOOR_SOURCE and len(summary) < _SUMMARY_FLOOR_CHARS:
         return "", f"{len(summary)} characters for {source_chars:,} of transcript"
     return summary, ""
+
+
+def _summary_output_room(window: int, max_output: int | None) -> int:
+    """The output cap a summarizer call asks for (ADR-0275): :data:`_SUMMARY_OUTPUT_TOKENS`,
+    held to a quarter of ``window`` but never under :data:`_SUMMARY_OUTPUT_FLOOR`, and then to
+    the model's declared ``max_output``.
+
+    A slice fills at most half the window by the summarizer's conservative estimate, so a
+    quarter for the answer leaves the last quarter for the instruction and the estimate's
+    error: a server that refuses a request whose prompt and cap together exceed the window
+    still takes this one. A declared output cap is a limit a hosted API enforces with an error,
+    so the ask never goes over it, even where that is under the floor.
+    """
+    room = min(_SUMMARY_OUTPUT_TOKENS, max(window // 4, _SUMMARY_OUTPUT_FLOOR))
+    return min(room, max_output) if max_output else room
 
 
 async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResult:
@@ -2937,7 +2971,11 @@ class AgentLoop:
             "the summary, inside <summary></summary>."
         )
         summarizer = self._summarizer_provider or self.provider
-        window = summarizer.capabilities().context_window or self._window()
+        caps = summarizer.capabilities()
+        window = caps.context_window or self._window()
+        # ADR-0275: room to think and still finish the summary. Every ask carries it, the
+        # resample, every slice and every fold included.
+        room = _summary_output_room(window, caps.max_output)
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
@@ -2961,7 +2999,7 @@ class AgentLoop:
                         [Message.user(prompt)],
                         system=instruction,
                         prompt_cache_key=self._prompt_cache_key(),
-                        **{**raised, **call_kw},
+                        **{"max_tokens": room, **raised, **call_kw},
                     )
                 )
 
@@ -2977,7 +3015,7 @@ class AgentLoop:
                     # here exactly as it is on the main call, instead of failing the compaction.
                     result = await self._complete_with_retry(request)
                     self._account_summarizer_usage(result.usage, summarizer)
-                    summary, why = _summary_of(result.text, len(prompt))
+                    summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
                     if summary:
                         return summary
                     self._compaction_cost["summarizer_rejected"] += 1
