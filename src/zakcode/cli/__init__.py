@@ -1281,7 +1281,7 @@ def _exec_argv(argv: list[str]) -> list[str]:
     on a Windows CI runner, unquoted: an argument with a space arrived as two, an empty one
     vanished, and a double quote opened a quoted run that swallowed the argument after it.
     The interpreter's own path is in that line too, as argv[0]: one with a space split, and
-    the new interpreter tried to run the rest of its own path as a script. The old process
+    the new interpreter tried to run the next word of its own path as a script. The old process
     has exited by then, so the restart's ``OSError`` fallback never sees it. On Windows each
     argument is therefore quoted the way that split undoes, by the same rules ``subprocess``
     uses to build its command lines.

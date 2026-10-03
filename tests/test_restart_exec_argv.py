@@ -140,8 +140,8 @@ def _interpreter_under_a_space(tmp_path: Path) -> str:
     the interpreter's own files (on Windows a launcher, or the interpreter and its DLLs;
     elsewhere a symlink) and that file is enough to run it from another directory.
     """
-    if sys.prefix == sys.base_prefix:
-        pytest.skip("needs a virtual environment's interpreter to copy")
+    if sys.prefix == sys.base_prefix or not (Path(sys.prefix) / "pyvenv.cfg").is_file():
+        pytest.skip("needs a virtual environment's interpreter, and its pyvenv.cfg, to copy")
     here = Path(sys.executable)
     home = tmp_path / "python with space"
     bindir = home / here.parent.name
