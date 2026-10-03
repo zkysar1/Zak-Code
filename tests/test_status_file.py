@@ -22,6 +22,8 @@ import pytest
 from zakcode.session.status_file import (
     SCHEMA_VERSION,
     STALE_THRESHOLD_SECONDS,
+    PlanPosition,
+    PlanSource,
     StatusFileWriter,
     _atomic_write,
     _prune_stale_files,
@@ -572,6 +574,108 @@ class TestSideCall:
         after = _read(self.w)
         assert after["state"] == "tool"
         assert after["call"] is None
+
+
+# ── plan position ────────────────────────────────────────────────────────────
+
+
+class _Plan:
+    """A stand-in plan source whose answer a test changes between transitions."""
+
+    def __init__(self, position: PlanPosition | None) -> None:
+        self.position = position
+        self.reads = 0
+
+    def __call__(self) -> PlanPosition | None:
+        self.reads += 1
+        return self.position
+
+
+class TestPlanPosition:
+    """ADR-0277: the file carries where the plan stands, read through the source the turn hands
+    over, at each transition after which the plan can have moved."""
+
+    @pytest.fixture(autouse=True)
+    def _writer(self, tmp_path: Path) -> Any:
+        self.w = _make_writer(tmp_path)
+        yield
+        self.w._stop_event.set()
+
+    def test_the_file_starts_with_no_plan(self) -> None:
+        assert _read(self.w)["plan"] is None
+
+    def test_a_turn_start_reads_the_plan_and_writes_its_time_in_the_file_s_form(self) -> None:
+        self.w.set_turn_start(SID, plan=_Plan(("2.1", "2026-10-03T03:19:48+00:00")))
+        assert _read(self.w)["plan"] == {"active": "2.1", "moved_at": "2026-10-03T03:19:48Z"}
+
+    def test_the_plan_is_read_again_after_each_transition_that_can_move_it(self) -> None:
+        plan = _Plan(("1", "2026-10-03T03:00:00+00:00"))
+        self.w.set_turn_start(SID, plan=plan)
+        plan.position = ("2", "2026-10-03T03:05:00+00:00")
+        self.w.set_tool_start(SID, "update_plan")
+        assert _read(self.w)["plan"]["active"] == "1"  # nothing has run yet at a tool's start
+        self.w.set_tool_end(SID)
+        assert _read(self.w)["plan"] == {"active": "2", "moved_at": "2026-10-03T03:05:00Z"}
+        plan.position = ("3", "2026-10-03T03:06:00+00:00")
+        self.w.set_model_call_start(SID)
+        assert _read(self.w)["plan"]["active"] == "3"
+        self.w.set_model_call_end(SID)
+        plan.position = (None, "2026-10-03T03:07:00+00:00")  # the conclusion closed the last step
+        self.w.set_idle(SID, stop_reason="end_turn")
+        assert _read(self.w)["plan"] == {"active": None, "moved_at": "2026-10-03T03:07:00Z"}
+
+    def test_a_turn_that_unwinds_writes_the_plan_as_it_was_left(self) -> None:
+        plan = _Plan(("1", "2026-10-03T03:00:00+00:00"))
+        self.w.set_turn_start(SID, plan=plan)
+        plan.position = ("2", "2026-10-03T03:01:00+00:00")
+        self.w.leave_turn(SID, "interrupted")
+        assert _read(self.w)["plan"]["active"] == "2"
+
+    def test_a_session_with_no_plan_writes_none(self) -> None:
+        self.w.set_turn_start(SID, plan=_Plan(None))
+        self.w.set_model_call_start(SID)
+        assert _read(self.w)["plan"] is None
+
+    def test_a_move_time_that_is_missing_or_unreadable_is_left_out(self) -> None:
+        self.w.set_turn_start(SID, plan=_Plan(("1", "")))
+        assert _read(self.w)["plan"] == {"active": "1", "moved_at": None}
+        self.w.set_turn_start(SID, plan=_Plan(("1", "not a time")))
+        assert _read(self.w)["plan"] == {"active": "1", "moved_at": None}
+
+    def test_a_failing_plan_source_costs_the_plan_and_nothing_else(self) -> None:
+        def unreadable() -> PlanPosition | None:
+            raise RuntimeError("plan unreadable")
+
+        self.w.set_turn_start(SID, plan=unreadable)
+        data = _read(self.w)
+        assert data["state"] == "working"
+        assert data["plan"] is None
+
+    def test_a_turn_start_without_a_source_keeps_the_one_held(self) -> None:
+        plan = _Plan(("1", "2026-10-03T03:00:00+00:00"))
+        self.w.set_turn_start(SID, plan=plan)
+        self.w.set_idle(SID, stop_reason="end_turn")
+        plan.position = ("2", "2026-10-03T03:10:00+00:00")
+        self.w.set_turn_start(SID)
+        assert _read(self.w)["plan"]["active"] == "2"
+
+    def test_another_session_s_turn_never_hands_its_plan_over(self) -> None:
+        mine = _Plan(("1", "2026-10-03T03:00:00+00:00"))
+        theirs = _Plan(("9", "2026-10-03T03:30:00+00:00"))
+        self.w.set_turn_start(SID, plan=mine)
+        self.w.set_turn_start("other-session", plan=theirs)
+        self.w.set_model_call_start(SID)
+        assert _read(self.w)["plan"]["active"] == "1"
+        assert theirs.reads == 0
+
+    def test_a_write_alone_never_reads_the_plan(self) -> None:
+        # The refresher thread writes between transitions while the loop may be changing the
+        # plan, so only a transition, on the loop's own thread, may read it.
+        plan = _Plan(("1", "2026-10-03T03:00:00+00:00"))
+        self.w.set_turn_start(SID, plan=plan)
+        reads = plan.reads
+        self.w._write()
+        assert plan.reads == reads
 
 
 # ── first output write ───────────────────────────────────────────────────────
@@ -1224,8 +1328,8 @@ class _RecordingWriter(StatusFileWriter):
         super().__init__()
         self.transitions: list[str] = []
 
-    def set_turn_start(self, session_id: str) -> None:
-        super().set_turn_start(session_id)
+    def set_turn_start(self, session_id: str, *, plan: PlanSource | None = None) -> None:
+        super().set_turn_start(session_id, plan=plan)
         if self._owns(session_id):
             self.transitions.append("turn_start:working")
 

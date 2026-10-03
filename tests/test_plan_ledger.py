@@ -10,7 +10,9 @@ plan and the compaction note carry the request and the plan's short-term memory.
 
 from __future__ import annotations
 
+import itertools
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -164,6 +166,72 @@ def test_model_clearing_the_plan_leaves_a_record() -> None:
     net.normalize()
     assert net.is_empty()
     assert net.log[-1].kind == "cleared" and "a; b" in net.log[-1].detail
+
+
+# ── unit: when the plan last moved (ADR-0277) ─────────────────────────────────
+
+
+def _a_minute_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp each plan event one minute after the one before, so a move is told from a layout."""
+    clock = itertools.count()
+    start = datetime(2026, 10, 3, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "zakcode.tasks._now", lambda: (start + timedelta(minutes=next(clock))).isoformat()
+    )
+
+
+def test_moved_at_is_the_newest_step_move_or_else_when_the_plan_was_laid_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _a_minute_apart(monkeypatch)
+    net = TaskNetwork()
+    assert net.moved_at() == ""  # no plan
+    _author(net, ("read the config", "in_progress"), ("fix it", "pending"))
+    laid_out = net.log[-1]
+    assert laid_out.kind == "authored"
+    assert net.moved_at() == laid_out.at  # a fresh plan reads as new
+    _author(net, ("read the config", "done", "timeout is 30s"), ("fix it", "in_progress"))
+    moved = net.log[-1]
+    assert moved.kind == "step"
+    assert net.moved_at() == moved.at
+    # Re-titling a step adds history, but it moves nothing.
+    _author(net, ("read the config", "done", "timeout is 30s"), ("fix the timeout", "in_progress"))
+    assert net.log[-1].kind == "authored"
+    assert net.moved_at() == moved.at
+    # The harness advancing a step is a move.
+    net.harness_advance(net.tasks[1])
+    assert net.log[-1].kind == "advanced"
+    assert net.moved_at() == net.log[-1].at
+
+
+def test_moved_at_starts_again_with_the_next_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    _a_minute_apart(monkeypatch)
+    net = TaskNetwork()
+    _author(net, ("a", "in_progress"))
+    _author(net, ("a", "done", "did a"))
+    old_move = net.moved_at()
+    net.record("reset", detail="completed 1/1: a")
+    net.tasks = []
+    assert net.moved_at() == ""  # nothing on the board
+    _author(net, ("b", "in_progress"))
+    assert net.moved_at() == net.log[-1].at
+    assert net.moved_at() != old_move  # the new plan's layout, not the last plan's move
+    seeded = TaskNetwork()
+    seeded.insert_before(None, [Task(title="look around"), Task(title="decide")], reason="probe")
+    assert seeded.moved_at() == seeded.log[-1].at  # a seeded plan is laid out when seeded
+
+
+def test_a_move_older_than_the_whole_log_answers_as_the_oldest_layout_in_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _a_minute_apart(monkeypatch)
+    net = TaskNetwork()
+    _author(net, ("a", "in_progress"), ("b", "pending"))
+    _author(net, ("a", "done", "x"), ("b", "in_progress"))
+    for i in range(MAX_LOG_EVENTS):
+        net.record("authored", detail=f"reshape {i}")
+    assert all(e.kind == "authored" for e in net.log)  # the move has folded away
+    assert net.moved_at() == net.log[0].at
 
 
 # ── loop: anchor, evidence, memory ────────────────────────────────────────────

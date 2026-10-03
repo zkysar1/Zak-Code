@@ -702,6 +702,120 @@ async def test_the_judges_show_in_the_status_file_as_side_calls(tmp_path: Path) 
     assert snaps[review + 1] == ("working", None, None)
 
 
+class _PlanSnapshots:
+    """A status writer that keeps the ``plan`` object of every write (ADR-0277 tests)."""
+
+    def __init__(self, tmp_path: Path, session_id: str) -> None:
+        from zakcode.session.status_file import StatusFileWriter
+
+        plans: list[dict[str, Any] | None] = []
+        self.plans = plans
+
+        class _Writer(StatusFileWriter):
+            def _write(self) -> None:
+                plan = self._data.get("plan")
+                plans.append(dict(plan) if plan else None)
+                super()._write()
+
+        self.writer = _Writer()
+        self.writer.start(
+            session_id=session_id, workspace=str(tmp_path), model="test/model", build="b"
+        )
+
+    def changes(self) -> list[dict[str, Any] | None]:
+        """The plan objects in the order the file took them, repeats dropped."""
+        out: list[dict[str, Any] | None] = []
+        for plan in self.plans:
+            if not out or out[-1] != plan:
+                out.append(plan)
+        return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_where_the_plan_stands_shows_in_the_status_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streamed: bool
+) -> None:
+    # ADR-0277: once the plan tool moves a step, the status file names the step to work on and
+    # when the plan last moved, on both ways into a turn (`zakcode cli` streams). The plan
+    # stamps its events a minute apart here, so each move is told from the one before. A step's
+    # title never reaches the file, only its id.
+    import itertools
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
+
+    clock = itertools.count()
+    start = datetime(2026, 10, 3, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "zakcode.tasks._now", lambda: (start + timedelta(minutes=next(clock))).isoformat()
+    )
+    secret = "TITLE_SECRET_q7Zr"
+    provider = _Scripted(
+        [
+            _plan_call(
+                [
+                    {"title": f"read {secret}", "status": "in_progress", "note": "x"},
+                    {"title": "fix it", "note": "y"},
+                ]
+            ),
+            _judge(_JUDGE_STRONG),
+            _plan_call(
+                [
+                    {"title": f"read {secret}", "status": "done", "note": "x"},
+                    {"title": "fix it", "status": "in_progress", "note": "y"},
+                ]
+            ),
+            _plan_call(
+                [
+                    {"title": f"read {secret}", "status": "done", "note": "x"},
+                    {"title": "fix it", "status": "done", "note": "y"},
+                ]
+            ),
+            _done(),
+            _review_ok(),
+        ]
+    )
+    loop, session = _loop(provider)
+    status = _PlanSnapshots(tmp_path, session.id)
+    try:
+        with patch("zakcode.agent.loop._status_writer", return_value=status.writer):
+            if streamed:
+                async for _event in loop.astream_turn("small thing"):
+                    pass
+            else:
+                await loop.arun_turn("small thing")
+        path = status.writer._path
+        assert path is not None
+        raw = path.read_text(encoding="utf-8")
+    finally:
+        status.writer._stop_event.set()
+
+    changes = status.changes()
+    assert changes[0] is None  # the turn started with no plan
+    assert [p["active"] if p else None for p in changes] == [None, "1", "2", None]
+    stamps = [p["moved_at"] for p in changes[1:] if p]
+    assert all(s.endswith("Z") for s in stamps)
+    assert stamps == sorted(stamps) and len(set(stamps)) == 3  # each move is later
+    last = datetime.fromisoformat(session.task_network.moved_at())
+    assert stamps[-1] == last.strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert secret not in raw
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_no_plan_leaves_the_status_files_plan_empty(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    loop, session = _loop(_Scripted([_done()]))
+    status = _PlanSnapshots(tmp_path, session.id)
+    try:
+        with patch("zakcode.agent.loop._status_writer", return_value=status.writer):
+            await loop.arun_turn("small thing")
+    finally:
+        status.writer._stop_event.set()
+    assert status.plans  # the turn wrote the file
+    assert status.changes() == [None]
+
+
 @pytest.mark.asyncio
 async def test_judge_runs_once_per_turn_even_across_structural_edits() -> None:
     provider = _Scripted(
