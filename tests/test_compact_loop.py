@@ -12,8 +12,10 @@ serialized state (Claude Code fires ``SessionStart(source="compact")``).
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -41,6 +43,7 @@ from zakcode.providers.base import (
     Provider,
     RateLimited,
 )
+from zakcode.session.status_file import StatusFileWriter
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 from zakcode.usage import Usage
@@ -451,6 +454,95 @@ def test_compact_now_default_stays_manual(tmp_path: Path) -> None:
     assert asyncio.run(loop.compact_now()) is True
     pre = [p for p in captured if p.event is HookEvent.PRE_COMPACT]
     assert pre and pre[0].trigger == "manual"
+
+
+class _Snapshots(StatusFileWriter):
+    """A status file writer that records (state, call kind, call model) at every write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.snaps: list[tuple[Any, Any, Any]] = []
+
+    def _write(self) -> None:
+        call = self._data.get("call") or {}
+        self.snaps.append((self._data.get("state"), call.get("kind"), call.get("model")))
+        super()._write()
+
+
+def _status_writer_for(session_id: str, tmp_path: Path) -> _Snapshots:
+    writer = _Snapshots()
+    writer.start(session_id=session_id, workspace=str(tmp_path), model="test", build="b")
+    return writer
+
+
+class _ReadsTheStatusFile(_SummarizerProvider):
+    """Records what the status file says at the moment each summarizer call is made."""
+
+    def __init__(self, writer: _Snapshots, texts: list[str], *, tokens: int) -> None:
+        super().__init__(texts, tokens=tokens)
+        self._writer = writer
+        self.at_call: list[tuple[str, str | None]] = []
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        assert self._writer._path is not None
+        data = json.loads(self._writer._path.read_text(encoding="utf-8"))
+        self.at_call.append((data["state"], (data["call"] or {}).get("kind")))
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+    def model_id(self) -> str:
+        return "summary-model"
+
+
+def test_a_compaction_shows_in_the_status_file_as_one_summarizer_side_call(
+    tmp_path: Path,
+) -> None:
+    # ADR-0276: measured on a worker session, an 11-minute compaction read as "working" the
+    # whole time. The summary's calls now find the file in model_call, kind summarizer, and the
+    # file is back in working when it ends, with the turn's count of conversation calls as it was.
+    session = Session(cwd=str(tmp_path), model="test")
+    writer = _status_writer_for(session.id, tmp_path)
+    provider = _ReadsTheStatusFile(writer, ["summary"], tokens=100_000)
+    loop = AgentLoop(
+        provider,
+        ToolRegistry(),
+        session,
+        workspace_root=tmp_path,
+        compactor=Compactor(CompactionConfig()),
+    )
+    loop.session.messages.extend(_history(5))
+    try:
+        writer.set_turn_start(session.id)  # an automatic compaction runs inside a turn
+        writer.snaps.clear()
+        with patch("zakcode.agent.loop._status_writer", return_value=writer):
+            assert asyncio.run(loop.compact_now(trigger="auto")) is True
+        assert writer._path is not None
+        after = json.loads(writer._path.read_text(encoding="utf-8"))
+    finally:
+        writer._stop_event.set()
+    assert provider.at_call == [("model_call", "summarizer")]
+    assert writer.snaps == [("model_call", "summarizer", "summary-model"), ("working", None, None)]
+    assert after["turn"]["model_calls"] == 0
+
+
+def test_a_compaction_in_another_session_never_touches_the_status_file(tmp_path: Path) -> None:
+    # A nested run compacts its own session; the top-level session's file must not move.
+    provider = _SummarizerProvider(["summary"], tokens=100_000)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    writer = _status_writer_for("top-level-session", tmp_path)
+    try:
+        writer.set_turn_start("top-level-session")
+        assert writer._path is not None
+        before = writer._path.read_bytes()
+        writer.snaps.clear()
+        with patch("zakcode.agent.loop._status_writer", return_value=writer):
+            assert asyncio.run(loop.compact_now(trigger="auto")) is True
+        assert writer._path.read_bytes() == before
+    finally:
+        writer._stop_event.set()
+    assert writer.snaps == []
 
 
 class _ExplodingProvider(_SummarizerProvider):

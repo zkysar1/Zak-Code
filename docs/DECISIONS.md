@@ -16098,6 +16098,9 @@ and the process-global singleton does not fit multi-session serve mode. The tran
 the agent loop are safe no-ops (every method returns immediately when `start()` has not been
 called or the session id does not match).
 
+**Amended by ADR-0276 (2026-10-03):** a side call also puts the file in `model_call`, with
+`call.kind` naming it, and `zakcode status` says what it is doing.
+
 ## ADR-0267: hook matchers follow Claude Code's matcher contract
 
 Status: accepted. 2026-09-29.
@@ -16609,3 +16612,59 @@ smaller cap. Eight sabotages each turned tests red: the finish-reason check remo
 finish reason not passed to it (3), the cap not sent (1), a declared cap ignored (3), no floor
 (2), no quarter of the window (3), the declared cap not passed from the call site (1), and the
 budget back at 8,192 (5). Every restore was byte-verified. The full suite passed, 5,112 tests.
+
+## ADR-0276: a side call shows in the status file as a model call naming its kind
+
+Status: accepted. 2026-10-03.
+
+The status file (ADR-0266) went to `model_call` only for the conversation's own calls. The side
+calls reach their provider directly: the compaction summary, the completion critic, the plan
+critique, the quality gate, the difficulty classifier and a deliberation, the calls ADR-0243 tags
+in their usage records. During one, the file kept what it said before. Measured 2026-09-29 on a
+worker session: the file read `working` from 03:03:33Z to 03:14:41Z while the process had no
+child process and held one connection to the model server with an empty send queue, and the
+session's next usage record was tagged `summarizer`. An 11-minute compaction read as a turn
+between steps, with its call and tool counts, to `zakcode status` and to an outside monitor.
+
+Decision.
+
+1. A side call puts the file in `model_call` while it runs, with `call.kind` set to the name its
+   usage is recorded under (`summarizer`, `critic`, `plan_critique`, `quality_gate`,
+   `difficulty_classifier`, `deep_think`) and `call.model` to the model it goes to. The other
+   `call` keys are a conversation call's. A side call's output is not counted into the file, so
+   its phase stays `waiting`.
+2. The turn's `model_calls` keeps counting the conversation's own calls, and the top-level
+   `model` keeps naming the conversation's model.
+3. When it ends, the state is worked out from what is still open: a running tool, else an open
+   turn (`working`), else `idle`. The plan critique runs inside the plan tool, a deliberation
+   inside the deep-think tool, and `/compact` compacts at the prompt, so going back to `working`
+   would be wrong for three of them. A running tool's record is kept through the side call.
+4. Side calls can overlap, since a deliberation asks for its samples at once. The file leaves
+   the side call when the last one still out has ended.
+5. Session binding is unchanged: a nested run's side calls never touch the file.
+6. `zakcode status` says what a side call is doing: compacting the conversation, reviewing the
+   answer, critiquing the plan, scoring the work, classifying the request, deliberating. A kind
+   it does not know reads as `side call <kind>`.
+
+A compaction is marked once, around its summary, so its slices, folds and resample read as one
+side call, and a compaction with nothing old enough to summarize makes no call and marks nothing.
+
+Not marked: the context relevance classifier and the context-use judge (`context_classifier=
+"model"`, `context_signal_judge`). They are options of the `Agent` library API that `zakcode cli`,
+the only process that writes a status file, never sets, so a mark there could never be written.
+
+Rejected: a new state for side calls. A reader that knows `model_call` already takes a side call
+for what it is, a live model call; a new state would read as unknown to every existing reader.
+Rejected: counting side calls in `turn.model_calls`. That count is read as the conversation's
+progress.
+
+Tests: `tests/test_status_file.py` (seven writer cases and eight `zakcode status` cases), and one
+case at each call site, through the real loop or `Agent`: a compaction and a compaction in
+another session (`tests/test_compact_loop.py`), the plan critique and the critic in a full turn
+(`tests/test_loop_planning.py`), the quality gate, a deliberation and the difficulty classifier.
+Fifteen sabotages each turned tests red: the kind not recorded (8 tests), never back to a running
+tool (4), never back to idle (2), no count of overlapping calls (1), the start or the end
+ignoring the session (2 each), the compaction unmarked (1) or without its model (1), the critic,
+the classifier and the deliberation unmarked (1 each), the plan critique and the quality gate
+marked on another session (1 each), and `zakcode status` without its words (7) or ignoring the
+kind (8). Every restore was byte-verified.

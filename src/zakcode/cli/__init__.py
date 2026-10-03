@@ -329,19 +329,37 @@ def _resolved_path(path: str) -> str:
         return path
 
 
+#: What a side call is doing, by the ``call.kind`` the status file records for it (ADR-0276). A
+#: kind missing here, from a newer writer, still reads as a side call, by its own name.
+_SIDE_CALL_DOING = {
+    "summarizer": "compacting the conversation",
+    "critic": "reviewing the answer",
+    "plan_critique": "critiquing the plan",
+    "quality_gate": "scoring the work",
+    "difficulty_classifier": "classifying the request",
+    "deep_think": "deliberating",
+}
+
+
 def _state_detail(row: dict[str, Any], now: float) -> str:
     """Build a per-state detail string for the status line.
 
     A model call that has produced output says how long the first output took, which
-    tells a slow prompt read from slow generation. An idle session names its armed
-    wake-up relative to ``now`` (an overdue one is the thing to notice) and how its last
-    turn ended.
+    tells a slow prompt read from slow generation. A side call says what it is doing, such
+    as compacting the conversation. An idle session names its armed wake-up relative to
+    ``now`` (an overdue one is the thing to notice) and how its last turn ended.
     """
     st = row.get("state", "?")
     if st == "model_call":
         call = row.get("call") or {}
         phase = call.get("phase", "waiting")
         model = call.get("model") or row.get("model", "")
+        kind = call.get("kind")
+        if kind:
+            # A side call's output is not counted into the file, so it has no phase or
+            # character count to show; what it is doing is the news.
+            doing = _SIDE_CALL_DOING.get(kind, f"side call {kind}")
+            return f"{doing} ({model})" if model else doing
         if phase == "waiting":
             return f"waiting for {model}" if model else "waiting"
         progress = f"{call.get(f'{phase}_chars', 0)} chars"

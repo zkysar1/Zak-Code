@@ -3419,10 +3419,20 @@ class AgentLoop:
             window: int | None = self.provider.capabilities().context_window
         except NotImplementedError:
             window = None
+        summarizer = self._summarizer_provider or self.provider  # the one the summary asks
+
+        async def summarize(old: list[Message]) -> str:
+            # Every slice and fold of the summary shows in the status file as one side call
+            # (ADR-0276). Unmarked, an 11-minute compaction read as a turn between steps.
+            with _status_writer().side_call(
+                self.session.id, "summarizer", model=summarizer.model_id()
+            ):
+                return await self._summarize_for_compaction(old)
+
         try:
             result = await self.compactor.compact(
                 self.session.messages,
-                summarize=self._summarize_for_compaction,
+                summarize=summarize,
                 context_window=window,
                 count_tokens=self._tail_tokens,
             )
@@ -6530,12 +6540,13 @@ class AgentLoop:
             # to run it (field 2026-09-10: a correct "type /start yourself" answer, then eleven
             # iterations grepping for start/boot/init scripts). The criteria carry the rule.
             request = f"{request}\n\n{_handed_off_clause(self._turn_handed_off)}"
-        verdict, usage = await binary_judge(
-            self.provider,
-            criteria=request,
-            artifact=artifact,
-            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
-        )
+        with _status_writer().side_call(self.session.id, "critic", model=self.provider.model_id()):
+            verdict, usage = await binary_judge(
+                self.provider,
+                criteria=request,
+                artifact=artifact,
+                prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
+            )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             # ADR-0243: a side call's record is tagged, like the summarizer's (ADR-0241): it has
             # no reply, and untagged it would move each reply before it onto a neighbour's record.
@@ -6580,12 +6591,15 @@ class AgentLoop:
             # model could neither act on nor was meant to. Structural quality still rides.
             return ""
         try:
-            card, usage = await score_plan(
-                self._judge_provider(),
-                goal=goal,
-                plan=rendered,
-                prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
-            )
+            with _status_writer().side_call(
+                self.session.id, "plan_critique", model=self._judge_provider().model_id()
+            ):
+                card, usage = await score_plan(
+                    self._judge_provider(),
+                    goal=goal,
+                    plan=rendered,
+                    prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
+                )
         except Exception:  # noqa: BLE001 — an unreachable judge must never break the tool result
             logger.warning("judged plan critique failed; skipping", exc_info=True)
             return ""
@@ -6623,12 +6637,15 @@ class AgentLoop:
         threshold = self.settings.quality_gate_threshold
         dimensions = self.settings.quality_gate_dimensions or _DEFAULT_CODE_RUBRIC
         artifact = _gather_work(claimed_result or "", written_paths)
-        card, usage = await score_rubric(
-            self._judge_provider(),
-            artifact=artifact,
-            dimensions=dimensions,
-            prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
-        )
+        with _status_writer().side_call(
+            self.session.id, "quality_gate", model=self._judge_provider().model_id()
+        ):
+            card, usage = await score_rubric(
+                self._judge_provider(),
+                artifact=artifact,
+                dimensions=dimensions,
+                prompt_cache_key=self._prompt_cache_key(),  # ADR-0257: this session's engine
+            )
         with contextlib.suppress(Exception):  # accounting must never break the gate
             self.session.add_usage(
                 usage, model=self._judge_provider().model_id(), side_call="quality_gate"

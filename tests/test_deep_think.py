@@ -266,6 +266,43 @@ def test_agent_wires_sampler_and_records_usage(tmp_path: Path) -> None:
     assert {u.side_call for u in agent.session.usages} == {"deep_think"}
 
 
+def test_a_deliberation_shows_in_the_status_file_as_a_side_call(tmp_path: Path) -> None:
+    # ADR-0276: while the deliberation's call runs the status file reads model_call, kind
+    # deep_think, and afterwards it is back on the deep_think tool that asked for it.
+    import asyncio
+    import json
+    from unittest.mock import patch
+
+    from zakcode.session.status_file import StatusFileWriter
+
+    seen: list[dict] = []
+
+    class _Reading(_Responder):
+        async def acomplete(self, messages, *, system=None, tools=None, response_format=None, **kw):
+            assert writer._path is not None
+            seen.append(json.loads(writer._path.read_text(encoding="utf-8")))
+            return await super().acomplete(
+                messages, system=system, tools=tools, response_format=response_format, **kw
+            )
+
+    agent = zakcode.Agent(workspace_root=tmp_path, provider=_Reading())
+    writer = StatusFileWriter()
+    writer.start(session_id=agent.session.id, workspace=str(tmp_path), model="m", build="b")
+    try:
+        writer.set_turn_start(agent.session.id)
+        writer.set_tool_start(agent.session.id, "deep_think")
+        with patch("zakcode._status_writer", return_value=writer):
+            asyncio.run(agent._deep_think_sample("ponder this", system=_CANDIDATE_SYSTEM))
+        assert writer._path is not None
+        after = json.loads(writer._path.read_text(encoding="utf-8"))
+    finally:
+        writer._stop_event.set()
+    calls = [(d["state"], d["call"]["kind"], d["call"]["model"]) for d in seen]
+    assert calls == [("model_call", "deep_think", "test/model")]
+    assert after["state"] == "tool"
+    assert after["tool"]["name"] == "deep_think"
+
+
 class _CutOffResponder(_Responder):
     """Every candidate call stops at the output limit, spelled the way the backend spells it."""
 

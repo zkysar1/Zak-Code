@@ -41,6 +41,7 @@ from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError, UnknownContextWindow, WindowResolution
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.providers.routing import DifficultyVerdict
+from zakcode.session.status_file import get_writer as _status_writer
 from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SampleCutOff, SkillLoad, SkillResolver
@@ -1721,12 +1722,13 @@ class Agent:
             # rejects (tool_use_failed) — the very unreliability zakpick routes around. Plain JSON
             # mode sidesteps the tool path; the trivial {"difficulty": ...} object is validated
             # locally against DIFFICULTY_SCHEMA below.
-            result = await provider.acomplete(
-                [Message.user(user_text)],
-                system=difficulty_system_prompt(skills, user_only),
-                response_format=make_response_format(None),
-                temperature=0.0,
-            )
+            with _status_writer().side_call(self.session.id, "difficulty_classifier", model=model):
+                result = await provider.acomplete(
+                    [Message.user(user_text)],
+                    system=difficulty_system_prompt(skills, user_only),
+                    response_format=make_response_format(None),
+                    temperature=0.0,
+                )
         except ProviderError:
             return DifficultyVerdict("deep_code")  # classifier unavailable -> fail UP
         with contextlib.suppress(Exception):  # accounting must never break routing
@@ -1779,9 +1781,10 @@ class Agent:
         key = self.loop._prompt_cache_key()
         if provider.model_id() != self.loop.provider.model_id():
             key = f"{key}/{provider.model_id()}"
-        result = await provider.acomplete(
-            [Message.user(prompt)], system=system, temperature=temperature, prompt_cache_key=key
-        )
+        with _status_writer().side_call(self.session.id, "deep_think", model=provider.model_id()):
+            result = await provider.acomplete(
+                [Message.user(prompt)], system=system, temperature=temperature, prompt_cache_key=key
+            )
         with contextlib.suppress(Exception):  # accounting must never break the deliberation
             self.session.add_usage(result.usage, model=provider.model_id(), side_call="deep_think")
             if self._shared_budget is not None:
