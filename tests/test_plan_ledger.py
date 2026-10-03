@@ -13,6 +13,7 @@ from __future__ import annotations
 import itertools
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -232,6 +233,39 @@ def test_a_move_older_than_the_whole_log_answers_as_the_oldest_layout_in_view(
         net.record("authored", detail=f"reshape {i}")
     assert all(e.kind == "authored" for e in net.log)  # the move has folded away
     assert net.moved_at() == net.log[0].at
+
+
+def test_a_close_handed_back_moves_the_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    _a_minute_apart(monkeypatch)
+    net = TaskNetwork()
+    _search_plan(net, "in_progress", "pending")
+    net.attach_evidence(net.tasks[0], "bash drive-list.py ∅ No files found in the location")
+    _search_plan(net, "done", "in_progress", outcome="listed the files")
+    assert net.log[-1].kind == "challenged"
+    assert net.moved_at() == net.log[-1].at  # the harness reopening the step is a move
+
+
+@pytest.mark.asyncio
+async def test_a_step_dropped_or_put_back_moves_nothing_and_a_cleared_plan_is_over(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _a_minute_apart(monkeypatch)
+    net = TaskNetwork()
+    _author(net, ("a", "in_progress"), ("b", "pending"), ("c", "pending"), ("d", "pending"))
+    _author(net, ("a", "done", "x"), ("b", "done", "y"), ("c", "in_progress"), ("d", "pending"))
+    moved = net.moved_at()
+    assert net.log[-1].kind == "step"
+    # A resend of the open step alone: the done steps the render folded come back, and the
+    # step it forgot is recorded as dropped. The plan was resent, not moved.
+    net.replace_from_author([Task(title="c", status="in_progress")])
+    assert [e.kind for e in net.log[-3:]] == ["restored", "dropped", "authored"]
+    assert net.moved_at() == moved
+    # A plan the model clears is over: the next one is new from its layout.
+    ctx = ToolContext(workspace_root=tmp_path, task_network=net)
+    assert (await UpdatePlanTool().execute({"tasks": []}, ctx)).output == "Plan cleared."
+    assert net.log[-1].kind == "cleared"
+    _author(net, ("e", "in_progress"))
+    assert net.moved_at() == net.log[-1].at
 
 
 # ── loop: anchor, evidence, memory ────────────────────────────────────────────

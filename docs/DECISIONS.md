@@ -16693,7 +16693,9 @@ Decision.
    (ADR-0110). Before any step of a plan has moved, the plan moved when it was laid out
    (`authored` or `seeded`), so a fresh plan reads as new and not as the last plan's final move.
    Re-titling or adding steps is not a move, and a plan resent unchanged writes no history, so a
-   model that rewrites or resends its plan without advancing it reads as standing still.
+   model that rewrites or resends its plan without advancing it reads as standing still. Nor is a
+   full replace dropping an open step or putting back a done one (`dropped`, `restored`). A plan
+   reset or cleared (`reset`, `cleared`) ends the walk back: the next plan starts its own clock.
 3. `moved_at` is read from the plan's history (`TaskNetwork.moved_at()`), not kept in a new
    field, so a session saved by an older build answers as soon as it is resumed, which is what a
    restart into a new build does. The history keeps the newest 200 events; a move older than all
@@ -16717,14 +16719,18 @@ event as a move. A model that only re-titles its plan would read as moving. Reje
 reading the session at every write. The refresher thread would read the plan while the loop
 changes it.
 
-Tests: `tests/test_plan_ledger.py` (three cases: the newest move, else the layout; the next plan
-starting afresh; a move older than the whole history), `tests/test_status_file.py` (ten writer
-cases), and a full turn through the plan tool on both ways into a turn, with a step title that
-never reaches the file, plus a turn with no plan (`tests/test_loop_planning.py`). Sixteen
+Tests: `tests/test_plan_ledger.py` (five cases: the newest move, else the layout; the next plan
+starting afresh; a move older than the whole history; a close handed back as a move; a step
+dropped or put back moving nothing, and a cleared plan ending the walk),
+`tests/test_status_file.py` (ten writer cases), and a full turn through the plan tool on both
+ways into a turn, with a step title that never reaches the file, plus a turn with no plan
+(`tests/test_loop_planning.py`). Twenty
 sabotages each turned tests red: the harness's advance not a move (1 test), the walk running on
 into the last plan (1), a re-title counted as a move (2), a tool's end, a model call's start, a
 turn's end or an unwound turn not reading the plan (1 each), the source never held (8), a turn
 start without one dropping it (1), the time not in the file's form (4), a failing source
 escaping (1), a plain write reading the plan (2), another session's turn handing its source over
-(1), the loop handing nothing over (2) or only the streamed turn handing nothing over (1), and
-the first step named in place of the current one (2). Every restore was byte-verified.
+(1), the loop handing nothing over (2) or only the streamed turn handing nothing over (1), the
+first step named in place of the current one (2), a handed-back close not a move (1), a clear not
+ending the walk (1), and a dropped step (2) or a restored one (1) counted as a move. Every
+restore was byte-verified.

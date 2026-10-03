@@ -54,6 +54,8 @@ _TERMINAL: frozenset[str] = frozenset({"done", "cancelled"})
 
 #: ADR-0277 — the history kinds (:class:`PlanEvent`) that move a step's status: the model's
 #: own moves, the harness closing a step at the conclusion, its advance, and its one reopen.
+#: A full replace dropping an open step or putting back a done one is not among them: the plan
+#: was resent, not moved.
 _MOVE_KINDS: frozenset[str] = frozenset({"step", "advanced", "challenged"})
 #: The kinds that lay a plan out or add steps to it, which start its clock before any step moves.
 _LAYOUT_KINDS: frozenset[str] = frozenset({"authored", "seeded"})
