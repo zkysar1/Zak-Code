@@ -16672,6 +16672,13 @@ the classifier and the deliberation unmarked (1 each), the plan critique and the
 marked on another session (1 each), and `zakcode status` without its words (7) or ignoring the
 kind (8). Every restore was byte-verified.
 
+Pinned since 2026-10-03 by `tests/test_provider_calls_marked.py`, so a call added later cannot go
+unmarked in silence: it walks `src/` and fails on any use of a provider completion method outside
+`zakcode.providers` that is not one of the two conversation calls, not inside a `side_call` block
+at the call or at every use of the function making it, followed up through its callers, and not
+reached only from a library-only entry point listed with its reason. The two options above are
+listed that way, and the test checks that nothing outside `zakcode/__init__.py` names them.
+
 ## ADR-0277: the status file says where the plan stands and when it last moved
 
 Status: accepted. 2026-10-03.
