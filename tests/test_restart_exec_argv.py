@@ -7,10 +7,11 @@ exits. The new process splits that line back into arguments, so an argument with
 it, a double quote, or nothing at all can arrive split, merged or dropped.
 
 Each case here execs for real, in the restart's own call shape (the interpreter's path, then
-the interpreter as argv[0], then the arguments), into a helper that writes down the argv it
-received. A case sends one kind of argument between two plain ones, so a failure names the
-kind that broke. The control sends an argument that needs no quoting anywhere: it must pass
-on every platform, or the probe itself is broken.
+the interpreter as argv[0], then the arguments) and through its quoting (``_exec_argv``),
+into a helper that writes down the argv it received. A case sends one kind of argument
+between two plain ones, so a failure names the kind that broke. The control sends an
+argument that needs no quoting anywhere: it must pass on every platform, or the probe itself
+is broken.
 """
 
 from __future__ import annotations
@@ -24,6 +25,40 @@ import time
 from pathlib import Path
 
 import pytest
+
+from zakcode.cli import _exec_argv
+
+#: One of each kind of argument the quoting must carry, the interpreter's path first.
+_KINDS = [
+    "C:\\py dir\\python.exe",
+    "-m",
+    "plain",
+    "two words",
+    "C:\\some dir\\",
+    'say"hi',
+    "",
+]
+
+
+def test_posix_hands_execv_the_argv_as_it_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _exec_argv(list(_KINDS)) == _KINDS
+
+
+def test_windows_quotes_each_argument_for_the_command_line_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _exec_argv(list(_KINDS)) == [
+        '"C:\\py dir\\python.exe"',  # argv[0] too: the new process splits it like the rest
+        "-m",
+        "plain",  # needs no quoting, so gets none
+        '"two words"',
+        '"C:\\some dir\\\\"',  # a backslash before the closing quote is doubled
+        'say\\"hi',  # an inner quote is escaped, so it opens nothing
+        '""',
+    ]
+
 
 #: Replaces itself with ``os.execv`` in the restart's call shape. The interpreter and the
 #: argv come in a JSON file, so no command line on the way here can re-split them.
@@ -63,7 +98,7 @@ def _received(tmp_path: Path, args: list[str], interpreter: str = sys.executable
     spec = tmp_path / "exec.json"
     exec_into.write_text(_EXEC_INTO, encoding="utf-8")
     report.write_text(_REPORT_ARGV, encoding="utf-8")
-    argv = [interpreter, str(report), str(out), *args]
+    argv = _exec_argv([interpreter, str(report), str(out), *args])
     spec.write_text(json.dumps([interpreter, argv]), encoding="utf-8")
     run = subprocess.run(
         [sys.executable, str(exec_into), str(spec)],

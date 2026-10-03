@@ -239,17 +239,23 @@ def test_restart_stamps_the_session_then_execs_with_it_pinned(
     monkeypatch.setattr(cli.os, "execv", lambda path, argv: execs.append([path, *argv]))
     monkeypatch.setattr(cli.sys, "argv", ["zakcode", "chat", "-s", "stale-id", "--model", "m"])
     cli._restart_into_new_build(_console(), agent)
+    # On Windows each argument is quoted for the new process's command line; elsewhere the
+    # list goes through as it is (test_restart_exec_argv.py pins both).
     assert execs == [
         [
             sys.executable,
-            sys.executable,
-            "-m",
-            "zakcode",
-            "chat",
-            "--model",
-            "m",
-            "--session",
-            agent.session.id,
+            *cli._exec_argv(
+                [
+                    sys.executable,
+                    "-m",
+                    "zakcode",
+                    "chat",
+                    "--model",
+                    "m",
+                    "--session",
+                    agent.session.id,
+                ]
+            ),
         ]
     ]
     # Stamped for the build that will READ it: the resumed session is an upgrade, not a
@@ -257,6 +263,32 @@ def test_restart_stamps_the_session_then_execs_with_it_pinned(
     loaded = store.load(agent.session.id)
     assert loaded.build == "new-build"
     assert loaded.resume_notice(running_build="new-build") is None
+
+
+def test_restart_hands_execv_its_argv_through_the_windows_quoting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The argv goes through ``_exec_argv``; the path does not, because it names the file to
+    run rather than a word of the new process's command line."""
+    agent, _store = _agent(tmp_path)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    monkeypatch.setattr(cli, "_exec_argv", lambda argv: ["<quoted>", *argv])
+    execs: list[list[str]] = []
+    monkeypatch.setattr(cli.os, "execv", lambda path, argv: execs.append([path, *argv]))
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    cli._restart_into_new_build(_console(), agent)
+    assert execs == [
+        [
+            sys.executable,
+            "<quoted>",
+            sys.executable,
+            "-m",
+            "zakcode",
+            "cli",
+            "--session",
+            agent.session.id,
+        ]
+    ]
 
 
 def test_restart_is_a_no_op_when_nothing_changed(

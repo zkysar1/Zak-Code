@@ -1272,6 +1272,25 @@ def _restart_args(argv: list[str], session_id: str) -> list[str]:
     return [*out, "--session", session_id]
 
 
+def _exec_argv(argv: list[str]) -> list[str]:
+    """``argv`` in the form ``os.execv`` must be given for the new process to receive it as is.
+
+    POSIX hands the list to the new program untouched. Windows has no exec: the C runtime
+    starts a new process from ONE command line, which it builds by joining the arguments with
+    spaces and quoting none of them, and the new process splits that line back up. Measured
+    on a Windows CI runner, unquoted: an argument with a space arrived as two, an empty one
+    vanished, and a double quote opened a quoted run that swallowed the argument after it.
+    The interpreter's own path is in that line too, as argv[0]: one with a space split, and
+    the new interpreter tried to run the rest of its own path as a script. The old process
+    has exited by then, so the restart's ``OSError`` fallback never sees it. On Windows each
+    argument is therefore quoted the way that split undoes, by the same rules ``subprocess``
+    uses to build its command lines.
+    """
+    if sys.platform != "win32":
+        return argv
+    return [subprocess.list2cmdline([arg]) for arg in argv]
+
+
 def _restart_into_new_build(console: Console, agent: Any) -> None:
     """Replace this process with one running the newly installed build (ADR-0034).
 
@@ -1326,7 +1345,7 @@ def _restart_into_new_build(console: Console, agent: Any) -> None:
     sys.stdout.flush()
     sys.stderr.flush()
     try:
-        os.execv(sys.executable, [sys.executable, "-m", "zakcode", *args])
+        os.execv(sys.executable, _exec_argv([sys.executable, "-m", "zakcode", *args]))
     except OSError as exc:
         get_writer().set_idle(agent.session.id)  # still serving, so no longer "restarting"
         notice_error(console, "restart failed — still on the previous build", str(exc))
