@@ -477,6 +477,103 @@ class TestLeaveTurn:
             w._stop_event.set()
 
 
+# ── side calls ───────────────────────────────────────────────────────────────
+
+
+class TestSideCall:
+    """ADR-0276: a model call outside the conversation shows as a ``model_call`` naming its kind,
+    and the file goes back to what is still open when it ends."""
+
+    @pytest.fixture(autouse=True)
+    def _writer(self, tmp_path: Path) -> Any:
+        self.w = _make_writer(tmp_path)
+        yield
+        self.w._stop_event.set()
+
+    def test_a_side_call_in_a_turn_names_its_kind_and_ends_back_in_working(self) -> None:
+        self.w.set_turn_start(SID)
+        with self.w.side_call(SID, "summarizer", model="summary-model"):
+            during = _read(self.w)
+        after = _read(self.w)
+        assert during["state"] == "model_call"
+        assert during["call"]["kind"] == "summarizer"
+        assert during["call"]["model"] == "summary-model"
+        assert during["call"]["phase"] == "waiting"
+        # Not one of the conversation's calls, and not a change of the conversation's model.
+        assert during["turn"]["model_calls"] == 0
+        assert during["model"] == "test-model"
+        assert after["state"] == "working"
+        assert after["call"] is None
+        assert after["turn"]["model_calls"] == 0
+
+    def test_a_side_call_without_a_model_names_the_session_s_model(self) -> None:
+        self.w.set_turn_start(SID)
+        with self.w.side_call(SID, "critic"):
+            assert _read(self.w)["call"]["model"] == "test-model"
+
+    def test_a_side_call_inside_a_tool_goes_back_to_the_tool(self) -> None:
+        # The plan critique runs inside the plan tool; the tool is still running after it.
+        self.w.set_turn_start(SID)
+        self.w.set_tool_start(SID, "update_plan")
+        with self.w.side_call(SID, "plan_critique"):
+            during = _read(self.w)
+        after = _read(self.w)
+        assert during["state"] == "model_call"
+        assert during["tool"]["name"] == "update_plan"
+        assert after["state"] == "tool"
+        assert after["tool"]["name"] == "update_plan"
+        assert after["call"] is None
+
+    def test_a_side_call_at_the_prompt_goes_back_to_idle(self) -> None:
+        # /compact compacts with no turn open: the file returns to idle, and the last turn's
+        # ending is kept.
+        self.w.set_turn_start(SID)
+        self.w.set_idle(SID, stop_reason="end_turn")
+        with self.w.side_call(SID, "summarizer"):
+            assert _read(self.w)["state"] == "model_call"
+        after = _read(self.w)
+        assert after["state"] == "idle"
+        assert after["turn"] is None
+        assert after["last_turn"]["stop_reason"] == "end_turn"
+
+    def test_a_side_call_from_another_session_never_touches_the_file(self) -> None:
+        self.w.set_turn_start(SID)
+        self.w._data["since"] = "2000-01-01T00:00:00Z"  # any transition would overwrite this
+        before = _read(self.w)
+        with self.w.side_call("other-session", "critic", model="judge-model"):
+            assert _read(self.w) == before
+            assert self.w._data["since"] == "2000-01-01T00:00:00Z"
+        assert _read(self.w) == before
+        assert self.w._data["since"] == "2000-01-01T00:00:00Z"
+        with self.w.side_call(SID, "critic"):  # positive control: the owner's own side call lands
+            assert _read(self.w)["call"]["kind"] == "critic"
+
+    def test_a_side_call_whose_body_raises_still_ends_and_the_error_propagates(self) -> None:
+        self.w.set_turn_start(SID)
+        with pytest.raises(RuntimeError, match="judge down"), self.w.side_call(SID, "critic"):
+            raise RuntimeError("judge down")
+        after = _read(self.w)
+        assert after["state"] == "working"
+        assert after["call"] is None
+
+    def test_overlapping_side_calls_hold_the_file_until_the_last_one_ends(self) -> None:
+        # A deliberation asks for its samples at once. The first one back must not take the file
+        # off the side call while another is still out.
+        self.w.set_turn_start(SID)
+        self.w.set_tool_start(SID, "deep_think")
+        first = self.w.side_call(SID, "deep_think")
+        second = self.w.side_call(SID, "deep_think")
+        first.__enter__()
+        second.__enter__()
+        first.__exit__(None, None, None)
+        assert _read(self.w)["state"] == "model_call"
+        assert _read(self.w)["call"]["kind"] == "deep_think"
+        second.__exit__(None, None, None)
+        after = _read(self.w)
+        assert after["state"] == "tool"
+        assert after["call"] is None
+
+
 # ── first output write ───────────────────────────────────────────────────────
 
 
@@ -916,6 +1013,55 @@ class TestStatusCLI:
         assert result.exit_code == 0
         assert "model_call" in result.output
         assert "thinking" in result.output
+
+    @staticmethod
+    def _side_call(kind: str) -> dict[str, Any]:
+        return {
+            "phase": "waiting",
+            "model": "small-27b",
+            "kind": kind,
+            "started_at": _now_iso(),
+            "first_output_at": None,
+            "thinking_chars": 0,
+            "text_chars": 0,
+            "tool_call_chars": 0,
+        }
+
+    def test_a_side_call_says_what_it_is_doing(self) -> None:
+        # ADR-0276: a compaction names itself; before, it read as a turn between steps.
+        _write_status(
+            self.sdir, "side-ses-1", "model_call", _now_iso(), call=self._side_call("summarizer")
+        )
+        result = self.runner.invoke(self.app, ["status"])
+        assert result.exit_code == 0
+        assert "compacting the conversation (small-27b)" in result.output
+        assert "waiting for" not in result.output
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "summarizer",
+            "critic",
+            "plan_critique",
+            "quality_gate",
+            "difficulty_classifier",
+            "deep_think",
+        ],
+    )
+    def test_every_side_call_the_loop_marks_has_its_own_words(self, kind: str) -> None:
+        from zakcode.cli import _state_detail
+
+        detail = _state_detail({"state": "model_call", "call": self._side_call(kind)}, time.time())
+        assert detail.endswith(" (small-27b)")
+        assert not detail.startswith("side call")
+
+    def test_a_side_call_of_an_unknown_kind_reads_by_its_name(self) -> None:
+        _write_status(
+            self.sdir, "side-ses-2", "model_call", _now_iso(), call=self._side_call("fact_check")
+        )
+        result = self.runner.invoke(self.app, ["status"])
+        assert result.exit_code == 0
+        assert "side call fact_check (small-27b)" in result.output
 
     def test_tool_detail(self) -> None:
         _write_status(

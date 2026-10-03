@@ -81,6 +81,36 @@ async def test_quality_gate_rides_the_sessions_affinity_key(tmp_path: Path) -> N
     assert provider.keys == [f"zakcode/{loop.session.id}"]
 
 
+async def test_quality_gate_shows_in_the_status_file_as_a_side_call(tmp_path: Path) -> None:
+    # ADR-0276: the scorer's call reads as model_call, kind quality_gate, then working again.
+    from unittest.mock import patch
+
+    from zakcode.session.status_file import StatusFileWriter
+
+    seen: list[dict[str, Any]] = []
+
+    class _Reading(_ScoreProvider):
+        async def acomplete(self, messages, *, system=None, tools=None, **kwargs: Any) -> LLMResult:  # noqa: ANN001
+            assert writer._path is not None
+            seen.append(json.loads(writer._path.read_text(encoding="utf-8")))
+            return await super().acomplete(messages, system=system, tools=tools, **kwargs)
+
+    loop = _loop(tmp_path, _Reading(json.dumps({"scores": {"q": 1.0}})), quality_gate_threshold=0.8)
+    writer = StatusFileWriter()
+    writer.start(session_id=loop.session.id, workspace=str(tmp_path), model="m", build="b")
+    try:
+        writer.set_turn_start(loop.session.id)
+        with patch("zakcode.agent.loop._status_writer", return_value=writer):
+            await loop._quality_gate("req", "the result", [])
+        assert writer._path is not None
+        after = json.loads(writer._path.read_text(encoding="utf-8"))
+    finally:
+        writer._stop_event.set()
+    calls = [(d["state"], d["call"]["kind"], d["call"]["model"]) for d in seen]
+    assert calls == [("model_call", "quality_gate", "judge/test")]
+    assert after["state"] == "working"
+
+
 async def test_quality_gate_ships_on_scorer_failure(tmp_path: Path) -> None:
     loop = _loop(tmp_path, _ScoreProvider("not json at all"), quality_gate_threshold=0.8)
     ship, weak = await loop._quality_gate("req", "the result", [])

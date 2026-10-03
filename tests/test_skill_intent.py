@@ -312,6 +312,54 @@ async def test_agent_side_call_names_a_catalogued_skill(
 
 
 @pytest.mark.asyncio
+async def test_the_difficulty_side_call_shows_in_the_status_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0276: the classifier's call reads as model_call, kind difficulty_classifier, on the
+    # classify model. No turn is open around it here, so the file goes back to idle.
+    import json
+    from unittest.mock import patch
+
+    from zakcode.session.status_file import StatusFileWriter
+
+    seen: list[dict[str, Any]] = []
+
+    class _Reading(_Stub):
+        async def acomplete(
+            self,
+            messages: list[Message],
+            *,
+            system: str | None = None,
+            tools: Any = None,
+            response_format: Any = None,
+            **kw: Any,
+        ) -> LLMResult:
+            assert writer._path is not None
+            seen.append(json.loads(writer._path.read_text(encoding="utf-8")))
+            return await super().acomplete(
+                messages, system=system, tools=tools, response_format=response_format, **kw
+            )
+
+    agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
+    monkeypatch.setattr(agent, "skill_registry", _Registry())
+    stub = _Reading('{"difficulty": "quick", "skill": "forge-skill"}')
+    monkeypatch.setattr(agent, "_resolve_task_provider", lambda c: (stub, "classify/m"))
+    writer = StatusFileWriter()
+    writer.start(session_id=agent.session.id, workspace=str(tmp_path), model="m", build="b")
+    try:
+        with patch("zakcode._status_writer", return_value=writer):
+            await agent._classify_difficulty("finish forging this skill", 0.0)
+        assert writer._path is not None
+        after = json.loads(writer._path.read_text(encoding="utf-8"))
+    finally:
+        writer._stop_event.set()
+    calls = [(d["state"], d["call"]["kind"], d["call"]["model"]) for d in seen]
+    assert calls == [("model_call", "difficulty_classifier", "classify/m")]
+    assert after["state"] == "idle"
+    assert after["call"] is None
+
+
+@pytest.mark.asyncio
 async def test_agent_side_call_drops_an_unanchored_guess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

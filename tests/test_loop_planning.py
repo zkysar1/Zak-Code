@@ -659,6 +659,50 @@ async def test_the_judges_ride_the_sessions_affinity_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_judges_show_in_the_status_file_as_side_calls(tmp_path: Path) -> None:
+    # ADR-0276: each judge call shows in the status file as a model_call naming its kind, then
+    # the file goes back to what is still open. The plan critique runs inside the plan tool, so
+    # it returns to that tool; the plan review runs between steps, so it returns to working.
+    from unittest.mock import patch
+
+    from zakcode.session.status_file import StatusFileWriter
+
+    class _Snapshots(StatusFileWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.snaps: list[tuple[Any, Any, Any]] = []
+
+        def _write(self) -> None:
+            call = self._data.get("call") or {}
+            tool = self._data.get("tool") or {}
+            self.snaps.append((self._data.get("state"), call.get("kind"), tool.get("name")))
+            super()._write()
+
+    provider = _Scripted(
+        [
+            _plan_call([{"title": "A", "status": "done", "note": "x"}]),
+            _judge(_JUDGE_STRONG),
+            _done(),
+            _review_ok(),
+        ]
+    )
+    loop, session = _loop(provider)
+    writer = _Snapshots()
+    writer.start(session_id=session.id, workspace=str(tmp_path), model="test/model", build="b")
+    try:
+        with patch("zakcode.agent.loop._status_writer", return_value=writer):
+            await loop.arun_turn("small thing")
+    finally:
+        writer._stop_event.set()
+    assert [u.side_call for u in session.usages] == ["", "plan_critique", "", "critic"]
+    snaps = writer.snaps
+    critique = snaps.index(("model_call", "plan_critique", "update_plan"))
+    assert snaps[critique + 1] == ("tool", None, "update_plan")
+    review = snaps.index(("model_call", "critic", None))
+    assert snaps[review + 1] == ("working", None, None)
+
+
+@pytest.mark.asyncio
 async def test_judge_runs_once_per_turn_even_across_structural_edits() -> None:
     provider = _Scripted(
         [

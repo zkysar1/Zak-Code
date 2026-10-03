@@ -25,7 +25,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ParamSpec
@@ -187,6 +187,7 @@ class StatusFileWriter:
         self._started = False
         self._session_id: str | None = None
         self._running_tools: int = 0
+        self._side_calls: int = 0
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -432,6 +433,77 @@ class StatusFileWriter:
                 return
             now_iso = _now_iso()
             self._data["state"] = "working"
+            self._data["since"] = now_iso
+            self._data["updated_at"] = now_iso
+            self._data["call"] = None
+        self._write()
+
+    @contextlib.contextmanager
+    def side_call(self, session_id: str, kind: str, *, model: str = "") -> Iterator[None]:
+        """Show a side call as a ``model_call`` whose ``call.kind`` names it, for the span of
+        the ``with`` block.
+
+        A side call is a model call outside the conversation: the compaction summary, the
+        completion critic, the plan critique, the quality gate, the difficulty classifier, a
+        deliberation. ``kind`` is the name its usage is recorded under (``Usage.side_call``) and
+        ``model`` the model it goes to. Unmarked, the file kept its last state through the call:
+        measured on a worker session, an 11-minute compaction read as ``working`` with its call
+        and tool counts, which an outside monitor rendered as a turn between steps.
+
+        The turn's ``model_calls`` counts the conversation's own calls and is left alone, and so
+        is the top-level ``model``, which names the conversation's model. On the way out the
+        state is worked out again from what is still open, because a side call does not always
+        start from ``working``: the plan critique runs inside the plan tool and a deliberation
+        inside the deep-think tool, and ``/compact`` compacts at the prompt. Side calls can
+        overlap, since a deliberation asks for its samples at once, so the file leaves the side
+        call only when the last one still out has ended. Bound to the owning session like every
+        transition, so a nested run's side calls never touch the file.
+        """
+        self._side_call_start(session_id, kind, model)
+        try:
+            yield
+        finally:
+            self._side_call_end(session_id)
+
+    @_never_raises
+    def _side_call_start(self, session_id: str, kind: str, model: str) -> None:
+        with self._lock:
+            if not self._owns(session_id):
+                return
+            self._side_calls += 1
+            now_iso = _now_iso()
+            self._data["state"] = "model_call"
+            self._data["since"] = now_iso
+            self._data["updated_at"] = now_iso
+            # The same keys as a conversation call's, plus ``kind``. A running tool is kept: the
+            # side call may be part of it, and the tool is what the state goes back to.
+            self._data["call"] = {
+                "started_at": now_iso,
+                "first_output_at": None,
+                "phase": "waiting",
+                "model": model or self._data.get("model", ""),
+                "kind": kind,
+                "thinking_chars": 0,
+                "text_chars": 0,
+                "tool_call_chars": 0,
+            }
+        self._write()
+
+    @_never_raises
+    def _side_call_end(self, session_id: str) -> None:
+        with self._lock:
+            if not self._owns(session_id):
+                return
+            self._side_calls = max(0, self._side_calls - 1)
+            if self._side_calls:
+                return  # another side call is still out, and the file stays on it
+            now_iso = _now_iso()
+            if self._running_tools > 0:
+                self._data["state"] = "tool"
+            elif self._data.get("turn") is not None:
+                self._data["state"] = "working"
+            else:
+                self._data["state"] = "idle"
             self._data["since"] = now_iso
             self._data["updated_at"] = now_iso
             self._data["call"] = None
