@@ -1,17 +1,21 @@
-"""ADR-0276: every provider call outside ``zakcode.providers`` is one the live status file sees.
+"""ADR-0276: every provider call outside the providers is one the live status file sees.
 
 A side call is marked by hand where it is made (``_status_writer().side_call(...)``). A call
 added later without a mark reads in the status file as whatever state came before it, which is
 the 11-minute "working" misread ADR-0276 was written for, and no other test fails. This walks
 ``src/`` with :mod:`ast` and requires every use of a provider completion method to be one of:
 
+* inside a provider's own completion method, handing the call on to another provider or to
+  itself. Nothing else is exempt for living in ``zakcode.providers``: a helper there (structured
+  output) is a function like any other, followed to its callers;
 * a conversation call, pinned by name in :data:`CONVERSATION`, which its function marks with
   ``set_model_call_start`` before making it;
 * inside a ``side_call`` block, at the call itself or at every place the function making it is
   used, followed up through the callers (a nested function within the function around it, a
   method by attribute, a module function by name or attribute anywhere in ``src/``);
-* reached only from an entry point in :data:`LIBRARY_ONLY`, each listed with its reason, and
-  each reason checked so an entry cannot outlive it.
+* reached only from an entry point in :data:`LIBRARY_ONLY`, or made in a function in
+  :data:`NO_SESSION`, each listed with its reason, and each reason checked so an entry cannot
+  outlive it.
 
 A function counts as used wherever its name is read, called or not, so a helper handed over as
 a callback (the compaction's retried request) is followed to where it is handed over. Names are
@@ -28,11 +32,11 @@ import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from zakcode.providers.base import Provider
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-#: The providers themselves make the calls this file is about; their own calls are not uses.
-PROVIDERS = "zakcode/providers/"
 
 #: Provider methods that run a completion: its async methods (``acomplete``, ``astream``).
 COMPLETION_METHODS: frozenset[str] = frozenset(
@@ -81,11 +85,20 @@ _OPTIONS = frozenset(option for _, option in LIBRARY_ONLY.values() if option)
 #: The library facade, where ``Agent`` takes the options above.
 _FACADE = "zakcode/__init__.py"
 
+#: Functions that make their calls for no session. A status file is one session's, so a call made
+#: for none leaves nothing in it to misread. Each is listed with its reason, and must read no name
+#: that says ``session``, so an entry cannot start serving one and stay listed.
+NO_SESSION: dict[str, str] = {
+    "zakcode/server/app.py::create_app.complete": (
+        "the raw /complete endpoint, which never creates or touches a session"
+    ),
+}
+
 _HOW_TO_FIX = (
     "Mark each: wrap the call, or every use of the function making it, in "
     "`_status_writer().side_call(session_id, '<kind>')` (ADR-0276). If only the library API "
     "reaches it, add its entry point to LIBRARY_ONLY in tests/test_provider_calls_marked.py "
-    "with the reason."
+    "with the reason; if it is made for no session, add the function making it to NO_SESSION."
 )
 
 
@@ -132,7 +145,7 @@ class Scan:
         self.fns: dict[str, Fn] = {}
         self.names: dict[str, list[Use]] = {}
         self.attrs: dict[str, list[Use]] = {}
-        #: Each use of a completion method outside the providers, with the method's name.
+        #: Each use of a completion method, with the method's name.
         self.provider: list[tuple[Use, str]] = []
         #: Lines of ``set_model_call_start`` reads, by function.
         self.marks: dict[str, list[int]] = {}
@@ -156,11 +169,20 @@ class Scan:
             found = self.names.get(fn.name, []) + self.attrs.get(fn.name, [])
         return [u for u in found if not (u.fn and _within(u.fn, fn.key))]
 
+    def delegates(self, key: str) -> bool:
+        """Whether function ``key`` is, or is nested in, a method named for a completion method:
+        a provider handing the call on, whose own callers are the uses that count."""
+        fn = self.fns[key]
+        while fn.parent is not None:
+            fn = self.fns[fn.parent]
+        return fn.method and fn.name in COMPLETION_METHODS
+
     def unmarked(self, key: str, seen: frozenset[str] = frozenset()) -> list[str] | None:
-        """``None`` when every way into function ``key`` is marked (or library-only). Else the
-        unmarked uses from ``key`` up, each ``"<file:line> in <function>"``, and last why the
-        trail ends: nothing uses the function, a use outside any function, or a cycle."""
-        if key in LIBRARY_ONLY:
+        """``None`` when every way into function ``key`` is marked (or listed in
+        :data:`LIBRARY_ONLY` or :data:`NO_SESSION`). Else the unmarked uses from ``key`` up, each
+        ``"<file:line> in <function>"``, and last why the trail ends: nothing uses the function,
+        a use outside any function, or a cycle."""
+        if key in LIBRARY_ONLY or key in NO_SESSION:
             return None
         uses = self.uses_of(self.fns[key])
         if not uses:
@@ -250,7 +272,7 @@ class _Visitor(ast.NodeVisitor):
         if isinstance(node.ctx, ast.Load):
             use = self._use(node.lineno)
             self.scan.attrs.setdefault(node.attr, []).append(use)
-            if node.attr in COMPLETION_METHODS and not self.rel.startswith(PROVIDERS):
+            if node.attr in COMPLETION_METHODS:
                 self.scan.provider.append((use, node.attr))
             if node.attr == "set_model_call_start" and self.fn is not None:
                 self.scan.marks.setdefault(self.fn, []).append(node.lineno)
@@ -284,6 +306,8 @@ def unmarked_calls(scan: Scan) -> list[str]:
         where = f"{use.rel}:{use.line} .{method}()"
         if use.fn is None:
             problems.append(f"{where}, outside any function")
+            continue
+        if scan.delegates(use.fn):
             continue
         chain = scan.unmarked(use.fn)
         if chain is not None:
@@ -333,13 +357,52 @@ def test_every_library_only_entry_still_holds() -> None:
             assert not named, f"{key} ({reason}): {option!r} is named in {sorted(named)}"
 
 
-def test_an_unmarked_critic_is_caught_and_the_report_says_what_to_do() -> None:
-    # The positive control: the completion critic with its mark taken off, in memory.
-    rel = "zakcode/agent/loop.py"
+def test_every_no_session_entry_still_holds() -> None:
+    scan = _scan()
+    for key, reason in NO_SESSION.items():
+        assert key in scan.fns, f"NO_SESSION names {key}, which no longer exists"
+        said = sorted(
+            name
+            for name, uses in [*scan.names.items(), *scan.attrs.items()]
+            if "session" in name.lower() and any(u.fn and _within(u.fn, key) for u in uses)
+        )
+        assert not said, f"{key} ({reason}) reads {said}: mark its calls instead"
+
+
+#: The positive controls: a real mark or listing taken away in memory, as ``(file, text, the text
+#: in its place, what a problem must name)``.
+_CONTROLS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+    # A side call made through a judge helper.
+    "critic": (
+        "zakcode/agent/loop.py",
+        '_status_writer().side_call(self.session.id, "critic", model=self.provider.model_id())',
+        "contextlib.nullcontext()",
+        ("AgentLoop._completion_critic", "binary_judge"),
+    ),
+    # A call made in a function nested in a method that is not a completion method.
+    "compaction": (
+        "zakcode/agent/loop.py",
+        'side_call(\n                self.session.id, "summarizer"',
+        'side_call_off(\n                self.session.id, "summarizer"',
+        ("AgentLoop._summarize_for_compaction",),
+    ),
+    # A call made inside zakcode.providers, by its structured-output helper, for a caller no list
+    # names.
+    "structured-output": (
+        "zakcode/server/app.py",
+        "    async def complete(request: CompleteRequest)",
+        "    async def complete_unlisted(request: CompleteRequest)",
+        ("complete_structured", "create_app.complete_unlisted"),
+    ),
+}
+
+
+@pytest.mark.parametrize("control", sorted(_CONTROLS))
+def test_an_unmarked_call_is_caught_and_the_report_says_what_to_do(control: str) -> None:
+    rel, mark, unmarked, named = _CONTROLS[control]
     text = (SRC / rel).read_text(encoding="utf-8")
-    mark = '_status_writer().side_call(self.session.id, "critic", model=self.provider.model_id())'
-    assert text.count(mark) == 1  # the control edits the real marker, not a copy of the test
-    problems = unmarked_calls(Scan(SRC, {rel: text.replace(mark, "contextlib.nullcontext()")}))
-    assert [p for p in problems if "AgentLoop._completion_critic" in p and "binary_judge" in p]
+    assert text.count(mark) == 1  # the control edits the real source, not a copy of the test
+    problems = unmarked_calls(Scan(SRC, {rel: text.replace(mark, unmarked)}))
+    assert [p for p in problems if all(name in p for name in named)], problems
     report = _report(problems)
     assert "side_call(session_id" in report and "LIBRARY_ONLY" in report
