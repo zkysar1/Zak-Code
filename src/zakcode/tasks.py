@@ -52,6 +52,16 @@ TaskKind = Literal["compound", "primitive"]
 #: Statuses that count a (primitive) task as finished — no more work is owed for it.
 _TERMINAL: frozenset[str] = frozenset({"done", "cancelled"})
 
+#: ADR-0277 — the history kinds (:class:`PlanEvent`) that move a step's status: the model's
+#: own moves, the harness closing a step at the conclusion, its advance, and its one reopen.
+#: A full replace dropping an open step or putting back a done one is not among them: the plan
+#: was resent, not moved.
+_MOVE_KINDS: frozenset[str] = frozenset({"step", "advanced", "challenged"})
+#: The kinds that lay a plan out or add steps to it, which start its clock before any step moves.
+_LAYOUT_KINDS: frozenset[str] = frozenset({"authored", "seeded"})
+#: The kinds after which no plan is left on the board. The log runs on across plans.
+_GONE_KINDS: frozenset[str] = frozenset({"reset", "cleared"})
+
 #: One-char glyphs for the rendered checklist (the live plan re-injected into context).
 _GLYPH: dict[str, str] = {
     "pending": " ",
@@ -715,6 +725,32 @@ class TaskNetwork(BaseModel):
         """The most recently closed leaf, or ``None``."""
         closed = self.recent_closed(1)
         return closed[0] if closed else None
+
+    def moved_at(self) -> str:
+        """When the plan last moved, as its history stamped it (ADR-0277).
+
+        A move is a step's status changing (:data:`_MOVE_KINDS`). Before any step of this plan
+        has moved, the plan moved when it was laid out, so a fresh plan reads as new and not as
+        the previous plan's last move. Re-titling or adding steps is not a move: a model that
+        only rewrites its plan has not advanced it. A plan resent unchanged writes no history
+        at all, so it reads as standing still. The live status file reports this so an outside
+        reader can tell a long unit that is moving from one that is stuck.
+
+        ``""`` before any plan, and once a plan is reset or cleared: every path that empties
+        the board records one of those first. Read from the log rather than kept as a field,
+        so a session saved by an older build answers as soon as it is resumed. The log keeps
+        the newest :data:`MAX_LOG_EVENTS` events; a move older than all of them answers as the
+        oldest layout still in view.
+        """
+        laid_out = ""
+        for event in reversed(self.log):
+            if event.kind in _MOVE_KINDS:
+                return event.at
+            if event.kind in _GONE_KINDS:
+                break  # the plan before this one
+            if event.kind in _LAYOUT_KINDS:
+                laid_out = event.at  # walk on back to this plan's first layout
+        return laid_out
 
     def is_anchor_only(self) -> bool:
         """True when nothing but the harness's request anchor is on the board (ADR-0111) —

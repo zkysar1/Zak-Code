@@ -3790,6 +3790,17 @@ class AgentLoop:
         if calls >= _CACHE_FLAT_MIN_CALLS and prompt - first >= _CACHE_FLAT_MIN_GROWTH:
             self._cache_probe_rests_next = True
 
+    def _plan_position(self) -> tuple[str | None, str] | None:
+        """Where this session's plan stands, for the live status file (ADR-0277): the id of
+        the step to work on (``None`` when no step is open) and when the plan last moved.
+        ``None`` with no plan. Read when the writer asks, so each transition sees the plan as it
+        stands then."""
+        network = self.session.task_network
+        if not network.tasks:
+            return None
+        current = network.current()
+        return (current.id if current is not None else None, network.moved_at())
+
     def _reset_stale_or_completed_plan(self) -> None:
         """Drop a finished plan (always) or an abandoned one (static for N turns) at turn start.
 
@@ -6929,7 +6940,7 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (this turn's events only).
         self._trace = TurnTrace()
         self._turn_count += 1
-        _status_writer().set_turn_start(self.session.id)
+        _status_writer().set_turn_start(self.session.id, plan=self._plan_position)
         lease = self._busy_lease()
         if lease is not None:
             await lease.acquire()
@@ -9190,7 +9201,7 @@ class AgentLoop:
         # Reset the per-turn decision trace before any work (streaming twin of arun_turn).
         self._trace = TurnTrace()
         self._turn_count += 1
-        _status_writer().set_turn_start(self.session.id)
+        _status_writer().set_turn_start(self.session.id, plan=self._plan_position)
         lease = self._busy_lease()
         if lease is not None:
             await lease.acquire()

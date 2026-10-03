@@ -16101,6 +16101,9 @@ called or the session id does not match).
 **Amended by ADR-0276 (2026-10-03):** a side call also puts the file in `model_call`, with
 `call.kind` naming it, and `zakcode status` says what it is doing.
 
+**Amended by ADR-0277 (2026-10-03):** the file also carries `plan`, the step to work on and when
+the plan last moved.
+
 ## ADR-0267: hook matchers follow Claude Code's matcher contract
 
 Status: accepted. 2026-09-29.
@@ -16668,3 +16671,66 @@ ignoring the session (2 each), the compaction unmarked (1) or without its model 
 the classifier and the deliberation unmarked (1 each), the plan critique and the quality gate
 marked on another session (1 each), and `zakcode status` without its words (7) or ignoring the
 kind (8). Every restore was byte-verified.
+
+## ADR-0277: the status file says where the plan stands and when it last moved
+
+Status: accepted. 2026-10-03.
+
+The status file (ADR-0266) says what the process is doing at this moment. It cannot say whether a
+long piece of work is moving. Measured 2026-09-29 on five worker sessions that an outside monitor
+flagged because none had finished a unit of work in 5 to 17 hours: each had moved a plan step in
+the 80 minutes before, its model calls took a median of 79 to 458 seconds, and the model server
+had a free engine for each. All five were working, and neither the file nor the monitor could
+tell them from a stuck process.
+
+Decision.
+
+1. The file gains `plan`: `null` with no plan, else `{"active": <id>, "moved_at": <time>}`.
+   `active` is the id of the step to work on (`TaskNetwork.current()`), `null` when no step is
+   open. `moved_at` is when the plan last moved, in the file's `YYYY-MM-DDTHH:MM:SSZ` form, `null`
+   when not known.
+2. A move is a step's status changing: the history kinds `step`, `advanced` and `challenged`
+   (ADR-0110). Before any step of a plan has moved, the plan moved when it was laid out
+   (`authored` or `seeded`), so a fresh plan reads as new and not as the last plan's final move.
+   Re-titling or adding steps is not a move, and a plan resent unchanged writes no history, so a
+   model that rewrites or resends its plan without advancing it reads as standing still. Nor is a
+   full replace dropping an open step or putting back a done one (`dropped`, `restored`). A plan
+   reset or cleared (`reset`, `cleared`) ends the walk back: the next plan starts its own clock.
+3. `moved_at` is read from the plan's history (`TaskNetwork.moved_at()`), not kept in a new
+   field, so a session saved by an older build answers as soon as it is resumed, which is what a
+   restart into a new build does. The history keeps the newest 200 events; a move older than all
+   of them answers as the oldest layout still in view.
+4. The loop hands the writer a reader of its plan at each turn start. The writer reads the plan
+   at the transitions after which it can have moved: a turn's start, a model call's start, a
+   tool's end, and a turn's end, including a turn that unwinds. A write alone never reads it,
+   because the refresher thread writes while the loop may be changing the plan. A turn start from
+   another session hands nothing over, as with every transition.
+5. Privacy holds: the id is the plan's own structural number (`2.1`), never a title the model
+   wrote.
+
+A resumed session that waits at its prompt shows no plan until its first turn starts, since that
+is when the loop hands its reader over. `zakcode status` does not show the field. The schema
+stays v1: `plan` is an added key, which a reader that does not know it ignores, as with
+`call.kind` (ADR-0276).
+
+Rejected: keeping the move time in a new field on the plan. Sessions saved before it would need a
+fallback to the history, so one fact would have two sources. Rejected: counting every history
+event as a move. A model that only re-titles its plan would read as moving. Rejected: the writer
+reading the session at every write. The refresher thread would read the plan while the loop
+changes it.
+
+Tests: `tests/test_plan_ledger.py` (five cases: the newest move, else the layout; the next plan
+starting afresh; a move older than the whole history; a close handed back as a move; a step
+dropped or put back moving nothing, and a cleared plan ending the walk),
+`tests/test_status_file.py` (ten writer cases), and a full turn through the plan tool on both
+ways into a turn, with a step title that never reaches the file, plus a turn with no plan
+(`tests/test_loop_planning.py`). Twenty
+sabotages each turned tests red: the harness's advance not a move (1 test), the walk running on
+into the last plan (1), a re-title counted as a move (2), a tool's end, a model call's start, a
+turn's end or an unwound turn not reading the plan (1 each), the source never held (8), a turn
+start without one dropping it (1), the time not in the file's form (4), a failing source
+escaping (1), a plain write reading the plan (2), another session's turn handing its source over
+(1), the loop handing nothing over (2) or only the streamed turn handing nothing over (1), the
+first step named in place of the current one (2), a handed-back close not a move (1), a clear not
+ending the walk (1), and a dropped step (2) or a restored one (1) counted as a move. Every
+restore was byte-verified.

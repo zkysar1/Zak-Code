@@ -102,6 +102,29 @@ def _wakeup_field(due_at_epoch: float | None) -> dict[str, str] | None:
     return {"due_at": dt.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
+#: Where the session's plan stands (ADR-0277): the id of the step to work on, ``None`` when no
+#: step is open, and when the plan last moved as an ISO-8601 time, ``""`` when not known. The id
+#: is the plan's own structural number (``"2.1"``), never a title the model wrote.
+PlanPosition = tuple[str | None, str]
+#: Reads the plan's position at the moment of a transition; ``None`` when there is no plan.
+PlanSource = Callable[[], PlanPosition | None]
+
+
+def _status_stamp(iso: str) -> str | None:
+    """``iso``, any ISO-8601 time such as the plan's ``+00:00`` stamps, in this file's
+    ``YYYY-MM-DDTHH:MM:SSZ`` form; ``None`` for an empty or unreadable value. A time with no
+    offset is taken as UTC, which is how the plan stamps its history."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # ── atomic write helper ─────────────────────────────────────────────────────
 
 
@@ -188,6 +211,7 @@ class StatusFileWriter:
         self._session_id: str | None = None
         self._running_tools: int = 0
         self._side_calls: int = 0
+        self._plan_source: PlanSource | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -230,6 +254,7 @@ class StatusFileWriter:
                 "turn": None,
                 "call": None,
                 "tool": None,
+                "plan": None,
                 "wakeup": _wakeup_field(wakeup_due_at),
                 "last_turn": None,
             }
@@ -277,6 +302,26 @@ class StatusFileWriter:
         """True when ``session_id`` matches the bound session."""
         return self._started and session_id == self._session_id
 
+    def _plan_field(self) -> dict[str, str | None] | None:
+        """The ``plan`` object, read now through the source the turn handed over: ``active``,
+        the step to work on, and ``moved_at``, when the plan last moved (ADR-0277). ``None``
+        with no plan, before any turn has handed a source over, or when the source fails.
+
+        Called only from transitions, which the loop makes on its own thread, so the plan is
+        never read while the loop is changing it. The refresher thread does not call it.
+        """
+        if self._plan_source is None:
+            return None
+        try:
+            position = self._plan_source()
+        except Exception:  # noqa: BLE001 — the writer must never raise
+            logger.debug("status: reading the plan failed", exc_info=True)
+            return None
+        if position is None:
+            return None
+        active, moved_at = position
+        return {"active": active, "moved_at": _status_stamp(moved_at)}
+
     # ── state transitions ────────────────────────────────────────────────
 
     @_never_raises
@@ -295,11 +340,18 @@ class StatusFileWriter:
             if stop_reason is not None:
                 self._data["last_turn"] = {"ended_at": now_iso, "stop_reason": stop_reason}
             self._data["turn"] = None
+            self._data["plan"] = self._plan_field()  # the conclusion can close a step
         self._write()
 
     @_never_raises
-    def set_turn_start(self, session_id: str) -> None:
-        """A new turn is starting — state goes to ``working``."""
+    def set_turn_start(self, session_id: str, *, plan: PlanSource | None = None) -> None:
+        """A new turn is starting — state goes to ``working``.
+
+        ``plan`` reads where the session's plan stands (ADR-0277). The writer keeps it and
+        reads the plan again at each transition after which it can have moved: here, at a
+        model call's start (the tools before it may have moved it), at a tool's end, and when
+        the turn ends. A turn start without one keeps the source already held.
+        """
         with self._lock:
             if not self._owns(session_id):
                 return
@@ -315,6 +367,9 @@ class StatusFileWriter:
             self._data["call"] = None
             self._data["tool"] = None
             self._running_tools = 0
+            if plan is not None:
+                self._plan_source = plan
+            self._data["plan"] = self._plan_field()
         self._write()
 
     @_never_raises
@@ -338,6 +393,7 @@ class StatusFileWriter:
             self._running_tools = 0
             self._data["last_turn"] = {"ended_at": now_iso, "stop_reason": reason}
             self._data["turn"] = None
+            self._data["plan"] = self._plan_field()
         self._write()
 
     @_never_raises
@@ -368,6 +424,7 @@ class StatusFileWriter:
                 self._data["model"] = model
             if self._data.get("turn") is not None:
                 self._data["turn"]["model_calls"] = self._data["turn"].get("model_calls", 0) + 1
+            self._data["plan"] = self._plan_field()
         self._write()
 
     @_never_raises
@@ -546,6 +603,7 @@ class StatusFileWriter:
                     self._data["tool"]["running"] = self._running_tools
             self._data["since"] = now_iso
             self._data["updated_at"] = now_iso
+            self._data["plan"] = self._plan_field()  # the plan tool moves it
         self._write()
 
     @_never_raises
