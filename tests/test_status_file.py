@@ -28,6 +28,7 @@ from zakcode.session.status_file import (
     _atomic_write,
     _prune_stale_files,
     read_status_files,
+    status_dir,
 )
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -190,6 +191,64 @@ class TestWriterLifecycle:
             assert "due_at" in data["wakeup"]
         finally:
             w._stop_event.set()
+
+    @pytest.mark.parametrize("rest", ["idle", "restarting", "exited"])
+    def test_a_resumed_session_says_how_its_last_turn_ended(
+        self, tmp_path: Path, rest: str
+    ) -> None:
+        # A build restart resumes the session in a fresh process, which writes a new file at
+        # the same path. The file the previous process left at rest says how the last turn
+        # ended, an interrupted one included, so the new file starts with exactly that.
+        old = _make_writer(tmp_path)
+        old.set_turn_start(SID)
+        old.leave_turn(SID, "interrupted")
+        if rest == "restarting":
+            old.set_restarting()
+        elif rest == "exited":
+            old.set_exited()
+        old._stop_event.set()
+        before = _read(old)
+        assert before["state"] == rest
+        assert before["last_turn"]["stop_reason"] == "interrupted"
+
+        new = _make_writer(tmp_path)
+        try:
+            assert _read(new)["state"] == "idle"
+            assert _read(new)["last_turn"] == before["last_turn"]
+            # The next turn's end replaces the carried value as usual.
+            new.set_turn_start(SID)
+            new.set_idle(SID, stop_reason="completed")
+            assert _read(new)["last_turn"]["stop_reason"] == "completed"
+        finally:
+            new._stop_event.set()
+
+    def test_a_file_left_mid_turn_carries_nothing(self, tmp_path: Path) -> None:
+        # The previous process died mid-turn. Its file still holds the turn before, but that
+        # is not how the last turn ended, so the new file starts without a last turn.
+        old = _make_writer(tmp_path)
+        old.set_turn_start(SID)
+        old.set_idle(SID, stop_reason="completed")
+        old.set_turn_start(SID)
+        old._stop_event.set()
+        assert _read(old)["state"] == "working"
+        assert _read(old)["last_turn"]["stop_reason"] == "completed"
+
+        new = _make_writer(tmp_path)
+        try:
+            assert _read(new)["last_turn"] is None
+        finally:
+            new._stop_event.set()
+
+    def test_an_unreadable_previous_file_carries_nothing(self, tmp_path: Path) -> None:
+        path = status_dir() / f"{SID}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        new = _make_writer(tmp_path)
+        try:
+            assert new._started is True
+            assert _read(new)["last_turn"] is None
+        finally:
+            new._stop_event.set()
 
 
 # ── session binding ──────────────────────────────────────────────────────────

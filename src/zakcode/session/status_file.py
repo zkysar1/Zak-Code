@@ -102,6 +102,36 @@ def _wakeup_field(due_at_epoch: float | None) -> dict[str, str] | None:
     return {"due_at": dt.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
+#: States in which no turn is open, so the file's ``last_turn`` is how the last turn ended.
+_AT_REST_STATES = ("idle", "restarting", "exited")
+
+
+def _carried_last_turn(path: Path) -> dict[str, str] | None:
+    """The ``last_turn`` a previous process for the same session left at ``path``.
+
+    A build restart resumes the session in a fresh process, which writes a new file at the
+    same path. Only a file left at rest is trusted: there ``last_turn`` is how the last
+    turn really ended, ``interrupted`` and ``error`` included, with its real end time. A
+    file left in a turn state (the process died mid-turn) says nothing about how that turn
+    ended, so nothing is carried. The session record is no substitute: its stop reason
+    moves only when a turn ends normally, so after an interrupted turn it still names an
+    older one. ``None`` when there is nothing to carry. Never raises.
+    """
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(old, dict) or old.get("state") not in _AT_REST_STATES:
+            return None
+        last = old.get("last_turn")
+        if not isinstance(last, dict):
+            return None
+        reason, ended = last.get("stop_reason"), last.get("ended_at")
+        if not (isinstance(reason, str) and reason and isinstance(ended, str)):
+            return None
+        return {"ended_at": ended, "stop_reason": reason}
+    except Exception:  # noqa: BLE001 — a missing or unreadable file carries nothing
+        return None
+
+
 #: Where the session's plan stands (ADR-0277): the id of the step to work on, ``None`` when no
 #: step is open, and when the plan last moved as an ISO-8601 time, ``""`` when not known. The id
 #: is the plan's own structural number (``"2.1"``), never a title the model wrote.
@@ -231,6 +261,11 @@ class StatusFileWriter:
         ``exited``.  If ``wakeup_due_at`` is provided (epoch seconds), the
         initial state includes the pending wake-up.  If any of that fails the
         writer stays unstarted, so every later call is a no-op.
+
+        A process that resumes a session (a build restart does) finds the file
+        the previous process left for it, and the initial ``last_turn`` is
+        carried from there (``_carried_last_turn``), so a stopped session still
+        says how its last turn ended.  ``since`` stays this process's start.
         """
         if self._started:
             return
@@ -256,7 +291,7 @@ class StatusFileWriter:
                 "tool": None,
                 "plan": None,
                 "wakeup": _wakeup_field(wakeup_due_at),
-                "last_turn": None,
+                "last_turn": _carried_last_turn(self._path),
             }
             self._write()
 

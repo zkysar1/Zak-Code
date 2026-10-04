@@ -16104,6 +16104,17 @@ called or the session id does not match).
 **Amended by ADR-0277 (2026-10-03):** the file also carries `plan`, the step to work on and when
 the plan last moved.
 
+**Amended 2026-10-04 (a resumed session says how its last turn ended).** A process that resumes a
+session, as a build restart does, used to start its file with `last_turn: null`, so a restarted
+session that sat stopped at its prompt no longer said how its last turn had ended. It now carries
+`last_turn`, with its real `ended_at`, from the file the previous process left at the same path,
+when that file is at rest (`idle`, `restarting` or `exited`). No turn was open there, so it is how
+the last turn really ended, `interrupted` and `error` included. A file left in a turn state, by a
+process that died mid-turn, carries nothing. The session record's `last_stop_reason` is not used:
+it moves only when a turn ends normally, so after an interrupted or failed turn it names an older
+one. `since` stays the process start, which is what the file describes, and the next turn's end
+replaces the carried value as usual.
+
 ## ADR-0267: hook matchers follow Claude Code's matcher contract
 
 Status: accepted. 2026-09-29.
