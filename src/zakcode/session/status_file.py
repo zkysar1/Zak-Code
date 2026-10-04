@@ -102,24 +102,23 @@ def _wakeup_field(due_at_epoch: float | None) -> dict[str, str] | None:
     return {"due_at": dt.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
-#: States in which no turn is open, so the file's ``last_turn`` is how the last turn ended.
-_AT_REST_STATES = ("idle", "restarting", "exited")
-
-
 def _carried_last_turn(path: Path) -> dict[str, str] | None:
     """The ``last_turn`` a previous process for the same session left at ``path``.
 
     A build restart resumes the session in a fresh process, which writes a new file at the
-    same path. Only a file left at rest is trusted: there ``last_turn`` is how the last
-    turn really ended, ``interrupted`` and ``error`` included, with its real end time. A
-    file left in a turn state (the process died mid-turn) says nothing about how that turn
-    ended, so nothing is carried. The session record is no substitute: its stop reason
-    moves only when a turn ends normally, so after an interrupted turn it still names an
-    older one. ``None`` when there is nothing to carry. Never raises.
+    same path. Only a file with no turn open (``turn`` null) is trusted: there ``last_turn``
+    is how the last turn really ended, ``interrupted`` and ``error`` included, with its real
+    end time. That holds at an idle prompt, after a restart or exit between turns, and in a
+    side call made at the prompt. The ``turn`` field is the test, not the state, because a
+    side call at the prompt reads ``model_call`` and a restart keeps an open turn. A file
+    with a turn still open (the process died, or restarted, in one) says nothing about how
+    that turn ended, so nothing is carried. The session record is no substitute: its stop
+    reason moves only when a turn ends normally, so after an interrupted turn it still names
+    an older one. ``None`` when there is nothing to carry. Never raises.
     """
     try:
         old = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(old, dict) or old.get("state") not in _AT_REST_STATES:
+        if not isinstance(old, dict) or old.get("turn") is not None:
             return None
         last = old.get("last_turn")
         if not isinstance(last, dict):

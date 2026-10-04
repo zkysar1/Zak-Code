@@ -192,23 +192,28 @@ class TestWriterLifecycle:
         finally:
             w._stop_event.set()
 
-    @pytest.mark.parametrize("rest", ["idle", "restarting", "exited"])
+    @pytest.mark.parametrize("left", ["idle", "restarting", "exited", "side_call"])
     def test_a_resumed_session_says_how_its_last_turn_ended(
-        self, tmp_path: Path, rest: str
+        self, tmp_path: Path, left: str
     ) -> None:
         # A build restart resumes the session in a fresh process, which writes a new file at
-        # the same path. The file the previous process left at rest says how the last turn
-        # ended, an interrupted one included, so the new file starts with exactly that.
+        # the same path. The file the previous process left with no turn open says how the
+        # last turn ended, an interrupted one included, so the new file starts with exactly
+        # that. No turn is open at an idle prompt, after a restart or exit between turns, or
+        # in a side call made at the prompt (a compaction) that the process never left.
         old = _make_writer(tmp_path)
         old.set_turn_start(SID)
         old.leave_turn(SID, "interrupted")
-        if rest == "restarting":
+        if left == "restarting":
             old.set_restarting()
-        elif rest == "exited":
+        elif left == "exited":
             old.set_exited()
+        elif left == "side_call":
+            old._side_call_start(SID, "compaction", "")
         old._stop_event.set()
         before = _read(old)
-        assert before["state"] == rest
+        assert before["state"] == ("model_call" if left == "side_call" else left)
+        assert before["turn"] is None
         assert before["last_turn"]["stop_reason"] == "interrupted"
 
         new = _make_writer(tmp_path)
@@ -222,15 +227,20 @@ class TestWriterLifecycle:
         finally:
             new._stop_event.set()
 
-    def test_a_file_left_mid_turn_carries_nothing(self, tmp_path: Path) -> None:
-        # The previous process died mid-turn. Its file still holds the turn before, but that
-        # is not how the last turn ended, so the new file starts without a last turn.
+    @pytest.mark.parametrize("restarted", [False, True])
+    def test_a_file_left_mid_turn_carries_nothing(self, tmp_path: Path, restarted: bool) -> None:
+        # The previous process died, or restarted, mid-turn. Its file still holds the turn
+        # before, but that is not how the last turn ended, so the new file starts without a
+        # last turn. A restart keeps the open turn in the file, which is how it shows.
         old = _make_writer(tmp_path)
         old.set_turn_start(SID)
         old.set_idle(SID, stop_reason="completed")
         old.set_turn_start(SID)
+        if restarted:
+            old.set_restarting()
         old._stop_event.set()
-        assert _read(old)["state"] == "working"
+        assert _read(old)["state"] == ("restarting" if restarted else "working")
+        assert _read(old)["turn"] is not None
         assert _read(old)["last_turn"]["stop_reason"] == "completed"
 
         new = _make_writer(tmp_path)
