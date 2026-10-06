@@ -150,6 +150,17 @@ _IDLE_BEAT_SECONDS = 0.5
 #: costs at most this much billed time — it is not part of the cap arithmetic.
 _DEADLINE_WATCH_SECONDS = 1.0
 
+#: How long a raised framework stop may sit with NOTHING that could still read it before the
+#: wait for the mind's sign-off ends. "Nothing" is checked on every beat (`_stop_has_no_reader`):
+#: no turn in flight, no say or nudge queued, no loop re-entry on the session (ADR-0189 starts one
+#: only for a session that has a `loop_skill`), no held wake-up, no background command still to
+#: report. Measured over every step-out since 2026-09-26: 13 of the 16 waits that ran
+#: the whole 350 s grace had an empty `loop_skill` and no held wake-up, and the mind's last model
+#: call came within 126 s of the raise; none of the 31 graceful endings had that state. The window
+#: only gives a late say or frame time to start a turn whose first tool call would surface the
+#: stop. It is not a second grace, and it never ends a mind that has a loop to re-enter.
+_STOP_QUIET_SECONDS = 60.0
+
 #: How long a permission prompt waits for an operator's answer before failing
 #: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
 APPROVAL_TIMEOUT_SECONDS = 120.0
@@ -2474,6 +2485,11 @@ def create_app(
     # Monotonic deadline while the mind runs its OWN graceful stop; None when no raise
     # is in flight. Opened once by `_begin_framework_stop`, read by `_keep_beating`.
     framework_stop_until: float | None = None
+    # When the stop was raised, on the same monotonic clock; the quiet window counts from it.
+    framework_stop_raised_at: float | None = None
+    # True once `_keep_beating` ended the wait at the quiet window (`_stop_has_no_reader`), so the
+    # exit path retires the pair in the quiet window's words and not the grace's.
+    framework_stop_quiet_ended = False
     run_ended = asyncio.Event()
     # ── host-neutral ending (run_stop_message) ──────────────────────────────────
     # Monotonic deadline for the message-based ending; None until the ending starts.
@@ -2704,11 +2720,12 @@ def create_app(
         ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
         share ONE window rather than each restarting the grace.
         """
-        nonlocal framework_stop_until, stop_reentry_pending
+        nonlocal framework_stop_until, framework_stop_raised_at, stop_reentry_pending
         if framework_stop_until is not None:
             return
         if await _raise_framework_stop():
-            framework_stop_until = time.monotonic() + _framework_stop_grace()
+            framework_stop_raised_at = time.monotonic()
+            framework_stop_until = framework_stop_raised_at + _framework_stop_grace()
             # ADR-0189: a raised stop needs a READER. A turn in flight reads it at its
             # own next beat; with none in flight the next consumer beat starts the
             # loop's re-entry. Idempotent with the window: set once per raise.
@@ -2851,6 +2868,43 @@ def create_app(
         if _retract_own_line():
             logger.info("run ending: retracted the configured line (never taken)")
 
+    def _stop_has_no_reader() -> bool:
+        """Whether the raised framework stop has NOTHING left that could read it.
+
+        The mind reads a stop by two routes only: a tool call that passes the framework's
+        PreToolUse hook (the stop advisory), and a turn the sidecar starts (a say, a nudge, a
+        background command's exit, a due wake-up, or the loop re-entry of ADR-0189). A mind that
+        has not run the framework's loop has no `loop_skill`, so `_take_stop_reentry` starts
+        nothing for it: once its first turn ends, nothing is left to read the stop, and the wait
+        ran the whole grace. Measured since 2026-09-26: 13 of the 16 step-outs that ran the whole
+        350 s grace (of 47 raises) were this case; none of the 31 that ended gracefully was.
+
+        True only when every route is closed AND the mind has been quiet for
+        `_STOP_QUIET_SECONDS`, counted from the later of the raise and the end of the last turn
+        the say consumer ran (`last_say_at`). A session with a `loop_skill`, a held wake-up (of
+        any due time) or a background command still to report is never true: a reader exists, so
+        the whole grace is the mind's. This never consults the stop stamp, which is four-way
+        ambiguous (`framework_stop_seen`); it asks only whether anything COULD read.
+        """
+        if framework_stop_raised_at is None or inflight:
+            return False
+        quiet_since = max(last_say_at, framework_stop_raised_at)
+        if time.monotonic() - quiet_since < _STOP_QUIET_SECONDS:
+            return False  # first, so nothing below is read while the window is still open
+        workspace = resolved_settings.workspace_root
+        if say_pending(say_path(workspace)) or _nudge_pending():
+            return False
+        if busy_elsewhere(busy_path(workspace)):
+            return False
+        session = _load_current_session()
+        if session is None:
+            return False
+        if str(getattr(session, "loop_skill", "") or "").strip():
+            return False
+        if getattr(session, "pending_wakeup", None) is not None:
+            return False
+        return all(task.notified for task in BackgroundTasks(session).records())
+
     def _keep_beating() -> bool:
         """Whether the say consumer gets another beat.
 
@@ -2868,7 +2922,13 @@ def create_app(
         mind's own sign-off ends the wait early, and the grace ends it at all. A
         wedged mind can never hold a paid vessel open -- which is why the grace is
         checked FIRST and the filesystem read only after.
+
+        A THIRD BOUND: the wait also ends when nothing could still read the stop and
+        the mind has been quiet for `_STOP_QUIET_SECONDS` (`_stop_has_no_reader`). The grace
+        stays the outer bound; this only stops a paid vessel waiting out all of it for a mind
+        with no turn, no loop to re-enter and no wake-up.
         """
+        nonlocal framework_stop_quiet_ended
         # Host-neutral ending (run_stop_message): the DONE check replaces the
         # filesystem read the legacy path uses.
         if run_ending_until is not None:
@@ -2878,10 +2938,33 @@ def create_app(
         if framework_stop_until is not None:
             if time.monotonic() >= framework_stop_until:
                 return False
-            return not framework_stop_complete(
+            if framework_stop_complete(
                 resolved_settings.workspace_root, resolved_settings.run_stop_agent or ""
-            )
+            ):
+                return False
+            if _stop_has_no_reader():
+                framework_stop_quiet_ended = True
+                return False
+            return True
         return not run_stopping.is_set()
+
+    def _retire_quiet_framework_stop() -> None:
+        """The wait ended at the quiet window, not at the grace: say so, then retire the pair.
+
+        Not `_retire_unconsumed_framework_stop`: its three verdict lines describe a spent
+        grace ("still working when the grace ran out", "the whole grace was spent"), and
+        neither is true here. SEEN is still reported, as an observation only.
+        """
+        agent = resolved_settings.run_stop_agent or ""
+        logger.warning(
+            "framework stop wait ended early: nothing can read it (no turn in flight, no loop "
+            "re-entry, no wake-up, no background command) and the mind has been quiet for "
+            "%.0fs of a %.0fs grace (SEEN=%s) — the run ends as it does at the grace's end",
+            _STOP_QUIET_SECONDS,
+            _framework_stop_grace(),
+            framework_stop_seen(resolved_settings.workspace_root, agent),
+        )
+        abandon_framework_stop(resolved_settings.workspace_root, agent)
 
     def _retire_unconsumed_framework_stop() -> None:
         """Both overrun branches below mean the same thing: the grace is spent and the
@@ -3119,7 +3202,9 @@ def create_app(
             # 02:39:20Z, the signed pair still on EFS after the vessel was torn down.
             if run_ending_until is not None and time.monotonic() >= run_ending_until:
                 _abandon_run_ending()
-            if framework_stop_until is not None and time.monotonic() >= framework_stop_until:
+            if framework_stop_quiet_ended:
+                _retire_quiet_framework_stop()
+            elif framework_stop_until is not None and time.monotonic() >= framework_stop_until:
                 _retire_unconsumed_framework_stop()
         if run_stop_reason is None:
             # Fell out of the `while` guard rather than the `break`: an explicit stop.

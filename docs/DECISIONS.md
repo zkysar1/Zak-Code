@@ -16759,6 +16759,88 @@ first step named in place of the current one (2), a handed-back close not a move
 ending the walk (1), and a dropped step (2) or a restored one (1) counted as a move. Every
 restore was byte-verified.
 
+## ADR-0278: a raised framework stop that nothing can read ends its wait at a quiet window, not at the grace
+
+Status: accepted. 2026-10-05.
+
+ADR-0047 lets a run be asked to end: for a framework seed the sidecar raises the framework's own
+stop and keeps the loop beating for a grace (the consolidation reserve, 350 s on the vessels) while
+the mind runs it, and ADR-0188 has it sign the stop it raises. ADR-0189 starts the turn that reads
+a stop raised with nothing in flight. The mind reads a stop by two routes only: a tool call through
+the framework's PreToolUse hook, whose advisory names the stop, and a turn the sidecar starts (a
+say, a nudge, a background command's exit, a due wake-up, or the re-entry of ADR-0189). That
+re-entry needs the session's `loop_skill`, which only a turn-end hook veto naming a loop skill sets
+(`agent/loop.py`). A mind that has not run the framework's loop has none, so once its first turn
+ends nothing is left to read the stop, and the run waited the whole grace for a mind with nothing
+running.
+
+Measured 2026-10-05 over every raised stop since 2026-09-26 (77 terminal runs, 47 with a raise): 31
+ended gracefully, a median 85 s after the raise (26.6 to 192.6 s), and 16 ran the whole grace,
+350.1 to 350.5 s each, 5,605 s in all. 13 of the 16 reached the end of the grace with no turn in
+flight, an empty `loop_skill` and no held wake-up on the session: eight whose mind never invoked
+the graceful stop (two made no Bash call, two called Bash from an unbound session that named no
+agent so the hook was silent, four read the advisory and ended their turn without acting on it) and
+five whose mind invoked it and was never seen to finish. None of the 31 graceful endings had that
+state; every one of their sessions carries a `loop_skill`. The other three waits held a loop and a
+wake-up (two) or were a worker Body, which the agent-wide stop the sidecar raises never reaches
+(one).
+
+Decision.
+
+1. `_keep_beating` gains a third bound beside the grace and the mind's own sign-off: the wait ends
+   when `_stop_has_no_reader()` holds. That is all of: no turn in flight; no say or nudge queued
+   and no other process holding the workspace; a saved session whose `loop_skill` is empty, with no
+   wake-up held (of any due time) and no background command whose exit is still to be reported;
+   and `_STOP_QUIET_SECONDS` (60 s) gone by since the later of the raise and the end of the last
+   turn the say consumer ran. No session yet is not "nothing to read": the grace governs.
+2. The grace stays the outer bound and the mind's own sign-off still ends the wait first. A mind
+   with any route left keeps its whole grace, and a turn in flight is never interrupted by this.
+3. When it fires, the exit path logs one warning saying the wait ended early and why, retires the
+   signed pair (`abandon_framework_stop`) as the grace's expiry does, and the run ends `stopped`;
+   the digest turn and `run_end_command` run as for any graceful ending. The three verdict lines of
+   `_retire_unconsumed_framework_stop` describe a spent grace and are not used. The helper's caller
+   rule was "only where the grace is already spent"; it is now "only where no stop can still land",
+   which the grace's end and this rule each establish, and its docstring says so.
+4. The rule does not consult the stop stamp (SEEN); the warning reports it, as the grace's expiry
+   does. An absent stamp has four causes (no tool call, a call the hook could not attribute to an
+   agent, a worker, a throttled write) and a present one says only that a call was seen, not that
+   the mind acted. The rule asks whether anything COULD read.
+
+ADR-0189 decision 3 holds: the sidecar still only decides WHEN, and no prompt of ours reaches the
+model. This ends a wait; it starts no turn.
+
+Consequences. Against the census the rule would have ended those 13 waits at 60 s of quiet and not
+at 350 s: 3,249 of the 5,605 s (2,107 s over the eight never-invoked minds, 1,142 s over the five
+that invoked the graceful stop). That is an upper bound: the census timed the quiet from the mind's
+last model call and the rule counts from the turn's end, which is never earlier, and the census did
+not read the say, nudge and background-command conditions. In none of the 13 did a model call come
+later than 126 s after the raise, so no say or frame started a turn in the time the rule would have
+saved. The newest wait of this kind is 2026-10-01 and the newest raise (2026-10-04) ended
+gracefully, so the rule bounds the next one and answers no live incident. Not changed here: why
+five minds that invoked the graceful stop were never seen to finish; the two runs whose session
+held a loop and a wake-up keep their grace; and a worker Body keeps it too. Two limits of the rule
+itself: a turn run through the HTTP route holds the wait while it is in flight but does not move
+the quiet clock (only the say consumer's turns do), and a held wake-up holds the wait whatever its
+due time, so a mind that armed one of its own keeps the whole grace. A reader that takes a run
+which ended before its grace, with no verdict line, as proof that the framework's own stop finished
+must now also look for the warning's first words, "framework stop wait ended early": that ending is
+not one.
+
+Rejected: ending the wait on the stop stamp, which is ambiguous four ways (decision 4). Rejected: a
+say from the sidecar telling the mind to stop, which puts a prompt of ours in front of the model
+(ADR-0189 decision 3). Rejected: a shorter reserve for every run: the 31 graceful endings took up
+to 192.6 s, and the reserve is also the floor of the digest's budget.
+
+Tests: `tests/test_run_stop_awaits_framework_stop.py`, six cases. A stop nothing can read ends at
+the quiet window, with the pair retired and the warning logged. Four states each keep the whole
+grace (a loop to re-enter, a held wake-up, a background command still running, a mind that has not
+taken a turn). The window opens at the end of the turn in flight, which finishes. Against the
+source before this change the first and the last time out, and a mind with no loop and a 6 s grace
+waited 6.3 s in each of three samples where the rule ends it in 0.79 s. Seven sabotages each turned
+one test red: the `loop_skill` check dropped, the wake-up check dropped, the background-command
+check dropped, a missing session read as nothing to read, the quiet counted from the raise, the
+pair not retired at the quiet end, and the flag never set so the exit path never retires.
+
 ## ADR-0279: OpenAI's own API is sent its own spelling of the output cap and is offered the reasoning depth, so a model family litellm's name table has not learned yet still gets the request it needs
 
 **Status:** Accepted (2026-10-06)

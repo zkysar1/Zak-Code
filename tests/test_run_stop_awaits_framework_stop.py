@@ -25,6 +25,7 @@ test that replays a finished stop fails, the older ones too: their sign-off used
 from __future__ import annotations
 
 import asyncio
+import os
 import stat
 import time
 from collections.abc import AsyncIterator, Callable
@@ -34,6 +35,7 @@ from typing import Any
 import httpx
 import pytest
 
+from zakcode.background import BackgroundTask
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
@@ -50,7 +52,7 @@ from zakcode.session.framework_stop import (
 from zakcode.session.say_inbox import say_path, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
-from zakcode.wakeup import LOOP_SENTINEL, fired_line
+from zakcode.wakeup import LOOP_SENTINEL, Wakeup, fired_line
 
 AGENT = "probe"
 
@@ -804,4 +806,154 @@ def test_a_stop_nobody_read_is_retired_when_its_window_closes_with_no_turn(tmp_p
     asyncio.run(scenario())
     assert not (session_dir / STOP_REQUESTED_SIGNAL).exists()
     assert not (session_dir / STOP_TARGET_MODE_FILENAME).exists()
+    assert endings == ["stopped"]
+
+
+# ── a stop nothing can read ends its wait at the quiet window (g-374-373) ──
+
+
+class _LeavesBehind(_QuietAgent):
+    """A quiet mind whose FIRST turn leaves ``leave(session)`` on the session, as a turn does."""
+
+    def __init__(
+        self, session: Session, seen: list[str], leave: Callable[[Session], None] | None
+    ) -> None:
+        super().__init__(session)
+        self._seen = seen
+        self._leave = leave
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append(user_text)
+        if len(self._seen) == 1 and self._leave is not None:
+            self._leave(self.session)
+        async for event in super().astream_turn(user_text):
+            yield event
+
+
+def _leave_a_loop(session: Session) -> None:
+    session.loop_skill = "aspirations loop"  # what a Stop-hook re-entry records
+
+
+def _leave_a_wakeup(session: Session) -> None:
+    now = time.time()
+    session.pending_wakeup = Wakeup(
+        prompt="check back", due_at=now + 600, armed_at=now, delay_seconds=600
+    )
+
+
+def _leave_a_background_command(session: Session) -> None:
+    """A command still running: this process's own pid and no exit file, so it reads
+    ``running`` and its exit has not been reported."""
+    session.background_tasks.append(
+        BackgroundTask(
+            id="bg1",
+            command="sleep 600",
+            cwd=str(Path.cwd()),
+            output_file="bg1.out",
+            exit_file="bg1.exit",
+            pid=os.getpid(),
+            started_at="2026-10-05T00:00:00",
+        )
+    )
+
+
+def _seconds_from_stop_to_run_end(
+    app: Any, tmp_path: Path, seen: list[str], *, say: bool = True
+) -> float:
+    """Let the mind take its first turn (when ``say``), rest, raise the stop; time the run's end."""
+    if say:
+        assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        if say:
+            await _until(lambda: len(seen) == 1)
+        await asyncio.sleep(0.3)  # at rest: the (instant) turn is over, nothing is queued
+        started = time.monotonic()
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - started
+
+    return asyncio.run(scenario())
+
+
+def test_a_stop_nothing_can_read_ends_its_wait_at_the_quiet_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """THE measured gap. A mind that never ran the framework's loop has no ``loop_skill``, so
+    once its first turn ends the raised stop has no reader: no turn, no re-entry, no wake-up.
+    Pre-fix the run waited the whole grace for it (16 of 47 step-outs since 2026-09-26, 350 s
+    each, metered); now it ends at the quiet window and retires the signed pair."""
+    monkeypatch.setattr("zakcode.server.app._STOP_QUIET_SECONDS", 0.6)
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path, reserve=30.0, agent_for=lambda session: _LeavesBehind(session, seen, None)
+    )
+    session_dir = framework_session_dir(tmp_path, AGENT)
+
+    with caplog.at_level("WARNING", logger="zakcode.server"):
+        elapsed = _seconds_from_stop_to_run_end(app, tmp_path, seen)
+
+    assert seen == ["hello"]
+    assert 0.5 <= elapsed < 5.0, f"waited {elapsed:.2f}s on a 30s grace and a 0.6s quiet window"
+    assert endings == ["stopped"]
+    assert not (session_dir / STOP_REQUESTED_SIGNAL).exists()
+    assert not (session_dir / STOP_TARGET_MODE_FILENAME).exists()
+    assert any("wait ended early" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "leave",
+    [_leave_a_loop, _leave_a_wakeup, _leave_a_background_command, None],
+    ids=["a-loop-to-re-enter", "a-held-wakeup", "a-background-command", "no-turn-yet"],
+)
+def test_a_mind_with_anything_left_to_read_the_stop_keeps_its_whole_grace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    leave: Callable[[Session], None] | None,
+) -> None:
+    """The controls that can fail. Each state is a route by which the mind could still read the
+    stop (a loop re-entry, a wake-up coming due, a background command's exit, a first turn not
+    yet taken), so the quiet window never applies and the grace stays the mind's. A rule that
+    ignored the state would end this run at the 0.3s quiet window."""
+    monkeypatch.setattr("zakcode.server.app._STOP_QUIET_SECONDS", 0.3)
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path, reserve=2.0, agent_for=lambda session: _LeavesBehind(session, seen, leave)
+    )
+
+    elapsed = _seconds_from_stop_to_run_end(app, tmp_path, seen, say=leave is not None)
+
+    assert elapsed >= 1.5, f"ended in {elapsed:.2f}s: the quiet window cut a mind that could read"
+    assert endings == ["stopped"]
+
+
+def test_the_quiet_window_opens_when_the_turn_in_flight_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop raised while a turn is running is not cut by the window. It is counted from the
+    later of the raise and that turn's END, and the turn finishes: it is never interrupted."""
+    monkeypatch.setattr("zakcode.server.app._STOP_QUIET_SECONDS", 0.5)
+    seen: list[str] = []
+    finished: list[str] = []
+    app, endings = _build(
+        tmp_path,
+        reserve=30.0,
+        agent_for=lambda session: _TimedAgent(session, seen, finished, [2.0]),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: len(seen) == 1)
+        started = time.monotonic()
+        await _post_stop(app)  # the 2s turn is still running
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(scenario())
+
+    assert finished == ["hello"], "the turn in flight was cut instead of finishing"
+    assert elapsed >= 2.3, f"ended in {elapsed:.2f}s: the window was counted from the raise"
+    assert elapsed < 8.0
     assert endings == ["stopped"]
