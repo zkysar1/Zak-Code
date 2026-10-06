@@ -16763,7 +16763,7 @@ restore was byte-verified.
 
 **Status:** Accepted (2026-10-06)
 
-**Context.** The first call the Mind sidecar made to `openai/gpt-6-luna` was refused, and so was every
+**Context.** The first call the sidecar made to `openai/gpt-6-luna` was refused, and so was every
 call after it. It was measured on 2026-10-05 and this is the fix. Through this
 provider on litellm 1.86.2, the `uv.lock` pin, measured 2026-10-05 and again 2026-10-06 with short
 prompts: (A) `openai/gpt-5.6-luna` with the provider's default kwargs succeeds; (B) `openai/gpt-6-luna`
@@ -16772,7 +16772,7 @@ this model. Use 'max_completion_tokens' instead."; (C) the same gpt-6-luna call 
 and `max_completion_tokens=64` succeeds. The provider's default is `max_tokens=8192` (ADR-0018), and
 litellm renames it only for the model names its gpt-5 and o-series mappers recognise.
 
-Probing the rest of what a Mind call needs on gpt-6-luna, with `reasoning_effort` none, found two more
+Probing the rest of what a sidecar call needs on gpt-6-luna, with `reasoning_effort` none, found two more
 breaks, and one cause behind all three. litellm picks its OpenAI parameter handling by MODEL NAME,
 while its own model map flags `gpt-6-luna` as `supports_reasoning` and `supports_none_reasoning_effort`
 exactly as it flags `gpt-5.6-luna`. For the name it does not know, `litellm.get_supported_openai_params`
@@ -16825,7 +16825,7 @@ bump is not the fix. On the wire, captured offline with `httpx` patched:
   measured may refuse `none` (the fallback tier does, ADR-0188).
 
 **Alternatives rejected.** A list of reasoning families for the cap (`gpt-5*`, `gpt-6*`, the o-series),
-which is the shape the goal first described: it is the failure itself, one level up. Sending
+which is the shape first proposed: it is the failure itself, one level up. Sending
 `max_completion_tokens` only for models litellm's map flags reasoning-capable: the map does say so for
 gpt-6-luna, but the bundled map has no row for the 5.6 and 6 luna tier at all (measured 2026-10-05), so
 offline the rule would switch itself off. Upgrading litellm: measured not to fix either parameter on 1.99.0.
@@ -16835,7 +16835,7 @@ travels as `reasoning.effort`; the opt-in needs none. Re-issuing from the provid
 cap and the temperature: a refused first call per session, and no re-issue exists on the streaming path.
 
 **Consequences.** gpt-6-luna works through the provider with its defaults and with `reasoning_effort`
-none. Every arm was run live on 2026-10-06 against the fleet key, litellm's fetched model map (the
+none. Every arm was run live on 2026-10-06 against a live OpenAI key, litellm's fetched model map (the
 default on a networked box; the bundled 1.86.2 map was not probed here, and pricing was not changed),
 a few cents in all:
 
@@ -16863,7 +16863,7 @@ NOT changed, and worth naming. (1) A configured depth other than `none` beside t
 refused on its chat route: litellm 1.86.2's Responses bridge does not carry the name, so the route the 5.6
 tier's depth-with-tools rides (ADR-0200) does not exist here. `acomplete` repairs it from the refusal text
 (live: the first call refused, the re-issue with `none` returned the tool call); `astream` does not (live:
-`RequestFailed` on the first call). The Mind runs effort `none`, so it is not met today; it is recorded as follow-up work.
+`RequestFailed` on the first call). The sidecar runs effort `none`, so it is not met today; it is recorded as follow-up work.
 (2) Other gpt-6 names than luna are unmeasured for the tools rule. (3) `azure/` gets nothing, as in
 ADR-0199. (4) A deployment that points `OPENAI_BASE_URL` at a proxy and leaves `api_base` unset is still
 treated as OpenAI's own API, as in ADR-0199.
