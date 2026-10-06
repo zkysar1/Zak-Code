@@ -16798,7 +16798,9 @@ Decision.
 3. When it fires, the exit path logs one warning saying the wait ended early and why, retires the
    signed pair (`abandon_framework_stop`) as the grace's expiry does, and the run ends `stopped`;
    the digest turn and `run_end_command` run as for any graceful ending. The three verdict lines of
-   `_retire_unconsumed_framework_stop` describe a spent grace and are not used.
+   `_retire_unconsumed_framework_stop` describe a spent grace and are not used. The helper's caller
+   rule was "only where the grace is already spent"; it is now "only where no stop can still land",
+   which the grace's end and this rule each establish, and its docstring says so.
 4. The rule does not consult the stop stamp (SEEN); the warning reports it, as the grace's expiry
    does. An absent stamp has four causes (no tool call, a call the hook could not attribute to an
    agent, a worker, a throttled write) and a present one says only that a call was seen, not that

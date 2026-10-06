@@ -315,11 +315,12 @@ def retire_expired_sidecar_stop(
 
     A signed signal never reads as stale to the framework (that is the point of the
     signature), so its lifetime has to be owned here. ``abandon_framework_stop`` already
-    retires the pair when THIS process's grace expires; this is the same decision for a
-    pair a previous process left behind — a sidecar that died between its raise and its
-    retirement. Only a raise older than ``grace_s`` qualifies: the docstring rule
-    "call it only where the grace is already spent" holds, and a fresher one (a restart
-    inside the window) is left for the mind. Returns True when a pair was retired.
+    retires the pair when THIS process's grace expires or its quiet window ends; this is the
+    same decision for a pair a previous process left behind — a sidecar that died between its
+    raise and its retirement. Only a raise older than ``grace_s`` qualifies: the docstring
+    rule "call it only where no stop can still land" holds once the whole window has run, and
+    a fresher one (a restart inside the window) is left for the mind. Returns True when a pair
+    was retired.
     """
     raised = sidecar_raise_time(workspace_root, agent)
     if raised is None:
@@ -392,8 +393,10 @@ def abandon_framework_stop(workspace_root: str | os.PathLike[str], agent: str) -
     prevent. Two hand cleanups preceded this (omni 2026-09-14, echo 2026-09-15); a third
     occurrence was already paid for while the signal had no lifetime.
 
-    Call it ONLY where the grace is already spent -- the overrun branches in
-    :mod:`zakcode.server.app`, which have just decided to interrupt. Never call it while
+    Call it ONLY where no stop can still land. :mod:`zakcode.server.app` has two such places:
+    the overrun branches, where the grace is spent and the run has just decided to interrupt,
+    and the quiet-window end (ADR-0278), where ``_stop_has_no_reader`` found no turn, no loop to
+    re-enter, no wake-up and no background command left to read the stop. Never call it while
     a stop may still land: a mind mid-consumption would lose the ask it is acting on.
 
     REMOVAL ORDER IS THE WRITE ORDER REVERSED, and that direction is load-bearing. The
