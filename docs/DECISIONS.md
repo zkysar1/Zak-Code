@@ -16838,3 +16838,127 @@ waited 6.3 s in each of three samples where the rule ends it in 0.79 s. Seven sa
 one test red: the `loop_skill` check dropped, the wake-up check dropped, the background-command
 check dropped, a missing session read as nothing to read, the quiet counted from the raise, the
 pair not retired at the quiet end, and the flag never set so the exit path never retires.
+
+## ADR-0279: OpenAI's own API is sent its own spelling of the output cap and is offered the reasoning depth, so a model family litellm's name table has not learned yet still gets the request it needs
+
+**Status:** Accepted (2026-10-06)
+
+**Context.** The first call the sidecar made to `openai/gpt-6-luna` was refused, and so was every
+call after it. It was measured on 2026-10-05 and this is the fix. Through this
+provider on litellm 1.86.2, the `uv.lock` pin, measured 2026-10-05 and again 2026-10-06 with short
+prompts: (A) `openai/gpt-5.6-luna` with the provider's default kwargs succeeds; (B) `openai/gpt-6-luna`
+with the same kwargs is refused with a 400, "Unsupported parameter: 'max_tokens' is not supported with
+this model. Use 'max_completion_tokens' instead."; (C) the same gpt-6-luna call with `max_tokens=None`
+and `max_completion_tokens=64` succeeds. The provider's default is `max_tokens=8192` (ADR-0018), and
+litellm renames it only for the model names its gpt-5 and o-series mappers recognise.
+
+Probing the rest of what a sidecar call needs on gpt-6-luna, with `reasoning_effort` none, found two more
+breaks, and one cause behind all three. litellm picks its OpenAI parameter handling by MODEL NAME,
+while its own model map flags `gpt-6-luna` as `supports_reasoning` and `supports_none_reasoning_effort`
+exactly as it flags `gpt-5.6-luna`. For the name it does not know, `litellm.get_supported_openai_params`
+returns the plain chat list: `reasoning_effort` is not in it and `max_tokens` is not mapped. Measured on
+litellm 1.99.0 as well (`reasoning_effort` unsupported, `max_tokens` left as `max_tokens`), so a version
+bump is not the fix. On the wire, captured offline with `httpx` patched:
+
+1. **`max_tokens` goes out as it is** (B above).
+2. **`reasoning_effort` is dropped** under `drop_params`. The request built for a tool call with effort
+   `none` carried no `reasoning_effort`, and OpenAI answered 400 "Function tools with reasoning_effort
+   are not supported for gpt-6-luna in /v1/chat/completions. To use function tools, use /v1/responses or
+   set reasoning_effort to 'none'.": the refusal that asks for the field the library had just
+   discarded. A configured depth without tools was dropped the same way (the new depth test fails on the
+   provider as it was).
+3. **`temperature` is forwarded**, and OpenAI answers 400 "Unsupported value: 'temperature' does not
+   support 0.7 with this model. Only the default (1) value is supported." as it does for gpt-5. The
+   rule that drops it, `_is_openai_gpt5_fixed_temperature_model`, was a `gpt-5` name prefix, and the
+   rule that gives a tool call its `none` (ADR-0188), `_is_openai_gpt56_tools_effort_none_model`, a
+   `gpt-5.6` one. The second matters more than it looks: the provider re-issues a call from OpenAI's own
+   refusal text (`_wants_effort_none`) on `acomplete` only. The main turn loop streams, so a name the
+   predicate does not know costs a streamed call its first tool call, and that is the failover to the
+   fallback model ADR-0188 was written to end.
+
+**Decision.**
+
+- **A call to OpenAI's own API carries the output cap as `max_completion_tokens`.** The provider still
+  builds `max_tokens=8192` (ADR-0018: the bound, its value and "a per-call override wins" are
+  unchanged) and, last in `_build_kwargs`, renames it for this destination. OpenAI's own API is the test
+  ADR-0199 uses for `store`: an `openai/`-prefixed or bare `gpt-` model with NO `api_base`. A caller's
+  own `max_completion_tokens` wins, and the `max_tokens=None` beside it, the first measurement's
+  workaround, keeps meaning what it says.
+- **A `reasoning_effort` the provider sends to OpenAI's own API is offered to litellm through
+  `allowed_openai_params`.** That is litellm's own opt-in: it forwards the named parameter as it is where
+  the mapper would drop it. Where the mapper already handles the name it changes nothing (measured on
+  gpt-5.6-luna, below). It is named for what it does, not for a model.
+- **The declared litellm floor moves from 1.55 to 1.66.** `allowed_openai_params` first ships in
+  1.66.0: the 1.55.0, 1.60.0 and 1.65.0 wheels have no trace of it and 1.66.0 through 1.70.0 do (read
+  from the wheels, 2026-10-06). An older litellm does not consume the kwarg, so it rides into the request
+  body (captured on 1.65.0), and OpenAI answers 400 "Unrecognized request argument supplied:
+  allowed_openai_params" (live, same day) on every call that carries a depth. `pyproject.toml` and the
+  specifier the lock records for it move to `>=1.66`, and a test pins the floor.
+- **Both ask the destination, not a model name.** This is the failure class the ADR met twice, first in
+  litellm's mapper and then in this provider's own `gpt-5` predicates: a name prefix is tied to the family
+  it was written for, and the next family fails on its first call.
+- **The two existing predicates follow the measurement.** `_is_openai_gpt5_fixed_temperature_model` is
+  matched on the GENERATION, `gpt-5` and every later one, as the Gemini rule is: a later name that does
+  take a temperature merely loses it and runs at the model's own default, and the other error is a 400 on
+  every call. `_is_openai_gpt56_tools_effort_none_model` names `gpt-6` beside the 5.6 tier, because
+  gpt-6-luna's refusal was measured live in the same words, and goes no further, because a tier nobody
+  measured may refuse `none` (the fallback tier does, ADR-0188).
+
+**Alternatives rejected.** A list of reasoning families for the cap (`gpt-5*`, `gpt-6*`, the o-series),
+which is the shape first proposed: it is the failure itself, one level up. Sending
+`max_completion_tokens` only for models litellm's map flags reasoning-capable: the map does say so for
+gpt-6-luna, but the bundled map has no row for the 5.6 and 6 luna tier at all (measured 2026-10-05), so
+offline the rule would switch itself off. Upgrading litellm: measured not to fix either parameter on 1.99.0.
+Carrying the depth in `extra_body`: measured to reach the chat request, but it goes around litellm's own
+mapping on every route, so it would need a gate by name for the 5.6 tier, where the depth already
+travels as `reasoning.effort`; the opt-in needs none. Re-issuing from the provider's refusal text for the
+cap and the temperature: a refused first call per session, and no re-issue exists on the streaming path.
+
+**Consequences.** gpt-6-luna works through the provider with its defaults and with `reasoning_effort`
+none. Every arm was run live on 2026-10-06 against a live OpenAI key, litellm's fetched model map (the
+default on a networked box; the bundled 1.86.2 map was not probed here, and pricing was not changed),
+a few cents in all:
+
+- default kwargs, a plain call: 200, served `gpt-6-luna`, 13 prompt and 4 completion tokens, recorded
+  cost $0.0000033, and the token mix through the cost-basis row ($0.10 input, $0.50 output per
+  million) gives the same figure with a difference of 0;
+- a configured temperature of 0.7: 200 (dropped);
+- a tool call, buffered and streamed, with effort `none` preset by the predicate: 200 with the call, the
+  streamed tool-call deltas and the usage event, 131 and 16 tokens, $0.0000211, reproduced to 0;
+- structured output (`json_schema`, the forced temperature 0): 200 `{"word":"ready"}`, 44 and 11 tokens,
+  $0.0000099, reproduced to 0; streaming usage on a plain call: the usage event carries tokens and cost,
+  reproduced to 0;
+- the controls, `gpt-5.6-luna`, `gpt-5-mini` and `gpt-4o-mini` with default kwargs: 200.
+
+The request litellm builds was captured for 15 arms before and after this change (gpt-5.6-luna plain,
+with tools, with a depth, with a temperature and with a per-call cap; gpt-5.6-terra with tools;
+gpt-5-mini plain and with tools; the pod with a non-gpt name and with a gpt-5.6 name; `groq/`,
+`anthropic/`, `ollama_chat/`; gpt-4o-mini). 14 request bodies are identical, host, path and every field,
+including the Responses-API route of the 5.6 tier. The one that changed is `openai/gpt-4o-mini`:
+`max_tokens: 8192` became `max_completion_tokens: 8192`. OpenAI accepts it (live: served
+gpt-4o-mini-2024-07-18, 200), and `max_tokens` is the deprecated spelling there; this is the price of
+asking the destination instead of the name.
+
+NOT changed, and worth naming. (1) A configured depth other than `none` beside tools on gpt-6-luna is
+refused on its chat route: litellm 1.86.2's Responses bridge does not carry the name, so the route the 5.6
+tier's depth-with-tools rides (ADR-0200) does not exist here. `acomplete` repairs it from the refusal text
+(live: the first call refused, the re-issue with `none` returned the tool call); `astream` does not (live:
+`RequestFailed` on the first call). The sidecar runs effort `none`, so it is not met today; it is recorded as follow-up work.
+(2) Other gpt-6 names than luna are unmeasured for the tools rule. (3) `azure/` gets nothing, as in
+ADR-0199. (4) A deployment that points `OPENAI_BASE_URL` at a proxy and leaves `api_base` unset is still
+treated as OpenAI's own API, as in ADR-0199.
+
+Tests: `tests/test_openai_new_family_request_shape.py`: the kwargs per destination (seven first-party
+spellings, a per-call cap, a caller's own cap, nine destinations that keep `max_tokens`, the offer of the
+depth), and the request litellm sends, pinned offline with `httpx` patched and canned bodies (gpt-6-luna
+chat, a gpt-6-luna tool call, a configured depth, the temperature, the unchanged gpt-5.6-luna chat and
+Responses routes, the pod, a Groq-compatible base), and the litellm floor the package declares.
+`tests/test_gpt5_temperature.py` and
+`tests/test_gpt56_tools_effort_none.py`: gpt-6 names, a later generation and the `-chat` variants in the
+two predicates. `tests/test_degeneration.py`: the two ADR-0018 assertions now name OpenAI's spelling.
+Against the provider as it was, 16 of the 30 provider tests fail, each naming the wire fact, and the 14
+that pass pin the destinations that did not change; the 31st, the floor, fails against the old `>=1.55`.
+Five sabotages, each byte-verified back to green: the rename off turns 13 red, the depth offer off 5,
+the temperature generation rule back to a prefix 3, `gpt-6` out of the tools predicate 4, and the
+shared destination test off 20 (it also reaches the `store` default of ADR-0199, so that file's tests
+go red with it).

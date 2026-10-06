@@ -3778,7 +3778,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.111" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27" },
     { name = "jsonschema", specifier = ">=4.18" },
-    { name = "litellm", specifier = ">=1.55" },
+    { name = "litellm", specifier = ">=1.66" },
     { name = "litellm", extras = ["google"], marker = "extra == 'google'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
