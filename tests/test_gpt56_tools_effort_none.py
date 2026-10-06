@@ -64,7 +64,10 @@ REMEDY_400 = (
         ("openai/gpt-5.6-terra", True),
         ("openai/gpt-5.6-luna", True),
         ("gpt-5.6-terra", True),
+        ("openai/gpt-6-luna", True),  # measured live 2026-10-06: the identical 400 (ADR-0279)
+        ("gpt-6-luna", True),
         ("openai/gpt-5.6-chat", False),  # not measured -> the re-issue half covers it
+        ("openai/gpt-6-chat", False),  # not measured, for the same reason
         ("openai/gpt-5-mini", False),  # the fallback tier refuses 'none' (measured)
         ("openai/gpt-5-nano", False),
         ("openai/gpt-5", False),
@@ -72,7 +75,7 @@ REMEDY_400 = (
         ("anthropic/claude-sonnet-5", False),
     ],
 )
-def test_predicate_is_the_gpt56_tier_only(model: str, expected: bool) -> None:
+def test_predicate_is_the_measured_tiers_only(model: str, expected: bool) -> None:
     assert _is_openai_gpt56_tools_effort_none_model(model) is expected
 
 

@@ -225,9 +225,15 @@ def _is_ollama_model(model: str) -> bool:
 _GEMINI_GENERATION = re.compile(r"^gemini-(\d+)")
 
 
+#: An OpenAI gpt model name's generation number: ``gpt-5.6-luna`` -> 5, ``gpt-6-luna`` -> 6.
+#: Anchored at the start of the name (after any provider prefix), so only a numbered gpt
+#: matches: ``gpt-oss-120b`` has no number and ``gpt-4o`` is 4.
+_GPT_GENERATION = re.compile(r"^gpt-(\d+)")
+
+
 def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
-    """Whether ``model`` is an OpenAI gpt-5 REASONING model that accepts ONLY the
-    default ``temperature`` (1).
+    """Whether ``model`` is an OpenAI gpt-5-GENERATION-OR-LATER REASONING model that accepts
+    ONLY the default ``temperature`` (1). (The name keeps the generation the rule began with.)
 
     OpenAI rejects any other value with a hard 400 ("temperature does not support
     0.7 with this model. Only the default (1) value is supported"). litellm cannot
@@ -242,9 +248,18 @@ def _is_openai_gpt5_fixed_temperature_model(model: str) -> bool:
     temperature, so they are excluded. Versioned chat models such as
     ``gpt-5.6-chat`` ARE reasoning models and are NOT excluded — matching litellm's
     own gpt-5 routing predicate.
+
+    ``gpt-6-luna`` answers the same 400 (measured live 2026-10-06: 0.7 -> 400 "Only the
+    default (1) value is supported"), and litellm 1.86.2 forwards the value there too. So the
+    rule is matched on the GENERATION, ``gpt-5`` and every later one, as the Gemini rule
+    below is: a name prefix is tied to the family it was written for and fails the next one
+    on its first call. An unmeasured later name that DOES take a temperature loses the
+    configured value and runs at the model's own default, which is the cheap way to be wrong;
+    the other way is a 400 on every call.
     """
     name = model.split("/")[-1]
-    return name.startswith("gpt-5") and not name.startswith("gpt-5-chat")
+    match = _GPT_GENERATION.match(name)
+    return match is not None and int(match.group(1)) >= 5 and not name.startswith("gpt-5-chat")
 
 
 def _is_gemini_sampling_deprecated_model(model: str) -> bool:
@@ -297,9 +312,19 @@ def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
     one parameter over. The ``gpt-5.6-chat`` variants are not measured and are
     excluded here; the generic re-issue path (``_wants_effort_none``) covers them if
     they turn out to share the constraint.
+
+    ``gpt-6`` is named beside the 5.6 tier: ``gpt-6-luna`` answers the identical 400 for a
+    tool call with no depth (measured live 2026-10-06, ADR-0279). Its chat route stays the
+    chat route, because litellm 1.86.2's Responses bridge does not carry the name, so
+    ``none`` is the one depth a tool call takes there. Other gpt-6 names are not measured;
+    a ``-chat`` variant is excluded for the reason the 5.6 one is. The re-issue path is on
+    ``acomplete`` only, so a name outside this predicate costs a STREAMED call its first
+    tool call, not just one retry.
     """
     name = model.split("/")[-1]
-    return name.startswith("gpt-5.6") and not name.startswith("gpt-5.6-chat")
+    return name.startswith(("gpt-5.6", "gpt-6")) and not name.startswith(
+        ("gpt-5.6-chat", "gpt-6-chat")
+    )
 
 
 #: Substring of the OpenAI 400 that names the remedy. Matched on the provider's own
@@ -1369,6 +1394,11 @@ class LiteLLMProvider(Provider):
     # ------------------------------------------------------------------
     # Provider interface
     # ------------------------------------------------------------------
+    def _is_openai_own_api(self) -> bool:
+        """Whether requests go to OpenAI's own API: an ``openai/`` or bare ``gpt-`` model with
+        NO ``api_base``. With a base configured the same names mean the server behind it."""
+        return self.api_base is None and self.model.startswith(("openai/", "gpt-"))
+
     def _build_kwargs(
         self,
         wire_messages: list[dict[str, Any]],
@@ -1416,7 +1446,8 @@ class LiteLLMProvider(Provider):
             # seconds of garbage at worst; a legitimate long answer continues through the
             # loop's bounded length-continuation path. Callers may override per call
             # (call_kwargs.update(kw) below wins); litellm maps the name per backend and
-            # drop_params drops it where unsupported.
+            # drop_params drops it where unsupported. OpenAI's own API is sent
+            # ``max_completion_tokens`` instead, further down (ADR-0279).
             "max_tokens": _MAX_COMPLETION_TOKENS,
         }
         if self.temperature is not None:
@@ -1472,7 +1503,7 @@ class LiteLLMProvider(Provider):
         # is an ``openai/`` or bare ``gpt-`` model with NO ``api_base``: with a base configured
         # the same names mean the server behind it (the pod, a llama-server), which is somebody
         # else's API. ``azure/`` takes the same bridge but was never measured: nothing assumed.
-        if self.api_base is None and self.model.startswith(("openai/", "gpt-")):
+        if self._is_openai_own_api():
             merged_body.setdefault("store", False)
         refused = set(self.rejected_request_fields)
         merged_body = {k: v for k, v in merged_body.items() if k not in refused}
@@ -1594,6 +1625,37 @@ class LiteLLMProvider(Provider):
                 )
             if self._effort_none_demanded_by_server or configured is None:
                 call_kwargs["reasoning_effort"] = "none"
+        # OpenAI's own API is where litellm's knowledge of a model NAME is the weak link. Its
+        # param mapper recognises the names of the families it has shipped support for (gpt-5*,
+        # the o-series) and treats any other OpenAI name as a plain chat model, and gpt-6-luna on
+        # litellm 1.86.2 (the uv.lock pin) is such a name. Two of OUR parameters die there
+        # (ADR-0279, measured 2026-10-05 and 06):
+        # * ``max_tokens`` is forwarded as it is, and the model answers 400 "Unsupported
+        #   parameter: 'max_tokens' is not supported with this model. Use
+        #   'max_completion_tokens' instead". That is OpenAI's spelling of the cap and
+        #   ``max_tokens`` is the deprecated one, so the provider says it itself.
+        # * ``reasoning_effort`` is DROPPED (drop_params), so a depth we chose, or the ``none``
+        #   a tool call needs, never reaches the wire, and the model refuses the tool call with
+        #   the 400 that asks for it. ``allowed_openai_params`` is litellm's own opt-in to
+        #   forward a named parameter as it is where the mapper would drop it, and it changes
+        #   nothing where the mapper already handles the name (measured: the gpt-5.6-luna request
+        #   is byte-identical with and without it, on the chat route and on the Responses bridge).
+        # The destination decides, not a model-name prefix, so the next family needs no change
+        # here. Same destination test as ``store`` above (``_is_openai_own_api``): behind a
+        # configured base (the pod, a llama-server, Groq's OpenAI-compatible endpoint) the
+        # request keeps the shape it has always had, because what each backend does with the
+        # new spelling was never measured. Last, so it sees the per-call ``kw`` and every rule
+        # above: a caller's ``max_tokens`` (the compaction summary's room) is renamed too, and
+        # a caller's own ``max_completion_tokens`` wins.
+        if self._is_openai_own_api():
+            cap = call_kwargs.pop("max_tokens", None)
+            if cap is not None and call_kwargs.get("max_completion_tokens") is None:
+                call_kwargs["max_completion_tokens"] = cap
+            if "reasoning_effort" in call_kwargs:
+                allowed = list(call_kwargs.get("allowed_openai_params") or [])
+                if "reasoning_effort" not in allowed:
+                    allowed.append("reasoning_effort")
+                call_kwargs["allowed_openai_params"] = allowed
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
