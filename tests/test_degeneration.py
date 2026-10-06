@@ -348,7 +348,11 @@ def test_no_temperature_sent_by_default() -> None:
     p = LiteLLMProvider(model="openai/gpt-4o")
     kwargs = p._build_kwargs([{"role": "user", "content": "hi"}], None)
     assert "temperature" not in kwargs  # the backend's own default applies
-    assert kwargs["max_tokens"] == 8192  # the per-completion degeneration bound
+    # The per-completion degeneration bound. OpenAI's own API spells it max_completion_tokens
+    # (ADR-0279); every other destination keeps max_tokens, pinned in
+    # test_openai_new_family_request_shape.py.
+    assert kwargs["max_completion_tokens"] == 8192
+    assert "max_tokens" not in kwargs
 
 
 def test_explicit_temperature_is_still_sent() -> None:
@@ -367,4 +371,5 @@ def test_explicit_zero_temperature_is_honored() -> None:
 def test_per_call_max_tokens_override_wins() -> None:
     p = LiteLLMProvider(model="openai/gpt-4o")
     kwargs = p._build_kwargs([{"role": "user", "content": "hi"}], None, max_tokens=64)
-    assert kwargs["max_tokens"] == 64
+    assert kwargs["max_completion_tokens"] == 64  # renamed for OpenAI's own API (ADR-0279)
+    assert "max_tokens" not in kwargs

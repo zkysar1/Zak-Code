@@ -51,6 +51,10 @@ def test_predicate_matches_gpt5_reasoning_family() -> None:
         "openai/gpt-5-nano",
         "azure/gpt-5.6-terra",
         "openai/gpt-5.6-chat",  # versioned chat = reasoning model (litellm routes it so)
+        "openai/gpt-6-luna",  # measured 2026-10-06: 0.7 -> 400, same words as gpt-5
+        "gpt-6-luna",
+        "openai/gpt-6-chat",  # unmeasured: dropping a temperature is the cheap way to be wrong
+        "openai/gpt-7-nova",  # matched on the GENERATION, so the next family needs no edit
     ):
         assert _is_openai_gpt5_fixed_temperature_model(m), m
 
@@ -80,6 +84,15 @@ def test_structured_temperature_zero_dropped_for_gpt5() -> None:
     p = LiteLLMProvider(model="openai/gpt-5.6-luna", context_window=400000)
     kwargs = p._build_kwargs(MSGS, None, temperature=0.0)
     assert "temperature" not in kwargs
+
+
+def test_main_loop_temperature_dropped_for_gpt6() -> None:
+    # gpt-6-luna answers 400 "Only the default (1) value is supported" (live, 2026-10-06), and
+    # litellm 1.86.2 forwards the value there, so the provider must drop it.
+    p = LiteLLMProvider(model="openai/gpt-6-luna", temperature=0.7, context_window=1050000)
+    assert "temperature" not in p._build_kwargs(MSGS, None)
+    structured = p._build_kwargs(MSGS, None, temperature=0.0)
+    assert "temperature" not in structured
 
 
 def test_explicit_temperature_one_is_preserved_for_gpt5() -> None:
