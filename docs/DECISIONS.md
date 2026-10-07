@@ -16964,3 +16964,53 @@ Five sabotages, each byte-verified back to green: the rename off turns 13 red, t
 the temperature generation rule back to a prefix 3, `gpt-6` out of the tools predicate 4, and the
 shared destination test off 20 (it also reaches the `store` default of ADR-0199, so that file's tests
 go red with it).
+
+## ADR-0280: the provider's httpx client honours the proxy environment, so a process whose only route out is a proxy still reaches its model
+
+**Status:** Accepted (2026-10-07)
+
+**Context.** A process in a network-sealed sandbox, with no route to the internet and a localhost forward
+proxy named by `HTTPS_PROXY` as the only way out, completed no model call: every provider call failed with a
+connection error and the provider retried it inside its backoff budget. Measured 2026-10-07 on litellm 1.86.2
+and httpx 0.28.1, the `uv.lock` pins, in a Linux network namespace that holds only loopback and whose one way
+out is a CONNECT proxy on the host, reached through a unix-socket bridge. Each run builds the provider's async
+client and calls `litellm.acompletion` on `openai/gpt-5-mini` with a deliberately invalid key: a 401 means the
+request reached the provider, and nothing is billed.
+
+| run | proxy mounts on the client | outcome |
+|---|---|---|
+| A. the provider module as it was | 0 | the call failed; the proxy saw no CONNECT for the provider's host |
+| B. A with litellm's own `_create_httpx_transport` put back (ADR-0249 undone) | 4 | 401, through the proxy |
+| C. A with `litellm.disable_aiohttp_transport` back at its default (ADR-0239 undone) | 0, litellm's aiohttp transport carries the call | 401, through the proxy |
+| D. the module not imported | 0, the aiohttp transport | 401, through the proxy |
+
+With no proxy variable set, A and D both fail in the same namespace, so it has no other way out.
+
+httpx builds proxy mounts from the environment on one condition, in `AsyncClient.__init__`:
+`allow_env_proxies = trust_env and transport is None`. litellm's own builder returns `None` unless `force_ipv4`
+is set, so its clients get the environment's proxies. ADR-0249's builder returned an `AsyncHTTPTransport`
+always, and with ADR-0239 steering every call onto the httpx path, that transport sent every call direct.
+Neither ADR alone drops the proxy: B and C each pass.
+
+**Decision.** `_httpx_transport_with_keepalive` returns `None` when the environment names a proxy
+(HTTP_PROXY, HTTPS_PROXY or ALL_PROXY, read through `urllib.request.getproxies()` as httpx reads them), so
+httpx builds the proxy mounts itself and applies NO_PROXY. With no proxy in the environment it returns the
+keepalive transport, as before.
+
+**Consequences.** A process that names no proxy is unchanged: the same transport and socket options
+(`tests/test_provider_keepalive.py`, untouched). A process that names one reaches its provider through it.
+Run A after the change: 4 mounts, a 401 through the proxy, a CONNECT seen. The same namespace without the
+variable still fails, and an unsealed process without it still gets the 4 keepalive options and a direct 401.
+
+The sockets on a proxied path, and the ones NO_PROXY exempts, take httpx's default options, so ADR-0249's
+keepalive does not cover them: the kernel would probe the proxy and not the backend behind it, and a proxy that
+goes silent holds a buffered call until `request_timeout`, as every call did before ADR-0249. With
+`litellm.force_ipv4` set and a proxy named, the proxy wins: litellm's own builder drops the proxy to bind the
+address, and this one drops the binding.
+
+`tests/conftest.py` starts every test from an environment that names no proxy, and narrows
+`urllib.request.getproxies` to the environment because macOS and Windows fall back to system settings, so the
+suite no longer depends on the machine running it. `tests/test_provider_proxy_env.py` reads the mounts and the
+transport that serve a URL on the client litellm builds. Against the provider as it was, 5 of its 7 tests fail
+(the three mount cases, the proxy pool, the NO_PROXY host) and the 2 direct-path tests pass, as do the 4
+keepalive tests; with the change all 11 pass, and the full suite is 5224 passed, 16 skipped.

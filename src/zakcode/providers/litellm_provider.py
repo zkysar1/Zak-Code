@@ -115,7 +115,13 @@ def _keepalive_socket_options() -> list[tuple[int, int, int]]:
     return options
 
 
-def _httpx_transport_with_keepalive() -> httpx.AsyncHTTPTransport:
+def _proxy_environment_configured() -> bool:
+    """Whether the environment names a proxy, read as httpx reads it (HTTP/HTTPS/ALL_PROXY)."""
+    proxies = urllib.request.getproxies()
+    return any(proxies.get(scheme) for scheme in ("http", "https", "all"))
+
+
+def _httpx_transport_with_keepalive() -> httpx.AsyncHTTPTransport | None:
     """The transport litellm builds for its httpx clients, with TCP keepalive on every socket.
 
     Replaces ``AsyncHTTPHandler._create_httpx_transport`` (ADR-0249). A buffered call's only
@@ -127,7 +133,17 @@ def _httpx_transport_with_keepalive() -> httpx.AsyncHTTPTransport:
     through carries the options instead. litellm's own ``force_ipv4`` choice is kept. A live
     backend answers probes from the kernel however busy the model is, so a slow prefill or a
     long generation cannot trip it. Pinned by ``tests/test_provider_keepalive.py``.
+
+    The one case it returns ``None`` instead is a process whose environment names a proxy
+    (ADR-0280), as litellm's own builder does unless ``force_ipv4`` is set. httpx reads
+    HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY only for a client built without an
+    explicit transport, so a transport returned here would send every call direct, and a
+    process whose only way out is that proxy would reach nothing. The connections httpx then
+    opens, through the proxy or exempted by NO_PROXY, carry its default socket options.
+    Pinned by ``tests/test_provider_proxy_env.py``.
     """
+    if _proxy_environment_configured():
+        return None
     local_address = "0.0.0.0" if getattr(litellm, "force_ipv4", False) else None
     return httpx.AsyncHTTPTransport(
         local_address=local_address, socket_options=_keepalive_socket_options()
