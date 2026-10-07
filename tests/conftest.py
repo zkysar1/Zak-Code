@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import re
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,22 @@ def _isolated_config_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     the next. A test that needs a particular home still sets its own; this runs first.
     """
     monkeypatch.setenv("ZAKCODE_HOME", str(tmp_path / ".zakcode"))
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test an environment that names no proxy, so the suite cannot use the machine's.
+
+    The provider's httpx clients honour HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and NO_PROXY
+    (ADR-0280), so a loopback stub a test calls would otherwise be reached through whatever
+    proxy the box running the suite has configured. ``urllib.request.getproxies`` is narrowed
+    to the environment alone, because on macOS and Windows it falls back to the system settings.
+    A test that wants a proxy sets its own; this runs first.
+    """
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setattr(urllib.request, "getproxies", urllib.request.getproxies_environment)
 
 
 class StubProvider(Provider):
