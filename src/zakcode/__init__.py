@@ -924,6 +924,24 @@ class Agent:
             )
         # Held so the deep_think sampler can fold its extra calls into the same turn-tree budget.
         self._shared_budget = shared_budget
+
+        # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
+        # before a turn once it exceeds the provider's context-window threshold. Built
+        # before the delegation block below because sub-agents compact too.
+        self.compactor: Compactor | None = None
+        if enable_compaction:
+            self.compactor = Compactor()
+
+        # Compaction summarizer routing. Precedence: an explicit model_roles['summarizer']
+        # wins; else under zakpick the "summarize" category routes to a cheap model; else None
+        # (use the generator's provider). So model_roles still overrides the zakpick default.
+        if "summarizer" in self.settings.model_roles:
+            summarizer_provider = self._provider_for(self.settings.model_roles["summarizer"])
+        elif self._zakpick:
+            summarizer_provider = self._resolve_task_provider("summarize")[0]
+        else:
+            summarizer_provider = None
+
         spawner = None
         if enable_subagents:
             from zakcode.agent.subagent import (
@@ -973,6 +991,11 @@ class Agent:
                 # (and chain) the same skills, drawing from the shared per-turn skill budget.
                 skill_resolver=skill_resolver,
                 trace_session=self.session.id,  # children trace under this session's directory
+                # A child's transcript grows like the parent's and meets the same window, so a
+                # child compacts under the parent's compaction settings and summarizer. None
+                # when compaction is off, which leaves delegation as it was.
+                compactor=self.compactor,
+                summarizer_provider=summarizer_provider,
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced). Apply optional
@@ -1137,22 +1160,6 @@ class Agent:
                 else:
                     signal = SignalLogger(gatherer, self.session, context_signal_log)
                 self.hook_manager.register_turn_end_observer(signal.on_turn_end)
-
-        # Compaction (M8), opt-in. When enabled, the loop auto-compacts the session
-        # before a turn once it exceeds the provider's context-window threshold.
-        self.compactor: Compactor | None = None
-        if enable_compaction:
-            self.compactor = Compactor()
-
-        # Compaction summarizer routing. Precedence: an explicit model_roles['summarizer']
-        # wins; else under zakpick the "summarize" category routes to a cheap model; else None
-        # (use the generator's provider). So model_roles still overrides the zakpick default.
-        if "summarizer" in self.settings.model_roles:
-            summarizer_provider = self._provider_for(self.settings.model_roles["summarizer"])
-        elif self._zakpick:
-            summarizer_provider = self._resolve_task_provider("summarize")[0]
-        else:
-            summarizer_provider = None
 
         self.loop = AgentLoop(
             self.provider,
