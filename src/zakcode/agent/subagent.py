@@ -30,6 +30,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from zakcode.agent.budget import IterationBudget
+from zakcode.agent.compact import Compactor
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings
@@ -149,6 +150,8 @@ class SubAgentRunner:
         provider_for_task: Callable[[str], tuple[Provider, str]] | None = None,
         skill_resolver: SkillResolver | None = None,
         trace_session: str | None = None,
+        compactor: Compactor | None = None,
+        summarizer_provider: Provider | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -183,6 +186,17 @@ class SubAgentRunner:
         # Monotonic per-spawn sequence for the children's trace_label — children share the
         # parent's trace_dir, so unlabeled child dumps would overwrite the root turn_N files.
         self._spawn_seq = itertools.count(1)
+        # The parent's compactor and compaction summarizer. A child's transcript grows with
+        # every tool result exactly as the parent's does, and without a compactor the child
+        # has no recovery when it reaches the window: the overflow ends the child's turn and
+        # the parent gets a stop instead of the child's answer. With one, each child loop
+        # compacts its OWN transcript, against its own model's window, the way the parent
+        # loop compacts. The compactor object is shared because it holds only settings and
+        # no per-session state, so one tuning governs the whole delegation tree. ``None``
+        # (compaction off) leaves a child uncompacted, as before. ``summarizer_provider=None``
+        # means each loop asks its own provider for the summary, as the parent loop does.
+        self.compactor = compactor
+        self.summarizer_provider = summarizer_provider
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -267,6 +281,14 @@ class SubAgentRunner:
             skill_resolver=self._skill_resolver,  # child use_skill resolves the parent's skills
             trace_label=f"sub{next(self._spawn_seq)}-{definition.name}",  # no turn_N clobber
             trace_session=self.trace_session,  # under the parent's session directory
+            # Compaction, when the parent has it on (see __init__). With skills on, a child
+            # compaction also resets the per-turn skill state of the resolver it shares with
+            # the parent (the reload dedup and the invocation budget), so the parent may be
+            # handed a skill body again that is still in its context. That costs tokens. Not
+            # resetting would cost instructions: a child that lost a body to compaction would
+            # be pointed back at text it no longer has.
+            compactor=self.compactor,
+            summarizer_provider=self.summarizer_provider,
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
