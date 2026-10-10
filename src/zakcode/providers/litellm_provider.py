@@ -68,6 +68,7 @@ from zakcode.providers.endpoints import (
     is_sentinel,
     model_uses_generic_endpoint,
 )
+from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
     reasoning_effort_reaches,
@@ -86,6 +87,12 @@ setattr(litellm, "drop_params", True)  # noqa: B010
 # provider exception — errors reach the operator through the ProviderError taxonomy,
 # not via a library writing directly to stdout mid-conversation.
 setattr(litellm, "suppress_debug_info", True)  # noqa: B010
+# A process that cannot fetch litellm's remote price map loads the one bundled in the installed
+# litellm, which can lack a model the deployment is configured with: its calls would read as
+# unpriced and the model as one nothing is known about (ADR-0281). Register litellm's own entry
+# for each such model. After ``suppress_debug_info``: registering probes an id the map lacks, and
+# litellm prints a provider-list banner for that probe unless debug info is suppressed.
+register_missing_entries(litellm)
 # Reach providers over httpx, not litellm's default aiohttp transport (ADR-0239). litellm
 # caches one HTTP client per endpoint and event loop for an hour, then drops it unclosed on
 # purpose, since a request may still hold it. When the collector reclaims an aiohttp session

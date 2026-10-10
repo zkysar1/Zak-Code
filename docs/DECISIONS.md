@@ -17014,3 +17014,55 @@ suite no longer depends on the machine running it. `tests/test_provider_proxy_en
 transport that serve a URL on the client litellm builds. Against the provider as it was, 5 of its 7 tests fail
 (the three mount cases, the proxy pool, the NO_PROXY host) and the 2 direct-path tests pass, as do the 4
 keepalive tests; with the change all 11 pass, and the full suite is 5224 passed, 16 skipped.
+
+## ADR-0281: a process that cannot fetch litellm's price map is given litellm's own entries for the models it is configured with, so it prices them and knows their limits
+
+**Status:** Accepted (2026-10-10)
+
+**Context.** A process in a network-sealed sandbox cannot fetch litellm's remote price map, so litellm loads the
+map bundled in the installed release, and that map lacks a model added after the release. Measured 2026-10-10 on
+litellm 1.86.2, the `uv.lock` pin: the bundled map holds 2,716 entries and the fetched map 4,035, and
+`gpt-6-luna`, which the deployment recipe configures, is in the second and not the first (the fetched map holds
+only the bare key; `openai/gpt-6-luna` resolves to it by prefix stripping). The same probe on each map, with
+`openai/gpt-6-luna`, 100,000 prompt tokens of which 90,000 are cache reads, and 10,000 completion tokens:
+
+| map | `_litellm_token_cost` | context window / max output / vision / caching | `_answer_room` |
+|---|---|---|---|
+| fetched (4,035 entries) | 0.0069 | 922,000 / 128,000 / yes / yes | 16,384 |
+| bundled (2,716 entries, `LITELLM_LOCAL_MODEL_COST_MAP=True`) | none, unpriced | none / none / no / no | 4,096 |
+
+`_litellm_token_cost` returns `None` for a model litellm does not map, never a guessed rate, so every call of such
+a process is flagged `cost_unpriced` and carries no cost: a host that meters spend from the reported cost has
+nothing to read, and the loop's answer room falls from 16,384 to 4,096 tokens.
+
+**Decision.** `providers/litellm_model_entries.json` ships litellm's OWN entries, verbatim, for the models the
+deployment recipe names (`gpt-6-luna`, `gpt-5-mini`, `gpt-5-nano`). `register_missing_entries`
+(`providers/model_entries.py`) registers an entry with `litellm.register_model` only when the loaded
+`litellm.model_cost` lacks that id, so it never overrides what litellm holds and guesses no rate: a copy of
+litellm's entry is litellm's price. `litellm_provider.py` calls it once, at import; the price lookup, the
+provider's capabilities and the registry's litellm resolver all read the map after that import. The function is
+handed the litellm module because `tests/test_contracts.py` lets only `litellm_provider.py` and `registry.py`
+import litellm. `scripts/refresh_litellm_model_entries.py` rewrites the snapshot from the fetched map;
+its `--check` mode is offline and exits non-zero when `_meta.litellm_version` differs from the installed litellm,
+and `tests/test_model_entries.py` pins the same, so moving the pin fails the suite until the snapshot is refreshed.
+
+**Consequences.** A process that can fetch the map is unchanged: it already holds all three ids, the loader
+registers nothing, the map keeps its 4,035 entries and every price and capability probed is identical to before.
+On the bundled map the loader adds one entry (2,717), `openai/gpt-6-luna` and `gpt-6-luna` read as the fetched
+row above, and no entry litellm already held changes (`openai/gpt-4o` among them): the sealed-process tests
+compare the whole map before and after the import.
+
+The call sits after `suppress_debug_info`, not before it: registering probes an id the map lacks, and litellm
+prints a provider-list banner for that probe unless debug info is suppressed. Registered ahead of that line, every
+sealed process wrote the banner to stdout twice at import (134 bytes; origin/main writes none), so the
+sealed-process tests require stdout to be exactly the one JSON line the probe prints.
+
+Only the models the recipe names are shipped. Any other model the bundled map lacks stays unpriced, as before,
+because a rate for it would be a guess. A model added to the recipe is added with
+`scripts/refresh_litellm_model_entries.py --models ...`; the script needs the remote map and refuses to write
+(exit 1) when a requested id is missing, since a blocked fetch makes litellm load the bundled map and a snapshot
+written from it would drop `gpt-6-luna`. When a release bundles the model, the loader registers nothing for it.
+
+Removing the one registration call fails 3 of the 18 tests in `tests/test_model_entries.py` (the price reads
+`None`, the capabilities read `[None, None, False]`: the defect itself) and passes the other 15; the full suite
+is 5245 passed, 16 skipped.
