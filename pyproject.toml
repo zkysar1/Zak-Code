@@ -103,6 +103,7 @@ artifacts = [
     "src/zakcode/py.typed",
     "src/zakcode/server/static/**",
     "src/zakcode/skills/bundled/**",
+    "src/zakcode/providers/litellm_model_entries.json",
 ]
 
 [tool.ruff]
