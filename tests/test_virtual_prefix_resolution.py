@@ -11,6 +11,7 @@ provisioner step (``agents/<id>/local-paths.conf``, unquoted absolute values).
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -38,18 +39,21 @@ _NODE = "knowledge/tree/intelligence/installed-packs/pack-a/n03-scores-to-probab
 _NODE_BODY = "# Scores to probabilities\nsoftmax turns scores into probabilities\n"
 
 
+def _put(path: Path, text: str) -> None:
+    """Write ``text`` byte for byte; ``write_text`` would end its lines CRLF on Windows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+
+
 @pytest.fixture
 def served(tmp_path: Path) -> Path:
     """A served Mind's workspace, laid out as the provisioner leaves it."""
     ws = tmp_path / "mind-workspace"
     (ws / "agents" / "char-1").mkdir(parents=True)
-    node = ws / "knowledge" / _NODE
-    node.parent.mkdir(parents=True)
-    node.write_text(_NODE_BODY, encoding="utf-8")
-    (ws / "knowledge" / "program.md").write_text("# The Program\n", encoding="utf-8")
-    (ws / "meta").mkdir()
-    (ws / "meta" / "reflection-strategy.yaml").write_text("depth: 1\n", encoding="utf-8")
-    (ws / "notes.md").write_text("workspace note\n", encoding="utf-8")
+    _put(ws / "knowledge" / _NODE, _NODE_BODY)
+    _put(ws / "knowledge" / "program.md", "# The Program\n")
+    _put(ws / "meta" / "reflection-strategy.yaml", "depth: 1\n")
+    _put(ws / "notes.md", "workspace note\n")
     (ws / "agents" / "char-1" / "local-paths.conf").write_text(
         f"WORLD_PATH={ws}/knowledge\nMETA_PATH={ws}/meta\n", encoding="utf-8"
     )
@@ -69,7 +73,7 @@ def hosted(tmp_path: Path) -> Path:
     world, meta = tmp_path / "Agents-World", tmp_path / "Agents-Meta"
     world.mkdir()
     meta.mkdir()
-    (meta / "reflection-strategy.yaml").write_text("depth: 1\n", encoding="utf-8")
+    _put(meta / "reflection-strategy.yaml", "depth: 1\n")
     (repo / "agents" / "assistant" / "local-paths.conf").write_text(
         f"WORLD_PATH={world}\nMETA_PATH={meta}\n", encoding="utf-8"
     )
@@ -248,8 +252,7 @@ async def test_a_workspace_that_declares_no_world_keeps_its_own_world_directory(
     tmp_path: Path,
 ) -> None:
     """``world/`` is an ordinary directory name until a conf says it is the framework's."""
-    (tmp_path / "world").mkdir()
-    (tmp_path / "world" / "map.md").write_text("a game map\n")
+    _put(tmp_path / "world" / "map.md", "a game map\n")
     result = await ReadFileTool().execute({"path": "world/map.md"}, _ctx(tmp_path))
     assert not result.is_error, result.output
     assert result.output == "a game map\n"
@@ -340,11 +343,17 @@ _WRITE = ToolSpec(
 )
 
 
+def _either_slash(path: str) -> str:
+    """``/srv/prod/world`` as a regex that matches both separators, as an ingested rule does."""
+    parts = [re.escape(part) for part in path.strip("/").split("/")]
+    return r"[\\/]" + r"[\\/]".join(parts) + r"[\\/]"
+
+
 def _guarding(prod: str, *, virtual: dict[str, str] | None) -> PermissionPolicy:
     # what ``deny Edit(/srv/prod/**)`` ingests to: an operator rule on the REAL location
     return PermissionPolicy(
         PermissionMode.AUTONOMOUS,
-        extra_protected_paths=compile_protected_paths([rf"{prod}/"], write_only=True),
+        extra_protected_paths=compile_protected_paths([_either_slash(prod)], write_only=True),
         workspace_root="/ws",
         virtual_roots=virtual,
     )
