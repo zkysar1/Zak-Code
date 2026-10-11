@@ -17,11 +17,13 @@ import ntpath
 import os
 import re
 import socket
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
+
+from zakcode.virtual_paths import expand_virtual_prefix
 
 
 class PathEscapeError(Exception):
@@ -125,16 +127,27 @@ def resolve_in_workspace_roots(path: str, roots: Sequence[Path]) -> Path:
     raise PathEscapeError(f"Path {path!r} resolves outside all workspace roots ({roots_str})")
 
 
-def resolve_path(path: str, workspace_root: Path, extra_roots: Sequence[Path] = ()) -> Path:
+def resolve_path(
+    path: str,
+    workspace_root: Path,
+    extra_roots: Sequence[Path] = (),
+    virtual_roots: Mapping[str, Path] | None = None,
+) -> Path:
     """Resolve ``path`` using the single-root or multi-root resolver as appropriate.
 
     When ``extra_roots`` is empty, delegates to :func:`resolve_in_workspace` (the
     original single-root behavior). When non-empty, delegates to
     :func:`resolve_in_workspace_roots` with ``[workspace_root] + list(extra_roots)``.
 
+    ``virtual_roots`` maps the host framework's ``world``/``meta`` prefixes to the directories
+    its workspace declared (ADR-0282): a path that opens with one is rewritten to that
+    directory first, and the result is then confined like any other path.
+
     This is the convenience entry point tools should prefer — it transparently picks
     the right code path without each tool having to branch on the extra-roots list.
     """
+    if virtual_roots and isinstance(path, str):
+        path = expand_virtual_prefix(path, virtual_roots)
     if extra_roots:
         return resolve_in_workspace_roots(path, [workspace_root, *extra_roots])
     return resolve_in_workspace(path, workspace_root)

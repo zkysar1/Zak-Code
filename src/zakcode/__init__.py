@@ -46,6 +46,7 @@ from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SampleCutOff, SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
+from zakcode.virtual_paths import VIRTUAL_PREFIX_KEYS
 
 __version__: str = _pkg_version("zakcode")
 
@@ -114,8 +115,8 @@ def _find_repo_root(start: Path) -> Path | None:
     return None
 
 
-def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
-    """Parse a ``local-paths.conf`` and return the directories it grants.
+def _read_local_paths_conf(conf_path: Path) -> list[tuple[str, Path]]:
+    """The ``(KEY, directory)`` pairs a ``local-paths.conf`` grants, in file order.
 
     The file is ``KEY=VALUE``, one per line. A value may be quoted, since the file is also
     sourced by a shell; the quotes are stripped. The framework grants its agent three kinds
@@ -124,7 +125,7 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
     ``AGENT_WRITE_PATH``, the product repositories the agent works on, several separated by
     ``;``. Only existing absolute directories are returned.
     """
-    paths: list[Path] = []
+    paths: list[tuple[str, Path]] = []
     if not conf_path.is_file():
         return paths
     try:
@@ -146,10 +147,48 @@ def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
             for v in values:
                 p = Path(v)
                 if v and p.is_absolute() and p.is_dir():
-                    paths.append(p)
+                    paths.append((key, p))
     except OSError:
         pass
     return paths
+
+
+def _parse_local_paths_conf(conf_path: Path) -> list[Path]:
+    """The directories a ``local-paths.conf`` grants (see :func:`_read_local_paths_conf`)."""
+    return [p for _key, p in _read_local_paths_conf(conf_path)]
+
+
+def _mind_virtual_roots(repo_root: Path) -> dict[str, Path]:
+    """The directory each virtual prefix (``world``, ``meta``) stands for in a framework repo.
+
+    Read from ``agents/*/local-paths.conf`` (ADR-0282). A prefix is present only when every
+    agent that declares an existing directory for it names the SAME one: ``world/x`` is a
+    write target too, and with two worlds on offer, picking one would put the file in a
+    world its author did not mean. An ambiguous prefix is left out and logged, and a path
+    spelled with it is refused as it was before.
+    """
+    declared: dict[str, set[Path]] = {}
+    agents_dir = repo_root / "agents"
+    if agents_dir.is_dir():
+        for child in sorted(agents_dir.iterdir()):
+            for key, p in _read_local_paths_conf(child / "local-paths.conf"):
+                for prefix, conf_key in VIRTUAL_PREFIX_KEYS.items():
+                    if key == conf_key:
+                        declared.setdefault(prefix, set()).add(p.resolve())
+    roots: dict[str, Path] = {}
+    for prefix, dirs in declared.items():
+        if len(dirs) == 1:
+            roots[prefix] = next(iter(dirs))
+        else:
+            logger.warning(
+                "%s/ is declared as %d different directories by agents/*/local-paths.conf "
+                "under %s; paths spelled %s/… are not rewritten",
+                prefix,
+                len(dirs),
+                repo_root,
+                prefix,
+            )
+    return roots
 
 
 def _mind_external_roots(repo_root: Path) -> list[Path]:
@@ -541,6 +580,10 @@ class Agent:
         # remedy for a missing optional dep — which pip_install_hint aims at zakcode's own
         # interpreter — is not refused by the very gate that guards the workspace.
         workspace_root = self.settings.workspace_root
+        # What the host framework's ``world/`` and ``meta/`` prefixes stand for in this
+        # workspace (ADR-0282): the file tools rewrite them, and the permission floor below
+        # scans the rewritten spelling too. Read once, so both see the same directories.
+        virtual_roots = _mind_virtual_roots(Path(workspace_root))
         declared_packages = (
             (lambda: read_declared_packages(workspace_root) | harness_declared_packages())
             if self.settings.dependency_gate
@@ -617,6 +660,7 @@ class Agent:
             # Relative path arguments resolve against the workspace before the protected-path
             # scan (ADR-0031) so a ``*/``-prefixed deny glob binds a relative spelling too.
             workspace_root=workspace_root,
+            virtual_roots=virtual_roots,
         )
         # Rehydrate operator grants persisted with the session (audit P0-2d / D12 / Q5).
         # Honored only when the active mode is at least as loose as the grant-time mode;
@@ -982,6 +1026,7 @@ class Agent:
                 hook_manager=self.hook_manager,
                 workspace_root=self.settings.workspace_root,
                 extra_workspace_roots=computed_extra_roots,  # same sandbox as the parent
+                virtual_roots=virtual_roots,  # and the same world/ + meta/ spelling
                 rules=rules_text or None,  # sub-agents inherit the parent's always-on rules
                 provider_for=self._provider_for,  # per-role model routing (model_roles)
                 # zakpick: a definition that names a CATEGORY but no model routes by task. Only
@@ -1170,6 +1215,7 @@ class Agent:
             store=self.store,
             workspace_root=self.settings.workspace_root,
             extra_workspace_roots=computed_extra_roots,
+            virtual_roots=virtual_roots,
             permission_policy=self.permission_policy,
             hook_manager=self.hook_manager,
             budget=shared_budget,

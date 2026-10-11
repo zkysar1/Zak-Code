@@ -2318,6 +2318,7 @@ class AgentLoop:
         max_iterations: int | None = None,
         workspace_root: Path | None = None,
         extra_workspace_roots: list[Path] | None = None,
+        virtual_roots: dict[str, Path] | None = None,
         permission_policy: PermissionPolicy | None = None,
         hook_manager: HookManager | None = None,
         budget: IterationBudget | None = None,
@@ -2489,6 +2490,10 @@ class AgentLoop:
         self.store = store
         self.workspace_root = workspace_root or self.settings.workspace_root
         self.extra_workspace_roots: list[Path] = extra_workspace_roots or []
+        # The host framework's world/ and meta/ prefixes and the directories they stand for
+        # (ADR-0282), handed to every tool context so Read/Edit/Write open a path the framework
+        # wrote in its own virtual spelling.
+        self.virtual_roots: dict[str, Path] = dict(virtual_roots or {})
         # Anomaly rail (ADR-0020): paths whose read_file errored THIS turn, so a
         # subsequent successful write_file to the same path carries the
         # expected-to-exist? question. Cleared at every turn start.
@@ -7674,6 +7679,7 @@ class AgentLoop:
         ctx = ToolContext(
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,
+            virtual_roots=self.virtual_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
             scrub_env=self._scrub_env_names(),
@@ -9297,6 +9303,7 @@ class AgentLoop:
         ctx = ToolContext(
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,
+            virtual_roots=self.virtual_roots,
             spawner=self.spawner,
             egress_env=await self._egress_env(),
             scrub_env=self._scrub_env_names(),

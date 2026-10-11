@@ -88,7 +88,9 @@ class WriteFileTool(Tool):
             return ToolResult.error(claims[0], data={"refusal": "skill_claims", "hosts": claims[1]})
 
         try:
-            resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)
+            resolved = resolve_path(
+                path, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
+            )
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

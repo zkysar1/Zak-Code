@@ -40,7 +40,7 @@ import logging
 import os
 import posixpath
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 from zakcode.config import PermissionTier
 from zakcode.deps_gate import display_name, installed_specs
 from zakcode.tool_names import canonical_tool_name
+from zakcode.virtual_paths import expand_virtual_prefix
 
 if TYPE_CHECKING:
     from zakcode.tools.base import ToolSpec
@@ -530,6 +531,7 @@ class PermissionPolicy:
         extra_protected_paths: list[tuple[re.Pattern[str], str]] | None = None,
         extra_denied_tools: set[str] | frozenset[str] | None = None,
         workspace_root: str | os.PathLike[str] | None = None,
+        virtual_roots: Mapping[str, str | os.PathLike[str]] | None = None,
     ) -> None:
         self.mode = PermissionMode.parse(mode)
         self.prompter = prompter
@@ -542,6 +544,13 @@ class PermissionPolicy:
         self._workspace_root: str | None = (
             os.path.normpath(os.fspath(workspace_root)) if workspace_root is not None else None
         )
+        # The directories the framework's ``world/`` and ``meta/`` prefixes stand for (ADR-0282).
+        # The file tools open a path spelled that way where the workspace declared it, so the
+        # scan tests that location too — the same tighten-only union as the line above.
+        self._virtual_roots: dict[str, str] = {
+            prefix: os.path.normpath(os.fspath(root))
+            for prefix, root in (virtual_roots or {}).items()
+        }
         # Per-tool trust overrides (audit P0-2b / D12): the named tool is judged under
         # ITS mode instead of the session mode — both directions (loosen or tighten).
         # The dangerous-command floor in an autonomous SESSION is never loosenable.
@@ -614,6 +623,7 @@ class PermissionPolicy:
             protected_path_patterns=self.protected_path_patterns,
             extra_denied_tools=self._denied_tools,
             workspace_root=self._workspace_root,
+            virtual_roots=self._virtual_roots,
         )
 
     # ── public read accessors (so clients never touch the private sets) ────────
@@ -715,6 +725,9 @@ class PermissionPolicy:
             candidates = [value]
             if self._workspace_root is not None and value and not os.path.isabs(value):
                 candidates.append(os.path.normpath(os.path.join(self._workspace_root, value)))
+            expanded = expand_virtual_prefix(value, self._virtual_roots)
+            if expanded != value:
+                candidates.append(os.path.normpath(expanded))
             for pattern, description in self.protected_path_patterns:
                 if read_only and (
                     description in _WRITE_ONLY_PROTECTED or description.endswith(_WRITE_ONLY_MARK)

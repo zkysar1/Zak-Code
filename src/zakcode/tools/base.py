@@ -286,6 +286,10 @@ class ToolContext(BaseModel):
 
     workspace_root: Path
     extra_workspace_roots: list[Path] = Field(default_factory=list)
+    #: The directory each host-framework virtual prefix (``world``, ``meta``) stands for, read
+    #: from the workspace's ``agents/*/local-paths.conf`` (ADR-0282). Read/Edit/Write rewrite a
+    #: path that opens with one before confining it. Empty for a workspace that declares none.
+    virtual_roots: dict[str, Path] = Field(default_factory=dict)
     spawner: SubAgentSpawner | None = None
     #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
     #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
