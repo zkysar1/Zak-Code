@@ -68,6 +68,7 @@ from zakcode.providers.endpoints import (
     is_sentinel,
     model_uses_generic_endpoint,
 )
+from zakcode.providers.hipaa import HipaaModelViolation, check_model
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
@@ -760,6 +761,13 @@ class LiteLLMProvider(Provider):
         #: api_base values the operator declared local. Empty = trust any base (the
         #: historical default); non-empty makes an unlisted base count as METERED.
         self.local_api_bases: list[str] = list(resolved_local_api_bases or [])
+        #: HIPAA mode (Settings.hipaa_mode): refuse any model outside the allowlist (see
+        #: _build_kwargs). Read from settings only, so a provider built without settings
+        #: behaves exactly as before and no per-call argument can widen the list.
+        self.hipaa_mode: bool = bool(getattr(settings, "hipaa_mode", False))
+        self.hipaa_allowed_models: list[str] = list(
+            getattr(settings, "hipaa_allowed_models", []) or []
+        )
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
@@ -1451,6 +1459,21 @@ class LiteLLMProvider(Provider):
                     f"local_only is set, but this call would reach a metered API: {reason}. "
                     f"Point the model at your self-hosted endpoint (ZAKCODE_API_BASE) or an "
                     f"ollama_chat/* model, or unset ZAKCODE_LOCAL_ONLY to allow paid calls."
+                )
+        # ── hipaa_mode: the APPLICATION gate (fail CLOSED) ───────────────────────────
+        # Same chokepoint and the same pairing as local_only above: the startup sweep in
+        # Agent._assert_hipaa_models names every offender at once, and this is the
+        # guarantee that fires on a route nobody enumerated. A refusal, never a swap: an
+        # allowed model is not substituted, because choosing one for the operator is a
+        # decision about what may see patient data.
+        if self.hipaa_mode:
+            ok, reason = check_model(self.model, self.hipaa_allowed_models)
+            if not ok:
+                raise HipaaModelViolation(
+                    f"hipaa_mode is set, but this call would use a model that is not "
+                    f"allowed: {reason}. List only models the vendor has confirmed as "
+                    f"covered in ZAKCODE_HIPAA_ALLOWED_MODELS, or unset ZAKCODE_HIPAA_MODE "
+                    f"for a home that handles no patient data."
                 )
         # Prompt caching (parity #2): stamp cache_control on the stable system prefix for
         # caching-capable Anthropic models. Mutates wire_messages[0] in place; a no-op for
