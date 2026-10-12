@@ -95,7 +95,9 @@ class EditFileTool(Tool):
             return ToolResult.error("'old_string' must not be empty; use Write to create a file.")
 
         try:
-            resolved = resolve_path(path, ctx.workspace_root, ctx.extra_workspace_roots)
+            resolved = resolve_path(
+                path, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
+            )
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

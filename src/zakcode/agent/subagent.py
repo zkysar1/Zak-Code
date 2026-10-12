@@ -24,7 +24,7 @@ session) — it adds no new agent behavior and imports no vendor SDK.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -145,6 +145,7 @@ class SubAgentRunner:
         hook_manager: HookManager | None = None,
         workspace_root: Path | None = None,
         extra_workspace_roots: Sequence[Path] | None = None,
+        virtual_roots: Mapping[str, Path] | None = None,
         rules: str | None = None,
         provider_for: Callable[[str | None], Provider] | None = None,
         provider_for_task: Callable[[str], tuple[Provider, str]] | None = None,
@@ -175,6 +176,9 @@ class SubAgentRunner:
         # The parent's multi-root sandbox, so a child gets the SAME roots (not a narrower
         # one) and a delegated --skill-dir-granted path isn't wrongly rejected. (audit4 #4)
         self.extra_workspace_roots = list(extra_workspace_roots or [])
+        # The parent's world/ and meta/ prefixes, so a child opens the same virtual paths
+        # (ADR-0282).
+        self.virtual_roots = dict(virtual_roots or {})
         # The parent's rendered always-on rules, threaded into every child's prompt so
         # delegated work runs under the same standing guidance as the parent.
         self.rules = rules
@@ -278,6 +282,7 @@ class SubAgentRunner:
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
+            virtual_roots=self.virtual_roots,  # and the same world/ + meta/ spelling
             skill_resolver=self._skill_resolver,  # child use_skill resolves the parent's skills
             trace_label=f"sub{next(self._spawn_seq)}-{definition.name}",  # no turn_N clobber
             trace_session=self.trace_session,  # under the parent's session directory

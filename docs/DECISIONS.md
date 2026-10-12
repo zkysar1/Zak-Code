@@ -17066,3 +17066,81 @@ written from it would drop `gpt-6-luna`. When a release bundles the model, the l
 Removing the one registration call fails 3 of the 18 tests in `tests/test_model_entries.py` (the price reads
 `None`, the capabilities read `[None, None, False]`: the defect itself) and passes the other 15; the full suite
 is 5245 passed, 16 skipped.
+
+## ADR-0282: the file tools open the host framework's `world/` and `meta/` prefixes where the workspace declares them
+
+**Status:** Accepted (2026-10-11)
+
+**Context.** A host framework names its files with two virtual prefixes. Its own file hook rewrites `world/…` to
+the `WORLD_PATH` and `meta/…` to the `META_PATH` of `agents/<name>/local-paths.conf` before its tools run, and
+every other path to the repo; a bare path gets no fallback. zakcode's file tools had no such rewrite, and the
+framework's retrieval script returns each knowledge node's path in the virtual spelling, so the path it handed the
+model was one the model's own file tool could not open. Measured 2026-10-10 on a served Mind, in the first turn of a
+character's Mind: retrieval answered with `world/knowledge/tree/intelligence/installed-packs/…`, and the first
+batch of four parallel `Read`s all answered `File not found`. The provisioner writes the conf with
+`WORLD_PATH=<workspace>/knowledge`, so the file was at `<workspace>/knowledge/knowledge/tree/…`, a path the model
+never sees. ADR-0229 made that miss cheaper to recover from (the not-found answer ranks the real file first); it
+still cost a turn, and a `Write` to `world/…` still made a stray `<workspace>/world/…` the framework never reads
+(the 2026-08-25 field case recorded where `Agent` derives its extra roots).
+
+**Decision.** `zakcode/virtual_paths.py` holds the contract. A path that opens with `world/` or `meta/` is
+rewritten to the directory the workspace declared for it. Every other path, a prefix no directory was declared
+for, and the bare words `world` and `meta` pass through untouched, since the framework's contract needs the
+slash. The remainder is joined as a relative path, so `world//x` cannot become an absolute `/x` that discards the
+root. The rewrite sits in `resolve_path`, ahead of the confinement check, so a rewritten path is judged exactly as
+the same absolute path would be: `world/../../x`, which leaves every root, is still refused. `Read`, `Edit` and
+`Write` pass `ctx.virtual_roots`.
+
+The directories come from the file the runtime already parses for the extra roots (ADR-0230).
+`_read_local_paths_conf` now returns `(KEY, directory)` pairs and `_parse_local_paths_conf` is built on it,
+unchanged for its callers. `_mind_virtual_roots` reads `agents/*/local-paths.conf` under the workspace root and
+declares a prefix only when every agent that names an existing directory for it names the same one. With two
+different worlds on offer, a `Write` to `world/x` would land in whichever was picked, so an ambiguous prefix is
+left out, with a warning, and a path spelled with it is refused as it was before. `Agent` derives the roots once and
+hands them to the loop (the tool context of both the buffered and the streaming path), to the sub-agent runner, so a
+child opens what its parent opened, and to the permission policy.
+
+The permission floor tests the rewritten spelling too. The protected-path scan already tests the raw argument and
+its workspace-resolved form (ADR-0031); the rewritten path is a third spelling of a real location, and an operator
+rule written against that location (`deny Edit(/srv/prod/world/**)`) would bind the absolute spelling and miss
+`world/…`. `PermissionPolicy(virtual_roots=…)` adds the rewritten form to the candidates, tighten-only and by string
+math like the line above it, and `child_view()` carries it.
+
+**Consequences.** A workspace with no `agents/*/local-paths.conf`, or whose conf names no existing directory for a
+prefix, is unchanged: its `world/` is an ordinary directory name (tested with a workspace holding `world/map.md`).
+A workspace that does declare a world no longer reaches a workspace-local `world/` by that spelling, which is the
+framework's contract and the stray directory the `Write` case made. On a served Mind `META_PATH` is
+`<workspace>/meta`, which a plain relative `meta/…` already reaches, so there the rewrite changes the answer for
+`world/` only; on a framework repo that keeps its world and meta elsewhere (ADR-0229) it changes both.
+
+Not covered. The conf of a `--skill-dir` repo still grants roots but declares no prefix; only the workspace's own
+conf does. `Glob`, `Grep` and `LS` still take `world/…` literally, and their not-found hints are unchanged
+(ADR-0040). `Bash` is untouched, as in the framework. The loop's write-after-failed-read tripwire (ADR-0020) keys
+paths lexically and does not rewrite: `world/x` and the absolute path it now reaches are two keys, so the tripwire
+declines to fire across those two spellings, the safe direction for a rail that costs an iteration. A file an
+earlier build wrote under a workspace-local `world/` stays where it is and is no longer reached by that spelling;
+`./world/…` or its absolute path reaches it.
+
+Measured on the served layout above. `Read` of `world/knowledge/tree/intelligence/installed-packs/pack-a/n03-….md`
+answered `File not found` with no roots declared (the field failure, kept as a positive control) and returns the
+node on the first try with them. A scripted turn through `Agent` and the loop returns the node body with `is_error`
+false.
+
+Measured against a real framework workspace's settings, loaded as `Agent` loads them (24 write-only protected-path
+rules and one strict rule): 30 decisions over 15 `world/`, `meta/` and ordinary spellings, each as a write and as a
+read, are identical with the roots off and on. The deny rules on the governed stores (`world/knowledge/tree/_tree.yaml`,
+`world/*.jsonl`, `meta/*.jsonl`, the session state files) bind the same, and ordinary `world/` and `meta/` notes stay
+writable. That workspace holds 22 agent directories and 2 `local-paths.conf` files; one names an existing world and meta, the
+other names none, so both prefixes are declared and nothing is ambiguous.
+
+The proof. `tests/test_virtual_prefix_resolution.py`, 35 tests: the conf (quoted values, a missing directory, no
+conf, two agents that agree and two that differ), the rewrite table (the two prefixes, `world//x`, the bare word,
+`worldly/`, `./world/`, `src/world/`, an absolute path, `World/`), the resolver and its sandbox, `Read`, `Edit` and
+`Write` on the served layout and on a framework repo whose world and meta live outside it, the whole stack through a
+scripted turn, a delegated child, and the permission floor with a control that shows the rule misses the alias
+without the roots. Sixteen mutations, run against a copy of the source, each turn at least one pin red: a control
+that breaks the module import, no rewrite in `resolve_path`, each of `Read`, `Edit` and `Write` dropping the roots,
+the loop dropping them from the tool context, `Agent` not handing them to the loop, the sub-agent runner or the
+policy, the runner not passing them to the child, the floor ignoring the rewritten form, `child_view` dropping them,
+an ambiguous prefix picked anyway, the doubled slash left absolute, the bare word rewritten, and the two conf keys
+swapped. The full suite is 5280 passed, 16 skipped.
