@@ -299,6 +299,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Session-affinity routing key (``prompt_cache_key``, ADR-0257): a body field sent to an
+    # OpenAI-compatible destination so the endpoint can keep a conversation on the engine
+    # that holds its cached prefix. A destination that refuses the field BY NAME is already
+    # handled: the refusal is read, the field is dropped for the session and the call is
+    # re-issued once (ADR-0181, ADR-0285). This switch is for an operator who knows a gateway
+    # refuses it, or whose gateway refuses it WITHOUT naming it, and who does not want the
+    # first call of every session to fail. It replaces a local edit of the source, which
+    # makes ``zakcode update`` refuse the checkout. Default True: affinity routing on a
+    # self-hosted pod depends on it.
+    send_prompt_cache_key: bool = Field(
+        default=True,
+        description=(
+            "Send the session-affinity key (prompt_cache_key) to an OpenAI-compatible "
+            "endpoint (ZAKCODE_SEND_PROMPT_CACHE_KEY=false to stop). Turn it off for a "
+            "gateway whose route refuses the field."
+        ),
+    )
+
     # ── Cost guarantee: never touch a metered API ────────────────────────────
     # For running MANY agents against self-hosted hardware, where a silent failover to a paid
     # provider is the thing you cannot allow. When true, every call is checked and a metered
