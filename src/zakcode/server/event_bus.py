@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
+from fractions import Fraction
 from typing import Any, Final
 
 _DEFAULT_MAXLEN: Final = 1000
@@ -71,6 +73,25 @@ class SessionEventBus:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def oldest_at(self) -> float | None:
+        """Publish stamp (epoch seconds) of the oldest retained event; ``None`` while it holds none.
+
+        The bus is in memory: it starts empty on every server start and evicts past ``maxlen``.
+        Anything older than this stamp can no longer be replayed from it, so it is the line
+        between what a late joiner draws from the bus and what only the saved session still holds.
+
+        Floored to the microsecond. A saved message carries its creation time as a microsecond
+        ISO string, cut from the same clock reading; the publish stamp is a float with finer
+        steps. For an event and a message made in the same instant the float reads a hair LATER,
+        so compared as they were the message looked older than the bus and was drawn twice (seen
+        on Windows CI, whose clock gives both the same reading). Flooring the float exactly, on
+        its true value, puts both on the microsecond.
+        """
+        if not self._buffer:
+            return None
+        return math.floor(Fraction(self._buffer[0][2]) * 1_000_000) / 1_000_000
 
     def publish(self, event: Any) -> int:
         """Append ``event`` to the ring buffer and fan it out to live subscribers.

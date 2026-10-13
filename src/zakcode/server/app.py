@@ -914,8 +914,11 @@ def create_app(
         session that held pages. Tool calls, tool results, thinking and system frames
         are omitted (they are not what was said); each text passes through the same
         secret redaction as the watch stream. ``limit`` keeps the LAST N spoken turns.
-        The literal id ``current`` resolves to the workspace's current conversation
-        (404 when there is none), like ``/watch/current``.
+        Each message carries its creation time (``at``) and the response says where the
+        watch bus starts (``bus_from``): the served page draws the saved messages older than
+        the bus and lets the watch replay draw the rest, so a reopened page shows the whole
+        conversation. The literal id ``current`` resolves to the workspace's current
+        conversation (404 when there is none), like ``/watch/current``.
         """
         if session_id == "current":
             resolved = _current_session_id()
@@ -930,11 +933,25 @@ def create_app(
             text = message.text
             if not text.strip():
                 continue  # a tool-only or empty turn is not a spoken one
-            spoken.append(TranscriptMessage(role=message.role, text=safe_projection.redact(text)))
+            at: float | None
+            try:
+                created = datetime.fromisoformat(message.created_at)
+                at = (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
+            except ValueError:
+                at = None
+            spoken.append(
+                TranscriptMessage(role=message.role, text=safe_projection.redact(text), at=at)
+            )
         if limit is not None and limit >= 0:
             spoken = spoken[-limit:] if limit else []
+        # Where the in-memory watch bus starts: a page draws what is older from `messages` and
+        # lets the bus replay draw the rest (see SessionTranscript.bus_from).
+        bus = event_bus_registry.get(session.id)
         return SessionTranscript(
-            session_id=session.id, messages=spoken, message_count=len(session.messages)
+            session_id=session.id,
+            messages=spoken,
+            message_count=len(session.messages),
+            bus_from=bus.oldest_at if bus is not None else None,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)

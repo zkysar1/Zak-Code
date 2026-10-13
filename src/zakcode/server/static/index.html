@@ -1444,6 +1444,35 @@
     connLabel.textContent = label;
   }
 
+  // The saved conversation, drawn BEFORE the live stream joins. The watch bus is in memory: it
+  // starts empty on every server start and keeps only its last 1000 events, so a page that
+  // relied on it alone drew an empty conversation (or only its newest turns) for one that was
+  // still saved. The saved transcript is the source for everything OLDER than the bus's oldest
+  // retained event (bus_from); the replay watchLoop() opens draws the rest, so no message is
+  // drawn twice and none is missed.
+  async function renderHistory() {
+    try {
+      const resp = await fetch("/sessions/" + sessionId + "/transcript");
+      if (!resp.ok) throw new Error("transcript " + resp.status);
+      const t = await resp.json();
+      assistantBody = null;
+      for (const m of t.messages) {
+        if (t.bus_from !== null && m.at !== null && m.at >= t.bus_from) continue;
+        if (m.role === "user") {
+          const body = userBody(m.text, m.at);
+          // hhmm() stamps a frame that has no time as it arrives; a saved line must not claim "now".
+          if (m.at === null) body.querySelector(".umeta").remove();
+          add(row("user", el("span", "", "›"), body));
+        } else {
+          onTextDelta(m.text);
+          assistantBody = null;  // the next saved message opens its own row
+        }
+      }
+    } catch (e) {
+      add(errCard("could not load the saved conversation: " + e.message));
+    }
+  }
+
   async function init() {
     setConn("connecting", "connecting");
     try {
@@ -1458,6 +1487,7 @@
       document.getElementById("chip-model").textContent = info.model;
       document.getElementById("chip-session").textContent = id8;
       document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
+      await renderHistory();
       watchLoop();
     } catch (e) {
       setConn("closed", "disconnected");
