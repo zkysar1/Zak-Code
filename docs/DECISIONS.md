@@ -17285,3 +17285,46 @@ is inserted ahead of `PYTHONPATH` and the copy was never imported. The full suit
 `test_openai_store_default`, `test_provider_edge`): the same six fail the same way on the unmodified parent commit, and all
 pass under 1.86.2. Both runs collect `tests/test_saybox.py` and `tests/test_ux_family.py`, since that venv has
 `prompt_toolkit`.
+
+## ADR-0285: the session-affinity key honours a refusal, and an operator can switch it off
+
+**Status:** Accepted (2026-10-13)
+
+**Context.** ADR-0181 made a request field the provider refuses by name leave the session: the field joins
+`rejected_request_fields`, `_build_kwargs` filters it out of every later request, and the failed call is re-issued once.
+The session-affinity key (`prompt_cache_key`, ADR-0257) is added to `extra_body` after that filter, so the filter never
+saw it. A gateway whose route refuses the key answered the first call with a 400 that named it, the provider recorded the
+refusal and re-issued the call, and the re-issue carried the key again. The repair is spent once per call, so the second
+refusal was raised and the turn ended.
+
+Reported 2026-10-13 from a Windows install pointed at an OpenAI-compatible gateway whose route fronts a Claude model on
+Bedrock. The operator's assistant patched the condition in the checkout (7 lines added, 2 removed) and the calls worked.
+That left the checkout with a local change, and `zakcode update` refuses a checkout that has local changes beyond the
+install-churn files (`_refresh_checkout`), so the install could no longer update itself. Reverting the patch to update
+brought the failure back. A fix that has to live in the source is a fix an updating install cannot keep.
+
+**Decision.** Two changes at the one seam, `LiteLLMProvider._build_kwargs`.
+
+* The key is sent only while `prompt_cache_key` is not among the session's refused fields, the list the filter above it
+  reads. A refusal costs one re-issued call, then no key for the rest of the session, as it does for every other field
+  Zak Code adds.
+* A setting, `send_prompt_cache_key` (`ZAKCODE_SEND_PROMPT_CACHE_KEY`, default true), turns the key off. It is for a
+  gateway the operator knows refuses the key, including one that refuses it without naming it: a refusal the classifier
+  cannot attribute to a field we sent is a defect to surface, and stays one. The provider reads it from settings only, as
+  it reads `hipaa_mode`, so a provider built without settings sends the key as before.
+
+Rejected: remembering refusals per endpoint across sessions, which is state that outlives the gateway route it was learned
+on; and sending the key only to endpoints known to want it, since the pod's affinity routing depends on it for every
+generic endpoint and any list would be wrong the day a new one appears.
+
+**Consequences.** Nothing changes where the destination accepts the key. Where it refuses by name, the first call of a
+session is refused once and re-issued; with the switch off it is never refused. Neither needs a source edit, so the
+checkout stays clean and `zakcode update` proceeds. Not changed: the phrasings the classifier reads
+(`REJECTED_FIELD_PATTERNS`). A refusal worded outside them still surfaces, and the switch is the remedy.
+
+The proof. `tests/test_provider_field_rejection.py` gains three tests (the re-issued call omits the key and keeps the rest
+of the body, the key stays out for the rest of the session, and the streaming path does the same) and
+`tests/test_prompt_cache_key.py` gains five (a refused key is not rebuilt into the request, the switch defaults on and reads
+the environment, off omits the key, off leaves the rest of the body, and a provider built without settings still sends
+it). Run against the source before this change, eight of those fail: the three refusal tests, the one that checks the
+refused list, and the four that read the new setting.

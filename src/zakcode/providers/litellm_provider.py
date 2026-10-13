@@ -807,6 +807,10 @@ class LiteLLMProvider(Provider):
         self.hipaa_allowed_models: list[str] = list(
             getattr(settings, "hipaa_allowed_models", []) or []
         )
+        #: Settings.send_prompt_cache_key: whether the session-affinity key may ride a
+        #: request (see _build_kwargs). Read from settings only, like hipaa_mode, so a
+        #: provider built without settings behaves exactly as before.
+        self.send_prompt_cache_key: bool = bool(getattr(settings, "send_prompt_cache_key", True))
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
@@ -1604,8 +1608,19 @@ class LiteLLMProvider(Provider):
         # conversation to the engine holding its KV prefix, and OpenAI itself
         # uses the same field for the same cache-routing purpose. Other clouds
         # (anthropic/...) reject unknown body params, so the key is omitted there.
-        if prompt_cache_key and (
-            _model_uses_generic_endpoint(self.model) or self.model.startswith(("openai/", "gpt-"))
+        # The key is added AFTER the refused-field filter above, so it reads the filter's
+        # two inputs itself: the operator's switch, and the fields this provider has been
+        # refused by name. Without the second, the call re-issued after a refusal carried
+        # the key straight back, and a destination that refuses it could never be used
+        # (ADR-0285).
+        if (
+            prompt_cache_key
+            and self.send_prompt_cache_key
+            and "prompt_cache_key" not in refused
+            and (
+                _model_uses_generic_endpoint(self.model)
+                or self.model.startswith(("openai/", "gpt-"))
+            )
         ):
             eb = dict(call_kwargs.get("extra_body") or {})
             eb["prompt_cache_key"] = prompt_cache_key

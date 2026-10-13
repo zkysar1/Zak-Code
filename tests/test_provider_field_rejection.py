@@ -290,3 +290,57 @@ async def test_streaming_never_repairs_after_a_chunk_reached_the_client(
         _ = [ev async for ev in provider.astream([Message.user("hi")])]
     assert len(calls) == 1
     assert provider.rejected_request_fields == []
+
+
+# ── the session-affinity key (ADR-0285) ───────────────────────────────────────
+
+#: How an OpenAI-compatible gateway whose route fronts a Claude model refuses the key: the
+#: pydantic-style phrasing Anthropic's own API uses, wrapped the way litellm surfaces it.
+KEY_REFUSAL_TEXT = (
+    "litellm.BadRequestError: OpenAIException - prompt_cache_key: Extra inputs are not permitted"
+)
+
+
+async def test_a_refused_affinity_key_stays_out_of_the_re_issued_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key is added after the refused-field filter. Before ADR-0285 the re-issue carried it
+    straight back, so a gateway that refuses it could never be used."""
+    fake = _Litellm([BadRequestError(KEY_REFUSAL_TEXT)])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod(extra_body={"seed": 42})
+    result = await provider.acomplete([Message.user("hi")], prompt_cache_key="zakcode/s1")
+    assert result.text == "ok"
+    assert len(fake.calls) == 2
+    assert fake.calls[0]["extra_body"] == {"seed": 42, "prompt_cache_key": "zakcode/s1"}
+    assert fake.calls[1]["extra_body"] == {"seed": 42}  # the key did not come back
+    assert provider.rejected_request_fields == ["prompt_cache_key"]
+
+
+async def test_a_refused_affinity_key_stays_out_for_the_rest_of_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _Litellm([BadRequestError(KEY_REFUSAL_TEXT)])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod()
+    await provider.acomplete([Message.user("hi")], prompt_cache_key="zakcode/s1")
+    await provider.acomplete([Message.user("again")], prompt_cache_key="zakcode/s1")
+    # Two calls for the first turn (refuse + re-issue), ONE for the second.
+    assert len(fake.calls) == 3
+    assert "extra_body" not in fake.calls[2]
+
+
+async def test_streaming_leaves_a_refused_affinity_key_out_of_the_re_issue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _Litellm([BadRequestError(KEY_REFUSAL_TEXT)])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod()
+    events = [
+        ev async for ev in provider.astream([Message.user("hi")], prompt_cache_key="zakcode/s1")
+    ]
+    assert [type(ev) for ev in events] == [StreamTextDelta, StreamDone]
+    assert len(fake.calls) == 2
+    assert fake.calls[0]["extra_body"] == {"prompt_cache_key": "zakcode/s1"}
+    assert "extra_body" not in fake.calls[1]
+    assert provider.rejected_request_fields == ["prompt_cache_key"]

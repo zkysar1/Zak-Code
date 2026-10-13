@@ -25,6 +25,9 @@ recovery never fired — measured the same day as 8 failed turns that
 should each have been a silent compaction.
 """
 
+import pytest
+
+from zakcode.config import Settings
 from zakcode.providers.base import ContextWindowExceeded
 from zakcode.providers.litellm_provider import LiteLLMProvider
 
@@ -70,6 +73,57 @@ def test_prompt_cache_key_absent_when_not_passed() -> None:
     )
     kwargs = p._build_kwargs(MSGS, None)
     assert "extra_body" not in kwargs
+
+
+def test_prompt_cache_key_stays_out_once_the_provider_was_refused_it() -> None:
+    """ADR-0285: the key is added AFTER the refused-field filter, so it must read that filter's
+    list itself — otherwise the call re-issued after a refusal carried the key straight back."""
+    p = LiteLLMProvider(
+        model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072
+    )
+    p.rejected_request_fields.append("prompt_cache_key")
+    kwargs = p._build_kwargs(MSGS, None, prompt_cache_key="zakcode/sess-4")
+    assert "extra_body" not in kwargs
+
+
+def _switched_off(**extra: object) -> Settings:
+    return Settings(
+        default_model="openai/zds-qwen3.6-35b",
+        api_base="http://10.0.0.205:9090/v1",
+        context_window=131072,
+        send_prompt_cache_key=False,
+        _env_file=None,
+        **extra,  # type: ignore[arg-type]
+    )
+
+
+def test_prompt_cache_key_switch_is_on_by_default_and_reads_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert Settings(_env_file=None).send_prompt_cache_key is True
+    monkeypatch.setenv("ZAKCODE_SEND_PROMPT_CACHE_KEY", "false")
+    assert Settings(_env_file=None).send_prompt_cache_key is False
+
+
+def test_prompt_cache_key_is_not_sent_when_the_switch_is_off() -> None:
+    p = LiteLLMProvider(_switched_off())
+    assert p.send_prompt_cache_key is False
+    kwargs = p._build_kwargs(MSGS, None, prompt_cache_key="zakcode/sess-5")
+    assert "extra_body" not in kwargs
+
+
+def test_the_switch_off_leaves_the_rest_of_the_configured_body_alone() -> None:
+    p = LiteLLMProvider(_switched_off(extra_body={"reasoning_budget": 0}))
+    kwargs = p._build_kwargs(MSGS, None, prompt_cache_key="zakcode/sess-6")
+    assert kwargs["extra_body"] == {"reasoning_budget": 0}
+
+
+def test_a_provider_built_without_settings_still_sends_the_key() -> None:
+    """The switch is read from settings only, so every provider built the old way is unchanged."""
+    p = LiteLLMProvider(
+        model="openai/zds-qwen3.6-35b", api_base="http://10.0.0.205:9090/v1", context_window=131072
+    )
+    assert p.send_prompt_cache_key is True
 
 
 def test_llama_cpp_context_overflow_maps_to_context_window_exceeded() -> None:
