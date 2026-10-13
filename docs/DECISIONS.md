@@ -17144,3 +17144,60 @@ the loop dropping them from the tool context, `Agent` not handing them to the lo
 policy, the runner not passing them to the child, the floor ignoring the rewritten form, `child_view` dropping them,
 an ambiguous prefix picked anyway, the doubled slash left absolute, the bare word rewritten, and the two conf keys
 swapped. The full suite is 5280 passed, 16 skipped.
+
+## ADR-0283: `hipaa_mode` narrows every model call to an allowlist the owner fills, and refuses the rest
+
+**Status:** Accepted (2026-10-12)
+
+**Context.** A home that handles protected health information may send it to a model API only under the vendor's
+business-associate agreement, and only to the models that agreement covers. The engine had no way to say "only these
+models". `allowed_models` narrows the per-request `model` override on the HTTP routes and nothing else, so
+`default_model`, `fallback_model`, a `model_roles` entry, runtime failover and every zakpick category could name any
+model the host held a key for. The reach is wider than the config shows: a zakpick category the operator never
+assigned falls through to its built-in default (`openai/gpt-4o-mini` for all six today), so a config that listed one
+model for `deep_code` still sent five categories to another. A host that rotates several models through zakpick had no
+list to hold the rotation to either.
+
+**Decision.** `Settings.hipaa_mode` (default off) and `Settings.hipaa_allowed_models` (default empty) make the engine a
+fail-closed gate on the model name, in the two places `local_only` is enforced and for the same reason (anticipation
+gates warn, application gates guarantee).
+
+* `LiteLLMProvider._build_kwargs` refuses at the call itself. Every completion path funnels through it (`acomplete`,
+  its retry, and `astream`), and a provider built for a role, a category or a failover is built from a copy of the
+  settings, so the list travels with it. This is the guarantee.
+* `Agent._assert_hipaa_models` runs at startup, beside `_assert_local_only` and before the context-window sweep, which
+  can ask a server for its listing. It reads `effective_model_entries`, the list the window sweep already reads, so a
+  category left on a default that is not listed stops the start, with every offender named at once. This is what
+  narrows a zakpick mix to the list: the mix can only hold listed models, and one that does not is loud.
+
+The predicate is `zakcode/providers/hipaa.py::check_model`, one function for both places. It matches the normalized
+name exactly: trimmed, lowercased, a leading `openai/` removed, since OpenAI's own prefix and the bare name are one
+model. No other prefix is dropped, because `anthropic/…` and `openai_like/…` are different destinations, and a dated
+snapshot is a different model from its family name, so each is listed on its own. A blank model, or an empty list,
+permits nothing.
+
+`HipaaModelViolation` is a `RuntimeError`, deliberately not a `ProviderError`, for the reason `LocalOnlyViolation` is
+not: provider errors ride the loop's failover, which answers by trying a different model, and that reaction would turn
+one refusal into patient data reaching a model nobody confirmed. Nothing substitutes a listed model for a refused one
+either. Choosing for the operator is a decision about what may see patient data, and it stays the operator's.
+
+**Consequences.** Off by default, and nothing changes while it is off (tested: the request is built for any model). On,
+the list ships empty and an empty list permits nothing, so the mode refuses to start until the owner fills it from the
+vendor's written confirmation. This change seeds no model.
+
+Not covered. The check names the model, not the destination: `openai/<name>` with an `api_base` that points at a
+gateway still passes when the name is listed, and which key or project receives a request is a separate control. A
+provider injected into `Agent` skips the startup sweep (as with `local_only`), and the request gate lives in the litellm
+provider, so an embedder that injects a different provider owns that provider's check. The vendor's other endpoints
+(Responses, Conversations, Assistants, Files, Batches) and web search are not touched here.
+
+The proof. `tests/test_hipaa_models.py`, 39 tests: the predicate table (the prefix, case, siblings, snapshots, other
+providers, blank and empty), the env parsing, the request gate (listed, unlisted, empty list, mode off), a routed model
+built through `Agent._build_provider` keeping the list, the startup gate (a listed config, an unlisted fallback, every
+offender named at once, unassigned zakpick categories, defaults listed, empty list, a sentinel, mode off), and a full
+`Agent` refusing at construction. Eleven mutations, run against a copy of the source, each turn at least one test red:
+the request gate removed, the constructor not calling the startup gate, the sweep ignoring zakpick, prefix matching
+instead of exact, an empty list permitting everything, the violation joining `ProviderError`, the list missing from
+the env parser, the provider ignoring the setting, a sentinel accused, the `openai/` prefix not normalized, and the
+startup gate returning early. The full suite is 5292 passed, 16 skipped on a build that lacks `prompt_toolkit`, so
+`tests/test_saybox.py` and `tests/test_ux_family.py`, which import it, were not collected.

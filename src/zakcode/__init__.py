@@ -523,6 +523,9 @@ class Agent:
         # only makes read-only /v1/models probes — no billable call has happened yet.
         if not self._provider_injected:
             self._assert_local_only()
+            # The HIPAA allowlist rides the same slot for the same reasons: it needs concrete
+            # models and must fail before any call, and its refusal is a plain config check.
+            self._assert_hipaa_models()
             self._assert_context_windows()
         # Cache of role providers built for a non-default model, keyed by model string, so
         # spawning N sub-agents on the same role model doesn't rebuild the litellm wrapper N×.
@@ -1413,6 +1416,45 @@ class Agent:
                 + "\n\nFix by pointing them at a self-hosted endpoint (set ZAKCODE_API_BASE and "
                 "use an openai/<model> name) or an ollama_chat/<model>, or unset "
                 "ZAKCODE_LOCAL_ONLY to allow paid calls."
+            )
+
+    def _assert_hipaa_models(self) -> None:
+        """Refuse to start when ``hipaa_mode`` is set but a configured model is not allowed.
+
+        The ANTICIPATION half of the HIPAA model guarantee, paired with the fail-closed check
+        in ``LiteLLMProvider._build_kwargs`` the way ``_assert_local_only`` is paired with its
+        own: this one fails at STARTUP and names every offender at once, but it only sees the
+        models it knows to enumerate. It reads EFFECTIVE models (``effective_model_entries``,
+        the list the context-window sweep reads), so a zakpick category the operator never
+        overrode is checked against its built-in default too. That is what narrows a zakpick
+        mix to the allowlist: a category left on a default that is not listed stops the start
+        instead of reaching that model.
+        """
+        if not self.settings.hipaa_mode:
+            return
+        from zakcode.providers.endpoints import is_sentinel
+        from zakcode.providers.hipaa import HipaaModelViolation, check_model
+        from zakcode.providers.routing import effective_model_entries
+
+        allowed = list(self.settings.hipaa_allowed_models or [])
+        offenders: list[str] = []
+        entries = effective_model_entries(self.settings, zakpick=self._zakpick)
+        for label, model, _declared in entries:
+            # Sentinels name no model; by this point default_model is already resolved.
+            if is_sentinel(model):
+                continue
+            ok, reason = check_model(model, allowed)
+            if not ok:
+                offenders.append(f"  - {label}: {reason}")
+
+        if offenders:
+            raise HipaaModelViolation(
+                "hipaa_mode is set, but these configured models are not on the allowlist:\n"
+                + "\n".join(offenders)
+                + "\n\nList only models the vendor has confirmed as covered in "
+                "ZAKCODE_HIPAA_ALLOWED_MODELS and point default_model, fallback_model, "
+                "model_roles and every zakpick category at them, or unset ZAKCODE_HIPAA_MODE "
+                "for a home that handles no patient data."
             )
 
     def _assert_context_windows(self) -> None:

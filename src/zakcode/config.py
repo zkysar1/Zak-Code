@@ -343,6 +343,45 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── HIPAA mode: only models the vendor has confirmed ─────────────────────
+    # For a home that handles protected health information. PHI may go to a model API only
+    # under the vendor's business-associate agreement and only to the models it covers, so
+    # this is the switch between "any model the config names" and "only a model someone
+    # confirmed in writing". When true, every model call is checked against
+    # ``hipaa_allowed_models`` and a model outside it is REFUSED (HipaaModelViolation), never
+    # swapped for another: failover to a model nobody confirmed is the leak.
+    #
+    # Enforced in TWO places, as ``local_only`` is (anticipation gates warn, application
+    # gates guarantee): ``Agent._assert_hipaa_models`` checks the whole config at startup,
+    # zakpick categories nobody overrode included because they fall through to built-in
+    # defaults, and ``LiteLLMProvider._build_kwargs`` refuses at the call itself so no
+    # unenumerated route (failover, auto-resolution, a sub-agent) can slip past.
+    #
+    # It names the MODEL only. Where the request goes (which key, project or base) is a
+    # separate control that this switch does not stand in for. Default False, so nothing
+    # that works today starts refusing.
+    hipaa_mode: bool = Field(
+        default=False,
+        description=(
+            "Refuse any model call whose model is not in hipaa_allowed_models "
+            "(ZAKCODE_HIPAA_MODE=true). No fallback_model, auto-resolution, zakpick "
+            "category or runtime failover can reach a model outside the list. Names the "
+            "model only, not the endpoint or key."
+        ),
+    )
+
+    # EMPTY (default) permits NOTHING under hipaa_mode: it is filled only with models the
+    # vendor has confirmed in writing as covered. ``openai/<name>`` and the bare ``<name>``
+    # are the same model; every other prefix has to be written in full. Matching is exact,
+    # so a dated snapshot is listed on its own.
+    hipaa_allowed_models: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Models a HIPAA home may call (ZAKCODE_HIPAA_ALLOWED_MODELS, comma/space/JSON "
+            "list). Empty permits no model while hipaa_mode is on."
+        ),
+    )
+
     # ── Agent behavior ──────────────────────────────────────────────────────
     # There is deliberately NO max-iterations setting (removed 2026-08-25, no-knobs
     # ruling): the product runs unlimited — minds run for days — and the real runaway
@@ -757,6 +796,7 @@ class Settings(BaseSettings):
         "tool_exposure_deny",
         "web_allowed_domains",
         "local_api_bases",
+        "hipaa_allowed_models",
         "egress_allowed_domains",
         "auto_model_preference",
         mode="before",
