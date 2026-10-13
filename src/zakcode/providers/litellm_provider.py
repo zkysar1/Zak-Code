@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import os
@@ -21,7 +22,7 @@ import socket
 import time
 import urllib.request
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 import httpx
@@ -68,7 +69,12 @@ from zakcode.providers.endpoints import (
     is_sentinel,
     model_uses_generic_endpoint,
 )
-from zakcode.providers.hipaa import HipaaModelViolation, check_model
+from zakcode.providers.hipaa import (
+    HipaaEndpointViolation,
+    HipaaModelViolation,
+    check_chat_completions_only,
+    check_model,
+)
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
@@ -417,6 +423,39 @@ def _litellm_supports_reasoning(model: str) -> bool:
         return bool(litellm.supports_reasoning(model=model))
     except Exception:  # noqa: BLE001 — a diagnostic lookup must never break a request
         return False
+
+
+def _litellm_route(model: str, call_kwargs: Mapping[str, Any], api_base: str | None) -> str | None:
+    """The mode litellm's own bridge check gives this call (``"responses"``, ``"chat"``, ...).
+
+    The probe ``hipaa_mode`` hands to :func:`zakcode.providers.hipaa.check_route`. It asks
+    litellm instead of re-deriving its rules, because the answer moves with the installed
+    version and the base: a ``gpt-5.4`` call carrying function tools and no reasoning depth
+    stays on chat under litellm 1.86.2 and is moved onto ``/v1/responses`` under 1.98 at
+    OpenAI's own base, and a ``gpt-5.6`` call carrying ``reasoning_effort="none"`` is the
+    reverse. The arguments are filtered to those the installed signature accepts. ``None``
+    means litellm could not be asked (no such function, an unknown provider); the caller
+    treats that as a refusal, never a pass.
+    """
+    try:
+        from litellm.main import responses_api_bridge_check
+
+        bare, provider, _key, _base = litellm.get_llm_provider(model=model, api_base=api_base)
+        accepted = inspect.signature(responses_api_bridge_check).parameters
+        offered = {
+            "web_search_options": call_kwargs.get("web_search_options"),
+            "tools": call_kwargs.get("tools"),
+            "reasoning_effort": call_kwargs.get("reasoning_effort"),
+            "api_base": api_base,
+        }
+        info, _routed = responses_api_bridge_check(
+            model=bare,
+            custom_llm_provider=provider,
+            **{k: v for k, v in offered.items() if k in accepted},
+        )
+        return str(info.get("mode"))
+    except Exception:  # noqa: BLE001 - failing to ask is "cannot prove", and that refuses
+        return None
 
 
 def _fetch_models(api_base: str, api_key: str | None, timeout: float) -> Any:
@@ -1702,6 +1741,24 @@ class LiteLLMProvider(Provider):
                 if "reasoning_effort" not in allowed:
                     allowed.append("reasoning_effort")
                 call_kwargs["allowed_openai_params"] = allowed
+        # ── hipaa_mode: the ENDPOINT gate (fail CLOSED) ──────────────────────────────
+        # Last on purpose: it judges the request that will actually be sent, after every
+        # rule above ran, the reasoning depth that decides whether litellm moves a call onto
+        # /v1/responses included. The model gate near the top names WHO may be called; this
+        # one names WHICH door. A refusal, never a downgrade: dropping the offending field
+        # or forcing a different depth would be a decision about what the vendor may keep,
+        # and that stays the operator's.
+        if self.hipaa_mode:
+            ok, reason = check_chat_completions_only(
+                self.model, call_kwargs, route_mode=_litellm_route, api_base=self.api_base
+            )
+            if not ok:
+                raise HipaaEndpointViolation(
+                    f"hipaa_mode is set, but this call would not stay on Chat Completions "
+                    f"with nothing kept or run on the vendor's side: {reason}. Use a model "
+                    f"that serves your tools on Chat Completions, or unset "
+                    f"ZAKCODE_HIPAA_MODE for a home that handles no patient data."
+                )
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:

@@ -17201,3 +17201,87 @@ instead of exact, an empty list permitting everything, the violation joining `Pr
 the env parser, the provider ignoring the setting, a sentinel accused, the `openai/` prefix not normalized, and the
 startup gate returning early. The full suite is 5292 passed, 16 skipped on a build that lacks `prompt_toolkit`, so
 `tests/test_saybox.py` and `tests/test_ux_family.py`, which import it, were not collected.
+
+## ADR-0284: `hipaa_mode` keeps every model call on Chat Completions, and refuses one that would be stored, run, or routed elsewhere
+
+**Status:** Accepted (2026-10-13)
+
+**Context.** ADR-0283 narrowed WHO a HIPAA home may call. It left open WHICH DOOR the call uses, and the owner has
+confirmed one OpenAI endpoint only, Chat Completions. Two things move a call off it. The request can ask the vendor to
+keep or run something: `store` or `background` set, `web_search_options`, a vendor-hosted tool, `previous_response_id`,
+`conversation` or a reasoning summary. And litellm answers some Chat Completions calls by sending them to `/v1/responses`
+instead, which Zak Code triggers on purpose: a `gpt-5.6`-tier tool call is given an explicit reasoning depth (`none`), and
+that depth is what moves it (ADR-0188, ADR-0200; the provider's comment records 160 of 160 measured calls reaching
+`/v1/responses`).
+
+Which door a call uses is not a property of the model name. Measured on 2026-10-13: the request the provider builds, with
+one function tool, at OpenAI's default base, sent through litellm with every HTTP request answered in-process (a socket
+guard refused any non-loopback connect, and none was attempted).
+
+| Model | litellm 1.86.2 (the lock) | litellm 1.98.0 |
+|---|---|---|
+| `gpt-4o`, `gpt-4o-mini`, `gpt-5-mini`, `gpt-6-luna` | `/v1/chat/completions` | `/v1/chat/completions` |
+| `gpt-5.4` (no depth set) | `/v1/chat/completions` | `/v1/responses` |
+| `gpt-5.6-luna` (depth `none`) | `/v1/responses` | `/v1/chat/completions` |
+| `gpt-5-pro`, `gpt-5-codex`, `gpt-5.4-pro` | `/v1/responses` | `/v1/responses` |
+
+A rule written from one column is wrong on the other. The base matters as well: litellm 1.98 bridges an unset depth only
+at OpenAI's own endpoint (its source says so), so a probe redirected to a local server measured a different request and
+disagreed with the real one on `gpt-5.4`.
+
+**Decision.** With `hipaa_mode` on, `LiteLLMProvider._build_kwargs` ends with an endpoint gate, after every default the
+provider adds, so it judges the request that will be sent. A refusal raises `HipaaEndpointViolation`, a `RuntimeError` and
+not a `ProviderError`, for the reason `HipaaModelViolation` is not: failover answers an error by trying another route, and
+another route is what this refusal exists to stop. Nothing is dropped or downgraded to pass, because removing a field or
+forcing a different depth is a decision about what the vendor may keep, and that stays the operator's.
+
+* `check_request_shape` judges the top level and `extra_body` separately, since both reach the wire: a truthy `store` or
+  `background`; any present `web_search_options`, `previous_response_id`, `conversation`, `reasoning_summary` or
+  `reasoningSummary`; and any tool whose type is not `function` or `custom`. `store=false`, which the provider sets itself,
+  is what the mode wants and passes.
+* `check_route` refuses a `responses/` model prefix outright, then asks a probe which door the call takes. It refuses on
+  `responses`, and refuses too when the probe cannot say (fail closed). The probe is litellm's own
+  `responses_api_bridge_check`, called with the final tools, depth and base and with its arguments filtered to those the
+  installed signature accepts (the lock's release has no `api_base` parameter). It lives in `litellm_provider.py` and the
+  policy takes it as an argument, because `tests/test_contracts.py` keeps litellm out of every module but the provider
+  layer and this change does not move that line.
+
+Asking litellm instead of copying its rules is the decision that matters: the table is why a copy would be right only on
+the day it was written.
+
+**Consequences.** Off by default, and nothing changes while it is off (tested). On, a listed model whose calls litellm
+would move is refused on its first such call, naming the route, so the owner's list has to hold models that stay on Chat
+Completions with function tools under the installed release; the first row above does, on both. Nothing substitutes a
+model or a route. The explicit depth ADR-0200 gives a `gpt-5.6` tool call stays, and where litellm answers it by moving
+the call, the call is refused.
+
+Not covered. The gate mirrors litellm's own routing decision. The wire test compares it with the request litellm sends for
+nine models on two releases and they agree on all nine, but a route litellm adds that its bridge check does not model
+would pass both until a model that exposes it joins the table. Which key, project or `api_base` receives the call is still
+a separate control (ADR-0283). A provider injected into `Agent` owns its own check. `GET {api_base}/models` (context-window
+discovery) is a listing, not a chat call, and is untouched. Zak Code's own web tools run on the host and are not a model
+endpoint. A separate process on the same host that calls OpenAI itself, and anything the agent runs through a shell tool,
+are outside this check.
+
+The proof. `tests/test_hipaa_endpoints.py`, 85 tests: the request-shape table (plain bodies pass; each refused field and
+tool kind is refused, in both layers); the policy against a stub probe (it follows the probe, and a blank or `responses/`
+model never reaches it); litellm's probe (Responses-only and chat models, a bridge that raises, a signature without
+`api_base` and one with it); the provider gate (a listed chat model builds, the provider's own `store: false` does not
+trip it, a listed Responses-only model, `store=true` from the settings body and from a per-call body, a hosted tool, a
+per-call web search option, an async call refused before any request leaves, the violation is not a `ProviderError`, mode
+off changes nothing, the model gate still speaks first); the wiring (the verdict equals litellm's own answer for the
+request the provider built, and the base the provider will call reaches the probe); and the wire test, for nine models
+as in the table, which passes on 1.98.0 and on 1.86.2. Twenty mutations, run against a copy of the source under both
+releases, each turn at least one test red on both: the route never refusing Responses, an unaskable route passing, the
+bridge arguments unfiltered, tools, depth or base not offered to the bridge (or a fixed custom base offered), `store`,
+`background` or `web_search_options` not refused, `extra_body` ignored, hosted tools passing, the composite skipping the
+shape check, the `responses/` prefix not refused, a present-but-empty field passing, the violation joining
+`ProviderError`, the provider gate removed, judging an empty request, dropping `api_base`, raising the model violation,
+and handing the policy a probe that never says `responses`. A planted import-time failure must be killed before any
+verdict counts: the first run of the harness reported every mutant as surviving, because pytest's `pythonpath = ["src"]`
+is inserted ahead of `PYTHONPATH` and the copy was never imported. The full suite under litellm 1.86.2 is 5404 passed,
+16 skipped, 0 failed. Under a dev venv holding litellm 1.98.0 it is 5398 passed, 16 skipped, 6 failed
+(`test_gpt56_tools_effort_none`, two in `test_model_entries`, `test_openai_new_family_request_shape`,
+`test_openai_store_default`, `test_provider_edge`): the same six fail the same way on the unmodified parent commit, and all
+pass under 1.86.2. Both runs collect `tests/test_saybox.py` and `tests/test_ux_family.py`, since that venv has
+`prompt_toolkit`.
