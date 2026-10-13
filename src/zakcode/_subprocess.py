@@ -38,6 +38,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -379,6 +380,47 @@ def resolve_executable(name: str) -> str:
     if found and "windowsapps" not in found.lower():
         return found
     return name
+
+
+def split_command(cmd: str, *, project_dir: str | None = None) -> list[str]:
+    """Split a settings.json command string into an argv array, the way its author wrote it.
+
+    POSIX is plain ``shlex.split``. On Windows the command still carries shell quoting (a hook is
+    written ``bash "$CLAUDE_PROJECT_DIR/x.sh"``), so BOTH quote kinds still group words and are
+    dropped from the token, wherever they sit in it: ``--dir="C:\\My Dir"`` is the one argv entry
+    ``--dir=C:\\My Dir``. The single difference is that a backslash is a path separator, never an
+    escape, so ``C:\\Users\\me\\x.cmd`` and a quoted path that ends in a backslash come through
+    whole.
+
+    This replaces ``shlex.split(cmd, posix=False)``, which KEPT the quote characters in each
+    token. ``subprocess`` re-quotes a Windows argument that holds a space, so the child received
+    ``"C:\\Program Files\\Git\\bin\\bash.exe"`` with literal quotes and a path with a space never
+    ran; it also cut ``--dir="C:\\My Dir"`` in two at the space. Raises ``ValueError`` on an
+    unclosed quote, as ``shlex.split`` does.
+
+    *project_dir* fills ``${CLAUDE_PROJECT_DIR}`` / ``$CLAUDE_PROJECT_DIR`` in each argument AFTER
+    the split. Filling it into the string first cut ``bash $CLAUDE_PROJECT_DIR/x.sh`` at the space
+    of a project directory such as ``C:/Users/me/My Project``, so the child got the truncated
+    ``C:/Users/me/My`` and the script was never found. Now the directory is one argument whether or
+    not its author quoted the variable, and the danger scan, which runs on the raw command, never
+    sees the substituted path.
+    """
+    if sys.platform != "win32":
+        argv = shlex.split(cmd)
+    else:
+        lex = shlex.shlex(cmd, posix=True)
+        lex.whitespace_split = True  # words end at whitespace only, as in shlex.split
+        lex.commenters = ""  # a ``#`` is an ordinary character, as in shlex.split(comments=False)
+        lex.escape = ""  # a backslash is a path separator here, never an escape
+        argv = list(lex)
+    if project_dir is not None:
+        argv = [
+            token.replace("${CLAUDE_PROJECT_DIR}", project_dir).replace(
+                "$CLAUDE_PROJECT_DIR", project_dir
+            )
+            for token in argv
+        ]
+    return argv
 
 
 def new_group_kwargs() -> dict[str, Any]:
