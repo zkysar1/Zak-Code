@@ -17356,6 +17356,11 @@ not the defect, and "connected, message handled, page blank" with the server up 
   transcript; a message the bus lost is drawn from the transcript. A message stamped at or after `bus_from` counts as the
   bus's, so a tie never draws one twice. A line drawn from the transcript is text only, since the session keeps tool calls
   and thinking apart from what was said.
+* `bus_from` is floored to the microsecond. A message carries its creation time as a microsecond ISO string cut from the
+  same clock reading as the event's publish stamp, which is a float with finer steps, so for an event and a message made in
+  the same instant the float reads a hair later and the message looked older than the bus. The Windows CI cell measured
+  exactly that pair (1791934333.961896 against 1791934333.9618964) and drew the first turn twice; the Linux cells never
+  saw a tie.
 
 Rejected: drawing the transcript and opening the watch at the bus's latest cursor, which hides the bus's richer frames for
 a turn still running; deduplicating by text, which merges a message the user sent twice; and a timer that drew the
@@ -17368,6 +17373,6 @@ it passes that cursor.
 
 The proof. `tests/test_webclient_reload_history.py` (six tests) runs the page's own script under node against a live
 server: reopened after a restart, reopened while the server holds everything, reopened against a ring of three events, a
-message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains one. With the page's
-history step removed three of the page tests fail, with the partition removed two fail, and with `bus_from` always null
-three fail.
+message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains two (the stamp moves
+forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
+with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.

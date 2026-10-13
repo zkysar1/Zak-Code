@@ -133,6 +133,20 @@ def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
     assert bus.oldest_at == 11.0
 
 
+def test_oldest_at_is_floored_to_the_microsecond_a_saved_message_is_stamped_in() -> None:
+    """A message made in the same instant as the event is stamped 1791934333.961896 (an ISO
+    string, microseconds); the publish stamp is the finer float 1791934333.9618964. Compared
+    raw the message reads older than the bus and a page draws it twice (Windows CI measured
+    exactly this pair). The bus's line is floored so the two are equal, and a message made a
+    microsecond later is not."""
+    bus = SessionEventBus(clock=lambda: 1791934333.9618964)
+    bus.publish("a")
+    assert bus.oldest_at == 1791934333.961896
+    message_at = 1791934333.961896  # stamped in the same instant as the event
+    assert message_at >= bus.oldest_at  # so it counts as the bus's
+    assert message_at - 0.000001 < bus.oldest_at  # one microsecond earlier does not
+
+
 # ── Multiple subscribers ─────────────────────────────────────────────────────
 
 
