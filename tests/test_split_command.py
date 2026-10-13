@@ -19,8 +19,10 @@ names one kind of token, so a failure says which kind broke.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,10 +31,21 @@ from zakcode.hooks import HookEvent
 from zakcode.hooks.settings_loader import load_settings_hooks
 from zakcode.status_line import load_status_line_spec
 
+#: A program given as a path: ``resolve_executable`` returns it as it is and never searches PATH.
+_PROGRAM = "/opt/tools/run"
+
+
+def _no_path_search(*_args: Any, **_kwargs: Any) -> None:
+    raise AssertionError(f"a PATH search ran; give the command a path program such as {_PROGRAM}")
+
 
 @pytest.fixture
 def windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
+    # From Python 3.12 `shutil.which` runs Windows-only code once `sys.platform` says win32, and a
+    # Linux host crashes there. Nothing under test needs the PATH search, so make any call to it
+    # fail the same way on every Python rather than only on the newer ones.
+    monkeypatch.setattr(shutil, "which", _no_path_search)
 
 
 # ── POSIX: unchanged ─────────────────────────────────────────────────────────
@@ -162,7 +175,7 @@ _VARIABLE_FORMS = [
 @pytest.mark.parametrize("form", _VARIABLE_FORMS)
 def test_hook_in_a_project_dir_with_a_space(windows: None, tmp_path: Path, form: str) -> None:
     ws = _project_with_space(tmp_path)
-    command = "python " + form.format(rest=".claude/hooks/x.py") + " --mode=fast"
+    command = f"{_PROGRAM} " + form.format(rest=".claude/hooks/x.py") + " --mode=fast"
     (ws / ".claude" / "settings.json").write_text(
         json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}),
         encoding="utf-8",
@@ -170,8 +183,9 @@ def test_hook_in_a_project_dir_with_a_space(windows: None, tmp_path: Path, form:
     specs, errors = load_settings_hooks(ws)
     assert errors == {}
     assert len(specs) == 1 and specs[0].event is HookEvent.TURN_END
-    # The directory arrives as ONE argument, with its space and without any quote character.
-    assert specs[0].command[1:] == [f"{ws}/.claude/hooks/x.py", "--mode=fast"]
+    # The directory arrives as ONE argument, with its space and without any quote character. The
+    # loader fills in the forward-slash form of the root, which is what Git Bash resolves.
+    assert specs[0].command[1:] == [f"{ws.as_posix()}/.claude/hooks/x.py", "--mode=fast"]
     assert not any('"' in part for part in specs[0].command)
 
 
@@ -184,7 +198,7 @@ def test_hook_whose_program_is_in_a_project_dir_with_a_space(windows: None, tmp_
     )
     specs, errors = load_settings_hooks(ws)
     assert errors == {}
-    assert [s.command for s in specs] == [[f"{ws}/.claude/hooks/x.cmd", "--mode=fast"]]
+    assert [s.command for s in specs] == [[f"{ws.as_posix()}/.claude/hooks/x.cmd", "--mode=fast"]]
 
 
 @pytest.mark.parametrize("form", _VARIABLE_FORMS)
@@ -192,7 +206,7 @@ def test_status_line_in_a_project_dir_with_a_space(
     windows: None, tmp_path: Path, form: str
 ) -> None:
     ws = _project_with_space(tmp_path)
-    command = "python " + form.format(rest="s.py")
+    command = f"{_PROGRAM} " + form.format(rest="s.py")
     (ws / ".claude" / "settings.json").write_text(
         json.dumps({"statusLine": {"type": "command", "command": command}}),
         encoding="utf-8",
@@ -200,4 +214,4 @@ def test_status_line_in_a_project_dir_with_a_space(
     spec, error = load_status_line_spec(ws)
     assert error is None
     assert spec is not None
-    assert spec.command[1:] == [f"{ws}/s.py"]
+    assert spec.command[1:] == [f"{ws.as_posix()}/s.py"]
