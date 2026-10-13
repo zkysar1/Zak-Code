@@ -229,7 +229,8 @@ running an autonomous framework on Zak Code:
   with a wake-up behind it (ADR-0187).
 - **`settings.json` hook ingestion.** A Claude-Code `settings.json` hook block is parsed verbatim
   (`zakcode.hooks.settings_loader`): event names mapped (`Stop` → `TURN_END`, `PreToolUse`, …),
-  `$CLAUDE_PROJECT_DIR` substituted, every command security-scanned; always on (ADR-0025).
+  `$CLAUDE_PROJECT_DIR` substituted into each argument (a project directory with a space stays
+  one argument, quoted or not), every command security-scanned; always on (ADR-0025).
   Read from `.claude/settings.json`, `.claude/settings.local.json`, and `.zakcode/settings.json`.
 
 ## Still the framework's job (the host won't do these — by design)

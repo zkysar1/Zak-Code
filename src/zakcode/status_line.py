@@ -41,8 +41,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shlex
-import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -50,6 +48,7 @@ from pydantic import BaseModel, Field
 from zakcode._subprocess import (
     create_group_subprocess_exec,
     resolve_executable,
+    split_command,
     terminate_process_tree,
 )
 
@@ -128,14 +127,15 @@ class StatusLineSpec(BaseModel):
     drop_env: list[str] = Field(default_factory=list)
 
 
-def _split_command(cmd: str) -> list[str]:
+def _split_command(cmd: str, project_dir: str | None = None) -> list[str]:
     """Split a shell command string into an argv array (platform-aware).
 
     Mirrors :func:`zakcode.hooks.settings_loader._split_command`: ``argv[0]`` is resolved
     to a real executable path so a ``bash my-status.sh`` spec spawns the actual Git Bash,
-    not the Windows WSL app-exec stub (see ``resolve_executable``).
+    not the Windows WSL app-exec stub (see ``resolve_executable``). *project_dir* is filled
+    into ``$CLAUDE_PROJECT_DIR`` after the split (see ``split_command``).
     """
-    argv = shlex.split(cmd, posix=False) if sys.platform == "win32" else shlex.split(cmd)
+    argv = split_command(cmd, project_dir=project_dir)
     if argv:
         argv[0] = resolve_executable(argv[0])
     return argv
@@ -211,11 +211,8 @@ def load_status_line_spec(
         )
         # Fall through to register with a warning (parity with the hook loader).
 
-    substituted = raw_command.replace("${CLAUDE_PROJECT_DIR}", project_dir).replace(
-        "$CLAUDE_PROJECT_DIR", project_dir
-    )
     try:
-        argv = _split_command(substituted)
+        argv = _split_command(raw_command, project_dir)
     except ValueError as exc:
         return None, f"command parse error: {exc}"
     if not argv:

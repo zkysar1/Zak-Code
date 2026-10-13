@@ -24,11 +24,9 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
-import sys
 from pathlib import Path
 
-from zakcode._subprocess import resolve_executable
+from zakcode._subprocess import resolve_executable, split_command
 from zakcode.hooks import (
     DEFAULT_HOOK_TIMEOUT,
     HookEvent,
@@ -72,13 +70,14 @@ _EVENT_MAP: dict[str, HookEvent] = {
 _SKIP_EVENTS: set[str] = {"StopFailure", "UserPromptExpansion"}
 
 
-def _split_command(cmd: str) -> list[str]:
+def _split_command(cmd: str, project_dir: str | None = None) -> list[str]:
     """Split a shell command string into an argv array (platform-aware).
 
     ``argv[0]`` is resolved to a real executable path so a hook's ``bash <script>``
     spawns the actual Git Bash, not the Windows WSL app-exec stub (see ``resolve_executable``).
+    *project_dir* is filled into ``$CLAUDE_PROJECT_DIR`` after the split (see ``split_command``).
     """
-    argv = shlex.split(cmd, posix=False) if sys.platform == "win32" else shlex.split(cmd)
+    argv = split_command(cmd, project_dir=project_dir)
     if argv:
         argv[0] = resolve_executable(argv[0])
     return argv
@@ -132,7 +131,8 @@ def load_settings_hooks(
     scrub_names = provider_key_env_names()
     # Claude Code's $CLAUDE_PROJECT_DIR (the project root); hooks reference scripts through
     # it (e.g. `bash $CLAUDE_PROJECT_DIR/scripts/x.sh`). We run hook argv WITHOUT a
-    # shell, so substitute it here ourselves — forward-slash form so Git Bash resolves the path.
+    # shell, so substitute it ourselves, in each argument after the split — forward-slash form so
+    # Git Bash resolves the path.
     project_dir = workspace_root.as_posix()
 
     for settings_path in _settings_candidates(workspace_root):
@@ -215,11 +215,8 @@ def load_settings_hooks(
                             )
                             # Fall through to register with warning.
 
-                    command_str = command_str.replace("${CLAUDE_PROJECT_DIR}", project_dir).replace(
-                        "$CLAUDE_PROJECT_DIR", project_dir
-                    )
                     try:
-                        argv = _split_command(command_str)
+                        argv = _split_command(command_str, project_dir)
                     except ValueError as exc:
                         errors[key] = f"command parse error: {exc}"
                         continue
