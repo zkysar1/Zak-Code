@@ -339,6 +339,10 @@ class TranscriptMessage(BaseModel):
 
     role: Literal["user", "assistant"]
     text: str
+    #: When the message was created (epoch seconds), on the same clock as the watch stream's
+    #: ``at``; ``None`` if its stored stamp does not parse. Lets a page that joins the watch bus
+    #: tell a saved message from one the bus will replay.
+    at: float | None = None
 
 
 class SessionTranscript(BaseModel):
@@ -348,11 +352,18 @@ class SessionTranscript(BaseModel):
     are not part of what was said, and the text is passed through the same secret
     redaction the watch stream applies. ``message_count`` is the session's full length
     (every stored message), so a consumer can tell "short transcript" from "short
-    session"."""
+    session".
+
+    ``bus_from`` is the publish stamp (epoch seconds) of the oldest event the session's watch
+    bus still holds, ``None`` when it holds none. A message with ``at`` at or after it is in
+    that bus's replay; one before it is only here. A page draws the second kind from this route
+    and lets the replay draw the first, so a reopened page shows the whole conversation without
+    drawing any message twice."""
 
     session_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
     message_count: int = 0
+    bus_from: float | None = None
 
 
 class ToolInfo(BaseModel):

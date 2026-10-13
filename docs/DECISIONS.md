@@ -17328,3 +17328,46 @@ of the body, the key stays out for the rest of the session, and the streaming pa
 the environment, off omits the key, off leaves the rest of the body, and a provider built without settings still sends
 it). Run against the source before this change, eight of those fail: the three refusal tests, the one that checks the
 refused list, and the four that read the new setting.
+
+## ADR-0286: a reopened web page draws the saved conversation, then lets the watch replay draw the rest
+
+**Status:** Accepted (2026-10-13)
+
+**Context.** The served page built the conversation from the watch bus alone: `GET /watch/<id>?full=1` replays the bus's
+retained events and then tails it. The bus is in memory, a ring of 1000 events per session that is empty at every server
+start (ADR-0219 stamps each event as it is published). A page opened against a bus that no longer holds the conversation
+therefore drew the empty start screen, or only the turns the ring still held, for a conversation the session file held in
+full. ADR-0041 added `GET /sessions/{id}/transcript` for exactly this reader, and no page used it.
+
+Reported 2026-10-13 from a first Windows run: the browser was closed and reopened at the same address, the page said
+"connected", a line sent from it was handled (the terminal showed it), and the page stayed on the start screen without the
+earlier conversation. Reproduced against a real loopback server running the page's own script under node. With the server
+restarted, the page drew 0 rows of a 3-turn conversation, and after one new message drew that message's turn alone. With
+the server kept running, the page replayed the whole conversation from the bus and drew it correctly, so that case was
+not the defect, and "connected, message handled, page blank" with the server up was not reproduced.
+
+**Decision.** The page draws what the bus cannot give it from the saved session, and lets the replay draw the rest.
+
+* `GET /sessions/{id}/transcript` stamps each message with its creation time (`at`, epoch seconds, the clock the watch
+  stream's `at` is on) and reports `bus_from`, the publish stamp of the oldest event the session's bus still holds
+  (`null` when it holds none).
+* On load, before the watch opens, the page draws every saved message older than `bus_from`, all of them when it is
+  `null`. The replay then draws every retained event. A message the bus holds is drawn from the bus and never from the
+  transcript; a message the bus lost is drawn from the transcript. A message stamped at or after `bus_from` counts as the
+  bus's, so a tie never draws one twice. A line drawn from the transcript is text only, since the session keeps tool calls
+  and thinking apart from what was said.
+
+Rejected: drawing the transcript and opening the watch at the bus's latest cursor, which hides the bus's richer frames for
+a turn still running; deduplicating by text, which merges a message the user sent twice; and a timer that drew the
+transcript only if no event arrived within a beat, which raced the replay and took a bus holding one event for a complete one.
+
+**Consequences.** Where the bus holds the whole conversation nothing changes on screen. After a restart or an eviction the
+earlier turns appear as text. Not changed, and read from `SessionEventBus.subscribe` rather than reproduced: a page that
+stays open across a server restart reconnects with its old cursor, and the new bus (cursors from 1) replays nothing until
+it passes that cursor.
+
+The proof. `tests/test_webclient_reload_history.py` (six tests) runs the page's own script under node against a live
+server: reopened after a restart, reopened while the server holds everything, reopened against a ring of three events, a
+message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains one. With the page's
+history step removed three of the page tests fail, with the partition removed two fail, and with `bus_from` always null
+three fail.

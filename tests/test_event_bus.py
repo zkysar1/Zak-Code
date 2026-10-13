@@ -117,6 +117,22 @@ async def test_bounded_buffer_evicts_oldest_and_replay_shows_cursor_gap() -> Non
     await agen.aclose()
 
 
+def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
+    """The line between what a late joiner can replay from the bus and what only the saved
+    session still holds: none while the bus is empty (a server restart), then the first
+    event's stamp, moving forward as the ring evicts."""
+    stamps = iter([10.0, 11.0, 12.0, 13.0])
+    bus = SessionEventBus(maxlen=3, clock=lambda: next(stamps))
+    assert bus.oldest_at is None
+    bus.publish("a")
+    bus.publish("b")
+    assert bus.oldest_at == 10.0
+    bus.publish("c")
+    assert bus.oldest_at == 10.0  # full, nothing evicted yet
+    bus.publish("d")  # evicts "a"
+    assert bus.oldest_at == 11.0
+
+
 # ── Multiple subscribers ─────────────────────────────────────────────────────
 
 

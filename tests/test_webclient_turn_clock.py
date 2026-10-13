@@ -132,6 +132,11 @@ globalThis.fetch = async (url) => {
   if (u.pathname === "/sessions/current") {
     return { ok: true, status: 200, json: async () => __SESSION };
   }
+  if (u.pathname === "/sessions/" + __SESSION.id + "/transcript") {
+    // A session with nothing saved: the page draws no history, only the scripted stream.
+    const empty = { session_id: __SESSION.id, messages: [], message_count: 0, bus_from: null };
+    return { ok: true, status: 200, json: async () => empty };
+  }
   if (u.pathname === "/watch/" + __SESSION.id) {
     const key = String(u.searchParams.get("since"));
     if (!(key in __STREAMS)) return new Promise(() => {});

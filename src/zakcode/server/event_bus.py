@@ -72,6 +72,16 @@ class SessionEventBus:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def oldest_at(self) -> float | None:
+        """Publish stamp (epoch seconds) of the oldest retained event; ``None`` while it holds none.
+
+        The bus is in memory: it starts empty on every server start and evicts past ``maxlen``.
+        Anything older than this stamp can no longer be replayed from it, so it is the line
+        between what a late joiner draws from the bus and what only the saved session still holds.
+        """
+        return self._buffer[0][2] if self._buffer else None
+
     def publish(self, event: Any) -> int:
         """Append ``event`` to the ring buffer and fan it out to live subscribers.
 
