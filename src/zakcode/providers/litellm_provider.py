@@ -442,7 +442,7 @@ def _litellm_route(model: str, call_kwargs: Mapping[str, Any], api_base: str | N
 
         bare, provider, _key, _base = litellm.get_llm_provider(model=model, api_base=api_base)
         accepted = inspect.signature(responses_api_bridge_check).parameters
-        offered = {
+        offered: dict[str, Any] = {
             "web_search_options": call_kwargs.get("web_search_options"),
             "tools": call_kwargs.get("tools"),
             "reasoning_effort": call_kwargs.get("reasoning_effort"),
