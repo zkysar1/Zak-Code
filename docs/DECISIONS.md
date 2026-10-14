@@ -18311,3 +18311,57 @@ not depend on the panel. Seven mutations were each run green, red, green (2026-1
 verdict: the row never added turned 12 red; the value printed after its provenance, 8; a blank never detected, 2; spaces
 counted as a key, 1; the in-process word removed, 1; existence read off the environment instead of the settings, 1; and
 every key reported as coming from the environment, 6. `uv run poe check` is green: 5,764 passed, 22 skipped.
+
+## ADR-0300: the build backend is pinned to one exact release, and the update's constraints carry no hashes because `uv tool install` does not check them
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0291 made `zakcode update` reinstall a local checkout with every dependency at the version its `uv.lock`
+pins, through a constraints file exported from the lock. A review on 2026-10-14 raised two follow-ups. The build backend
+was declared `requires = ["hatchling"]`, with no version, and neither the lock nor its export holds anything of the build
+backend (the export has no `hatchling` line), so each update built the checkout with whatever hatchling was newest that
+day, outside the lock. And the export is written with `--no-hashes`, which left open whether `uv tool install` would check
+hashes if the export carried them.
+
+**Decision.**
+
+* `pyproject.toml` pins the backend to one exact release, `hatchling==1.32.4`, the release that built the installs the
+  current lock is tested in (the `Generator` line of an installed build's `WHEEL` reads `hatchling 1.32.4`), with a comment
+  that says why and how to bump it. A build reads `[build-system] requires` from the tree it builds, so every build of the
+  project uses that release: a first install, CI, a developer's `uv sync`, and an update, which builds the tree it has just
+  pulled.
+* The export stays without hashes, and `_pin_to_lock` says why. Measured on uv 0.12.5 and 0.13.1 with a one-module wheel
+  served from a local folder, each case on a fresh cache and tool directory: with a constraints file that gives the wheel a
+  wrong sha256, `uv tool install` resolved, installed and exited 0, also with `--force --reinstall` as the update runs it,
+  while `uv pip install` with the same file refused it with `Hash mismatch` and exited 1. A hash that nothing checks would
+  promise a check nobody makes.
+
+Rejected: a `--build-constraints` file written by the update, because it would pin the backend for updates only, leave
+every other build floating, and put the version in a second place; a range such as `>=1.32,<1.33`, which still floats
+inside it; and exporting hashes anyway, for when a later uv checks them, for the reason above. Declined, as a stated
+choice: pinning hatchling's own dependencies (`packaging`, `pathspec`, `pluggy`, `trove-classifiers`). They are still
+resolved at build time, within hatchling's own ranges, and pinning them takes a build-constraints file that every build is
+handed, the mechanism rejected above. They float, and this record says so.
+
+Not verified: a Windows machine other than through the end-to-end test, which CI runs on Windows and Ubuntu. Whether a
+later uv starts checking a hash in a tool install's constraints; nothing here would notice, and the measurement above is
+the way to ask again. The local run of the end-to-end test needed uv 0.13.1: on uv 0.12.5 the update stops before it
+builds, because uv releases before 0.13.0 split a constraints path at a space, which is a separate defect recorded on its
+own.
+
+**Consequences.** Every build uses hatchling 1.32.4 until someone bumps the pin. A bump is one edit to `pyproject.toml`,
+checked by `ZAKCODE_UPDATE_E2E=1 pytest tests/test_update_e2e.py`, which shows an update moving an install from one backend
+to the other; a fix in a newer hatchling arrives only through such a bump. `uv.lock` does not change, because the lock does
+not record the build backend (`uv lock --check` passes). The pins fix versions, not bytes, which `docs/DEPLOY.md` now says.
+
+The proof. `tests/test_build_backend_pin.py` (11 tests). A predicate flags each build requirement that is not one exact
+release: a control shows one exact release passes, seven loose forms are flagged (a bare name, `>=`, `~=`, `<`, `==1.*`,
+`===` and a two-clause range), and a floating requirement beside a pinned one is flagged. Then the project itself: every
+build requirement is one exact release, and the backend that builds it, `hatchling.build`, is among them. Against the
+pre-change `pyproject.toml` (`requires = ["hatchling"]`) one test fails,
+`test_every_build_requirement_of_the_project_is_one_exact_release`; the other ten pass, because they test the predicate
+and the backend's name. Three mutations of the pin were each run green, red, green (2026-10-14): unpinned, `>=1.32` and
+`==1.*` each turned that one test red. `tests/test_update_e2e.py` now seeds its remote with an older backend,
+`hatchling==1.31.0`, checks that the first install was built by it (the `Generator` line of the installed `WHEEL`), pushes
+a commit that restores the pinned release, and checks that the updated install was built by the pinned one; it passed
+locally with uv 0.13.1. `uv run poe check` is green: 5,775 passed, 22 skipped.

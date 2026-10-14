@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+# One exact release, not a range (ADR-0300). `zakcode update` builds the checkout it has just
+# pulled, and a backend left unpinned is whatever is newest that day, outside uv.lock. Bump it on
+# purpose, with `ZAKCODE_UPDATE_E2E=1 pytest tests/test_update_e2e.py`.
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]

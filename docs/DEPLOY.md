@@ -74,6 +74,12 @@ install. Its progress and result are in `~/.zakcode/update/update.log`, which en
 it back by hand, for the case that the process is killed. An update that stops leaves the
 checkout pulled, and says so with the `git reset --hard` that returns it.
 
+The build backend is pinned as well: `pyproject.toml` names one exact hatchling release, and
+every build of the project uses it, an update's included (ADR-0300). hatchling's own
+dependencies are not pinned. These pins fix versions, not bytes: `uv tool install` does not
+check a hash in a constraints file, so the constraints an update exports from `uv.lock` carry
+none.
+
 ## Hand-managed hosts
 
 A host nobody reaches by fleet automation gets the same unit, installed by hand with the
