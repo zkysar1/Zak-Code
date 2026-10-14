@@ -155,8 +155,8 @@ class Settings(BaseSettings):
         description=(
             "Per-category model assignments for default_model='zakpick' (JSON; keys "
             "quick_code | deep_code | summarize | plan | delegate | classify; each value "
-            "{model, source, thinking?, reasoning_effort?, context_window?}, source defaults "
-            "to 'openai'). Unset categories use OpenAI defaults."
+            "{model, source, thinking?, reasoning_effort?, context_window?, prompt_caching?}, "
+            "source defaults to 'openai'). Unset categories use OpenAI defaults."
         ),
     )
     # None (the default) sends NO temperature, so every backend runs at its own intended
@@ -314,6 +314,26 @@ class Settings(BaseSettings):
             "Send the session-affinity key (prompt_cache_key) to an OpenAI-compatible "
             "endpoint (ZAKCODE_SEND_PROMPT_CACHE_KEY=false to stop). Turn it off for a "
             "gateway whose route refuses the field."
+        ),
+    )
+
+    # Prompt caching for a route that does not announce itself (ADR-0298). A cache breakpoint
+    # (``cache_control``) is emitted only for a model whose NAME says it takes one, an
+    # ``anthropic/`` or ``claude*`` string. A Claude behind an OpenAI-compatible gateway is
+    # named by the gateway (``openai/Claude4.5``), so it never got one. This is the operator's
+    # word that THIS route takes the marker. It is a switch, default off, and it is never
+    # inferred from the alias: the same alias can be a model that rejects the marker, and the
+    # name says nothing about the gateway. What it saves is unmeasured. The gateway reports
+    # neither cache reads nor writes in a form we can tell apart, so no saving is promised.
+    # Like ``context_window`` this is a fact about ONE route, so a ``zakpick`` category carries
+    # its own (ZakpickModel.prompt_caching); this field is the default model's.
+    prompt_caching: bool = Field(
+        default=False,
+        description=(
+            "Send a prompt-cache breakpoint (cache_control) to the default model's route "
+            "(ZAKCODE_PROMPT_CACHING=true). Off by default and never inferred from the model "
+            "name: set it for a Claude served by an OpenAI-compatible gateway. A zakpick "
+            "category sets its own with prompt_caching in its entry."
         ),
     )
 

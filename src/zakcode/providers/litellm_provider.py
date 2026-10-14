@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import inspect
 import json
 import logging
@@ -620,14 +621,20 @@ def unknown_window_message(model: str, resolution: WindowResolution, api_base: s
 _CACHE_BOUNDARY = "--- DYNAMIC_BOUNDARY ---"
 
 
-def _supports_cache_control(model: str) -> bool:
+def _supports_cache_control(model: str, *, opted_in: bool = False) -> bool:
     """Whether to emit Anthropic ``cache_control`` content blocks for ``model`` (parity #2).
 
     Gated to Anthropic only: litellm maps ``cache_control`` onto Anthropic's prompt-cache
     beta (adding the beta header itself), whereas OpenAI caches automatically and would
     reject the annotation. Requires the static registry's ``supports_caching`` flag too, so
     a future Anthropic model marked non-caching is respected. Never raises.
+
+    ``opted_in`` is the operator's explicit per-route switch (``prompt_caching``, ADR-0298),
+    the one way a route that is not Anthropic by name, a Claude behind an OpenAI-compatible
+    gateway as ``openai/Claude4.5``, gets a breakpoint. The name decides nothing there.
     """
+    if opted_in:
+        return True
     prefix = model.split("/", 1)[0].lower() if "/" in model else ""
     if not (prefix == "anthropic" or model.lower().startswith("claude")):
         return False
@@ -637,14 +644,33 @@ def _supports_cache_control(model: str) -> bool:
         return False
 
 
+#: Provider prefixes whose litellm chat config deletes ``cache_control`` from the messages
+#: before the request leaves (ADR-0298). MEASURED on litellm 1.86.2, 2026-10-14: ``openai/`` and
+#: ``hosted_vllm/`` removed it, ``anthropic/`` kept it. The removal is
+#: ``OpenAIGPTConfig.remove_cache_control_flag_from_messages_and_tools`` and it works IN PLACE,
+#: on the list and the dicts it is handed. A prefix is listed only once measured: a route that is
+#: not here is not assumed to strip, and not assumed to keep.
+_CACHE_CONTROL_STRIPPED_PREFIXES = frozenset({"openai", "hosted_vllm"})
+
+
+def _strips_cache_control(model: str) -> bool:
+    """Whether litellm removes a ``cache_control`` marker from the messages sent to ``model``."""
+    prefix = model.split("/", 1)[0].lower() if "/" in model else ""
+    return prefix in _CACHE_CONTROL_STRIPPED_PREFIXES
+
+
 def _carries_cache_breakpoint(call_kwargs: dict[str, Any]) -> bool:
     """Whether the request in ``call_kwargs`` carries a ``cache_control`` breakpoint (ADR-0294).
 
     Read off the messages that were SENT, not off what the model is capable of, so the answer
     stays true to what the backend was asked whatever put the breakpoint there. A reply to a
-    request without one has no cached prompt to find in its usage.
+    request without one has no cached prompt to find in its usage. Messages carried in
+    ``extra_body`` (ADR-0298) are the ones on the wire: the client merges that key over
+    ``messages``, and the call's own ``messages`` is then a copy litellm has already stripped
+    by the time this is read after the call.
     """
-    for message in call_kwargs.get("messages") or ():
+    carried = (call_kwargs.get("extra_body") or {}).get("messages")
+    for message in carried or call_kwargs.get("messages") or ():
         if not isinstance(message, dict):
             continue
         if "cache_control" in message:
@@ -835,6 +861,12 @@ class LiteLLMProvider(Provider):
         #: request (see _build_kwargs). Read from settings only, like hipaa_mode, so a
         #: provider built without settings behaves exactly as before.
         self.send_prompt_cache_key: bool = bool(getattr(settings, "send_prompt_cache_key", True))
+        #: Settings.prompt_caching (ADR-0298): the operator's word that THIS route takes a
+        #: ``cache_control`` breakpoint. Off unless set, and never inferred from the model's
+        #: name. Read from settings only, like hipaa_mode, so a provider built without
+        #: settings behaves exactly as before. A routed model's own settings copy carries
+        #: its own value (Agent._build_provider), so it describes this route and no other.
+        self.prompt_caching: bool = bool(getattr(settings, "prompt_caching", False))
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
@@ -1055,17 +1087,21 @@ class LiteLLMProvider(Provider):
         return 0.0
 
     @classmethod
-    def _extract_usage(cls, response: Any, *, carried_breakpoint: bool = False) -> Usage:
+    def _extract_usage(
+        cls, response: Any, *, carried_breakpoint: bool = False, reported_total: int = 0
+    ) -> Usage:
         """Read one response's (or stream chunk's) usage.
 
         ``carried_breakpoint`` says the request carried a ``cache_control`` breakpoint
         (:func:`_carries_cache_breakpoint`); it is what lets a cached prompt that the backend
-        reports only in ``total_tokens`` be read out of it (ADR-0294).
+        reports only in ``total_tokens`` be read out of it (ADR-0294). ``reported_total`` is
+        the total the backend itself sent, for an object that no longer carries it: every
+        chunk of a stream, which litellm rebuilds (:meth:`_stream_reported_total`, ADR-0298).
         """
         usage_obj = _get(response, "usage")
         prompt = cls._coerce_int(_get(usage_obj, "prompt_tokens"))
         completion = cls._coerce_int(_get(usage_obj, "completion_tokens"))
-        total = cls._coerce_int(_get(usage_obj, "total_tokens"))
+        total = max(cls._coerce_int(_get(usage_obj, "total_tokens")), reported_total)
         # If the backend omitted a total but gave the parts, derive it.
         if total == 0 and (prompt or completion):
             total = prompt + completion
@@ -1151,6 +1187,29 @@ class LiteLLMProvider(Provider):
             reasoning_tokens=reasoning,
             cost_unpriced=unpriced,
         )
+
+    @classmethod
+    def _stream_reported_total(cls, stream: Any) -> int:
+        """The ``total_tokens`` the backend itself put on a stream's usage chunk (ADR-0298).
+
+        litellm's stream wrapper does not hand on the usage a backend sent. The usage chunk it
+        yields is built as prompt plus completion (``calculate_total_usage``, litellm 1.86.2),
+        so a total that carries a cached prompt the backend leaves out of ``prompt_tokens`` is
+        gone from the chunk the caller receives: measured on a canned stream, a gateway total
+        of 49,568 came back as 123, which is why ADR-0294's rule could never fire on a streamed
+        turn. The wrapper keeps the raw chunks it read in ``chunks``, and the usage one still
+        holds the backend's own total. 0 when there is none, or when the wrapper keeps nothing
+        by that name (a litellm that changed it): the caller then reads the total it was
+        handed, exactly as before. Never raises.
+        """
+        try:
+            for stored in reversed(stream.chunks):
+                total = cls._coerce_int(_get(_get(stored, "usage"), "total_tokens"))
+                if total:
+                    return total
+        except Exception:  # noqa: BLE001 — a stream's accounting must never fail a turn
+            return 0
+        return 0
 
     @staticmethod
     def _litellm_token_cost(
@@ -1735,6 +1794,26 @@ class LiteLLMProvider(Provider):
             eb = dict(call_kwargs.get("extra_body") or {})
             eb["prompt_cache_key"] = prompt_cache_key
             call_kwargs["extra_body"] = eb
+        # The prompt-caching switch (ADR-0298). litellm deletes ``cache_control`` from the
+        # messages it is given on an OpenAI-compatible route (measured on 1.86.2 for
+        # ``openai/`` and ``hosted_vllm/``), IN PLACE, so the breakpoint stamped above would
+        # reach the gateway as nothing. The marked messages therefore ride ``extra_body`` too:
+        # the OpenAI client merges that key over ``messages`` when it builds the body, and
+        # litellm never touches ``extra_body``. litellm is handed a COPY to strip, not the list
+        # this provider keeps: a call re-issued after a refusal is rebuilt from
+        # ``wire_messages``, which would otherwise come back with no marker left. Only when
+        # this request carries a breakpoint, and not on a route that refused the key BY NAME
+        # this session (ADR-0181), which is then served the plain, uncached request.
+        if (
+            self.prompt_caching
+            and _strips_cache_control(self.model)
+            and "messages" not in refused
+            and _carries_cache_breakpoint(call_kwargs)
+        ):
+            eb = dict(call_kwargs.get("extra_body") or {})
+            eb["messages"] = wire_messages
+            call_kwargs["extra_body"] = eb
+            call_kwargs["messages"] = copy.deepcopy(wire_messages)
         if self.extra_headers:
             call_kwargs["extra_headers"] = dict(self.extra_headers)
         # Forward the configured generic api_base ONLY for OpenAI-compatible models — never to
@@ -1906,14 +1985,15 @@ class LiteLLMProvider(Provider):
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
         """Rewrite the leading system message into cached + uncached content blocks.
 
-        When the model supports cache_control (Anthropic) and the system content is a plain
-        string carrying :data:`_CACHE_BOUNDARY`, split it there: the STABLE prefix (identity,
-        tool guidance — constant for the session) becomes a ``cache_control: ephemeral`` text
-        block, and the DYNAMIC tail (git status, recalled memory — changes per turn) a plain
-        block, so the cache breakpoint is stable across turns. A no-op (leaves the plain
-        string) for any other backend or a system prompt with no boundary. Mutates in place.
+        When the model supports cache_control (Anthropic) or the route opted in (ADR-0298), and
+        the system content is a plain string carrying :data:`_CACHE_BOUNDARY`, split it there:
+        the STABLE prefix (identity, tool guidance — constant for the session) becomes a
+        ``cache_control: ephemeral`` text block, and the DYNAMIC tail (git status, recalled
+        memory — changes per turn) a plain block, so the cache breakpoint is stable across
+        turns. A no-op (leaves the plain string) for any other backend or a system prompt with
+        no boundary. Mutates in place.
         """
-        if not _supports_cache_control(self.model):
+        if not _supports_cache_control(self.model, opted_in=self.prompt_caching):
             return
         if not wire_messages or wire_messages[0].get("role") != "system":
             return
@@ -2056,7 +2136,7 @@ class LiteLLMProvider(Provider):
     # ------------------------------------------------------------------
     @classmethod
     def _parse_chunk(
-        cls, chunk: Any, *, carried_breakpoint: bool = False
+        cls, chunk: Any, *, carried_breakpoint: bool = False, reported_total: int = 0
     ) -> tuple[list[ProviderStreamEvent], str | None]:
         """Translate one raw litellm stream chunk into provider events.
 
@@ -2128,7 +2208,11 @@ class LiteLLMProvider(Provider):
         # Usage typically rides the final chunk (stream_options include_usage).
         if _get(chunk, "usage") is not None:
             events.append(
-                StreamUsage(usage=cls._extract_usage(chunk, carried_breakpoint=carried_breakpoint))
+                StreamUsage(
+                    usage=cls._extract_usage(
+                        chunk, carried_breakpoint=carried_breakpoint, reported_total=reported_total
+                    )
+                )
             )
 
         return events, finish_reason
@@ -2343,7 +2427,15 @@ class LiteLLMProvider(Provider):
                         delta = _stream_delta(chunk)
                         if delta is not None:
                             (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
-                        events, fr = self._parse_chunk(chunk, carried_breakpoint=carried)
+                        # litellm rebuilt this usage chunk without the backend's own total, which
+                        # is where a cached prompt shows up (ADR-0298): read it back from the
+                        # raw chunks the wrapper kept, only when it can matter.
+                        reported = 0
+                        if carried and _get(chunk, "usage") is not None:
+                            reported = self._stream_reported_total(resp)
+                        events, fr = self._parse_chunk(
+                            chunk, carried_breakpoint=carried, reported_total=reported
+                        )
                         if fr is not None:
                             finish_reason = fr
                         for event in events:
@@ -2483,6 +2575,10 @@ class LiteLLMProvider(Provider):
         limit = _max_stop_sequences(self.model)
         if limit is not None and caps.max_stop_sequences is None:
             caps = caps.model_copy(update={"max_stop_sequences": limit})
+        # A route the operator opted in (ADR-0298) takes the breakpoint whatever the registry
+        # knows of its name: the switch is the only source for an alias it has never heard of.
+        if self.prompt_caching and not caps.supports_caching:
+            caps = caps.model_copy(update={"supports_caching": True})
         return caps
 
 

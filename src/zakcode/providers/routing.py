@@ -152,6 +152,12 @@ class ZakpickModel(BaseModel):
     #: a mismatch (config says 131,072, server says 43,690) is reported loudly, and the
     #: config wins, because a per-engine figure can overstate the per-request window.
     context_window: int | None = None
+    #: The operator's word that this route takes a prompt-cache breakpoint (ADR-0298), also a
+    #: fact about the MODEL as served, so it lives in the model's entry like the window. Off
+    #: unless set, and never inferred from the alias: ``openai/Claude4.5`` names the gateway,
+    #: not the model behind it. The default model's own switch is ``Settings.prompt_caching``;
+    #: an entry never inherits it, so one category's opt-in cannot reach another model.
+    prompt_caching: bool = False
 
     @field_validator("reasoning_effort", mode="before")
     @classmethod

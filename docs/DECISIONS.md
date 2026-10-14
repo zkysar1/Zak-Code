@@ -18146,3 +18146,107 @@ the red tests counted from the verdict: the provider no longer cutting turned 4 
 removed, 3; the template tokens not cut, 4; the match case sensitive, 1; the word boundary removed, 2; the cut one character
 late, 15; and a tag that starts exactly where a call ends counted as inside it, 6. `uv run poe check` is green: 5,707 passed,
 22 skipped.
+
+## ADR-0298: a route takes a prompt-cache breakpoint only when its owner says so, the marker is carried past litellm's strip, and a streamed turn reads the cached prompt too
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14 that `_supports_cache_control` is true only for `anthropic/` and `claude*` model
+strings, so a Claude served through an OpenAI-compatible gateway as `openai/Claude4.5` never gets a breakpoint. The report
+asked for an explicit per-route switch, default off, never inferred from the alias, feeding `Capabilities.supports_caching`,
+to land with or after ADR-0294, with the hit rate unmeasured and no saving promised in the docs or the PR.
+
+Two measurements changed the work. Both were taken on litellm 1.86.2 on 2026-10-14, through litellm's own client with
+`httpx.AsyncClient.send` replaced by a canned answer.
+
+* A breakpoint on the messages does not reach the wire on an OpenAI-compatible route. The chat config of those routes
+  calls `remove_cache_control_flag_from_messages_and_tools` on every request, which deletes `cache_control` recursively and
+  in place, from the list and the dicts it is handed. An `openai/` and a `hosted_vllm/` request left with none; an
+  `anthropic/` request kept it. A switch that only stamped the marker would have been a no-op on the wire.
+* A streamed call never sees the gateway's total. `calculate_total_usage` in litellm's stream wrapper builds the usage chunk it
+  yields as prompt plus completion: on a canned stream whose gateway total was 49,568 the chunk read 123, and
+  `_hidden_params` held no token field. The wrapper keeps the raw chunks it read in `chunks`, and the usage one still read
+  49,568. ADR-0294's rule reads a cached prompt out of the excess of the total over prompt plus completion, so on the main
+  turn, which streams, it could not fire. Its streamed case was proved over a scripted `acompletion` that returned chunks
+  already carrying the gateway's total, a shape litellm's wrapper never yields, so the proof was green over a path the live
+  turn does not take. That is a defect in ADR-0294's proof, found here because the switch is the first hermetic route that
+  carries a breakpoint over the real wrapper, and without this correction turning the switch on would have brought back the
+  3-token prompt ADR-0294 was written to remove.
+
+**Decision.**
+
+* `Settings.prompt_caching: bool = False` (`ZAKCODE_PROMPT_CACHING`) is the default model's switch, and
+  `ZakpickModel.prompt_caching: bool = False` is a category entry's own, as `context_window` is. Under `zakpick` the startup
+  copy of the settings takes the startup entry's value and the global field is not read. `_build_provider` and `_provider_for`
+  take a `prompt_caching` argument that REPLACES the settings' value, is part of the provider cache key, and, where a caller
+  has no route to speak for (a failover, a role override), is inherited only by the default model: any other model is built
+  with the switch off. It is never inferred from the alias.
+* `_supports_cache_control(model, opted_in=...)` is true for an opted-in route and is otherwise unchanged: an `anthropic/` or
+  `claude` prefix, and the registry's `supports_caching`. `capabilities()` reports `supports_caching=True` for an opted-in
+  route.
+* The carry. For an opted-in route on a prefix measured to strip (`openai`, `hosted_vllm`), when the request carries a
+  breakpoint, the marked messages also ride `extra_body["messages"]`, which the OpenAI client merges over `messages` when it
+  builds the body and which litellm does not touch, and litellm is handed a deep copy of the messages to strip. A copy,
+  because the call re-issued after a refusal (ADR-0181, ADR-0296) is rebuilt from the same `wire_messages`, which litellm
+  would otherwise have stripped. An `anthropic/` route keeps the marker, so nothing is carried: OpenAI-shaped messages in an
+  Anthropic body would replace its own.
+* A refusal repairs itself the way ADR-0285 made `prompt_cache_key` repair itself. `messages` is then a key of the
+  `extra_body` this call sent, so a 400 that names the path to the marker (the Anthropic form, `messages.0.content.0.cache_control:
+  Extra inputs are not permitted`) is learned by ADR-0181, the call is re-issued once without it, the re-issued call does not
+  carry it back, and the session stays plain.
+* `_carries_cache_breakpoint` reads the carried messages first. `acomplete` evaluates it after the call, when litellm has
+  stripped the call's own messages.
+* A streamed usage chunk is given the backend's own total. `_stream_reported_total(resp)` reads the last usage chunk's
+  `total_tokens` out of the wrapper's `chunks`, only for a request that carried a breakpoint, and `_extract_usage` takes the
+  larger of it and the total it was handed. It returns 0, which is the old behaviour, when the wrapper keeps nothing by that
+  name.
+
+Declined, as choices: inferring the switch from the alias or from a `claude` anywhere in the name, because the same alias can
+be a model that rejects the marker and the name says nothing about the gateway; and a rolling breakpoint on the conversation,
+which would change what is sent on every turn for a benefit nobody has measured. Neither is built. A measured gateway that
+takes the marker on a name this rule does not know would change the first, and a measured hit rate the second.
+
+Rejected: rewriting the model prefix to `litellm_proxy/`, which keeps the marker, because it changes the route litellm
+resolves for the sake of one field; patching litellm's `remove_cache_control_flag_from_messages_and_tools`, because it edits a
+pinned dependency's internals for every route in the process; handing litellm the provider's own list and putting a copy in
+`extra_body`, which is the single mutation the re-issue test exists for; and reading the streamed total on every request,
+which would change `total_tokens` for streams whose request carried no breakpoint.
+
+Not verified: whether the gateway honours the marker, whether anything is cached, and the hit rate. The gateway reports a
+cached prompt only in its total, so the footer reads `(NN% cached, read/write unknown)` (ADR-0294) and nothing here, in the
+docs or in the PR, claims a saving. The carried body was checked against litellm's own client over canned answers, never
+against the gateway. Other `openai/`-route message handling litellm applies on the way out is not applied to the carried copy,
+and none was observed to change the request. Prefixes other than `openai`, `hosted_vllm` and `anthropic` were not measured: on
+them the switch stamps the marker as for Anthropic and carries nothing. The streamed correction rests on an attribute of
+litellm's stream wrapper, which a premise test pins.
+
+**Consequences.** Turning the switch on for a Claude behind a gateway sends the stable block with an ephemeral breakpoint, and
+a gateway that answers with a short prompt and a long total is read as cached on a buffered call and on a streamed one, as
+ADR-0294 intended. On the `openai/Claude4.5` alias, which litellm cannot price, the tokens are counted and nothing is priced.
+A streamed call whose request carried no breakpoint reads as before. To check a route: set the switch, run two turns, and read
+the footer, which should show a cached share and a prompt near the real size, not 3.
+
+The proof. `tests/test_prompt_caching_switch.py` (41 tests). The switch is off by default in the settings and in an entry, is
+read from `ZAKCODE_PROMPT_CACHING` and from an entry, and a Claude alias gets no breakpoint without it, including
+`bedrock/anthropic.claude-…` and `vertex_ai/claude-…`, which the registry knows take caching. With it, the stable block carries
+the marker whatever the model is called, a prompt with no boundary carries nothing, an Anthropic route is identical with or
+without it and carries nothing in `extra_body`, and the capabilities report it. Premises: litellm removes the marker from the
+messages it is handed, in place, on both stripped routes and keeps it on `anthropic/`; a streamed usage chunk reads prompt
+plus completion while the wrapper's stored chunk holds the gateway's total. On the wire, a request without the switch carries no
+breakpoint and one with it carries exactly one, for both routes, buffered and streamed, and again on the call re-issued after a
+stop refusal. A gateway that refuses the marker by naming its path is served the plain request on the re-issue and on the next
+call, with `messages` learned as refused. The cached prompt is read out of the total on a buffered and on a streamed call (3
+uncached, 49,445 cached, 120 completion), left alone without the switch on both, and the helper takes the last usage chunk
+and reports 0 for a stream that kept none. The switch follows the route: the startup category takes its entry's, two
+categories naming one model keep their own, and so do two naming a model that is not the default, the default model reads
+the settings', and another model does not inherit it. Against the pre-change source 25 of the 41 fail; the 16 that pass are
+the controls (no breakpoint without the switch, five models; no boundary; Anthropic unchanged, two; litellm's two premises
+and its Anthropic one; nothing on the wire without it, two; the report left alone, buffered and streamed) and one that holds
+vacuously until the mutation below. Nineteen mutations were each run green, red, green (2026-10-14), with the red tests counted
+from the verdict: the opt-in ignored turned 10 red; the switch inferred from "claude" in the name, 2; the carry never firing,
+9; litellm handed the provider's own list, 1; the refusal guard removed, 1; the breakpoint check reading only the stripped
+messages, 1; the capability silent, 4; the strip list widened to `anthropic`, 1; the streamed total not passed, 1, read for
+every stream, 1, ignored by the extraction, 1, and taken from the first usage chunk, 1; the startup copy taking the global
+field, 1; a category's switch dropped, 1; the switch left out of the cache key, 1; every model inheriting the default's, 1; the
+default-model shortcut ignoring the switch, 1; and the global and the entry defaults turned on, 1 and 3. `uv run poe check` is
+green: 5,748 passed, 22 skipped.
