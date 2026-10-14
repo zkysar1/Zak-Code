@@ -17393,13 +17393,23 @@ tests. Nine put an unquoted temp path into a command (`touch <path>`, `cat <path
 "No such file" hint (ADR-0097) reads the path out of the tool's error line, and `grep` and a script run by `bash` print that
 path bare, so the read stopped at the first space and a workspace under a spaced folder lost the hint.
 
-**Decision.** Two changes.
+**Decision.** Three changes.
 
-* Every pytest step in CI runs with `--basetemp` set to a folder named `zak code tmp` under the runner's temp directory, so
-  `tmp_path` holds a space on Linux and on Windows. A test that builds a command from a temp path must quote it, and one
-  that does not fails in CI instead of on a user's machine. The nine tests that did not now quote their paths.
-* The bare-path pattern of the hint (`_ENOENT_RES`) accepts spaces: the path runs from its first non-space character to the
-  next colon, and no further than the end of its line. The quoted shapes were already complete.
+* Both suite steps in `ci.yml`, Linux and Windows, run with `--basetemp` set to a folder named `zak code tmp` under the
+  runner's temp directory, so `tmp_path` holds a space on both. A test that builds a command from a temp path must quote it,
+  and one that does not fails in CI instead of on a user's machine. The scheduled say-watch canary runs three transport
+  files against newer dependencies, never gates a merge, and is left as it was.
+* The nine tests above now quote their paths, or compare the wrapped console text with its whitespace stripped. The
+  Windows cell then failed eight observe-hook tests: their helper passed the interpreter and the script bare on Windows,
+  which worked only while CI paths held no space, and it now quotes both parts the way the settings loader reads them.
+  The Windows restart-path kill test takes its folder from the system temp when `tmp_path` holds a space, because
+  `os.execv` on Windows does not quote an argument that holds a space; without that it skipped under the spaced folder and
+  the cell lost its only run of it.
+* The bare-path patterns of the hint (`_ENOENT_RES`) accept spaces. `pytest` prints its path to the end of the line, so the
+  path runs to there. For `<tool>: <path>: No such file or directory` the path runs to the next colon, and may hold spaces
+  only when it starts like a path: `/`, `\`, `~`, `.` or a drive letter. Any other start is one word, because the tool's
+  own words also sit between the colons (`ld: cannot open output file out/prog: ...`), and a pattern that let any text
+  through took them for a path and pointed at a file the command never named. The quoted shapes were already complete.
 
 Rejected: setting `TMPDIR` and `TEMP` instead, since the folder must exist first and `tempfile` calls outside `tmp_path`
 change with it; and skipping the hint test under a spaced path, which would hide the defect the folder found.
@@ -17408,6 +17418,11 @@ change with it; and skipping the hint test under a spaced path, which would hide
 `cannot open '<path>' for reading` and `cd` prints `bash: line 1: cd: <path>`, and the hint reads neither with a space or
 without one (measured with the real tools, 2026-10-14).
 
-The proof. `tests/test_builtins.py` gains `test_bash_enoent_hint_survives_a_space_in_the_workspace_path`, which builds its
-own spaced workspace so it holds on a runner whose temp folder has none. With the pattern's space allowance removed it
-fails (the hint is `None`, the grep error unexplained), and with it restored it passes.
+The proof. `tests/test_builtins.py` gains four tests, and each was run through a two-way mutation proof (green, then red with
+its part of the change reverted, then green again; 2026-10-14):
+
+* `test_bash_enoent_hint_survives_a_space_in_the_workspace_path` builds its own spaced workspace, so it holds on a runner
+  whose temp folder has none. With the space allowance removed from the path-start branch it fails.
+* `test_enoent_hint_reads_a_pytest_path_with_a_space` fails with the `pytest` pattern back at `(\S+)`.
+* `test_enoent_hint_ignores_a_tools_own_words_before_the_path` and
+  `test_enoent_hint_reaches_a_later_line_after_one_it_cannot_read` both fail with the path-start restriction removed.
