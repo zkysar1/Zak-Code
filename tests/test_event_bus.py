@@ -57,6 +57,19 @@ def test_publish_assigns_strictly_increasing_cursors_from_one() -> None:
     assert bus.latest_cursor == 3
 
 
+def test_a_bus_keeps_one_epoch_for_its_life_and_no_two_buses_share_one() -> None:
+    """Cursors start again from 1 on every bus, so a cursor means something only to the bus that
+    issued it. The epoch names the bus: publishing and closing never change it, and buses made
+    later (a server start, a session's bus made again) do not repeat one (ADR-0289)."""
+    bus = SessionEventBus()
+    epoch = bus.epoch
+    assert epoch and all(c in "0123456789abcdef" for c in epoch)  # URL-safe, never empty
+    bus.publish("a")
+    bus.close()
+    assert bus.epoch == epoch
+    assert len({SessionEventBus().epoch for _ in range(50)}) == 50
+
+
 async def test_subscribe_since_none_replays_whole_buffer() -> None:
     bus = SessionEventBus()
     for x in ("a", "b", "c"):
@@ -131,20 +144,6 @@ def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
     assert bus.oldest_at == 10.0  # full, nothing evicted yet
     bus.publish("d")  # evicts "a"
     assert bus.oldest_at == 11.0
-
-
-def test_oldest_at_is_floored_to_the_microsecond_a_saved_message_is_stamped_in() -> None:
-    """A message made in the same instant as the event is stamped 1791934333.961896 (an ISO
-    string, microseconds); the publish stamp is the finer float 1791934333.9618964. Compared
-    raw the message reads older than the bus and a page draws it twice (Windows CI measured
-    exactly this pair). The bus's line is floored so the two are equal, and a message made a
-    microsecond later is not."""
-    bus = SessionEventBus(clock=lambda: 1791934333.9618964)
-    bus.publish("a")
-    assert bus.oldest_at == 1791934333.961896
-    message_at = 1791934333.961896  # stamped in the same instant as the event
-    assert message_at >= bus.oldest_at  # so it counts as the bus's
-    assert message_at - 0.000001 < bus.oldest_at  # one microsecond earlier does not
 
 
 # ── Multiple subscribers ─────────────────────────────────────────────────────
@@ -260,3 +259,13 @@ def test_registry_get_or_create_replaces_a_closed_bus() -> None:
     second = reg.get_or_create("s1")  # a closed bus is replaced, not handed back
     assert second is not first
     assert second.closed is False
+
+
+def test_a_session_whose_bus_is_made_again_gets_a_new_epoch() -> None:
+    """What a client holding a cursor needs to tell: the same bus (keep the cursor) from a new
+    one that numbers from 1 again (drop it)."""
+    reg = EventBusRegistry()
+    first = reg.get_or_create("s1")
+    assert reg.get_or_create("s1").epoch == first.epoch
+    reg.discard("s1")
+    assert reg.get_or_create("s1").epoch != first.epoch

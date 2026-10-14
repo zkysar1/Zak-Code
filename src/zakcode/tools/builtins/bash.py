@@ -578,11 +578,16 @@ _ENOENT_RES = (
     # coreutils: `ls: cannot access 'x'`, `touch: cannot touch 'x'`, `mkdir: cannot create
     # directory 'x'`, `stat: cannot statx 'x'`, `rm: cannot remove 'x'`, `cp: cannot stat 'x'`
     re.compile(r"cannot [a-z]+(?: [a-z]+)* '([^']+)': No such file or directory"),
-    # pytest
-    re.compile(r"ERROR: file or directory not found: (\S+)"),
-    # bash / cat / cd / head / source ... : `<tool>: <path>: No such file or directory`
+    # pytest prints the path bare to the end of its line, so it may hold spaces
+    re.compile(r"(?m)ERROR: file or directory not found: (.+?)\s*$"),
+    # bash / cat / grep / source ... : `<tool>: <path>: No such file or directory`. The tool prints
+    # the path bare, so it may hold spaces (a Windows profile folder does). A path may hold spaces
+    # only when it STARTS like one (`/`, `\`, `~`, `.` or a drive letter): the tool's own words
+    # also sit between the colons (`ld: cannot open output file out/prog: ...`), and a pattern
+    # that let any text through took them for a path and pointed at the wrong file.
     re.compile(
-        r"(?m)^[\w.\-/]+: (?:line \d+: )?((?:[A-Za-z]:)?[^\s:'\"]+): No such file or directory"
+        r"(?m)^[\w.\-/]+: (?:line \d+: )?"
+        r"((?:[A-Za-z]:)?(?:[/\\~.][^\n:'\"]*|[^\s:'\"]+)): No such file or directory"
     ),
     # the same frame with the path QUOTED — newer coreutils (Git Bash on Windows CI, 2026-08-29:
     # `cat: 'C:/Users/.../forged-skills.yaml': No such file or directory`)

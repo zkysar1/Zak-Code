@@ -354,17 +354,22 @@ class SessionTranscript(BaseModel):
     (every stored message), so a consumer can tell "short transcript" from "short
     session".
 
-    ``bus_from`` is the publish stamp (epoch seconds, floored to the microsecond a message is
-    stamped in) of the oldest event the session's watch bus still holds, ``None`` when it holds
-    none. A message with ``at`` at or after it is in
-    that bus's replay; one before it is only here. A page draws the second kind from this route
-    and lets the replay draw the first, so a reopened page shows the whole conversation without
-    drawing any message twice."""
+    ``bus_from`` is the publish stamp (epoch seconds, read the way a message's ``at`` is, so an
+    event and a message made in the same instant carry the same number) of the oldest event the
+    session's watch bus still holds, ``None`` when it holds none. A message with ``at`` at or
+    after it is in that bus's replay; one before it is only here. A page draws the second kind
+    from this route and lets the replay draw the first, so a reopened page shows the whole
+    conversation without drawing any message twice.
+
+    ``bus_epoch`` names that bus (the ``X-Bus-Epoch`` its watch response carries), ``None`` when
+    there is no bus. The cut at ``bus_from`` holds only against that bus, so a page that opens the
+    watch and is answered by another one (a restart in between) knows to cut again (ADR-0289)."""
 
     session_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
     message_count: int = 0
     bus_from: float | None = None
+    bus_epoch: str | None = None
 
 
 class ToolInfo(BaseModel):

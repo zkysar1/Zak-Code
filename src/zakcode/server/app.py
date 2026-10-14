@@ -915,7 +915,8 @@ def create_app(
         are omitted (they are not what was said); each text passes through the same
         secret redaction as the watch stream. ``limit`` keeps the LAST N spoken turns.
         Each message carries its creation time (``at``) and the response says where the
-        watch bus starts (``bus_from``): the served page draws the saved messages older than
+        watch bus starts (``bus_from``) and which bus that is (``bus_epoch``, the name a watch
+        response carries): the served page draws the saved messages older than
         the bus and lets the watch replay draw the rest, so a reopened page shows the whole
         conversation. The literal id ``current`` resolves to the workspace's current
         conversation (404 when there is none), like ``/watch/current``.
@@ -945,13 +946,15 @@ def create_app(
         if limit is not None and limit >= 0:
             spoken = spoken[-limit:] if limit else []
         # Where the in-memory watch bus starts: a page draws what is older from `messages` and
-        # lets the bus replay draw the rest (see SessionTranscript.bus_from).
+        # lets the bus replay draw the rest (see SessionTranscript.bus_from). The bus's name goes
+        # with it, read from the same bus object, so the page can tell if the watch is another.
         bus = event_bus_registry.get(session.id)
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
             message_count=len(session.messages),
             bus_from=bus.oldest_at if bus is not None else None,
+            bus_epoch=bus.epoch if bus is not None else None,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)
@@ -1199,7 +1202,7 @@ def create_app(
 
     @app.get("/watch/{session_id}")
     async def watch(
-        session_id: str, since: int | None = None, full: bool = False
+        session_id: str, since: int | None = None, full: bool = False, epoch: str | None = None
     ) -> EventSourceResponse:
         """Read-only SSE tail of a session's events, secret-redacted (P0-3, spec sec 4+7).
 
@@ -1209,6 +1212,13 @@ def create_app(
         is configured) exactly like every other HTTP route. NO agent/turn is created — this
         only tails the fan-out bus. ``?since=<cursor>`` resumes after a known event (each
         frame's SSE ``id`` is its cursor); omit it to replay the retained buffer then tail.
+
+        Cursors count from 1 on every bus, and a bus is made again after a server start, so a
+        cursor is good only against the bus that issued it. The response names its bus in the
+        ``X-Bus-Epoch`` header; a client that sends that name back as ``?epoch=`` has any
+        ``since`` it holds checked against it, and one that belongs to another bus is ignored
+        (the whole retained buffer replays) instead of skipping that many of the new bus's
+        first events. No ``epoch``, no check (ADR-0289).
 
         The literal id ``current`` is a gateway-facing alias (the watch UI streams
         ``/watch/current`` without knowing the concrete id) resolved here to the active
@@ -1225,6 +1235,8 @@ def create_app(
             session_id = resolved
         _load_session_or_404(session_id)  # existence check; never creates an agent/turn
         bus = event_bus_registry.get_or_create(session_id)
+        if epoch is not None and epoch != bus.epoch:
+            since = None  # the caller's cursor is from a bus that no longer exists
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             async for cursor, event, at in bus.subscribe(since=since):
@@ -1258,7 +1270,7 @@ def create_app(
 
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
-        return EventSourceResponse(event_source(), ping=15)
+        return EventSourceResponse(event_source(), ping=15, headers={"X-Bus-Epoch": bus.epoch})
 
     @app.post("/watch/{session_id}/marker", status_code=201)
     def publish_watch_marker(session_id: str, request: WatchMarkerRequest) -> dict[str, Any]:

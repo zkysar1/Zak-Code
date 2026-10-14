@@ -64,17 +64,24 @@ jobs:
         # stalling silently to the runner ceiling (the failure class this PR fixes).
         # Per-test bound is in pyproject (pytest-timeout, timeout=120). The suite
         # runs in ~90s, so the 600s bound is pure headroom.
+        #
+        # --basetemp puts every tmp_path under a folder with a SPACE in its name, like a Windows
+        # user's profile folder. A test that builds a command from a temp path must then quote
+        # it, and one that does not fails here instead of on that user's machine (nine tests
+        # did not, and a hint cut a path at its first space; found by hand on 2026-10-13).
         env:
           PYTHONFAULTHANDLER: "1"
-        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --cov=zakcode --cov-report=xml --cov-report=term
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --basetemp "$RUNNER_TEMP/zak code tmp" --cov=zakcode --cov-report=xml --cov-report=term
 
       - name: Pytest (Windows)
         if: runner.os == 'Windows'
         # GNU `timeout` does not exist here; the job-level timeout-minutes is the
         # session bound and pytest-timeout (thread method) the per-test bound.
+        # The spaced --basetemp is the Linux step's (see there); PowerShell expands
+        # $env:RUNNER_TEMP inside the double quotes and hands pytest one argument.
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync pytest -q --basetemp "$env:RUNNER_TEMP\zak code tmp"
 
       - name: Upload coverage report
         # One cell is enough for the artifact (audit P2-1; acceptance 13).
@@ -83,6 +90,37 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+  # `zakcode update` replaces the install it runs from. Windows will not delete the files of a
+  # running program, which is how one user's update deleted its own dependencies and left an
+  # environment with nothing in it (ADR-0291). The unit tests fake uv and git and cannot see
+  # that, so this drives the real thing: a real uv, a real git remote, a real tool environment.
+  # It is its own job because it needs the network and takes minutes, which keeps `verify`
+  # offline and fast; neither publish-sidecar nor the failure alert waits on it.
+  update-e2e:
+    name: update end to end (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync (dev)
+        run: uv sync --extra dev --python 3.11
+
+      - name: Update end to end
+        env:
+          ZAKCODE_UPDATE_E2E: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest -q -s tests/test_update_e2e.py
 
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
