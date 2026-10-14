@@ -17426,3 +17426,244 @@ its part of the change reverted, then green again; 2026-10-14):
 * `test_enoent_hint_reads_a_pytest_path_with_a_space` fails with the `pytest` pattern back at `(\S+)`.
 * `test_enoent_hint_ignores_a_tools_own_words_before_the_path` and
   `test_enoent_hint_reaches_a_later_line_after_one_it_cannot_read` both fail with the path-start restriction removed.
+
+## ADR-0288: the watch bus stamps events with the clock a saved message is stamped with
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0286 lets a reopened page draw the saved messages older than `bus_from`, the publish stamp of the oldest
+event the session's bus holds, and lets the watch replay draw the rest; a message stamped at or after `bus_from` counts as
+the bus's. To make an event and a message made in the same instant compare equal, it floored `bus_from` to the microsecond.
+
+That floor was not enough. The ring-of-three page test
+(`test_a_page_reopened_when_the_bus_kept_only_the_newest_turn_draws_the_older_ones_from_disk`) failed again on the Windows
+CI cell and drew the newest turn twice. A throwaway loop of that test on the same cell (Python 3.11.9, whose `time.time()`
+reads `GetSystemTimeAsFileTime()` in 15.625 ms steps) recorded, for each of 60 passes, how each saved message was stamped
+against the bus's start. In 48 passes the newest turn tied the bus's start, since one clock reading served the event and the
+messages after it. In 2 passes the message was stamped one microsecond BEFORE it: a bus start of 1791938643.98543 against a
+message at 1791938643.985429, and 1791938744.132585 against 1791938744.132584. The page drew each of those turns twice.
+
+The two stamps are cut differently. A saved message is stamped by `datetime.now(UTC)`, which floors the clock reading's
+nanoseconds to whole microseconds. The bus stamped by `time.time()`, which returns the same reading as a float rounded to the
+nearest representable value, 0.24 microseconds apart at this magnitude. A reading just under a whole microsecond can round up
+onto it, and flooring that float gives a number one microsecond above what flooring the reading gives. Once the reading is a
+float nothing recovers it, so the floor ADR-0286 added cannot be made exact.
+
+**Decision.** The bus stamps events with `datetime.now(UTC).timestamp()`, the call a saved message's `created_at` is cut from;
+the transcript route reads a message back with the same `.timestamp()`. An event and a message made on one reading are then
+the same float, bit for bit, and a tie goes to the bus as ADR-0286 intends. `bus_from` is the stored stamp, with no floor. The
+injectable clock stays, so the tests that script stamps are unchanged.
+
+Rejected: a one-microsecond allowance in the comparison, which hides the error and lets a message made a microsecond before
+the bus count as the bus's and be drawn from neither place; and carrying the integer nanosecond reading beside the float, a
+second field on every event to recover what one shared call gives for free.
+
+**Consequences.** Every event's `at` is now a whole number of microseconds, as a message's is. The watch frame rounds it to the
+millisecond (`round(at, 3)`), so nothing a client reads changes. On Linux the two readings are not made in the same nanosecond
+and nothing changes. ADR-0286's statement that a tie goes to the bus now holds for every reading, where before it held for all
+but the few that rounded up.
+
+The proof. `tests/test_server_transcript.py::test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number`
+replaces the floor test in `tests/test_event_bus.py`. It freezes `datetime` in the two modules that stamp,
+`zakcode.messages` and `zakcode.server.event_bus`, at 2026-10-14T00:44:03.985429Z, which is 1791938643.985429, the message
+of the first failing pair above. The stand-in clock honours `tz`, and read without one it reports a machine 5 h 17 min
+ahead of UTC, so a stamp cut without the zone cannot land on the right number. The test stamps a real `Message` under that
+clock, saves it, reads it back through the real `/transcript` route, publishes a real event on the bus the route reads
+`bus_from` from, and asserts that `bus_from` is 1791938643.985429, that the message's `at` is the same number, and that
+`at >= bus_from`, the comparison the page makes.
+
+Against `main`'s source the test fails on the number (`assert 1791947031.793732 == 1791938643.985429`, the real clock
+against the frozen one), not on a missing name. Seven mutants of this change were each run red, restored and green, and
+each failed on the number the same way: the bus reading `time.time()` again; that and the floor, which is `main`'s whole
+behaviour; a message stamped from `time.time()`; a message stamped without the zone; a message stamped to the millisecond;
+a bus clock without the zone; and the route dropping a message's microseconds. Spelling the bus's call `now(tz=UTC)` leaves
+the test green. The same 240-pass loop on the Windows cell with the change drew every pass correctly (0 bad), the newest
+turn tied the bus's start in 185 passes, and no message was stamped before the bus (0 of 240, where the loop without the
+change found 2 in 60).
+
+## ADR-0289: a watch client names the bus its cursor came from, and a page left open across a restart starts over
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0286 had the served page draw the saved conversation and then the watch replay, and it named one case it
+left alone, read from `SessionEventBus.subscribe` and not reproduced: a page that stays open across a server restart
+reconnects with its old cursor, and the new bus, which numbers its events from 1, replays nothing until it passes that
+number. That is what any server restart does to a page left open.
+
+Reproduced against a real loopback server running the page's own script under node. The page had drawn two turns and held
+cursor 6. The session's bus was discarded, which is what a restart does to it (the old bus is closed and forgotten, the
+next request makes a new one). The page reconnected asking for `/watch/<id>?full=1&since=6`, and a message sent afterwards
+drew nothing: its events were cursors 1 to 3 on the new bus, all below the cursor the page asked past. A turn with more
+events than the old cursor would have drawn only its tail. Behind that sits a second loss: whatever the page had not drawn
+when the old bus died (a turn that finished while the page was offline) went with the bus, and only the saved session
+still holds it.
+
+**Decision.** A cursor is good only against the bus that issued it, so the client says which bus that was.
+
+* Each `SessionEventBus` carries a random `epoch` (eight random bytes in hex), fixed for the bus's life.
+* `GET /watch/{id}` names its bus in an `X-Bus-Epoch` response header and takes an optional `epoch` query parameter. When
+  `epoch` is given and is not this bus's, `since` is ignored and the whole retained buffer replays. With no `epoch` the
+  route behaves as it did, so a client that sends none is unchanged.
+* The page keeps the epoch of the last response and sends it with its cursor. When a response names a different bus it
+  starts over before it reads the stream, as a freshly opened page does: the start screen, the cursor and the per-turn
+  state forgotten, the saved conversation older than the new bus drawn again (ADR-0286), then the new bus's replay. The
+  composer and what is typed in it stay. A response that names no bus, from an older server, never resets the page. The
+  cursor has to go with the rest: the new bus is empty at that point, and if the connection drops again before its first
+  frame, a cursor kept from the old bus would be sent with the new bus's name, which the server honours.
+* `GET /sessions/{id}/transcript` names the bus it read `bus_from` from (`bus_epoch`, `null` when there is no bus), and the
+  page holds that name from its first request. The history leaves the turns the bus holds to the bus's replay, so a bus
+  replaced between the page's two first requests, the saved conversation and the watch, is one that holds none of them.
+  The watch then names another bus than the transcript did, and the page starts over like any later replacement.
+
+Rejected: treating a cursor beyond the bus's latest as stale, which catches a restart only until the new bus passes the old
+number (a turn already running when the page reconnects has passed it, and the page would draw the middle of that turn);
+keeping the page's rows and only dropping the stale cursor, which stops the page going deaf but leaves a turn the old bus
+took with it undrawn; reloading the page, which loses the composer's text and the scroll position for what a redraw does
+without; and a per-process boot id, which says nothing when a session's bus is made again without a restart.
+
+**Consequences.** After a restart the open page redraws its conversation from the saved session once, as text: tool calls
+and thinking are not saved, so a turn the page missed shows what was said and not how. A hard kill of the server erases
+rows the page drew but the session never saved, since the start-over keeps only what the transcript returns (by
+construction, not run). Pages and servers of different ages work together, since an older page sends no `epoch` and an
+older server sends no header, but an older page gains nothing: pages already open when the server restarts into this
+release run the old script and go deaf once more until they are reloaded (measured: the previous script against this
+server, after a bus restart, drew 4 rows and never drew the next turn). No other client in this repo resumes a watch
+stream by cursor. Those outside it (a dashboard, a gateway) send no `epoch` and keep resuming by cursor
+alone, so across a restart they still wait for the new bus to pass their old cursor; they are unchanged here and can send
+the name back the same way.
+
+The proof. `tests/test_webclient_bus_epoch.py` (six tests) keeps the page's own script open under node against a live
+server. A page open across a bus restart draws the next turn and ends with the rows a page opened afterwards shows,
+whether the message is sent after or before the page reconnects. A page that has started over on the new, empty bus and
+then loses its connection again draws the next turn, and its reconnect carries the bus's name and no cursor. A page offline
+while a turn finishes and the server restarts draws the missed turn from the saved session. A page whose connection drops on
+the same bus resumes from its cursor, draws nothing twice and does not start over. A page whose bus is replaced between its
+history request and its watch (a registry that forgets the session's bus the instant the transcript route has read it) drew
+0 of the 4 saved rows before the transcript named its bus, and draws all 4 after. `tests/test_webclient_turn_clock.py` gains
+one: a turn the old bus took with it lends its clock and token meter to nothing, so the next turn's footer equals the one a
+page opened on the new bus draws, while the same turn across a reconnect to its own bus keeps both. `tests/test_server_watch.py`
+gains five (the header, a cursor from another bus ignored, a cursor from this bus honoured, the transcript naming the bus
+the watch names, a session with no bus naming none) and `tests/test_event_bus.py` two (one epoch per bus, a new one when a
+session's bus is made again). Run against twelve mutations of the source, each reverting one piece, each reddened the test
+written for it: no `epoch` check on the route, no header, a constant epoch, the page's start-over removed, the page not
+sending its epoch, the page not sending its cursor, the page starting over on every reconnect, the start-over keeping the
+old cursor, the start-over not ending the turn, the page not taking the bus's name from the transcript, the transcript not
+naming its bus, and the transcript naming an empty bus `""` and not `null`. Two of those had been missed by the page tests
+written first: with the old cursor kept, the first four stayed green, and with `endTurn()` dropped from the start-over so
+did every test in the three files that run the page's script.
+
+## ADR-0291: `zakcode update` finishes in a second process on Windows, keeps the old install until the new one starts, and installs the versions the lock pins
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** `zakcode update` on a local-checkout install pulled the checkout and then ran `uv tool install --force
+--reinstall "zakcode[extras] @ file:///<checkout>"`. That command was wrong in three ways, found by running it on a first
+Windows install and then on a Windows runner.
+
+1. *It replaces the environment it runs from.* uv deletes the tool's environment before it builds the next, and Windows
+   will not delete the files of a program that is running. Reported 2026-10-14 from a Windows 11 editable install: the pull
+   worked (989fdff to c0a7171), the reinstall stopped at `Failed to remove directory ...\uv\tools\zakcode\Scripts: Access is
+   denied (os error 5)` after uv had already removed `Lib\`, and what was left held only `Scripts\`, `pyvenv.cfg` and
+   `uv-receipt.toml`. `zakcode` could not start until the environment was rebuilt by hand. Reproduced on a windows-latest
+   runner with no other process in the install: `error: failed to remove directory ...\tools\zakcode\Lib: Access is denied.
+   (os error 5)`, leaving `Lib`, `Scripts`, `pyvenv.cfg` and `uv-receipt.toml`. The program that blocks the delete is the
+   update command itself.
+2. *It ignored `uv.lock`.* Every dependency was resolved afresh. Measured 2026-10-14 on Linux with uv 0.12.5, installing
+   the `server` extra into a throwaway tool directory and comparing it with `uv export --locked --no-dev --extra server`
+   from the same checkout: of the 78 packages the install and the lock share, 52 came out at a different version, and the
+   install added ten more that the lock does not contain (newer releases of a dependency pull them in). An update swapped
+   the set CI tested for whatever was newest that day. (An earlier draft of this record said "63 of 89"; that counted the
+   ten extra packages and a name that differed only in punctuation as if the lock pinned them to another version.)
+3. *It dropped what the install was.* An editable install came back as a copy (the receipt's `editable` became `directory`;
+   the end to end test on ubuntu-latest reported `the install is no longer editable`), and the Python was whichever uv chose.
+
+**Decision.**
+
+* The reinstall carries the install forward. `--constraints` is `uv export --locked --all-extras --no-dev
+  --no-emit-project` run in the checkout just pulled, `--editable` is passed when the receipt says the install is editable,
+  and `--python` is the running interpreter's major.minor. `--locked` refuses a lock that no longer matches
+  `pyproject.toml`; that refusal comes before anything is replaced, and its message says the install was not changed and
+  that the checkout stays pulled, with the `git reset --hard` that returns it (an editable install runs the checkout's
+  code, so until then it runs the new code on the old dependencies). A git-URL install has no checkout and so no lock to
+  pin to. If `~/.zakcode` cannot be written the command stops with a message at the same point, not with a traceback.
+* On Windows, for a uv-managed install, the update command does not run the reinstall. It lists the programs that run from
+  the install (a PowerShell process listing; a chat session, the web app or a hook is named by pid) and refuses before the
+  pull if there is one. Otherwise it writes the job to `~/.zakcode/update/job.json`, copies `swap_install.py` out of the
+  package into that folder, starts the copy with the interpreter the environment was built from (which lives outside the
+  environment) detached, in its own process group and out of the terminal's job object where the job allows it, and exits.
+* The second process waits for the command to exit, writes to the log how to put the environment back by hand (the paths in
+  quotes, since a profile folder holds a space), and then moves it aside to `<env>.update-backup`. A rename fails, and
+  nothing has changed, while a program has a file in the environment open or has its folder as the working directory. A
+  program that only runs from the environment does not stop the rename. Measured on a windows-latest runner (run
+  38507968500), the move went through with one running, the reinstall completed and the new install started, and only the
+  delete of the old folder was refused, on that program's `Scripts\python.exe`. So the listing in the update command, not
+  the move, is what refuses a busy install. The second process then runs the reinstall into the empty place, starts the
+  new environment's interpreter and imports the package, and only then deletes the backup. If that delete is refused the
+  update is still complete: the log says the old install is left, that a program is probably still running from it and
+  must be restarted, and that the folder is safe to delete by hand. A failure after the move deletes what the reinstall
+  made and moves the old environment back. The programs it starts run
+  with `CREATE_NO_WINDOW`: the process is detached and has no console, so a console program it started would be given a
+  visible one, and closing that window would kill the reinstall. A symlink or junction is removed as a link and never
+  followed. Anything that escapes the helper is caught in `main`, logged with the way back, and exits 3.
+* Everything goes to `~/.zakcode/update/update.log`, which ends `update complete` or `update failed` with what was done
+  about it, unless the process is itself killed (a reboot, a logoff, Task Manager): then the line written before the move
+  is the last word, which is why it comes first. The second process does not undo the pull, so a failure ends with a
+  sentence saying the checkout stays pulled and the `git reset --hard` that returns it. It prints that command and does not
+  run it, because by the time it fails the person may have edited the checkout.
+* A backup left by a run that was cut off, or by one that could not delete it, is deleted only when the install in place
+  starts. Otherwise it may be the only good copy: nothing is touched and the log says how to restore it by hand. If the
+  install in place starts and the backup still cannot be deleted, the update stops before anything moves and says why.
+* Elsewhere the command runs the reinstall itself, as before, with the options above.
+
+Rejected: renaming the environment aside from the update command. The measurement above shows the rename would go
+through, but the command would then go on running from a folder that no longer holds what it imports next (an inference,
+not measured), where the second process needs nothing from the environment; building the new environment elsewhere and
+moving it in, since the launchers uv writes into `Scripts\`
+hold the absolute path of the interpreter they were built beside; the second process on Linux and macOS too, which delete
+the files of a running program without complaint, so it would add a failure surface for nothing; printing a warning about
+the lock and leaving the versions alone; resetting the checkout from the second process, which could discard edits made
+since the pull; and telling the user to reinstall by hand, which is the state this replaces.
+
+**Consequences.** On Windows the command returns before the install is replaced and `zakcode` cannot start for about a
+minute; the command says so, names the log and names the folder that keeps the old install until the new one starts. An
+install whose base interpreter lives inside the environment (uv does not make one) is refused with the exact reinstall
+command this update built, to run from a shell outside it. Elsewhere there is still no rollback, because uv deletes first,
+as before. Whoever's environment broke needs one `git pull` of the checkout to get this (an editable install runs the
+checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list processes the command goes on.
+A program running from the install then does not stop the move: the update completes, the old install is left where that
+program holds it, and the program keeps running from the left folder until it is restarted, and may fail on its next
+import. A program with a file open in the install, or working in its folder, is refused by the move, in the log.
+
+Not guarded: two updates started at once. The second `zakcode update` cannot start once the first has moved the environment
+aside, because the program is in it, and before that the first updater is a program running from the install, which the
+up-front listing refuses. What is left is a window of seconds with the listing unavailable and two update commands typed
+within it. A lock file holding the helper's pid would close it; it is not built because that needs two coincidences, and a
+reported double update is the thing that would change the decision.
+
+The proof. `tests/test_update_e2e.py`, the `update-e2e` CI job on windows-latest and ubuntu-latest, installs the project into
+a throwaway uv tool directory the way the report did (editable, from a local checkout, unpinned), pushes commits to a local
+git remote and runs the installed `zakcode update`. Its seed holds one package a release behind the newest in its own copy of
+the lock, so an unpinned reinstall differs from the lock whatever today's releases are. Against the code before this change
+it fails on both: on Windows with the `Access is denied (os error 5)` above, and on Ubuntu because the install is no longer
+editable (run 38497613390). The Windows run covers, in order: a second process in the install being refused and named with
+nothing pulled; a process working in the environment's folder, which the listing cannot see, so the update pulls and the move
+is refused, leaving the install untouched and the log naming the pull; PowerShell off `PATH` with a program running from the
+install, where the move goes through, the update completes and the log says the old install is left; a reinstall that fails
+offline, which first clears that leftover and then restores the old install and its receipt; and the update itself, pinned to
+the lock and still editable. The third was first written to expect a refusal, and its first run (run 38507968500) measured
+the opposite, which is why the move is no longer described as what finds a running program. `tests/test_update_swap.py` (31
+tests, 37 cases) runs the second process's file against real directory trees and puts a failure at each step: the old tree
+comes back byte for byte after a failed command, a verify that fails and an exception, and a refused rename leaves it
+untouched. Its Windows-only cases hold a file open inside a fake environment, and a process working in it, and show the move
+refused with the tree untouched, and remove a junction without touching its target; the others check that the updater is
+waited for before the move, that the way back is on disk before the move and quotes its paths, that programs run without a
+console window, that an old install a program still holds is left and the update completes, that a leftover which cannot be
+deleted stops the next update before anything moves, and that every failure ends with the note about the checkout.
+`tests/test_cli_chat.py` gains fifteen tests and changes one, for the options, the lock and its refusal, the unwritable
+home, the job that cannot be written and the Windows hand-off. Twelve behaviours were each run through a two-way mutation
+proof (green, red with the behaviour reverted, green again) on the first fix commit: the wait before the move, the way-back
+line, the console flag, the note after a failure, the catch in `main`, the removal of a link, the note in the lock refusal,
+the real command in the refusals, the note in the job, the unwritable home, the backup path in the hand-off and the walk over
+the process chain. Four more were run on the second, with the red tests named from the junit file: the stop on a leftover
+that cannot be deleted, the completion with an old install left behind, the quoting of the way back and the message for a job
+that cannot be written.

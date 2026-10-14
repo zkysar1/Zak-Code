@@ -10,13 +10,17 @@ TEXT only, tool/thinking/system frames omitted, secrets redacted like the watch 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from zakcode import messages as messages_mod
 from zakcode.config import Settings
 from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from zakcode.server import app as server_app
+from zakcode.server import event_bus
 from zakcode.server.app import create_app
 from zakcode.session.store import Session, SessionStore
 
@@ -109,3 +113,68 @@ def test_text_is_redacted_like_the_watch_stream(tmp_path: Path, monkeypatch: Any
     text = _get(app, f"/sessions/{session.id}/transcript").json()["messages"][0]["text"]
     assert "sk-live-1234567890abcdefghijklmnop" not in text
     assert text.endswith(" ok")
+
+
+# An offset from UTC that no machine's own zone has, so a clock read that leaves the zone out
+# comes back a different instant on every machine and never the right one by coincidence.
+_LOCAL_OFFSET = timedelta(hours=5, minutes=17)
+
+
+class _FrozenClock:
+    """Stands in for ``datetime`` in a module that stamps with ``datetime.now(...)``.
+
+    ``now(tz)`` is the one frozen instant read in ``tz``, as the real call reads it. With no ``tz``
+    it is the naive wall-clock reading of a machine ``_LOCAL_OFFSET`` ahead of UTC, so a stamp cut
+    without the zone is a different number, not the same one. Anything else (``fromtimestamp``,
+    ``fromisoformat``) is the real class's, so a stamp cut from another source still runs and comes
+    back wrong, rather than failing on a missing attribute.
+    """
+
+    def __init__(self, instant: datetime) -> None:
+        self._instant = instant
+
+    def now(self, tz: tzinfo | None = None) -> datetime:
+        if tz is not None:
+            return self._instant.astimezone(tz)
+        return (self._instant + _LOCAL_OFFSET).replace(tzinfo=None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(datetime, name)
+
+
+def test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A message and a bus event made in one instant come back from the route as ONE number.
+
+    The reopened page draws a saved message itself only when it is older than ``bus_from``, so a
+    message made in the very instant of the bus's first event has to read as the bus's: ``at``
+    must not fall below ``bus_from`` by even a microsecond (ADR-0288). Both stamps are taken under
+    one frozen clock at 2026-10-14T00:44:03.985429Z, which is 1791938643.985429, the stamp of the
+    message in the pair that drew a turn twice on Windows CI. The message is a real ``Message``,
+    stamped by the messages module, saved, and read back by the real route, which turns its ISO
+    string into epoch seconds. The event is a real publish on the bus the route reports
+    ``bus_from`` from. The stand-in clock honours ``tz``, so a stamp cut from another clock source,
+    or one that leaves the zone out, lands on a different number and the test fails on the value.
+    """
+    instant = datetime(2026, 10, 14, 0, 44, 3, 985429, tzinfo=UTC)
+    assert instant.timestamp() == 1791938643.985429
+    clock = _FrozenClock(instant)
+    monkeypatch.setattr(messages_mod, "datetime", clock)
+    # raising=False: a bus that does not read `datetime` at all must fail on the numbers below,
+    # not on a name missing from this module.
+    monkeypatch.setattr(event_bus, "datetime", clock, raising=False)
+    registry = event_bus.EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    app, store = _build(tmp_path)
+
+    session = Session(cwd=str(tmp_path), model="scripted/test")
+    session.messages = [Message.user("the newest turn")]
+    store.save(session)
+    registry.get_or_create(session.id).publish("the bus's first event")
+
+    body = _get(app, f"/sessions/{session.id}/transcript").json()
+    at = body["messages"][0]["at"]
+    assert body["bus_from"] == instant.timestamp()  # the bus read the frozen clock
+    assert at == body["bus_from"]  # the same reading is the same number
+    assert at >= body["bus_from"]  # so the page counts the message as the bus's

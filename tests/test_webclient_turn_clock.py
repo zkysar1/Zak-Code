@@ -122,6 +122,9 @@ const document = {
 const navigator = { clipboard: { writeText: async () => {} } };
 
 const __STREAMS = JSON.parse(process.argv[2]);
+// The watch bus that serves each connection, keyed like `__STREAMS` and sent as X-Bus-Epoch. A
+// connection with no entry is served with no name, as an older server does (ADR-0289).
+const __EPOCHS = JSON.parse(process.argv[3] || "{}");
 const __SESSION = { id: "abcdef0123456789", model: "fake-model" };
 function __sse(frames) {
   // CRLF framing, as sse-starlette sends it.
@@ -148,7 +151,11 @@ globalThis.fetch = async (url) => {
       sent = true;
       return { done: false, value: bytes };
     };
-    return { ok: true, status: 200, body: { getReader: () => ({ read }) } };
+    // A connection with no name scripted is served as an older server serves it, with no
+    // X-Bus-Epoch header: the page must resume by cursor alone, as before servers named buses.
+    const epoch = key in __EPOCHS ? __EPOCHS[key] : null;
+    const headers = { get: (name) => (name.toLowerCase() === "x-bus-epoch" ? epoch : null) };
+    return { ok: true, status: 200, headers, body: { getReader: () => ({ read }) } };
   }
   return { ok: false, status: 404, json: async () => ({}) };
 };
@@ -174,13 +181,20 @@ def _page_script() -> str:
     return scripts[0]
 
 
-def _footers(streams: dict[str, list[tuple[str, dict[str, Any]]]], tmp_path: Path) -> list[str]:
-    """Run the page against the scripted watch streams; return every turn footer it drew."""
+def _footers(
+    streams: dict[str, list[tuple[str, dict[str, Any]]]],
+    tmp_path: Path,
+    epochs: dict[str, str] | None = None,
+) -> list[str]:
+    """Run the page against the scripted watch streams; return every turn footer it drew.
+
+    `epochs` names the watch bus that serves each connection, keyed like `streams`; a connection
+    it does not list is served with no bus name, as an older server serves it."""
     assert _NODE is not None
     script = tmp_path / "page.js"
     script.write_text(_PRELUDE + _page_script(), encoding="utf-8")
     proc = subprocess.run(
-        [_NODE, str(script), json.dumps(streams)],
+        [_NODE, str(script), json.dumps(streams), json.dumps(epochs or {})],
         capture_output=True,
         timeout=60,
         check=False,
@@ -240,3 +254,39 @@ def test_a_turn_that_ends_stops_its_clock(tmp_path: Path) -> None:
     assert "1m 15s" in first.split(" · "), first
     assert not any(_is_duration(part) for part in second.split(" · ")), second
     assert len(second.split(" · ")) == len(first.split(" · ")) - 1, (first, second)
+
+
+def test_a_turn_the_old_bus_took_with_it_does_not_lend_its_clock_or_meter_to_the_next(
+    tmp_path: Path,
+) -> None:
+    """A server restart ends the turn that was running: nothing will finish it. The page that
+    starts over on the new bus must not carry that turn's clock and token meter into the next
+    turn, which may open with no user_message of its own: its footer would time and count from a
+    turn that no longer exists (ADR-0289). On the SAME bus the turn is the same turn, and both
+    carry on (above)."""
+    usage = {"event": "usage", "usage": {"total_tokens": 7, "prompt_tokens": 5}, "at": _T0 + 1.0}
+    dead_turn = [
+        ("1", {"event": "user_message", "text": "hello", "at": _T0}),
+        ("2", usage),
+        ("3", {"event": "text", "text": "working on it", "at": _T0 + 2.0}),
+    ]
+
+    def next_turn(first_cursor: int) -> list[tuple[str, dict[str, Any]]]:
+        text = {"event": "text", "text": "a turn nobody timed", "at": _T0 + 200.0}
+        done = {"event": "done", "stop_reason": "completed", "iterations": 2, "at": _T0 + 230.0}
+        return [(str(first_cursor), text), (str(first_cursor + 1), done)]
+
+    # The connection ends after cursor 3 and the page asks to resume past it, on a bus that is
+    # the same (cursors go on) or another (cursors start again from 1).
+    [same_bus] = _footers(
+        {"null": dead_turn, "3": next_turn(4)}, tmp_path, {"null": "bus-a", "3": "bus-a"}
+    )
+    [restarted] = _footers(
+        {"null": dead_turn, "3": next_turn(1)}, tmp_path, {"null": "bus-a", "3": "bus-b"}
+    )
+    [opened_on_the_new_bus] = _footers({"null": next_turn(1)}, tmp_path)
+    # Positive control: the same turn carries its clock and meter across a reconnect to its bus,
+    # so the restarted page's footer being free of both is the page starting over.
+    assert "3m 50s" in same_bus.split(" · "), same_bus
+    assert "7 tokens" in same_bus, same_bus
+    assert restarted == opened_on_the_new_bus
