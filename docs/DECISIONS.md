@@ -17772,3 +17772,42 @@ the real command in the refusals, the note in the job, the unwritable home, the 
 the process chain. Four more were run on the second, with the red tests named from the junit file: the stop on a leftover
 that cannot be deleted, the completion with an old install left behind, the quoting of the way back and the message for a job
 that cannot be written.
+
+## ADR-0292: the page tests count their waits in snapshots, so a late answer is not a page that never settled
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** On the push run for the merge of #759 (2026-10-14), one Windows cell failed the first `settle(4)` of
+`test_a_page_left_open_across_a_bus_restart_shows_the_next_turn_as_a_fresh_page_does[False]` with "wanted 4 rows, the page
+drew []; asked for ['/sessions/current']". The assertion's own numbers show what happened: the clock read 671.89 against a
+deadline of 648.64, so a snapshot of the page came back 23.25 s after the 15 s deadline had run out, and it showed a page
+that had drawn nothing and asked for one URL, a page that had only just started. The other 5,522 tests of the cell passed,
+and a rerun of the failed job passed.
+
+`_OpenPage.settle` and `_OpenPage._wait_for` took their deadline from the clock and then made a round trip to the node
+process, which has no timeout of its own. An answer that comes back late is charged to the page, whatever held it up: the
+wait ended on the late answer and the page was given no poll after it. What held this answer up is not established. The log
+shows that one round trip took at least 23 s, which fits a slow start of the process and a stalled runner alike. The defect
+is the reading: a late answer was taken for a page that never settled.
+
+**Decision.** The wait is counted in snapshots, not seconds. `_OpenPage._snapshots(timeout)` yields one snapshot every
+0.05 s, `timeout / 0.05` of them (300 for the default 15 s), and `settle` and `_wait_for` both read from it. A late answer
+is one snapshot. A page that never gets there still runs out, after the same 300. Both failure messages now end with the
+seconds actually waited, so the next failure says at once whether the answers were late or the page was stuck.
+
+Rejected: a longer deadline, which moves the edge and does not remove it; a deadline that starts after the first answer,
+which covers a slow start and not a stall in the middle of a test; and a timeout on the round trip itself, which needs a
+thread and a queue to read a pipe, for a hang that has not been seen.
+
+**Consequences.** On a healthy runner a wait lasts as long as before: each snapshot costs its 0.05 s sleep and a few
+milliseconds. A page that is slow to answer now lengthens the wait where it used to fail it. Not changed: a page process
+that never answers still blocks its test on the pipe, as it did.
+
+The proof. `tests/test_webclient_bus_epoch.py` gains four tests that run the real `settle` and `wait_for_watches` over
+scripted answers and a clock the test moves by hand, so a 23 s stall costs no time. For each of the two waits, one test has
+the first answer held up 23 s and showing a page only just started, then the rows, and expects the wait to end with them;
+the other has a page that never gets there and expects the wait to fail after 15 s. Two mutations were each run green, red,
+green (2026-10-14), with the red tests named from the verdict: a clock deadline put back turns the two held-up tests red
+with the message of the Windows run ("wanted 4 rows, the page drew []; asked for ['/sessions/current']; waited 23 s"), and
+the bound widened fourfold turns the two never-gets-there tests red (their messages read "waited 60 s" where 15 is
+expected).

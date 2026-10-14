@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -96,6 +96,10 @@ process.stdin.on("end", () => process.exit(0));
 """
 
 
+#: Seconds between two snapshots of the page.
+_POLL = 0.05
+
+
 class _OpenPage:
     """The page's script running under node and held open, so the test can act while it is there."""
 
@@ -149,22 +153,36 @@ class _OpenPage:
         answer: dict[str, Any] = json.loads(line)
         return answer
 
+    def _snapshots(self, timeout: float) -> Iterator[dict[str, Any]]:
+        """Snapshots of the page, one every `_POLL` seconds, as many as `timeout` seconds hold.
+
+        The wait is counted in snapshots and not read off the clock. A snapshot is a round trip
+        to the page's process, and a runner that holds that process up makes the answer late; a
+        deadline on the clock charged that delay to the page. On one Windows run the first
+        answer came back 23 s after a 15 s deadline began, showing a page that had drawn nothing
+        and asked for one URL, and the test failed a page that had only just started. A late
+        answer is now one snapshot, and a page that never gets there still runs out.
+        """
+        for _ in range(round(timeout / _POLL)):
+            yield self.ask("SNAP")
+            time.sleep(_POLL)
+
     def settle(self, want: int, timeout: float = 15.0) -> dict[str, Any]:
         """Snapshot once `want` user and assistant rows are drawn and nothing has changed for a
         beat, so a late duplicate would still show. Fails with what was drawn if it never is."""
-        deadline = time.monotonic() + timeout
-        seen, changed = "", time.monotonic()
-        while True:
-            snap = self.ask("SNAP")
+        started = time.monotonic()
+        seen, changed = "", started
+        snap: dict[str, Any] = {"rows": [], "trace": []}
+        for snap in self._snapshots(timeout):
             key = json.dumps(snap["rows"])
             if key != seen:
                 seen, changed = key, time.monotonic()
             if len(_spoken(snap)) >= want and time.monotonic() - changed > 0.8:
                 return snap
-            assert time.monotonic() < deadline, (
-                f"wanted {want} rows, the page drew {_spoken(snap)}; asked for {snap['trace']}"
-            )
-            time.sleep(0.05)
+        raise AssertionError(
+            f"wanted {want} rows, the page drew {_spoken(snap)}; asked for {snap['trace']}; "
+            f"waited {time.monotonic() - started:.0f} s"
+        )
 
     def wait_for_watches(self, count: int, timeout: float = 15.0) -> dict[str, Any]:
         """Snapshot once the page has asked for the watch stream `count` times."""
@@ -176,13 +194,14 @@ class _OpenPage:
         return self._wait_for(lambda snap: len(_transcripts(snap)) >= count, timeout)
 
     def _wait_for(self, done: Callable[[dict[str, Any]], bool], timeout: float) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        while True:
-            snap = self.ask("SNAP")
+        started = time.monotonic()
+        snap: dict[str, Any] = {"trace": []}
+        for snap in self._snapshots(timeout):
             if done(snap):
                 return snap
-            assert time.monotonic() < deadline, f"the page asked for {snap['trace']}"
-            time.sleep(0.05)
+        raise AssertionError(
+            f"the page asked for {snap['trace']}; waited {time.monotonic() - started:.0f} s"
+        )
 
 
 def _spoken(snap: dict[str, Any]) -> list[tuple[str, str]]:
@@ -347,3 +366,89 @@ def test_a_page_whose_connection_drops_resumes_from_its_cursor_on_the_same_bus(
     assert _spoken(drawn) == _ALL_SIX
     assert "&since=" in _watches(reconnected)[1] and "&epoch=" in _watches(reconnected)[1]
     assert len(_transcripts(drawn)) == 1  # it never started over
+
+
+# The page harness's own waits. These drive the real `settle` and `wait_for_watches` over answers
+# the test scripts and a clock it moves by hand, so a runner's stall is reproduced exactly and
+# costs no time.
+
+
+class _HandClock:
+    """Time that moves only when the test moves it: sleeping moves it, and so does a late answer."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def hand_clock(monkeypatch: pytest.MonkeyPatch) -> _HandClock:
+    """This module's `time`, swapped for a clock that moves only when told to."""
+    clock = _HandClock()
+    monkeypatch.setattr(f"{__name__}.time", clock)
+    return clock
+
+
+class _StubPage(_OpenPage):
+    """The real waits over scripted answers, with no node process behind them."""
+
+    def __init__(self, clock: _HandClock, answers: list[dict[str, Any]], held_up: float) -> None:
+        self._clock = clock
+        self._answers = answers  # the last one repeats
+        self._held_up = held_up  # seconds the runner keeps the page before its first answer
+        self._asked = 0
+
+    def ask(self, command: str) -> dict[str, Any]:
+        if self._asked == 0:
+            self._clock.now += self._held_up
+        answer = self._answers[min(self._asked, len(self._answers) - 1)]
+        self._asked += 1
+        return answer
+
+
+def _page_showing(rows: list[tuple[str, str]], asked: tuple[str, ...] = ()) -> dict[str, Any]:
+    """A snapshot with these rows drawn, spelled the way the page's own rows are."""
+    return {
+        "rows": [
+            {"cls": role, "text": ("›" + text) if role == "user" else text} for role, text in rows
+        ],
+        "trace": list(asked),
+    }
+
+
+def test_a_first_answer_the_runner_held_up_is_not_the_page_failing_to_settle(
+    hand_clock: _HandClock,
+) -> None:
+    """The run that failed on Windows: a 15 s wait, a first snapshot back 23 s later that shows a
+    page that has only just started, and the rows drawn by the next."""
+    just_started = _page_showing([], ("/sessions/current",))
+    page = _StubPage(hand_clock, [just_started, _page_showing(_ONE_AND_TWO)], held_up=23.0)
+    assert _spoken(page.settle(4)) == _ONE_AND_TWO
+
+
+def test_a_first_answer_the_runner_held_up_is_not_the_page_never_asking_for_the_watch(
+    hand_clock: _HandClock,
+) -> None:
+    just_started = _page_showing([], ("/sessions/current",))
+    watching = _page_showing([], ("/sessions/current", "/watch/s1"))
+    page = _StubPage(hand_clock, [just_started, watching], held_up=23.0)
+    assert _watches(page.wait_for_watches(1)) == ["/watch/s1"]
+
+
+def test_a_page_that_never_draws_the_rows_still_runs_out_of_time(hand_clock: _HandClock) -> None:
+    page = _StubPage(hand_clock, [_page_showing(_ONE_AND_TWO[:2])], held_up=0.0)
+    with pytest.raises(AssertionError, match=r"wanted 4 rows, .*waited 15 s"):
+        page.settle(4)
+
+
+def test_a_page_that_never_asks_for_the_watch_still_runs_out_of_time(
+    hand_clock: _HandClock,
+) -> None:
+    page = _StubPage(hand_clock, [_page_showing([], ("/sessions/current",))], held_up=0.0)
+    with pytest.raises(AssertionError, match=r"the page asked for .*waited 15 s"):
+        page.wait_for_watches(1)
