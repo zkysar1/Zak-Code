@@ -157,6 +157,7 @@ from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, 
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
     Capabilities,
+    ContentFiltered,
     ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
@@ -292,6 +293,13 @@ _RETRY_MAX_DELAY = 60.0
 _RETRY_AFTER_CEILING = 120.0
 _RATE_LIMIT_RETRY_HORIZON = 900.0
 _MAX_INTERRUPT_RETRIES = 3
+
+#: A :class:`ContentFiltered` answer is sampled again ONCE, at the configured temperature
+#: (ADR-0290), not :data:`_MAX_INTERRUPT_RETRIES` times at a raised one. litellm files a
+#: model's own safety refusal under the same finish reason, and a refusal repeats: three more
+#: samples of a long prompt would bill up to four calls for one refusal. The reported case,
+#: an occasional empty 200 on long text, is covered by a single fresh sample.
+_MAX_FILTER_RETRIES = 1
 
 #: Resample temperature for a ModelOutputRejected retry (Groq ``tool_use_failed``). At
 #: ``temperature=0.0`` the model is deterministic, so re-issuing the SAME request re-emits
@@ -2690,6 +2698,9 @@ class AgentLoop:
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
         #: and its summarizer calls, noted on the compaction's intervention row.
         self._compaction_cost = _zero_compaction_cost()
+        #: What this turn's withheld model calls cost (ADR-0290): billed, though each raised
+        #: instead of returning, so they reach the turn's usage through here, not a result.
+        self._turn_withheld_usage = Usage()
         #: The transcript file whose directory this loop has already made ready (ADR-0206):
         #: the mkdir / ignore-file / chmod run once per file, not at every persist.
         self._transcript_ready_for = ""
@@ -3008,6 +3019,12 @@ class AgentLoop:
                     )
                 )
 
+            def account_withheld(usage: Usage | None) -> None:
+                # A summarizer call a content filter withheld was billed too (ADR-0290), and
+                # it is the longest prompt a session sends.
+                if usage is not None:
+                    self._account_summarizer_usage(usage, summarizer)
+
             started = time.monotonic()
             try:
                 why = ""
@@ -3018,7 +3035,7 @@ class AgentLoop:
                         raised = {"temperature": self._rejection_retry_temperature(resample)}
                     # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out
                     # here exactly as it is on the main call, instead of failing the compaction.
-                    result = await self._complete_with_retry(request)
+                    result = await self._complete_with_retry(request, on_withheld=account_withheld)
                     self._account_summarizer_usage(result.usage, summarizer)
                     summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
                     if summary:
@@ -5195,9 +5212,26 @@ class AgentLoop:
         Escalates from the floor so a deterministic (temp-0) re-emit of a malformed tool
         call is broken — the retry samples a different, likely well-formed call. Clamped
         to 1.0. Applied ONLY to :class:`ModelOutputRejected` retries; a plain 429 keeps
-        the configured temperature.
+        the configured temperature, and so does a :class:`ContentFiltered` answer, whose
+        resample is a fresh draw at the temperature the operator chose (ADR-0290).
         """
         return min(1.0, _REJECTION_RETRY_TEMP_FLOOR + _REJECTION_RETRY_TEMP_STEP * (attempt - 1))
+
+    def _account_withheld_call(self, usage: Usage | None) -> None:
+        """Count a main-conversation call whose answer a content filter withheld (ADR-0290).
+
+        The provider answered, so the call was billed, but it raised instead of returning a
+        result, and the accounting that follows a returned completion never saw it: a route
+        that withholds answers ran up calls the session, the budget's token and cost ceilings
+        and the turn's usage did not know about. Folded in here the moment the call ends,
+        whether or not a resample follows.
+        """
+        if usage is None:
+            return
+        self.session.add_usage(usage, model=self.provider.model_id())
+        self._turn_withheld_usage = self._turn_withheld_usage + usage
+        if self.budget is not None:
+            self.budget.add_usage(usage.cost_usd, usage.total_tokens, usage.cost_unpriced)
 
     def _context_fraction(self, messages: list[Message]) -> float:
         """How full the current model's context window is (0..~1), for zakpick classification.
@@ -5312,7 +5346,10 @@ class AgentLoop:
                         call.arguments[key] = call.arguments.pop(cc_key)
 
     async def _complete_with_retry(
-        self, complete: Callable[[dict[str, Any]], Awaitable[LLMResult]]
+        self,
+        complete: Callable[[dict[str, Any]], Awaitable[LLMResult]],
+        *,
+        on_withheld: Callable[[Usage | None], None] | None = None,
     ) -> LLMResult:
         """Run one collected completion under the loop's ONE retry policy (audit P0-4).
 
@@ -5324,28 +5361,42 @@ class AgentLoop:
         directly, so the first 429 of a busy pod failed the compaction outright while the
         very same 429 on the main call would have been waited out. Measured 2026-08-29
         (served workspace, five agents on four engines): "summarizer failed (RateLimited: …)".
+
+        A :class:`ContentFiltered` answer is sampled again once, at the configured temperature
+        (ADR-0290). That call was billed though it raised, so ``on_withheld`` counts its usage:
+        by default as the main conversation's, and a side call passes its own accounting.
         """
         attempt = 0
         interrupt_attempts = 0  # TimedOut / ModelOutputRejected retries (fixed bound)
+        filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
         rate_limit_started: float | None = None  # wall clock of the first pure 429
         next_temperature: float | None = None
         while True:
             # A rejection retry resamples at a raised temperature so a deterministic
             # (temp-0) re-emit of the malformed tool call is broken; every other call
-            # (first attempt, or a plain 429 retry) uses the configured temperature.
+            # (first attempt, a plain 429 retry, a filtered answer's resample) uses the
+            # configured temperature.
             call_kw: dict[str, Any] = (
                 {} if next_temperature is None else {"temperature": next_temperature}
             )
             try:
                 return await complete(call_kw)
             except RateLimited as exc:
+                if isinstance(exc, ContentFiltered):
+                    # Billed though it raised: counted before any bound below can end the
+                    # call, so the last withheld attempt is counted as well.
+                    (on_withheld or self._account_withheld_call)(exc.usage)
                 # ModelOutputRejected and TimedOut subclass RateLimited for their retry
                 # semantics but keep a small FIXED attempt bound; a pure rate limit
                 # retries inside the backoff-horizon budget instead (see the policy
                 # constants). The bound check precedes the counter bump so exhausting
                 # either budget re-raises the ORIGINAL failure.
                 interrupt_class = isinstance(exc, ModelOutputRejected | TimedOut)
-                if interrupt_class:
+                if isinstance(exc, ContentFiltered):
+                    if filter_attempts >= _MAX_FILTER_RETRIES:
+                        raise
+                    filter_attempts += 1
+                elif interrupt_class:
                     if interrupt_attempts >= _MAX_INTERRUPT_RETRIES:
                         raise
                     interrupt_attempts += 1
@@ -5358,7 +5409,10 @@ class AgentLoop:
                     raise
                 attempt += 1
                 delay = self._retry_delay(exc, attempt)
-                if isinstance(exc, ModelOutputRejected):
+                if isinstance(exc, ContentFiltered):
+                    reason = exc.reason
+                    budget = f"{filter_attempts}/{_MAX_FILTER_RETRIES}"
+                elif isinstance(exc, ModelOutputRejected):
                     reason = exc.reason
                     budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 elif isinstance(exc, TimedOut):
@@ -5381,7 +5435,7 @@ class AgentLoop:
                     )
                 next_temperature = (
                     self._rejection_retry_temperature(attempt)
-                    if isinstance(exc, ModelOutputRejected)
+                    if isinstance(exc, ModelOutputRejected) and not isinstance(exc, ContentFiltered)
                     else None
                 )
                 logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
@@ -7641,6 +7695,7 @@ class AgentLoop:
         self._answer_already_given = False  # ADR-0217: a new turn has answered nothing yet
         turn_tool_results: list[ToolResultBlock] = []
         turn_usage = Usage()
+        self._turn_withheld_usage = Usage()  # ADR-0290: this turn's withheld calls, none yet
         iterations = 0
         stop_reason = "max_iterations"
         turn_error = ""
@@ -9124,6 +9179,7 @@ class AgentLoop:
 
         if self._veto_stall:
             stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
+        turn_usage = turn_usage + self._turn_withheld_usage  # billed calls that returned no result
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d duration_s=%.3f",
             stop_reason,
@@ -9266,6 +9322,7 @@ class AgentLoop:
             )
 
         turn_usage = Usage()
+        self._turn_withheld_usage = Usage()  # ADR-0290: this turn's withheld calls, none yet
         iterations = 0
         stop_reason = "max_iterations"
         turn_error = ""
@@ -9505,6 +9562,7 @@ class AgentLoop:
                 provider_failure: str | None = None
                 retry_attempts = 0
                 interrupt_attempts = 0  # TimedOut / ModelOutputRejected (fixed bound)
+                filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
                 rate_limit_started: float | None = None  # wall clock of the first pure 429
                 next_temperature: float | None = None
 
@@ -9661,8 +9719,14 @@ class AgentLoop:
                         # small fixed bound.
                         retryable = True
                         discarded = len("".join(text_parts)) if received_any else 0
+                        if isinstance(exc, ContentFiltered):
+                            # Billed though it raised, and the attempt's own usage is dropped
+                            # with the attempt: counted whether or not a resample follows.
+                            self._account_withheld_call(exc.usage)
                         interrupt_class = isinstance(exc, ModelOutputRejected | TimedOut)
-                        if interrupt_class:
+                        if isinstance(exc, ContentFiltered):
+                            within_budget = filter_attempts < _MAX_FILTER_RETRIES
+                        elif interrupt_class:
                             within_budget = interrupt_attempts < _MAX_INTERRUPT_RETRIES
                         elif rate_limit_started is None:
                             # Wall-clock horizon from the first pure 429 — see the
@@ -9678,9 +9742,14 @@ class AgentLoop:
                             next_temperature = (
                                 self._rejection_retry_temperature(retry_attempts)
                                 if isinstance(exc, ModelOutputRejected)
+                                and not isinstance(exc, ContentFiltered)
                                 else None
                             )
-                            if isinstance(exc, ModelOutputRejected):
+                            if isinstance(exc, ContentFiltered):
+                                filter_attempts += 1
+                                reason = exc.reason
+                                budget = f"{filter_attempts}/{_MAX_FILTER_RETRIES}"
+                            elif isinstance(exc, ModelOutputRejected):
                                 interrupt_attempts += 1
                                 reason = exc.reason
                                 budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
@@ -9781,6 +9850,7 @@ class AgentLoop:
                                 # attempt counter per call — keep the paths symmetric).
                                 retry_attempts = 0
                                 interrupt_attempts = 0
+                                filter_attempts = 0
                                 rate_limit_started = None
                                 yield AgentStatus(message=f"switching model: {note}")
                                 continue  # fresh accumulators, retry on the new provider
@@ -11104,6 +11174,7 @@ class AgentLoop:
 
         if self._veto_stall:
             stop_reason = "veto_stall"  # the ADR-0187 fence ended the turn, at whichever site
+        turn_usage = turn_usage + self._turn_withheld_usage  # billed calls that returned no result
         logger.info(
             "turn ended: stop_reason=%s iterations=%d tokens=%d duration_s=%.3f",
             stop_reason,

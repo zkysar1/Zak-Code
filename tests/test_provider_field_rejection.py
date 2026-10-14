@@ -105,6 +105,16 @@ def test_a_field_we_did_not_send_is_never_ours_to_strip() -> None:
     assert rejected_request_field(value_only, ["seed"]) is None
 
 
+def test_bedrocks_other_complaints_about_a_key_are_not_a_refusal_of_it() -> None:
+    # The same validator also says a key is MISSING. Such a complaint names a key, and the key
+    # may be one we sent, but it is not a field the server refuses: only an extraneous key
+    # that "is not permitted" is, so dropping the field would repair nothing.
+    missing = (
+        "Malformed input request: #: required key [seed] not found, please reformat your input"
+    )
+    assert rejected_request_field(missing, ["seed"]) is None
+
+
 def test_the_classifier_reads_an_exception_too() -> None:
     assert rejected_request_field(BadRequestError(VERTEX_TEXT), ["chat_template_kwargs"]) == (
         "chat_template_kwargs"

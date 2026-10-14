@@ -17383,7 +17383,7 @@ with the partition removed two fail, with `bus_from` always null three fail, and
 
 **Context.** An operator running Zak Code against an OpenAI-compatible gateway in front of Bedrock models (the install
 behind ADR-0285) reported four provider-layer behaviours on 2026-10-13. Each was checked against the code before anything
-changed. Two are fixed here; two are real and are written up below without being built.
+changed. Two are fixed here; two are real and are left undecided below.
 
 *The refusal classifier.* ADR-0181 reads a 400 and, when the text names a field Zak Code sent, drops that field for the
 session and re-issues the call (`rejected_request_field`, `REJECTED_FIELD_PATTERNS`). Bedrock's own request validator,
@@ -17407,68 +17407,77 @@ calls, with no answer and no cause.
 
 * `REJECTED_FIELD_PATTERNS` gains Bedrock's phrasing, `extraneous key [<name>] is not permitted`. The gate in
   `rejected_request_field` that attributes only a name Zak Code actually sent is unchanged: a refusal naming a key we did
-  not send (`extraneous key [messages]`) and a key of ours that appears only as a value in the dump are still not
-  attributed.
+  not send (`extraneous key [messages]`), another complaint about a key of ours (`required key [seed] not found`) and a
+  key of ours that appears only as a value in the dump are still not attributed.
 * A response that ends `finish_reason="content_filter"` with no text and no tool call raises `ContentFiltered`, a
   `ModelOutputRejected`, from the provider: on the buffered path, and on the streaming path once the stream has ended with
   nothing delivered. Reasoning and the trailing usage chunk are not an answer (the provider asks for `include_usage`, so
-  every stream ends with one). The loop's existing bound for a rejected tool call then applies unchanged: three retries,
-  each at a raised temperature so that it is a new sample. The retry notice names the cause (`ModelOutputRejected.reason`;
-  it used to call every rejection a malformed tool call), and when the retries are spent the turn ends `provider_error`
-  carrying the provider's text, which names the filter. A filtered response that did deliver text or a tool call is
-  returned as it came: it is a cut-off answer the caller can see.
+  every stream ends with one). A filtered response that did deliver text or a tool call is returned as it came: it is a
+  cut-off answer the caller can see.
+* More than filters arrive as `content_filter`. litellm 1.86 files these provider finish reasons under it: OpenAI's own,
+  Anthropic's `refusal` (and Sonnet 4's `content_filtered`), Gemini and Vertex AI's `SAFETY`, `RECITATION`, `LANGUAGE`,
+  `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` and two image variants, Cohere's `ERROR_TOXIC`, Bedrock's
+  `guardrail_intervened` and Zhipu's `sensitive`. The provider cannot tell them apart, so a model's own refusal reaches
+  the loop as a filter and is reported as one; the exception's text says "content filter or safety refusal".
+* The loop samples a `ContentFiltered` answer again once, at the temperature the operator configured (none is sent when
+  none is set), under its own bound `_MAX_FILTER_RETRIES = 1`, apart from the three retries a rejected tool call gets. A
+  refusal repeats and each call is a long prompt; the reported case, an occasional empty 200, is covered by one fresh
+  sample. The retry notice names the cause (`ModelOutputRejected.reason`; it used to call every rejection a malformed tool
+  call), and a second withheld answer ends the turn `provider_error` carrying the provider's text, which names the filter.
+  A replacement route after a failover gets its own resample.
+* Every withheld call is recorded. The route answered and reported usage for it, so the call counts as billed, but it
+  raised instead of returning a result, and the accounting that follows a result never saw it. `ContentFiltered.usage`
+  carries what the call reported (the response's usage when buffered; the stream's usage chunks, summed as the loop sums
+  them, when streamed), and the loop records it the moment the call ends, whether or not a resample follows: in the
+  session, in the budget's token and cost ceilings and in the turn's usage, on both retry paths. The compaction summarizer
+  records it as its own, tagged as the summarizer's.
 
 Rejected: a second parser for Bedrock's schema paths, since the name sits in the brackets whatever precedes the colon and
 the one pattern reads the bare and the pathed form; treating every `content_filter` finish as a failure, which would
-discard an answer the caller already has; and a new stop reason or retry budget for the filter, since the rejected-output
-seam already has the bound and the terminal, and a new stop reason is a new case for every consumer of the turn's end.
+discard an answer the caller already has; a new stop reason for the filter, which is a new case for every consumer of the
+turn's end; and the rejected tool call's three retries at a raised temperature, since a refusal repeats, so one refusal
+could bill four long prompts, and a temperature the operator never set can itself be refused by a model that fixes its
+own, which would hide the filter behind a 400.
 
-**Not built: prompt caching through a custom endpoint.** The report measured that `cache_control` works through the
-gateway for a Claude model (a 44k-token prompt billed 11 prompt tokens on the repeat instead of 43,859) and that Zak Code
-never sends it to `openai/Claude4.5`, which it estimated leaves agent loops about 3x dearer than they need to be. Two
-gates say no, independently. `_supports_cache_control` requires the model string to start `anthropic/` or `claude`,
-because OpenAI would reject the annotation, and it also requires the capability lookup's `supports_caching`, which reads
-as false for an alias that neither the static table nor litellm's metadata knows. Probed: `anthropic/claude-sonnet-4-5`,
-`claude-sonnet-4-5` and `claude-haiku-4-5` pass both; `openai/claude-haiku-4-5` passes the capability and fails the name
-rule; `openai/claude-sonnet-4-5`, `openai/Claude4.5`, an OpenRouter id, a Bedrock id and a Vertex id pass neither.
-Widening the name rule alone changes nothing for an alias, and the fact that settles it, that this alias is Claude and its
-route passes the marker through, lives in the operator's gateway, not in the model string. Three ways to settle it: an
-operator declaration of the model strings that take the marker (a setting, against the one-contract stance); inferring it
-for a custom endpoint whose model string names Claude, with ADR-0181's repair extended to the marker so that a route that
-refuses it costs one re-issued call a session instead of every call (no setting, but a new mechanism, since the marker is
-a message field and not a request field, and it guesses wrong for a non-Claude model that carries the name until its first
-refusal); or leaving it. Recommended: the second, after one measurement of the repeat call's cache read on the reporter's
-gateway with a build that has it, since a wrong guess costs one call. Not built here because it changes what every such
-route is sent on the strength of one reported probe, which makes it the owner's call.
+**Not decided: prompt caching through a custom endpoint.** `cache_control` is sent only when the model string starts
+`anthropic/` or `claude` and the capability lookup says the model caches. A Claude model behind an `openai/` route, or
+under an alias no table knows, is never sent it, though its route may pass it through, and the fact that settles it lives
+in the operator's gateway and not in the model string. An operator declaration of which models take the marker, or an
+inference from the model string repaired by ADR-0181 when a route refuses it, would settle it; either changes what every
+such route is sent, so it is the owner's call.
 
-**Not built: the text mode's `stop` sequences.** In text tool mode (`ZAKCODE_TOOL_CALLING_MODE=text`, which the reporter
-had to use because the gateway rejects a native `tool_choice`), `text_tools._merge_stop_sentinels` sends six `stop`
-sequences: `</tool_call>`, `<tool_result>` and four chat-template tokens, each 10 to 13 characters long, capped by count
-(four under the `openai/` prefix) and never by length. The report saw one model reject `stop` outright and another reject
-strings over 10 characters. ADR-0181's repair does not reach it, since it covers the fields we put in `extra_body` and the
-thinking switch, and a drop is not a safe repair here: those sequences are what stop a weak model fabricating a tool
-result. It needs its own decision.
+**Not decided: the text mode's `stop` sequences.** Text tool mode sends up to six `stop` sequences of 10 to 13 characters,
+capped by count and never by length, and a reported route rejects `stop` outright while another rejects any string over 10
+characters. ADR-0181's repair does not reach them, and dropping them is not safe, since they stop a weak model fabricating
+a tool result.
 
 **Consequences.** A Bedrock-worded refusal that names a field we sent now costs one re-issued call at the start of a
-session, as every other phrasing does, where it used to fail every call. A filtered empty answer costs up to three further
-calls, each billed as a rejected tool call is, and then ends the turn with a cause where it used to end it with none (or
-with a clean `completed`); a route that filters every attempt ends the turn `provider_error` after four calls. Nothing
-changes for a response that delivered anything, for a refusal naming a field we did not send, or for a plain
-`ModelOutputRejected`, whose notice still reads "provider rejected a malformed tool call". Not changed: the caching gate,
-the `stop` sequences, `tool_choice`, and the gateway's request limit.
+session, as every other phrasing does, where it used to fail every call. A filtered empty answer costs one further call
+and then ends the turn `provider_error` naming the filter, where it used to end it with no cause (or with a clean
+`completed`); both calls are recorded, so a ceiling that falls between one call and two now ends a turn `budget_exhausted`
+after the second call has delivered its answer. Nothing changes for a response that delivered anything, for a refusal
+naming a field we did not send, or for a plain `ModelOutputRejected`, whose three retries at a raised temperature and
+notice "provider rejected a malformed tool call" are as before. Not changed: the caching gate, the `stop` sequences,
+`tool_choice`, the gateway's request limit, and the side calls other than the summarizer (the judge, relevance scoring,
+the classifiers), which call the provider once, fail soft, and still record nothing for a call that raised.
 
-The proof. `tests/test_provider_field_rejection.py` gains four tests (two phrasings in the classifier's table, the
-affinity key repaired from Bedrock's wording, and a Bedrock refusal naming a key we did not send staying a
-`RequestFailed`) and two assertions that a key we did not send is never attributed.
-`tests/test_provider_content_filter.py` is new, with eleven: the provider raises on an empty filtered buffered answer, on
-an empty filtered stream (with the trailing usage chunk, and after reasoning only) and on a buffered answer that only
-reasoned; leaves an unfiltered empty answer to the silence gate; returns a filtered answer that delivered text or a tool
-call as it came; and, with the real provider under the loop, the loop retries a filtered answer as a fresh sample naming
-the filter on both paths and ends `provider_error` naming it once the bound is spent. Against main's source three of the
-classifier tests fail (the two phrasings and the repair; the fourth guards what must not change, so it passes there) and
-the new file does not import. Ten mutants of the change were each killed by name: the Bedrock pattern broken (3 tests
-red), the raise disabled (5), the stream's delivered flag counting nothing (1), everything (3), usage (3) or reasoning
-(1), the buffered answer's reasoning counted as delivered (1), its tool calls ignored (1), the gate raising when something
-was delivered (3), and the retry notice's cause hard-coded (2). The first run left the "everything" mutant alive, which
-showed that the stream tests lacked the usage chunk every real stream ends with; that chunk and a reasoning-only stream
-were added and it died.
+The proof. `tests/test_provider_field_rejection.py` gains five tests (two phrasings in the classifier's table, the
+affinity key repaired from Bedrock's wording, a Bedrock refusal naming a key we did not send staying a `RequestFailed`,
+and a complaint about a key that is not a refusal of it staying unattributed) and two assertions that a key we did not
+send is never attributed. `tests/test_provider_content_filter.py` is new, with 26. The provider raises on an empty
+filtered buffered answer, on an empty filtered stream (with the trailing usage chunk, and after reasoning only) and on a
+buffered answer that only reasoned, and sums a stream's usage chunks; it leaves an unfiltered empty answer to the silence
+gate, and returns a filtered answer that delivered text or a tool call, buffered or streamed, as it came. With the real
+provider under the loop, on both paths: one resample at the configured temperature and none sent when none is set, a
+second withheld answer ending `provider_error` naming the filter and the refusal, every billed call recorded in the
+session, the budget and the turn at 1000 prompt tokens a call, and a withheld call belonging to its own turn and no other.
+With a scripted provider: the summarizer's withheld call tagged as the summarizer's, a call that reported no usage adding
+nothing, and a replacement route getting its own resample. Against main's source three of the classifier tests fail (the
+two phrasings and the repair; the others guard what must not change) and the new file does not import. Thirty-five
+one-line mutants of the change were each killed by one to twelve named tests, and the restored source turned them green
+again. They break the Bedrock pattern or widen it to any `key [x]`; disable the raise or make it fire when something was
+delivered; make the delivered flag count nothing, everything, reasoning, the usage chunk, only text (a streamed tool call
+then reads as silence) or not a buffered tool call; drop the exception's usage or sum a stream's chunks wrongly; leave a
+withheld call out of the session, the budget, the turn or either handler; ignore or unwire the summarizer's own
+accounting; raise the resample's temperature, loosen its bound or mislabel its notice; and skip the turn's reset, the
+no-usage guard or the failover's reset.

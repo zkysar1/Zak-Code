@@ -316,13 +316,21 @@ class ContentFiltered(ModelOutputRejected):
     loop's empty-completion gate nudges a model that goes silent, and a turn that had
     already spoken ended clean on it). Reported 2026-10-13 for a Claude route behind an
     OpenAI-compatible gateway, cause unconfirmed: an occasional empty 200 on long text that a
-    sibling model answered. It is retried like a rejected tool call because the remedy is the
-    same, to sample the answer again, and the retry's raised temperature makes that a different
-    sample. When the retries are spent the turn ends ``provider_error`` carrying this text,
-    so the operator sees the filter, not an empty answer.
+    sibling model answered. litellm files several refusals under the same finish reason (a
+    model's own safety refusal among them), so a real refusal arrives here too and is reported
+    as a filter. The loop samples again ONCE, at the configured temperature, and when that is
+    withheld too the turn ends ``provider_error`` carrying this text, so the operator sees the
+    filter, not an empty answer.
+
+    The call was billed even though it raised, so the exception carries what it cost for the
+    loop to record: nothing else would.
     """
 
     reason = "provider's content filter withheld the answer"
+
+    def __init__(self, message: str, *, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class RequestFailed(ProviderError):
