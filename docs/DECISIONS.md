@@ -17376,3 +17376,45 @@ server: reopened after a restart, reopened while the server holds everything, re
 message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains two (the stamp moves
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
+
+## ADR-0288: the watch bus stamps events with the clock a saved message is stamped with
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0286 lets a reopened page draw the saved messages older than `bus_from`, the publish stamp of the oldest
+event the session's bus holds, and lets the watch replay draw the rest; a message stamped at or after `bus_from` counts as
+the bus's. To make an event and a message made in the same instant compare equal, it floored `bus_from` to the microsecond.
+
+That floor was not enough. The ring-of-three page test
+(`test_a_page_reopened_when_the_bus_kept_only_the_newest_turn_draws_the_older_ones_from_disk`) failed again on the Windows
+CI cell and drew the newest turn twice. A throwaway loop of that test on the same cell (Python 3.11.9, whose `time.time()`
+reads `GetSystemTimeAsFileTime()` in 15.625 ms steps) recorded, for each of 60 passes, how each saved message was stamped
+against the bus's start. In 48 passes the newest turn tied the bus's start, since one clock reading served the event and the
+messages after it. In 2 passes the message was stamped one microsecond BEFORE it: a bus start of 1791938643.98543 against a
+message at 1791938643.985429, and 1791938744.132585 against 1791938744.132584. The page drew each of those turns twice.
+
+The two stamps are cut differently. A saved message is stamped by `datetime.now(UTC)`, which floors the clock reading's
+nanoseconds to whole microseconds. The bus stamped by `time.time()`, which returns the same reading as a float rounded to the
+nearest representable value, 0.24 microseconds apart at this magnitude. A reading just under a whole microsecond can round up
+onto it, and flooring that float gives a number one microsecond above what flooring the reading gives. Once the reading is a
+float nothing recovers it, so the floor ADR-0286 added cannot be made exact.
+
+**Decision.** The bus stamps events with `datetime.now(UTC).timestamp()`, the call a saved message's `created_at` is cut from;
+the transcript route reads a message back with the same `.timestamp()`. An event and a message made on one reading are then
+the same float, bit for bit, and a tie goes to the bus as ADR-0286 intends. `bus_from` is the stored stamp, with no floor. The
+injectable clock stays, so the tests that script stamps are unchanged.
+
+Rejected: a one-microsecond allowance in the comparison, which hides the error and lets a message made a microsecond before
+the bus count as the bus's and be drawn from neither place; and carrying the integer nanosecond reading beside the float, a
+second field on every event to recover what one shared call gives for free.
+
+**Consequences.** Every event's `at` is now a whole number of microseconds, as a message's is. The watch frame rounds it to the
+millisecond (`round(at, 3)`), so nothing a client reads changes. On Linux the two readings are not made in the same nanosecond
+and nothing changes. ADR-0286's statement that a tie goes to the bus now holds for every reading, where before it held for all
+but the few that rounded up.
+
+The proof. `tests/test_event_bus.py` replaces the floor test with one that freezes `datetime.now` at the instant of the
+failing pair and asserts that the bus's line equals the message's `.timestamp()`; with the bus reading `time.time()` again it
+fails, and with the change it passes. The same 240-pass loop on the Windows cell with the change drew every pass correctly
+(0 bad), the newest turn tied the bus's start in 185 passes, and no message was stamped before the bus (0 of 240, where the
+loop without the change found 2 in 60).
