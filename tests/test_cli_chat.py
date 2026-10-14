@@ -1494,6 +1494,30 @@ def test_update_on_windows_stops_when_the_second_process_cannot_start(
     assert f"waspulledfrom{old_sha}to" in flat
 
 
+def test_update_on_windows_stops_with_a_message_when_the_job_cannot_be_written(
+    tmp_path, monkeypatch
+) -> None:
+    """A full disk, or a file another program holds, after the pull: a traceback said nothing about
+    the state the checkout and the install were left in."""
+    import zakcode.cli as cli_mod
+
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    old_sha = _head(h.clone)
+
+    def full(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(cli_mod.shutil, "copyfile", full)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, OSError), "a raw traceback instead of a message"
+    flat = _flat(result.stdout)
+    assert "couldnotpreparethesecondprocess" in flat and "Nospaceleftondevice" in flat
+    assert "toolinstall--force--reinstall" in flat and "--constraints" in flat
+    assert "Theinstalledenvironmentwasnotchanged" in flat and f"waspulledfrom{old_sha}to" in flat
+    assert h.started == []
+
+
 def test_update_on_windows_refuses_while_other_programs_run_from_the_install(
     tmp_path, monkeypatch
 ) -> None:

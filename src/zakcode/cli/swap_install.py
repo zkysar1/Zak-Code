@@ -15,11 +15,14 @@ The order is the whole design:
 
 1. wait for the updater to exit;
 2. write to the log how to put the old environment back by hand, then move it aside. A rename
-   fails, and nothing has changed, while any other process still holds a file in it, so a program
-   that is running is found out here and not half way through a delete;
+   fails, and nothing has changed, while another process has a file in it open or has it as its
+   working directory. A program that is merely running from it does NOT stop the rename (measured
+   on Windows, ADR-0291): the updater's listing is what refuses that case, before anything is
+   pulled;
 3. run the reinstall into the now-empty place;
 4. start the new environment and import the package from it;
-5. only then delete the old one.
+5. only then delete the old one. A program still running from it keeps its files from being
+   deleted: the log says so and leaves the folder, which the next update removes.
 
 A failure after step 2 deletes whatever the reinstall made and moves the old environment back, so a
 failed update leaves the environment that was there. The checkout the updater pulled stays pulled:
@@ -94,7 +97,8 @@ def _move(src: Path, dst: Path, seconds: float) -> OSError | None:
     """Rename ``src`` to ``dst``, retrying for ``seconds``: ``None`` on success, else the error.
 
     The retry covers the tail of the updater's own process tree: the launcher that started it
-    exits a moment after it does. A process that stays holds its files and the rename keeps failing.
+    exits a moment after it does. A process that stays, with a file in the folder open or the folder
+    as its working directory, keeps the rename failing.
     """
     deadline = time.monotonic() + seconds
     while True:
@@ -166,8 +170,13 @@ def _starts(verify: list[str]) -> tuple[bool, str]:
 
 
 def _by_hand(env_dir: Path, backup: Path) -> str:
-    """The two steps that put the old environment back without this program."""
-    return f"delete {env_dir} if it exists, then rename {backup} to {env_dir}"
+    """The two steps that put the old environment back without this program.
+
+    The paths are quoted: a Windows profile folder holds a space, and unquoted the reader cannot
+    tell where a path ends and the next word begins. The new name is the folder's own name,
+    because the rename commands of both shells take a name there and not a path.
+    """
+    return f'delete "{env_dir}" if it exists, then rename the folder "{backup}" to "{env_dir.name}"'
 
 
 def run(job: dict[str, Any], log: TextIO) -> int:
@@ -195,15 +204,26 @@ def run(job: dict[str, Any], log: TextIO) -> int:
     _wait_for_exit(int(job.get("wait_pid", 0)), _WAIT_SECONDS)
 
     if backup.exists():
-        # A run that was cut off between moving the install aside and finishing leaves this behind.
+        # A run that was cut off between moving the install aside and finishing leaves this behind,
+        # and so does one that could not delete the old install because a program ran from it.
         # Delete it only when the install in place works; otherwise it may be the only good copy.
         if env_dir.exists() and _starts(verify)[0]:
-            _rmtree(backup)
+            try:
+                _rmtree(backup)
+            except OSError as exc:
+                say(
+                    f"update failed: {backup}, left by an earlier update, cannot be deleted "
+                    f"({exc}). A program is probably still running from it. Close that program "
+                    "and run zakcode update again, or delete the folder by hand. The install in "
+                    "place was not touched."
+                )
+                return fail(2)
             say(f"removed {backup}, left by an earlier update, since the install in place works")
         else:
             say(
-                f"update failed: {backup} is left from an earlier update and {env_dir} does not "
-                f"start. Nothing was touched. To restore by hand: {_by_hand(env_dir, backup)}."
+                f"update failed: {backup} is left from an earlier update and {env_dir} is "
+                f"missing or does not start. Nothing was touched. To restore by hand: "
+                f"{_by_hand(env_dir, backup)}."
             )
             return fail(2)
 
@@ -218,9 +238,10 @@ def run(job: dict[str, Any], log: TextIO) -> int:
         error = _move(env_dir, backup, float(job.get("move_seconds", _MOVE_SECONDS)))
         if error is not None:
             say(
-                f"update failed: {env_dir} cannot be moved ({error}). Another program is still "
-                "running from it, so the environment was left as it was. Close every zakcode "
-                "session, the web app included, and run zakcode update again."
+                f"update failed: {env_dir} cannot be moved ({error}). Another program has a file "
+                "in it open or is working in that folder, so the environment was left as it was. "
+                "Close every zakcode session, the web app included, and any window or editor open "
+                "in that folder, and run zakcode update again."
             )
             return fail(2)
         say(f"moved the install to {backup}")
@@ -276,7 +297,12 @@ def run(job: dict[str, Any], log: TextIO) -> int:
         try:
             _rmtree(backup)
         except OSError as exc:
-            say(f"could not delete {backup} ({exc}); it is the old install, safe to delete by hand")
+            say(
+                f"could not delete {backup} ({exc}). It is the old install, and a program is "
+                "probably still running from it: restart that program to use the new install. "
+                "The folder is safe to delete by hand once it has exited, and the next update "
+                "deletes it."
+            )
     say("update complete")
     return 0
 

@@ -247,11 +247,44 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         assert not (tool_dir / "zakcode.update-backup").exists()
         _ok([str(tool_python), "-c", "import zakcode"])  # the install is untouched
 
-        # ── 1b. the programs cannot be listed: the second process still refuses a busy install ──
-        # PowerShell is what lists them. With it off PATH the update goes ahead and pulls, and the
-        # move of the environment is what finds the program running from it: nothing is replaced,
-        # and the log says the checkout was pulled and how to go back.
+        # ── 2. a process works in the environment's folder: the move refuses, nothing changes ──
+        # No program runs from the install, so the listing finds nothing and the update goes ahead
+        # and pulls. The process's working directory holds the folder, the rename of it fails, and
+        # the log says so, that the checkout was pulled and how to go back. A terminal left open
+        # in the folder does the same, and the listing cannot see it.
         receipt_before = (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
+        # The base interpreter, not the venv's launcher: killing the launcher need not end the
+        # process behind it, and that process is the one holding the folder.
+        base_python = getattr(sys, "_base_executable", None) or sys.executable
+        holder = subprocess.Popen(
+            [base_python, "-c", "print('up', flush=True); import time; time.sleep(900)"],
+            cwd=tool_env,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert holder.stdout is not None and holder.stdout.readline().strip() == "up"
+            proc = _run([str(zakcode), "update"], env=env)
+            assert proc.returncode == 0, f"the update did not start:\n{proc.stdout}\n{proc.stderr}"
+            # The note about the checkout is the last thing written after the refusal.
+            text = _wait_for_log(log, ("reset --hard", "update complete"))
+        finally:
+            holder.kill()
+            holder.wait()
+            if holder.stdout is not None:
+                holder.stdout.close()
+        assert "cannot be moved" in text, text
+        assert "was pulled from" in text, text
+        assert _head(checkout) != old_head, "the update should have pulled before it found out"
+        assert (tool_env / "uv-receipt.toml").read_text(encoding="utf-8") == receipt_before
+        assert not (tool_dir / "zakcode.update-backup").exists(), "the backup was left behind"
+        _ok([str(tool_python), "-c", "import zakcode"])  # the install is untouched
+
+        # ── 3. the programs cannot be listed and one runs from the install: the update goes on ──
+        # PowerShell is what lists them. With it off PATH the update cannot know, and a program
+        # that merely RUNS from the environment does not stop the move (measured on windows-latest,
+        # 2026-10-14: the rename went through). The new install is built and started; the old one
+        # cannot be deleted while that program runs, and the log says so. The update is complete.
         no_powershell = os.pathsep.join(
             p for p in env["PATH"].split(os.pathsep) if "powershell" not in p.lower()
         )
@@ -260,26 +293,28 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
             time.sleep(2)
             proc = _run([str(zakcode), "update"], env={**env, "PATH": no_powershell})
             assert proc.returncode == 0, f"the listing was still available:\n{proc.stdout}"
-            text = _wait_for_log(log, ("cannot be moved", "update complete"))
+            text = _wait_for_log(log, ("update complete", "update failed"))
         finally:
             decoy.kill()
             decoy.wait()
-        assert "cannot be moved" in text, text
-        assert "was pulled from" in text and "reset --hard" in text, text
-        assert _head(checkout) != old_head, "the update should have pulled before it found out"
-        assert (tool_env / "uv-receipt.toml").read_text(encoding="utf-8") == receipt_before
-        assert not (tool_dir / "zakcode.update-backup").exists(), "the backup was left behind"
-        _ok([str(tool_python), "-c", "import zakcode"])  # the install is untouched
+        assert "update complete" in text and "updated " in text, text
+        assert "could not delete" in text and "safe to delete by hand" in text, text
+        assert (tool_dir / "zakcode.update-backup").is_dir(), "the old install should be left"
+        _ok([str(tool_python), "-c", "import zakcode"])  # the new install works
+        receipt_before = (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
 
-        # ── 2. the reinstall fails: the old install comes back, whole ──
+        # ── 4. the reinstall fails: the old install comes back, whole ──
+        # The program that held the leftover in 3 has exited, so this update clears it first.
         offline = {**env, "UV_OFFLINE": "1", "UV_NO_CACHE": "1"}
         proc = _run([str(zakcode), "update"], env=offline)
         assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
         # The last lines, not the first: "update failed" is written before the old install is put
         # back, so a test that stopped there would read the tree while it was still being restored.
+        # This update pulls nothing, so no note about the checkout follows the last line.
         text = _wait_for_log(
             log, ("restored the previous environment", "could NOT be put back", "update complete")
         )
+        assert "left by an earlier update" in text, text
         assert "update failed" in text and "restored the previous environment" in text, text
         assert tool_python.is_file() and _ok([str(tool_python), "-c", "import zakcode"]) is not None
         assert (tool_env / "uv-receipt.toml").read_text(encoding="utf-8") == receipt_before

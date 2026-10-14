@@ -17416,11 +17416,17 @@ Windows install and then on a Windows runner.
   pull if there is one. Otherwise it writes the job to `~/.zakcode/update/job.json`, copies `swap_install.py` out of the
   package into that folder, starts the copy with the interpreter the environment was built from (which lives outside the
   environment) detached, in its own process group and out of the terminal's job object where the job allows it, and exits.
-* The second process waits for the command to exit, writes to the log how to put the environment back by hand, and then
-  moves it aside to `<env>.update-backup`. A rename fails, and nothing has changed, while any program holds a file in the
-  environment, so a busy install is found here and not half way through a delete. It then runs the reinstall into the
-  empty place, starts the new environment's interpreter and imports the package, and only then deletes the backup. A
-  failure after the move deletes what the reinstall made and moves the old environment back. The programs it starts run
+* The second process waits for the command to exit, writes to the log how to put the environment back by hand (the paths in
+  quotes, since a profile folder holds a space), and then moves it aside to `<env>.update-backup`. A rename fails, and
+  nothing has changed, while a program has a file in the environment open or has its folder as the working directory. A
+  program that only runs from the environment does not stop the rename. Measured on a windows-latest runner (run
+  38507968500), the move went through with one running, the reinstall completed and the new install started, and only the
+  delete of the old folder was refused, on that program's `Scripts\python.exe`. So the listing in the update command, not
+  the move, is what refuses a busy install. The second process then runs the reinstall into the empty place, starts the
+  new environment's interpreter and imports the package, and only then deletes the backup. If that delete is refused the
+  update is still complete: the log says the old install is left, that a program is probably still running from it and
+  must be restarted, and that the folder is safe to delete by hand. A failure after the move deletes what the reinstall
+  made and moves the old environment back. The programs it starts run
   with `CREATE_NO_WINDOW`: the process is detached and has no console, so a console program it started would be given a
   visible one, and closing that window would kill the reinstall. A symlink or junction is removed as a link and never
   followed. Anything that escapes the helper is caught in `main`, logged with the way back, and exits 3.
@@ -17429,12 +17435,15 @@ Windows install and then on a Windows runner.
   is the last word, which is why it comes first. The second process does not undo the pull, so a failure ends with a
   sentence saying the checkout stays pulled and the `git reset --hard` that returns it. It prints that command and does not
   run it, because by the time it fails the person may have edited the checkout.
-* A backup left by a run that was cut off is deleted only when the install in place starts. Otherwise it may be the only
-  good copy: nothing is touched and the log says how to restore it by hand.
+* A backup left by a run that was cut off, or by one that could not delete it, is deleted only when the install in place
+  starts. Otherwise it may be the only good copy: nothing is touched and the log says how to restore it by hand. If the
+  install in place starts and the backup still cannot be deleted, the update stops before anything moves and says why.
 * Elsewhere the command runs the reinstall itself, as before, with the options above.
 
-Rejected: renaming the environment aside from the update command, since a directory with a running program in it cannot
-be renamed either; building the new environment elsewhere and moving it in, since the launchers uv writes into `Scripts\`
+Rejected: renaming the environment aside from the update command. The measurement above shows the rename would go
+through, but the command would then go on running from a folder that no longer holds what it imports next (an inference,
+not measured), where the second process needs nothing from the environment; building the new environment elsewhere and
+moving it in, since the launchers uv writes into `Scripts\`
 hold the absolute path of the interpreter they were built beside; the second process on Linux and macOS too, which delete
 the files of a running program without complaint, so it would add a failure surface for nothing; printing a warning about
 the lock and leaving the versions alone; resetting the checkout from the second process, which could discard edits made
@@ -17445,8 +17454,10 @@ minute; the command says so, names the log and names the folder that keeps the o
 install whose base interpreter lives inside the environment (uv does not make one) is refused with the exact reinstall
 command this update built, to run from a shell outside it. Elsewhere there is still no rollback, because uv deletes first,
 as before. Whoever's environment broke needs one `git pull` of the checkout to get this (an editable install runs the
-checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list processes the command goes on,
-and the second process's rename refuses a busy install in the log instead.
+checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list processes the command goes on.
+A program running from the install then does not stop the move: the update completes, the old install is left where that
+program holds it, and the program keeps running from the left folder until it is restarted, and may fail on its next
+import. A program with a file open in the install, or working in its folder, is refused by the move, in the log.
 
 Not guarded: two updates started at once. The second `zakcode update` cannot start once the first has moved the environment
 aside, because the program is in it, and before that the first updater is a program running from the install, which the
@@ -17459,17 +17470,24 @@ a throwaway uv tool directory the way the report did (editable, from a local che
 git remote and runs the installed `zakcode update`. Its seed holds one package a release behind the newest in its own copy of
 the lock, so an unpinned reinstall differs from the lock whatever today's releases are. Against the code before this change
 it fails on both: on Windows with the `Access is denied (os error 5)` above, and on Ubuntu because the install is no longer
-editable (run 38497613390). The Windows run covers a second process in the install being refused and named with nothing
-pulled; the same with PowerShell off `PATH`, where the update goes on and the second process refuses at the move, leaving
-the install untouched and the log naming the pull; a reinstall that fails offline restoring the old install and its receipt;
-and the update itself, pinned to the lock and still editable. `tests/test_update_swap.py` (28 tests, 33 cases) runs the
-second process's file against real directory trees and puts a failure at each step: the old tree comes back byte for byte
-after a failed command, a verify that fails and an exception, and a refused rename leaves it untouched. Its Windows-only
-cases hold a file open inside a fake environment and show the move refused with the tree untouched, and remove a junction
-without touching its target; the others check that the updater is waited for before the move, that the way back is on disk
-before the move, that programs run without a console window, and that every failure ends with the note about the checkout.
-`tests/test_cli_chat.py` gains fourteen tests for the options, the lock and its refusal, the unwritable home and the Windows
-hand-off. Twelve behaviours were each run through a two-way mutation proof (green, red with the behaviour reverted, green
-again): the wait before the move, the way-back line, the console flag, the note after a failure, the catch in `main`, the
-removal of a link, the note in the lock refusal, the real command in the refusals, the note in the job, the unwritable
-home, the backup path in the hand-off and the walk over the process chain.
+editable (run 38497613390). The Windows run covers, in order: a second process in the install being refused and named with
+nothing pulled; a process working in the environment's folder, which the listing cannot see, so the update pulls and the move
+is refused, leaving the install untouched and the log naming the pull; PowerShell off `PATH` with a program running from the
+install, where the move goes through, the update completes and the log says the old install is left; a reinstall that fails
+offline, which first clears that leftover and then restores the old install and its receipt; and the update itself, pinned to
+the lock and still editable. The third was first written to expect a refusal, and its first run (run 38507968500) measured
+the opposite, which is why the move is no longer described as what finds a running program. `tests/test_update_swap.py` (31
+tests, 37 cases) runs the second process's file against real directory trees and puts a failure at each step: the old tree
+comes back byte for byte after a failed command, a verify that fails and an exception, and a refused rename leaves it
+untouched. Its Windows-only cases hold a file open inside a fake environment, and a process working in it, and show the move
+refused with the tree untouched, and remove a junction without touching its target; the others check that the updater is
+waited for before the move, that the way back is on disk before the move and quotes its paths, that programs run without a
+console window, that an old install a program still holds is left and the update completes, that a leftover which cannot be
+deleted stops the next update before anything moves, and that every failure ends with the note about the checkout.
+`tests/test_cli_chat.py` gains sixteen tests for the options, the lock and its refusal, the unwritable home, the job that
+cannot be written and the Windows hand-off. Twelve behaviours were each run through a two-way mutation proof (green, red with
+the behaviour reverted, green again) on the first fix commit: the wait before the move, the way-back line, the console flag,
+the note after a failure, the catch in `main`, the removal of a link, the note in the lock refusal, the real command in the
+refusals, the note in the job, the unwritable home, the backup path in the hand-off and the walk over the process chain. Four
+more were run on the second, with the red tests named from the junit file: the stop on a leftover that cannot be deleted, the
+completion with an old install left behind, the quoting of the way back and the message for a job that cannot be written.

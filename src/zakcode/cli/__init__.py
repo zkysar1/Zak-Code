@@ -719,7 +719,11 @@ def _other_programs_in(env_dir: Path) -> list[tuple[int, str]] | None:
     """``(pid, program)`` of every OTHER process that runs from a file inside ``env_dir``.
 
     ``None`` when they cannot be listed (no PowerShell, a policy that blocks it). That is not
-    fatal: the second process refuses a busy environment too, only later and into a log.
+    fatal, but the listing is the only thing that refuses a busy install: a program that merely
+    runs from the environment does not stop the second process's move (measured on Windows,
+    ADR-0291). The update then completes, the old install is left where it cannot be deleted, and
+    the program keeps running from it until it is restarted. A program that has a file open in the
+    environment, or works in its folder, is refused by the move and not by this listing.
     """
     script = (
         "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and "
@@ -801,7 +805,6 @@ def _finish_in_second_process(
     work = _update_dir(note)
     script, job_file, log = work / "swap_install.py", work / "job.json", work / "update.log"
     backup = env_dir.with_name(env_dir.name + ".update-backup")
-    shutil.copyfile(Path(__file__).with_name("swap_install.py"), script)
     job = {
         "wait_pid": os.getpid(),
         "env_dir": str(env_dir),
@@ -814,8 +817,18 @@ def _finish_in_second_process(
         "new_sha": new_sha,
         "checkout_note": note,
     }
-    job_file.write_text(json.dumps(job, indent=2), encoding="utf-8")
-    log.write_text(f"{time.strftime('%H:%M:%S')} update handed to a second process\n", "utf-8")
+    try:
+        shutil.copyfile(Path(__file__).with_name("swap_install.py"), script)
+        job_file.write_text(json.dumps(job, indent=2), encoding="utf-8")
+        log.write_text(f"{time.strftime('%H:%M:%S')} update handed to a second process\n", "utf-8")
+    except OSError as exc:  # a full disk, a file another program holds: the pull has already run
+        notice_error(
+            console,
+            "could not prepare the second process",
+            f"{exc}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
+        )
+        raise typer.Exit(code=1) from exc
     flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
     for extra in (_CREATE_BREAKAWAY_FROM_JOB, 0):  # a job that forbids breakaway refuses the flag
         try:

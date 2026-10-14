@@ -4,8 +4,9 @@ These run the real file against a real directory tree. The reinstall and "does i
 are small Python programs standing in for ``uv tool install`` and the new environment's
 interpreter, so a failure can be put at any step and the tree compared byte for byte afterwards.
 What only Windows can show (a rename that fails while a file in the directory is open) has its own
-Windows-only test here, and a rename that fails while a real program runs from the directory is
-the job of ``test_update_e2e.py``.
+Windows-only test here. What a real program does to the rename and to the delete, whether it runs
+from the directory or only works in it, is the job of ``test_update_e2e.py``: measured there, a
+program that merely runs from the directory does not stop the rename.
 """
 
 from __future__ import annotations
@@ -111,8 +112,9 @@ def test_a_successful_update_replaces_the_install_and_removes_the_backup(tmp_pat
 
 def test_the_way_back_is_on_disk_before_the_install_is_moved(tmp_path: Path, monkeypatch) -> None:
     """A process killed after the move (a reboot, a logoff, Task Manager) runs nothing more, so the
-    line that says how to undo it has to be written before the move starts."""
-    env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
+    line that says how to undo it has to be written before the move starts. The paths hold a space,
+    as a Windows profile folder does, and are quoted so the reader can tell where each one ends."""
+    env, backup = tmp_path / "tool env", tmp_path / "tool env.update-backup"
     _old_env(env)
     job = _job(tmp_path, env, _install(env))
     at_the_move: list[str] = []
@@ -126,8 +128,9 @@ def test_the_way_back_is_on_disk_before_the_install_is_moved(tmp_path: Path, mon
     code, log = _run(job)
     assert code == 0, log
     (written_by_then,) = at_the_move
+    by_hand = f'delete "{env}" if it exists, then rename the folder "{backup}" to "{env.name}"'
     assert "if this log stops here" in written_by_then
-    assert f"delete {env} if it exists, then rename {backup} to {env}" in written_by_then
+    assert by_hand in written_by_then
 
 
 def test_the_updater_is_waited_for_before_the_install_is_touched(
@@ -227,7 +230,7 @@ def test_an_install_another_program_holds_is_left_alone(tmp_path: Path, monkeypa
     assert code == 2, log
     assert _snapshot(env) == before
     assert not marker.exists(), "a command ran although the install could not be moved aside"
-    assert "Another program is still running from it" in log
+    assert "Another program has a file in it open or is working in that folder" in log
     assert "Close every zakcode session" in log
 
 
@@ -270,6 +273,59 @@ def test_a_backup_from_a_cut_off_update_is_cleared_when_the_install_works(tmp_pa
     assert (env / "version.txt").read_text() == "new" and not backup.exists()
 
 
+def _locked(path: Path) -> None:
+    raise PermissionError("[WinError 5] Access is denied")
+
+
+def test_an_old_install_a_program_still_holds_is_left_and_the_update_still_completes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Measured on Windows (ADR-0291): a program running from the old install does not stop the
+    move, and does stop the delete at the end. The new install is already in place and works, so
+    the update is complete; the log says what is left and why, and the next update clears it."""
+    env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
+    _old_env(env)
+    old = _snapshot(env)
+    with monkeypatch.context() as held:
+        held.setattr(swap_install, "_rmtree", _locked)
+        code, log = _run(_job(tmp_path, env, _install(env)))
+    assert code == 0, log
+    assert (env / "version.txt").read_text() == "new"
+    assert _snapshot(backup) == old  # only the delete that failed could have removed anything
+    assert "could not delete" in log and "safe to delete by hand" in log
+    assert "restart that program" in log
+    assert log.rstrip().endswith("update complete")
+    # The next update finds the leftover, sees the install in place works, and deletes it.
+    (tmp_path / "update.log").unlink()
+    code, log = _run(_job(tmp_path, env, _install(env)))
+    assert code == 0, log
+    assert "removed" in log and "left by an earlier update" in log
+    assert not backup.exists()
+
+
+def test_a_leftover_backup_that_cannot_be_deleted_stops_the_update_before_anything_moves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The leftover may still have a program running from it. That is not a crash and not a reason
+    to touch the install in place: the update says so and stops, with the note on the checkout."""
+    env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
+    _old_env(env)
+    backup.mkdir()
+    (backup / "stale.txt").write_text("an earlier run's leftovers")
+    before = _snapshot(env)
+    marker = tmp_path / "ran.txt"
+    command = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
+    monkeypatch.setattr(swap_install, "_rmtree", _locked)
+    code, log = _run(_job(tmp_path, env, command, checkout_note=_NOTE))
+    assert code == 2, log
+    assert _snapshot(env) == before
+    assert not marker.exists(), "a command ran although the leftover could not be cleared"
+    assert "cannot be deleted" in log and "run zakcode update again" in log
+    assert "The install in place was not touched" in log
+    assert "unexpectedly" not in log and "Traceback" not in log
+    assert log.rstrip().endswith(_NOTE)
+
+
 @pytest.mark.parametrize("env_state", ["missing", "does not start"])
 def test_a_backup_is_kept_when_the_install_in_place_cannot_vouch_for_it(
     tmp_path: Path, env_state: str
@@ -287,6 +343,7 @@ def test_a_backup_is_kept_when_the_install_in_place_cannot_vouch_for_it(
     assert _snapshot(backup) == before
     assert not marker.exists()
     assert "To restore by hand" in log and str(backup) in log and str(env) in log
+    assert "is missing or does not start" in log
 
 
 def test_when_the_old_install_cannot_be_put_back_the_log_says_how(
@@ -308,7 +365,13 @@ def test_when_the_old_install_cannot_be_put_back_the_log_says_how(
 
 @pytest.mark.parametrize(
     ("failure", "exit_code"),
-    [("rolled back", 1), ("cannot be moved", 2), ("cannot be put back", 3), ("stale backup", 2)],
+    [
+        ("rolled back", 1),
+        ("cannot be moved", 2),
+        ("cannot be put back", 3),
+        ("stale backup", 2),
+        ("undeletable backup", 2),
+    ],
 )
 def test_every_failure_ends_with_the_note_about_the_checkout(
     tmp_path: Path, monkeypatch, failure: str, exit_code: int
@@ -329,6 +392,9 @@ def test_every_failure_ends_with_the_note_about_the_checkout(
     if failure == "stale backup":
         backup.mkdir()
         (env / "version.txt").unlink()  # the install in place cannot vouch for the backup
+    if failure == "undeletable backup":
+        backup.mkdir()
+        monkeypatch.setattr(swap_install, "_rmtree", _locked)
     code, log = _run(_job(tmp_path, env, command, checkout_note=_NOTE))
     assert code == exit_code, log
     assert log.rstrip().endswith(_NOTE)
@@ -337,24 +403,23 @@ def test_every_failure_ends_with_the_note_about_the_checkout(
 def test_an_exception_outside_the_install_steps_still_ends_in_the_log(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A leftover backup whose delete raises escapes ``run`` before any step that rolls back. The
-    helper is detached and its stderr goes nowhere, so without this the log would stop at
-    "update started" and say nothing."""
-    env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
+    """Whatever raises in ``run`` before the step that rolls back escapes it (here the wait for the
+    updater). The helper is detached and its stderr goes nowhere, so without this the log would stop
+    at "update started" and say nothing."""
+    env, backup = tmp_path / "tool env", tmp_path / "tool env.update-backup"
     _old_env(env)
-    backup.mkdir()
 
-    def locked(path: Path) -> None:
-        raise PermissionError("locked")
+    def broken(pid: int, seconds: float) -> None:
+        raise RuntimeError("the wait broke")
 
-    monkeypatch.setattr(swap_install, "_rmtree", locked)
-    job = _job(tmp_path, env, _install(env))
+    monkeypatch.setattr(swap_install, "_wait_for_exit", broken)
+    job = _job(tmp_path, env, _install(env), wait_pid=4242)
     (tmp_path / "job.json").write_text(json.dumps(job), encoding="utf-8")
     code = swap_install.main(["swap_install.py", str(tmp_path / "job.json")])
     log = Path(job["log"]).read_text(encoding="utf-8")
     assert code == 3, log
-    assert "update failed unexpectedly" in log and "Traceback" in log and "PermissionError" in log
-    assert f"delete {env} if it exists, then rename {backup} to {env}" in log
+    assert "update failed unexpectedly" in log and "Traceback" in log and "RuntimeError" in log
+    assert f'delete "{env}" if it exists, then rename the folder "{backup}" to "{env.name}"' in log
 
 
 def test_an_update_with_no_install_to_replace_installs_fresh(tmp_path: Path) -> None:
@@ -476,9 +541,10 @@ def test_rmtree_removes_a_junction_and_leaves_what_it_points_at(tmp_path: Path) 
 def test_a_file_held_open_in_the_install_blocks_the_move_and_nothing_changes(
     tmp_path: Path,
 ) -> None:
-    """The design rests on this (ADR-0291), measured here on the real filesystem: the rename of the
-    environment fails while any process has a file in it open, so a busy install is found out by
-    the move and not half way through a delete. A running program holds files the same way."""
+    """Measured here on the real filesystem (ADR-0291): the rename of the environment fails while
+    any process has a file in it open, and then nothing has changed. A program that only RUNS from
+    the directory holds no file open this way, and its rename went through when
+    ``test_update_e2e.py`` measured it."""
     env = tmp_path / "toolenv"
     _old_env(env)
     before = _snapshot(env)
@@ -486,6 +552,43 @@ def test_a_file_held_open_in_the_install_blocks_the_move_and_nothing_changes(
     command = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
     with open(env / "Lib" / "site-packages" / "dep.py", "rb"):
         code, log = _run(_job(tmp_path, env, command, move_seconds=1))
+    assert code == 2, log
+    assert "cannot be moved" in log
+    assert not marker.exists(), "a command ran although the install could not be moved aside"
+    assert _snapshot(env) == before
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="only Windows refuses to move a directory that is a process's working directory",
+)
+def test_a_process_working_in_the_install_blocks_the_move_and_nothing_changes(
+    tmp_path: Path,
+) -> None:
+    """A terminal left open in the environment's folder holds it the same way, and a listing of the
+    programs that run from the install cannot see it, so the move is the only thing that does."""
+    env = tmp_path / "toolenv"
+    _old_env(env)
+    before = _snapshot(env)
+    marker = tmp_path / "ran.txt"
+    command = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
+    # The base interpreter, not the venv's launcher: killing the launcher need not end the process
+    # behind it, and that process is the one holding the folder.
+    base_python = getattr(sys, "_base_executable", None) or PY
+    decoy = subprocess.Popen(
+        [base_python, "-c", "print('up', flush=True); import time; time.sleep(120)"],
+        cwd=env,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert decoy.stdout is not None and decoy.stdout.readline().strip() == "up"
+        code, log = _run(_job(tmp_path, env, command, move_seconds=1))
+    finally:
+        decoy.kill()
+        decoy.wait()
+        if decoy.stdout is not None:
+            decoy.stdout.close()
     assert code == 2, log
     assert "cannot be moved" in log
     assert not marker.exists(), "a command ran although the install could not be moved aside"

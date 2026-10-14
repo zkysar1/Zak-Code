@@ -66,7 +66,10 @@ A local-checkout install is reinstalled with every dependency at the version the
 finishes in a second process after the command exits, because Windows will not replace the
 files of a program that is running: the command refuses while another program runs from the
 install (it names the pid), and the second process puts the old install back if anything
-fails. Its progress and result are in `~/.zakcode/update/update.log`, which ends
+fails. If the programs cannot be listed the update goes on, and a program still running from the old
+install keeps its files from being deleted: the log says so and leaves the folder, which is safe to delete by
+hand once that program has exited, and the next update removes it. Restart that program to use the new
+install. Its progress and result are in `~/.zakcode/update/update.log`, which ends
 `update complete` or `update failed`; before it moves the old install the log says how to put
 it back by hand, for the case that the process is killed. An update that stops leaves the
 checkout pulled, and says so with the `git reset --hard` that returns it.
