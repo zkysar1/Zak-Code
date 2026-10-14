@@ -17376,3 +17376,68 @@ server: reopened after a restart, reopened while the server holds everything, re
 message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains two (the stamp moves
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
+
+## ADR-0291: `zakcode update` finishes in a second process on Windows, keeps the old install until the new one starts, and installs the versions the lock pins
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** `zakcode update` on a local-checkout install pulled the checkout and then ran `uv tool install --force
+--reinstall "zakcode[extras] @ file:///<checkout>"`. That command was wrong in three ways, found by running it on a first
+Windows install and then on a Windows runner.
+
+1. *It replaces the environment it runs from.* uv deletes the tool's environment before it builds the next, and Windows
+   will not delete the files of a program that is running. Reported 2026-10-14 from a Windows 11 editable install: the pull
+   worked (989fdff to c0a7171), the reinstall stopped at `Failed to remove directory ...\uv\tools\zakcode\Scripts: Access is
+   denied (os error 5)` after uv had already removed `Lib\`, and what was left held only `Scripts\`, `pyvenv.cfg` and
+   `uv-receipt.toml`. `zakcode` could not start until the environment was rebuilt by hand. Reproduced on a windows-latest
+   runner with no other process in the install: `error: failed to remove directory ...\tools\zakcode\Lib: Access is denied.
+   (os error 5)`, leaving `Lib`, `Scripts`, `pyvenv.cfg` and `uv-receipt.toml`. The program that blocks the delete is the
+   update command itself.
+2. *It ignored `uv.lock`.* Every dependency was resolved afresh. Against this repository's lock (uv 0.12.5, the `server`
+   extra) 63 of 89 installed packages came out at a version other than the one the lock pins, so an update swapped the set
+   CI tested for whatever was newest that day.
+3. *It dropped what the install was.* An editable install came back as a copy (the receipt's `editable` became `directory`;
+   the end to end test on ubuntu-latest reported `the install is no longer editable`), and the Python was whichever uv chose.
+
+**Decision.**
+
+* The reinstall carries the install forward. `--constraints` is `uv export --locked --all-extras --no-dev
+  --no-emit-project` run in the checkout just pulled, `--editable` is passed when the receipt says the install is editable,
+  and `--python` is the running interpreter's major.minor. `--locked` refuses a lock that no longer matches
+  `pyproject.toml`; that refusal comes before anything is replaced, and its message says the checkout was pulled and the
+  install was not changed. A git-URL install has no checkout and so no lock to pin to.
+* On Windows, for a uv-managed install, the update command does not run the reinstall. It lists the programs that run from
+  the install (a PowerShell process listing; a chat session, the web app or a hook is named by pid) and refuses before the
+  pull if there is one. Otherwise it writes the job to `~/.zakcode/update/job.json`, copies `swap_install.py` out of the
+  package into that folder, starts the copy with the interpreter the environment was built from (which lives outside the
+  environment) detached, in its own process group and out of the terminal's job object where the job allows it, and exits.
+* The second process waits for the command to exit, then moves the environment aside to `<env>.update-backup`. A rename
+  fails, and nothing has changed, while any program holds a file in the environment, so a busy install is found here and
+  not half way through a delete. It then runs the reinstall into the empty place, starts the new environment's interpreter
+  and imports the package, and only then deletes the backup. A failure after the move deletes what the reinstall made and
+  moves the old environment back. Everything goes to `~/.zakcode/update/update.log`, which ends `update complete` or
+  `update failed` with what was done about it.
+* A backup left by a run that was cut off is deleted only when the install in place starts. Otherwise it may be the only
+  good copy: nothing is touched and the log says how to restore it by hand.
+* Elsewhere the command runs the reinstall itself, as before, with the options above.
+
+Rejected: renaming the environment aside from the update command, since a directory with a running program in it cannot
+be renamed either; building the new environment elsewhere and moving it in, since the launchers uv writes into `Scripts\`
+hold the absolute path of the interpreter they were built beside; the second process on Linux and macOS too, which delete
+the files of a running program without complaint, so it would add a failure surface for nothing; printing a warning about
+the lock and leaving the versions alone; and telling the user to reinstall by hand, which is the state this replaces.
+
+**Consequences.** On Windows the command returns before the install is replaced and `zakcode` cannot start for about a
+minute; the command says so and names the log. An install whose base interpreter lives inside the environment (uv does not
+make one) is refused with the single command that reinstalls from a shell outside it. Elsewhere there is still no rollback,
+because uv deletes first, as before. Whoever's environment broke needs one `git pull` of the checkout to get this (an
+editable install runs the checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list
+processes the command goes on, and the second process's rename refuses a busy install in the log instead.
+
+The proof. `tests/test_update_e2e.py`, the `update-e2e` CI job on windows-latest and ubuntu-latest, installs the project into
+a throwaway uv tool directory the way the report did (editable, from a local checkout, unpinned), pushes commits to a local
+git remote and runs the installed `zakcode update`. Against the code before this change it fails on both: on Windows with
+the `Access is denied (os error 5)` above, and on Ubuntu because the install is no longer editable. `tests/test_update_swap.py`
+(22 tests) runs the second process's file against real directory trees and puts a failure at each step: the old tree comes
+back byte for byte after a failed command, a verify that fails, an exception, and a rename that is refused leaves it
+untouched. `tests/test_cli_chat.py` gains twelve tests for the options, the lock refusal and the Windows hand-off.

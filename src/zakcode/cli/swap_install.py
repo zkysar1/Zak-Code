@@ -120,7 +120,11 @@ def _rmtree(path: Path) -> None:
 def _starts(verify: list[str]) -> tuple[bool, str]:
     """Run the verify command; ``(ok, what it printed or the tail of why not)``."""
     try:
-        proc = subprocess.run(verify, capture_output=True, text=True, timeout=120, check=False)
+        # `errors="replace"`: a byte the locale cannot decode must not turn a healthy install into
+        # a failed one (the reader thread would drop the output and `.strip()` would raise).
+        proc = subprocess.run(
+            verify, capture_output=True, text=True, errors="replace", timeout=120, check=False
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
     if proc.returncode != 0:

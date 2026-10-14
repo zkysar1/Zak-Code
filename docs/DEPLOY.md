@@ -61,6 +61,14 @@ local checkout) and prints old → new build identity; the restart hands the new
 server. A `Restart=always` unit would also pick the new build up on the server's next exit,
 but do not wait for one.
 
+A local-checkout install is reinstalled with every dependency at the version the checkout's
+`uv.lock` pins, and an editable install stays editable (ADR-0291). On Windows the reinstall
+finishes in a second process after the command exits, because Windows will not replace the
+files of a program that is running: the command refuses while another program runs from the
+install (it names the pid), and the second process puts the old install back if anything
+fails. Its progress and result are in `~/.zakcode/update/update.log`, which ends
+`update complete` or `update failed`.
+
 ## Hand-managed hosts
 
 A host nobody reaches by fleet automation gets the same unit, installed by hand with the

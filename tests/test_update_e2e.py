@@ -43,8 +43,18 @@ _SKIP_TOP = ("tests", "docs", "bench")
 def _run(
     cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None, timeout: int = 900
 ) -> subprocess.CompletedProcess[str]:
+    # UTF-8 on purpose: the programs print it (PYTHONUTF8=1 below), and the Windows default is
+    # cp1252, which cannot decode the glyphs in `zakcode update`'s messages.
     return subprocess.run(
-        cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False
+        cmd,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
     )
 
 

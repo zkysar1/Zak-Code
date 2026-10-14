@@ -611,6 +611,7 @@ def _pin_to_lock(uv: str, checkout: str) -> Path:
         cwd=checkout,
         capture_output=True,
         text=True,
+        errors="replace",
     )
     if proc.returncode != 0:
         notice_error(
@@ -795,7 +796,7 @@ def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str)
     _dim(console, f"progress and result: {log}")
     _dim(
         console,
-        "zakcode is unavailable for about a minute; the log ends with “update complete”, or says "
+        'zakcode is unavailable for about a minute; the log ends with "update complete", or says '
         "how the old install was put back",
     )
 
