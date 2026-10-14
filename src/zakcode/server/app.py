@@ -915,7 +915,8 @@ def create_app(
         are omitted (they are not what was said); each text passes through the same
         secret redaction as the watch stream. ``limit`` keeps the LAST N spoken turns.
         Each message carries its creation time (``at``) and the response says where the
-        watch bus starts (``bus_from``): the served page draws the saved messages older than
+        watch bus starts (``bus_from``) and which bus that is (``bus_epoch``, the name a watch
+        response carries): the served page draws the saved messages older than
         the bus and lets the watch replay draw the rest, so a reopened page shows the whole
         conversation. The literal id ``current`` resolves to the workspace's current
         conversation (404 when there is none), like ``/watch/current``.
@@ -945,13 +946,15 @@ def create_app(
         if limit is not None and limit >= 0:
             spoken = spoken[-limit:] if limit else []
         # Where the in-memory watch bus starts: a page draws what is older from `messages` and
-        # lets the bus replay draw the rest (see SessionTranscript.bus_from).
+        # lets the bus replay draw the rest (see SessionTranscript.bus_from). The bus's name goes
+        # with it, read from the same bus object, so the page can tell if the watch is another.
         bus = event_bus_registry.get(session.id)
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
             message_count=len(session.messages),
             bus_from=bus.oldest_at if bus is not None else None,
+            bus_epoch=bus.epoch if bus is not None else None,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)

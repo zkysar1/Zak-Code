@@ -2,8 +2,8 @@
 
 The watch bus (``zakcode.server.event_bus``) is in memory and numbers its events from 1, so a
 cursor means something only to the bus that issued it. A page that stays open across a server
-restart (``zakcode update`` restarts the server) reconnects holding its old cursor, and the new
-bus only reaches that number after that many more events: the page drew nothing new until then.
+restart reconnects holding its old cursor, and the new bus only reaches that number after that
+many more events: the page drew nothing new until then.
 The server now names each bus (``X-Bus-Epoch``) and the page sends the name back, so a cursor from
 a bus that is gone is dropped, and a page that finds itself on a new bus starts over as a freshly
 opened one would.
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -37,7 +38,7 @@ from tests.test_webclient_reload_history import (
 )
 from tests.test_webclient_turn_clock import _NODE, _PRELUDE, _page_script
 from zakcode.server import app as server_app
-from zakcode.server.event_bus import EventBusRegistry
+from zakcode.server.event_bus import EventBusRegistry, SessionEventBus
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="needs node on PATH (CI runners carry it)")
 
@@ -104,11 +105,12 @@ class _OpenPage:
         dom = _PRELUDE.split("const __STREAMS = ")[0]
         script.write_text(dom + _TAIL + _page_script(), encoding="utf-8")
         self._errors = workdir / f"{script.stem}.err"
+        self._errors_out = self._errors.open("wb")
         self._proc = subprocess.Popen(
             [_NODE, str(script), base],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=self._errors.open("wb"),
+            stderr=self._errors_out,
             text=True,
             encoding="utf-8",
         )
@@ -122,13 +124,20 @@ class _OpenPage:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        assert self._proc.stdin is not None
-        self._proc.stdin.close()  # the page process exits when its stdin ends
         try:
-            self._proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._proc.kill()
-            self._proc.wait()
+            assert self._proc.stdin is not None
+            self._proc.stdin.close()  # the page process exits when its stdin ends
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait()
+        finally:
+            # Both ends this class opened, closed here and not left to the garbage collector,
+            # which reports each as a ResourceWarning under `-X dev`.
+            if self._proc.stdout is not None:
+                self._proc.stdout.close()
+            self._errors_out.close()
 
     def ask(self, command: str) -> dict[str, Any]:
         """Send one command and return the JSON line the page answers it with."""
@@ -159,10 +168,18 @@ class _OpenPage:
 
     def wait_for_watches(self, count: int, timeout: float = 15.0) -> dict[str, Any]:
         """Snapshot once the page has asked for the watch stream `count` times."""
+        return self._wait_for(lambda snap: len(_watches(snap)) >= count, timeout)
+
+    def wait_for_transcripts(self, count: int, timeout: float = 15.0) -> dict[str, Any]:
+        """Snapshot once the page has asked for the saved conversation `count` times. Its second
+        ask is the page starting over: the start screen is back by then, the history not yet."""
+        return self._wait_for(lambda snap: len(_transcripts(snap)) >= count, timeout)
+
+    def _wait_for(self, done: Callable[[dict[str, Any]], bool], timeout: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
             snap = self.ask("SNAP")
-            if len(_watches(snap)) >= count:
+            if done(snap):
                 return snap
             assert time.monotonic() < deadline, f"the page asked for {snap['trace']}"
             time.sleep(0.05)
@@ -187,13 +204,33 @@ def _transcripts(snap: dict[str, Any]) -> list[str]:
     return [url for url in snap["trace"] if url.endswith("/transcript")]
 
 
-@pytest.fixture
-def registries(monkeypatch: pytest.MonkeyPatch) -> list[EventBusRegistry]:
-    """Every watch-bus registry the app under test makes, so a test can discard a session's bus."""
-    made: list[EventBusRegistry] = []
+class _Registry(EventBusRegistry):
+    """The app's watch-bus registry, which a test can also arm to lose a bus at a chosen moment.
 
-    def make() -> EventBusRegistry:
-        registry = EventBusRegistry()
+    A restart between the page's two first requests (the saved conversation, then the watch)
+    answers the first from the old bus and the second from a new one. Armed, this forgets the
+    session's bus the instant the transcript route has read it: the route is handed the old bus
+    and the next request makes a new one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lose_the_bus_once_it_is_read = False
+
+    def get(self, session_id: str) -> SessionEventBus | None:
+        bus = super().get(session_id)
+        if bus is not None and self.lose_the_bus_once_it_is_read:
+            self.lose_the_bus_once_it_is_read = False
+            self.discard(session_id)
+        return bus
+
+
+@pytest.fixture
+def registries(monkeypatch: pytest.MonkeyPatch) -> list[_Registry]:
+    """Every watch-bus registry the app under test makes, so a test can discard a session's bus."""
+    made: list[_Registry] = []
+
+    def make() -> _Registry:
+        registry = _Registry()
         made.append(registry)
         return registry
 
@@ -201,7 +238,7 @@ def registries(monkeypatch: pytest.MonkeyPatch) -> list[EventBusRegistry]:
     return made
 
 
-def _restart_the_bus(registries: list[EventBusRegistry], base: str) -> None:
+def _restart_the_bus(registries: list[_Registry], base: str) -> None:
     """What a server restart does to the session's watch bus: it is gone, and the next request
     makes a new one that numbers its events from 1."""
     registries[0].discard(_transcript(base)["session_id"])
@@ -209,7 +246,7 @@ def _restart_the_bus(registries: list[EventBusRegistry], base: str) -> None:
 
 @pytest.mark.parametrize("said_before_the_page_reconnects", [False, True])
 def test_a_page_left_open_across_a_bus_restart_shows_the_next_turn_as_a_fresh_page_does(
-    tmp_path: Path, registries: list[EventBusRegistry], said_before_the_page_reconnects: bool
+    tmp_path: Path, registries: list[_Registry], said_before_the_page_reconnects: bool
 ) -> None:
     with _LiveServer(_app(tmp_path)) as base:
         _converse(base, ["one", "two"])
@@ -217,8 +254,8 @@ def test_a_page_left_open_across_a_bus_restart_shows_the_next_turn_as_a_fresh_pa
             assert _spoken(page.settle(4)) == _ONE_AND_TWO
             _restart_the_bus(registries, base)
             if not said_before_the_page_reconnects:
-                page.wait_for_watches(2)  # the page is back, on the new (empty) bus
-                time.sleep(0.5)
+                page.wait_for_transcripts(2)  # the page is back on the new (empty) bus ...
+                assert _spoken(page.settle(4)) == _ONE_AND_TWO  # ... and has started over
             _converse(base, ["three"])
             drawn = page.settle(6)
         assert drawn["errs"] == []
@@ -231,8 +268,50 @@ def test_a_page_left_open_across_a_bus_restart_shows_the_next_turn_as_a_fresh_pa
         assert _open_page(base, tmp_path, want=6) == _ALL_SIX
 
 
+def test_a_page_that_started_over_forgets_the_old_cursor_when_its_connection_drops_again(
+    tmp_path: Path, registries: list[_Registry]
+) -> None:
+    """The new bus is empty when the page starts over, so the page has no cursor of its own yet.
+    If its connection drops again before the first frame, the reconnect must not pair the OLD
+    bus's cursor with the NEW bus's name: the name matches, so the server would honour the cursor
+    and the page would skip every event up to a number it never saw on this bus: deaf again."""
+    with _LiveServer(_app(tmp_path)) as base:
+        _converse(base, ["one", "two"])
+        with _OpenPage(base, tmp_path) as page:
+            assert _spoken(page.settle(4)) == _ONE_AND_TWO
+            _restart_the_bus(registries, base)
+            page.wait_for_transcripts(2)  # the page is back on the new (empty) bus ...
+            assert _spoken(page.settle(4)) == _ONE_AND_TWO  # ... and has started over
+            page.ask("DROP")  # its connection drops before the new bus has sent it a frame
+            reconnected = page.wait_for_watches(3)
+            _converse(base, ["three"])
+            drawn = page.settle(6)
+    assert drawn["errs"] == []
+    assert _spoken(drawn) == _ALL_SIX
+    third = _watches(reconnected)[2]
+    assert "&epoch=" in third and "&since=" not in third, third
+
+
+def test_a_bus_replaced_between_the_pages_history_and_its_watch_does_not_cost_it_the_history(
+    tmp_path: Path, registries: list[_Registry]
+) -> None:
+    """The page asks for the saved conversation, then for the watch. The history leaves the turns
+    the bus holds to the bus's replay, so a bus replaced between the two requests (a restart) is
+    one that holds none of them: the page would show an empty conversation. The transcript names
+    the bus it was cut against, so the page sees the watch is another and starts over."""
+    with _LiveServer(_app(tmp_path)) as base:
+        _converse(base, ["one", "two"])
+        registries[0].lose_the_bus_once_it_is_read = True  # the next read is the page's
+        with _OpenPage(base, tmp_path) as page:
+            drawn = page.settle(4)
+        assert drawn["errs"] == []
+        assert _spoken(drawn) == _ONE_AND_TWO
+        assert len(_transcripts(drawn)) == 2  # the second history is cut against the new bus
+        assert _open_page(base, tmp_path, want=4) == _ONE_AND_TWO
+
+
 def test_a_page_that_was_offline_while_the_server_restarted_catches_up_from_the_saved_session(
-    tmp_path: Path, registries: list[EventBusRegistry]
+    tmp_path: Path, registries: list[_Registry]
 ) -> None:
     """The turn the page missed was published only to the bus that died with the restart, so no
     replay can bring it back; the saved session is the one place it survives."""
@@ -251,7 +330,7 @@ def test_a_page_that_was_offline_while_the_server_restarted_catches_up_from_the_
 
 
 def test_a_page_whose_connection_drops_resumes_from_its_cursor_on_the_same_bus(
-    tmp_path: Path, registries: list[EventBusRegistry]
+    tmp_path: Path, registries: list[_Registry]
 ) -> None:
     """No restart: the same bus answers, so the cursor is good. The page asks only for what
     follows it, keeps what it drew, and draws nothing twice."""

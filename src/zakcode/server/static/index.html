@@ -507,7 +507,7 @@
 
   let sessionId = null;
   let lastCursor = null;
-  let busEpoch = null;       // the watch bus lastCursor was issued by (ADR-0289); null until named
+  let busEpoch = null;       // the watch bus the history and lastCursor belong to (ADR-0289); null until named
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
   let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send and at turn end
@@ -1451,7 +1451,9 @@
   // relied on it alone drew an empty conversation (or only its newest turns) for one that was
   // still saved. The saved transcript is the source for everything OLDER than the bus's oldest
   // retained event (bus_from); the replay watchLoop() opens draws the rest, so no message is
-  // drawn twice and none is missed.
+  // drawn twice and none is missed. Returns the name of the bus that cut was made against (null
+  // when there was none, or the server names none): a bus replaced before the watch opens holds
+  // none of the turns the cut left to it, and the watch response then names another (ADR-0289).
   async function renderHistory() {
     try {
       const resp = await fetch("/sessions/" + sessionId + "/transcript");
@@ -1470,8 +1472,10 @@
           assistantBody = null;  // the next saved message opens its own row
         }
       }
+      return t.bus_epoch || null;
     } catch (e) {
       add(errCard("could not load the saved conversation: " + e.message));
+      return null;
     }
   }
 
@@ -1491,7 +1495,7 @@
     approvedTool = "";
     stick = true;
     endTurn();  // the turn clock and meter, the status line, pending tool cards, the prose group
-    await renderHistory();
+    await renderHistory();  // the watch response that sent us here named the bus; watchLoop() keeps it
   }
 
   async function init() {
@@ -1508,7 +1512,7 @@
       document.getElementById("chip-model").textContent = info.model;
       document.getElementById("chip-session").textContent = id8;
       document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
-      await renderHistory();
+      busEpoch = await renderHistory();  // the bus the history was cut against: see startOver()
       watchLoop();
     } catch (e) {
       setConn("closed", "disconnected");

@@ -17403,7 +17403,13 @@ still holds it.
 * The page keeps the epoch of the last response and sends it with its cursor. When a response names a different bus it
   starts over before it reads the stream, as a freshly opened page does: the start screen, the cursor and the per-turn
   state forgotten, the saved conversation older than the new bus drawn again (ADR-0286), then the new bus's replay. The
-  composer and what is typed in it stay. A response that names no bus, from an older server, never resets the page.
+  composer and what is typed in it stay. A response that names no bus, from an older server, never resets the page. The
+  cursor has to go with the rest: the new bus is empty at that point, and if the connection drops again before its first
+  frame, a cursor kept from the old bus would be sent with the new bus's name, which the server honours.
+* `GET /sessions/{id}/transcript` names the bus it read `bus_from` from (`bus_epoch`, `null` when there is no bus), and the
+  page holds that name from its first request. The history leaves the turns the bus holds to the bus's replay, so a bus
+  replaced between the page's two first requests, the saved conversation and the watch, is one that holds none of them.
+  The watch then names another bus than the transcript did, and the page starts over like any later replacement.
 
 Rejected: treating a cursor beyond the bus's latest as stale, which catches a restart only until the new bus passes the old
 number (a turn already running when the page reconnects has passed it, and the page would draw the middle of that turn);
@@ -17412,18 +17418,32 @@ took with it undrawn; reloading the page, which loses the composer's text and th
 without; and a per-process boot id, which says nothing when a session's bus is made again without a restart.
 
 **Consequences.** After a restart the open page redraws its conversation from the saved session once, as text: tool calls
-and thinking are not saved, so a turn the page missed shows what was said and not how. Pages and servers of different ages
-work together, since an older page sends no `epoch` and an older server sends no header. No other client in this repo
-resumes a watch stream by cursor. Those outside it (a dashboard, a gateway) send no `epoch` and keep resuming by cursor
+and thinking are not saved, so a turn the page missed shows what was said and not how. A hard kill of the server erases
+rows the page drew but the session never saved, since the start-over keeps only what the transcript returns (by
+construction, not run). Pages and servers of different ages work together, since an older page sends no `epoch` and an
+older server sends no header, but an older page gains nothing: pages already open when the server restarts into this
+release run the old script and go deaf once more until they are reloaded (measured: the previous script against this
+server, after a bus restart, drew 4 rows and never drew the next turn). No other client in this repo resumes a watch
+stream by cursor. Those outside it (a dashboard, a gateway) send no `epoch` and keep resuming by cursor
 alone, so across a restart they still wait for the new bus to pass their old cursor; they are unchanged here and can send
 the name back the same way.
 
-The proof. `tests/test_webclient_bus_epoch.py` (four tests) keeps the page's own script open under node against a live
+The proof. `tests/test_webclient_bus_epoch.py` (six tests) keeps the page's own script open under node against a live
 server. A page open across a bus restart draws the next turn and ends with the rows a page opened afterwards shows,
-whether the message is sent after or before the page reconnects. A page offline while a turn finishes and the server
-restarts draws the missed turn from the saved session. A page whose connection drops on the same bus resumes from its
-cursor, draws nothing twice and does not start over. `tests/test_server_watch.py` gains three (the header, a cursor from
-another bus ignored, a cursor from this bus honoured) and `tests/test_event_bus.py` two (one epoch per bus, a new one when
-a session's bus is made again). Run against seven mutations of the source, each reverting one piece, each reddened the test
+whether the message is sent after or before the page reconnects. A page that has started over on the new, empty bus and
+then loses its connection again draws the next turn, and its reconnect carries the bus's name and no cursor. A page offline
+while a turn finishes and the server restarts draws the missed turn from the saved session. A page whose connection drops on
+the same bus resumes from its cursor, draws nothing twice and does not start over. A page whose bus is replaced between its
+history request and its watch (a registry that forgets the session's bus the instant the transcript route has read it) drew
+0 of the 4 saved rows before the transcript named its bus, and draws all 4 after. `tests/test_webclient_turn_clock.py` gains
+one: a turn the old bus took with it lends its clock and token meter to nothing, so the next turn's footer equals the one a
+page opened on the new bus draws, while the same turn across a reconnect to its own bus keeps both. `tests/test_server_watch.py`
+gains five (the header, a cursor from another bus ignored, a cursor from this bus honoured, the transcript naming the bus
+the watch names, a session with no bus naming none) and `tests/test_event_bus.py` two (one epoch per bus, a new one when a
+session's bus is made again). Run against twelve mutations of the source, each reverting one piece, each reddened the test
 written for it: no `epoch` check on the route, no header, a constant epoch, the page's start-over removed, the page not
-sending its epoch, the page not sending its cursor, and the page starting over on every reconnect.
+sending its epoch, the page not sending its cursor, the page starting over on every reconnect, the start-over keeping the
+old cursor, the start-over not ending the turn, the page not taking the bus's name from the transcript, the transcript not
+naming its bus, and the transcript naming an empty bus `""` and not `null`. Two of those had been missed by the page tests
+written first: with the old cursor kept, the first four stayed green, and with `endTurn()` dropped from the start-over so
+did every test in the three files that run the page's script.
