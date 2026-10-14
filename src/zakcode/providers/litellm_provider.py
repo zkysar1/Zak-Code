@@ -60,6 +60,7 @@ from zakcode.providers.base import (
     ToolCall,
     UnknownContextWindow,
     WindowResolution,
+    context_overflow_marker,
     quota_exhaustion_marker,
     rejected_request_field,
 )
@@ -1415,16 +1416,22 @@ class LiteLLMProvider(Provider):
             return AuthError(message)
         if cls._is_a(exc, _LiteLLMContextWindowError, "ContextWindowExceededError"):
             return ContextWindowExceeded(message)
-        if "exceeds the available context size" in str(exc).lower():
-            # llama.cpp's phrasing ("request (N tokens) exceeds the available
-            # context size (M tokens)") is NOT in litellm's context-window
-            # sniff list (probed litellm 2026-08-28: recognized False), so it
-            # arrives as a generic BadRequestError and the loop's
-            # compact-and-retry recovery never fires. Measured on a self-hosted pod the
-            # same day: 8 such 400s, each a failed turn instead of a compact.
-            return ContextWindowExceeded(message)
         if cls._is_a(exc, _LiteLLMRateLimitError, "RateLimitError"):
             return RateLimited(message, retry_after=retry_after)
+        if context_overflow_marker(message) is not None:
+            # An overflow litellm did not name (ADR-0293). Its sniff list is short and keyed
+            # on the provider it believes it is calling, so llama.cpp's phrasing ("request
+            # (N tokens) exceeds the available context size (M tokens)", probed 2026-08-28:
+            # recognized False, eight such 400s on a self-hosted pod, each a failed turn
+            # instead of a compact) and a gateway's Bedrock wording both arrive as a generic
+            # BadRequestError, and the loop's compact-and-retry recovery never fires.
+            #
+            # WHERE IT SITS. After the rate-limit type, so a throttle stays a throttle
+            # whatever its text says; before the transient-5xx arm below, because a gateway
+            # can report a provider's 400 as a 500, and waiting out an overflow never helps.
+            # It reads ``message``, the redacted text the operator will see, as the quota
+            # check above does, so the verdict and its evidence are the same string.
+            return ContextWindowExceeded(message)
         if "tool_use_failed" in str(exc):
             # Groq rejects a malformed model-emitted tool call with HTTP 400 and
             # ``code: "tool_use_failed"``. Matched on the payload text because it

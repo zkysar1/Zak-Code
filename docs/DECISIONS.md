@@ -17811,3 +17811,71 @@ green (2026-10-14), with the red tests named from the verdict: a clock deadline 
 with the message of the Windows run ("wanted 4 rows, the page drew []; asked for ['/sessions/current']; waited 23 s"), and
 the bound widened fourfold turns the two never-gets-there tests red (their messages read "waited 60 s" where 15 is
 expected).
+
+## ADR-0293: a context overflow in a gateway's own wording is recognised from its text, so the loop compacts and retries
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14 that behind an OpenAI-compatible gateway in front of Bedrock models, like the
+one behind ADR-0285 and ADR-0290, a prompt larger than the window ends the turn `provider_error` at once. The loop
+recovers from `ContextWindowExceeded` and from nothing else (ADR-0074 and ADR-0083: one compaction, then the elision of
+tool outputs, two attempts per call), so the overflow was reaching it as `RequestFailed`.
+
+The premise was measured before anything changed, against litellm 1.86.2, the version the lock pins. For a route whose
+provider is `openai`, `litellm.exception_type` names a context-window error only when the text matches its own short
+list, and it re-raises a class that a proxy named in the body only on the `litellm_proxy` route. Four wordings, each
+carried in an HTTP 400 through an `openai/` route, came back a plain `BadRequestError`, and `_map_error` made
+`RequestFailed` of each: Bedrock's `Input is too long for requested model`, Anthropic's `prompt is too long`, Bedrock's
+`Too many input tokens`, and the text of a proxy's own `litellm.ContextWindowExceededError`. litellm's message for the
+`openai` route also drops the body's `code`, so an error code cannot be relied on to arrive. The text is all that does.
+
+**Decision.**
+
+* `CONTEXT_OVERFLOW_MARKERS` in `providers/base.py` lists the phrases that prove an overflow, and
+  `context_overflow_marker(text)` returns the one that matches, ignoring case, from a string or an exception, as
+  `quota_exhaustion_marker` does for quota phrases. The list: a LiteLLM proxy's class name in the body
+  (`contextwindowexceedederror`); Bedrock's and Anthropic's validation (`input is too long for requested model`,
+  `prompt is too long`, `too many input tokens`); Anthropic's input plus `max_tokens` not fitting
+  (`exceed context limit`); OpenAI's and Azure's sentence for Chat Completions, the one the Responses API uses, and the
+  error code for a path that still carries it (`maximum context length`, `exceeds the context window`,
+  `context_length_exceeded`); and llama.cpp's (`exceeds the available context size`), which had an inline check of its
+  own until now. Every entry names the size of the input.
+* `LiteLLMProvider._map_error` raises `ContextWindowExceeded` when the redacted message carries a marker. The check sits
+  after the rate-limit type, so a throttle whose text quotes one of these phrases is still waited out, and before the
+  transient-5xx arm, so a gateway that reports a provider's 400 as a 500 is not retried as an outage, which would fail
+  the same way every time.
+* The loop is unchanged. It already compacts on `ContextWindowExceeded`, and when that cannot help it ends the turn
+  `provider_error` naming the recovery it tried.
+
+Rejected: reading every 400 as an overflow, which would compact on any refusal of the request's shape; a bare
+`too many tokens`, which is Bedrock's token-rate throttle and would compact a throttle away; and a change of route to
+`litellm_proxy/`, which re-raises the proxy's class, because it asks every operator to reconfigure for one gateway's
+wording when the text is already in hand.
+
+Not verified: the wording of the live gateway. The list is a judgement from the phrasings that Bedrock, Anthropic,
+OpenAI, Azure and the servers that copy them use, and from what litellm passes on; it was not captured from that gateway.
+A live overflow that still ends `provider_error` carries the gateway's own text in the turn's error. That phrase joins
+`CONTEXT_OVERFLOW_MARKERS` as one line, and as one row of the classification test.
+
+**Consequences.** An overflow through a gateway is recovered the way a native one is, at most twice per call. A refusal
+that only quotes one of these phrases starts a compaction it does not need; the attempts are bounded, and a compaction
+that does not help ends the turn `provider_error` with the gateway's text, as before. An overflow in a wording off the
+list behaves as it did. Not changed: the bitnet provider keeps its own check, a 400 whose body mentions the context.
+
+The proof. `tests/test_context_overflow_classification.py` (31 tests) sends real OpenAI SDK errors through
+`litellm.exception_type` for an `openai` route and through the provider's `acomplete` and `astream`. For each of the four
+wordings one test asserts the premise (litellm leaves it a plain `BadRequestError`, so a litellm that learns the wording
+fails that test first) and one asserts the classification. Further tests cover the overflows litellm already names,
+llama.cpp's sentence and an overflow reported as a 500, and the controls: Bedrock's token-rate throttle stays
+`RateLimited`, a 429 that quotes "prompt is too long" stays `RateLimited`, an unrelated 400 stays `RequestFailed`, a plain
+500 stays `ProviderUnavailable`, and no marker matches five known throttle sentences. `tests/test_context_overflow_loop.py`
+(5 tests) runs the real `AgentLoop` with the real `Compactor` over a scripted `acompletion`. An overflow once makes the
+calls main, summary, main, and the turn completes (buffered and streaming). A transcript larger than a 2,048-token
+window, whose summariser call overflows too, ends `provider_error` with no exception, no lost message, one main call and
+a bounded number of summary calls, naming the gateway's text and "nothing left to elide; 0/2 attempts" (buffered and
+streaming). An unrelated 400 ends the turn on its first call with no summary call. Three mutations were each run green,
+red, green (2026-10-14), with the red tests named from the verdict: removing the branch from `_map_error` turns 14 tests
+red, ten in the classification file and four in the loop file; adding a bare `too many tokens` to the list turns
+`test_no_marker_matches_a_known_throttle_sentence` red; and moving the check ahead of the rate-limit type turns
+`test_a_throttle_is_never_an_overflow_whatever_its_text_says` red, the 429 coming back as `ContextWindowExceeded`.
+`uv run poe check` is green: 5,592 passed, 22 skipped.
