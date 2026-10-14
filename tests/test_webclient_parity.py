@@ -254,6 +254,14 @@ def test_the_whole_footer_line_matches_the_terminal(
             cost_usd=0.0213,
             cache_read_tokens=12_000,
         ),
+        # The cached prompt a gateway reports only in its total (ADR-0294).
+        Usage(
+            prompt_tokens=18_000,
+            completion_tokens=234,
+            total_tokens=18_234,
+            cost_usd=0.0213,
+            cache_unsplit_tokens=12_000,
+        ),
     ]
     for usage in usages:
         done = AgentDone(stop_reason="completed", iterations=6, usage=usage)

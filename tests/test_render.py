@@ -874,6 +874,27 @@ async def test_footer_surfaces_prompt_cache_share() -> None:
 
 
 @pytest.mark.asyncio
+async def test_footer_marks_a_cached_prompt_whose_read_and_write_are_unknown() -> None:
+    # ADR-0294: a gateway that reports the cached prompt only in its total gives no read count,
+    # so the share is not a hit rate. The footer says the tokens were cached and that it cannot
+    # tell a read from a write; a reported read count keeps the plain annotation.
+    async def footer_for(usage: Usage) -> str:
+        renderer, buffer = _make_renderer()
+        await renderer.render(
+            _astream([AgentDone(stop_reason="completed", iterations=3, usage=usage)])
+        )
+        return buffer.getvalue()
+
+    unsplit = Usage(
+        prompt_tokens=1000, completion_tokens=50, total_tokens=1050, cache_unsplit_tokens=750
+    )
+    assert "(75% cached, read/write unknown)" in await footer_for(unsplit)
+    both = unsplit.model_copy(update={"cache_read_tokens": 500})
+    out = await footer_for(both)
+    assert "(50% cached)" in out and "unknown" not in out
+
+
+@pytest.mark.asyncio
 async def test_pinned_footer_states() -> None:
     async def footer_for(done: AgentDone) -> str:
         renderer, buffer = _make_renderer()

@@ -37,6 +37,12 @@ class Usage(BaseModel):
     cache_read_tokens: int = 0
     #: Prompt tokens written to the cache this call (Anthropic ``cache_creation_input_tokens``).
     cache_creation_tokens: int = 0
+    #: Prompt tokens a backend cached but did not split into reads and writes: a gateway that
+    #: answers a request carrying a cache breakpoint with ``prompt_tokens`` of the uncached part
+    #: alone and the cached part only in ``total_tokens`` (ADR-0294). A subset of
+    #: ``prompt_tokens``, which already counts them; zero whenever the backend names its cache
+    #: tokens itself. Priced at the cache-write rate, so the cost is never under-reported.
+    cache_unsplit_tokens: int = 0
     #: Completion tokens spent on reasoning rather than the visible answer — OpenAI
     #: ``completion_tokens_details.reasoning_tokens`` (chat) /
     #: ``output_tokens_details.reasoning_tokens`` (Responses). A subset of ``completion_tokens``,
@@ -87,6 +93,7 @@ class Usage(BaseModel):
             cost_usd=self.cost_usd + other.cost_usd,
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_creation_tokens=self.cache_creation_tokens + other.cache_creation_tokens,
+            cache_unsplit_tokens=self.cache_unsplit_tokens + other.cache_unsplit_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             model=self.model if self.model == other.model else "",
             cost_unpriced=self.cost_unpriced or other.cost_unpriced,

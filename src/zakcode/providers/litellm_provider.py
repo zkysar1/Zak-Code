@@ -635,6 +635,26 @@ def _supports_cache_control(model: str) -> bool:
         return False
 
 
+def _carries_cache_breakpoint(call_kwargs: dict[str, Any]) -> bool:
+    """Whether the request in ``call_kwargs`` carries a ``cache_control`` breakpoint (ADR-0294).
+
+    Read off the messages that were SENT, not off what the model is capable of, so the answer
+    stays true to what the backend was asked whatever put the breakpoint there. A reply to a
+    request without one has no cached prompt to find in its usage.
+    """
+    for message in call_kwargs.get("messages") or ():
+        if not isinstance(message, dict):
+            continue
+        if "cache_control" in message:
+            return True
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and "cache_control" in block for block in content
+        ):
+            return True
+    return False
+
+
 def _max_stop_sequences(model: str) -> int | None:
     """The backend's max number of ``stop`` sequences, when known.
 
@@ -1028,7 +1048,13 @@ class LiteLLMProvider(Provider):
         return 0.0
 
     @classmethod
-    def _extract_usage(cls, response: Any) -> Usage:
+    def _extract_usage(cls, response: Any, *, carried_breakpoint: bool = False) -> Usage:
+        """Read one response's (or stream chunk's) usage.
+
+        ``carried_breakpoint`` says the request carried a ``cache_control`` breakpoint
+        (:func:`_carries_cache_breakpoint`); it is what lets a cached prompt that the backend
+        reports only in ``total_tokens`` be read out of it (ADR-0294).
+        """
         usage_obj = _get(response, "usage")
         prompt = cls._coerce_int(_get(usage_obj, "prompt_tokens"))
         completion = cls._coerce_int(_get(usage_obj, "completion_tokens"))
@@ -1046,6 +1072,23 @@ class LiteLLMProvider(Provider):
             details = _get(usage_obj, "prompt_tokens_details")
             cache_read = cls._coerce_int(_get(details, "cached_tokens"))
         cache_creation = cls._coerce_int(_get(usage_obj, "cache_creation_input_tokens"))
+
+        # A cached prompt the backend reports only in its total (ADR-0294). A LiteLLM proxy in
+        # front of Bedrock answers a request that carried a breakpoint with ``prompt_tokens`` of
+        # the UNCACHED part alone (3 on a later turn of a 49,445-token conversation, where the
+        # same prompt without a breakpoint reads 49,445) and no cache field; the cached part
+        # shows only in ``total_tokens``. Read as it came, the prompt anchor sees 3 tokens and
+        # the cost is priced on 3. So the excess of the total over prompt plus completion is
+        # counted into the prompt, and recorded apart as cached with its read/write split
+        # unknown. Scoped to the one case that can be told apart: the request carried a
+        # breakpoint and the reply names no cache token. Without a breakpoint the excess may be
+        # something else (some providers' totals include thinking tokens that
+        # ``completion_tokens`` leaves out), and a backend that names its cache tokens splits
+        # them itself.
+        unsplit = 0
+        if carried_breakpoint and not (cache_read or cache_creation):
+            unsplit = max(0, total - prompt - completion)
+            prompt += unsplit
 
         # Reasoning accounting. A reasoning model bills its thinking at the OUTPUT rate and folds
         # it into ``completion_tokens``, so without this the visible answer and the reasoning behind
@@ -1065,7 +1108,7 @@ class LiteLLMProvider(Provider):
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
         model = str(_get(response, "model") or "")
-        if cost == 0.0 and (prompt or completion):
+        if (cost == 0.0 and (prompt or completion)) or unsplit:
             # Streaming chunks carry NO response_cost: litellm nulls it on the chunk and computes
             # the cost later in an async callback the consumer never sees, so /cost and the
             # budget ceiling would under-report to $0 on the streaming path. Recompute from
@@ -1073,13 +1116,22 @@ class LiteLLMProvider(Provider):
             # the hand-maintained Groq rate table it used to sit behind was removed with that
             # provider, and it had become a mispricing hazard — it matched by STEM,
             # so it priced `openai/gpt-oss-*` at Groq rates.
-            priced = cls._litellm_token_cost(model, prompt, completion, cache_read, cache_creation)
-            # None = the model has no price anywhere. Keep cost at 0.0 (never guess a rate) and
-            # carry the fact that this 0.0 is an absence of knowledge, not an absence of spend.
+            #
+            # A cached prompt read out of the total (ADR-0294) is priced here too, at the
+            # cache-WRITE rate: the split is unknown, the write rate is the dearer of the two,
+            # so the figure is never below the truth. A cost litellm gave for the response was
+            # priced on the short prompt the usage named, so it is a floor: the dearer of the
+            # two stands, and a higher cost from the backend itself is kept.
+            priced = cls._litellm_token_cost(
+                model, prompt, completion, cache_read, cache_creation + unsplit
+            )
+            # None = the model has no price anywhere. Keep cost as it is (never guess a rate) and,
+            # when there was none, carry the fact that this 0.0 is an absence of knowledge, not
+            # an absence of spend.
             if priced is None:
-                unpriced = True
+                unpriced = cost == 0.0
             else:
-                cost = priced
+                cost = max(cost, priced)
 
         return Usage(
             prompt_tokens=prompt,
@@ -1088,6 +1140,7 @@ class LiteLLMProvider(Provider):
             cost_usd=cost,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
+            cache_unsplit_tokens=unsplit,
             reasoning_tokens=reasoning,
             cost_unpriced=unpriced,
         )
@@ -1156,7 +1209,7 @@ class LiteLLMProvider(Provider):
             return None
 
     @classmethod
-    def _normalize(cls, response: Any) -> LLMResult:
+    def _normalize(cls, response: Any, *, carried_breakpoint: bool = False) -> LLMResult:
         choices = _get(response, "choices")
         message = None
         finish_reason: str | None = None
@@ -1206,7 +1259,7 @@ class LiteLLMProvider(Provider):
             # non-string echo reads ``None``, because a provenance field that guesses is
             # worse than one that admits it does not know.
             served_model=served if isinstance(served, str) and served else None,
-            usage=cls._extract_usage(response),
+            usage=cls._extract_usage(response, carried_breakpoint=carried_breakpoint),
             raw=raw,
         )
 
@@ -1878,7 +1931,9 @@ class LiteLLMProvider(Provider):
             except Exception as again:  # noqa: BLE001 - mapped to taxonomy below
                 raise self._map_error(again) from again
 
-        result = self._normalize(response)
+        result = self._normalize(
+            response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
+        )
         # Announce the answerer on the FIRST sighting of each distinct name (ADR-0214),
         # rather than on a mismatch with ``self.model``. A mismatch rule would have to
         # decide when two spellings are "the same model" -- ``openai/x`` against ``x`` is
@@ -1932,7 +1987,9 @@ class LiteLLMProvider(Provider):
     # Streaming: litellm chunk stream -> ProviderStreamEvent stream
     # ------------------------------------------------------------------
     @classmethod
-    def _parse_chunk(cls, chunk: Any) -> tuple[list[ProviderStreamEvent], str | None]:
+    def _parse_chunk(
+        cls, chunk: Any, *, carried_breakpoint: bool = False
+    ) -> tuple[list[ProviderStreamEvent], str | None]:
         """Translate one raw litellm stream chunk into provider events.
 
         Returns ``(events, finish_reason)`` where ``events`` is the (possibly
@@ -2002,7 +2059,9 @@ class LiteLLMProvider(Provider):
 
         # Usage typically rides the final chunk (stream_options include_usage).
         if _get(chunk, "usage") is not None:
-            events.append(StreamUsage(usage=cls._extract_usage(chunk)))
+            events.append(
+                StreamUsage(usage=cls._extract_usage(chunk, carried_breakpoint=carried_breakpoint))
+            )
 
         return events, finish_reason
 
@@ -2198,6 +2257,8 @@ class LiteLLMProvider(Provider):
             while True:
                 try:
                     started = time.monotonic()  # the first-chunk wait counts from here
+                    # Of the request about to be sent, so a repaired re-issue is read as sent.
+                    carried = _carries_cache_breakpoint(call_kwargs)
                     resp = await litellm.acompletion(**call_kwargs)
                     async for chunk in self._bounded_chunks(
                         resp, prompt_estimate=prompt_estimate, started=started
@@ -2214,7 +2275,7 @@ class LiteLLMProvider(Provider):
                         delta = _stream_delta(chunk)
                         if delta is not None:
                             (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
-                        events, fr = self._parse_chunk(chunk)
+                        events, fr = self._parse_chunk(chunk, carried_breakpoint=carried)
                         if fr is not None:
                             finish_reason = fr
                         for event in events:

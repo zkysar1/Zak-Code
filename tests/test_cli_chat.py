@@ -141,6 +141,31 @@ def test_chat_cost_reports_usage(monkeypatch) -> None:
     assert "total=8" in result.stdout
 
 
+def test_chat_cost_marks_a_cached_prompt_whose_read_and_write_are_unknown(monkeypatch) -> None:
+    # ADR-0294: the cached prompt a gateway reports only in its total is shown as cached, with
+    # the fact that a read cannot be told from a write.
+    class GatewayAgent(FakeAgent):
+        events = [
+            AgentTextDelta(text="ok\n"),
+            AgentDone(
+                stop_reason="completed",
+                iterations=1,
+                usage=Usage(
+                    prompt_tokens=1003,
+                    completion_tokens=5,
+                    total_tokens=1008,
+                    cache_unsplit_tokens=1000,
+                ),
+            ),
+        ]
+
+    monkeypatch.setattr(zakcode, "Agent", GatewayAgent)
+    result = runner.invoke(app, ["cli"], input="hello\n/cost\n/exit\n")
+    assert result.exit_code == 0
+    shown = " ".join(result.stdout.split())  # the console may wrap the line
+    assert "prompt 1003, 1000 cached, read/write unknown / completion 5" in shown
+
+
 def test_chat_headless_prompt_runs_once_and_exits_zero(monkeypatch) -> None:
     # `-p TASK` runs a single turn (no REPL, no banner) and exits 0 when the turn completes.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
