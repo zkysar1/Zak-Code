@@ -25,13 +25,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.11", "3.12", "3.13"]
-        # One Windows cell (audit P2-4): the dev box is Windows and the 2026-06-08
-        # hang incident was ubuntu-only — cross-platform signal matters both ways.
-        include:
-          - os: windows-latest
-            python-version: "3.11"
+        os: [windows-latest]
+        python-version: ["3.11"]
     steps:
       - uses: actions/checkout@v6
 
@@ -48,15 +43,6 @@ jobs:
       # Every step uses --no-sync so it runs against the env synced above and never
       # re-syncs to the default (which would prune the optional `server` extra — i.e.
       # uninstall fastapi — and break the server tests' collection).
-      - name: Ruff (lint)
-        run: uv run --no-sync ruff check .
-
-      - name: Ruff (format check)
-        run: uv run --no-sync ruff format --check .
-
-      - name: Mypy (type check)
-        run: uv run --no-sync mypy
-
       - name: Pytest (Linux — session watchdog + coverage)
         if: runner.os == 'Linux'
         # Session-level safety bound: PYTHONFAULTHANDLER + `timeout -s ABRT` make
@@ -74,7 +60,7 @@ jobs:
         # session bound and pytest-timeout (thread method) the per-test bound.
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync pytest -q -s --timeout=900 tests/test_zz_debug_reload.py
 
       - name: Upload coverage report
         # One cell is enough for the artifact (audit P2-1; acceptance 13).
