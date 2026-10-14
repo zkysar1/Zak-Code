@@ -17377,6 +17377,60 @@ message sent from a reopened page, and the transcript's two new fields. `tests/t
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
 
+## ADR-0288: the watch bus stamps events with the clock a saved message is stamped with
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0286 lets a reopened page draw the saved messages older than `bus_from`, the publish stamp of the oldest
+event the session's bus holds, and lets the watch replay draw the rest; a message stamped at or after `bus_from` counts as
+the bus's. To make an event and a message made in the same instant compare equal, it floored `bus_from` to the microsecond.
+
+That floor was not enough. The ring-of-three page test
+(`test_a_page_reopened_when_the_bus_kept_only_the_newest_turn_draws_the_older_ones_from_disk`) failed again on the Windows
+CI cell and drew the newest turn twice. A throwaway loop of that test on the same cell (Python 3.11.9, whose `time.time()`
+reads `GetSystemTimeAsFileTime()` in 15.625 ms steps) recorded, for each of 60 passes, how each saved message was stamped
+against the bus's start. In 48 passes the newest turn tied the bus's start, since one clock reading served the event and the
+messages after it. In 2 passes the message was stamped one microsecond BEFORE it: a bus start of 1791938643.98543 against a
+message at 1791938643.985429, and 1791938744.132585 against 1791938744.132584. The page drew each of those turns twice.
+
+The two stamps are cut differently. A saved message is stamped by `datetime.now(UTC)`, which floors the clock reading's
+nanoseconds to whole microseconds. The bus stamped by `time.time()`, which returns the same reading as a float rounded to the
+nearest representable value, 0.24 microseconds apart at this magnitude. A reading just under a whole microsecond can round up
+onto it, and flooring that float gives a number one microsecond above what flooring the reading gives. Once the reading is a
+float nothing recovers it, so the floor ADR-0286 added cannot be made exact.
+
+**Decision.** The bus stamps events with `datetime.now(UTC).timestamp()`, the call a saved message's `created_at` is cut from;
+the transcript route reads a message back with the same `.timestamp()`. An event and a message made on one reading are then
+the same float, bit for bit, and a tie goes to the bus as ADR-0286 intends. `bus_from` is the stored stamp, with no floor. The
+injectable clock stays, so the tests that script stamps are unchanged.
+
+Rejected: a one-microsecond allowance in the comparison, which hides the error and lets a message made a microsecond before
+the bus count as the bus's and be drawn from neither place; and carrying the integer nanosecond reading beside the float, a
+second field on every event to recover what one shared call gives for free.
+
+**Consequences.** Every event's `at` is now a whole number of microseconds, as a message's is. The watch frame rounds it to the
+millisecond (`round(at, 3)`), so nothing a client reads changes. On Linux the two readings are not made in the same nanosecond
+and nothing changes. ADR-0286's statement that a tie goes to the bus now holds for every reading, where before it held for all
+but the few that rounded up.
+
+The proof. `tests/test_server_transcript.py::test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number`
+replaces the floor test in `tests/test_event_bus.py`. It freezes `datetime` in the two modules that stamp,
+`zakcode.messages` and `zakcode.server.event_bus`, at 2026-10-14T00:44:03.985429Z, which is 1791938643.985429, the message
+of the first failing pair above. The stand-in clock honours `tz`, and read without one it reports a machine 5 h 17 min
+ahead of UTC, so a stamp cut without the zone cannot land on the right number. The test stamps a real `Message` under that
+clock, saves it, reads it back through the real `/transcript` route, publishes a real event on the bus the route reads
+`bus_from` from, and asserts that `bus_from` is 1791938643.985429, that the message's `at` is the same number, and that
+`at >= bus_from`, the comparison the page makes.
+
+Against `main`'s source the test fails on the number (`assert 1791947031.793732 == 1791938643.985429`, the real clock
+against the frozen one), not on a missing name. Seven mutants of this change were each run red, restored and green, and
+each failed on the number the same way: the bus reading `time.time()` again; that and the floor, which is `main`'s whole
+behaviour; a message stamped from `time.time()`; a message stamped without the zone; a message stamped to the millisecond;
+a bus clock without the zone; and the route dropping a message's microseconds. Spelling the bus's call `now(tz=UTC)` leaves
+the test green. The same 240-pass loop on the Windows cell with the change drew every pass correctly (0 bad), the newest
+turn tied the bus's start in 185 passes, and no message was stamped before the bus (0 of 240, where the loop without the
+change found 2 in 60).
+
 ## ADR-0291: `zakcode update` finishes in a second process on Windows, keeps the old install until the new one starts, and installs the versions the lock pins
 
 **Status:** Accepted (2026-10-14)
