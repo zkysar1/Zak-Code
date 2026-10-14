@@ -67,7 +67,7 @@ from zakcode.cli.logsink import (
 )
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.cli.saybox import fold_lines
-from zakcode.config import PermissionTier, Settings, env_source, load_settings
+from zakcode.config import PermissionTier, Settings, env_source, load_settings, zakcode_home
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
 from zakcode.providers.base import ProviderError, UnknownContextWindow
@@ -545,37 +545,135 @@ def _refresh_checkout(directory: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
-def _uv_tool_spec(source: str) -> str:
-    """``zakcode[extras] @ source``, extras recovered from uv's install receipt.
+def _uv_receipt_requirement() -> dict[str, Any]:
+    """The ``zakcode`` entry of uv's install receipt, or ``{}`` when the receipt is unreadable.
 
     The receipt (``uv-receipt.toml`` at the tool env root) records the requirement
-    as originally requested — dropping its extras on update would silently uninstall
-    a provider (e.g. ``[google]`` = the vertex deps). Unreadable receipt ⇒ no extras:
-    the update still lands, worst case a provider needs one manual reinstall.
+    as originally requested: its extras, and whether it was installed editable.
+    Both have to survive an update. Unreadable receipt ⇒ ``{}``: the update still
+    lands, worst case a provider needs one manual reinstall.
     """
-    extras: list[str] = []
     try:
         import tomllib
 
         data = tomllib.loads((Path(sys.prefix) / "uv-receipt.toml").read_text(encoding="utf-8"))
-        reqs = data.get("tool", {}).get("requirements", [])
-        for req in reqs:
+        for req in data.get("tool", {}).get("requirements", []):
             if isinstance(req, dict) and req.get("name") == "zakcode":
-                got = req.get("extras")
-                if isinstance(got, list):
-                    extras = [e for e in got if isinstance(e, str)]
-    except Exception:  # noqa: BLE001 - extras are a nicety, never block the update
+                return req
+    except Exception:  # noqa: BLE001 - the receipt is a nicety, never block the update
         pass
+    return {}
+
+
+def _uv_tool_spec(source: str) -> str:
+    """``zakcode[extras] @ source``, extras recovered from uv's install receipt.
+
+    Dropping the extras on update would silently uninstall a provider (e.g.
+    ``[google]`` = the vertex deps).
+    """
+    got = _uv_receipt_requirement().get("extras")
+    extras = [e for e in got if isinstance(e, str)] if isinstance(got, list) else []
     name = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
     return f"{name} @ {source}"
 
 
-def _reinstall_commands(source: str) -> list[list[str]]:
+def _checkout_note(checkout: str, old_sha: str, new_sha: str) -> str:
+    """What is true of the checkout once the update has pulled it, for a message or a log that says
+    the update stopped: it stays pulled, and an editable install runs it (ADR-0291). Empty when
+    the pull brought nothing."""
+    if old_sha == new_sha:
+        return ""
+    return (
+        f"The checkout {checkout} was pulled from {old_sha} to {new_sha} and stays there. An "
+        f"editable install runs the checkout's code, so to run the old code again: "
+        f'git -C "{checkout}" reset --hard {old_sha}'
+    )
+
+
+def _unchanged(note: str) -> str:
+    """The closing sentences of a refusal that comes after the pull, before anything is replaced."""
+    return "The installed environment was not changed." + (f" {note}" if note else "")
+
+
+def _update_dir(note: str = "") -> Path:
+    """Where an update keeps its working files, created on the way: the lock export and, on
+    Windows, the second process's script, job and log.
+
+    A home that cannot be written stops the update here with a message, not a traceback after the
+    pull; ``note`` is what to say about the checkout when it was already pulled.
+    """
+    work = zakcode_home() / "update"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        notice_error(
+            console, "cannot keep the update's working files", f"{work}: {exc}\n{_unchanged(note)}"
+        )
+        raise typer.Exit(code=1) from exc
+    return work
+
+
+def _pin_to_lock(uv: str, checkout: str, note: str = "") -> Path:
+    """Export the checkout's ``uv.lock`` as a constraints file for the reinstall.
+
+    Without it ``uv tool install`` resolves every dependency afresh to the newest version, which
+    is neither what CI tested nor what an install pinned to the lock was meant to get (measured:
+    of the 78 packages an unpinned install and the lock share, 52 came out at another version,
+    and the install added 10 more that the lock does not contain). ``--locked`` refuses a lock
+    that no longer matches ``pyproject.toml`` instead of quietly pinning to a stale one. This runs
+    before anything is replaced, so a refusal leaves the installed environment as it was; the
+    checkout it reads is already pulled, which ``note`` says (ADR-0291).
+    """
+    dest = _update_dir(note) / "constraints.txt"
+    proc = subprocess.run(
+        [
+            uv,
+            "export",
+            "--locked",
+            "--all-extras",
+            "--no-dev",
+            "--no-emit-project",
+            "--no-hashes",
+            "--no-header",
+            "--no-annotate",
+            "--output-file",
+            str(dest),
+        ],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    if proc.returncode != 0:
+        notice_error(
+            console,
+            "cannot pin the update to uv.lock",
+            (proc.stderr or proc.stdout).strip()[-2000:] + f"\n{_unchanged(note)}",
+        )
+        raise typer.Exit(code=proc.returncode)
+    return dest
+
+
+#: Prints the build identity of the zakcode this interpreter imports. Run in a fresh process,
+#: because the one that ran the update has its importlib metadata cached from before it.
+_VERSION_PROBE = (
+    "from zakcode import __version__ as v;"
+    "from zakcode.build_info import version_line;"
+    "print(version_line(v))"
+)
+
+
+def _reinstall_commands(
+    source: str, checkout: str | None = None, note: str = ""
+) -> list[list[str]]:
     """The reinstall invocations for this environment: uv when uv owns it, else pip.
 
     A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
     there; the ``uv-receipt.toml`` at the env root is the discriminator. uv is one
-    command (a full resolve, dependencies included). pip is TWO: the
+    command (a full resolve, dependencies included) and it carries three things
+    forward that a bare ``uv tool install`` would drop (ADR-0291): the Python the
+    install runs on, ``--editable`` when the install was editable, and, for a
+    ``checkout``, the versions its ``uv.lock`` pins. pip is TWO: the
     ``--force-reinstall --no-deps`` pass replaces the package code even when the
     version string is unchanged (pip's same-version no-op trap) without churning
     the whole dependency tree — but it also means a build that ADDS a dependency
@@ -593,12 +691,182 @@ def _reinstall_commands(source: str) -> list[list[str]]:
                 "Install uv (or run its reinstall by hand), then rerun zakcode update.",
             )
             raise typer.Exit(code=1)
-        return [[uv, "tool", "install", "--force", "--reinstall", _uv_tool_spec(source)]]
+        options = ["--python", f"{sys.version_info.major}.{sys.version_info.minor}"]
+        if _uv_receipt_requirement().get("editable"):
+            options.append("--editable")
+        if checkout is not None:
+            options += ["--constraints", str(_pin_to_lock(uv, checkout, note))]
+        return [[uv, "tool", "install", "--force", "--reinstall", *options, _uv_tool_spec(source)]]
     pip = [sys.executable, "-m", "pip", "install"]
     return [
         [*pip, "--force-reinstall", "--no-deps", f"zakcode @ {source}"],
         [*pip, f"zakcode @ {source}"],
     ]
+
+
+def _replaces_its_own_env() -> bool:
+    """True when the reinstall would replace the environment this process runs from, on Windows.
+
+    That is the one case that cannot be done in this process: Windows will not delete the files
+    of a program that is running, and ``uv tool install --force --reinstall`` deletes the whole
+    environment before it builds the next. Run from inside it, uv removed every dependency and
+    then stopped at ``Scripts\\python.exe``, leaving an install that could not start (ADR-0291).
+    """
+    return sys.platform == "win32" and (Path(sys.prefix) / "uv-receipt.toml").is_file()
+
+
+def _other_programs_in(env_dir: Path) -> list[tuple[int, str]] | None:
+    """``(pid, program)`` of every OTHER process that runs from a file inside ``env_dir``.
+
+    ``None`` when they cannot be listed (no PowerShell, a policy that blocks it). That is not
+    fatal, but the listing is the only thing that refuses a busy install: a program that merely
+    runs from the environment does not stop the second process's move (measured on Windows,
+    ADR-0291). The update then completes, the old install is left where it cannot be deleted, and
+    the program keeps running from it until it is restarted. A program that has a file open in the
+    environment, or works in its folder, is refused by the move and not by this listing.
+    """
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and "
+        "$_.ExecutablePath.StartsWith($env:ZAKCODE_ENV_DIR, "
+        "[StringComparison]::OrdinalIgnoreCase) } | "
+        "ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, $_.ExecutablePath }"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            env={**os.environ, "ZAKCODE_ENV_DIR": str(env_dir).rstrip("\\/") + os.sep},
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    running: dict[int, tuple[int, str]] = {}
+    for line in proc.stdout.splitlines():
+        pid, _, rest = line.partition("|")
+        parent, _, program = rest.partition("|")
+        if pid.strip().isdigit() and parent.strip().isdigit():
+            running[int(pid)] = (int(parent.strip()), program.strip())
+    # This command runs under the interpreter the environment was built from, outside it, and was
+    # started by the environment's own `Scripts\python.exe` shim, which sits inside it and exits
+    # with this process. That shim, and any other process between this one and the first ancestor
+    # outside the environment, is not an "other program". The launcher in the tool bin directory
+    # is outside the environment and is never listed.
+    mine = {os.getpid()}
+    ancestor = os.getppid()
+    while ancestor in running and ancestor not in mine:
+        mine.add(ancestor)
+        ancestor = running[ancestor][0]
+    return [
+        (pid, program) for pid, (_parent, program) in sorted(running.items()) if pid not in mine
+    ]
+
+
+#: Win32 process-creation flags. Spelled as numbers because ``subprocess`` defines the names on
+#: Windows only, and this module is type-checked everywhere.
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+def _manual_reinstall(commands: list[list[str]]) -> str:
+    """The reinstall as the line(s) to run by hand from a shell that is not running zakcode."""
+    return "\n".join("  " + subprocess.list2cmdline(command) for command in commands)
+
+
+def _finish_in_second_process(
+    commands: list[list[str]], old: str, new_sha: str, note: str = ""
+) -> None:
+    """Hand the reinstall to ``swap_install.py``, which runs after this process has exited.
+
+    The helper is copied out of the package first and run by the interpreter the environment was
+    built from, which lives outside it: neither may sit in the environment being replaced. It is
+    detached, with no console to close under it, and asked to leave any job object this process
+    is in, so closing the terminal does not stop an update half way. It moves the environment
+    aside, reinstalls, checks the result starts, and puts the old environment back if anything
+    fails; its log ends with ``update complete`` or ``update failed`` and what was done about it,
+    and says before the move how to undo it by hand. ``note`` is the sentence about the checkout
+    this update pulled, which the helper writes after any failure (ADR-0291).
+    """
+    env_dir = Path(sys.prefix)
+    base = Path(getattr(sys, "_base_executable", None) or sys.executable)
+    if env_dir.resolve() in base.resolve().parents:
+        notice_error(
+            console,
+            "cannot update from this install on Windows",
+            f"Its Python ({base}) lives inside the environment the update replaces. "
+            f"{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
+        )
+        raise typer.Exit(code=1)
+    work = _update_dir(note)
+    script, job_file, log = work / "swap_install.py", work / "job.json", work / "update.log"
+    backup = env_dir.with_name(env_dir.name + ".update-backup")
+    job = {
+        "wait_pid": os.getpid(),
+        "env_dir": str(env_dir),
+        "backup_dir": str(backup),
+        "commands": commands,
+        "verify": [str(env_dir / "Scripts" / "python.exe"), "-c", _VERSION_PROBE],
+        "cwd": str(work),
+        "log": str(log),
+        "old": old,
+        "new_sha": new_sha,
+        "checkout_note": note,
+    }
+    try:
+        shutil.copyfile(Path(__file__).with_name("swap_install.py"), script)
+        job_file.write_text(json.dumps(job, indent=2), encoding="utf-8")
+        log.write_text(f"{time.strftime('%H:%M:%S')} update handed to a second process\n", "utf-8")
+    except OSError as exc:  # a full disk, a file another program holds: the pull has already run
+        notice_error(
+            console,
+            "could not prepare the second process",
+            f"{exc}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
+        )
+        raise typer.Exit(code=1) from exc
+    flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+    for extra in (_CREATE_BREAKAWAY_FROM_JOB, 0):  # a job that forbids breakaway refuses the flag
+        try:
+            subprocess.Popen(
+                [str(base), str(script), str(job_file)],
+                creationflags=flags | extra,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            break
+        except OSError as exc:
+            last = exc
+    else:
+        notice_error(
+            console,
+            "could not start the second process",
+            f"{last}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
+        )
+        raise typer.Exit(code=1)
+    _dim(
+        console,
+        "Windows will not replace the program it is running, so the reinstall finishes in a "
+        "second process once this command exits",
+    )
+    _dim(console, f"progress and result: {log}")
+    _dim(
+        console,
+        'zakcode is unavailable for about a minute; the log ends with "update complete", or says '
+        "how the old install was put back",
+    )
+    _dim(
+        console,
+        f"the old install is kept in {backup} until the new one starts; if the update is cut "
+        "off, the log says how to put it back by hand",
+    )
 
 
 @app.command()
@@ -614,20 +882,41 @@ def update(
       from that URL at ``REF``.
     - **local-checkout install** (``uv tool install 'zakcode[…] @ file:///path'``):
       ``git pull`` the checkout first — auto-reverting the ``pyproject.toml`` /
-      ``uv.lock`` churn a prior install left behind — then force-reinstall from it.
+      ``uv.lock`` churn a prior install left behind — then force-reinstall from it,
+      with every dependency at the version the checkout's ``uv.lock`` pins, an
+      editable install kept editable, and the same Python (ADR-0291).
 
     Owns the traps: a plain ``pip install --upgrade`` silently keeps the old build
     when the version string is unchanged (measured 2026-08-21), and a uv tool
     environment carries no pip, so the reinstall leg goes through ``uv tool install
     --force --reinstall`` whenever uv owns this install (extras recovered from uv's
-    receipt). Prints old → new build identity. Running chat sessions notice the new
-    install at their next idle prompt and restart themselves into it, resuming their
-    session (ADR-0034) — no operator action needed.
+    receipt). On Windows that reinstall replaces the environment this command runs
+    from, which Windows refuses to do under a running program, so it finishes in a
+    second process after this one exits, refuses while another program runs from the
+    install, and puts the old install back if anything fails (ADR-0291). Prints
+    old → new build identity. Elsewhere, running chat sessions notice the new
+    install at their next idle prompt and restart themselves into it, resuming
+    their session (ADR-0034) — no operator action needed. On Windows they run from
+    the install being replaced, so the command refuses until they are closed.
     """
     old = version_line(__version__)
     url = build_url()
     directory = build_dir()
+    second_process = _replaces_its_own_env()
+    if second_process:
+        busy = _other_programs_in(Path(sys.prefix))
+        if busy:
+            notice_error(
+                console,
+                "other programs are running from this install",
+                "\n".join(f"  pid {pid}  {program}" for pid, program in busy[:10])
+                + "\nWindows will not replace files a running program holds. Close them (every "
+                "zakcode session, the web app included) and run zakcode update again. Nothing "
+                "was changed.",
+            )
+            raise typer.Exit(code=1)
     shas: tuple[str, str] | None = None
+    note = ""  # what to tell the reader about the checkout if the update stops after the pull
     if url is not None:
         source = f"git+{url}@{ref}"
         _dim(console, f"updating from {url} @ {ref} …")
@@ -635,6 +924,7 @@ def update(
         if ref != "main":
             _dim(console, "ref ignored — a local-checkout install pulls its tracked branch")
         shas = _refresh_checkout(directory)
+        note = _checkout_note(directory, *shas)
         source = Path(directory).as_uri()
         _dim(console, f"reinstalling from {directory} …")
     else:
@@ -646,23 +936,18 @@ def update(
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    for command in _reinstall_commands(source):
+    commands = _reinstall_commands(source, directory, note)
+    if second_process:
+        before = old.replace("(local path)", f"(git {shas[0]})") if shas is not None else old
+        _finish_in_second_process(commands, before, shas[1] if shas is not None else "", note)
+        return
+    for command in commands:
         proc = subprocess.run(command, capture_output=True, text=True)
         if proc.returncode != 0:
             notice_error(console, "reinstall failed", (proc.stderr or proc.stdout).strip()[-2000:])
             raise typer.Exit(code=proc.returncode)
     # Fresh process: this one's importlib metadata is cached pre-update.
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from zakcode import __version__ as v;"
-            "from zakcode.build_info import version_line;"
-            "print(version_line(v))",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    probe = subprocess.run([sys.executable, "-c", _VERSION_PROBE], capture_output=True, text=True)
     new = probe.stdout.strip() if probe.returncode == 0 and probe.stdout.strip() else "(unreadable)"
     if shas is not None:
         # A local-path install's metadata carries no commit — both sides would read
