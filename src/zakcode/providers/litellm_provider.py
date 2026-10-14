@@ -40,6 +40,7 @@ from zakcode.messages import (
 from zakcode.providers.base import (
     AuthError,
     Capabilities,
+    ContentFiltered,
     ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
@@ -1891,7 +1892,29 @@ class LiteLLMProvider(Provider):
             result.usage.completion_tokens,
             result.usage.cost_usd,
         )
+        self._raise_if_filtered(
+            result.finish_reason, delivered=bool(result.text or result.tool_calls)
+        )
         return result
+
+    def _raise_if_filtered(self, finish_reason: str | None, *, delivered: bool) -> None:
+        """Raise :class:`ContentFiltered` for a response a content filter emptied.
+
+        ``finish_reason="content_filter"`` with no text and no tool call is a 200 whose answer
+        the route withheld. Left as it came, the loop read it as the model going silent: it
+        nudged a model that had said nothing and reported "went silent", and a turn that had
+        already spoken ended ``completed`` on it (measured, scripted provider). Raised here
+        it rides the loop's existing bounded retry and then ends the turn ``provider_error``
+        with this text. A filtered response that still delivered something is left alone:
+        that is a cut-off answer, which the caller can see for itself.
+        """
+        if finish_reason == "content_filter" and not delivered:
+            raise ContentFiltered(
+                f"{self.model} answered with no content and finish_reason=content_filter: a "
+                "content filter on the route withheld the response. Retrying samples it again; "
+                "if it keeps happening, shorten or reword the request, or use another model "
+                "or route."
+            )
 
     # ------------------------------------------------------------------
     # Streaming: litellm chunk stream -> ProviderStreamEvent stream
@@ -2155,6 +2178,7 @@ class LiteLLMProvider(Provider):
         head: list[Any] = []
         tail: deque[Any] = deque(maxlen=_STREAM_SAMPLE_EDGE)
         chunks = 0
+        delivered = False  # any text or tool-call fragment reached the caller
         repaired = False  # the one ADR-0181 re-issue this call may spend
         await self._pace()
         try:
@@ -2181,6 +2205,8 @@ class LiteLLMProvider(Provider):
                         if fr is not None:
                             finish_reason = fr
                         for event in events:
+                            if isinstance(event, StreamTextDelta | StreamToolCallDelta):
+                                delivered = True
                             yield event
                     break
                 except ProviderError:
@@ -2206,6 +2232,7 @@ class LiteLLMProvider(Provider):
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
 
+        self._raise_if_filtered(finish_reason, delivered=delivered)
         yield StreamDone(finish_reason=finish_reason)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:

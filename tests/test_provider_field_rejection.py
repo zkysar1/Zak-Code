@@ -44,6 +44,13 @@ VERTEX_TEXT = (
     "}}'"
 )
 
+#: Bedrock's own request validator, as Nova and Llama 4 answer it (reported 2026-10-13 through
+#: an OpenAI-compatible gateway); ``{key}`` is the field it refuses.
+BEDROCK_TEXT = (
+    "Malformed input request: #: extraneous key [{key}] is not permitted, please reformat "
+    "your input and try again."
+)
+
 
 class BadRequestError(Exception):
     """Named exactly: the provider matches litellm's class by MRO NAME (plus status)."""
@@ -74,6 +81,11 @@ class InternalServerError(Exception):
         "extra_body.chat_template_kwargs: Extra inputs are not permitted",
         "[{'type': 'extra_forbidden', 'loc': ('body', 'chat_template_kwargs'), "
         "'msg': 'Extra inputs are not permitted'}]",
+        # Bedrock's own validator (Nova, Llama 4), bare and with a schema path before the colon.
+        "Malformed input request: #: extraneous key [chat_template_kwargs] is not permitted, "
+        "please reformat your input and try again.",
+        "Malformed input request: #/inferenceConfig: extraneous key [chat_template_kwargs] is "
+        "not permitted, please reformat your input and try again.",
         "got an unexpected keyword argument 'chat_template_kwargs'",
         "unknown parameter: chat_template_kwargs",
         "Unsupported parameter: 'chat_template_kwargs'",
@@ -87,6 +99,10 @@ def test_a_field_we_did_not_send_is_never_ours_to_strip() -> None:
     assert rejected_request_field('Unknown name "tools": Cannot find field.', ["seed"]) is None
     assert rejected_request_field(VERTEX_TEXT, []) is None
     assert rejected_request_field("Invalid JSON payload received.", ["seed"]) is None
+    # Bedrock's wording names a key we never sent, or a key of ours only as a value in the dump.
+    assert rejected_request_field(BEDROCK_TEXT.format(key="messages"), ["seed"]) is None
+    value_only = BEDROCK_TEXT.format(key="role") + " It saw seed."
+    assert rejected_request_field(value_only, ["seed"]) is None
 
 
 def test_the_classifier_reads_an_exception_too() -> None:
@@ -328,6 +344,37 @@ async def test_a_refused_affinity_key_stays_out_for_the_rest_of_the_session(
     # Two calls for the first turn (refuse + re-issue), ONE for the second.
     assert len(fake.calls) == 3
     assert "extra_body" not in fake.calls[2]
+
+
+async def test_bedrocks_own_wording_repairs_the_affinity_key_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nova and Llama 4 answer the key in Bedrock's validator wording, which no other
+    phrasing matched: the refusal fell through as a RequestFailed on EVERY call to them."""
+    refusal = "litellm.BadRequestError: OpenAIException - " + BEDROCK_TEXT.format(
+        key="prompt_cache_key"
+    )
+    fake = _Litellm([BadRequestError(refusal)])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod()
+    result = await provider.acomplete([Message.user("hi")], prompt_cache_key="zakcode/s1")
+    assert result.text == "ok"
+    assert len(fake.calls) == 2
+    assert fake.calls[0]["extra_body"] == {"prompt_cache_key": "zakcode/s1"}
+    assert "extra_body" not in fake.calls[1]  # the key did not come back
+    assert provider.rejected_request_fields == ["prompt_cache_key"]
+
+
+async def test_bedrocks_wording_naming_a_field_we_did_not_send_is_surfaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _Litellm([BadRequestError(BEDROCK_TEXT.format(key="messages"))])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod()
+    with pytest.raises(RequestFailed):
+        await provider.acomplete([Message.user("hi")], prompt_cache_key="zakcode/s1")
+    assert len(fake.calls) == 1
+    assert provider.rejected_request_fields == []
 
 
 async def test_streaming_leaves_a_refused_affinity_key_out_of_the_re_issue(

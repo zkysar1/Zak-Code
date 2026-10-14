@@ -5359,7 +5359,7 @@ class AgentLoop:
                 attempt += 1
                 delay = self._retry_delay(exc, attempt)
                 if isinstance(exc, ModelOutputRejected):
-                    reason = "provider rejected a malformed tool call"
+                    reason = exc.reason
                     budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                 elif isinstance(exc, TimedOut):
                     reason = f"request timed out ({exc.bound})"
@@ -9682,7 +9682,7 @@ class AgentLoop:
                             )
                             if isinstance(exc, ModelOutputRejected):
                                 interrupt_attempts += 1
-                                reason = "provider rejected a malformed tool call"
+                                reason = exc.reason
                                 budget = f"{interrupt_attempts}/{_MAX_INTERRUPT_RETRIES}"
                             elif isinstance(exc, TimedOut):
                                 interrupt_attempts += 1
