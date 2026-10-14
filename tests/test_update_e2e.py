@@ -38,6 +38,9 @@ REPO = Path(__file__).resolve().parents[1]
 WINDOWS = sys.platform == "win32"
 #: What a user does not get from a checkout: tests, docs and benchmarks are not needed to install.
 _SKIP_TOP = ("tests", "docs", "bench")
+#: An older build backend than ``pyproject.toml`` pins. The seed is built with it, so the update
+#: has to build with the pinned one, read from the tree it pulls, whatever is newest that day.
+_PREVIOUS_BACKEND = "hatchling==1.31.0"
 
 
 def _run(
@@ -82,6 +85,7 @@ def _seed_remote(base: Path, uv: str) -> tuple[Path, Path, Path]:
         target = author / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / name, target)
+    _set_backend(author, _PREVIOUS_BACKEND)
     _hold_one_package_back(uv, author)
     _git(author, "init", "-q", "-b", "main")
     _git(author, "add", "-A")
@@ -105,6 +109,36 @@ def _push_commit(author: Path, note: str) -> str:
 
 def _head(checkout: Path) -> str:
     return _git(checkout, "rev-parse", "HEAD").strip()
+
+
+def _backend_requirement(project: Path) -> str:
+    """The build requirement that names hatchling in ``project``'s ``pyproject.toml``."""
+    text = (project / "pyproject.toml").read_text(encoding="utf-8")
+    requires = tomllib.loads(text)["build-system"]["requires"]
+    found = [r for r in requires if r.lower().startswith("hatchling")]
+    assert len(found) == 1, f"expected one hatchling build requirement: {requires}"
+    return str(found[0])
+
+
+def _set_backend(project: Path, requirement: str) -> None:
+    """Make ``requirement`` the only build requirement of ``project``, keeping its line endings."""
+    path = project / "pyproject.toml"
+    text, count = re.subn(
+        r"(?m)^requires = \[[^\]\r\n]*\]",
+        f'requires = ["{requirement}"]',
+        path.read_bytes().decode("utf-8"),
+    )
+    assert count == 1, f"expected one build requirement line in {path}, found {count}"
+    path.write_bytes(text.encode("utf-8"))
+
+
+def _built_by(tool_python: Path) -> str:
+    """The backend that built the installed project, as the ``Generator`` line of its wheel."""
+    code = "import importlib.metadata as m; print(m.distribution('zakcode').read_text('WHEEL'))"
+    wheel = _ok([str(tool_python), "-c", code])
+    found = re.findall(r"(?m)^Generator:\s*(.+?)\s*$", wheel)
+    assert len(found) == 1, f"no single Generator line in the installed WHEEL:\n{wheel}"
+    return str(found[0])
 
 
 def _norm(name: str) -> str:
@@ -223,6 +257,7 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         "the unpinned install already matches the lock; the pin check would prove nothing"
     )
     assert "editable" in (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
+    assert _built_by(tool_python) == _PREVIOUS_BACKEND.replace("==", " ")
 
     if WINDOWS:
         # ── 1. another process runs from this install: refuse before touching anything ──
@@ -321,6 +356,11 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         assert not (tool_dir / "zakcode.update-backup").exists(), "the backup was left behind"
 
     # ── the update itself: pulled, pinned to the lock, still editable, working ──
+    # The pushed commit restores the backend the project pins, so the rebuild must use the one
+    # the pulled tree names (ADR-0300) and not the one the install was built with.
+    pinned = _backend_requirement(REPO)
+    assert pinned != _PREVIOUS_BACKEND, f"the project pins {pinned}, the seed's backend"
+    _set_backend(author, pinned)
     new_head = _push_commit(author, "second")
     proc = _run([str(zakcode), "update"], env=env)
     shown = proc.stdout + proc.stderr
@@ -337,6 +377,8 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
     receipt = tomllib.loads((tool_env / "uv-receipt.toml").read_text(encoding="utf-8"))
     requirement = next(r for r in receipt["tool"]["requirements"] if r["name"] == "zakcode")
     assert "editable" in requirement, f"the install is no longer editable: {requirement}"
+    built = _built_by(tool_python)
+    assert built == pinned.replace("==", " "), f"built by {built}; the pulled tree pins {pinned}"
     after = _installed(tool_python)
     moved = {n: (after.get(n), v) for n, v in pins.items() if n in after and after[n] != v}
     assert not moved, f"dependencies not at the version the lock pins: {moved}"

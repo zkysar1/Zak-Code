@@ -647,6 +647,12 @@ def _pin_to_lock(uv: str, checkout: str, note: str = "") -> Path:
     that no longer matches ``pyproject.toml`` instead of quietly pinning to a stale one. This runs
     before anything is replaced, so a refusal leaves the installed environment as it was; the
     checkout it reads is already pulled, which ``note`` says (ADR-0291).
+
+    The export carries no hashes, because ``uv tool install`` does not check one in a constraints
+    file (measured on uv 0.12.5 and 0.13.1: a wrong hash installed, where ``uv pip install``
+    refused it), so they would promise a check nobody makes. The lock pins versions, not bytes,
+    and it does not pin the build backend either: ``pyproject.toml`` pins that, and the build
+    reads it from the checkout this export reads (ADR-0300).
     """
     dest = _update_dir(note) / "constraints.txt"
     proc = subprocess.run(
