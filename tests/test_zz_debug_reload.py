@@ -27,7 +27,7 @@ from zakcode.server.event_bus import EventBusRegistry
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="needs node on PATH")
 
-RUNS = 60
+RUNS = 240
 _EXPECTED = [*_ONE_AND_TWO, ("user", "three"), ("assistant", "echo three")]
 _FETCH = "globalThis.fetch = (url, opts) => __realFetch(new URL(url, __BASE), opts);"
 _WRITE = "process.stdout.write(JSON.stringify({ rows, errs }));"
@@ -128,7 +128,11 @@ def test_the_ring_of_three_page_repeated(tmp_path: Path, monkeypatch: pytest.Mon
                     }
                 )
     ties = sum(1 for m in margins if m[4] == 0 or m[5] == 0)
-    print(f"DEBUG-RELOAD runs={RUNS} bad={len(bad)} turn3-ties={ties}", flush=True)
+    before = sum(1 for m in margins if m[4] < 0 or m[5] < 0)
+    print(
+        f"DEBUG-RELOAD runs={RUNS} bad={len(bad)} turn3-ties={ties} turn3-before-bus={before}",
+        flush=True,
+    )
     print("DEBUG-RELOAD margins (microseconds from bus start, per message):", flush=True)
     for m in margins[:20]:
         print("   ", m, flush=True)
