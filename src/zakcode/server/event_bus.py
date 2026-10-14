@@ -17,7 +17,8 @@ Guarantees:
 * **Stamped at publish.** Every event also carries the wall clock (epoch seconds) of the moment it
   was published, and every subscriber receives it. A watcher that joins late or reconnects then
   replays the buffer in a burst; without the stamp it could only time events by when THEY
-  arrived, and every duration it drew over a replay read as zero (ADR-0219).
+  arrived, and every duration it drew over a replay read as zero (ADR-0219). The stamp is read
+  the way a saved message's creation time is (ADR-0288), so the two compare exactly.
 * **Per-subscriber backpressure.** Each subscriber has its own bounded queue; a stuck watcher
   drops ITS OWN oldest queued events (recoverable via the ring buffer + cursor gap) and never
   blocks the publisher or other subscribers.
@@ -30,11 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
-import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
-from fractions import Fraction
+from datetime import UTC, datetime
 from typing import Any, Final
 
 _DEFAULT_MAXLEN: Final = 1000
@@ -48,11 +47,26 @@ _SUBSCRIBER_QUEUE_MAXLEN: Final = 512
 _CLOSE: Final = object()
 
 
+def _wall_clock() -> float:
+    """Epoch seconds, read the way a saved message's ``created_at`` is: ``datetime.now(UTC)``.
+
+    A message is stamped with ``datetime.now(UTC)``, whole microseconds, and the transcript route
+    turns that into epoch seconds with ``.timestamp()``. Stamping an event the same way makes the
+    two the SAME number when they are made in the same instant, which is the only way a page can
+    tell "older than the bus" from "the bus's" without being a microsecond out either way.
+    ``time.time()`` reads the same system clock but hands back a float rounded from nanoseconds,
+    and that rounding can carry it over a microsecond boundary the message stops short of: on
+    Windows, whose clock moves in 15.6 ms steps so both are made on the same reading, 2 runs in 60
+    drew the newest turn twice (ADR-0288).
+    """
+    return datetime.now(UTC).timestamp()
+
+
 class SessionEventBus:
     """A bounded, cursor-addressed pub/sub buffer for one session's events."""
 
     def __init__(
-        self, maxlen: int = _DEFAULT_MAXLEN, clock: Callable[[], float] = time.time
+        self, maxlen: int = _DEFAULT_MAXLEN, clock: Callable[[], float] = _wall_clock
     ) -> None:
         self._buffer: deque[tuple[int, Any, float]] = deque(maxlen=maxlen)
         self._cursor = 0
@@ -82,16 +96,14 @@ class SessionEventBus:
         Anything older than this stamp can no longer be replayed from it, so it is the line
         between what a late joiner draws from the bus and what only the saved session still holds.
 
-        Floored to the microsecond. A saved message carries its creation time as a microsecond
-        ISO string, cut from the same clock reading; the publish stamp is a float with finer
-        steps. For an event and a message made in the same instant the float reads a hair LATER,
-        so compared as they were the message looked older than the bus and was drawn twice (seen
-        on Windows CI, whose clock gives both the same reading). Flooring the float exactly, on
-        its true value, puts both on the microsecond.
+        The stamp is cut the way a saved message's is (see ``_wall_clock``), so an event and a
+        message made in the same instant carry the same number: the message counts as the bus's,
+        not older than it, and a page draws it once. On Windows, whose clock moves in 15.6 ms
+        steps, that tie is the common case.
         """
         if not self._buffer:
             return None
-        return math.floor(Fraction(self._buffer[0][2]) * 1_000_000) / 1_000_000
+        return self._buffer[0][2]
 
     def publish(self, event: Any) -> int:
         """Append ``event`` to the ring buffer and fan it out to live subscribers.
