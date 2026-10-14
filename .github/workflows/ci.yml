@@ -64,17 +64,24 @@ jobs:
         # stalling silently to the runner ceiling (the failure class this PR fixes).
         # Per-test bound is in pyproject (pytest-timeout, timeout=120). The suite
         # runs in ~90s, so the 600s bound is pure headroom.
+        #
+        # --basetemp puts every tmp_path under a folder with a SPACE in its name, like a Windows
+        # user's profile folder. A test that builds a command from a temp path must then quote
+        # it, and one that does not fails here instead of on that user's machine (nine tests
+        # did not, and a hint cut a path at its first space; found by hand on 2026-10-13).
         env:
           PYTHONFAULTHANDLER: "1"
-        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --cov=zakcode --cov-report=xml --cov-report=term
+        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --basetemp "$RUNNER_TEMP/zak code tmp" --cov=zakcode --cov-report=xml --cov-report=term
 
       - name: Pytest (Windows)
         if: runner.os == 'Windows'
         # GNU `timeout` does not exist here; the job-level timeout-minutes is the
         # session bound and pytest-timeout (thread method) the per-test bound.
+        # The spaced --basetemp is the Linux step's (see there); PowerShell expands
+        # $env:RUNNER_TEMP inside the double quotes and hands pytest one argument.
         env:
           PYTHONFAULTHANDLER: "1"
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync pytest -q --basetemp "$env:RUNNER_TEMP\zak code tmp"
 
       - name: Upload coverage report
         # One cell is enough for the artifact (audit P2-1; acceptance 13).

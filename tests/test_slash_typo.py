@@ -111,7 +111,7 @@ def test_unknown_command_in_a_skill_less_workspace_names_the_workspace(tmp_path:
     # The console wraps the long notice; glue the wrap back before asserting.
     out = " ".join(buf.getvalue().split())
     assert "has no project skills" in out
-    assert str(tmp_path) in "".join(out.split())
+    assert "".join(str(tmp_path).split()) in "".join(out.split())
     assert "-w <project-root>" in out
 
 

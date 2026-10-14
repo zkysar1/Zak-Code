@@ -667,7 +667,7 @@ def _sink_command(tmp_path: Path) -> tuple[str, Path]:
         encoding="utf-8",
     )
     out = tmp_path / "ending.json"
-    return f"{sys.executable} {sink} {out}", out
+    return f'"{sys.executable}" "{sink}" "{out}"', out
 
 
 def test_run_end_command_receives_reason_and_digest_before_the_vessel_goes_down(
@@ -695,7 +695,7 @@ def test_run_end_command_failures_are_fail_open(tmp_path: Path) -> None:
     """A command that exits non-zero, or cannot start at all, never strands the ending."""
     boom = tmp_path / "boom.py"
     boom.write_text("import sys\nsys.stdin.read()\nraise SystemExit(3)\n", encoding="utf-8")
-    for command in (f"{sys.executable} {boom}", str(tmp_path / "no-such-command")):
+    for command in (f'"{sys.executable}" "{boom}"', str(tmp_path / "no-such-command")):
         app, _seen, endings, _t0 = _build_bounded(
             tmp_path, max_duration=0.3, message="wrap up", run_end_command=command
         )

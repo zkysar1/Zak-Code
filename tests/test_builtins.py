@@ -652,7 +652,7 @@ async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) ->
     bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
     # as_posix(): bash eats a WindowsPath's backslashes, and `touch C:Usersx` SUCCEEDS
     # in the cwd (measured on CI, 2026-08-29) — so the absolute form here must be posix.
-    res = await BashTool().execute({"command": f"touch {bad.as_posix()}"}, ctx)
+    res = await BashTool().execute({"command": f'touch "{bad.as_posix()}"'}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "'.agent-data/agents' is the first missing part" in res.fix
@@ -671,7 +671,7 @@ async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path)
     (other / "body-manifest.yaml").write_text("body_state: active\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
-    res = await BashTool().execute({"command": f"grep -c body_state {bad.as_posix()}"}, ctx)
+    res = await BashTool().execute({"command": f'grep -c body_state "{bad.as_posix()}"'}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "agents/coach/sessions/xyz/body-manifest.yaml" in res.fix
@@ -696,7 +696,20 @@ async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> Non
     root = _mind_workspace(tmp_path)
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
-        {"command": f"cat {root.as_posix()}/world/forged-skills.yaml"}, ctx
+        {"command": f'cat "{root.as_posix()}/world/forged-skills.yaml"'}, ctx
+    )
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "a file named 'forged-skills.yaml' does: .agent-data/world/forged-skills.yaml" in res.fix
+
+
+async def test_bash_enoent_hint_survives_a_space_in_the_workspace_path(tmp_path) -> None:
+    """grep and bash print the missing path bare. A workspace folder with a space in its name
+    (a Windows profile folder has one) cut that path at the space, and the hint was lost."""
+    root = _mind_workspace(tmp_path / "my project")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute(
+        {"command": f'grep -c skills "{root.as_posix()}/world/forged-skills.yaml"'}, ctx
     )
     assert res.is_error
     assert res.fix is not None, res.output

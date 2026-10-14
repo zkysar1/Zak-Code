@@ -580,9 +580,12 @@ _ENOENT_RES = (
     re.compile(r"cannot [a-z]+(?: [a-z]+)* '([^']+)': No such file or directory"),
     # pytest
     re.compile(r"ERROR: file or directory not found: (\S+)"),
-    # bash / cat / cd / head / source ... : `<tool>: <path>: No such file or directory`
+    # bash / cat / cd / head / source ... : `<tool>: <path>: No such file or directory`. grep and
+    # bash print the path bare, so it may hold spaces (a Windows profile folder does): it runs to
+    # the next colon and no further than the end of its line.
     re.compile(
-        r"(?m)^[\w.\-/]+: (?:line \d+: )?((?:[A-Za-z]:)?[^\s:'\"]+): No such file or directory"
+        r"(?m)^[\w.\-/]+: (?:line \d+: )?"
+        r"((?:[A-Za-z]:)?[^\s:'\"][^\n:'\"]*): No such file or directory"
     ),
     # the same frame with the path QUOTED — newer coreutils (Git Bash on Windows CI, 2026-08-29:
     # `cat: 'C:/Users/.../forged-skills.yaml': No such file or directory`)

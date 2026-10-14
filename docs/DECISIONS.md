@@ -17376,3 +17376,38 @@ server: reopened after a restart, reopened while the server holds everything, re
 message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains two (the stamp moves
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
+
+## ADR-0287: the suite runs from a temp folder with a space in its name
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** CI never ran the suite with a space in any path. The Linux runners' temp folder is under `/tmp`, the Windows
+runner's is under `D:\a\_temp`, and the repository's own path holds none. A Windows profile folder usually does
+(`C:\Users\First Last\...`), and the first Windows run of this product, reported 2026-10-13, failed on exactly that: a hook
+command whose `$CLAUDE_PROJECT_DIR` held a space was cut into pieces at the space. The Windows cell had run the whole
+suite and still did not see it.
+
+Measured 2026-10-13: the suite run on Linux from a pytest temp folder named `/tmp/zc space dir/bt` failed ten of 5,435
+tests. Nine put an unquoted temp path into a command (`touch <path>`, `cat <path>`, `S=<path> && ...`, the
+`run_end_command` of `<python> <script> <out>`) or compared wrapped console text with the path. The tenth was a defect: the
+"No such file" hint (ADR-0097) reads the path out of the tool's error line, and `grep` and a script run by `bash` print that
+path bare, so the read stopped at the first space and a workspace under a spaced folder lost the hint.
+
+**Decision.** Two changes.
+
+* Every pytest step in CI runs with `--basetemp` set to a folder named `zak code tmp` under the runner's temp directory, so
+  `tmp_path` holds a space on Linux and on Windows. A test that builds a command from a temp path must quote it, and one
+  that does not fails in CI instead of on a user's machine. The nine tests that did not now quote their paths.
+* The bare-path pattern of the hint (`_ENOENT_RES`) accepts spaces: the path runs from its first non-space character to the
+  next colon, and no further than the end of its line. The quoted shapes were already complete.
+
+Rejected: setting `TMPDIR` and `TEMP` instead, since the folder must exist first and `tempfile` calls outside `tmp_path`
+change with it; and skipping the hint test under a spaced path, which would hide the defect the folder found.
+
+**Consequences.** Each CI cell runs the same suite in a spaced folder; no cell is added. Not changed: `head` prints
+`cannot open '<path>' for reading` and `cd` prints `bash: line 1: cd: <path>`, and the hint reads neither with a space or
+without one (measured with the real tools, 2026-10-14).
+
+The proof. `tests/test_builtins.py` gains `test_bash_enoent_hint_survives_a_space_in_the_workspace_path`, which builds its
+own spaced workspace so it holds on a runner whose temp folder has none. With the pattern's space allowance removed it
+fails (the hint is `None`, the grep error unexplained), and with it restored it passes.
