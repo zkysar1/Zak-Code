@@ -1361,8 +1361,10 @@ def test_update_pins_the_reinstall_to_the_checkouts_lock(tmp_path, monkeypatch) 
         constraints,
     ]
     assert kwargs["cwd"] == str(h.clone)  # the lock of the checkout just pulled
-    reinstall = h.calls[1][0]
-    assert reinstall[reinstall.index("--constraints") + 1] == constraints
+    reinstall, kwargs = h.calls[1]
+    # Named without its folder, and run in that folder (ADR-0301).
+    assert reinstall[reinstall.index("--constraints") + 1] == "constraints.txt"
+    assert Path(kwargs["cwd"]) == Path(constraints).parent
     assert Path(constraints).read_text() == "somepkg==1.0\n"
 
 
@@ -1575,6 +1577,64 @@ def test_update_on_windows_refuses_when_its_python_lives_in_the_install(
     assert "toolinstall--force--reinstall" in flat and "--constraints" in flat
     assert "zakcode[google]" in flat and "<yourcheckout>" not in flat
     assert f"waspulledfrom{old_sha}to" in flat and "Theinstalledenvironmentwasnotchanged" in flat
+
+
+# ── a home folder with a space in its path (ADR-0301) ──
+# uv before 0.13.0 splits a `--constraints` value at a space: measured on 0.11.33, 0.12.5 and
+# 0.12.24, `uv tool install --constraints "<dir with a space>/c.txt"` stops with `File not found`
+# naming the path up to the space, and 0.13.0 and 0.13.1 read it. A Windows profile folder can
+# hold a space, and the constraints file lives under it, in the update folder.
+
+
+def _spaced_home(tmp_path, monkeypatch) -> Path:
+    home = tmp_path / "zak home" / ".zakcode"
+    monkeypatch.setenv("ZAKCODE_HOME", str(home))
+    return home / "update"
+
+
+def test_update_hands_uv_a_constraints_name_without_a_space(tmp_path, monkeypatch) -> None:
+    work = _spaced_home(tmp_path, monkeypatch)
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    reinstall, kwargs = h.calls[1]
+    given = reinstall[reinstall.index("--constraints") + 1]
+    assert not any(c.isspace() for c in given), f"uv before 0.13.0 splits {given!r}"
+    assert Path(kwargs["cwd"]) == work
+    assert (work / given).read_text() == "somepkg==1.0\n"
+
+
+def test_update_on_windows_hands_uv_a_constraints_name_without_a_space(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    work = _spaced_home(tmp_path, monkeypatch)
+    _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    job = json.loads((work / "job.json").read_text(encoding="utf-8"))
+    install = job["commands"][0]
+    given = install[install.index("--constraints") + 1]
+    assert not any(c.isspace() for c in given), f"uv before 0.13.0 splits {given!r}"
+    assert Path(job["cwd"]) == work  # where the second process runs it
+    assert (work / given).read_text() == "somepkg==1.0\n"
+
+
+def test_the_reinstall_to_run_by_hand_starts_in_the_update_folder(tmp_path, monkeypatch) -> None:
+    """The command names the constraints file without its folder, so the lines to run by hand go
+    to that folder first. ``pushd`` does so in both cmd and PowerShell, across drives too."""
+    import zakcode.cli as cli_mod
+
+    work = _spaced_home(tmp_path, monkeypatch)
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    inside = h.prefix / "python.exe"  # refused, so the command is printed to run by hand
+    monkeypatch.setattr(cli_mod.sys, "_base_executable", str(inside), raising=False)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    flat = _flat(result.stdout)
+    assert _flat(f'pushd "{work}"') in flat
+    assert flat.index("pushd") < flat.index("toolinstall--force--reinstall")
 
 
 @pytest.mark.parametrize(

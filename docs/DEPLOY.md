@@ -80,6 +80,12 @@ dependencies are not pinned. These pins fix versions, not bytes: `uv tool instal
 check a hash in a constraints file, so the constraints an update exports from `uv.lock` carry
 none.
 
+The reinstall runs in `~/.zakcode/update` and names its constraints file there without the
+folder, because uv before 0.13.0 splits a constraints path at a space and a profile folder can
+hold one (ADR-0301). An install built between ADR-0291 and this change passes the full path, so
+on such a uv its next update stops with `File not found` and keeps the old install: upgrade uv
+to 0.13.0 or later first (`uv self update` where uv came from its own installer).
+
 ## Hand-managed hosts
 
 A host nobody reaches by fleet automation gets the same unit, installed by hand with the

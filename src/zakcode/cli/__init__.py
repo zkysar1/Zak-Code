@@ -711,6 +711,11 @@ def _reinstall_commands(
     an update, the say box silently fell back to its no-Esc reader). The second,
     plain pass resolves the freshly-installed package's dependency list and
     installs only what is missing.
+
+    The commands run in the update folder (``_update_dir``) and name the constraints file
+    without its folder: uv before 0.13.0 splits a ``--constraints`` value at a space (measured on
+    0.11.33, 0.12.5 and 0.12.24), and a Windows profile folder, which holds the update folder,
+    can have one (ADR-0301).
     """
     if (Path(sys.prefix) / "uv-receipt.toml").is_file():
         uv = shutil.which("uv")
@@ -725,7 +730,7 @@ def _reinstall_commands(
         if _uv_receipt_requirement().get("editable"):
             options.append("--editable")
         if checkout is not None:
-            options += ["--constraints", str(_pin_to_lock(uv, checkout, note))]
+            options += ["--constraints", _pin_to_lock(uv, checkout, note).name]
         return [[uv, "tool", "install", "--force", "--reinstall", *options, _uv_tool_spec(source)]]
     pip = [sys.executable, "-m", "pip", "install"]
     return [
@@ -802,9 +807,12 @@ _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
-def _manual_reinstall(commands: list[list[str]]) -> str:
-    """The reinstall as the line(s) to run by hand from a shell that is not running zakcode."""
-    return "\n".join("  " + subprocess.list2cmdline(command) for command in commands)
+def _manual_reinstall(commands: list[list[str]], work: Path) -> str:
+    """The reinstall as the lines to run by hand from a shell that is not running zakcode, starting
+    in ``work``, the update folder the commands run in (ADR-0301). ``pushd`` changes folder, and
+    drive, in both cmd and PowerShell."""
+    lines = [f'pushd "{work}"', *(subprocess.list2cmdline(command) for command in commands)]
+    return "\n".join("  " + line for line in lines)
 
 
 def _finish_in_second_process(
@@ -823,16 +831,16 @@ def _finish_in_second_process(
     """
     env_dir = Path(sys.prefix)
     base = Path(getattr(sys, "_base_executable", None) or sys.executable)
+    work = _update_dir(note)
     if env_dir.resolve() in base.resolve().parents:
         notice_error(
             console,
             "cannot update from this install on Windows",
             f"Its Python ({base}) lives inside the environment the update replaces. "
             f"{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
-            f"{_manual_reinstall(commands)}",
+            f"{_manual_reinstall(commands, work)}",
         )
         raise typer.Exit(code=1)
-    work = _update_dir(note)
     script, job_file, log = work / "swap_install.py", work / "job.json", work / "update.log"
     backup = env_dir.with_name(env_dir.name + ".update-backup")
     job = {
@@ -856,7 +864,7 @@ def _finish_in_second_process(
             console,
             "could not prepare the second process",
             f"{exc}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
-            f"{_manual_reinstall(commands)}",
+            f"{_manual_reinstall(commands, work)}",
         )
         raise typer.Exit(code=1) from exc
     flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
@@ -878,7 +886,7 @@ def _finish_in_second_process(
             console,
             "could not start the second process",
             f"{last}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
-            f"{_manual_reinstall(commands)}",
+            f"{_manual_reinstall(commands, work)}",
         )
         raise typer.Exit(code=1)
     _dim(
@@ -971,8 +979,9 @@ def update(
         before = old.replace("(local path)", f"(git {shas[0]})") if shas is not None else old
         _finish_in_second_process(commands, before, shas[1] if shas is not None else "", note)
         return
+    work = _update_dir(note)  # where the commands run: they name the constraints file alone
     for command in commands:
-        proc = subprocess.run(command, capture_output=True, text=True)
+        proc = subprocess.run(command, capture_output=True, text=True, cwd=work)
         if proc.returncode != 0:
             notice_error(console, "reinstall failed", (proc.stderr or proc.stdout).strip()[-2000:])
             raise typer.Exit(code=proc.returncode)
