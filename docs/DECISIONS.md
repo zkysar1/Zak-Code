@@ -17552,6 +17552,111 @@ naming its bus, and the transcript naming an empty bus `""` and not `null`. Two 
 written first: with the old cursor kept, the first four stayed green, and with `endTurn()` dropped from the start-over so
 did every test in the three files that run the page's script.
 
+## ADR-0290: a refusal in Bedrock's wording names its field, and a 200 that a content filter emptied is a provider failure
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** An operator running Zak Code against an OpenAI-compatible gateway in front of Bedrock models (the install
+behind ADR-0285) reported four provider-layer behaviours on 2026-10-13. Each was checked against the code before anything
+changed. Two are fixed here; two are real and are left undecided below.
+
+*The refusal classifier.* ADR-0181 reads a 400 and, when the text names a field Zak Code sent, drops that field for the
+session and re-issues the call (`rejected_request_field`, `REJECTED_FIELD_PATTERNS`). Bedrock's own request validator,
+which the report saw from Nova and Llama 4, words a refusal `Malformed input request: #: extraneous key [prompt_cache_key]
+is not permitted, please reformat your input and try again.` No known phrasing matched it. Probed against the unmodified
+classifier, five of eight cases came back `None` where a field should have been named: that exact text, the same text
+carried by an exception, the escaped-JSON form a gateway relays it in, a schema path before the colon
+(`#/inferenceConfig:`), and two violations of which only the second key was one we sent. Unattributed, a refusal is a
+defect to surface (ADR-0285), so every call to those models failed with `RequestFailed` and the session could not recover;
+the switch ADR-0285 added was the only remedy.
+
+*The empty 200.* The same gateway's Sonnet 4.5 route was reported to answer HTTP 200 with empty content and
+`finish_reason="content_filter"` on long text now and then, cause unconfirmed (Sonnet 4 answers the same text). The
+provider handed that back as an ordinary empty completion, and the loop reads an empty completion as the model going
+silent. Against a scripted provider returning that shape, before this change: as a turn's first completion it cost three
+provider calls and two nudges ("asking for a real answer") to a model that had said nothing, and ended `gave_up` "the
+model went silent"; arriving after the turn had already spoken, it ended `completed` with `degraded` false after two
+calls, with no answer and no cause.
+
+**Decision.**
+
+* `REJECTED_FIELD_PATTERNS` gains Bedrock's phrasing, `extraneous key [<name>] is not permitted`. The gate in
+  `rejected_request_field` that attributes only a name Zak Code actually sent is unchanged: a refusal naming a key we did
+  not send (`extraneous key [messages]`), another complaint about a key of ours (`required key [seed] not found`) and a
+  key of ours that appears only as a value in the dump are still not attributed.
+* A response that ends `finish_reason="content_filter"` with no text and no tool call raises `ContentFiltered`, a
+  `ModelOutputRejected`, from the provider: on the buffered path, and on the streaming path once the stream has ended with
+  nothing delivered. Reasoning and the trailing usage chunk are not an answer (the provider asks for `include_usage`, so
+  every stream ends with one). A filtered response that did deliver text or a tool call is returned as it came: it is a
+  cut-off answer the caller can see.
+* More than filters arrive as `content_filter`. litellm 1.86 files these provider finish reasons under it: OpenAI's own,
+  Anthropic's `refusal` (and Sonnet 4's `content_filtered`), Gemini and Vertex AI's `SAFETY`, `RECITATION`, `LANGUAGE`,
+  `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII` and two image variants, Cohere's `ERROR_TOXIC`, Bedrock's
+  `guardrail_intervened` and Zhipu's `sensitive`. The provider cannot tell them apart, so a model's own refusal reaches
+  the loop as a filter and is reported as one; the exception's text says "content filter or safety refusal".
+* The loop samples a `ContentFiltered` answer again once, at the temperature the operator configured (none is sent when
+  none is set), under its own bound `_MAX_FILTER_RETRIES = 1`, apart from the three retries a rejected tool call gets. A
+  refusal repeats and each call is a long prompt; the reported case, an occasional empty 200, is covered by one fresh
+  sample. The retry notice names the cause (`ModelOutputRejected.reason`; it used to call every rejection a malformed tool
+  call), and a second withheld answer ends the turn `provider_error` carrying the provider's text, which names the filter.
+  A replacement route after a failover gets its own resample.
+* Every withheld call is recorded. The route answered and reported usage for it, so the call counts as billed, but it
+  raised instead of returning a result, and the accounting that follows a result never saw it. `ContentFiltered.usage`
+  carries what the call reported (the response's usage when buffered; the stream's usage chunks, summed as the loop sums
+  them, when streamed), and the loop records it the moment the call ends, whether or not a resample follows: in the
+  session, in the budget's token and cost ceilings and in the turn's usage, on both retry paths. The compaction summarizer
+  records it as its own, tagged as the summarizer's.
+
+Rejected: a second parser for Bedrock's schema paths, since the name sits in the brackets whatever precedes the colon and
+the one pattern reads the bare and the pathed form; treating every `content_filter` finish as a failure, which would
+discard an answer the caller already has; a new stop reason for the filter, which is a new case for every consumer of the
+turn's end; and the rejected tool call's three retries at a raised temperature, since a refusal repeats, so one refusal
+could bill four long prompts, and a temperature the operator never set can itself be refused by a model that fixes its
+own, which would hide the filter behind a 400.
+
+**Not decided: prompt caching through a custom endpoint.** `cache_control` is sent only when the model string starts
+`anthropic/` or `claude` and the capability lookup says the model caches. A Claude model behind an `openai/` route, or
+under an alias no table knows, is never sent it, though its route may pass it through, and the fact that settles it lives
+in the operator's gateway and not in the model string. An operator declaration of which models take the marker, or an
+inference from the model string repaired by ADR-0181 when a route refuses it, would settle it; either changes what every
+such route is sent, so it is the owner's call.
+
+**Not decided: the text mode's `stop` sequences.** Text tool mode sends up to six `stop` sequences of 10 to 13 characters,
+capped by count and never by length, and a reported route rejects `stop` outright while another rejects any string over 10
+characters. ADR-0181's repair does not reach them, and dropping them is not safe, since they stop a weak model fabricating
+a tool result.
+
+**Consequences.** A Bedrock-worded refusal that names a field we sent now costs one re-issued call at the start of a
+session, as every other phrasing does, where it used to fail every call. A filtered empty answer costs one further call
+and then ends the turn `provider_error` naming the filter, where it used to end it with no cause (or with a clean
+`completed`); both calls are recorded, so a ceiling that falls between one call and two now ends a turn `budget_exhausted`
+after the second call has delivered its answer. Nothing changes for a response that delivered anything, for a refusal
+naming a field we did not send, or for a plain `ModelOutputRejected`, whose three retries at a raised temperature and
+notice "provider rejected a malformed tool call" are as before. Not changed: the caching gate, the `stop` sequences,
+`tool_choice`, the gateway's request limit, and the side calls other than the summarizer (the judge, relevance scoring,
+the classifiers), which call the provider once, fail soft, and still record nothing for a call that raised.
+
+The proof. `tests/test_provider_field_rejection.py` gains five tests (two phrasings in the classifier's table, the
+affinity key repaired from Bedrock's wording, a Bedrock refusal naming a key we did not send staying a `RequestFailed`,
+and a complaint about a key that is not a refusal of it staying unattributed) and two assertions that a key we did not
+send is never attributed. `tests/test_provider_content_filter.py` is new, with 26. The provider raises on an empty
+filtered buffered answer, on an empty filtered stream (with the trailing usage chunk, and after reasoning only) and on a
+buffered answer that only reasoned, and sums a stream's usage chunks; it leaves an unfiltered empty answer to the silence
+gate, and returns a filtered answer that delivered text or a tool call, buffered or streamed, as it came. With the real
+provider under the loop, on both paths: one resample at the configured temperature and none sent when none is set, a
+second withheld answer ending `provider_error` naming the filter and the refusal, every billed call recorded in the
+session, the budget and the turn at 1000 prompt tokens a call, and a withheld call belonging to its own turn and no other.
+With a scripted provider: the summarizer's withheld call tagged as the summarizer's, a call that reported no usage adding
+nothing, and a replacement route getting its own resample. Against main's source three of the classifier tests fail (the
+two phrasings and the repair; the others guard what must not change) and the new file does not import. Thirty-five
+one-line mutants of the change were each killed by one to twelve named tests, and the restored source turned them green
+again. They break the Bedrock pattern or widen it to any `key [x]`; disable the raise or make it fire when something was
+delivered; make the delivered flag count nothing, everything, reasoning, the usage chunk, only text (a streamed tool call
+then reads as silence) or not a buffered tool call; drop the exception's usage or sum a stream's chunks wrongly; leave a
+withheld call out of the session, the budget, the turn or either handler; ignore or unwire the summarizer's own
+accounting; raise the resample's temperature, loosen its bound or mislabel its notice; and skip the turn's reset, the
+no-usage guard or the failover's reset.
+
 ## ADR-0291: `zakcode update` finishes in a second process on Windows, keeps the old install until the new one starts, and installs the versions the lock pins
 
 **Status:** Accepted (2026-10-14)

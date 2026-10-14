@@ -40,6 +40,7 @@ from zakcode.messages import (
 from zakcode.providers.base import (
     AuthError,
     Capabilities,
+    ContentFiltered,
     ContextWindowExceeded,
     LLMResult,
     ModelOutputRejected,
@@ -1891,7 +1892,34 @@ class LiteLLMProvider(Provider):
             result.usage.completion_tokens,
             result.usage.cost_usd,
         )
+        self._raise_if_filtered(
+            result.finish_reason,
+            delivered=bool(result.text or result.tool_calls),
+            usage=result.usage,
+        )
         return result
+
+    def _raise_if_filtered(
+        self, finish_reason: str | None, *, delivered: bool, usage: Usage | None
+    ) -> None:
+        """Raise :class:`ContentFiltered` for a response a content filter emptied.
+
+        ``finish_reason="content_filter"`` with no text and no tool call is a 200 whose answer
+        the route withheld. Left as it came, the loop read it as the model going silent: it
+        nudged a model that had said nothing and reported "went silent", and a turn that had
+        already spoken ended ``completed`` on it (measured, scripted provider). Raised here
+        the loop samples it again once and then ends the turn ``provider_error`` with this
+        text. A filtered response that still delivered something is left alone: that is a
+        cut-off answer, which the caller can see for itself. The response was billed, so the
+        exception carries its ``usage`` for the loop to record.
+        """
+        if finish_reason == "content_filter" and not delivered:
+            raise ContentFiltered(
+                f"{self.model} answered with no content and finish_reason=content_filter: a "
+                "content filter or safety refusal on the route withheld the response. If it "
+                "keeps happening, shorten or reword the request, or use another model or route.",
+                usage=usage,
+            )
 
     # ------------------------------------------------------------------
     # Streaming: litellm chunk stream -> ProviderStreamEvent stream
@@ -2155,6 +2183,8 @@ class LiteLLMProvider(Provider):
         head: list[Any] = []
         tail: deque[Any] = deque(maxlen=_STREAM_SAMPLE_EDGE)
         chunks = 0
+        delivered = False  # any text or tool-call fragment reached the caller
+        streamed_usage: Usage | None = None  # summed as the loop sums it, for a filtered end
         repaired = False  # the one ADR-0181 re-issue this call may spend
         await self._pace()
         try:
@@ -2181,6 +2211,14 @@ class LiteLLMProvider(Provider):
                         if fr is not None:
                             finish_reason = fr
                         for event in events:
+                            if isinstance(event, StreamTextDelta | StreamToolCallDelta):
+                                delivered = True
+                            elif isinstance(event, StreamUsage):
+                                streamed_usage = (
+                                    event.usage
+                                    if streamed_usage is None
+                                    else streamed_usage + event.usage
+                                )
                             yield event
                     break
                 except ProviderError:
@@ -2206,6 +2244,7 @@ class LiteLLMProvider(Provider):
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
 
+        self._raise_if_filtered(finish_reason, delivered=delivered, usage=streamed_usage)
         yield StreamDone(finish_reason=finish_reason)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:

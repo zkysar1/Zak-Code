@@ -300,8 +300,37 @@ class ModelOutputRejected(RateLimited):
     retry machinery, with ``retry_after=0`` (nothing to wait for).
     """
 
+    #: What the loop's retry notice says happened. A subclass that is not a malformed tool
+    #: call names its own cause, so the notice never blames the model for the provider.
+    reason = "provider rejected a malformed tool call"
+
     def __init__(self, message: str) -> None:
         super().__init__(message, retry_after=0.0)
+
+
+class ContentFiltered(ModelOutputRejected):
+    """The provider answered HTTP 200 but withheld the answer: no text, no tool call, and
+    ``finish_reason="content_filter"``.
+
+    A filter on the route emptied the response, which is not the model going silent (the
+    loop's empty-completion gate nudges a model that goes silent, and a turn that had
+    already spoken ended clean on it). Reported 2026-10-13 for a Claude route behind an
+    OpenAI-compatible gateway, cause unconfirmed: an occasional empty 200 on long text that a
+    sibling model answered. litellm files several refusals under the same finish reason (a
+    model's own safety refusal among them), so a real refusal arrives here too and is reported
+    as a filter. The loop samples again ONCE, at the configured temperature, and when that is
+    withheld too the turn ends ``provider_error`` carrying this text, so the operator sees the
+    filter, not an empty answer.
+
+    The call was billed even though it raised, so the exception carries what it cost for the
+    loop to record: nothing else would.
+    """
+
+    reason = "provider's content filter withheld the answer"
+
+    def __init__(self, message: str, *, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class RequestFailed(ProviderError):
@@ -389,6 +418,11 @@ REJECTED_FIELD_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"unrecognized request arguments?\s+supplied:\s*([\w.,\s-]+)", re.IGNORECASE),
     # Anthropic (pydantic-style): x: Extra inputs are not permitted
     re.compile(r"([\w.]+):\s*extra inputs are not permitted", re.IGNORECASE),
+    # AWS Bedrock's own request validator (reported 2026-10-13 for Nova and Llama 4, through an
+    # OpenAI-compatible gateway): Malformed input request: #: extraneous key [x] is not
+    # permitted, please reformat your input and try again. The Claude route on the same host
+    # was reported answering in the Anthropic form above.
+    re.compile(r"extraneous key\s*\[([^\]]+)\]\s*is not permitted", re.IGNORECASE),
     # FastAPI / pydantic v2 body validation (vLLM and kin): 'loc': ('body', 'x')
     re.compile(r"[\(\[]\s*[\"']body[\"'],\s*[\"']([\w.]+)[\"']", re.IGNORECASE),
     # Generic server phrasings.
