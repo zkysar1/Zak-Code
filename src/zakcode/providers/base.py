@@ -400,6 +400,68 @@ def quota_exhaustion_marker(text: str | BaseException) -> str | None:
     return None
 
 
+#: Substrings that identify a request the model's CONTEXT WINDOW could not hold.
+#: Lower-cased compare.
+#:
+#: WHY THE TEXT. litellm names an overflow (``ContextWindowExceededError``) only when its
+#: sniff list for the provider it believes it is calling matches the wording, and the list for
+#: an OpenAI-compatible route is short. A gateway in front of Bedrock speaks the OpenAI wire,
+#: so litellm sees ``openai`` while the body is in Bedrock's words ("Input is too long for
+#: requested model"), and the overflow arrives as a plain ``BadRequestError``. That maps to
+#: ``RequestFailed``, the loop's compact-and-retry never runs, and the turn ends
+#: ``provider_error`` where one compaction would have saved it.
+#:
+#: A LiteLLM proxy has already run litellm's own mapping on its side, and the class name
+#: (``litellm.ContextWindowExceededError``) is written into the body it returns. litellm's
+#: client re-raises that name for its ``litellm_proxy`` route (it searches the text for
+#: ``litellm\.\w+Error``, ``extract_and_raise_litellm_exception``) and never for ``openai/``,
+#: which is the route a gateway is configured as here. The class name is the first marker for
+#: that reason, and the only one that cannot mean anything else.
+#:
+#: MEASURED (2026-10-14, litellm 1.86.2): an ``openai.BadRequestError`` carrying each of the
+#: first four wordings below, run through ``litellm.exception_type`` for provider ``openai``,
+#: comes out a plain ``BadRequestError`` every time; ``tests/test_context_overflow_
+#: classification.py`` reruns that probe, so a litellm that learns a wording shows as a test
+#: that stops being a regression test, not as a silent change.
+#:
+#: THIS LIST IS A JUDGEMENT CALL, NOT A MEASUREMENT OF A LIVE GATEWAY. Like the quota markers
+#: above it is the vendor phrasing known at the time of writing, and the one place to extend
+#: when a provider's wording is observed to differ.
+#:
+#: Every entry names the SIZE OF THE INPUT. A phrase that also reads as a throttle is left out
+#: on purpose: Bedrock's token-rate refusal is "Too many tokens, please wait before trying
+#: again" (HTTP 429), and a marker on "too many tokens" would compact a transcript to cure a
+#: rate limit. :meth:`LiteLLMProvider._map_error` also checks these only after the rate-limit
+#: type, so a throttle stays a throttle whatever its text says.
+CONTEXT_OVERFLOW_MARKERS: tuple[str, ...] = (
+    # A LiteLLM proxy's own classification, carried in the body text.
+    "contextwindowexceedederror",
+    # Bedrock (Converse and InvokeModel), and Anthropic's validation behind it.
+    "input is too long for requested model",
+    "prompt is too long",
+    "too many input tokens",
+    # Anthropic, when the input plus ``max_tokens`` does not fit the window.
+    "exceed context limit",
+    # OpenAI, Azure and the servers that copy them: the sentence Chat Completions uses, the
+    # one the Responses API uses, and the error code for a path that still carries it
+    # (litellm's own mapping for an ``openai`` route keeps the message and drops the code).
+    "maximum context length",
+    "exceeds the context window",
+    "context_length_exceeded",
+    # llama.cpp: "request (N tokens) exceeds the available context size (M tokens)".
+    "exceeds the available context size",
+)
+
+
+def context_overflow_marker(text: str | BaseException) -> str | None:
+    """Return the marker proving ``text`` is a context-window overflow, else None."""
+    lowered = str(text).lower()
+    for marker in CONTEXT_OVERFLOW_MARKERS:
+        if marker in lowered:
+            return marker
+    return None
+
+
 #: How a provider names a request field it refuses, one pattern per vendor phrasing
 #: (case-insensitive; group 1 is the field). The list is a JUDGEMENT CALL like the quota
 #: markers above — the phrasings known at the time of writing — and the one place to
