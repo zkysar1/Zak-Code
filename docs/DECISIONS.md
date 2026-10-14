@@ -18365,3 +18365,47 @@ and the backend's name. Three mutations of the pin were each run green, red, gre
 `hatchling==1.31.0`, checks that the first install was built by it (the `Generator` line of the installed `WHEEL`), pushes
 a commit that restores the pinned release, and checks that the updated install was built by the pinned one; it passed
 locally with uv 0.13.1. `uv run poe check` is green: 5,775 passed, 22 skipped.
+
+## ADR-0301: the update hands uv its constraints file by name, from the update folder, because uv before 0.13.0 splits that path at a space
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0291 has `zakcode update` export the checkout's lock to `constraints.txt` in the update folder
+(`~/.zakcode/update`) and pass that file's full path to `uv tool install --constraints`. Run end to end on 2026-10-14 with
+uv 0.12.5, the update stopped at the reinstall with `error: File not found:` and the path up to its first space; the test's
+folder has a space in its name on purpose, because a Windows profile folder can. Measured with `uv tool install
+--constraints "<folder with a space>/c.txt"`: uv 0.11.33, 0.12.5 and 0.12.24 stop with `File not found` naming the path up
+to the space, and uv 0.13.0 (released 2026-10-09) and 0.13.1 read the file. On 0.12.5 the same file in a folder without a
+space installs, and so does the same command with no constraints. CI installs the newest uv, so its end to end passed with
+the space in the path and could not show this.
+
+**Decision.**
+
+* `_reinstall_commands` passes the constraints file by name alone, `--constraints constraints.txt`, and the commands run in
+  the update folder. On Windows the second process already ran them there (`cwd` in its job); the in-process runner now
+  passes `cwd` too, so both platforms keep one contract: the reinstall runs in the update folder.
+* The lines to run by hand, printed when the second process cannot run, start with `pushd "<update folder>"`, which
+  changes folder, and drive, in both cmd and PowerShell.
+
+Rejected: refusing to update on a uv older than 0.13.0, which would block every update there to fix a case a working
+folder avoids; and a Windows short (8.3) path, which exists only where short names are enabled and does nothing elsewhere.
+
+Not verified: an older uv on Windows. The split was measured on Linux. CI's end to end on `windows-latest` runs the
+second process with the name and the working folder, so it shows that path works there, but it installs the newest uv,
+which does not split.
+
+**Consequences.** An install built between ADR-0291 and this change runs its own, older update code, which passes the full
+path: on a uv before 0.13.0 with a space in the home folder's path, its next update stops with `File not found` before uv
+touches the environment, and the old install stays. Upgrading uv to 0.13.0 or later gets that one update through; from
+then on the update passes the name. `docs/DEPLOY.md` says so. pip installs also run in the update folder now; their
+source is an absolute file URL.
+
+The proof. Three tests in `tests/test_cli_chat.py`, each with the home folder under a folder whose name has a space: in
+process, the `--constraints` value holds no whitespace, the reinstall runs in the update folder, and the name there is the
+exported file; on Windows, the same for the job the second process reads; and the lines to run by hand start with
+`pushd "<update folder>"`, ahead of the reinstall. All three fail against the pre-change source. One existing assertion
+moved with the contract: `test_update_pins_the_reinstall_to_the_checkouts_lock` read the full path and now reads the name
+and the working folder. Three mutations were each run green, red, green (2026-10-14): the full path put back turned 3
+tests red, the in-process working folder dropped turned 2, and the `pushd` line dropped turned 1. The end to end, run
+locally on uv 0.12.5, stopped at the reinstall with `File not found` before the change and passes after it. `uv run poe
+check` is green: 5,778 passed, 22 skipped.
