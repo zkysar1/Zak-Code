@@ -100,8 +100,12 @@ _SENTINEL_RE = re.compile(r"</?\s*tool_(?:call|result)|```tool_call", re.IGNOREC
 # autoregress past one tool call into a fabricated ``<tool_result>`` or leak a
 # chat-template token. These are protocol frame markers + chat-template sentinels
 # common across open models (ChatML / Llama) — structural strings, never a
-# vendor-name branch. litellm forwards ``stop`` to the backend; the text path only
-# targets local backends (Ollama), which accept many stop strings.
+# vendor-name branch. litellm forwards ``stop`` to the backend, but a backend may take
+# few or none: a gateway in front of Bedrock refused the field, or a sequence over a
+# length, and the provider then leaves out what it refused (ADR-0296). And the sentinel
+# is the bare ``<tool_result>`` while the protocol renders ``<tool_result tool="Name">``,
+# the form models imitate. So the stop list is not what bounds a reply on its own:
+# :func:`cut_invented_turn` cuts it on the client, before the parser (ADR-0297).
 _STOP_SENTINELS: tuple[str, ...] = (
     "<tool_result>",
     "<|im_start|>",
@@ -128,6 +132,18 @@ _TEMPLATE_TOKEN_RE = re.compile(r"<\|[^|>]{0,40}\|>")
 #: but never finished (truncated/abandoned); stripped so it does not render as cruft.
 _TRAILING_OPEN_CALL_RE = re.compile(
     r"<\s*tool_call\s*>(?:(?!</\s*tool_call\s*>).)*\Z", re.IGNORECASE | re.DOTALL
+)
+
+#: Where a text-mode reply stops being the model's own turn (ADR-0297): the opening tag of
+#: a tool result the model wrote itself, in the form the protocol renders and models imitate
+#: (``<tool_result tool="Name">``) as well as the bare one, and the chat-template tokens of
+#: the stop list. Built from :data:`_STOP_SENTINELS` so the two cannot drift apart.
+_REPLY_END_RE = re.compile(
+    "|".join(
+        r"<\s*tool_result\b" if sentinel == "<tool_result>" else re.escape(sentinel)
+        for sentinel in _STOP_SENTINELS
+    ),
+    re.IGNORECASE,
 )
 
 
@@ -491,6 +507,23 @@ def _parse_fence_body(body: str) -> tuple[str, dict[str, Any]] | None:
     return None
 
 
+def _candidate_calls(text: str) -> list[tuple[int, int, tuple[str, dict[str, Any]]]]:
+    """Every tool call that can be recovered from ``text``, as ``(start, end, (name, args))``.
+
+    The tag form, a closed fence and a truncated trailing fence, in no particular order and
+    possibly overlapping (a fence may wrap a tag). Shared by :func:`parse_text_tool_calls`,
+    which picks among them, and :func:`cut_invented_turn`, which needs only their spans.
+    """
+    candidates: list[tuple[int, int, tuple[str, dict[str, Any]]]] = []
+    candidates.extend(_iter_tag_calls(text))
+    for rx in (_FENCE_RE, _FENCE_OPEN_RE):
+        for m in rx.finditer(text):
+            parsed = _parse_fence_body(m.group(1).strip())
+            if parsed is not None:
+                candidates.append((m.start(), m.end(), parsed))
+    return candidates
+
+
 def parse_text_tool_calls(
     text: str,
     *,
@@ -518,13 +551,7 @@ def parse_text_tool_calls(
     if not text:
         return text, []
 
-    candidates: list[tuple[int, int, tuple[str, dict[str, Any]]]] = []
-    candidates.extend(_iter_tag_calls(text))
-    for rx in (_FENCE_RE, _FENCE_OPEN_RE):
-        for m in rx.finditer(text):
-            parsed = _parse_fence_body(m.group(1).strip())
-            if parsed is not None:
-                candidates.append((m.start(), m.end(), parsed))
+    candidates = _candidate_calls(text)
 
     if allowed_names is not None:
         allowed = set(allowed_names)
@@ -565,6 +592,28 @@ def parse_text_tool_calls(
     out_parts.append("" if truncate_tail else text[cursor:])
     residual = "".join(out_parts).strip()
     return residual, calls
+
+
+def cut_invented_turn(text: str) -> str:
+    """Cut ``text`` where the model began writing the turns that follow its own (ADR-0297).
+
+    A text-protocol reply ends at the first opening ``<tool_result`` tag or chat-template token
+    that is not part of a tool call. After one the model is writing the harness's answer to its
+    call, or the next turn of the conversation, and a call written there was chosen on a result
+    nobody produced (measured: a made-up file list, then a read of a path from it). The stop list
+    says the same thing server-side, but only where the backend takes it (ADR-0296), and its
+    ``<tool_result>`` is the bare tag. A tag inside a call's own span, an argument that quotes
+    the protocol as when its docs are being edited, is the call's text and not a cut point.
+    Returns ``text`` itself when there is nothing to cut.
+    """
+    matches = list(_REPLY_END_RE.finditer(text))
+    if not matches:
+        return text
+    spans = [(start, end) for start, end, _parsed in _candidate_calls(text)]
+    for match in matches:
+        if not any(start <= match.start() < end for start, end in spans):
+            return text[: match.start()]
+    return text
 
 
 # ── the wrapper provider ─────────────────────────────────────────────────────
@@ -701,7 +750,9 @@ class TextToolCallingProvider(Provider):
                 textify_messages(messages), system=new_system, tools=None, **call_kwargs
             )
             max_calls = 1 if self.single_tool_per_turn else None
-            residual, calls = parse_text_tool_calls(result.text, max_calls=max_calls)
+            residual, calls = parse_text_tool_calls(
+                cut_invented_turn(result.text), max_calls=max_calls
+            )
             residual = _strip_forged_frames(residual)
             return result.model_copy(update={"text": residual, "tool_calls": calls})
 
