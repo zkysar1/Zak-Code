@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -1229,42 +1230,320 @@ def test_refresh_checkout_refuses_real_local_changes(tmp_path) -> None:
     assert (clone / "my-experiment.py").read_text() == "precious\n"  # untouched
 
 
-def test_update_local_checkout_uses_uv_with_receipt_extras(tmp_path, monkeypatch) -> None:
+#: A uv receipt the way `uv tool install "zakcode[google] @ file:///..."` writes it.
+_RECEIPT_EXTRAS = '[tool]\nrequirements = [{ name = "zakcode", extras = ["google"] }]\n'
+#: The same for `uv tool install --editable "zakcode @ file:///..."`.
+_RECEIPT_EDITABLE = '[tool]\nrequirements = [{ name = "zakcode", editable = "file:///x" }]\n'
+
+
+def _update_harness(
+    tmp_path,
+    monkeypatch,
+    receipt,
+    *,
+    windows=False,
+    busy=None,
+    export_rc=0,
+    refuse=lambda flags: False,
+):
+    """A fake uv tool environment and a real clone pair for ``zakcode update`` to work on.
+
+    Only git runs for real. Every other command is recorded in ``calls`` instead of run, and
+    ``uv export`` writes the constraints file it was asked for, as the real one does. A process
+    the command starts lands in ``started`` (``refuse(creationflags)`` makes that start fail), so
+    nothing here replaces an install or spawns the second process.
+    """
+    import types
+
     import zakcode.cli as cli_mod
 
     clone = _make_clone_pair(tmp_path)
+    prefix = tmp_path / "toolenv"
+    prefix.mkdir()
+    (prefix / "uv-receipt.toml").write_text(receipt)
     monkeypatch.setattr(cli_mod, "build_url", lambda: None)
     monkeypatch.setattr(cli_mod, "build_dir", lambda: str(clone))
-    # Simulate a uv tool env: receipt with the [google] extra at the env root.
-    fake_prefix = tmp_path / "toolenv"
-    fake_prefix.mkdir()
-    (fake_prefix / "uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{ name = "zakcode", extras = ["google"] }]\n'
-    )
-    monkeypatch.setattr(cli_mod.sys, "prefix", str(fake_prefix))
+    monkeypatch.setattr(cli_mod, "version_line", lambda version: "0.0.1 (local path)")
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(prefix))
     monkeypatch.setattr(cli_mod.shutil, "which", lambda name: "/usr/bin/uv")
-    calls = []
-    real_run = cli_mod.subprocess.run
+    monkeypatch.setattr(cli_mod, "_replaces_its_own_env", lambda: windows)
+    monkeypatch.setattr(cli_mod, "_other_programs_in", lambda env_dir: busy)
+    real = cli_mod.subprocess
+    calls: list[tuple[list[str], dict]] = []
+    started: list[tuple[list[str], dict]] = []
 
     def fake_run(cmd, **kwargs):
-        if cmd and cmd[0] == "git":
-            return real_run(cmd, **kwargs)  # the checkout refresh is real
-        calls.append(cmd)
+        if cmd[0] == "git":
+            return real.run(cmd, **kwargs)  # the checkout refresh is real
+        calls.append((cmd, kwargs))
+        exporting = cmd[1] == "export"
+        if exporting and export_rc == 0:
+            Path(cmd[cmd.index("--output-file") + 1]).write_text("somepkg==1.0\n")
+        return types.SimpleNamespace(
+            returncode=export_rc if exporting else 0,
+            stdout="0.0.1 (git feedbead1234)\n",
+            stderr="the lock is out of date" if exporting and export_rc else "",
+        )
 
-        class P:
-            returncode = 0
-            stdout = "0.0.1 (git feedbead1234)\n"
-            stderr = ""
+    def fake_popen(cmd, **kwargs):
+        if refuse(kwargs["creationflags"]):
+            raise PermissionError("access is denied")
+        started.append((cmd, kwargs))
 
-        return P()
+    # Swapped in on the cli module only: patching `subprocess` itself would break the real git
+    # calls, which go through `subprocess.run` and so through `Popen`.
+    fake = types.SimpleNamespace(**{n: getattr(real, n) for n in dir(real) if n[:2] != "__"})
+    fake.run, fake.Popen = fake_run, fake_popen
+    monkeypatch.setattr(cli_mod, "subprocess", fake)
+    return types.SimpleNamespace(clone=clone, prefix=prefix, calls=calls, started=started)
 
-    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+
+def _flat(text: str) -> str:
+    """``text`` without whitespace: the console wraps long paths and lines at its own width."""
+    return "".join(text.split())
+
+
+def test_update_local_checkout_uses_uv_with_receipt_extras(tmp_path, monkeypatch) -> None:
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 0
-    reinstall = calls[0]
+    reinstall = h.calls[1][0]  # after the lock export
     assert reinstall[:5] == ["/usr/bin/uv", "tool", "install", "--force", "--reinstall"]
-    assert reinstall[5].startswith("zakcode[google] @ file://")
+    assert reinstall[-1].startswith("zakcode[google] @ file://")
+    assert "--editable" not in reinstall  # the receipt does not say editable
     assert "updated" in result.stdout
+
+
+def test_update_pins_the_reinstall_to_the_checkouts_lock(tmp_path, monkeypatch) -> None:
+    """An unpinned reinstall resolved afresh: 63 of 89 packages came out off the lock (ADR-0291)."""
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    constraints = str(Path(os.environ["ZAKCODE_HOME"]) / "update" / "constraints.txt")
+    export, kwargs = h.calls[0]
+    assert export == [
+        "/usr/bin/uv",
+        "export",
+        "--locked",  # a lock that no longer matches pyproject.toml is refused, not trusted
+        "--all-extras",
+        "--no-dev",
+        "--no-emit-project",
+        "--no-hashes",
+        "--no-header",
+        "--no-annotate",
+        "--output-file",
+        constraints,
+    ]
+    assert kwargs["cwd"] == str(h.clone)  # the lock of the checkout just pulled
+    reinstall = h.calls[1][0]
+    assert reinstall[reinstall.index("--constraints") + 1] == constraints
+    assert Path(constraints).read_text() == "somepkg==1.0\n"
+
+
+def test_update_keeps_the_python_and_an_editable_install(tmp_path, monkeypatch) -> None:
+    """Dropping either silently changed the install: an editable one came back as a copy."""
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EDITABLE)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    reinstall = h.calls[1][0]
+    assert reinstall[reinstall.index("--python") + 1] == (
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
+    assert "--editable" in reinstall
+    assert reinstall[-1].startswith("zakcode @ file://")  # no extras in this receipt
+
+
+def test_update_changes_nothing_when_the_lock_cannot_be_exported(tmp_path, monkeypatch) -> None:
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, export_rc=2)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 2
+    flat = _flat(result.stdout)
+    assert "cannotpinthe" in flat and "uv.lock" in flat and "thelockisoutofdate" in flat
+    assert [c[0][1] for c in h.calls] == ["export"]  # no reinstall was attempted
+    assert "theinstalledenvironmentwasnotchanged" in flat
+    assert (h.clone / "pyproject.toml").read_text() == "v2\n"  # the pull it reports did happen
+
+
+def test_a_git_url_install_has_no_lock_to_pin_to(tmp_path, monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    (tmp_path / "uv-receipt.toml").write_text(_RECEIPT_EXTRAS)
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda name: "/usr/bin/uv")
+    (command,) = cli_mod._reinstall_commands("git+https://example.com/repo.git@main")
+    assert "--constraints" not in command and "--editable" not in command
+    assert command[-1] == "zakcode[google] @ git+https://example.com/repo.git@main"
+
+
+# ── zakcode update on Windows: the reinstall finishes in a second process (ADR-0291) ──
+
+
+def test_update_on_windows_finishes_the_reinstall_in_a_second_process(
+    tmp_path, monkeypatch
+) -> None:
+    import json
+
+    import zakcode.cli as cli_mod
+
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    old_sha = cli_mod.subprocess.run(
+        ["git", "-C", str(h.clone), "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    # Only the lock export ran in this process: replacing the install waits until it has exited.
+    assert [c[0][1] for c in h.calls] == ["export"]
+    ((argv, kwargs),) = h.started
+    work = Path(os.environ["ZAKCODE_HOME"]) / "update"
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    assert argv == [str(Path(base)), str(work / "swap_install.py"), str(work / "job.json")]
+    detached, new_group, breakaway = 0x8, 0x200, 0x01000000
+    assert kwargs["creationflags"] == detached | new_group | breakaway
+    job = json.loads((work / "job.json").read_text(encoding="utf-8"))
+    install = job["commands"][0]
+    assert install[:5] == ["/usr/bin/uv", "tool", "install", "--force", "--reinstall"]
+    assert "--constraints" in install and install[-1].startswith("zakcode[google] @ file://")
+    assert job["wait_pid"] == os.getpid()
+    assert job["env_dir"] == str(h.prefix)
+    assert job["backup_dir"] == str(h.prefix) + ".update-backup"  # beside it, same volume
+    assert job["verify"][0] == str(h.prefix / "Scripts" / "python.exe")
+    assert job["old"] == f"0.0.1 (git {old_sha})"
+    assert job["new_sha"] != old_sha and len(job["new_sha"]) >= 7
+    assert job["log"] == str(work / "update.log")
+    # The script that runs is a copy: the package it came from is what gets replaced.
+    package_copy = Path(cli_mod.__file__).with_name("swap_install.py")
+    assert (work / "swap_install.py").read_bytes() == package_copy.read_bytes()
+    assert "handed to a second process" in (work / "update.log").read_text(encoding="utf-8")
+    flat = _flat(result.stdout)
+    assert "update.log" in flat and "secondprocess" in flat
+
+
+def test_second_process_starts_without_breakaway_when_the_job_forbids_it(
+    tmp_path, monkeypatch
+) -> None:
+    h = _update_harness(
+        tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True, refuse=lambda f: bool(f & 0x01000000)
+    )
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    ((_argv, kwargs),) = h.started
+    assert kwargs["creationflags"] == 0x8 | 0x200
+
+
+def test_update_on_windows_stops_when_the_second_process_cannot_start(
+    tmp_path, monkeypatch
+) -> None:
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True, refuse=lambda f: True)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert "couldnotstartthesecondprocess" in _flat(result.stdout)
+    assert "accessisdenied" in _flat(result.stdout)
+    assert h.started == []
+
+
+def test_update_on_windows_refuses_while_other_programs_run_from_the_install(
+    tmp_path, monkeypatch
+) -> None:
+    busy = [(4242, r"C:\tools\zakcode\Scripts\python.exe")]
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True, busy=busy)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    flat = _flat(result.stdout)
+    assert "otherprogramsarerunningfromthisinstall" in flat and "4242" in flat
+    assert h.calls == [] and h.started == []  # not even the lock export
+    assert (h.clone / "pyproject.toml").read_text() == "v1\n"  # and nothing was pulled
+
+
+def test_update_on_windows_refuses_when_its_python_lives_in_the_install(
+    tmp_path, monkeypatch
+) -> None:
+    import zakcode.cli as cli_mod
+
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    inside = h.prefix / "python.exe"
+    monkeypatch.setattr(cli_mod.sys, "_base_executable", str(inside), raising=False)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert "cannotupdatefromthisinstallonWindows" in _flat(result.stdout)
+    assert h.started == []
+
+
+@pytest.mark.parametrize(
+    ("platform", "has_receipt", "expected"),
+    [
+        ("win32", True, True),
+        ("win32", False, False),
+        ("linux", True, False),
+        ("darwin", True, False),
+    ],
+)
+def test_only_a_uv_install_on_windows_replaces_the_env_it_runs_from(
+    tmp_path, monkeypatch, platform, has_receipt, expected
+) -> None:
+    import types
+
+    import zakcode.cli as cli_mod
+
+    if has_receipt:
+        (tmp_path / "uv-receipt.toml").write_text("")
+    monkeypatch.setattr(
+        cli_mod, "sys", types.SimpleNamespace(platform=platform, prefix=str(tmp_path))
+    )
+    assert cli_mod._replaces_its_own_env() is expected
+
+
+def test_other_programs_in_leaves_out_this_process_and_its_launchers(tmp_path, monkeypatch) -> None:
+    import types
+
+    import zakcode.cli as cli_mod
+
+    me, parent = os.getpid(), os.getppid()
+    launcher, other = 7_000_001, 7_000_002  # above any real pid_max
+    listing = "\n".join(
+        [
+            f"{me}|{parent}|C:\\env\\Scripts\\python.exe",
+            f"{parent}|{launcher}|C:\\env\\Scripts\\zakcode.exe",
+            f"{launcher}|1|C:\\env\\Scripts\\launcher.exe",
+            f"{other}|1|C:\\env\\Scripts\\python.exe",
+            "not a process line",
+            "",
+        ]
+    )
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(cmd=cmd, env=kwargs["env"])
+        return types.SimpleNamespace(returncode=0, stdout=listing)
+
+    shim = types.SimpleNamespace(run=fake_run, TimeoutExpired=cli_mod.subprocess.TimeoutExpired)
+    monkeypatch.setattr(cli_mod, "subprocess", shim)
+    env = tmp_path / "env"
+    assert cli_mod._other_programs_in(env) == [(other, "C:\\env\\Scripts\\python.exe")]
+    assert seen["cmd"][0] == "powershell"
+    # The directory travels in the environment, not the script text: no quoting to get wrong, and
+    # the trailing separator stops `env` matching a sibling called `env2`.
+    assert seen["env"]["ZAKCODE_ENV_DIR"] == str(env) + os.sep
+
+
+@pytest.mark.parametrize("failure", ["exit 1", "no powershell", "timeout"])
+def test_other_programs_in_is_none_when_they_cannot_be_listed(
+    tmp_path, monkeypatch, failure
+) -> None:
+    import subprocess
+    import types
+
+    import zakcode.cli as cli_mod
+
+    def fake_run(cmd, **kwargs):
+        if failure == "no powershell":
+            raise FileNotFoundError("powershell")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 60)
+        return types.SimpleNamespace(returncode=1, stdout="")
+
+    shim = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
+    monkeypatch.setattr(cli_mod, "subprocess", shim)
+    assert cli_mod._other_programs_in(tmp_path) is None
 
 
 def test_update_local_checkout_without_uv_receipt_uses_pip(tmp_path, monkeypatch) -> None:
