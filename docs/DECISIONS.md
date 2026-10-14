@@ -18076,3 +18076,73 @@ following the latest sentence instead of only going down, 1; the "we sent a stop
 limit pattern losing its tie to a stop sequence, 3; the first pattern matching any field, 1; and nothing remembered, 24. The
 first batch refused four of the eleven before they ran, because the harness found the replacement text already in the file; the
 four were run again with text that is not. `uv run poe check` is green: 5,675 passed, 22 skipped.
+
+## ADR-0297: a text-mode reply is cut on the client at the first result or turn the model wrote itself, before it is parsed
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14, as the second half of the `stop` finding (ADR-0296), that once a backend has
+refused the stop list a text-protocol reply is bounded by nothing. The protocol renders a tool's answer as
+`<tool_result tool="Name">`. The stop list names the bare `<tool_result>` and the chat-template tokens, and a backend may take
+few of them or none. Three reply shapes were measured with `stop` removed:
+
+* GPT-oss: a call, then chatter (`<reasoning>We await result.</reasoning>DONE`). The parser takes the one call and drops the
+  tail (`max_calls=1`). That was already right.
+* DeepSeek-R1: a reply that STARTS with a result it made up, `<tool_result tool="Glob">[...]</tool_result>`, then a
+  `<tool_call>` that reads a path from that list. The parser returned the call and kept the invented result in the residual, so
+  the loop ran a call on a path that did not exist. The same reply cut at its first sentinel, which is what a server-side stop
+  gives, is no call and an empty residual.
+* The attribute form `<tool_result tool="Name">` is the one the models imitate, and a server-side stop on the bare
+  `<tool_result>` would not have cut it either.
+
+**Decision.**
+
+* `providers/text_tools.py::cut_invented_turn(text)` returns `text` cut at the first opening `<tool_result` tag, the bare tag
+  and the attribute form, or chat-template token (`<|im_start|>`, `<|im_end|>`, `<|eot_id|>`, `<|eom_id|>`) that is not part of
+  a tool call. The tag is matched case-insensitively with a word boundary, so `<tool_results>` and `<tool_result_summary>` are
+  not tags. The pattern is built from `_STOP_SENTINELS`, so the cut and the stop list cannot drift apart.
+* A match inside a tool call's own span is not a cut point. `_candidate_calls(text)`, the candidates `parse_text_tool_calls`
+  picks among, gives each call's span, and the cut is made at the first match outside all of them. A call that writes the tag
+  into a file, as when this protocol's own docs or tests are edited, stays a call, and a tag after such a call is still cut.
+* Text mode only: `TextToolCallingProvider.acomplete` runs `parse_text_tool_calls(cut_invented_turn(result.text), ...)`. The
+  `auto` mode's salvage of a call that a native model wrote as text is unchanged.
+* The comment above `_STOP_SENTINELS`, which said the text path only targets local backends that accept many stop strings, now
+  says the stop list does not bound a reply on its own, and where the cut is.
+
+Two choices against the report's wording, both stated:
+
+* The report cuts at the first `<tool_result\b` wherever it is. This cuts at the first one outside a call. Cutting
+  unconditionally would drop a `write_file` call whose content quotes the tag, whole and silently, and this repository edits
+  such files. It can be built and I am choosing not to. A measured reply where the span rule keeps a call that the model chose
+  on an invented result would change this, and so would the owner asking for it.
+* The report cuts at the other sentinels "when a sentinel could not be sent". This cuts at them always. On a reply the server
+  already stopped the cut finds nothing, so it needs no record of which stop was sent, and it also covers a backend that
+  accepts `stop` and ignores it.
+
+Rejected: cutting after the first `</tool_call>` as well, because `max_calls=1` already drops what follows the first call (the
+GPT-oss shape) and multi-call mode wants the second; asking the model in the prompt not to write results, which is the
+prompt-pleading this wrapper exists to replace with a mechanism; and choosing what to cut from the model name.
+
+Not verified: a live reply. The three shapes are the report's, written out in the tests, and none was captured. That either
+model then produces good agent runs is not claimed: the report has DeepSeek-R1 finishing its task with `stop` removed and
+GPT-oss not.
+
+**Consequences.** A reply that opens with an invented result now parses to no call and an empty residual. The loop meets that as
+it meets any empty completion: it asks for a real answer, refunds the iteration, and stops only after repeated empty completions
+(`loop.py`, the `empty_completion` intervention and `gave_up`). A reply that writes the attribute form in prose before its call,
+to explain how results arrive for instance, now loses the call; the bare form already did on a route that took the stop.
+
+The proof. `tests/test_invented_result_cut.py` (32 tests) takes the three shapes through the parser: the GPT-oss call and
+chatter gives the one call with the tail dropped, the DeepSeek-R1 reply gives no call and an empty residual, and that equals the
+same reply cut at its first sentinel; prose before the invented result is kept. Every spelling of the opening tag (bare,
+attribute, upper case, spaced, extra attributes) is cut. Text that only resembles the tag (`<tool_results>`,
+`<tool_result_summary>`, a closing tag alone, the words in prose) is left alone. A call before an invented result survives, with
+several calls allowed one written after it is dropped, and each template token ends a reply. An argument that quotes the tag, in
+the tag form and in a fence, is not cut, and a tag after such a call is. Through `acomplete` the invented-result reply gives no
+call and no text, the provider and the parser agree on five shapes, `astream` gives no call, a good call still comes through,
+and the `auto` mode's salvage is unchanged. Against the pre-fix source 30 of the 32 fail; the two that pass are the controls (a
+good call through `acomplete`, and the native-mode salvage). Eight mutations were each run green, red, green (2026-10-14), with
+the red tests counted from the verdict: the provider no longer cutting turned 4 red; only the bare tag cut, 11; the span rule
+removed, 3; the template tokens not cut, 4; the match case sensitive, 1; the word boundary removed, 2; the cut one character
+late, 15; and a tag that starts exactly where a call ends counted as inside it, 6. `uv run poe check` is green: 5,707 passed,
+22 skipped.
