@@ -17484,10 +17484,11 @@ refused with the tree untouched, and remove a junction without touching its targ
 waited for before the move, that the way back is on disk before the move and quotes its paths, that programs run without a
 console window, that an old install a program still holds is left and the update completes, that a leftover which cannot be
 deleted stops the next update before anything moves, and that every failure ends with the note about the checkout.
-`tests/test_cli_chat.py` gains sixteen tests for the options, the lock and its refusal, the unwritable home, the job that
-cannot be written and the Windows hand-off. Twelve behaviours were each run through a two-way mutation proof (green, red with
-the behaviour reverted, green again) on the first fix commit: the wait before the move, the way-back line, the console flag,
-the note after a failure, the catch in `main`, the removal of a link, the note in the lock refusal, the real command in the
-refusals, the note in the job, the unwritable home, the backup path in the hand-off and the walk over the process chain. Four
-more were run on the second, with the red tests named from the junit file: the stop on a leftover that cannot be deleted, the
-completion with an old install left behind, the quoting of the way back and the message for a job that cannot be written.
+`tests/test_cli_chat.py` gains fifteen tests and changes one, for the options, the lock and its refusal, the unwritable
+home, the job that cannot be written and the Windows hand-off. Twelve behaviours were each run through a two-way mutation
+proof (green, red with the behaviour reverted, green again) on the first fix commit: the wait before the move, the way-back
+line, the console flag, the note after a failure, the catch in `main`, the removal of a link, the note in the lock refusal,
+the real command in the refusals, the note in the job, the unwritable home, the backup path in the hand-off and the walk over
+the process chain. Four more were run on the second, with the red tests named from the junit file: the stop on a leftover
+that cannot be deleted, the completion with an old install left behind, the quoting of the way back and the message for a job
+that cannot be written.
