@@ -17995,3 +17995,84 @@ green (2026-10-14), with the red tests counted from the verdict: the field resto
 for `openai/` routes only, 8; restored for every other route, 3 (Anthropic, Gemini, Ollama); the tools dropped along with the
 field, 11; and a per-call `tool_choice` no longer forwarded, 3 (the override and the two controls). `uv run poe check` is
 green: 5,626 passed, 22 skipped.
+
+## ADR-0296: a refusal of `stop` is read from the gateway's own wording, learned for the session, and answered once with the stop it takes
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14, found while trying two open models behind an OpenAI-compatible gateway in front of
+Bedrock, that every text-protocol turn ended `provider_error` at its first iteration with no tokens spent. In text mode
+`TextToolCallingProvider._merge_stop_sentinels` always sends a stop list: `</tool_call>` in single-tool mode, then
+`<tool_result>` and the chat-template tokens. It is capped by count only, through `Capabilities.max_stop_sequences`, which
+`_max_stop_sequences` derives from the model string alone (4 for `openai/...`, unbounded otherwise). Two models answered the
+list with a 400:
+
+* GPT-oss: `This model doesn't support the stopSequences field. Remove stopSequences and try again.`
+* DeepSeek-R1: `The stop sequence you provided at index 0 is longer than the model limit of 10 characters. Try again with a
+  stop sequence that is shorter than 10 characters.` (`</tool_call>` is 12 characters.)
+
+ADR-0181's repair reads neither. `stop` is a top-level argument, `_refuse_rejected_field` offers it only the keys of
+`extra_body` and the rendered thinking switch, and neither sentence names a field the way `prompt_cache_key` was named.
+Measured through litellm 1.86.2 with the HTTP answer stubbed: both arrive as `litellm.BadRequestError`, status 400, with the
+gateway's sentence verbatim after `OpenAIException - `, and `_map_error` made each a plain `RequestFailed`.
+
+**Decision.**
+
+* `providers/base.py` reads the two sentences: `stop_field_unsupported(text)` for the first and `stop_length_limit(text)`, the
+  limit in characters or None, for the second. The second is tied to "stop sequence", so a limit on something else, a tool
+  name for instance, is not read as one.
+* `LiteLLMProvider._refuse_stop(exc, call_kwargs)` learns from a 4xx that answers a call which carried a `stop`. The first
+  sentence puts `stop` in `rejected_request_fields`. The second sets `max_stop_chars`, which only ever goes down. It is
+  consulted on both call paths beside ADR-0181's repair and keeps its rules: the call is re-issued once, a second refusal is
+  reported as it is, and a stream is repaired only before its first chunk.
+* `_build_kwargs` applies what was learned to every later request, after `call_kwargs.update(kw)` so the text protocol's
+  sentinels and a caller's own are treated alike: no `stop` at all for the first sentence, the sequences strictly shorter
+  than the limit for the second, and no key when none is left, since an empty list is a stop field too. With nothing learned
+  the request is byte-identical to before.
+* Strictly shorter, where the report suggests `len <= N`. The sentence says "longer than the model limit of 10" and asks for a
+  sequence "shorter than 10". They differ at exactly ten characters, and strictly shorter is accepted under both readings.
+  The price is that a sequence of exactly N characters is not sent. The text protocol's sentinels are ten characters or more
+  (`<|im_end|>`, `<|eot_id|>` and `<|eom_id|>` are exactly ten), so for a limit of ten none is left and the request goes out
+  without `stop`, which is the request the report measured working for DeepSeek-R1.
+
+Declined, as a choice: an operator knob on the zakpick entry (`max_stop_sequences` or `max_stop_chars`) so that a known route
+never pays the discovery request. It can be built and I am choosing not to. Finding out costs one 400 per provider instance
+and no tokens, and the standing rule is one contract, no knobs. A route where that request costs something measurable (a
+rate limit that counts it, a slow gateway) would change this, and so would the owner asking for it.
+
+Rejected: choosing the stop list from the model name, which is a list that needs an owner and is how `openai/` came by a cap
+of four; a probe request per route before the first real one, which spends the request it saves; trimming the text protocol's
+list to ten characters on every route, which changes the request of all of them to protect two; and reading a refusal that
+names `stop` in the ADR-0181 wordings as well, because no such wording was observed for it (the module's own rule is to add a
+pattern when one is).
+
+Not verified: the live gateway. The two sentences are the report's, byte for byte. The gateway that answers them in the tests
+is scripted from the wording and was not captured; the wire tests send the same sentences through litellm's own HTTP client,
+so what the provider reads is the exception litellm raises. Whether the gateway accepts a sequence of exactly N characters.
+Whether a reply that has no server-side stop has to be cut on the client (the next ADR). That GPT-oss or DeepSeek-R1 then
+produces good agent runs is not claimed: the report has DeepSeek-R1 finishing its task with `stop` removed and GPT-oss not.
+
+**Consequences.** A backend that refuses the stop costs one re-issued call the first time and none after it. What was learned
+lives on the provider instance and is not kept across processes. On such a route the stop list no longer bounds a
+single-tool turn, so the parser's `max_calls=1` is the only bound, and a result the model invented before its call is not
+touched by this change. The text protocol's own list is still capped by count only.
+
+The proof. `tests/test_stop_refusal.py` (49 tests) reads the two sentences verbatim, bare, behind litellm's prefix and as the
+JSON body the report quotes, and declines the sentences it must not read (a limit on a tool name, another field). Through
+`LiteLLMProvider.acomplete` and `astream` each, a scripted gateway that refuses what the sentences say is asked once more with
+the stop it takes: none at all for the first sentence, the sequences strictly shorter than the limit for the second (a
+sequence of exactly the limit is not sent, a limit of twelve keeps the ten-character token, and nothing left means no `stop`
+key), and what it learned is not asked again. A refusal of a call that sent no stop and a 5xx that quotes the sentence are
+surfaced, a second refusal is reported as it is, and a looser refusal that arrives late does not loosen the limit. The text
+protocol over the same gateway, buffered and streamed, parses the call from the re-issued answer; the real agent loop,
+buffered and streamed, goes on past its first iteration with three requests of which only the first carries `stop`. The same
+two sentences are sent through litellm's own HTTP client, and the exception it raises reads the same as the scripted one.
+Before the change 44 of the 49 failed (the 5 that passed are the ordinary-gateway control on both paths, the 5xx guard and the
+two tests that show what litellm raises); the loop's failure reads `turn aborted by provider error: ... doesn't support the
+stopSequences field`, the report's symptom. Eleven mutations were each run green, red, green (2026-10-14), with the red tests
+counted from the verdict: the buffered path no longer consulting the refusal turned 18 red; the streamed path, 6; a refusal of
+the whole field learned and never applied, 11; the limit made inclusive, 11; an empty list in place of no key, 7; the limit
+following the latest sentence instead of only going down, 1; the "we sent a stop" gate removed, 2; the 4xx gate removed, 1; the
+limit pattern losing its tie to a stop sequence, 3; the first pattern matching any field, 1; and nothing remembered, 24. The
+first batch refused four of the eleven before they ran, because the harness found the replacement text already in the file; the
+four were run again with text that is not. `uv run poe check` is green: 5,675 passed, 22 skipped.

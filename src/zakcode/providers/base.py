@@ -517,6 +517,40 @@ def rejected_request_field(text: str | BaseException, sent: Iterable[str]) -> st
     return None
 
 
+#: How a backend refuses the ``stop`` it was sent (ADR-0296). ``stop`` is a top-level argument
+#: and neither sentence names it the way the phrasings above name a field, so the two are read
+#: apart from them. Both are the MEASURED wordings (2026-10-14, two open models behind an
+#: OpenAI-compatible gateway in front of Bedrock): the first from a model that takes no stop
+#: at all, the second from one that takes a stop of a bounded length. Like the lists above they
+#: are a judgement call and the one place to extend when a vendor words it differently. A
+#: pattern alone NEVER decides anything: the caller reads them only for a 4xx that answered a
+#: request which carried a ``stop``.
+_STOP_UNSUPPORTED = re.compile(
+    r"(?:doesn['’]?t|does not) support the stop[_ ]?sequences field", re.IGNORECASE
+)
+_STOP_LENGTH_LIMIT = re.compile(
+    r"stop sequence\b.{0,80}?\blonger than the model limit of (\d+) characters?",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def stop_field_unsupported(text: str | BaseException) -> bool:
+    """Whether ``text`` says the model takes no ``stop`` at all."""
+    return _STOP_UNSUPPORTED.search(str(text)) is not None
+
+
+def stop_length_limit(text: str | BaseException) -> int | None:
+    """The length ``text`` limits a stop sequence to, in characters, else None.
+
+    The sentence says a sequence is "longer than the model limit of N characters" and asks for
+    one "shorter than N characters". The two differ at exactly N, and a sequence of N that is
+    refused costs the turn this reading exists to save, so a caller keeps only sequences
+    STRICTLY shorter than N, which both readings accept.
+    """
+    match = _STOP_LENGTH_LIMIT.search(str(text))
+    return int(match.group(1)) if match else None
+
+
 # ── Provider ABC ─────────────────────────────────────────────────────────────
 
 

@@ -63,6 +63,8 @@ from zakcode.providers.base import (
     context_overflow_marker,
     quota_exhaustion_marker,
     rejected_request_field,
+    stop_field_unsupported,
+    stop_length_limit,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -841,8 +843,13 @@ class LiteLLMProvider(Provider):
         #: thinking switch (and the rendered depth, which rides the same kwarg).
         #: ``_build_kwargs`` leaves them out of every later request, so a server that
         #: rejects a knob costs ONE re-issued call, not the turn — and never the same 400
-        #: twice. Diagnostic: the operator's config is left intact.
+        #: twice. Diagnostic: the operator's config is left intact. The name ``stop`` joins it
+        #: when a backend said it takes no stop at all (ADR-0296).
         self.rejected_request_fields: list[str] = []
+        #: The length, in characters, a backend limited a stop sequence to (ADR-0296), learned
+        #: from its own 4xx. ``None`` until one did. ``_build_kwargs`` sends only the sequences
+        #: STRICTLY shorter than it. A later refusal can only lower it.
+        self.max_stop_chars: int | None = None
         #: Function tools on this model's chat route need ``reasoning_effort="none"``
         #: (the gpt-5.6 tier, see ``_is_openai_gpt56_tools_effort_none_model``). Pre-set
         #: from the model name so the first tool call is already the accepted shape, and
@@ -1403,6 +1410,41 @@ class LiteLLMProvider(Provider):
         )
         return True
 
+    def _refuse_stop(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Learn that the backend will not take the ``stop`` this call sent (ADR-0296).
+
+        True when ``exc`` is a request rejection of a call that CARRIED a ``stop`` and says, in
+        one of the two measured wordings, either that the model takes no stop at all (``stop``
+        joins ``rejected_request_fields``) or that a stop sequence may not reach some length
+        (``max_stop_chars``, which only ever goes down). ``_build_kwargs`` then leaves the
+        refused part out of every later request, and the caller re-issues the call once.
+        False for every other failure, which maps through the taxonomy as before. The "we sent
+        one" gate is what keeps this honest, as in ADR-0181: a sentence about a stop that
+        answers a request with none is a defect to surface, never something to repair.
+        """
+        if not call_kwargs.get("stop") or not self._is_request_rejection(exc):
+            return False
+        message = redact_secrets(str(exc))[0]
+        limit = stop_length_limit(message)
+        if limit is not None:
+            known = self.max_stop_chars
+            self.max_stop_chars = limit if known is None else min(known, limit)
+            refused = f"stop sequences of {limit} characters or more"
+        elif stop_field_unsupported(message):
+            if "stop" not in self.rejected_request_fields:
+                self.rejected_request_fields.append("stop")
+            refused = "the stop field"
+        else:
+            return False
+        logger.warning(
+            "%s refused %s (%s) — leaving it out for the rest of this session and re-issuing "
+            "the call without it",
+            self.model,
+            refused,
+            " ".join(message.split())[:200],
+        )
+        return True
+
     @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
         # Prefer isinstance against resolved classes; fall back to class-name
@@ -1724,6 +1766,23 @@ class LiteLLMProvider(Provider):
             call_kwargs.setdefault("response_format", response_format)
         # Allow per-call overrides (e.g. max_tokens) without re-listing them.
         call_kwargs.update(kw)
+        # A stop list this backend has refused (ADR-0296), whoever put it there: the text
+        # protocol's sentinels arrive through ``kw`` like a caller's own. ``_refuse_stop``
+        # learns it from the backend's own 4xx and every later request of the session leaves
+        # it out, so finding out costs one re-issued call, not the turn. A backend that takes
+        # no stop gets none. One that limits their length gets the sequences STRICTLY shorter
+        # than the limit, and no key at all when none is left (an empty list is a stop field
+        # too). Nothing learned, nothing touched: the default request is byte-identical.
+        stop = call_kwargs.get("stop")
+        if stop and "stop" in self.rejected_request_fields:
+            call_kwargs.pop("stop")
+        elif stop and self.max_stop_chars is not None:
+            limit = self.max_stop_chars
+            fits = [s for s in ([stop] if isinstance(stop, str) else stop) if len(s) < limit]
+            if fits:
+                call_kwargs["stop"] = fits
+            else:
+                call_kwargs.pop("stop")
         # OpenAI gpt-5 reasoning models accept ONLY temperature=1; any other value is a
         # 400. Normalise AFTER the update above so this covers BOTH the main loop's
         # configured temperature AND the structured path's per-call temperature=0
@@ -1919,13 +1978,15 @@ class LiteLLMProvider(Provider):
             if not (
                 self._wants_effort_none(exc, call_kwargs)
                 or self._refuse_rejected_field(exc, call_kwargs)
+                or self._refuse_stop(exc, call_kwargs)
             ):
                 raise self._map_error(exc) from exc
             # The provider named a field of ours it will not take (ADR-0181), or named
-            # the one value it WILL take for the tools+reasoning pairing: the flag /
-            # ``rejected_request_fields`` is updated, so the rebuilt request has the
-            # accepted shape — the SAME logical call, re-issued once. A second refusal
-            # is reported as is.
+            # the one value it WILL take for the tools+reasoning pairing, or said it takes
+            # no stop (or only a short one, ADR-0296): the flag / ``rejected_request_fields``
+            # / ``max_stop_chars`` is updated, so the rebuilt request has the accepted
+            # shape — the SAME logical call, re-issued once. A second refusal is reported
+            # as is.
             call_kwargs = self._build_kwargs(
                 wire_messages,
                 tools,
@@ -2301,11 +2362,15 @@ class LiteLLMProvider(Provider):
                 except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
                     # A field refusal arrives at request time, before any chunk — so
                     # nothing has been yielded and the rebuilt request can be re-issued in
-                    # place (ADR-0181). Anything after the first chunk is a real failure.
+                    # place (ADR-0181, and the stop list, ADR-0296). Anything after the
+                    # first chunk is a real failure.
                     if (
                         chunks == 0
                         and not repaired
-                        and self._refuse_rejected_field(exc, call_kwargs)
+                        and (
+                            self._refuse_rejected_field(exc, call_kwargs)
+                            or self._refuse_stop(exc, call_kwargs)
+                        )
                     ):
                         repaired = True
                         call_kwargs = build()
