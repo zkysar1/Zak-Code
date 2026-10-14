@@ -17413,8 +17413,20 @@ millisecond (`round(at, 3)`), so nothing a client reads changes. On Linux the tw
 and nothing changes. ADR-0286's statement that a tie goes to the bus now holds for every reading, where before it held for all
 but the few that rounded up.
 
-The proof. `tests/test_event_bus.py` replaces the floor test with one that freezes `datetime.now` at the instant of the
-failing pair and asserts that the bus's line equals the message's `.timestamp()`; with the bus reading `time.time()` again it
-fails, and with the change it passes. The same 240-pass loop on the Windows cell with the change drew every pass correctly
-(0 bad), the newest turn tied the bus's start in 185 passes, and no message was stamped before the bus (0 of 240, where the
-loop without the change found 2 in 60).
+The proof. `tests/test_server_transcript.py::test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number`
+replaces the floor test in `tests/test_event_bus.py`. It freezes `datetime` in the two modules that stamp,
+`zakcode.messages` and `zakcode.server.event_bus`, at 2026-10-14T00:44:03.985429Z, which is 1791938643.985429, the message
+of the first failing pair above. The stand-in clock honours `tz`, and read without one it reports a machine 5 h 17 min
+ahead of UTC, so a stamp cut without the zone cannot land on the right number. The test stamps a real `Message` under that
+clock, saves it, reads it back through the real `/transcript` route, publishes a real event on the bus the route reads
+`bus_from` from, and asserts that `bus_from` is 1791938643.985429, that the message's `at` is the same number, and that
+`at >= bus_from`, the comparison the page makes.
+
+Against `main`'s source the test fails on the number (`assert 1791947031.793732 == 1791938643.985429`, the real clock
+against the frozen one), not on a missing name. Seven mutants of this change were each run red, restored and green, and
+each failed on the number the same way: the bus reading `time.time()` again; that and the floor, which is `main`'s whole
+behaviour; a message stamped from `time.time()`; a message stamped without the zone; a message stamped to the millisecond;
+a bus clock without the zone; and the route dropping a message's microseconds. Spelling the bus's call `now(tz=UTC)` leaves
+the test green. The same 240-pass loop on the Windows cell with the change drew every pass correctly (0 bad), the newest
+turn tied the bus's start in 185 passes, and no message was stamped before the bus (0 of 240, where the loop without the
+change found 2 in 60).
