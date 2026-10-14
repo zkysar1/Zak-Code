@@ -797,6 +797,11 @@
     let tokens = fmtTokens(usage.total_tokens || 0);
     if (usage.cache_read_tokens && usage.prompt_tokens) {
       tokens += " (" + cachePercent(usage.cache_read_tokens, usage.prompt_tokens) + "% cached)";
+    } else if (usage.cache_unsplit_tokens && usage.prompt_tokens) {
+      // A gateway that reports the cached prompt only in its total (ADR-0294): cached, but a read
+      // cannot be told from a write, so the share is not a hit rate and the footer says so.
+      tokens += " (" + cachePercent(usage.cache_unsplit_tokens, usage.prompt_tokens) +
+        "% cached, read/write unknown)";
     }
     const parts = [label, iterations + " iterations", tokens, fmtCost(usage.cost_usd || 0)];
     if (seconds !== null) parts.push(fmtDur(seconds));
@@ -814,7 +819,9 @@
   function between(from, to) {
     return typeof from === "number" && typeof to === "number" ? Math.max(0, to - from) : null;
   }
-  function emptyUsage() { return { total_tokens: 0, cost_usd: 0, prompt_tokens: 0, cache_read_tokens: 0 }; }
+  function emptyUsage() {
+    return { total_tokens: 0, cost_usd: 0, prompt_tokens: 0, cache_read_tokens: 0, cache_unsplit_tokens: 0 };
+  }
 
   function titleCase(name) {
     return String(name).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());

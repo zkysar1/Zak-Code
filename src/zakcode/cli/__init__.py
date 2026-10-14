@@ -3669,6 +3669,9 @@ def chat(
                 cached_note = (
                     f", {usage.cache_read_tokens} cached" if usage.cache_read_tokens else ""
                 )
+                if usage.cache_unsplit_tokens:
+                    # Cached, but the backend gave no read/write split (ADR-0294).
+                    cached_note += f", {usage.cache_unsplit_tokens} cached, read/write unknown"
                 console.print(
                     margin(
                         Text.assemble(

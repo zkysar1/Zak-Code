@@ -43,6 +43,15 @@ def test_usage_cache_fields_default_zero() -> None:
     assert u.cache_read_tokens == 0 and u.cache_creation_tokens == 0
 
 
+def test_usage_unsplit_cache_field_adds_and_loads_from_an_older_record() -> None:
+    # The cached prompt a gateway reports only in its total (ADR-0294): a subset view of
+    # prompt_tokens like the other two, summed like them, and zero in a record written before.
+    a = Usage(prompt_tokens=100, cache_unsplit_tokens=80)
+    b = Usage(prompt_tokens=50, cache_unsplit_tokens=10)
+    assert (a + b).cache_unsplit_tokens == 90
+    assert Usage.model_validate({"prompt_tokens": 5}).cache_unsplit_tokens == 0
+
+
 # ── _extract_usage reads both vendor shapes ───────────────────────────────────
 
 

@@ -17879,3 +17879,72 @@ red, ten in the classification file and four in the loop file; adding a bare `to
 `test_no_marker_matches_a_known_throttle_sentence` red; and moving the check ahead of the rate-limit type turns
 `test_a_throttle_is_never_an_overflow_whatever_its_text_says` red, the 429 coming back as `ContextWindowExceeded`.
 `uv run poe check` is green: 5,592 passed, 22 skipped.
+
+## ADR-0294: a cached prompt that a gateway reports only in `total_tokens` is counted into the prompt, so the anchor and the cost see it
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14 that through a LiteLLM proxy in front of Bedrock, a request that carries a cache
+breakpoint comes back with a `usage` whose `prompt_tokens` is the uncached part alone and no cache field at all. On the
+later turns of one conversation `prompt_tokens` read 3, where the same prompt sent without a breakpoint read 49,445; the
+cached part appeared only in `total_tokens`. `_extract_usage` took `prompt_tokens` as it came, so three readers saw 3
+tokens where the prompt held about 49,000: the prompt anchor (ADR-0077), which floors the compaction check with the
+provider's last measured prompt size and so floored it by nothing; `/cost` and the footer, which showed a prompt of 3; and
+the cost, which was priced on 3.
+
+**Decision.**
+
+* `Usage.cache_unsplit_tokens` counts prompt tokens the backend cached but did not split into reads and writes. It is a
+  subset view of `prompt_tokens` like `cache_read_tokens` and `cache_creation_tokens`, is summed with them, and reads 0 in a
+  record written before it existed.
+* `_extract_usage(response, *, carried_breakpoint=False)` reads the excess of `total_tokens` over `prompt_tokens` plus
+  `completion_tokens` as a cached prompt when the request carried a breakpoint and the reply names no cache token (no
+  `cache_read_input_tokens`, no `cache_creation_input_tokens`, no `prompt_tokens_details.cached_tokens`). The excess is
+  added to `prompt_tokens` and recorded in `cache_unsplit_tokens`; every other response reads as before.
+  `_carries_cache_breakpoint(call_kwargs)` answers from the messages that were sent, so it stays true whatever put the
+  breakpoint there and a re-issued request is read as sent. It is threaded through `_normalize` (buffered) and
+  `_parse_chunk` (streaming).
+* The excess is priced at the cache-write rate, the dearer of the two cache rates, so the cost is never below the truth. A
+  `response_cost` litellm gave was priced on the short prompt the usage named, so it is a floor: the dearer of it and the
+  recomputed cost stands, and a higher cost from the backend is kept. A route litellm cannot price counts its tokens and
+  stays unpriced.
+* The footer, in the terminal and on the web page (kept byte-identical by the parity test), reads `(NN% cached,
+  read/write unknown)`, and `/cost` reads `N cached, read/write unknown`. A reported read count keeps the plain
+  `(NN% cached)`.
+* `cache_read_tokens` stays 0, so the cache-friendly tail's probe (ADR-0193) and the first-chunk bound's cache share
+  (ADR-0248) read what they read before: neither is told a hit that nothing proves.
+
+Rejected: reading the excess on every request, because some providers' totals include thinking tokens that
+`completion_tokens` leaves out; counting it as `cache_read_tokens`, which would claim hits and start ADR-0193's probe on a
+count that may be a write, or as `cache_creation_tokens`, which would claim a write on every turn; pricing it at the read
+rate, which would under-report whenever it was a write; and keying on the route's alias, which is the operator's choice of
+name and says nothing about the reply, where the request's own breakpoint does.
+
+Not verified: the live gateway's usage payload. The rule is built on the figures reported (3 and 49,445) and the excess
+they imply, not on a capture of the gateway's reply. If the live reply also names a cache token, the rule steps aside and
+that split is believed.
+
+**Consequences.** The prompt anchor sees the real size of the prompt, so the compaction check fires where its threshold
+says. The cost errs high by design on a priced route: at the bundled price of Claude Sonnet 4.5 the write rate is 12.5
+times the read rate (3.75 against 0.30 dollars per million tokens), so a cached prompt that was in fact read is priced up
+to 12.5 times its true cost, and a `max_cost_usd` ceiling trips earlier than the money spent. On a route litellm cannot
+price nothing is priced, as before. The footer's percentage on such a route is a share of cached tokens, not a hit rate,
+and says so.
+
+The proof. `tests/test_usage_unsplit_cache.py` (17 tests) reads scripted usages shaped as the gateway sends them (3
+uncached prompt tokens, 120 completion tokens, a total of 49,568). The excess becomes a cached prompt of 49,445 and a
+prompt of 49,448 with the total unchanged and both named cache counts 0. The same totals without a breakpoint, in the
+gateway's shape and in a shape where thinking tokens sit in the total, read as before, as does the default argument. A
+reply that names its cache tokens (Anthropic read, Anthropic write, OpenAI nested) is believed. Parts that add up, a total
+below the parts and an omitted total leave nothing to count. The cost is the priced model's write rate, is raised from the
+short-prompt cost litellm gave, keeps a higher cost from the backend, and an unpriced route counts its tokens and stays
+unpriced. The buffered and the streamed call, each with and without a breakpoint on the request that was sent, and the
+agent loop's anchor (buffered and streaming) take the 49,448 from a real `LiteLLMProvider` over a scripted
+`acompletion`. Three more tests cover the field's sum and forward load, the terminal footer, and `/cost`, and the page
+footer joins the parity test as a third case. Fifteen mutations were each run green, red, green (2026-10-14), with the red
+tests named from the verdict: the excess reading removed turns 8 red; applied to every request, 4 (the two extraction
+cases without a breakpoint and the buffered and streamed call without one); the reply's own split ignored, 3; the excess
+priced at the input rate, 2, and at the read rate, 2; litellm's cost made to win, 1, and the recomputed cost made to
+override a higher backend cost, 1; the buffered call or the streamed call left unthreaded, 2 each; the breakpoint scan
+made never true, 4, and always true, 2; the field dropped from `Usage.__add__`, 2; the footer branch removed in the
+terminal, 2, and on the page, 1; and the `/cost` note removed, 1. `uv run poe check` is green: 5,612 passed, 22 skipped.

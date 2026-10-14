@@ -759,6 +759,12 @@ class StreamRenderer:
         if usage.cache_read_tokens and usage.prompt_tokens:
             share = round(100 * usage.cache_read_tokens / usage.prompt_tokens)
             tokens_item += f" ({share}% cached)"
+        elif usage.cache_unsplit_tokens and usage.prompt_tokens:
+            # A gateway that reports the cached prompt only in its total (ADR-0294): the tokens
+            # were cached, but a read cannot be told from a write, so the share is not a hit rate
+            # and the footer says so.
+            share = round(100 * usage.cache_unsplit_tokens / usage.prompt_tokens)
+            tokens_item += f" ({share}% cached, read/write unknown)"
         body = Text(
             sep.join(
                 (
