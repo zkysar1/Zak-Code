@@ -18250,3 +18250,64 @@ every stream, 1, ignored by the extraction, 1, and taken from the first usage ch
 field, 1; a category's switch dropped, 1; the switch left out of the cache key, 1; every model inheriting the default's, 1; the
 default-model shortcut ignoring the switch, 1; and the global and the entry defaults turned on, 1 and 3. `uv run poe check` is
 green: 5,748 passed, 22 skipped.
+
+## ADR-0299: `zakcode info` names the gateway key and where it came from, and calls a blank one empty, so a working gateway setup no longer reads as keyless
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14 that `zakcode info` does not show whether the gateway key resolved. The panel
+listed `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `TAVILY_API_KEY`, all `not set` on a machine that reaches its models
+through an OpenAI-compatible gateway, and the key such a machine sends is `ZAKCODE_API_KEY`. That one is a setting
+(`Settings.api_key`), where the three listed are variables litellm reads: `_provider_key_status()` asks `env_source` about
+a fixed list of names, and `ZAKCODE_API_KEY` was not on it. So the panel read keyless beside a working setup and had no
+row that could answer "did my key take, and from which file".
+
+**Decision.**
+
+* `build_info_lines` gains one row, made by `_gateway_key_row(settings)`, ahead of the three it already listed. It reads
+  `not set` when `settings.api_key` is `None`, `set (<source>)` when a key resolved, and `empty (<source>)` when what
+  resolved is blank (nothing, or only spaces). `<source>` is what `env_source` answers for the other keys (`env`,
+  `workspace .env`, `user .env`), or `in process` for a key handed to `Settings` directly (the SDK, a test), which has no
+  variable or file behind it and must not read `set (not set)`.
+* Whether a key exists is read off `settings`, the object the provider is built from, so the row cannot say `set` for a
+  key the provider would not send. Where it came from is read off `env_source`, so the row names the file that won when two
+  hold one, as the other keys do. The value is never formatted into the row.
+* A blank key gets its own word, because `set` would be false. Measured through a stubbed transport on litellm 1.86.2, with
+  a made-up `OPENAI_API_KEY` in the environment as the control: a configured key is what the gateway receives; an empty
+  string is read as no key, so the request carries `OPENAI_API_KEY` if the environment has one and is not sent at all
+  otherwise (`ProviderUnavailable`); a value of only spaces is not read as no key and goes out as a blank credential. In
+  none of the three does the gateway receive the key the owner meant.
+
+Rejected: adding the name to `_PROVIDER_KEY_ENV`, because every row built from that list answers for an environment
+variable, and a key handed to `Settings` directly has none, so it would read `not set` beside a key the provider holds and
+sends (`in process` exists to say so, and one test pins it); and showing a prefix, a length or a hash of the value, because
+this panel's contract is provenance only (`build_info_lines` is documented secret-safe), and "did it resolve, and from
+where" needs none of them.
+
+Not verified: the report's machine and a real Windows `.env`. The panel is exercised through throwaway files and the
+command runner, and no gateway was contacted. The wire behaviour of a blank key is litellm 1.86.2's; the four premise tests
+go red if a later release changes it, which is the cue to revisit the word `empty`. A key that resolves is not a key the
+gateway accepts: the row says where the key came from and nothing about whether it is valid. `zakcode info` does send this
+key, to the server's `/models` listing for the Context window rows, but that probe fails open (the error is logged at debug
+level and the answer is none), so a refused key is not reported as one there; how such a key reads in those rows was not
+examined. The tests leave `api_base` unset, so that probe sends nothing in them.
+
+**Consequences.** One more row on every machine: `ZAKCODE_API_KEY` reads `not set` where no gateway key is configured, and
+`set (user .env)`, `set (workspace .env)` or `set (env)` where one is. Nothing else in the panel moves. A blank value, which
+looked like a missing key only to someone reading the file, now reads `empty (<source>)`. The measurement above also shows
+that with no gateway key, or a blank one, and an `OPENAI_API_KEY` in the environment, the gateway is sent the OpenAI key.
+That was already so for a missing key and is unchanged here; the row is the first place either state is visible, and
+whether a route to a non-OpenAI endpoint should send that key at all is a separate decision with its own tests.
+
+The proof. `tests/test_info_gateway_key.py` (16 tests). The row reads `not set` with nothing configured; `set (env)`,
+`set (user .env)` and `set (workspace .env)` for the three places a key can come from; the workspace file when two files
+hold one; the real environment over both files; `empty (user .env)` for an empty value and for one of only spaces; and
+`set (in process)` for a key given to `Settings` directly. The three keys it already listed are still there, no row of the
+panel holds either test key, and the printed panel names the key and never shows it. Four premises pin the wire: a configured
+key is what the gateway receives with another key in the environment (the control); an empty string sends the environment
+key; an empty string with nothing else in the environment sends no request; and a key of spaces goes out as a blank
+credential. Against the pre-change source 12 of the 16 fail; the 4 that pass are the premises, which are litellm's and do
+not depend on the panel. Seven mutations were each run green, red, green (2026-10-14), with the red tests counted from the
+verdict: the row never added turned 12 red; the value printed after its provenance, 8; a blank never detected, 2; spaces
+counted as a key, 1; the in-process word removed, 1; existence read off the environment instead of the settings, 1; and
+every key reported as coming from the environment, 6. `uv run poe check` is green: 5,764 passed, 22 skipped.
