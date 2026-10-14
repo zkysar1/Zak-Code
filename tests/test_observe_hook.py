@@ -113,12 +113,10 @@ def _records(tmp_path: Path, name: str) -> list[dict[str, object]]:
 def _command(script: Path) -> str:
     """The settings-file command that runs ``script`` under this interpreter.
 
-    Quoted POSIX-style where the loader splits POSIX-style. On Windows it splits on
-    whitespace and keeps quotes, so the parts go in bare there (CI paths carry no spaces).
+    Quoted POSIX-style: the loader splits that way on every platform, so a path with a space
+    (a temp folder, a Windows profile) stays one argument.
     """
-    parts = [Path(sys.executable).as_posix(), script.as_posix()]
-    if sys.platform != "win32":
-        parts = [shlex.quote(p) for p in parts]
+    parts = [shlex.quote(Path(sys.executable).as_posix()), shlex.quote(script.as_posix())]
     return " ".join(parts)
 
 

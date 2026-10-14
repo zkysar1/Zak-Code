@@ -30,10 +30,12 @@ import asyncio
 import contextlib
 import gc
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -436,8 +438,26 @@ def _tail(path: Path) -> str:
         return "(no log)"
 
 
+@pytest.fixture
+def space_free_tmp(tmp_path: Path) -> Iterator[Path]:
+    """A temp folder whose path holds no space, for a test that ``os.execv``s.
+
+    ``os.execv`` on Windows does not quote an argument that holds a space, so the restart helper
+    cannot run from the spaced basetemp CI uses (ADR-0287). Without this the test skipped there,
+    and the Windows cell lost its only run of it. The system temp folder is used instead.
+    """
+    if " " not in str(tmp_path):
+        yield tmp_path
+        return
+    folder = Path(tempfile.mkdtemp(prefix="zakcode-nospace-"))
+    try:
+        yield folder
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows restart-path kill test")
-async def test_stop_after_a_restart_kills_the_git_bash_tree(tmp_path: Path) -> None:
+async def test_stop_after_a_restart_kills_the_git_bash_tree(space_free_tmp: Path) -> None:
     """A task started before a zakcode restart is stopped by the process that replaced the
     one that started it. That process has the task on its saved table but no process object
     and no job handle for it: only the pid and the job's name.
@@ -449,6 +469,7 @@ async def test_stop_after_a_restart_kills_the_git_bash_tree(tmp_path: Path) -> N
     """
     from zakcode._subprocess import find_bash
 
+    tmp_path = space_free_tmp
     if find_bash() is None:
         pytest.skip("Git Bash not found on this Windows machine")
     if not _has_powershell():

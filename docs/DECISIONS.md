@@ -17377,6 +17377,56 @@ message sent from a reopened page, and the transcript's two new fields. `tests/t
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
 
+## ADR-0287: the suite runs from a temp folder with a space in its name
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** CI never ran the suite with a space in any path. The Linux runners' temp folder is under `/tmp`, the Windows
+runner's is under `D:\a\_temp`, and the repository's own path holds none. A Windows profile folder usually does
+(`C:\Users\First Last\...`), and the first Windows run of this product, reported 2026-10-13, failed on exactly that: a hook
+command whose `$CLAUDE_PROJECT_DIR` held a space was cut into pieces at the space. The Windows cell had run the whole
+suite and still did not see it.
+
+Measured 2026-10-13: the suite run on Linux from a pytest temp folder named `/tmp/zc space dir/bt` failed ten of 5,435
+tests. Nine put an unquoted temp path into a command (`touch <path>`, `cat <path>`, `S=<path> && ...`, the
+`run_end_command` of `<python> <script> <out>`) or compared wrapped console text with the path. The tenth was a defect: the
+"No such file" hint (ADR-0097) reads the path out of the tool's error line, and `grep` and a script run by `bash` print that
+path bare, so the read stopped at the first space and a workspace under a spaced folder lost the hint.
+
+**Decision.** Three changes.
+
+* Both suite steps in `ci.yml`, Linux and Windows, run with `--basetemp` set to a folder named `zak code tmp` under the
+  runner's temp directory, so `tmp_path` holds a space on both. A test that builds a command from a temp path must quote it,
+  and one that does not fails in CI instead of on a user's machine. The scheduled say-watch canary runs three transport
+  files against newer dependencies, never gates a merge, and is left as it was.
+* The nine tests above now quote their paths, or compare the wrapped console text with its whitespace stripped. The
+  Windows cell then failed eight observe-hook tests: their helper passed the interpreter and the script bare on Windows,
+  which worked only while CI paths held no space, and it now quotes both parts the way the settings loader reads them.
+  The Windows restart-path kill test takes its folder from the system temp when `tmp_path` holds a space, because
+  `os.execv` on Windows does not quote an argument that holds a space; without that it skipped under the spaced folder and
+  the cell lost its only run of it.
+* The bare-path patterns of the hint (`_ENOENT_RES`) accept spaces. `pytest` prints its path to the end of the line, so the
+  path runs to there. For `<tool>: <path>: No such file or directory` the path runs to the next colon, and may hold spaces
+  only when it starts like a path: `/`, `\`, `~`, `.` or a drive letter. Any other start is one word, because the tool's
+  own words also sit between the colons (`ld: cannot open output file out/prog: ...`), and a pattern that let any text
+  through took them for a path and pointed at a file the command never named. The quoted shapes were already complete.
+
+Rejected: setting `TMPDIR` and `TEMP` instead, since the folder must exist first and `tempfile` calls outside `tmp_path`
+change with it; and skipping the hint test under a spaced path, which would hide the defect the folder found.
+
+**Consequences.** Each CI cell runs the same suite in a spaced folder; no cell is added. Not changed: `head` prints
+`cannot open '<path>' for reading` and `cd` prints `bash: line 1: cd: <path>`, and the hint reads neither with a space or
+without one (measured with the real tools, 2026-10-14).
+
+The proof. `tests/test_builtins.py` gains four tests, and each was run through a two-way mutation proof (green, then red with
+its part of the change reverted, then green again; 2026-10-14):
+
+* `test_bash_enoent_hint_survives_a_space_in_the_workspace_path` builds its own spaced workspace, so it holds on a runner
+  whose temp folder has none. With the space allowance removed from the path-start branch it fails.
+* `test_enoent_hint_reads_a_pytest_path_with_a_space` fails with the `pytest` pattern back at `(\S+)`.
+* `test_enoent_hint_ignores_a_tools_own_words_before_the_path` and
+  `test_enoent_hint_reaches_a_later_line_after_one_it_cannot_read` both fail with the path-start restriction removed.
+
 ## ADR-0288: the watch bus stamps events with the clock a saved message is stamped with
 
 **Status:** Accepted (2026-10-14)

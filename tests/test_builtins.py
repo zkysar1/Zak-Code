@@ -652,7 +652,7 @@ async def test_bash_enoent_invented_prefix_names_the_real_directory(tmp_path) ->
     bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "light-prime-done"
     # as_posix(): bash eats a WindowsPath's backslashes, and `touch C:Usersx` SUCCEEDS
     # in the cwd (measured on CI, 2026-08-29) — so the absolute form here must be posix.
-    res = await BashTool().execute({"command": f"touch {bad.as_posix()}"}, ctx)
+    res = await BashTool().execute({"command": f'touch "{bad.as_posix()}"'}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "'.agent-data/agents' is the first missing part" in res.fix
@@ -671,7 +671,7 @@ async def test_bash_enoent_invented_prefix_also_names_same_named_files(tmp_path)
     (other / "body-manifest.yaml").write_text("body_state: active\n", encoding="utf-8")
     ctx = ToolContext(workspace_root=root)
     bad = root / ".agent-data" / "agents" / "coach" / "sessions" / "abc" / "body-manifest.yaml"
-    res = await BashTool().execute({"command": f"grep -c body_state {bad.as_posix()}"}, ctx)
+    res = await BashTool().execute({"command": f'grep -c body_state "{bad.as_posix()}"'}, ctx)
     assert res.is_error
     assert res.fix is not None, res.output
     assert "agents/coach/sessions/xyz/body-manifest.yaml" in res.fix
@@ -696,11 +696,65 @@ async def test_bash_enoent_absolute_guess_matches_the_real_file(tmp_path) -> Non
     root = _mind_workspace(tmp_path)
     ctx = ToolContext(workspace_root=root)
     res = await BashTool().execute(
-        {"command": f"cat {root.as_posix()}/world/forged-skills.yaml"}, ctx
+        {"command": f'cat "{root.as_posix()}/world/forged-skills.yaml"'}, ctx
     )
     assert res.is_error
     assert res.fix is not None, res.output
     assert "a file named 'forged-skills.yaml' does: .agent-data/world/forged-skills.yaml" in res.fix
+
+
+async def test_bash_enoent_hint_survives_a_space_in_the_workspace_path(tmp_path) -> None:
+    """grep and bash print the missing path bare. A workspace folder with a space in its name
+    (a Windows profile folder has one) cut that path at the space, and the hint was lost."""
+    root = _mind_workspace(tmp_path / "my project")
+    ctx = ToolContext(workspace_root=root)
+    res = await BashTool().execute(
+        {"command": f'grep -c skills "{root.as_posix()}/world/forged-skills.yaml"'}, ctx
+    )
+    assert res.is_error
+    assert res.fix is not None, res.output
+    assert "a file named 'forged-skills.yaml' does: .agent-data/world/forged-skills.yaml" in res.fix
+
+
+def test_enoent_hint_ignores_a_tools_own_words_before_the_path(tmp_path) -> None:
+    """`ld: cannot open output file out/prog: No such file or directory`: the words between the
+    colons are the tool's, not a path. A bare-path pattern that let any text through took them
+    for one and pointed at `build/prog`, a file the command never named."""
+    from zakcode.tools.builtins.bash import _enoent_fix
+
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "prog").write_text("x", encoding="utf-8")
+    ld = "ld: cannot open output file out/prog: No such file or directory\n"
+    assert _enoent_fix(ld, tmp_path, []) is None
+    # mkdir in a UTF-8 locale quotes with curly quotes, which none of the patterns read
+    mkdir = "mkdir: cannot create directory ‘out/prog’: No such file or directory\n"
+    assert _enoent_fix(mkdir, tmp_path, []) is None
+
+
+def test_enoent_hint_reaches_a_later_line_after_one_it_cannot_read(tmp_path) -> None:
+    """`mkdir scratch/out; cat world/forged-skills.yaml`: the earliest match wins, so a garbage
+    capture on the mkdir line used to hide the correct lead on the cat line."""
+    from zakcode.tools.builtins.bash import _enoent_fix
+
+    root = _mind_workspace(tmp_path)
+    out = (
+        "mkdir: cannot create directory ‘scratch/out’: No such file or directory\n"
+        "cat: world/forged-skills.yaml: No such file or directory\n"
+    )
+    fix = _enoent_fix(out, root, [])
+    assert fix is not None and ".agent-data/world/forged-skills.yaml" in fix
+
+
+def test_enoent_hint_reads_a_pytest_path_with_a_space(tmp_path) -> None:
+    """pytest prints the path bare to the end of the line; `(\\S+)` cut it at the first space, and
+    the hint then named `tests/my`, a path the command never held."""
+    from zakcode.tools.builtins.bash import _enoent_fix
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "my test.py").write_text("x", encoding="utf-8")
+    fix = _enoent_fix("ERROR: file or directory not found: tests/my test.sh\n", tmp_path, [])
+    assert fix is not None
+    assert fix.startswith("'tests/my test.sh' does not exist; that directory holds my test.py")
 
 
 def test_first_missing_component_and_guess_relative(tmp_path) -> None:

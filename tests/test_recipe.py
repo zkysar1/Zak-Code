@@ -999,7 +999,7 @@ def test_harness_never_runs_a_file_the_model_reached_through_a_variable(tmp_path
             _c(
                 "w1",
                 "bash",
-                command=f'S={scratch} && mkdir -p "$S" && printf "exit 254\\n" > "$S/stub.sh"',
+                command=f'S="{scratch}" && mkdir -p "$S" && printf "exit 254\\n" > "$S/stub.sh"',
             )
         ]
     )
