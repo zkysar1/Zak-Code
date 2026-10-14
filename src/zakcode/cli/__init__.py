@@ -577,23 +577,54 @@ def _uv_tool_spec(source: str) -> str:
     return f"{name} @ {source}"
 
 
-def _update_dir() -> Path:
-    """Where an update keeps its working files: the lock export and, on Windows, the second
-    process's script, job and log."""
-    return zakcode_home() / "update"
+def _checkout_note(checkout: str, old_sha: str, new_sha: str) -> str:
+    """What is true of the checkout once the update has pulled it, for a message or a log that says
+    the update stopped: it stays pulled, and an editable install runs it (ADR-0291). Empty when
+    the pull brought nothing."""
+    if old_sha == new_sha:
+        return ""
+    return (
+        f"The checkout {checkout} was pulled from {old_sha} to {new_sha} and stays there. An "
+        f"editable install runs the checkout's code, so to run the old code again: "
+        f'git -C "{checkout}" reset --hard {old_sha}'
+    )
 
 
-def _pin_to_lock(uv: str, checkout: str) -> Path:
+def _unchanged(note: str) -> str:
+    """The closing sentences of a refusal that comes after the pull, before anything is replaced."""
+    return "The installed environment was not changed." + (f" {note}" if note else "")
+
+
+def _update_dir(note: str = "") -> Path:
+    """Where an update keeps its working files, created on the way: the lock export and, on
+    Windows, the second process's script, job and log.
+
+    A home that cannot be written stops the update here with a message, not a traceback after the
+    pull; ``note`` is what to say about the checkout when it was already pulled.
+    """
+    work = zakcode_home() / "update"
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        notice_error(
+            console, "cannot keep the update's working files", f"{work}: {exc}\n{_unchanged(note)}"
+        )
+        raise typer.Exit(code=1) from exc
+    return work
+
+
+def _pin_to_lock(uv: str, checkout: str, note: str = "") -> Path:
     """Export the checkout's ``uv.lock`` as a constraints file for the reinstall.
 
     Without it ``uv tool install`` resolves every dependency afresh to the newest version, which
     is neither what CI tested nor what an install pinned to the lock was meant to get (measured:
-    63 of 89 packages came out different from the lock). ``--locked`` refuses a lock that no longer
-    matches ``pyproject.toml`` instead of quietly pinning to a stale one. This runs before anything
-    is replaced, so a refusal leaves the installed environment as it was (ADR-0291).
+    of the 78 packages an unpinned install and the lock share, 52 came out at another version,
+    and the install added 10 more that the lock does not contain). ``--locked`` refuses a lock
+    that no longer matches ``pyproject.toml`` instead of quietly pinning to a stale one. This runs
+    before anything is replaced, so a refusal leaves the installed environment as it was; the
+    checkout it reads is already pulled, which ``note`` says (ADR-0291).
     """
-    dest = _update_dir() / "constraints.txt"
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = _update_dir(note) / "constraints.txt"
     proc = subprocess.run(
         [
             uv,
@@ -617,8 +648,7 @@ def _pin_to_lock(uv: str, checkout: str) -> Path:
         notice_error(
             console,
             "cannot pin the update to uv.lock",
-            (proc.stderr or proc.stdout).strip()[-2000:]
-            + f"\nThe checkout {checkout} was updated; the installed environment was not changed.",
+            (proc.stderr or proc.stdout).strip()[-2000:] + f"\n{_unchanged(note)}",
         )
         raise typer.Exit(code=proc.returncode)
     return dest
@@ -633,7 +663,9 @@ _VERSION_PROBE = (
 )
 
 
-def _reinstall_commands(source: str, checkout: str | None = None) -> list[list[str]]:
+def _reinstall_commands(
+    source: str, checkout: str | None = None, note: str = ""
+) -> list[list[str]]:
     """The reinstall invocations for this environment: uv when uv owns it, else pip.
 
     A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
@@ -663,7 +695,7 @@ def _reinstall_commands(source: str, checkout: str | None = None) -> list[list[s
         if _uv_receipt_requirement().get("editable"):
             options.append("--editable")
         if checkout is not None:
-            options += ["--constraints", str(_pin_to_lock(uv, checkout))]
+            options += ["--constraints", str(_pin_to_lock(uv, checkout, note))]
         return [[uv, "tool", "install", "--force", "--reinstall", *options, _uv_tool_spec(source)]]
     pip = [sys.executable, "-m", "pip", "install"]
     return [
@@ -714,8 +746,11 @@ def _other_programs_in(env_dir: Path) -> list[tuple[int, str]] | None:
         parent, _, program = rest.partition("|")
         if pid.strip().isdigit() and parent.strip().isdigit():
             running[int(pid)] = (int(parent.strip()), program.strip())
-    # This command's own launchers (the .exe that started it and the interpreter shim) run from
-    # the same environment and exit with it. They are not "other programs".
+    # This command runs under the interpreter the environment was built from, outside it, and was
+    # started by the environment's own `Scripts\python.exe` shim, which sits inside it and exits
+    # with this process. That shim, and any other process between this one and the first ancestor
+    # outside the environment, is not an "other program". The launcher in the tool bin directory
+    # is outside the environment and is never listed.
     mine = {os.getpid()}
     ancestor = os.getppid()
     while ancestor in running and ancestor not in mine:
@@ -733,7 +768,14 @@ _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
-def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str) -> None:
+def _manual_reinstall(commands: list[list[str]]) -> str:
+    """The reinstall as the line(s) to run by hand from a shell that is not running zakcode."""
+    return "\n".join("  " + subprocess.list2cmdline(command) for command in commands)
+
+
+def _finish_in_second_process(
+    commands: list[list[str]], old: str, new_sha: str, note: str = ""
+) -> None:
     """Hand the reinstall to ``swap_install.py``, which runs after this process has exited.
 
     The helper is copied out of the package first and run by the interpreter the environment was
@@ -741,7 +783,9 @@ def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str)
     detached, with no console to close under it, and asked to leave any job object this process
     is in, so closing the terminal does not stop an update half way. It moves the environment
     aside, reinstalls, checks the result starts, and puts the old environment back if anything
-    fails; its log ends with ``update complete`` or ``update failed`` (ADR-0291).
+    fails; its log ends with ``update complete`` or ``update failed`` and what was done about it,
+    and says before the move how to undo it by hand. ``note`` is the sentence about the checkout
+    this update pulled, which the helper writes after any failure (ADR-0291).
     """
     env_dir = Path(sys.prefix)
     base = Path(getattr(sys, "_base_executable", None) or sys.executable)
@@ -749,25 +793,26 @@ def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str)
         notice_error(
             console,
             "cannot update from this install on Windows",
-            f"Its Python ({base}) lives inside the environment the update replaces. Reinstall "
-            "from a shell that is not running zakcode:\n"
-            '  uv tool install --force --reinstall --editable "zakcode @ file:///<your checkout>"',
+            f"Its Python ({base}) lives inside the environment the update replaces. "
+            f"{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
         )
         raise typer.Exit(code=1)
-    work = _update_dir()
-    work.mkdir(parents=True, exist_ok=True)
+    work = _update_dir(note)
     script, job_file, log = work / "swap_install.py", work / "job.json", work / "update.log"
+    backup = env_dir.with_name(env_dir.name + ".update-backup")
     shutil.copyfile(Path(__file__).with_name("swap_install.py"), script)
     job = {
         "wait_pid": os.getpid(),
         "env_dir": str(env_dir),
-        "backup_dir": str(env_dir.with_name(env_dir.name + ".update-backup")),
+        "backup_dir": str(backup),
         "commands": commands,
         "verify": [str(env_dir / "Scripts" / "python.exe"), "-c", _VERSION_PROBE],
         "cwd": str(work),
         "log": str(log),
         "old": old,
         "new_sha": new_sha,
+        "checkout_note": note,
     }
     job_file.write_text(json.dumps(job, indent=2), encoding="utf-8")
     log.write_text(f"{time.strftime('%H:%M:%S')} update handed to a second process\n", "utf-8")
@@ -786,7 +831,12 @@ def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str)
         except OSError as exc:
             last = exc
     else:
-        notice_error(console, "could not start the second process", str(last))
+        notice_error(
+            console,
+            "could not start the second process",
+            f"{last}\n{_unchanged(note)}\nReinstall from a shell that is not running zakcode:\n"
+            f"{_manual_reinstall(commands)}",
+        )
         raise typer.Exit(code=1)
     _dim(
         console,
@@ -798,6 +848,11 @@ def _finish_in_second_process(commands: list[list[str]], old: str, new_sha: str)
         console,
         'zakcode is unavailable for about a minute; the log ends with "update complete", or says '
         "how the old install was put back",
+    )
+    _dim(
+        console,
+        f"the old install is kept in {backup} until the new one starts; if the update is cut "
+        "off, the log says how to put it back by hand",
     )
 
 
@@ -826,9 +881,10 @@ def update(
     from, which Windows refuses to do under a running program, so it finishes in a
     second process after this one exits, refuses while another program runs from the
     install, and puts the old install back if anything fails (ADR-0291). Prints
-    old → new build identity. Running chat sessions notice the new install at their
-    next idle prompt and restart themselves into it, resuming their session
-    (ADR-0034) — no operator action needed.
+    old → new build identity. Elsewhere, running chat sessions notice the new
+    install at their next idle prompt and restart themselves into it, resuming
+    their session (ADR-0034) — no operator action needed. On Windows they run from
+    the install being replaced, so the command refuses until they are closed.
     """
     old = version_line(__version__)
     url = build_url()
@@ -847,6 +903,7 @@ def update(
             )
             raise typer.Exit(code=1)
     shas: tuple[str, str] | None = None
+    note = ""  # what to tell the reader about the checkout if the update stops after the pull
     if url is not None:
         source = f"git+{url}@{ref}"
         _dim(console, f"updating from {url} @ {ref} …")
@@ -854,6 +911,7 @@ def update(
         if ref != "main":
             _dim(console, "ref ignored — a local-checkout install pulls its tracked branch")
         shas = _refresh_checkout(directory)
+        note = _checkout_note(directory, *shas)
         source = Path(directory).as_uri()
         _dim(console, f"reinstalling from {directory} …")
     else:
@@ -865,10 +923,10 @@ def update(
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    commands = _reinstall_commands(source, directory)
+    commands = _reinstall_commands(source, directory, note)
     if second_process:
         before = old.replace("(local path)", f"(git {shas[0]})") if shas is not None else old
-        _finish_in_second_process(commands, before, shas[1] if shas is not None else "")
+        _finish_in_second_process(commands, before, shas[1] if shas is not None else "", note)
         return
     for command in commands:
         proc = subprocess.run(command, capture_output=True, text=True)

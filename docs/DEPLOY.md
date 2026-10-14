@@ -67,7 +67,9 @@ finishes in a second process after the command exits, because Windows will not r
 files of a program that is running: the command refuses while another program runs from the
 install (it names the pid), and the second process puts the old install back if anything
 fails. Its progress and result are in `~/.zakcode/update/update.log`, which ends
-`update complete` or `update failed`.
+`update complete` or `update failed`; before it moves the old install the log says how to put
+it back by hand, for the case that the process is killed. An update that stops leaves the
+checkout pulled, and says so with the `git reset --hard` that returns it.
 
 ## Hand-managed hosts
 

@@ -17393,9 +17393,12 @@ Windows install and then on a Windows runner.
    runner with no other process in the install: `error: failed to remove directory ...\tools\zakcode\Lib: Access is denied.
    (os error 5)`, leaving `Lib`, `Scripts`, `pyvenv.cfg` and `uv-receipt.toml`. The program that blocks the delete is the
    update command itself.
-2. *It ignored `uv.lock`.* Every dependency was resolved afresh. Against this repository's lock (uv 0.12.5, the `server`
-   extra) 63 of 89 installed packages came out at a version other than the one the lock pins, so an update swapped the set
-   CI tested for whatever was newest that day.
+2. *It ignored `uv.lock`.* Every dependency was resolved afresh. Measured 2026-10-14 on Linux with uv 0.12.5, installing
+   the `server` extra into a throwaway tool directory and comparing it with `uv export --locked --no-dev --extra server`
+   from the same checkout: of the 78 packages the install and the lock share, 52 came out at a different version, and the
+   install added ten more that the lock does not contain (newer releases of a dependency pull them in). An update swapped
+   the set CI tested for whatever was newest that day. (An earlier draft of this record said "63 of 89"; that counted the
+   ten extra packages and a name that differed only in punctuation as if the lock pinned them to another version.)
 3. *It dropped what the install was.* An editable install came back as a copy (the receipt's `editable` became `directory`;
    the end to end test on ubuntu-latest reported `the install is no longer editable`), and the Python was whichever uv chose.
 
@@ -17404,19 +17407,28 @@ Windows install and then on a Windows runner.
 * The reinstall carries the install forward. `--constraints` is `uv export --locked --all-extras --no-dev
   --no-emit-project` run in the checkout just pulled, `--editable` is passed when the receipt says the install is editable,
   and `--python` is the running interpreter's major.minor. `--locked` refuses a lock that no longer matches
-  `pyproject.toml`; that refusal comes before anything is replaced, and its message says the checkout was pulled and the
-  install was not changed. A git-URL install has no checkout and so no lock to pin to.
+  `pyproject.toml`; that refusal comes before anything is replaced, and its message says the install was not changed and
+  that the checkout stays pulled, with the `git reset --hard` that returns it (an editable install runs the checkout's
+  code, so until then it runs the new code on the old dependencies). A git-URL install has no checkout and so no lock to
+  pin to. If `~/.zakcode` cannot be written the command stops with a message at the same point, not with a traceback.
 * On Windows, for a uv-managed install, the update command does not run the reinstall. It lists the programs that run from
   the install (a PowerShell process listing; a chat session, the web app or a hook is named by pid) and refuses before the
   pull if there is one. Otherwise it writes the job to `~/.zakcode/update/job.json`, copies `swap_install.py` out of the
   package into that folder, starts the copy with the interpreter the environment was built from (which lives outside the
   environment) detached, in its own process group and out of the terminal's job object where the job allows it, and exits.
-* The second process waits for the command to exit, then moves the environment aside to `<env>.update-backup`. A rename
-  fails, and nothing has changed, while any program holds a file in the environment, so a busy install is found here and
-  not half way through a delete. It then runs the reinstall into the empty place, starts the new environment's interpreter
-  and imports the package, and only then deletes the backup. A failure after the move deletes what the reinstall made and
-  moves the old environment back. Everything goes to `~/.zakcode/update/update.log`, which ends `update complete` or
-  `update failed` with what was done about it.
+* The second process waits for the command to exit, writes to the log how to put the environment back by hand, and then
+  moves it aside to `<env>.update-backup`. A rename fails, and nothing has changed, while any program holds a file in the
+  environment, so a busy install is found here and not half way through a delete. It then runs the reinstall into the
+  empty place, starts the new environment's interpreter and imports the package, and only then deletes the backup. A
+  failure after the move deletes what the reinstall made and moves the old environment back. The programs it starts run
+  with `CREATE_NO_WINDOW`: the process is detached and has no console, so a console program it started would be given a
+  visible one, and closing that window would kill the reinstall. A symlink or junction is removed as a link and never
+  followed. Anything that escapes the helper is caught in `main`, logged with the way back, and exits 3.
+* Everything goes to `~/.zakcode/update/update.log`, which ends `update complete` or `update failed` with what was done
+  about it, unless the process is itself killed (a reboot, a logoff, Task Manager): then the line written before the move
+  is the last word, which is why it comes first. The second process does not undo the pull, so a failure ends with a
+  sentence saying the checkout stays pulled and the `git reset --hard` that returns it. It prints that command and does not
+  run it, because by the time it fails the person may have edited the checkout.
 * A backup left by a run that was cut off is deleted only when the install in place starts. Otherwise it may be the only
   good copy: nothing is touched and the log says how to restore it by hand.
 * Elsewhere the command runs the reinstall itself, as before, with the options above.
@@ -17425,19 +17437,39 @@ Rejected: renaming the environment aside from the update command, since a direct
 be renamed either; building the new environment elsewhere and moving it in, since the launchers uv writes into `Scripts\`
 hold the absolute path of the interpreter they were built beside; the second process on Linux and macOS too, which delete
 the files of a running program without complaint, so it would add a failure surface for nothing; printing a warning about
-the lock and leaving the versions alone; and telling the user to reinstall by hand, which is the state this replaces.
+the lock and leaving the versions alone; resetting the checkout from the second process, which could discard edits made
+since the pull; and telling the user to reinstall by hand, which is the state this replaces.
 
 **Consequences.** On Windows the command returns before the install is replaced and `zakcode` cannot start for about a
-minute; the command says so and names the log. An install whose base interpreter lives inside the environment (uv does not
-make one) is refused with the single command that reinstalls from a shell outside it. Elsewhere there is still no rollback,
-because uv deletes first, as before. Whoever's environment broke needs one `git pull` of the checkout to get this (an
-editable install runs the checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list
-processes the command goes on, and the second process's rename refuses a busy install in the log instead.
+minute; the command says so, names the log and names the folder that keeps the old install until the new one starts. An
+install whose base interpreter lives inside the environment (uv does not make one) is refused with the exact reinstall
+command this update built, to run from a shell outside it. Elsewhere there is still no rollback, because uv deletes first,
+as before. Whoever's environment broke needs one `git pull` of the checkout to get this (an editable install runs the
+checkout's code); after that `zakcode update` is the whole update. If PowerShell cannot list processes the command goes on,
+and the second process's rename refuses a busy install in the log instead.
+
+Not guarded: two updates started at once. The second `zakcode update` cannot start once the first has moved the environment
+aside, because the program is in it, and before that the first updater is a program running from the install, which the
+up-front listing refuses. What is left is a window of seconds with the listing unavailable and two update commands typed
+within it. A lock file holding the helper's pid would close it; it is not built because that needs two coincidences, and a
+reported double update is the thing that would change the decision.
 
 The proof. `tests/test_update_e2e.py`, the `update-e2e` CI job on windows-latest and ubuntu-latest, installs the project into
 a throwaway uv tool directory the way the report did (editable, from a local checkout, unpinned), pushes commits to a local
-git remote and runs the installed `zakcode update`. Against the code before this change it fails on both: on Windows with
-the `Access is denied (os error 5)` above, and on Ubuntu because the install is no longer editable. `tests/test_update_swap.py`
-(22 tests) runs the second process's file against real directory trees and puts a failure at each step: the old tree comes
-back byte for byte after a failed command, a verify that fails, an exception, and a rename that is refused leaves it
-untouched. `tests/test_cli_chat.py` gains twelve tests for the options, the lock refusal and the Windows hand-off.
+git remote and runs the installed `zakcode update`. Its seed holds one package a release behind the newest in its own copy of
+the lock, so an unpinned reinstall differs from the lock whatever today's releases are. Against the code before this change
+it fails on both: on Windows with the `Access is denied (os error 5)` above, and on Ubuntu because the install is no longer
+editable (run 38497613390). The Windows run covers a second process in the install being refused and named with nothing
+pulled; the same with PowerShell off `PATH`, where the update goes on and the second process refuses at the move, leaving
+the install untouched and the log naming the pull; a reinstall that fails offline restoring the old install and its receipt;
+and the update itself, pinned to the lock and still editable. `tests/test_update_swap.py` (28 tests, 33 cases) runs the
+second process's file against real directory trees and puts a failure at each step: the old tree comes back byte for byte
+after a failed command, a verify that fails and an exception, and a refused rename leaves it untouched. Its Windows-only
+cases hold a file open inside a fake environment and show the move refused with the tree untouched, and remove a junction
+without touching its target; the others check that the updater is waited for before the move, that the way back is on disk
+before the move, that programs run without a console window, and that every failure ends with the note about the checkout.
+`tests/test_cli_chat.py` gains fourteen tests for the options, the lock and its refusal, the unwritable home and the Windows
+hand-off. Twelve behaviours were each run through a two-way mutation proof (green, red with the behaviour reverted, green
+again): the wait before the move, the way-back line, the console flag, the note after a failure, the catch in `main`, the
+removal of a link, the note in the lock refusal, the real command in the refusals, the note in the job, the unwritable
+home, the backup path in the hand-off and the walk over the process chain.

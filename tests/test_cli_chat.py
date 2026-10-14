@@ -1315,7 +1315,8 @@ def test_update_local_checkout_uses_uv_with_receipt_extras(tmp_path, monkeypatch
 
 
 def test_update_pins_the_reinstall_to_the_checkouts_lock(tmp_path, monkeypatch) -> None:
-    """An unpinned reinstall resolved afresh: 63 of 89 packages came out off the lock (ADR-0291)."""
+    """An unpinned reinstall resolved afresh: 52 of the 78 packages it shared with the lock came out
+    at another version, and it added 10 more (ADR-0291)."""
     h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 0, result.stdout
@@ -1353,15 +1354,56 @@ def test_update_keeps_the_python_and_an_editable_install(tmp_path, monkeypatch) 
     assert reinstall[-1].startswith("zakcode @ file://")  # no extras in this receipt
 
 
+def _head(clone) -> str:
+    """The abbreviated HEAD of ``clone``, the form ``zakcode update`` reports."""
+    import subprocess as sp
+
+    done = sp.run(["git", "-C", str(clone), "rev-parse", "--short", "HEAD"], capture_output=True)
+    return done.stdout.decode().strip()
+
+
 def test_update_changes_nothing_when_the_lock_cannot_be_exported(tmp_path, monkeypatch) -> None:
     h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, export_rc=2)
+    old_sha = _head(h.clone)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 2
     flat = _flat(result.stdout)
     assert "cannotpinthe" in flat and "uv.lock" in flat and "thelockisoutofdate" in flat
     assert [c[0][1] for c in h.calls] == ["export"]  # no reinstall was attempted
-    assert "theinstalledenvironmentwasnotchanged" in flat
+    assert "Theinstalledenvironmentwasnotchanged" in flat
     assert (h.clone / "pyproject.toml").read_text() == "v2\n"  # the pull it reports did happen
+    # The environment is as it was and the checkout is not: an editable install runs the checkout,
+    # so the message says it stays pulled and gives the way back (ADR-0291).
+    assert f"waspulledfrom{old_sha}to{_head(h.clone)}andstaysthere" in flat
+    assert f"reset--hard{old_sha}" in flat
+
+
+def test_the_note_about_a_pulled_checkout_is_empty_when_the_pull_brought_nothing() -> None:
+    import zakcode.cli as cli_mod
+
+    assert cli_mod._checkout_note("/work/zak", "abc1234", "abc1234") == ""
+    note = cli_mod._checkout_note("/work/zak", "abc1234", "def5678")
+    assert "pulled from abc1234 to def5678 and stays there" in note
+    assert 'git -C "/work/zak" reset --hard abc1234' in note
+    assert cli_mod._unchanged("") == "The installed environment was not changed."
+    assert cli_mod._unchanged(note).endswith(note)
+
+
+def test_update_stops_with_a_message_when_its_working_directory_cannot_be_made(
+    tmp_path, monkeypatch
+) -> None:
+    """``~/.zakcode`` unwritable: a traceback after the pull told nobody what state they were in."""
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    not_a_directory = tmp_path / "file-in-the-way"
+    not_a_directory.write_text("x")
+    monkeypatch.setenv("ZAKCODE_HOME", str(not_a_directory / "home"))
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, OSError), "a raw traceback instead of a message"
+    flat = _flat(result.stdout)
+    assert "cannotkeeptheupdate'sworkingfiles" in flat
+    assert "Theinstalledenvironmentwasnotchanged" in flat and "waspulledfrom" in flat
+    assert h.calls == [] and h.started == []  # nothing was run after it
 
 
 def test_a_git_url_install_has_no_lock_to_pin_to(tmp_path, monkeypatch) -> None:
@@ -1409,6 +1451,9 @@ def test_update_on_windows_finishes_the_reinstall_in_a_second_process(
     assert job["verify"][0] == str(h.prefix / "Scripts" / "python.exe")
     assert job["old"] == f"0.0.1 (git {old_sha})"
     assert job["new_sha"] != old_sha and len(job["new_sha"]) >= 7
+    # The helper cannot un-pull the checkout; it is given what to say about it if the update stops.
+    assert job["checkout_note"] == cli_mod._checkout_note(str(h.clone), old_sha, job["new_sha"])
+    assert f"reset --hard {old_sha}" in job["checkout_note"]
     assert job["log"] == str(work / "update.log")
     # The script that runs is a copy: the package it came from is what gets replaced.
     package_copy = Path(cli_mod.__file__).with_name("swap_install.py")
@@ -1416,6 +1461,9 @@ def test_update_on_windows_finishes_the_reinstall_in_a_second_process(
     assert "handed to a second process" in (work / "update.log").read_text(encoding="utf-8")
     flat = _flat(result.stdout)
     assert "update.log" in flat and "secondprocess" in flat
+    # Where the old install is kept, and that the log says how to put it back if the update is cut
+    # off.
+    assert _flat(str(h.prefix) + ".update-backup") in flat and "cutoff" in flat
 
 
 def test_second_process_starts_without_breakaway_when_the_job_forbids_it(
@@ -1434,11 +1482,16 @@ def test_update_on_windows_stops_when_the_second_process_cannot_start(
     tmp_path, monkeypatch
 ) -> None:
     h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True, refuse=lambda f: True)
+    old_sha = _head(h.clone)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 1
-    assert "couldnotstartthesecondprocess" in _flat(result.stdout)
-    assert "accessisdenied" in _flat(result.stdout)
+    flat = _flat(result.stdout)
+    assert "couldnotstartthesecondprocess" in flat
+    assert "accessisdenied" in flat
     assert h.started == []
+    # It says what to run by hand (the real command, not a template) and that the pull happened.
+    assert "toolinstall--force--reinstall" in flat and "--constraints" in flat
+    assert f"waspulledfrom{old_sha}to" in flat
 
 
 def test_update_on_windows_refuses_while_other_programs_run_from_the_install(
@@ -1460,12 +1513,19 @@ def test_update_on_windows_refuses_when_its_python_lives_in_the_install(
     import zakcode.cli as cli_mod
 
     h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS, windows=True)
+    old_sha = _head(h.clone)
     inside = h.prefix / "python.exe"
     monkeypatch.setattr(cli_mod.sys, "_base_executable", str(inside), raising=False)
     result = runner.invoke(app, ["update"])
     assert result.exit_code == 1
-    assert "cannotupdatefromthisinstallonWindows" in _flat(result.stdout)
+    flat = _flat(result.stdout)
+    assert "cannotupdatefromthisinstallonWindows" in flat
     assert h.started == []
+    # The command to run by hand is the one this update built (pinned, with the receipt's extras),
+    # not a template that is wrong for an install from a git URL; and the pull is acknowledged.
+    assert "toolinstall--force--reinstall" in flat and "--constraints" in flat
+    assert "zakcode[google]" in flat and "<yourcheckout>" not in flat
+    assert f"waspulledfrom{old_sha}to" in flat and "Theinstalledenvironmentwasnotchanged" in flat
 
 
 @pytest.mark.parametrize(
@@ -1492,19 +1552,22 @@ def test_only_a_uv_install_on_windows_replaces_the_env_it_runs_from(
     assert cli_mod._replaces_its_own_env() is expected
 
 
-def test_other_programs_in_leaves_out_this_process_and_its_launchers(tmp_path, monkeypatch) -> None:
+def test_other_programs_in_leaves_out_the_shim_that_started_this_process(
+    tmp_path, monkeypatch
+) -> None:
     import types
 
     import zakcode.cli as cli_mod
 
-    me, parent = os.getpid(), os.getppid()
+    # The real chain on a uv tool install: `zakcode.exe` in the tool bin directory (outside the
+    # environment) starts the environment's own `Scripts\python.exe` shim, which starts the
+    # interpreter the environment was built from (also outside) that runs this command.
+    shim = os.getppid()
     launcher, other = 7_000_001, 7_000_002  # above any real pid_max
     listing = "\n".join(
         [
-            f"{me}|{parent}|C:\\env\\Scripts\\python.exe",
-            f"{parent}|{launcher}|C:\\env\\Scripts\\zakcode.exe",
-            f"{launcher}|1|C:\\env\\Scripts\\launcher.exe",
-            f"{other}|1|C:\\env\\Scripts\\python.exe",
+            f"{shim}|{launcher}|C:\\env\\Scripts\\python.exe",  # in the environment, exits with us
+            f"{other}|1|C:\\env\\Scripts\\python.exe",  # another session: the one to report
             "not a process line",
             "",
         ]

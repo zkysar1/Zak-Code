@@ -14,19 +14,21 @@ environment was built from, which lives outside the environment.
 The order is the whole design:
 
 1. wait for the updater to exit;
-2. move the environment aside. A rename fails, and nothing has changed, while any other process
-   still holds a file in it, so a program that is running is found out here and not half way
-   through a delete;
+2. write to the log how to put the old environment back by hand, then move it aside. A rename
+   fails, and nothing has changed, while any other process still holds a file in it, so a program
+   that is running is found out here and not half way through a delete;
 3. run the reinstall into the now-empty place;
 4. start the new environment and import the package from it;
 5. only then delete the old one.
 
 A failure after step 2 deletes whatever the reinstall made and moves the old environment back, so a
-failed update leaves the install that was there. Everything is written to the log, whose last line
-says how it ended: ``update complete``, or ``update failed`` and what was done about it.
+failed update leaves the environment that was there. The checkout the updater pulled stays pulled:
+the job carries a note saying so, and how to undo it, for the log. Everything is written to the log,
+whose last lines say how it ended: ``update complete``, or ``update failed`` and what was done about
+it. If this process is itself killed, the line written at step 2 is what is left to follow.
 
-Exit codes: 0 updated, 1 failed and the old install is back, 2 refused and nothing was touched,
-3 failed and the old install could NOT be put back (the log says how to).
+Exit codes: 0 updated, 1 failed and the old environment is back, 2 refused and nothing was moved,
+3 failed and the old environment may NOT be back (the log says how to check and what to do).
 """
 
 from __future__ import annotations
@@ -42,9 +44,13 @@ import traceback
 from pathlib import Path
 from typing import Any, TextIO
 
-#: How long to wait for the updater to exit, and for the environment to come free, by default.
+#: How long to wait for the updater to exit, and by default for the environment to come free.
 _WAIT_SECONDS = 120
 _MOVE_SECONDS = 60
+#: Win32 ``CREATE_NO_WINDOW``. This process is detached, so it has no console, and a console
+#: program it starts would be given a new visible one; closing that window would kill the reinstall
+#: half way and the person would never learn why. Zero elsewhere, where the flag does not exist.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def _stamp() -> str:
@@ -101,8 +107,29 @@ def _move(src: Path, dst: Path, seconds: float) -> OSError | None:
             time.sleep(0.5)
 
 
+def _is_link(path: Path) -> bool:
+    """True for a symlink or, on Windows, a directory junction: something that points elsewhere."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    junction = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -1)
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) == junction
+
+
 def _rmtree(path: Path) -> None:
-    """Delete a tree, clearing the read-only bit Windows refuses to delete through."""
+    """Delete a tree, clearing the read-only bit Windows refuses to delete through.
+
+    A link is removed as the link it is and never followed: ``shutil.rmtree`` refuses one, and the
+    handler below would then ``chmod`` the directory it points at and report success with the link
+    still in place.
+    """
+    if _is_link(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)  # a directory link on Windows is removed like an empty directory
+        return
 
     def clear_and_retry(func: Any, name: str, _exc: Any) -> None:
         os.chmod(name, stat.S_IWRITE)
@@ -123,7 +150,13 @@ def _starts(verify: list[str]) -> tuple[bool, str]:
         # `errors="replace"`: a byte the locale cannot decode must not turn a healthy install into
         # a failed one (the reader thread would drop the output and `.strip()` would raise).
         proc = subprocess.run(
-            verify, capture_output=True, text=True, errors="replace", timeout=120, check=False
+            verify,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=120,
+            check=False,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, str(exc)
@@ -132,17 +165,34 @@ def _starts(verify: list[str]) -> tuple[bool, str]:
     return True, proc.stdout.strip()
 
 
+def _by_hand(env_dir: Path, backup: Path) -> str:
+    """The two steps that put the old environment back without this program."""
+    return f"delete {env_dir} if it exists, then rename {backup} to {env_dir}"
+
+
 def run(job: dict[str, Any], log: TextIO) -> int:
-    """Carry out one update job (see the module docstring). Returns the exit code."""
+    """Carry out one update job (see the module docstring). Returns the exit code.
+
+    Optional job keys: ``checkout_note``, a sentence about the checkout the updater pulled, which
+    stays pulled when the update stops and is written as the last word of every failure; and
+    ``move_seconds``, how long the environment is given to come free.
+    """
 
     def say(message: str) -> None:
         log.write(f"{_stamp()} {message}\n")
         log.flush()
 
+    note = str(job.get("checkout_note") or "")
+
+    def fail(code: int) -> int:
+        if note:
+            say(note)
+        return code
+
     env_dir, backup = Path(job["env_dir"]), Path(job["backup_dir"])
     verify: list[str] = job["verify"]
     say(f"update started for {env_dir}")
-    _wait_for_exit(int(job.get("wait_pid", 0)), float(job.get("wait_seconds", _WAIT_SECONDS)))
+    _wait_for_exit(int(job.get("wait_pid", 0)), _WAIT_SECONDS)
 
     if backup.exists():
         # A run that was cut off between moving the install aside and finishing leaves this behind.
@@ -153,21 +203,26 @@ def run(job: dict[str, Any], log: TextIO) -> int:
         else:
             say(
                 f"update failed: {backup} is left from an earlier update and {env_dir} does not "
-                f"start. Nothing was touched. To restore by hand: delete {env_dir} if it exists, "
-                f"then rename {backup} to {env_dir}."
+                f"start. Nothing was touched. To restore by hand: {_by_hand(env_dir, backup)}."
             )
-            return 2
+            return fail(2)
 
     had_old = env_dir.exists()
     if had_old:
+        # Written before the move, so that a process killed after it (a reboot, a logoff, Task
+        # Manager) still leaves the way back in the log: nothing after this line can run then.
+        say(
+            "if this log stops here, the update was cut off: to put the old install back, "
+            f"{_by_hand(env_dir, backup)}"
+        )
         error = _move(env_dir, backup, float(job.get("move_seconds", _MOVE_SECONDS)))
         if error is not None:
             say(
                 f"update failed: {env_dir} cannot be moved ({error}). Another program is still "
-                "running from it, so the install was left as it was. Close every zakcode session, "
-                "the web app included, and run zakcode update again."
+                "running from it, so the environment was left as it was. Close every zakcode "
+                "session, the web app included, and run zakcode update again."
             )
-            return 2
+            return fail(2)
         say(f"moved the install to {backup}")
     else:
         say(f"no install at {env_dir}; installing fresh")
@@ -181,16 +236,16 @@ def run(job: dict[str, Any], log: TextIO) -> int:
                 os.replace(backup, env_dir)
         except OSError as exc:
             say(
-                f"the old install could NOT be put back ({exc}). It is intact in {backup}: delete "
-                f"{env_dir} if it exists, then rename {backup} to {env_dir}."
+                f"the old install could NOT be put back ({exc}). It is intact in {backup}: "
+                f"{_by_hand(env_dir, backup)}."
             )
-            return 3
+            return fail(3)
         say(
-            "restored the previous install, as it was"
+            "restored the previous environment, as it was"
             if had_old
             else "no previous install to restore"
         )
-        return 1
+        return fail(1)
 
     try:
         for command in job["commands"]:
@@ -202,6 +257,7 @@ def run(job: dict[str, Any], log: TextIO) -> int:
                 stdin=subprocess.DEVNULL,
                 cwd=job.get("cwd") or None,
                 check=False,
+                creationflags=_NO_WINDOW,
             )
             if proc.returncode != 0:
                 return roll_back(f"{Path(command[0]).name} exited with status {proc.returncode}")
@@ -229,7 +285,17 @@ def main(argv: list[str]) -> int:
     job_file = Path(argv[1])
     job = json.loads(job_file.read_text(encoding="utf-8"))
     with open(job["log"], "a", encoding="utf-8") as log:
-        return run(job, log)
+        try:
+            return run(job, log)
+        except BaseException:  # noqa: BLE001 - this process is detached: the log is all there is
+            env_dir, backup = Path(job["env_dir"]), Path(job["backup_dir"])
+            log.write(
+                f"{_stamp()} update failed unexpectedly:\n{traceback.format_exc().rstrip()}\n"
+                f"{_stamp()} {env_dir} may or may not have been moved aside. If it is missing or "
+                f"does not start and {backup} exists, {_by_hand(env_dir, backup)}.\n"
+            )
+            log.flush()
+            return 3
 
 
 if __name__ == "__main__":
