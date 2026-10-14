@@ -28,7 +28,12 @@ Provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 environment, which either `.env` populates. Put keys in `~/.zakcode/.env` once and
 every `zakcode` invocation on the machine has them; a workspace `.env` overrides
 per-project. `zakcode info` names each key's source (`env` / `workspace .env` /
-`user .env`) so "why is it using that key on this machine" is always answerable.
+`user .env`) so "why is it using that key on this machine" is always answerable. The key a
+gateway route sends is `ZAKCODE_API_KEY`, which **is** a setting, and it has its own row:
+`set (<source>)`, `empty (<source>)` for a blank value, or `not set`. A blank value is
+present and still not a key: litellm reads an empty string as no key, so the request carries
+`OPENAI_API_KEY` if the environment has one and is not sent otherwise, and a value of only
+spaces goes out as the credential. The value is never printed (ADR-0299).
 
 `zakcode info` names the source for the settings that decide **cost and routing** too —
 `api_base`, `permission_mode`, `local_only` — annotating anything that came from a file

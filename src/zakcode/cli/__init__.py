@@ -194,10 +194,33 @@ def _provider_key_status() -> dict[str, str]:
     return {name: env_source(name) for name in _PROVIDER_KEY_ENV}
 
 
+def _gateway_key_row(settings: Settings) -> tuple[str, str]:
+    """The gateway key's row: did ``ZAKCODE_API_KEY`` resolve, and from where (ADR-0299).
+
+    A machine that reaches its models through an OpenAI-compatible gateway sends this key and
+    none of the cloud-provider keys, so a panel that listed only those read ``not set`` for a
+    working setup and could not answer "did my key take?". Provenance only, like theirs: the
+    value is never formatted into the row. Whether a key exists is read off ``settings``, the
+    object the provider is built from, and where it came from off ``env_source``. A blank
+    value gets its own word, because ``ZAKCODE_API_KEY=`` left empty in a file is present to a
+    presence check and is still not a key: litellm reads an empty string as no key, so the
+    request carries ``OPENAI_API_KEY`` if the environment has one and is not sent otherwise.
+    """
+    label = "ZAKCODE_API_KEY"
+    if settings.api_key is None:
+        return label, "not set"
+    source = env_source(label)
+    # A key handed to ``Settings`` directly (the SDK, a test) has no file or variable behind it.
+    where = "in process" if source == "not set" else source
+    if not settings.api_key.strip():
+        return label, f"empty ({where})"
+    return label, f"set ({where})"
+
+
 def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
     """Build the (label, value) rows shown by ``info``.
 
-    Secret-safe: provider keys are reported as ``set (<source>)`` / ``not set``
+    Secret-safe: provider and gateway keys are reported as ``set (<source>)`` / ``not set``
     only — the source names where the value came from, never what it is.
     """
     if settings.default_model in ("auto", "zakpick"):
@@ -248,6 +271,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
         )
     rows.extend(_cost_rows(settings))
     rows.extend(_window_rows(settings))
+    rows.append(_gateway_key_row(settings))
     for name, source in _provider_key_status().items():
         rows.append((name, "not set" if source == "not set" else f"set ({source})"))
     return rows
