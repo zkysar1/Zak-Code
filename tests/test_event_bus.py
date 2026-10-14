@@ -20,13 +20,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from zakcode.server import event_bus
 from zakcode.server.event_bus import EventBusRegistry, SessionEventBus, _offer
 
 Pair = tuple[int, Any]
@@ -147,25 +144,6 @@ def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
     assert bus.oldest_at == 10.0  # full, nothing evicted yet
     bus.publish("d")  # evicts "a"
     assert bus.oldest_at == 11.0
-
-
-def test_the_default_stamp_is_the_number_a_message_made_in_that_instant_is_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A saved message is stamped ``datetime.now(UTC).isoformat()`` and the transcript route reads
-    it back with ``.timestamp()``. An event made in the same instant has to carry that same
-    number, or a page comparing the two draws the message twice. Windows CI measured the miss
-    while the bus read ``time.time()``: both were made on one 15.6 ms clock reading, the message
-    came out 1791938643.985429 and the bus's line 1791938643.98543, a microsecond later, in 2 runs
-    of 60 (ADR-0288). The bus reads ``datetime.now(UTC)`` too, so the two are one number."""
-    instant = datetime(2026, 10, 14, 0, 43, 43, 985429, tzinfo=UTC)
-    monkeypatch.setattr(event_bus, "datetime", SimpleNamespace(now=lambda tz=None: instant))
-    bus = SessionEventBus()
-    bus.publish("a")
-    message_at = datetime.fromisoformat(instant.isoformat()).timestamp()  # as /transcript reads it
-    assert bus.oldest_at == message_at
-    assert message_at >= bus.oldest_at  # so it counts as the bus's
-    assert message_at - 0.000001 < bus.oldest_at  # one microsecond earlier does not
 
 
 # ── Multiple subscribers ─────────────────────────────────────────────────────

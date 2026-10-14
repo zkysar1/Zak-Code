@@ -84,6 +84,37 @@ jobs:
           name: coverage-xml
           path: coverage.xml
 
+  # `zakcode update` replaces the install it runs from. Windows will not delete the files of a
+  # running program, which is how one user's update deleted its own dependencies and left an
+  # environment with nothing in it (ADR-0291). The unit tests fake uv and git and cannot see
+  # that, so this drives the real thing: a real uv, a real git remote, a real tool environment.
+  # It is its own job because it needs the network and takes minutes, which keeps `verify`
+  # offline and fast; neither publish-sidecar nor the failure alert waits on it.
+  update-e2e:
+    name: update end to end (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync (dev)
+        run: uv sync --extra dev --python 3.11
+
+      - name: Update end to end
+        env:
+          ZAKCODE_UPDATE_E2E: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: uv run --no-sync pytest -q -s tests/test_update_e2e.py
+
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
   # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
