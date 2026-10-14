@@ -148,7 +148,10 @@ globalThis.fetch = async (url) => {
       sent = true;
       return { done: false, value: bytes };
     };
-    return { ok: true, status: 200, body: { getReader: () => ({ read }) } };
+    // A server that names no watch bus (no X-Bus-Epoch header): the page must resume by cursor
+    // alone, exactly as it did before servers named their buses (ADR-0289).
+    const headers = { get: () => null };
+    return { ok: true, status: 200, headers, body: { getReader: () => ({ read }) } };
   }
   return { ok: false, status: 404, json: async () => ({}) };
 };

@@ -491,6 +491,7 @@
 
   const main = document.getElementById("main");
   const log = document.getElementById("log");
+  const emptyState = document.getElementById("empty");  // the start screen; add() removes it
   const input = document.getElementById("input");
   const attachBtn = document.getElementById("attach");
   const fileInput = document.getElementById("file-input");
@@ -506,6 +507,7 @@
 
   let sessionId = null;
   let lastCursor = null;
+  let busEpoch = null;       // the watch bus lastCursor was issued by (ADR-0289); null until named
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
   let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send and at turn end
@@ -1473,6 +1475,25 @@
     }
   }
 
+  // The watch bus is in memory and numbers its events from 1, so a cursor means something only to
+  // the bus that issued it. The server names each bus (X-Bus-Epoch); when a reconnect is answered
+  // by another one, the server restarted (or the session's bus was made again) while this page
+  // stayed open. Resuming at the old cursor would skip that many of the new bus's first events,
+  // and whatever this page had not drawn yet died with the old bus. So the page starts over as a
+  // freshly opened one does: the start screen, the saved conversation older than the new bus,
+  // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay.
+  async function startOver() {
+    log.replaceChildren(...(emptyState ? [emptyState] : []));
+    lastCursor = null;
+    lastPlanKey = "";
+    assistantText = "";
+    thinkingText = "";
+    approvedTool = "";
+    stick = true;
+    endTurn();  // the turn clock and meter, the status line, pending tool cards, the prose group
+    await renderHistory();
+  }
+
   async function init() {
     setConn("connecting", "connecting");
     try {
@@ -1496,14 +1517,22 @@
   }
 
   // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
-  // need); reconnects forever, resuming after the last seen cursor.
+  // need); reconnects forever, resuming after the last seen cursor of the same bus.
   async function watchLoop() {
     for (;;) {
       try {
-        const qs = lastCursor !== null ? "&since=" + encodeURIComponent(lastCursor) : "";
+        let qs = lastCursor !== null ? "&since=" + encodeURIComponent(lastCursor) : "";
+        // Say which bus the cursor came from; the server drops the cursor if that bus is gone.
+        if (busEpoch !== null) qs += "&epoch=" + encodeURIComponent(busEpoch);
         const resp = await fetch("/watch/" + sessionId + "?full=1" + qs);
         if (!resp.ok) throw new Error("watch " + resp.status);
         setConn("open", "connected");
+        // A server that names no bus (an older one) never differs, so it never resets the page.
+        const epoch = resp.headers.get("X-Bus-Epoch");
+        if (epoch !== null) {
+          if (busEpoch !== null && epoch !== busEpoch) await startOver();
+          busEpoch = epoch;
+        }
         await readSse(resp.body, (id, data) => {
           if (id) lastCursor = id;
           try { onFrame(JSON.parse(data)); }

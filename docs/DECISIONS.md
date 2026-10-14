@@ -17376,3 +17376,54 @@ server: reopened after a restart, reopened while the server holds everything, re
 message sent from a reopened page, and the transcript's two new fields. `tests/test_event_bus.py` gains two (the stamp moves
 forward as the ring evicts, and the microsecond floor). With the page's history step removed three of the page tests fail,
 with the partition removed two fail, with `bus_from` always null three fail, and with the floor removed the floor test fails.
+
+## ADR-0289: a watch client names the bus its cursor came from, and a page left open across a restart starts over
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** ADR-0286 had the served page draw the saved conversation and then the watch replay, and it named one case it
+left alone, read from `SessionEventBus.subscribe` and not reproduced: a page that stays open across a server restart
+reconnects with its old cursor, and the new bus, which numbers its events from 1, replays nothing until it passes that
+number. That is what any server restart does to a page left open.
+
+Reproduced against a real loopback server running the page's own script under node. The page had drawn two turns and held
+cursor 6. The session's bus was discarded, which is what a restart does to it (the old bus is closed and forgotten, the
+next request makes a new one). The page reconnected asking for `/watch/<id>?full=1&since=6`, and a message sent afterwards
+drew nothing: its events were cursors 1 to 3 on the new bus, all below the cursor the page asked past. A turn with more
+events than the old cursor would have drawn only its tail. Behind that sits a second loss: whatever the page had not drawn
+when the old bus died (a turn that finished while the page was offline) went with the bus, and only the saved session
+still holds it.
+
+**Decision.** A cursor is good only against the bus that issued it, so the client says which bus that was.
+
+* Each `SessionEventBus` carries a random `epoch` (eight random bytes in hex), fixed for the bus's life.
+* `GET /watch/{id}` names its bus in an `X-Bus-Epoch` response header and takes an optional `epoch` query parameter. When
+  `epoch` is given and is not this bus's, `since` is ignored and the whole retained buffer replays. With no `epoch` the
+  route behaves as it did, so a client that sends none is unchanged.
+* The page keeps the epoch of the last response and sends it with its cursor. When a response names a different bus it
+  starts over before it reads the stream, as a freshly opened page does: the start screen, the cursor and the per-turn
+  state forgotten, the saved conversation older than the new bus drawn again (ADR-0286), then the new bus's replay. The
+  composer and what is typed in it stay. A response that names no bus, from an older server, never resets the page.
+
+Rejected: treating a cursor beyond the bus's latest as stale, which catches a restart only until the new bus passes the old
+number (a turn already running when the page reconnects has passed it, and the page would draw the middle of that turn);
+keeping the page's rows and only dropping the stale cursor, which stops the page going deaf but leaves a turn the old bus
+took with it undrawn; reloading the page, which loses the composer's text and the scroll position for what a redraw does
+without; and a per-process boot id, which says nothing when a session's bus is made again without a restart.
+
+**Consequences.** After a restart the open page redraws its conversation from the saved session once, as text: tool calls
+and thinking are not saved, so a turn the page missed shows what was said and not how. Pages and servers of different ages
+work together, since an older page sends no `epoch` and an older server sends no header. No other client in this repo
+resumes a watch stream by cursor. Those outside it (a dashboard, a gateway) send no `epoch` and keep resuming by cursor
+alone, so across a restart they still wait for the new bus to pass their old cursor; they are unchanged here and can send
+the name back the same way.
+
+The proof. `tests/test_webclient_bus_epoch.py` (four tests) keeps the page's own script open under node against a live
+server. A page open across a bus restart draws the next turn and ends with the rows a page opened afterwards shows,
+whether the message is sent after or before the page reconnects. A page offline while a turn finishes and the server
+restarts draws the missed turn from the saved session. A page whose connection drops on the same bus resumes from its
+cursor, draws nothing twice and does not start over. `tests/test_server_watch.py` gains three (the header, a cursor from
+another bus ignored, a cursor from this bus honoured) and `tests/test_event_bus.py` two (one epoch per bus, a new one when
+a session's bus is made again). Run against seven mutations of the source, each reverting one piece, each reddened the test
+written for it: no `epoch` check on the route, no header, a constant epoch, the page's start-over removed, the page not
+sending its epoch, the page not sending its cursor, and the page starting over on every reconnect.

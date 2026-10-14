@@ -14,6 +14,10 @@ Guarantees:
 * **Cursor-addressed replay.** Every published event gets a strictly increasing cursor (starting
   at 1). ``subscribe(since=c)`` replays every retained event with cursor > c, then tails live.
   ``since=None``/``0`` replays the whole retained buffer.
+* **A named incarnation.** Cursors start again from 1 on every new bus (a server start, or a
+  session's bus discarded and made again), so a cursor means something only to the bus that
+  issued it. Each bus therefore carries a random ``epoch``; a client that remembers it can tell
+  a cursor from this bus from one that belongs to a bus that no longer exists (ADR-0289).
 * **Stamped at publish.** Every event also carries the wall clock (epoch seconds) of the moment it
   was published, and every subscriber receives it. A watcher that joins late or reconnects then
   replays the buffer in a burst; without the stamp it could only time events by when THEY
@@ -31,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
@@ -70,10 +75,18 @@ class SessionEventBus:
     ) -> None:
         self._buffer: deque[tuple[int, Any, float]] = deque(maxlen=maxlen)
         self._cursor = 0
+        #: Names this bus. Random rather than a counter: a counter would restart with the
+        #: process, which is exactly the event a client needs this to tell apart.
+        self._epoch = secrets.token_hex(8)
         #: The publish stamp's clock (epoch seconds); injectable so tests never read the time.
         self._clock = clock
         self._subscribers: set[asyncio.Queue[Any]] = set()
         self._closed = False
+
+    @property
+    def epoch(self) -> str:
+        """Which bus this is: the cursors a client holds are good only against the same one."""
+        return self._epoch
 
     @property
     def latest_cursor(self) -> int:

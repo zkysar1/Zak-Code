@@ -1199,7 +1199,7 @@ def create_app(
 
     @app.get("/watch/{session_id}")
     async def watch(
-        session_id: str, since: int | None = None, full: bool = False
+        session_id: str, since: int | None = None, full: bool = False, epoch: str | None = None
     ) -> EventSourceResponse:
         """Read-only SSE tail of a session's events, secret-redacted (P0-3, spec sec 4+7).
 
@@ -1209,6 +1209,13 @@ def create_app(
         is configured) exactly like every other HTTP route. NO agent/turn is created — this
         only tails the fan-out bus. ``?since=<cursor>`` resumes after a known event (each
         frame's SSE ``id`` is its cursor); omit it to replay the retained buffer then tail.
+
+        Cursors count from 1 on every bus, and a bus is made again after a server start, so a
+        cursor is good only against the bus that issued it. The response names its bus in the
+        ``X-Bus-Epoch`` header; a client that sends that name back as ``?epoch=`` has any
+        ``since`` it holds checked against it, and one that belongs to another bus is ignored
+        (the whole retained buffer replays) instead of skipping that many of the new bus's
+        first events. No ``epoch``, no check (ADR-0289).
 
         The literal id ``current`` is a gateway-facing alias (the watch UI streams
         ``/watch/current`` without knowing the concrete id) resolved here to the active
@@ -1225,6 +1232,8 @@ def create_app(
             session_id = resolved
         _load_session_or_404(session_id)  # existence check; never creates an agent/turn
         bus = event_bus_registry.get_or_create(session_id)
+        if epoch is not None and epoch != bus.epoch:
+            since = None  # the caller's cursor is from a bus that no longer exists
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             async for cursor, event, at in bus.subscribe(since=since):
@@ -1258,7 +1267,7 @@ def create_app(
 
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
-        return EventSourceResponse(event_source(), ping=15)
+        return EventSourceResponse(event_source(), ping=15, headers={"X-Bus-Epoch": bus.epoch})
 
     @app.post("/watch/{session_id}/marker", status_code=201)
     def publish_watch_marker(session_id: str, request: WatchMarkerRequest) -> dict[str, Any]:

@@ -60,6 +60,19 @@ def test_publish_assigns_strictly_increasing_cursors_from_one() -> None:
     assert bus.latest_cursor == 3
 
 
+def test_a_bus_keeps_one_epoch_for_its_life_and_no_two_buses_share_one() -> None:
+    """Cursors start again from 1 on every bus, so a cursor means something only to the bus that
+    issued it. The epoch names the bus: publishing and closing never change it, and buses made
+    later (a server start, a session's bus made again) do not repeat one (ADR-0289)."""
+    bus = SessionEventBus()
+    epoch = bus.epoch
+    assert epoch and all(c in "0123456789abcdef" for c in epoch)  # URL-safe, never empty
+    bus.publish("a")
+    bus.close()
+    assert bus.epoch == epoch
+    assert len({SessionEventBus().epoch for _ in range(50)}) == 50
+
+
 async def test_subscribe_since_none_replays_whole_buffer() -> None:
     bus = SessionEventBus()
     for x in ("a", "b", "c"):
@@ -268,3 +281,13 @@ def test_registry_get_or_create_replaces_a_closed_bus() -> None:
     second = reg.get_or_create("s1")  # a closed bus is replaced, not handed back
     assert second is not first
     assert second.closed is False
+
+
+def test_a_session_whose_bus_is_made_again_gets_a_new_epoch() -> None:
+    """What a client holding a cursor needs to tell: the same bus (keep the cursor) from a new
+    one that numbers from 1 again (drop it)."""
+    reg = EventBusRegistry()
+    first = reg.get_or_create("s1")
+    assert reg.get_or_create("s1").epoch == first.epoch
+    reg.discard("s1")
+    assert reg.get_or_create("s1").epoch != first.epoch
