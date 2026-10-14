@@ -226,6 +226,64 @@ async def test_watch_since_cursor_resumes_after_it(live_url: str) -> None:
     assert frames[0]["status"] == "completed"
 
 
+async def _bus_epoch(base_url: str, sid: str) -> str:
+    """The name a watch response gives its bus (``X-Bus-Epoch``), read from the headers alone."""
+    timeout = httpx.Timeout(10.0, read=5.0)
+    async with (
+        httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac,
+        ac.stream("GET", f"/watch/{sid}") as resp,
+    ):
+        assert resp.status_code == 200
+        return resp.headers.get("x-bus-epoch", "")
+
+
+async def test_watch_names_its_bus_in_a_response_header(live_url: str) -> None:
+    """Cursors count from 1 on every bus, so a client resuming at one needs to know which bus it
+    came from. Every connection to the same session's bus reports the same name (ADR-0289)."""
+    sid = await _run_turn(live_url)
+    epoch = await _bus_epoch(live_url, sid)
+    assert epoch  # present, and not empty
+    assert await _bus_epoch(live_url, sid) == epoch
+
+
+async def test_watch_ignores_a_cursor_that_belongs_to_another_bus(live_url: str) -> None:
+    """The same ``since=3`` that resumes after cursor 3 above means nothing to a bus the client
+    never held a cursor from (a server restarted since): the whole buffer replays, not the
+    two events past a number the new bus happens to reach."""
+    sid = await _run_turn(live_url)
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=3&epoch=another-bus", count=4)
+    assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
+
+
+async def test_watch_resumes_at_a_cursor_that_belongs_to_this_bus(live_url: str) -> None:
+    """A client that names this bus resumes exactly as one that names none does
+    (test_watch_since_cursor_resumes_after_it): only what follows its cursor."""
+    sid = await _run_turn(live_url)
+    epoch = await _bus_epoch(live_url, sid)
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=3&epoch={epoch}", count=2)
+    assert [f["event"] for f in frames] == ["tool_summary", "done"]
+
+
+async def test_the_transcript_names_the_bus_its_start_belongs_to(live_url: str) -> None:
+    """``bus_from`` is a place on one bus's clock, and the page's cut of the conversation holds
+    only against that bus: the transcript names it, with the name a watch response carries, so a
+    page whose watch is answered by another bus knows to cut again (ADR-0289)."""
+    sid = await _run_turn(live_url)
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        transcript = (await ac.get(f"/sessions/{sid}/transcript")).json()
+    assert transcript["bus_from"] is not None
+    assert transcript["bus_epoch"] == await _bus_epoch(live_url, sid)
+    assert transcript["bus_epoch"]  # present, and not empty
+
+
+async def test_the_transcript_of_a_session_with_no_bus_names_none(live_url: str) -> None:
+    async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
+        sid = (await ac.post("/sessions")).json()["id"]
+        transcript = (await ac.get(f"/sessions/{sid}/transcript")).json()
+    assert transcript["bus_from"] is None
+    assert transcript["bus_epoch"] is None
+
+
 async def test_watch_drops_unsafe_usage_event(live_url: str) -> None:
     sid = await _run_turn(live_url)
     frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4)
