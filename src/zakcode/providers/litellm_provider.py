@@ -1605,7 +1605,14 @@ class LiteLLMProvider(Provider):
             call_kwargs["temperature"] = self.temperature
         if tools:
             call_kwargs["tools"] = tools
-            call_kwargs["tool_choice"] = "auto"
+            # No ``tool_choice`` (ADR-0295). "auto" is what a backend does when it gets tools
+            # and no choice: OpenAI documents it as the default with tools, Anthropic and
+            # Gemini default to it, and llama.cpp's server reads an absent field as "auto"
+            # (server-common.cpp, read in the pod's build 2026-10-14). Sending it added no
+            # behaviour and handed a gateway a field to refuse by name: a LiteLLM proxy in
+            # front of Bedrock answered the same request 400 UnsupportedParamsError for
+            # {'tool_choice': 'auto'} and answered it without the field. A caller that wants
+            # a choice passes ``tool_choice=`` per call; ``call_kwargs.update(kw)`` below wins.
         # Server-specific request-body knobs (llama.cpp thinking control, etc). litellm
         # forwards extra_body into the JSON body on the OpenAI-compatible path and keeps it
         # through drop_params, so an unknown-to-litellm key still reaches the server. NOT

@@ -17948,3 +17948,50 @@ priced at the input rate, 2, and at the read rate, 2; litellm's cost made to win
 override a higher backend cost, 1; the buffered call or the streamed call left unthreaded, 2 each; the breakpoint scan
 made never true, 4, and always true, 2; the field dropped from `Usage.__add__`, 2; the footer branch removed in the
 terminal, 2, and on the page, 1; and the `/cost` note removed, 1. `uv run poe check` is green: 5,612 passed, 22 skipped.
+
+## ADR-0295: tools are sent without `tool_choice`, so a gateway that refuses the field is never asked
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14 that through an OpenAI-compatible gateway (a LiteLLM proxy in front of Bedrock)
+a request that carries `tools` is answered, and the same request with `tool_choice: "auto"` added is a 400
+`UnsupportedParamsError` naming `{'tool_choice': 'auto'}`. `_build_kwargs` set `tool_choice = "auto"` whenever tools were
+present, so a native tool call through that route ended the turn `provider_error`. ADR-0181's repair did not catch it: it
+repairs a field of the request body that a 4xx names, `tool_choice` is a top-level argument, and `rejected_request_field`
+has no pattern for that wording.
+
+**Decision.**
+
+* `_build_kwargs` no longer sets `tool_choice`. Tools ride alone. A caller that wants a choice passes `tool_choice=` per
+  call, which `call_kwargs.update(kw)` forwards as before.
+* The field said nothing a backend does not already do. litellm 1.86.2 adds none of its own: an `openai/` route with tools
+  and no choice puts `tools` alone on the wire, measured through a stubbed transport with the field sent as the control.
+  OpenAI documents auto as the default when tools are present. The build the pod runs reads an absent field as auto
+  (llama.cpp `tools/server/server-common.cpp`, `json_value(body, "tool_choice", std::string("auto"))`, read in the source of
+  the running build on 2026-10-14).
+
+Rejected: extending ADR-0181's repair to top-level arguments and to this wording, because it spends a failed request per
+session on every route that refuses the field, adds a second recogniser to keep in step with litellm's wording, and still
+leaves a field on the wire that carries no information; sending the field only to routes known to accept it, which is a list
+that needs an owner and tells a backend nothing it does not already do; and a setting, because on no route does the explicit
+"auto" do anything.
+
+Not verified: the live gateway. The refusal is scripted from the report, not captured, and that the gateway answers a tool
+call natively once the field is gone is the report's own finding (tools alone work). The defaults of Anthropic and Gemini are
+their documented ones and were not re-measured.
+
+**Consequences.** One field fewer on every request that carries tools, on every route. A backend whose default with tools is
+not auto would now run at its own default; none of the backends above is such, and a per-call `tool_choice` remains the way
+to pin one. The request is otherwise unchanged.
+
+The proof. `tests/test_tool_choice_omitted.py` (14 tests) pins five routes (the gateway alias, OpenAI, Anthropic, Gemini,
+Ollama) as carrying `tools` and no `tool_choice`, a call without tools as carrying neither, and a per-call `tool_choice` as
+still forwarded. A scripted gateway that answers 400 to a request carrying the field and answers one carrying tools alone is
+asked through a real `LiteLLMProvider`, buffered and streamed, and through the real agent loop, buffered and streamed; a
+control shows the same gateway does refuse a request that asks for the field. The request litellm puts on the wire is read
+through a stubbed HTTP client, with a control that shows the field when it is asked for. The assertion in
+`tests/test_provider.py` that pinned `tool_choice == "auto"` now pins its absence. Five mutations were each run green, red,
+green (2026-10-14), with the red tests counted from the verdict: the field restored on every route turned 11 red; restored
+for `openai/` routes only, 8; restored for every other route, 3 (Anthropic, Gemini, Ollama); the tools dropped along with the
+field, 11; and a per-call `tool_choice` no longer forwarded, 3 (the override and the two controls). `uv run poe check` is
+green: 5,626 passed, 22 skipped.

@@ -162,7 +162,7 @@ async def test_acomplete_text_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["messages"][0] == {"role": "system", "content": "sys"}
 
 
-async def test_acomplete_with_tools_sends_tool_choice(
+async def test_acomplete_with_tools_sends_tools_and_no_tool_choice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -177,7 +177,9 @@ async def test_acomplete_with_tools_sends_tool_choice(
     await _provider().acomplete([Message.user("go")], tools=tools)
 
     assert captured["tools"] == tools
-    assert captured["tool_choice"] == "auto"
+    # "auto" is every backend's default with tools, and a gateway may refuse the field by name
+    # (ADR-0295; tests/test_tool_choice_omitted.py pins the whole contract).
+    assert "tool_choice" not in captured
 
 
 async def test_acomplete_forwards_response_format(monkeypatch: pytest.MonkeyPatch) -> None:
