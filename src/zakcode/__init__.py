@@ -503,11 +503,14 @@ class Agent:
             # The window travels WITH the model (ADR-0066): the startup model's entry
             # carries its own context_window, and the copied settings must say so too, or
             # the default provider would be built against Settings.context_window — which
-            # describes a concrete ZAKCODE_DEFAULT_MODEL, not this category's model.
+            # describes a concrete ZAKCODE_DEFAULT_MODEL, not this category's model. The
+            # prompt-caching switch (ADR-0298) is the same kind of fact about the served
+            # route, so it travels the same way: the entry's word, never the global field's.
             self.settings = self.settings.model_copy(
                 update={
                     "default_model": startup_model,
                     "context_window": startup_spec.context_window,
+                    "prompt_caching": startup_spec.prompt_caching,
                 }
             )
             logger.info("zakpick: routing per task category; startup model %s", startup_model)
@@ -1582,6 +1585,7 @@ class Agent:
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
         reasoning_effort: str | None = None,
+        prompt_caching: bool | None = None,
     ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
@@ -1592,7 +1596,11 @@ class Agent:
         routed model's own declared window (ADR-0066) and REPLACES the settings' value,
         which describes the default model only. ``reasoning_effort`` (a category's reasoning
         depth, ADR-0182) REPLACES the settings' fleet-wide level for that category; a category
-        that sets none inherits it.
+        that sets none inherits it. ``prompt_caching`` (the entry's switch, ADR-0298) is the
+        route's own word and REPLACES the settings' value; ``None`` is a caller that has no
+        route to speak for (a failover, a role override), and then only the default model
+        keeps the settings' switch. Any other model is built with it off: the switch was
+        given for one route, and a different model must not inherit it.
         """
         from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -1603,6 +1611,7 @@ class Agent:
             and not extra_body
             and context_window is None
             and reasoning_effort is None
+            and prompt_caching in (None, self.settings.prompt_caching)
         ):
             role_settings = self.settings
         else:
@@ -1610,7 +1619,15 @@ class Agent:
                 # A variant of the default model (a per-category thinking flag or depth) is
                 # the same model, so the settings' window still describes it.
                 context_window = self.settings.context_window
-            update: dict[str, object] = {"default_model": model, "context_window": context_window}
+            if prompt_caching is None:
+                prompt_caching = (
+                    self.settings.prompt_caching if model == self.settings.default_model else False
+                )
+            update: dict[str, object] = {
+                "default_model": model,
+                "context_window": context_window,
+                "prompt_caching": prompt_caching,
+            }
             if reasoning_effort is not None:
                 update["reasoning_effort"] = reasoning_effort
             # api_base/api_key are ENDPOINT-specific. Don't carry the configured custom
@@ -1684,6 +1701,7 @@ class Agent:
         extra_body: dict[str, object] | None = None,
         context_window: int | None = None,
         reasoning_effort: str | None = None,
+        prompt_caching: bool | None = None,
     ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
@@ -1695,19 +1713,30 @@ class Agent:
         ``thinking`` flag). It participates in the CACHE KEY, which it must: two categories
         can name the SAME model and want different thinking, and a model-only key would hand
         the second one the first one's provider and silently apply the wrong setting.
-        ``context_window`` (the category entry's declared window, ADR-0066) and
-        ``reasoning_effort`` (the category's reasoning depth, ADR-0182) are keyed the same
-        way for the same reason.
+        ``context_window`` (the category entry's declared window, ADR-0066),
+        ``reasoning_effort`` (the category's reasoning depth, ADR-0182) and ``prompt_caching``
+        (the entry's cache-breakpoint switch, ADR-0298) are keyed the same way for the same
+        reason: two categories can name one model and disagree on the switch.
         """
         if not model or self._provider_injected:
             return self.provider
-        if model == self.settings.default_model and not extra_body and reasoning_effort is None:
+        if (
+            model == self.settings.default_model
+            and not extra_body
+            and reasoning_effort is None
+            and prompt_caching in (None, self.settings.prompt_caching)
+        ):
             return self.provider
         key = model
-        if extra_body or context_window is not None or reasoning_effort is not None:
+        if (
+            extra_body
+            or context_window is not None
+            or reasoning_effort is not None
+            or prompt_caching is not None
+        ):
             key = (
                 f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
-                f"\x00{reasoning_effort}"
+                f"\x00{reasoning_effort}\x00{prompt_caching}"
             )
         if key not in self._provider_cache:
             self._provider_cache[key] = self._build_provider(
@@ -1715,6 +1744,7 @@ class Agent:
                 extra_body=extra_body,
                 context_window=context_window,
                 reasoning_effort=reasoning_effort,
+                prompt_caching=prompt_caching,
             )
         return self._provider_cache[key]
 
@@ -1746,6 +1776,7 @@ class Agent:
                 extra_body=spec.extra_body,
                 context_window=spec.context_window,
                 reasoning_effort=spec.reasoning_effort,
+                prompt_caching=spec.prompt_caching,
             ),
             model,
         )
