@@ -290,3 +290,27 @@ def test_a_turn_the_old_bus_took_with_it_does_not_lend_its_clock_or_meter_to_the
     assert "3m 50s" in same_bus.split(" · "), same_bus
     assert "7 tokens" in same_bus, same_bus
     assert restarted == opened_on_the_new_bus
+
+
+def test_a_cancelled_turn_says_when_its_cost_could_not_be_priced(tmp_path: Path) -> None:
+    """A cancel sends no done frame, so the page draws that footer from the usage frames it
+    summed. The sum keeps `cost_unpriced` as the terminal's `Usage.__add__` does (ADR-0302): one
+    call that could not be priced makes the figure a floor, and none priced leaves no figure."""
+
+    def cancelled(*usages: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        frames = [("1", {"event": "user_message", "text": "hello", "at": _T0})]
+        for n, usage in enumerate(usages, start=2):
+            frames.append((str(n), {"event": "usage", "usage": usage, "at": _T0 + n}))
+        end = {"event": "status", "message": "interrupted", "at": _T0 + 10.0}
+        return [*frames, (str(len(frames) + 1), end)]
+
+    priced = {"total_tokens": 10, "prompt_tokens": 8, "cost_usd": 0.0213}
+    unpriced = {"total_tokens": 10, "prompt_tokens": 8, "cost_usd": 0.0, "cost_unpriced": True}
+    [both_priced] = _footers({"null": cancelled(priced, priced)}, tmp_path)
+    [none_priced] = _footers({"null": cancelled(unpriced, unpriced)}, tmp_path)
+    [one_priced] = _footers({"null": cancelled(priced, unpriced)}, tmp_path)
+    # Positive control: a priced cancel prints its figure, so the words below are the flag.
+    assert "$0.0426" in both_priced.split(" · "), both_priced
+    assert "unpriced" not in both_priced, both_priced
+    assert "unpriced" in none_priced.split(" · "), none_priced
+    assert "at least $0.0213, some calls unpriced" in one_priced.split(" · "), one_priced

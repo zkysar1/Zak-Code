@@ -18409,3 +18409,64 @@ and the working folder. Three mutations were each run green, red, green (2026-10
 tests red, the in-process working folder dropped turned 2, and the `pushd` line dropped turned 1. The end to end, run
 locally on uv 0.12.5, stopped at the reinstall with `File not found` before the change and passes after it. `uv run poe
 check` is green: 5,778 passed, 22 skipped.
+
+## ADR-0302: a cost that could not be priced reads `unpriced`, and a total with some unpriced calls reads as a floor, in the footer, `/cost` and the web page
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that the
+cost footer prints `$0.00` for calls Zak Code already knows it could not price. On that gateway a streamed call carries no
+cost (the final usage has token fields only, and the stream's hidden params and headers carry no response cost) and
+litellm's price map has no entry for most of its aliases, so the provider returns `cost_usd=0.0` with `cost_unpriced=True`,
+while a buffered call is priced from the gateway's own figure. `Usage.__add__` keeps the flag sticky and the budget honours
+it (`budget_unpriced`), but every display read `cost_usd` alone: the turn footer, the `/cost` total and its per-model rows,
+and the web page's footer. A 40k to 110k token run ended with `$0.00`, and where budgets exist zero reads as free.
+
+**Decision.**
+
+* One rule, `cost_text(usage, figure)` in `cli/render.py`, decides what a display shows in place of the figure it was
+  handed: the figure when `cost_unpriced` is not set; `unpriced` when it is set and nothing was priced (`cost_usd` is 0);
+  and `at least <figure>, some calls unpriced` when it is set and some calls were priced, which is the case when sub-agents
+  run buffered and are priced by the gateway while the main turn streams and is not. Each display keeps its own figure
+  format (the footer's trimmed one, `/cost`'s four places), and the rule wraps it.
+* The footer, the `/cost` total and each per-model row go through it. The web page's footer mirrors it as `costText`
+  beside `fmtCost`, inside the block the parity test checks against the terminal.
+* The page's own sum of a turn's usage frames keeps `cost_unpriced` the way `Usage.__add__` does. The server sends no
+  done frame after a cancel, so the page draws a cancelled turn's footer from that sum, and it summed five numeric fields
+  only: a cancelled turn on such a route would still have read `$0.00`. The terminal's footer already falls back to a
+  `Usage` sum.
+* No rate is guessed for the unpriced calls, for the reason the provider gives where it declines to: a guessed price
+  printed as a cost is a fabricated measurement.
+* `docs/CONFIG.md` says, at `ZAKCODE_MAX_COST_USD`, that with a ceiling set an unpriced call stops the turn with
+  `budget_unpriced`, by design, since the ceiling cannot be enforced.
+
+Rejected: printing `$0.00 (unpriced)`, which keeps the zero that reads as free in front of the word that corrects it; and
+counting priced and unpriced calls to tell "some priced at nothing" from "none priced", because a priced call that costs
+exactly nothing beside an unpriced one reads `unpriced` either way and neither word claims a spend. Not done, as the report
+allows: a user-declared price per zakpick entry, which would let the ceiling work on gateway aliases with a number the user
+supplies. It is a separate change with its own contract.
+
+Not verified: a live gateway. The three states are built from `Usage` records as the provider produces them; that a
+streamed call on the reported gateway arrives with `cost_unpriced=True` is the report's own measurement. The server's
+JSON is not changed: every done frame and every `POST /chat` reply carries `usage.cost_unpriced` beside `usage.cost_usd`
+(measured through `event_to_dict` and `ChatResponse`), while the reply's top-level `cost_usd` stays the bare figure, so a
+client that reads that field alone still sees `0.0`. The log line of a turn its budget stopped prints the bare figure too;
+it is a log record, not a display, and is unchanged.
+
+**Consequences.** A session on a gateway alias that streams now ends with `unpriced` where it ended with `$0.00`, and a
+session where only sub-agents were priced ends with `at least $x, some calls unpriced`. A priced session reads exactly as
+before, on every display.
+
+The proof. `tests/test_render.py`: the footer for a priced turn (the figure, no `unpriced`), a turn with nothing priced
+(`unpriced`, no `$0.00`) and a mixed one (`at least $0.0252, some calls unpriced`). `tests/test_cli_chat.py`: `/cost` for
+the same three states, each with two models, so the total and both per-model rows are read; the mixed case has one model
+with a priced and an unpriced call and one with an unpriced call only, so one row is a floor and the other `unpriced`.
+`tests/test_webclient_parity.py`: the whole footer line, terminal against page, now also for a turn with nothing priced
+and a mixed one. `tests/test_webclient_turn_clock.py`: a cancelled turn's footer, drawn by the page's own script under
+node from the usage frames it summed, for two priced calls (`$0.0426`), two unpriced ones (`unpriced`) and one of each
+(`at least $0.0213, some calls unpriced`). Against the pre-change source, 4 of the 6 new terminal tests fail (the priced
+cases pass, as controls), the cancelled-turn test fails reading `$0.00`, and the parity test fails once the terminal is
+changed and the page is not. Five mutations were each run green, red, green (2026-10-14 and 2026-10-15): the flag
+ignored turned 5 tests red, the mixed case reported as `unpriced` 3, the per-model rows left on the bare figure 2, the
+page left on the bare figure 1, and the page's sum dropping the flag 1. `uv run poe check` is green: 5,785 passed, 22
+skipped.

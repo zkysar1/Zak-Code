@@ -771,7 +771,7 @@ class StreamRenderer:
                     label,
                     f"{done.iterations} iterations",
                     tokens_item,
-                    _fmt_cost(usage.cost_usd),
+                    cost_text(usage, _fmt_cost(usage.cost_usd)),
                     _fmt_duration(self._clock() - self._turn_start),
                     # When the turn ended, wall clock (ADR-0185): with the operator's line
                     # stamped too, every turn shows its time bracket.
@@ -1023,6 +1023,20 @@ def _fmt_cost(cost: float) -> str:
     if len(frac) < 2:
         frac = frac.ljust(2, "0")
     return f"${whole}.{frac}"
+
+
+def cost_text(usage: Usage, figure: str) -> str:
+    """What a display shows for ``usage``'s cost, given ``figure``, its ``cost_usd`` formatted.
+
+    With ``cost_unpriced`` set, ``cost_usd`` is the sum of the calls that could be priced, so it
+    is not the cost: nothing priced reads ``unpriced``, not a ``$0.00`` that looks free, and some
+    priced reads as the floor it is. No rate is guessed for the rest (ADR-0302).
+    """
+    if not usage.cost_unpriced:
+        return figure
+    if usage.cost_usd > 0:
+        return f"at least {figure}, some calls unpriced"
+    return "unpriced"
 
 
 def _humanize_tokens(n: int) -> str:

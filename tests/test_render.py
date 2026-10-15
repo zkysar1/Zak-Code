@@ -1070,6 +1070,32 @@ async def test_render_footer_always_shows_cost_slot() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage", "shown", "absent"),
+    [
+        (Usage(total_tokens=20, cost_usd=0.0252), "$0.0252", "unpriced"),
+        # Nothing could be priced: a $0.00 here reads as free (ADR-0302).
+        (Usage(total_tokens=20, cost_unpriced=True), "· unpriced ·", "$0.00"),
+        # A buffered call priced by a gateway beside a streamed one it could not price.
+        (
+            Usage(total_tokens=20, cost_usd=0.0252, cost_unpriced=True),
+            "· at least $0.0252, some calls unpriced ·",
+            None,
+        ),
+    ],
+    ids=["priced", "unpriced", "mixed"],
+)
+async def test_render_footer_says_when_the_cost_could_not_be_priced(
+    usage: Usage, shown: str, absent: str | None
+) -> None:
+    renderer, buffer = _make_renderer()
+    await renderer.render(_astream([AgentDone(stop_reason="stop", iterations=1, usage=usage)]))
+    out = buffer.getvalue()
+    assert shown in out, out
+    assert absent is None or absent not in out, out
+
+
+@pytest.mark.asyncio
 async def test_render_footer_falls_back_to_accumulated_usage() -> None:
     renderer, buffer = _make_renderer()
     # AgentDone carries no usage tokens; the renderer accumulated some via

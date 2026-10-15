@@ -262,6 +262,15 @@ def test_the_whole_footer_line_matches_the_terminal(
             cost_usd=0.0213,
             cache_unsplit_tokens=12_000,
         ),
+        # A turn no call of which could be priced, and one where only some could (ADR-0302).
+        Usage(prompt_tokens=18_000, completion_tokens=234, total_tokens=18_234, cost_unpriced=True),
+        Usage(
+            prompt_tokens=18_000,
+            completion_tokens=234,
+            total_tokens=18_234,
+            cost_usd=0.0213,
+            cost_unpriced=True,
+        ),
     ]
     for usage in usages:
         done = AgentDone(stop_reason="completed", iterations=6, usage=usage)

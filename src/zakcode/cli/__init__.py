@@ -65,7 +65,7 @@ from zakcode.cli.logsink import (
     install_transcript_logging,
     log_level_from_env,
 )
-from zakcode.cli.render import StreamRenderer, display_call
+from zakcode.cli.render import StreamRenderer, cost_text, display_call
 from zakcode.cli.saybox import fold_lines
 from zakcode.config import PermissionTier, Settings, env_source, load_settings, zakcode_home
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
@@ -3721,7 +3721,7 @@ def chat(
                                 "notice.dim",
                             ),
                             (dot, "notice.dim"),
-                            (f"${usage.cost_usd:.4f}", "arg.value"),
+                            (cost_text(usage, f"${usage.cost_usd:.4f}"), "arg.value"),
                         )
                     )
                 )
@@ -3739,7 +3739,10 @@ def chat(
                                     (dot, "notice.dim"),
                                     (f"{model_usage.total_tokens} tok", "notice.dim"),
                                     (dot, "notice.dim"),
-                                    (f"${model_usage.cost_usd:.4f}", "arg.value"),
+                                    (
+                                        cost_text(model_usage, f"${model_usage.cost_usd:.4f}"),
+                                        "arg.value",
+                                    ),
                                 )
                             )
                         )
