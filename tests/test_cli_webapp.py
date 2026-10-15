@@ -30,6 +30,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
     def fake_create_app(*, settings: Any = None, **kw: Any) -> object:
         captured["settings"] = settings
         captured["on_run_end"] = kw.get("on_run_end")
+        captured["new_session"] = kw.get("new_session")
         return object()  # dummy ASGI app; the server is stubbed so it is never served
 
     class _FakeServer:
@@ -75,6 +76,33 @@ def test_webapp_without_workspace_uses_configured_default(monkeypatch: pytest.Mo
     assert result.exit_code == 0, result.stdout
     # create_app() is called with no settings (server resolves them from env/.env).
     assert captured["settings"] is None
+
+
+@pytest.mark.parametrize(
+    ("flags", "opens_a_new_chat"),
+    [
+        (["--new-session"], True),
+        (["--new-session", "--workspace", "{tmp}"], True),
+        ([], False),
+        (["--workspace", "{tmp}"], False),
+    ],
+    ids=["new-session", "new-session-with-workspace", "default", "workspace-only"],
+)
+def test_webapp_new_session_reaches_the_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    opens_a_new_chat: bool,
+) -> None:
+    """``--new-session`` opens the run on a new chat (ADR-0319); without it the run
+    continues the workspace's current chat, as a restart must."""
+    captured: dict[str, Any] = {}
+    _patch(monkeypatch, captured)
+
+    result = runner.invoke(app, ["webapp", *(f.replace("{tmp}", str(tmp_path)) for f in flags)])
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["new_session"] is opens_a_new_chat
 
 
 # ── non-loopback bind guard (unauthenticated exposure) ─────────────────────────────

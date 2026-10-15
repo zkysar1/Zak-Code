@@ -106,6 +106,42 @@
       letter-spacing: .06em; text-transform: uppercase;
     }
 
+    /* ── chat list: the workspace's saved chats beside the column, New chat on top (ADR-0319);
+       below 48rem it folds away behind the header's Chats button ── */
+    header .lead { display: flex; align-items: center; gap: .75rem; }
+    #frame { flex: 1 1 auto; display: flex; min-height: 0; }
+    #chat { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+    #sidebar {
+      flex: none; width: 16rem; overflow-y: auto; padding: .75rem .5rem;
+      background: var(--bg); border-right: 1px solid var(--line);
+    }
+    #new-chat, #chats-toggle {
+      font: 600 13px/1.5 var(--font-prose); color: var(--fg); background: transparent;
+      border: 1px solid var(--line-strong); border-radius: 999px; cursor: pointer;
+      transition: border-color 120ms ease;
+    }
+    #new-chat { display: block; width: 100%; margin-bottom: .75rem; padding: .4rem .8rem; text-align: left; }
+    #new-chat:hover, #chats-toggle:hover { border-color: var(--brand); }
+    #chats-toggle { display: none; padding: .15rem .7rem; font-size: 12px; }
+    .chat {
+      display: flex; align-items: baseline; gap: .5rem; width: 100%; padding: .4rem .6rem;
+      text-align: left; background: transparent; border: 0; border-radius: var(--radius-sm);
+      color: var(--muted); font: 13px/1.45 var(--font-prose); cursor: pointer;
+      transition: background-color 120ms ease, color 120ms ease;
+    }
+    .chat:hover { background: var(--surface); color: var(--fg); }
+    .chat.current { background: var(--inset); color: var(--fg); }
+    .chat .ct { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat .cm { flex: none; font: 11px/1.45 var(--font-mono); color: var(--faint); }
+    @media (max-width: 48rem) {
+      #chats-toggle { display: inline-block; }
+      #sidebar {
+        display: none; position: fixed; top: 48px; bottom: 0; left: 0; z-index: 20;
+        max-width: calc(100vw - 3rem); box-shadow: var(--shadow);
+      }
+      #sidebar.open { display: block; }
+    }
+
     /* ── transcript: one centered 44rem column (spaciousness guard: do not widen) ── */
     main { flex: 1 1 auto; overflow-y: auto; }
     #log { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
@@ -408,7 +444,10 @@
 </head>
 <body>
   <header>
-    <div class="brand"><span class="spark" aria-hidden="true">✦</span><span>Zak Code</span></div>
+    <div class="lead">
+      <button type="button" id="chats-toggle" aria-controls="sidebar" aria-expanded="false">Chats</button>
+      <div class="brand"><span class="spark" aria-hidden="true">✦</span><span>Zak Code</span></div>
+    </div>
     <div class="right">
       <span class="chip" id="chip-model"></span>
       <span class="chip" id="chip-session"></span>
@@ -419,6 +458,12 @@
     </div>
   </header>
 
+  <div id="frame">
+  <aside id="sidebar" aria-label="Chats">
+    <button type="button" id="new-chat">New chat</button>
+    <nav id="chats" aria-label="Saved chats"></nav>
+  </aside>
+  <div id="chat">
   <main id="main">
     <div id="log" aria-live="polite">
       <div id="empty">
@@ -454,6 +499,8 @@
       <textarea id="input" rows="1" placeholder="Message Zak Code…" autocomplete="off"></textarea>
       <button type="button" id="send" aria-label="Send">↑</button>
     </div>
+  </div>
+  </div>
   </div>
 
   <script>
@@ -504,10 +551,15 @@
   const approvalDetail = document.getElementById("approval-detail");
   const connDot = document.getElementById("conn-dot");
   const connLabel = document.getElementById("conn-label");
+  const sidebar = document.getElementById("sidebar");
+  const chatList = document.getElementById("chats");
+  const chatsToggle = document.getElementById("chats-toggle");
 
   let sessionId = null;
   let lastCursor = null;
   let busEpoch = null;       // the watch bus the history and lastCursor belong to (ADR-0289); null until named
+  let shown = 0;             // counts the chats opened; work begun for an earlier one draws nothing (ADR-0319)
+  let watchAbort = null;     // ends the open watch connection when another chat opens
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
   let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send and at turn end
@@ -1198,6 +1250,7 @@
     const body = el("div", "receipt", text + " · " + hhmm(ev.at));
     add(row("turnend", el("span", "rdot " + tone), body));
     endTurn();
+    refreshChats();  // the turn saved this chat: its title, and its place at the top of the list
   }
 
   // A turn's end: done, the interrupted status, an error frame, a session restart.
@@ -1293,8 +1346,7 @@
         follow();
         return;
       case "session_rotated":
-        add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (ev.reason ? " — " + ev.reason : ""))));
-        endTurn();
+        followCurrent(ev.reason);
         return;
       case "usage":
         if (ev.usage) {
@@ -1428,9 +1480,16 @@
       const resp = await fetch("/say", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, session_id: sessionId }),
       });
       if (resp.status === 429) { setStatus("agent is busy — a message is already pending"); return; }
+      if (resp.status === 409) {
+        // Another chat is current now (opened from another page while this one was not
+        // listening): open it, and keep the message for the user to send there or not.
+        await followCurrent("");
+        setStatus("another chat is open now — your message was not sent");
+        return;
+      }
       if (!resp.ok) throw new Error("HTTP " + resp.status);
     } catch (e) {
       add(errCard("send failed: " + e.message));
@@ -1474,11 +1533,12 @@
   // drawn twice and none is missed. Returns the name of the bus that cut was made against (null
   // when there was none, or the server names none): a bus replaced before the watch opens holds
   // none of the turns the cut left to it, and the watch response then names another (ADR-0289).
-  async function renderHistory() {
+  async function renderHistory(gen) {
     try {
       const resp = await fetch("/sessions/" + sessionId + "/transcript");
       if (!resp.ok) throw new Error("transcript " + resp.status);
       const t = await resp.json();
+      if (gen !== shown) return null;  // another chat opened while this one's history was on its way
       assistantBody = null;
       for (const m of t.messages) {
         if (t.bus_from !== null && m.at !== null && m.at >= t.bus_from) continue;
@@ -1506,7 +1566,16 @@
   // and whatever this page had not drawn yet died with the old bus. So the page starts over as a
   // freshly opened one does: the start screen, the saved conversation older than the new bus,
   // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay.
-  async function startOver() {
+  async function startOver(gen) {
+    resetView();
+    await renderHistory(gen);  // the watch response that sent us here named the bus; watchLoop() keeps it
+  }
+
+  // Everything the page drew or counted for the chat on screen: the rows, the cursor, the plan
+  // it last drew, the turn's clock and meter, the status line, pending tool and permission cards.
+  // Cleared together, when the bus changes and when another chat opens (ADR-0289, ADR-0319);
+  // kept, any of it would be read against the next chat's frames.
+  function resetView() {
     log.replaceChildren(...(emptyState ? [emptyState] : []));
     lastCursor = null;
     lastPlanKey = "";
@@ -1515,59 +1584,175 @@
     approvedTool = "";
     stick = true;
     endTurn();  // the turn clock and meter, the status line, pending tool cards, the prose group
-    await renderHistory();  // the watch response that sent us here named the bus; watchLoop() keeps it
+  }
+
+  // Show a chat: its start screen, its saved conversation, then its own watch (ADR-0319). The
+  // watch of the chat it replaces is ended, and anything still on its way for that chat (frames,
+  // its history) is dropped, because it belongs to a count of `shown` that has passed.
+  async function openSession(info) {
+    if (info.id === sessionId) return;
+    const gen = ++shown;
+    if (watchAbort) watchAbort.abort();
+    sessionId = info.id;
+    const id8 = sessionId.slice(0, 8);
+    document.getElementById("chip-model").textContent = info.model;
+    document.getElementById("chip-session").textContent = id8;
+    document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
+    resetView();
+    const epoch = await renderHistory(gen);  // the bus the history was cut against: see startOver()
+    if (gen !== shown) return;
+    busEpoch = epoch;
+    watchLoop(gen);
   }
 
   async function init() {
     setConn("connecting", "connecting");
     try {
       // Join the workspace's CURRENT conversation; create it only if none exists —
-      // one workspace, one conversation, shared with every surface.
+      // one workspace, one current conversation, shared with every surface.
       let resp = await fetch("/sessions/current");
       if (resp.status === 404) resp = await fetch("/sessions", { method: "POST" });
       if (!resp.ok) throw new Error("session " + resp.status);
-      const info = await resp.json();
-      sessionId = info.id;
-      const id8 = sessionId.slice(0, 8);
-      document.getElementById("chip-model").textContent = info.model;
-      document.getElementById("chip-session").textContent = id8;
-      document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
-      busEpoch = await renderHistory();  // the bus the history was cut against: see startOver()
-      watchLoop();
+      await openSession(await resp.json());
     } catch (e) {
       setConn("closed", "disconnected");
       add(errCard("could not join a session: " + e.message));
     }
+    refreshChats();
   }
 
   // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
-  // need); reconnects forever, resuming after the last seen cursor of the same bus.
-  async function watchLoop() {
-    for (;;) {
+  // need); reconnects for as long as its chat is the one shown, resuming after the
+  // last seen cursor of the same bus.
+  async function watchLoop(gen) {
+    while (gen === shown) {
       try {
         let qs = lastCursor !== null ? "&since=" + encodeURIComponent(lastCursor) : "";
         // Say which bus the cursor came from; the server drops the cursor if that bus is gone.
         if (busEpoch !== null) qs += "&epoch=" + encodeURIComponent(busEpoch);
-        const resp = await fetch("/watch/" + sessionId + "?full=1" + qs);
+        watchAbort = new AbortController();
+        const resp = await fetch("/watch/" + sessionId + "?full=1" + qs, { signal: watchAbort.signal });
         if (!resp.ok) throw new Error("watch " + resp.status);
         setConn("open", "connected");
         // A server that names no bus (an older one) never differs, so it never resets the page.
         const epoch = resp.headers.get("X-Bus-Epoch");
         if (epoch !== null) {
-          if (busEpoch !== null && epoch !== busEpoch) await startOver();
+          if (busEpoch !== null && epoch !== busEpoch) await startOver(gen);
+          if (gen !== shown) return;
           busEpoch = epoch;
         }
         await readSse(resp.body, (id, data) => {
+          if (gen !== shown) return;  // a frame of the chat the page has left
           if (id) lastCursor = id;
           try { onFrame(JSON.parse(data)); }
           catch { add(errCard("[bad frame]")); }
         });
       } catch (e) { /* fall through to reconnect */ }
+      if (gen !== shown) return;  // another chat opened: its own watch is on its way
       setConn("connecting", "reconnecting");
       resetTurnView();
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
+
+  // ── the chat list (ADR-0319) ──
+  // The workspace's saved chats, newest first, the one on screen marked. Asked for again
+  // whenever what it shows can change: a chat opened, a turn ended. A list that cannot be
+  // read keeps what it showed; the chat in the column does not depend on it.
+  async function refreshChats() {
+    let chats;
+    try {
+      const resp = await fetch("/sessions/recent");
+      if (!resp.ok) return;
+      chats = await resp.json();
+    } catch (e) {
+      return;
+    }
+    const now = Date.now() / 1000;
+    chatList.replaceChildren(...chats.map((c) => chatItem(c, now)));
+  }
+
+  function chatItem(c, now) {
+    const item = el("button", "chat");
+    item.appendChild(el("span", "ct", c.title || "New chat"));
+    item.appendChild(el("span", "cm", ago(now - Date.parse(c.updated_at) / 1000)));
+    if (c.id === sessionId) {
+      item.classList.add("current");
+      item.setAttribute("aria-current", "page");
+    }
+    item.onclick = () => switchTo(c.id);
+    return item;
+  }
+
+  // How long ago, as the terminal's /resume picker prints it (cli _age_str).
+  function ago(s) {
+    s = Math.max(0, s || 0);
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+
+  // Open a saved chat, or a new one (null). The server makes it the workspace's current chat,
+  // so the next message runs on it with its whole history, and tells every page watching the
+  // chat it replaces to follow. It refuses while a turn runs or a message waits (409).
+  async function switchTo(target) {
+    closeChats();
+    if (target !== null && target === sessionId) return;
+    if (turnActive) { setStatus("a turn is running — stop it or let it finish, then switch"); return; }
+    let resp;
+    try {
+      resp = await fetch("/sessions/current", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: target }),
+      });
+    } catch (e) {
+      add(errCard("could not open the chat: " + e.message));
+      return;
+    }
+    if (resp.status === 409) {
+      const refused = await resp.json().catch(() => ({}));
+      setStatus(refused.detail || "this chat is busy — try again when it is idle");
+      return;
+    }
+    if (!resp.ok) { add(errCard("could not open the chat: HTTP " + resp.status)); return; }
+    await openSession(await resp.json());
+    refreshChats();
+    input.focus();
+  }
+
+  // The current chat changed under this page: another page opened one, or a driver started a
+  // new session (session_rotated). Open the chat that is current now. When it is still this one
+  // (the marker has not moved yet), mark the restart in place, as the page always did.
+  async function followCurrent(reason) {
+    const gen = shown;
+    try {
+      const resp = await fetch("/sessions/current");
+      if (gen !== shown) return;  // the page has opened another chat meanwhile
+      if (resp.ok) {
+        const info = await resp.json();
+        if (gen !== shown) return;
+        if (info.id !== sessionId) {
+          await openSession(info);
+          refreshChats();
+          return;
+        }
+      }
+    } catch (e) { /* mark it below */ }
+    add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (reason ? " — " + reason : ""))));
+    endTurn();
+  }
+
+  function closeChats() {
+    sidebar.classList.remove("open");
+    chatsToggle.setAttribute("aria-expanded", "false");
+  }
+  chatsToggle.onclick = () => {
+    const open = sidebar.classList.toggle("open");
+    chatsToggle.setAttribute("aria-expanded", String(open));
+  };
+  document.getElementById("new-chat").onclick = () => switchTo(null);
 
   async function readSse(body, onEvent) {
     const reader = body.getReader();

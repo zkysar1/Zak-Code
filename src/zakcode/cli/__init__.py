@@ -3995,6 +3995,12 @@ def serve(
         "the catastrophic-command blocklist and explicit tool denies still refuse. "
         "Equivalent to ZAKCODE_PERMISSION_MODE=bypassPermissions.",
     ),
+    new_session: bool = typer.Option(
+        False,
+        "--new-session",
+        help="Open on a new chat instead of the last one. Earlier chats stay in the page's "
+        "chat list.",
+    ),
 ) -> None:
     """Serve the web app: the browser chat page + HTTP API, over the same core.
 
@@ -4009,6 +4015,9 @@ def serve(
     say``) writes the workspace say inbox, and the webapp runs a turn per say —
     including y/a/n permission answers mid-prompt. The webapp is always the
     workspace's turn-runner; there is no second consumer to configure around.
+
+    The run continues the workspace's current chat, as a restart must. ``--new-session``
+    opens it on a new one instead; the page's chat list opens any earlier one (ADR-0319).
 
     Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on
     every request. Without a token the server is unauthenticated, so binding a
@@ -4065,9 +4074,9 @@ def serve(
             server.should_exit = True
 
     fastapi_app = (
-        create_app(settings=resolved_settings, on_run_end=_on_run_end)
+        create_app(settings=resolved_settings, on_run_end=_on_run_end, new_session=new_session)
         if workspace is not None
-        else create_app(on_run_end=_on_run_end)
+        else create_app(on_run_end=_on_run_end, new_session=new_session)
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""

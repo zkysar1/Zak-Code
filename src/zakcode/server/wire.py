@@ -113,6 +113,11 @@ class SayRequest(BaseModel):
     the server only length-caps and queues it."""
 
     text: str
+    #: The conversation the sender is showing; the web page sends it (ADR-0319). When it is not
+    #: the workspace's current conversation the say is refused with 409 and nothing is queued, so
+    #: a page left on another chat never puts its message into this one. Omitted, the say goes
+    #: to the current conversation, as before.
+    session_id: str | None = None
 
 
 class ObserveRequest(BaseModel):
@@ -332,6 +337,28 @@ class SessionInfo(BaseModel):
             call_count=len(session.usages),
             calls_by_model=calls_by_model,
         )
+
+
+class SessionSummary(BaseModel):
+    """One saved conversation as the web page's chat list shows it (``GET /sessions/recent``,
+    ADR-0319)."""
+
+    id: str
+    #: Its first ask (the pinned ``task``, else its first user message) on one line, redacted
+    #: and cut at a word. Empty before anything was asked in it.
+    title: str = ""
+    #: When it was last saved (ISO 8601, UTC): the order of the list, newest first.
+    updated_at: str = ""
+    message_count: int = 0
+    #: Whether it is the workspace's current conversation, the one the next turn runs on.
+    current: bool = False
+
+
+class CurrentSessionRequest(BaseModel):
+    """Body of ``PUT /sessions/current`` (ADR-0319): the saved conversation to make the
+    workspace's current one, or ``None`` for a new one."""
+
+    session_id: str | None = None
 
 
 class TranscriptMessage(BaseModel):

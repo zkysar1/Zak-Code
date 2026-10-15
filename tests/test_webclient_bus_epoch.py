@@ -103,11 +103,11 @@ _POLL = 0.05
 class _OpenPage:
     """The page's script running under node and held open, so the test can act while it is there."""
 
-    def __init__(self, base: str, workdir: Path) -> None:
+    def __init__(self, base: str, workdir: Path, tail: str = _TAIL) -> None:
         assert _NODE is not None
         script = workdir / f"open-page-{time.monotonic_ns()}.js"
         dom = _PRELUDE.split("const __STREAMS = ")[0]
-        script.write_text(dom + _TAIL + _page_script(), encoding="utf-8")
+        script.write_text(dom + tail + _page_script(), encoding="utf-8")
         self._errors = workdir / f"{script.stem}.err"
         self._errors_out = self._errors.open("wb")
         self._proc = subprocess.Popen(

@@ -465,7 +465,23 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   `sessionId.slice(0, 8)`), connection dot (`aria-hidden`; `--brand` pulsing /
   `--ok` open / `--err` closed) + adjacent text state label (the accessible carrier) in
   the family's live-status grammar — 11px, weight 600, uppercase, `.06em` tracking.
-  Cost lives in per-turn receipts, never the header.
+  Cost lives in per-turn receipts, never the header. Below 48rem a **Chats** pill sits
+  before the wordmark and opens the chat list.
+- **Chat list** — a 16rem column left of the transcript, on `--bg` with a `--line` rule
+  beside it (ADR-0319). On top, **New chat**: an outlined pill (`--line-strong` border,
+  `--brand` border under the pointer, never a brand fill). Under it, the workspace's saved
+  chats, newest first, one line each: the chat's first ask in 13px prose, cut with an
+  ellipsis, then the age of its last save in 11px mono `--faint`, as the terminal's
+  `/resume` prints it (`3m ago`). The chat on screen sits on `--inset` with
+  `aria-current`; another one shows `--surface` under the pointer. A chat with nothing asked
+  in it yet reads "New chat". Choosing a chat opens it: the column clears, draws that
+  chat's saved conversation and watches its own bus, and the next message runs on it with
+  its whole history. New chat opens an empty chat, or stays on the current one while
+  nothing is in it. While a turn runs or a message waits, the switch is refused and the
+  status line says why. Every other page on the workspace follows a switch. Below 48rem the
+  list folds away and opens over the column from the header's **Chats** pill; choosing a
+  chat closes it. The list is asked for again whenever it can change (a chat opened, a turn
+  ended); one that cannot be read keeps what it showed.
 - **Empty state** — centered `✦` + name (`--font-display`, 30px) + `{model} · session
   {id8}` + hint, plus three sample-prompt pills that prefill the composer (never send);
   removed on first append.
