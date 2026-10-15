@@ -66,7 +66,9 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
     ToolUseRefused,
+    quoted_provider_message,
 )
+from zakcode.providers.labels import ModelRef
 
 logger = logging.getLogger(__name__)
 
@@ -687,8 +689,8 @@ class TextToolCallingProvider(Provider):
             logger.warning(
                 "%s refused tool use (%s) — using the text tool protocol for the rest of this "
                 "session and re-issuing the call",
-                self.model_id(),
-                " ".join(str(exc).split())[:200],
+                ModelRef(self.model_id()),
+                quoted_provider_message(exc),
             )
 
     @staticmethod
@@ -891,7 +893,9 @@ class TextToolCallingProvider(Provider):
                 arguments_delta=json.dumps(call.arguments, default=str),
             )
         yield StreamUsage(usage=result.usage)
-        yield StreamDone(finish_reason=result.finish_reason)
+        yield StreamDone(
+            finish_reason=result.finish_reason, clamped_output_cap=result.clamped_output_cap
+        )
 
     def _record_text_overhead(self, protocol: str) -> None:
         """Remember the injected protocol's token cost (see ``_text_overhead_tokens``)."""

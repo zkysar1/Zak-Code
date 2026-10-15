@@ -39,6 +39,7 @@ from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError, UnknownContextWindow, WindowResolution
+from zakcode.providers.labels import ModelRef
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.status_file import get_writer as _status_writer
@@ -493,7 +494,7 @@ class Agent:
             )
             logger.info(
                 "auto model resolution: %s (%s)",
-                self.model_resolution.model,
+                ModelRef(self.model_resolution.model),
                 self.model_resolution.reason,
             )
         elif not self._provider_injected and self.settings.default_model == ZAKPICK_SENTINEL:
@@ -519,7 +520,9 @@ class Agent:
             # an entry that names no mode inherits the global setting, so a copy would hand
             # the startup entry's mode to every other entry. It is kept for this model alone.
             self._startup_tool_calling_mode = startup_spec.tool_calling_mode
-            logger.info("zakpick: routing per task category; startup model %s", startup_model)
+            logger.info(
+                "zakpick: routing per task category; startup model %s", ModelRef(startup_model)
+            )
         #: Every effective model's context window and its source (ADR-0066), by label —
         #: filled by ``_assert_context_windows`` for the info panel and the skill-fit check.
         self.context_windows: dict[str, WindowResolution] = {}
