@@ -26,7 +26,9 @@ wiring for a plain-text protocol the model *can* follow:
 
 Three modes (``tool_calling_mode`` in :class:`~zakcode.config.Settings`):
 
-* ``"native"`` — pure passthrough; never inject a protocol, never parse text.
+* ``"native"`` — pure passthrough; never inject a protocol, never parse text, unless the
+  backend refuses tool use outright, after which the session uses the text protocol
+  (ADR-0303).
 * ``"text"``   — always use the text protocol (force it on, for any backend).
 * ``"auto"``   — *(default)* use native when the wrapped provider reports
   ``capabilities().supports_tools``; otherwise fall back to text. In native mode it
@@ -41,6 +43,7 @@ object with a ``"name"`` key), so prose almost never trips the parser.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Collection, Iterator
 from typing import Any
@@ -62,7 +65,10 @@ from zakcode.providers.base import (
     StreamToolCallDelta,
     StreamUsage,
     ToolCall,
+    ToolUseRefused,
 )
+
+logger = logging.getLogger(__name__)
 
 #: Accepted tool-calling modes (anything else normalizes to ``"auto"``).
 TOOL_CALLING_MODES = ("auto", "native", "text")
@@ -635,6 +641,9 @@ class TextToolCallingProvider(Provider):
         self.mode = mode if mode in TOOL_CALLING_MODES else "auto"
         self.single_tool_per_turn = single_tool_per_turn
         self._cached_native: bool | None = None
+        # The backend refused tool use outright (ADR-0303): every later call with tools uses
+        # the text protocol, whatever the mode. Learned per instance, so per route and session.
+        self._tools_refused = False
         # Token cost of the most recently injected text-mode protocol. The loop calls
         # count_tokens() WITHOUT tools, so without this the compactor would under-count the
         # real text-mode request (raw messages + this multi-KB protocol) and risk silently
@@ -660,11 +669,27 @@ class TextToolCallingProvider(Provider):
         """Whether *this* call should use the text protocol instead of native tools."""
         if not tools:
             return False
-        if self.mode == "text":
+        if self.mode == "text" or self._tools_refused:
             return True
         if self.mode == "native":
             return False
         return not self._native_supported()  # auto
+
+    def _refuse_tools(self, exc: ToolUseRefused) -> None:
+        """Answer every later call with tools through the text protocol (ADR-0303).
+
+        The backend said it takes no tools, so native tool-calling cannot work on this route;
+        the text protocol carries the tools in the prompt instead. A protocol change, not the
+        removal of a field: the model still gets every tool.
+        """
+        if not self._tools_refused:
+            self._tools_refused = True
+            logger.warning(
+                "%s refused tool use (%s) — using the text tool protocol for the rest of this "
+                "session and re-issuing the call",
+                self.model_id(),
+                " ".join(str(exc).split())[:200],
+            )
 
     @staticmethod
     def _offered_names(tools: list[dict[str, Any]] | None) -> set[str]:
@@ -741,33 +766,37 @@ class TextToolCallingProvider(Provider):
         if not tools:
             return await self.inner.acomplete(messages, system=system, tools=None, **kwargs)
 
-        if self._use_text_mode(tools):
-            protocol = render_tool_protocol(tools, single_tool=self.single_tool_per_turn)
-            new_system = f"{system}\n\n{protocol}" if system else protocol
-            self._record_text_overhead(protocol)
-            call_kwargs = self._merge_stop_sentinels(kwargs)
-            result = await self.inner.acomplete(
-                textify_messages(messages), system=new_system, tools=None, **call_kwargs
-            )
-            max_calls = 1 if self.single_tool_per_turn else None
-            residual, calls = parse_text_tool_calls(
-                cut_invented_turn(result.text), max_calls=max_calls
-            )
-            residual = _strip_forged_frames(residual)
-            return result.model_copy(update={"text": residual, "tool_calls": calls})
+        if not self._use_text_mode(tools):
+            # Native path. In auto mode, salvage a text tool-call the model emitted even
+            # though it had native tools (it ignored them but wrote a block anyway). The
+            # salvage is name-gated to the offered tools so a model that merely *shows* a
+            # tool-call example is not coerced into executing it.
+            try:
+                result = await self.inner.acomplete(messages, system=system, tools=tools, **kwargs)
+            except ToolUseRefused as exc:
+                # The backend takes no tools (ADR-0303): this call goes on below, through the
+                # text protocol, in place, so its re-issue cannot be sent native again.
+                self._refuse_tools(exc)
+            else:
+                if self.mode == "auto" and not result.tool_calls and result.text:
+                    residual, calls = parse_text_tool_calls(
+                        result.text, allowed_names=self._offered_names(tools)
+                    )
+                    if calls:
+                        return result.model_copy(update={"text": residual, "tool_calls": calls})
+                return result
 
-        # Native path. In auto mode, salvage a text tool-call the model emitted even
-        # though it had native tools (it ignored them but wrote a block anyway). The
-        # salvage is name-gated to the offered tools so a model that merely *shows* a
-        # tool-call example is not coerced into executing it.
-        result = await self.inner.acomplete(messages, system=system, tools=tools, **kwargs)
-        if self.mode == "auto" and not result.tool_calls and result.text:
-            residual, calls = parse_text_tool_calls(
-                result.text, allowed_names=self._offered_names(tools)
-            )
-            if calls:
-                return result.model_copy(update={"text": residual, "tool_calls": calls})
-        return result
+        protocol = render_tool_protocol(tools, single_tool=self.single_tool_per_turn)
+        new_system = f"{system}\n\n{protocol}" if system else protocol
+        self._record_text_overhead(protocol)
+        call_kwargs = self._merge_stop_sentinels(kwargs)
+        result = await self.inner.acomplete(
+            textify_messages(messages), system=new_system, tools=None, **call_kwargs
+        )
+        max_calls = 1 if self.single_tool_per_turn else None
+        residual, calls = parse_text_tool_calls(cut_invented_turn(result.text), max_calls=max_calls)
+        residual = _strip_forged_frames(residual)
+        return result.model_copy(update={"text": residual, "tool_calls": calls})
 
     async def astream(
         self,
@@ -798,48 +827,71 @@ class TextToolCallingProvider(Provider):
             kwargs["response_format"] = response_format
         if self._use_text_mode(tools):
             result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
-            if result.text:
-                yield StreamTextDelta(text=result.text)
-            for index, call in enumerate(result.tool_calls):
-                yield StreamToolCallDelta(
-                    index=index,
-                    id=call.id,
-                    name=call.name,
-                    arguments_delta=json.dumps(call.arguments, default=str),
-                )
-            yield StreamUsage(usage=result.usage)
-            yield StreamDone(finish_reason=result.finish_reason)
+            for event in self._as_stream(result):
+                yield event
             return
 
-        if self.mode == "auto" and tools:
-            saw_tool_call = False
-            text_parts: list[str] = []
-            async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
-                if isinstance(event, StreamToolCallDelta):
-                    saw_tool_call = True
-                    yield event
-                elif isinstance(event, StreamTextDelta):
-                    text_parts.append(event.text)
-                    yield event
-                elif isinstance(event, StreamDone):
-                    if not saw_tool_call:
-                        _residual, calls = parse_text_tool_calls(
-                            "".join(text_parts), allowed_names=self._offered_names(tools)
-                        )
-                        for index, call in enumerate(calls):
-                            yield StreamToolCallDelta(
-                                index=index,
-                                id=call.id,
-                                name=call.name,
-                                arguments_delta=json.dumps(call.arguments, default=str),
+        # A refusal of tool use answers the request, so it arrives before any event and the call
+        # can be answered again in full, through the text protocol (ADR-0303). One raised after
+        # an event went out is a real failure.
+        started = False
+        try:
+            if self.mode == "auto" and tools:
+                saw_tool_call = False
+                text_parts: list[str] = []
+                async for event in self.inner.astream(
+                    messages, system=system, tools=tools, **kwargs
+                ):
+                    started = True
+                    if isinstance(event, StreamToolCallDelta):
+                        saw_tool_call = True
+                        yield event
+                    elif isinstance(event, StreamTextDelta):
+                        text_parts.append(event.text)
+                        yield event
+                    elif isinstance(event, StreamDone):
+                        if not saw_tool_call:
+                            _residual, calls = parse_text_tool_calls(
+                                "".join(text_parts), allowed_names=self._offered_names(tools)
                             )
-                    yield event
-                else:
-                    yield event
-            return
+                            for index, call in enumerate(calls):
+                                yield StreamToolCallDelta(
+                                    index=index,
+                                    id=call.id,
+                                    name=call.name,
+                                    arguments_delta=json.dumps(call.arguments, default=str),
+                                )
+                        yield event
+                    else:
+                        yield event
+                return
 
-        async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
-            yield event
+            async for event in self.inner.astream(messages, system=system, tools=tools, **kwargs):
+                started = True
+                yield event
+        except ToolUseRefused as exc:
+            if started or not tools:
+                raise
+            self._refuse_tools(exc)
+            result = await self.acomplete(messages, system=system, tools=tools, **kwargs)
+            for event in self._as_stream(result):
+                yield event
+
+    @staticmethod
+    def _as_stream(result: LLMResult) -> Iterator[ProviderStreamEvent]:
+        """A buffered result in the base provider's stream shape: text delta, one tool-call
+        delta per parsed call, usage, done."""
+        if result.text:
+            yield StreamTextDelta(text=result.text)
+        for index, call in enumerate(result.tool_calls):
+            yield StreamToolCallDelta(
+                index=index,
+                id=call.id,
+                name=call.name,
+                arguments_delta=json.dumps(call.arguments, default=str),
+            )
+        yield StreamUsage(usage=result.usage)
+        yield StreamDone(finish_reason=result.finish_reason)
 
     def _record_text_overhead(self, protocol: str) -> None:
         """Remember the injected protocol's token cost (see ``_text_overhead_tokens``)."""

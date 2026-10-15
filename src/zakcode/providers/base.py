@@ -337,6 +337,16 @@ class RequestFailed(ProviderError):
     """A request failed for a reason not covered by the more specific errors."""
 
 
+class ToolUseRefused(RequestFailed):
+    """The backend refused the function tools the request carried (ADR-0303).
+
+    Raised only for a 4xx that answered a request with ``tools`` in the wording a backend uses
+    to say it takes none (:func:`tool_use_unsupported`). The text-protocol wrapper catches it and
+    answers the call, and every later one of the session, with the tools in the prompt instead;
+    without that wrapper it is the :class:`RequestFailed` it always was.
+    """
+
+
 class QuotaExhausted(ProviderError):
     """The account is out of quota/credit — a PERMANENT refusal, never retried.
 
@@ -551,6 +561,28 @@ def stop_length_limit(text: str | BaseException) -> int | None:
     return int(match.group(1)) if match else None
 
 
+#: How a backend refuses the ``temperature`` and the tools a request carried (ADR-0303). The
+#: MEASURED wordings (2026-10-14, a LiteLLM 1.9x gateway in front of Bedrock/Vertex relaying a
+#: 400 in Bedrock's words): ``This model doesn't support the temperature field. Remove
+#: temperature and try again.`` and ``This model doesn't support tool use.`` As with the stop
+#: sentences above, a pattern alone NEVER decides anything: the caller reads them only for a
+#: 4xx that answered a request which carried the field.
+_TEMPERATURE_UNSUPPORTED = re.compile(
+    r"(?:doesn['’]?t|does not) support the temperature field", re.IGNORECASE
+)
+_TOOL_USE_UNSUPPORTED = re.compile(r"(?:doesn['’]?t|does not) support tool use", re.IGNORECASE)
+
+
+def temperature_field_unsupported(text: str | BaseException) -> bool:
+    """Whether ``text`` says the model takes no ``temperature``."""
+    return _TEMPERATURE_UNSUPPORTED.search(str(text)) is not None
+
+
+def tool_use_unsupported(text: str | BaseException) -> bool:
+    """Whether ``text`` says the model takes no function tools."""
+    return _TOOL_USE_UNSUPPORTED.search(str(text)) is not None
+
+
 # ── Provider ABC ─────────────────────────────────────────────────────────────
 
 
@@ -666,6 +698,7 @@ __all__ = [
     "ContextWindowExceeded",
     "RateLimited",
     "RequestFailed",
+    "ToolUseRefused",
     "Provider",
     "UnknownContextWindow",
     "WindowResolution",

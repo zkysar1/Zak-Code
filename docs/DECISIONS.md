@@ -18470,3 +18470,114 @@ changed and the page is not. Five mutations were each run green, red, green (202
 ignored turned 5 tests red, the mixed case reported as `unpriced` 3, the per-model rows left on the bare figure 2, the
 page left on the bare figure 1, and the page's sum dropping the flag 1. `uv run poe check` is green: 5,785 passed, 22
 skipped.
+
+## ADR-0303: a refused `temperature` is learned like a refused stop, a refusal of tool use moves the session to the text protocol, and one call is repaired once per refusal it learns from, at most three times
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that a
+route which refuses `temperature` or tool use ends the turn, where one that refuses `stop` now recovers (ADR-0296). The
+gateway relays two more 400s in Bedrock's own words:
+
+* `This model doesn't support the temperature field. Remove temperature and try again.`
+* `This model doesn't support tool use.`
+
+Against main, `acomplete` on a route that answers either sentence raised `RequestFailed` on every call: one request per
+call, nothing learned, nothing re-issued. A temperature reaches the wire whenever `ZAKCODE_TEMPERATURE` is set, and from
+the side calls that pass `temperature=0.0` per call. ADR-0181's repair offers `_refuse_rejected_field` only the keys of
+`extra_body` and the rendered thinking switch, and leaves `tools` alone on purpose, while
+`TextToolCallingProvider._use_text_mode` chooses the protocol from static capabilities only, so nothing a route said
+could move it to the text protocol. And ADR-0296 repaired one refusal per call, so a route that refused `stop` and then
+`temperature` lost the call at the second refusal, though each was repairable alone.
+
+**Decision.**
+
+* `providers/base.py` reads the two sentences: `temperature_field_unsupported(text)` and `tool_use_unsupported(text)`,
+  each with `doesn't`, `doesn’t` or `does not`, bare, behind litellm's prefix or inside a JSON body.
+* `LiteLLMProvider._refuse_temperature` learns from a 4xx in the first wording that answers a call which carried a
+  `temperature`, a 0.0 included: `temperature` joins `rejected_request_fields` and the call is re-issued.
+  `_build_kwargs` leaves it out of every later request, after `call_kwargs.update(kw)`, so the configured value and a
+  side call's 0.0 are left out alike and the backend's own default applies, as it does when none is configured.
+* Tool use is not a field to strip, because the call needs its tools. A 4xx in the second wording that answers a call
+  which carried `tools` is raised as `ToolUseRefused`, a `RequestFailed`, from both call paths: at once on the buffered
+  one, before the first chunk on the streamed one. `TextToolCallingProvider` catches it on its native path, in `native`
+  and `auto` mode alike, latches the refusal for the instance with one WARNING, and answers the call through the text
+  protocol, which carries the tools in the prompt; `_use_text_mode` then sends every later call with tools that way. A
+  refusal raised after the stream's first event is a real failure and is raised as it is. Without the wrapper,
+  `ToolUseRefused` is the `RequestFailed` it always was.
+* The buffered call goes on through the text protocol in place: its native attempt is skipped in text mode and falls
+  through to the text body on a refusal, so the re-issue cannot be sent native again whatever the mode check says. The
+  streamed call is answered from `acomplete`, which makes at most one native attempt. The first version re-dispatched
+  through the wrapper itself, and a mutation that took the latch out of the mode check made it call itself on every
+  refusal: that run took 11 minutes, where each of the others took about 15 seconds. Every call to the inner provider
+  stays inside the wrapper's own `acomplete` and `astream`, which is what ADR-0276's scan of provider calls allows: a
+  second version that moved them into helpers failed that scan.
+* One call is repaired once per refusal it learns from, up to `_MAX_REQUEST_REPAIRS = 3` re-issues, on both paths, where
+  ADR-0296 allowed one: a stop, a temperature and a field ADR-0181 learns can each be refused on one call and the call
+  still answered. The wrapper's switch to the text protocol is not one of the three: it is a new call to the provider,
+  whose count starts again.
+* What keeps the bound from being a retry count is each learner's own gate: once a refusal is learned, the re-issued
+  request no longer carries what was refused, so the same sentence again teaches nothing and is reported as it is.
+  ADR-0296's stop-length learner lacked that gate. It learned any limit from a call that sent any stop, so with three
+  repairs a route that quoted the same limit again was sent the request it had just refused, twice more (measured: four
+  requests where two are right). `_refuse_stop` now learns a limit only when a sequence the call carried reaches it. A
+  stricter limit still tightens what was learned, and a looser one that answers a call sent before the stricter one was
+  learned is still repaired, through the filter, as ADR-0296 has it.
+* `docs/CONFIG.md` says both, at the `temperature` and `tool_calling_mode` rows.
+
+Stated choices. The latch overrides `native` mode. A route that says it takes no tools cannot be served natively, and the
+text protocol is the one way the call keeps its tools; the WARNING names the switch. Failing the turn in `native` mode
+instead can be built, and I am choosing not to: the report's own setup sets `native` for every route behind one endpoint
+and asks for exactly this recovery. The owner asking for a strict `native` would change it. The bound is a constant, not a
+knob, under the standing rule of one contract, no knobs: three is the number of distinct refusals measured on one route.
+The tool refusal is handled in the wrapper because the wrapper owns the text protocol; the provider only reports what it
+was told.
+
+Rejected: stripping `tools` and re-issuing, which answers a different question; choosing the protocol or the fields by
+model name, a list that needs an owner, as ADR-0296 says; folding the two wordings into ADR-0181's patterns, since neither
+names a field the way those do and tool use is not a field; and having `LiteLLMProvider` switch protocols itself, which
+would put the text protocol in two places.
+
+Not verified: a live gateway. The two sentences are the report's, byte for byte. The gateway that answers them in the
+tests is scripted from the wording, and its order of refusals (tools, then stop, then temperature, one per request) is
+scripted from the report, not captured; with one refusal learned per request the bound covers any order of the three.
+The wire tests send both sentences through litellm's own HTTP client, so what the provider reads is the exception litellm
+raises. That a model behind such a route does good agent work through the text protocol is not claimed.
+
+**Consequences.** A route that refuses `temperature` costs one re-issued call the first time and none after; the side
+calls' 0.0 no longer reaches it, so on that route they sample at the backend's default. A route that refuses tool use
+costs one re-issued call, then the session talks the text protocol, which sends the stop list: a route that refuses
+tools, stop and temperature wastes three requests on the first call and none after. What was learned lives on the
+provider and wrapper instances and is not kept across processes, so a new instance asks for native tools again. This
+amends the one re-issue per call of ADR-0181 and ADR-0296, and ADR-0296's stop-length learner, as above. ADR-0181's test
+of the old rule, `test_the_repair_is_spent_once_per_call`, refused two different fields in one call and required the
+second to be reported; it is now two tests in `tests/test_provider_field_rejection.py`: another field refused in the same
+call is learned too, and the same refusal again is reported as it is.
+
+The proof. `tests/test_temperature_tools_refusal.py` (50 tests) reads both sentences verbatim, bare, behind litellm's
+prefix and as JSON, with both apostrophes and `does not`, and reads neither in the stop sentences and other complaints.
+For temperature, through `acomplete` and `astream` each: an ordinary route gets the temperature it was given; a refusing
+one is asked once more without it, and not asked again; a side call's 0.0 is learned the same way; a refusal of a
+temperature that was never sent and a 5xx quoting the sentence are surfaced. For the repair: a call carrying a stop and a
+temperature to a route that refuses both completes in three requests; a route that teaches something new on every
+request is given four, and the fourth refusal is reported; a repeated limit that teaches nothing is reported after the
+one repair it taught. For tool use, buffered and streamed, in `native` and in `auto`: the call is answered through the
+text protocol (the re-issued request carries no `tools`, the protocol in its system prompt and the text protocol's stop
+list) and its call is parsed; the protocol is kept for the session; a new instance asks for native tools again; a refusal
+of a call that sent no tools is surfaced as the plain failure it was; and a route that refuses tools, stop and
+temperature answers with one wasted request per refusal, and the next call wastes none. The real agent loop, buffered and
+streamed, goes on past its first iteration with three requests, of which only the first carries `tools`. Both sentences
+are also sent through litellm's own HTTP client. Against main, 41 of the 50 fail; the loop's failure is a
+`provider_error` on `This model doesn't support tool use.`, the report's symptom. The 9 that pass are the ordinary-route
+control and the never-sent guard on both paths, the 5xx guard, the two tests that show what litellm raises, and the
+repeated limit on both paths, which main's single repair already meets: that test guards the raised bound. In
+`tests/test_provider_field_rejection.py`, another field refused in the same call being learned too fails against main,
+and the same refusal again being reported passes there, as the guard that the mechanism never loops. Fourteen mutations
+were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the learned temperature never
+left out turned 11 red; the temperature sentence never read, 11; the temperature's "we sent one" gate removed, 2; a
+temperature of 0.0 read as none sent, 2; the bound back to one repair, 6; a fourth repair allowed, 2; the buffered tool
+refusal not raised as such, 7; the streamed one, 5; the "we sent tools" gate removed, 2; the latch left out of the mode
+check, 8; the streamed fallback taking the refusal for one after the first event, 5; the tool-use sentence never read,
+18; a stop limit that nothing sent reaches learned again, 2; and the wrapper re-raising a buffered refusal instead of
+answering it, 7. Two earlier batches ran against the earlier versions above; the first was also spoiled by a test added
+while it ran. `uv run poe check` is green: 5,836 passed, 22 skipped.
