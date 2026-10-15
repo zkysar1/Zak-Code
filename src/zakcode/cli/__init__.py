@@ -64,6 +64,7 @@ from zakcode.cli.logsink import (
     RedactingFilter,
     install_transcript_logging,
     log_level_from_env,
+    set_provider_labels,
 )
 from zakcode.cli.render import StreamRenderer, cost_text, display_call
 from zakcode.cli.saybox import fold_lines
@@ -71,6 +72,7 @@ from zakcode.config import PermissionTier, Settings, env_source, load_settings, 
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
 from zakcode.providers.base import ProviderError, UnknownContextWindow
+from zakcode.providers.labels import display_model_id, provider_label
 from zakcode.secrets import strip_url_credentials
 
 if TYPE_CHECKING:
@@ -230,7 +232,7 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
 
         model_row = describe_resolution(settings)
     else:
-        model_row = settings.default_model
+        model_row = display_model_id(settings.default_model, settings.provider_labels)
     rows: list[tuple[str, str]] = [
         ("Model", model_row),
         ("Provider", settings.provider),
@@ -260,6 +262,12 @@ def build_info_lines(settings: Settings) -> list[tuple[str, str]]:
             + (" (confirm per call)" if settings.web_fetch_confirm else ""),
         ),
     ]
+    if settings.provider_labels:
+        # Display only (ADR-0314): the Model row and every line a session shows a person read
+        # these names for the token, so the panel says where a name came from. The Provider
+        # row above stays the token as configured.
+        labels = f"{json.dumps(settings.provider_labels)} (display only)"
+        rows.insert(2, ("Provider labels", _sourced("ZAKCODE_PROVIDER_LABELS", labels)))
     if settings.search_backend == "searxng":
         rows.append(("SearXNG URL", strip_url_credentials(settings.searxng_url) or "(not set)"))
     if settings.egress_proxy:
@@ -292,6 +300,7 @@ def _window_rows(settings: Settings) -> list[tuple[str, str]]:
     for label, model, declared in effective_model_entries(settings, zakpick=zakpick):
         if model in ("auto", "zakpick"):
             continue  # a routing name, not a model; its categories are listed below it
+        shown = display_model_id(model, settings.provider_labels)
         try:
             resolution = resolve_context_window(
                 model,
@@ -304,9 +313,9 @@ def _window_rows(settings: Settings) -> list[tuple[str, str]]:
                 listing_cache=listing_cache,
             )
         except Exception:  # noqa: BLE001 — an info panel must never crash on a probe
-            rows.append((f"Context window ({label})", f"{model}: (could not resolve)"))
+            rows.append((f"Context window ({label})", f"{shown}: (could not resolve)"))
             continue
-        text = f"{model}: {resolution.describe()}"
+        text = f"{shown}: {resolution.describe()}"
         if resolution.window is None and resolution.source == "unknown":
             text += " — REFUSES TO RUN; declare context_window in this model's entry"
         rows.append((f"Context window ({label})", text))
@@ -2549,7 +2558,8 @@ def _print_banner(console: Console, agent: Agent) -> None:
         model_cell = f"zakpick {g['dot']} picks a model per task"
     else:
         model_id = settings.default_model.removeprefix(settings.provider + "/")
-        model_cell = f"{model_id} {g['dot']} {settings.provider}"
+        provider = provider_label(settings.provider, settings.provider_labels)
+        model_cell = f"{model_id} {g['dot']} {provider}"
     rows = [
         ("model", model_cell),
         # The code this session runs, in the log from its first line: a restart announces
@@ -3061,7 +3071,12 @@ def _build_chat_agent(
     # The transcript store (~/.zakcode/sessions): persists every turn so -s can resume it later.
     store = SessionStore()
     session = store.load(session_id) if session_id else None
+    settings = load_settings(**overrides)
+    # The transcript handler is installed before any settings load, so it learns this session's
+    # labels here, before the Agent logs its startup model while it is built (ADR-0314).
+    set_provider_labels(settings.provider_labels)
     return Agent(
+        settings=settings,
         prompter=prompter,
         session=session,
         session_store=store,
@@ -3074,7 +3089,6 @@ def _build_chat_agent(
         extra_workspace_roots=extra_workspace_roots,
         enable_rules=enable_rules,
         enable_compaction=True,
-        **overrides,
     )
 
 
@@ -3600,7 +3614,10 @@ def chat(
                         )
                     )
                 else:
-                    console.print(margin(Text(agent.settings.default_model)))
+                    shown = display_model_id(
+                        agent.settings.default_model, agent.settings.provider_labels
+                    )
+                    console.print(margin(Text(shown)))
                 continue
             if command == "/permissions":
                 _render_permissions(console, agent)
@@ -3731,11 +3748,12 @@ def chat(
                 by_model = {m: u for m, u in agent.session.usage_by_model().items() if m}
                 if len(by_model) >= 2:
                     console.print(margin(Text("by model:", style="notice.dim")))
+                    labels = agent.settings.provider_labels
                     for model_name, model_usage in by_model.items():
                         console.print(
                             margin(
                                 Text.assemble(
-                                    (f"  {model_name}", "arg.value"),
+                                    (f"  {display_model_id(model_name, labels)}", "arg.value"),
                                     (dot, "notice.dim"),
                                     (f"{model_usage.total_tokens} tok", "notice.dim"),
                                     (dot, "notice.dim"),

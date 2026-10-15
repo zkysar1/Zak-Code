@@ -85,6 +85,7 @@ from zakcode.providers.hipaa import (
     check_chat_completions_only,
     check_model,
 )
+from zakcode.providers.labels import ModelRef
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
@@ -255,11 +256,49 @@ _LiteLLMPermissionError = _resolve_exc_type("PermissionDeniedError")
 _LiteLLMContextWindowError = _resolve_exc_type("ContextWindowExceededError")
 _LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
 
-#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306).
+#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306):
+#: the openings of the blocks whose contents are not words, each kind's closing tag, and a tag.
 _HTML_PAGE = re.compile(r"<(?:!doctype\s+)?html[\s>]", re.IGNORECASE)
-_HTML_HEAD = re.compile(r"<head\b.*?</head\s*>", re.IGNORECASE | re.DOTALL)
-_HTML_CODE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_HEAD = re.compile(r"<(head)\b", re.IGNORECASE)
+_HTML_CODE = re.compile(r"<(script|style)\b", re.IGNORECASE)
+_HTML_CLOSE = {
+    kind: re.compile(rf"</{kind}\s*>", re.IGNORECASE) for kind in ("head", "script", "style")
+}
 _HTML_TAG = re.compile(r"<[^>]*>")
+
+
+def _drop_blocks(page: str, opening: re.Pattern[str]) -> str:
+    """``page`` with each block that ``opening`` starts, through the first closing tag of its
+    kind, replaced by a space (ADR-0313).
+
+    It returns what ``re.sub(r"<(kind)\\b.*?</\\1\\s*>", " ", page, flags=re.I | re.S)`` returns,
+    in linear time. That pattern rescans the rest of the page from every opening with no closing
+    tag after it, so a page of unclosed openings took seconds. Such an opening is skipped unread.
+    """
+    last: dict[str, int] = {}
+    kept: list[str] = []
+    pos = 0
+    for found in opening.finditer(page):
+        if found.start() < pos:
+            continue
+        kind = found.group(1).lower()
+        if kind not in last:
+            last[kind] = max((m.start() for m in _HTML_CLOSE[kind].finditer(page)), default=-1)
+        close = _HTML_CLOSE[kind].search(page, found.end()) if last[kind] >= found.end() else None
+        if close is None:
+            continue
+        kept += [page[pos : found.start()], " "]
+        pos = close.end()
+    kept.append(page[pos:])
+    return "".join(kept)
+
+
+def _drop_tags(text: str) -> str:
+    """``text`` with each tag replaced by a space, as ``_HTML_TAG`` matches one, in linear time
+    (ADR-0313). No tag closes after the last ``>``, so the pattern runs only up to it: tried from
+    every ``<`` of a run with no ``>`` after it, it rescanned the run each time."""
+    end = text.rfind(">") + 1
+    return _HTML_TAG.sub(" ", text[:end]) + text[end:]
 
 
 def _page_text(message: str) -> str:
@@ -268,15 +307,16 @@ def _page_text(message: str) -> str:
     An ingress or proxy in front of an API answers some failures with a web page, and litellm
     puts the page in its exception's message, so its markup reached the turn's error. The body's
     text is kept, or the title's when the body has none. A message with no page is returned as
-    it is, so angle brackets in an ordinary message survive.
+    it is, so angle brackets in an ordinary message survive. The work is linear in the page's
+    length, however the page is broken (ADR-0313): this runs on the event loop.
     """
     found = _HTML_PAGE.search(message)
     if found is None:
         return message
-    page = _HTML_CODE.sub(" ", message[found.start() :])
-    text = " ".join(html.unescape(_HTML_TAG.sub(" ", _HTML_HEAD.sub(" ", page))).split())
+    page = _drop_blocks(message[found.start() :], _HTML_CODE)
+    text = " ".join(html.unescape(_drop_tags(_drop_blocks(page, _HTML_HEAD))).split())
     if not text:
-        text = " ".join(html.unescape(_HTML_TAG.sub(" ", page)).split())
+        text = " ".join(html.unescape(_drop_tags(page)).split())
     return f"{message[: found.start()].rstrip()} {text}".strip()
 
 
@@ -971,7 +1011,7 @@ class LiteLLMProvider(Provider):
                 "reasoning-capable (or is reached through a generic api_base, where the "
                 "server's own body form via extra_body applies): the level is not sent",
                 self.reasoning_effort,
-                self.model,
+                ModelRef(self.model),
             )
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
@@ -1498,7 +1538,7 @@ class LiteLLMProvider(Provider):
             "%s takes function tools only with reasoning_effort='none' on this route (%s) "
             "— sending 'none' with tools for the rest of this session and re-issuing "
             "the call",
-            self.model,
+            ModelRef(self.model),
             quoted_provider_message(message),
         )
         return True
@@ -1528,7 +1568,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused the request field %r (%s) — dropping it for the rest of this "
             "session and re-issuing the call without it",
-            self.model,
+            ModelRef(self.model),
             field,
             quoted_provider_message(message),
         )
@@ -1568,7 +1608,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused %s (%s) — leaving it out for the rest of this session and re-issuing "
             "the call without it",
-            self.model,
+            ModelRef(self.model),
             refused,
             quoted_provider_message(message),
         )
@@ -1594,7 +1634,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused the temperature field (%s) — leaving it out for the rest of this "
             "session and re-issuing the call without it",
-            self.model,
+            ModelRef(self.model),
             quoted_provider_message(message),
         )
         return True
@@ -1636,7 +1676,9 @@ class LiteLLMProvider(Provider):
         # backend echoing a token) from the vendor message BEFORE it propagates to any
         # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
         # An ingress's web page in the message keeps its words and loses its markup (ADR-0306).
-        message = _page_text(redact_secrets(str(exc))[0])
+        # The words are redacted again once decoded: an assignment written with entities
+        # (``&quot;api_key&quot;: ...``) is only an assignment after the unescape (ADR-0312).
+        message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
@@ -2018,7 +2060,7 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: %s not sent -- deprecated for this Gemini generation; sampling is "
                     "steered from the system instructions and the model applies its own default",
-                    self.model,
+                    ModelRef(self.model),
                     ", ".join(dropped),
                 )
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
@@ -2047,7 +2089,7 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: this provider answered a tool call by asking for "
                     "reasoning_effort='none', so the configured %r is not sent",
-                    self.model,
+                    ModelRef(self.model),
                     configured,
                 )
             if self._effort_none_demanded_by_server or configured is None:
@@ -2206,7 +2248,7 @@ class LiteLLMProvider(Provider):
         self._fallbacks_seen.add((self.model, answered))
         logger.warning(
             "%s: the gateway answered with %s%s instead, after %d attempted fallback(s)",
-            self.model,
+            ModelRef(self.model),
             answered,
             f" ({name})" if group and name else "",
             attempts,
@@ -2280,13 +2322,13 @@ class LiteLLMProvider(Provider):
         # one whose backend swapped underneath it spends two, and the second is the finding.
         if result.served_model is not None and result.served_model not in self._served_seen:
             self._served_seen.add(result.served_model)
-            logger.info("%s: served by %s", self.model, result.served_model)
+            logger.info("%s: served by %s", ModelRef(self.model), result.served_model)
         self._warn_on_fallback(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
         # logged — model, latency, token counts, and litellm-computed cost only.
         logger.debug(
             "%s: %.2fs, %d+%d tokens, $%.6f",
-            self.model,
+            ModelRef(self.model),
             time.perf_counter() - start,
             result.usage.prompt_tokens,
             result.usage.completion_tokens,

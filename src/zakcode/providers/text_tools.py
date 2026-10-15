@@ -68,6 +68,7 @@ from zakcode.providers.base import (
     ToolUseRefused,
     quoted_provider_message,
 )
+from zakcode.providers.labels import ModelRef
 
 logger = logging.getLogger(__name__)
 
@@ -688,7 +689,7 @@ class TextToolCallingProvider(Provider):
             logger.warning(
                 "%s refused tool use (%s) — using the text tool protocol for the rest of this "
                 "session and re-issuing the call",
-                self.model_id(),
+                ModelRef(self.model_id()),
                 quoted_provider_message(exc),
             )
 

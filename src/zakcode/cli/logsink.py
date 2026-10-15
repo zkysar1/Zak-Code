@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Mapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,6 +33,7 @@ from rich.text import Text
 from zakcode.cli._glyphs import resolve_glyphs
 from zakcode.cli._layout import block
 from zakcode.config import zakcode_home
+from zakcode.providers.labels import ModelRef, display_model_id, provider_label
 from zakcode.secrets import redact_secrets, redact_url_credentials
 
 LOG_LEVEL_ENV = "ZAKCODE_LOG_LEVEL"
@@ -93,7 +95,28 @@ def _is_own(record: logging.LogRecord) -> bool:
     return record.name in ("root", "zakcode") or record.name.startswith("zakcode.")
 
 
-def transcript_line(record: logging.LogRecord) -> str | None:
+def _shown_message(record: logging.LogRecord, labels: Mapping[str, str] | None) -> str:
+    """The record's text for a person: each :class:`ModelRef` argument labelled (ADR-0314).
+
+    The record itself is left alone, so the file and every other handler render the id.
+    A record whose arguments were consumed by the scrub carries no reference and reads as is;
+    the labelled text is scrubbed too, like every other row.
+    """
+    args = record.args
+    if labels and isinstance(args, tuple) and any(isinstance(a, ModelRef) for a in args):
+        shown = tuple(
+            display_model_id(a.model_id, labels) if isinstance(a, ModelRef) else a for a in args
+        )
+        try:
+            return _scrub(str(record.msg) % shown)
+        except (TypeError, ValueError):
+            pass
+    return record.getMessage()
+
+
+def transcript_line(
+    record: logging.LogRecord, labels: Mapping[str, str] | None = None
+) -> str | None:
     """The compact one-line form of a record for the transcript, or None for file-only.
 
     litellm's call record reads ``call gemini-3.8-flash · vertex_ai`` — the model call the
@@ -102,9 +125,11 @@ def transcript_line(record: logging.LogRecord) -> str | None:
     own records read ``<logger>: <message>`` with the ``zakcode.`` prefix dropped (the root
     logger's carry no name), whitespace collapsed so no record breaks the grid. Any other
     third-party record prints only at WARNING and above: ``Wrapper: Completed Call, calling
-    success_handler`` is chatter, and the file keeps it.
+    success_handler`` is chatter, and the file keeps it. ``labels`` (``provider_labels``,
+    ADR-0314) names the provider after the dot of a call row and each model id a record hands
+    over as a :class:`ModelRef`.
     """
-    message = " ".join(record.getMessage().split())
+    message = " ".join(_shown_message(record, labels).split())
     if record.name == "httpx":
         match = _HTTPX_REQUEST_RE.match(message)
         if match:
@@ -115,7 +140,7 @@ def transcript_line(record: logging.LogRecord) -> str | None:
     elif record.name.startswith("LiteLLM"):
         match = _LITELLM_CALL_RE.search(message)
         if match:
-            return f"call {match['model']} · {match['provider']}"
+            return f"call {match['model']} · {provider_label(match['provider'], labels)}"
     if not _is_own(record) and record.levelno < logging.WARNING:
         return None
     name = record.name
@@ -133,10 +158,12 @@ class TranscriptLogHandler(logging.Handler):
         super().__init__()
         self.console = console
         self._glyphs = resolve_glyphs(console)
+        #: ``provider_labels`` (ADR-0314), set once the settings are loaded.
+        self.provider_labels: dict[str, str] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            line = transcript_line(record)
+            line = transcript_line(record, self.provider_labels)
             if line is None:
                 return
             if record.levelno >= logging.ERROR:
@@ -195,6 +222,17 @@ def install_transcript_logging(console: Console) -> None:
     root.addHandler(transcript)
 
 
+def set_provider_labels(labels: Mapping[str, str]) -> None:
+    """Show ``labels`` (``provider_labels``, ADR-0314) in every transcript row from now on.
+
+    The handler is installed before the settings load, so the session hands its labels over
+    once it has them. The file handler is not touched: the log keeps the token.
+    """
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, TranscriptLogHandler):
+            handler.provider_labels = dict(labels)
+
+
 __all__ = [
     "LOG_LEVEL_ENV",
     "RedactingFilter",
@@ -202,5 +240,6 @@ __all__ = [
     "install_transcript_logging",
     "log_file_path",
     "log_level_from_env",
+    "set_provider_labels",
     "transcript_line",
 ]

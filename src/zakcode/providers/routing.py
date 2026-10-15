@@ -34,6 +34,8 @@ from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from zakcode.providers.labels import provider_label
+
 #: The task categories zakpick routes on. These ARE the strings passed as the routing ``task``.
 #: ``classify`` powers the cheap difficulty side-call that routes the main turn quick-vs-deep
 #: (:func:`should_consult_classifier` → :func:`classify_main_turn`'s ``difficulty_hint``). It is
@@ -735,13 +737,16 @@ def describe_zakpick(settings: object) -> str:
     """One-line, friendly summary of the live per-category routing for the info panel / ``/model``.
 
     Shows only categories with a real call site (:data:`ROUTED_CATEGORIES`) and uses
-    ``model (source)`` form, never a raw litellm slug. Never raises.
+    ``model (source)`` form, never a raw litellm slug, with the source's display label where
+    ``provider_labels`` sets one (ADR-0314). Never raises.
     """
+    labels = getattr(settings, "provider_labels", None)
     parts: list[str] = []
     for category in ROUTED_CATEGORIES:
         try:
             spec = model_spec_for_category(category, settings)
-            parts.append(f"{CATEGORY_LABEL[category]} → {spec.model} ({spec.source})")
+            source = provider_label(spec.source, labels)
+            parts.append(f"{CATEGORY_LABEL[category]} → {spec.model} ({source})")
         except Exception:  # noqa: BLE001 — the panel is diagnostic; never crash it
             parts.append(f"{CATEGORY_LABEL[category]} → (unset)")
     return "zakpick — " + "; ".join(parts)
