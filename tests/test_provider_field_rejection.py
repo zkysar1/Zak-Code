@@ -245,9 +245,11 @@ async def test_a_5xx_quoting_the_field_is_a_transient_not_a_refusal(
     assert provider.rejected_request_fields == []
 
 
-async def test_the_repair_is_spent_once_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A second refusal in the same call (another field, or the same one again) is reported
-    as is — the mechanism never loops."""
+async def test_another_field_refused_in_the_same_call_is_learned_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second refusal in the same call, of another field it sent, teaches something new, so it
+    is repaired as the first was (ADR-0303: once per refusal learned, at most three)."""
     fake = _Litellm(
         [
             BadRequestError(VERTEX_TEXT),
@@ -256,11 +258,22 @@ async def test_the_repair_is_spent_once_per_call(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr(lp.litellm, "acompletion", fake)
     provider = _pod(extra_body={**thinking_extra_body(False), "seed": 42})
+    await provider.acomplete([Message.user("hi")])
+    assert len(fake.calls) == 3
+    assert "extra_body" not in fake.calls[2]
+    assert provider.rejected_request_fields == ["chat_template_kwargs", "seed"]
+
+
+async def test_the_same_refusal_again_is_reported_as_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The re-issued request no longer carries the field, so the same refusal again teaches
+    nothing and is raised: the mechanism never loops."""
+    fake = _Litellm([BadRequestError(VERTEX_TEXT), BadRequestError(VERTEX_TEXT)])
+    monkeypatch.setattr(lp.litellm, "acompletion", fake)
+    provider = _pod(extra_body={**thinking_extra_body(False), "seed": 42})
     with pytest.raises(RequestFailed) as ei:
         await provider.acomplete([Message.user("hi")])
-    assert "seed" in str(ei.value)
+    assert "chat_template_kwargs" in str(ei.value)
     assert len(fake.calls) == 2
-    # The first refusal was still recorded; the second was raised, not recorded.
     assert provider.rejected_request_fields == ["chat_template_kwargs"]
 
 

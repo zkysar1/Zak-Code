@@ -59,6 +59,7 @@ from zakcode.providers.base import (
     StreamUsage,
     TimedOut,
     ToolCall,
+    ToolUseRefused,
     UnknownContextWindow,
     WindowResolution,
     context_overflow_marker,
@@ -66,6 +67,8 @@ from zakcode.providers.base import (
     rejected_request_field,
     stop_field_unsupported,
     stop_length_limit,
+    temperature_field_unsupported,
+    tool_use_unsupported,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -727,6 +730,14 @@ _MAX_COMPLETION_TOKENS = 8_192
 #: on real calls (every model call takes longer than this) — it only shaves the
 #: burst edge. Fixed, not a knob (no-knobs ruling).
 _MIN_REQUEST_INTERVAL_S = 1.0
+
+#: How many times one call may be re-issued after a refusal the provider learned from
+#: (ADR-0303): three, the number of distinct refusals measured on one route (stop, temperature,
+#: tool use). A refusal of tool use spends none of them, since the text-protocol wrapper answers
+#: it with a new call, which leaves one for a field ADR-0181 learns. A refusal that teaches
+#: nothing new is reported as it is, so this bounds only a route that keeps finding new things
+#: to refuse. Fixed, not a knob.
+_MAX_REQUEST_REPAIRS = 3
 
 #: The first chunk of a streaming call waits out the prefill, and a prefill is as long as
 #: its prompt (ADR-0248). That chunk's bound is the prompt's estimated size times the
@@ -1444,7 +1455,7 @@ class LiteLLMProvider(Provider):
         True when ``exc`` is a request rejection that names a field WE added — a key of
         the ``extra_body`` this call sent, or the wire spelling of the rendered thinking
         switch — in which case the field joins ``rejected_request_fields`` (so no later
-        request of this session carries it) and the caller re-issues the call once.
+        request of this session carries it) and the caller re-issues the call.
         False for every other failure, which maps through the taxonomy as before. The
         "one we sent" gate is what keeps this honest: a provider refusing ``tools`` or
         ``messages`` is a defect to surface, never a field to strip.
@@ -1475,17 +1486,22 @@ class LiteLLMProvider(Provider):
         True when ``exc`` is a request rejection of a call that CARRIED a ``stop`` and says, in
         one of the two measured wordings, either that the model takes no stop at all (``stop``
         joins ``rejected_request_fields``) or that a stop sequence may not reach some length
-        (``max_stop_chars``, which only ever goes down). ``_build_kwargs`` then leaves the
-        refused part out of every later request, and the caller re-issues the call once.
-        False for every other failure, which maps through the taxonomy as before. The "we sent
-        one" gate is what keeps this honest, as in ADR-0181: a sentence about a stop that
-        answers a request with none is a defect to surface, never something to repair.
+        that one it carried reaches (``max_stop_chars``, which only ever goes down).
+        ``_build_kwargs`` then leaves the refused part out of every later request, and the
+        caller re-issues the call. False for every other failure, which maps through the
+        taxonomy as before. The "we sent one" gate is what keeps this honest, as in ADR-0181: a
+        sentence about a stop that answers a request with none is a defect to surface, never
+        something to repair, and so is a limit that nothing the request carried reaches, which
+        a re-issue would only send again (ADR-0303).
         """
         if not call_kwargs.get("stop") or not self._is_request_rejection(exc):
             return False
         message = redact_secrets(str(exc))[0]
         limit = stop_length_limit(message)
         if limit is not None:
+            stop = call_kwargs["stop"]
+            if all(len(s) < limit for s in ([stop] if isinstance(stop, str) else stop)):
+                return False
             known = self.max_stop_chars
             self.max_stop_chars = limit if known is None else min(known, limit)
             refused = f"stop sequences of {limit} characters or more"
@@ -1503,6 +1519,43 @@ class LiteLLMProvider(Provider):
             " ".join(message.split())[:200],
         )
         return True
+
+    def _refuse_temperature(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Learn that the backend will not take the ``temperature`` this call sent (ADR-0303).
+
+        True when ``exc`` is a request rejection of a call that CARRIED a ``temperature``, a
+        0.0 included, and says in the measured wording that the model takes none:
+        ``temperature`` joins ``rejected_request_fields``, ``_build_kwargs`` leaves it out of
+        every later request, and the caller re-issues the call. The backend's own default then
+        applies, as it does when no temperature is configured. Same gate as ``_refuse_stop``: a
+        sentence about a temperature that answers a request with none is a defect to surface.
+        """
+        if call_kwargs.get("temperature") is None or not self._is_request_rejection(exc):
+            return False
+        message = redact_secrets(str(exc))[0]
+        if not temperature_field_unsupported(message):
+            return False
+        if "temperature" not in self.rejected_request_fields:
+            self.rejected_request_fields.append("temperature")
+        logger.warning(
+            "%s refused the temperature field (%s) — leaving it out for the rest of this "
+            "session and re-issuing the call without it",
+            self.model,
+            " ".join(message.split())[:200],
+        )
+        return True
+
+    def _refuses_tool_use(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Whether ``exc`` refuses the function tools this call sent (ADR-0303).
+
+        A request rejection of a call that CARRIED ``tools``, in the measured wording. Not a
+        field to strip, since the call needs its tools: the caller raises
+        :class:`ToolUseRefused`, which the text-protocol wrapper answers by carrying the tools
+        in the prompt instead. Nothing is learned here; the wrapper keeps what it learned.
+        """
+        if not call_kwargs.get("tools") or not self._is_request_rejection(exc):
+            return False
+        return tool_use_unsupported(redact_secrets(str(exc))[0])
 
     @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
@@ -1862,6 +1915,10 @@ class LiteLLMProvider(Provider):
                 call_kwargs["stop"] = fits
             else:
                 call_kwargs.pop("stop")
+        # A temperature this backend has refused (ADR-0303), whoever set it: the configured one
+        # and the 0.0 a side call passes through ``kw`` are left out alike.
+        if "temperature" in self.rejected_request_fields:
+            call_kwargs.pop("temperature", None)
         # OpenAI gpt-5 reasoning models accept ONLY temperature=1; any other value is a
         # 400. Normalise AFTER the update above so this covers BOTH the main loop's
         # configured temperature AND the structured path's per-call temperature=0
@@ -2052,32 +2109,37 @@ class LiteLLMProvider(Provider):
 
         await self._pace()
         start = time.perf_counter()
-        try:
-            response = await litellm.acompletion(**call_kwargs)
-        except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            if not (
-                self._wants_effort_none(exc, call_kwargs)
-                or self._refuse_rejected_field(exc, call_kwargs)
-                or self._refuse_stop(exc, call_kwargs)
-            ):
-                raise self._map_error(exc) from exc
-            # The provider named a field of ours it will not take (ADR-0181), or named
-            # the one value it WILL take for the tools+reasoning pairing, or said it takes
-            # no stop (or only a short one, ADR-0296): the flag / ``rejected_request_fields``
-            # / ``max_stop_chars`` is updated, so the rebuilt request has the accepted
-            # shape — the SAME logical call, re-issued once. A second refusal is reported
-            # as is.
-            call_kwargs = self._build_kwargs(
-                wire_messages,
-                tools,
-                response_format=response_format,
-                prompt_cache_key=prompt_cache_key,
-                **kw,
-            )
+        repairs = 0
+        while True:
             try:
                 response = await litellm.acompletion(**call_kwargs)
-            except Exception as again:  # noqa: BLE001 - mapped to taxonomy below
-                raise self._map_error(again) from again
+                break
+            except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+                if self._refuses_tool_use(exc, call_kwargs):
+                    raise ToolUseRefused(str(self._map_error(exc))) from exc
+                if repairs >= _MAX_REQUEST_REPAIRS or not (
+                    self._wants_effort_none(exc, call_kwargs)
+                    or self._refuse_rejected_field(exc, call_kwargs)
+                    or self._refuse_stop(exc, call_kwargs)
+                    or self._refuse_temperature(exc, call_kwargs)
+                ):
+                    raise self._map_error(exc) from exc
+                # The provider named a field of ours it will not take (ADR-0181), or named
+                # the one value it WILL take for the tools+reasoning pairing, or said it takes
+                # no stop (or only a short one, ADR-0296) or no temperature (ADR-0303): the
+                # flag / ``rejected_request_fields`` / ``max_stop_chars`` is updated, so the
+                # rebuilt request has the accepted shape — the SAME logical call, re-issued.
+                # A route can refuse several of these one at a time, so a call is re-issued
+                # once per refusal it learns from, up to ``_MAX_REQUEST_REPAIRS``; a refusal
+                # it cannot learn from, or one past the bound, is reported as is.
+                repairs += 1
+                call_kwargs = self._build_kwargs(
+                    wire_messages,
+                    tools,
+                    response_format=response_format,
+                    prompt_cache_key=prompt_cache_key,
+                    **kw,
+                )
 
         result = self._normalize(
             response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
@@ -2403,7 +2465,7 @@ class LiteLLMProvider(Provider):
         chunks = 0
         delivered = False  # any text or tool-call fragment reached the caller
         streamed_usage: Usage | None = None  # summed as the loop sums it, for a filtered end
-        repaired = False  # the one ADR-0181 re-issue this call may spend
+        repairs = 0  # re-issues this call has spent, at most _MAX_REQUEST_REPAIRS (ADR-0303)
         await self._pace()
         try:
             while True:
@@ -2454,17 +2516,21 @@ class LiteLLMProvider(Provider):
                 except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
                     # A field refusal arrives at request time, before any chunk — so
                     # nothing has been yielded and the rebuilt request can be re-issued in
-                    # place (ADR-0181, and the stop list, ADR-0296). Anything after the
-                    # first chunk is a real failure.
+                    # place (ADR-0181, the stop list, ADR-0296, and the temperature,
+                    # ADR-0303), once per refusal learned. A refusal of the tools is the
+                    # wrapper's to answer. Anything after the first chunk is a real failure.
+                    if chunks == 0 and self._refuses_tool_use(exc, call_kwargs):
+                        raise ToolUseRefused(str(self._map_error(exc))) from exc
                     if (
                         chunks == 0
-                        and not repaired
+                        and repairs < _MAX_REQUEST_REPAIRS
                         and (
                             self._refuse_rejected_field(exc, call_kwargs)
                             or self._refuse_stop(exc, call_kwargs)
+                            or self._refuse_temperature(exc, call_kwargs)
                         )
                     ):
-                        repaired = True
+                        repairs += 1
                         call_kwargs = build()
                         continue
                     raise self._map_error(exc) from exc
