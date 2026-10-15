@@ -18885,7 +18885,7 @@ its own read as silence, 1; the streamed give-up status keeping the old words, 1
 them, 2; the buffered call dropping the cap it was given, 9; and the streamed call dropping it, 4. `uv run poe check` is
 green: 5,908 passed, 22 skipped.
 
-## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt
+## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt, counted by the tokenizer
 
 **Status:** Accepted (2026-10-15)
 
@@ -18898,29 +18898,39 @@ output tokens." Every call asks for the 8,192-token cap of ADR-0018, while the l
 threshold is 27,034 (ADR-0240: the window, less its 5% margin, less 4,096), so a prompt of 24,577 to 27,034 tokens went
 out uncompacted and was refused. The provider reads that refusal as an overflow (ADR-0293), and the loop compacts and
 retries, one wasted request each time, and no help at all when the prompt's fixed overhead alone fills the room. A
-larger reserve would not close it: the threshold's 0.8 floor still lets 26,214 through.
+larger reserve would not close it: the threshold's 0.8 floor still lets 26,214 through. The report proposed clamping the
+cap with the provider's rough estimate, four characters a token.
+
+Measured here on 2026-10-15, that estimate is the wrong count for this: on generated id-dense JSONL tool output, goal
+ids, short shas, timestamps and paths, it came to 0.56 of litellm's tokenizer; on plain English 1.29; on Python source
+1.01. That is the shortfall ADR-0077 met in the compaction check. A clamp from it would leave the refused cap unchanged
+on exactly the dense prompts that fill a window, and would over-clamp prose.
 
 **Decision.**
 
-* The provider holds the output cap of every call to the room the window leaves: the window, less the prompt's rough
-  estimate (`_rough_token_estimate`, with the tool schemas counted at the same four characters a token), less the
-  compaction check's 5% margin. The default and a caller's own cap alike: the compaction summarizer's 32,768 (ADR-0275)
-  and the overflow retry's raise (ADR-0307) are held to it too. A cap already within the room is sent as it is.
+* The provider holds the output cap of every call to the room the window leaves: the window, less the prompt's token
+  count, tool schemas included, less the compaction check's 5% margin. The default and a caller's own cap alike: the
+  compaction summarizer's 32,768 (ADR-0275) and the overflow retry's raise (ADR-0307) are held to it too. A cap already
+  within the room is sent as it is.
+* The count is litellm's tokenizer, the one `count_tokens` uses, with the tool schemas passed to it. When the counter
+  fails, or answers with anything but a count, the rough estimate stands in, as it already did for `count_tokens`. Both
+  now go through one method, `_wire_token_count`, and `count_tokens` calls the counter exactly as before.
 * The clamp never goes under 1,024 tokens, and never raises a caller's cap that is smaller than that.
 * It runs before the rename to `max_completion_tokens` on OpenAI's own API (ADR-0279), so the renamed cap is clamped.
   The window is the one `capabilities()` reports, which the provider always has (ADR-0066); a sentinel with none is left
   alone.
 
 Stated choices. The seam is the provider, not the loop: every call funnels through `_build_kwargs`, side calls and the
-summarizer included, and the provider holds the wire messages it estimates. The estimate is the rough one, not
-`litellm.token_counter`: the provider already makes it on every streamed call (ADR-0248), it costs nothing, and the
-margin covers a route whose tokenizer counts more; a route that still refuses meets the overflow recovery as before. The
-margin is the compaction check's own, held equal by a test, since the providers package does not import the agent's.
-Under the floor an answer is a few words, so a prompt that leaves less is sent the floor and, if refused, compacted as
-before.
+summarizer included, and the provider holds the wire messages it counts. The counter costs 11 to 24 ms on 50,000 to
+105,000 tokens (measured), against calls that take seconds. It is litellm's default tokenizer for an alias it does not
+know, not the route's own; the margin covers that difference, and a route that still refuses meets the overflow recovery
+as before. The margin is the compaction check's own, held equal by a test, since the providers package does not import
+the agent's. Under the floor an answer is a few words, so a prompt that leaves less is sent the floor and, if refused,
+compacted as before.
 
 Rejected: raising `_answer_room`'s 4,096 to the cap, which the 0.8 floor defeats, as the report showed, and which would
-take room from the prompt on every window, not only on a route that adds the two.
+take room from the prompt on every window, not only on a route that adds the two; and the rough estimate as the count,
+for the measured reason above.
 
 Not verified: a live route. The refusal's words are the report's; the tests send them from a stand-in that counts the
 prompt as the clamp does.
@@ -18928,18 +18938,21 @@ prompt as the clamp does.
 **Consequences.** On a window the prompt has nearly filled, a call asks for less output than 8,192 rather than being
 refused. An answer longer than the room it was given ends `finish_reason=length` and continues through the loop's length
 path, as an answer over 8,192 always has. On a large window nothing changes: with 26,000 tokens of prompt on 131,072 the
-cap is 8,192.
+cap is 8,192. Each call is counted once more, at the cost measured above.
 
-The proof. `tests/test_output_cap_clamp.py` (16 tests). A 32,768-token window with a 26,000-token prompt sends 5,130 in
-one request, buffered and streamed. A prompt with room keeps 8,192; room of exactly 8,192 keeps it, and one token less
-clamps by one. A prompt that fills the window is sent the floor, and its refusal is the overflow; a caller's 200 under
-the floor is kept. The summarizer's 32,768 is clamped; a caller's 512 is kept. Tool schemas count against the room.
-OpenAI's own API is sent the clamped `max_completion_tokens`. A 131,072-token window is untouched. The margin equals the
-compaction check's. Against main, 8 of the 16 fail: every case the clamp decides, and the margin's equality. The 8 that
-pass are the controls: the fixture's estimate, the stand-in refusing 8,192 on 26,000 as an overflow, a prompt with room
-on each path, room of exactly the default, a caller's cap under the floor, a caller's smaller cap, and the large window.
-Ten mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the clamp
-removed turned 7 red; the margin ignored, 6; the tool schemas not counted, 1; no floor, 2; the floor raising a caller's
-smaller cap, 1; a caller's own cap never clamped, 1; OpenAI's renamed cap not clamped, 1; every cap set to the room,
-raised too, 4; the margin drifting from the compaction check's, 7; and the floor changed, 1. `uv run poe check` is
-green: 5,924 passed, 22 skipped.
+The proof. `tests/test_output_cap_clamp.py` (18 tests). Most stand in a tokenizer of one token a character, so the
+numbers are exact. A 32,768-token window with a 26,000-token prompt sends 5,130 in one request, buffered and streamed.
+On id-dense JSONL that litellm's tokenizer counts at 26,469 and the rough estimate at 14,554, the route counting the
+same way, the call is sent 4,661 and taken; the rough estimate would have left 8,192, which the route refuses. A counter
+that fails falls back to the rough estimate. Tool schemas count against the room. A prompt with room keeps 8,192; room
+of exactly 8,192 keeps it, and one token less clamps by one. A prompt that fills the window is sent the floor, and its
+refusal is the overflow; a caller's 200 under the floor is kept. The summarizer's 32,768 is clamped; a caller's 512 is
+kept. OpenAI's own API is sent the clamped `max_completion_tokens`. A 131,072-token window is untouched. The margin
+equals the compaction check's. Against main, 10 of the 18 fail: every case the clamp decides, and the margin's equality.
+The 8 that pass are the controls: the fixture's count, the stand-in refusing 8,192 on 26,000 as an overflow, a prompt
+with room on each path, room of exactly the default, a caller's cap under the floor, a caller's smaller cap, and the
+large window. Twelve mutations were each run green, red, green (2026-10-15), with the red tests counted from the
+verdict: the clamp removed turned 9 red; the margin ignored, 8; the tool schemas not passed to the counter, 1; no floor,
+2; the floor raising a caller's smaller cap, 1; a caller's own cap never clamped, 1; OpenAI's renamed cap not clamped,
+1; every cap set to the room, raised too, 4; the margin drifting from the compaction check's, 9; the floor changed, 1;
+the clamp counting four characters a token, 8; and a failing counter not caught, 2. `uv run poe check` is green: 5,926 passed, 22 skipped.

@@ -2049,16 +2049,17 @@ class LiteLLMProvider(Provider):
         # tokens and your prompt contains at least 24577 input tokens" on a 32,768-token route
         # (reported 2026-10-14), and the compaction threshold leaves the prompt only the answer
         # room of ``_answer_room`` below the window, 4,096 for an unmapped alias. So any cap,
-        # the default or a caller's, is held to the window less the prompt's rough estimate,
-        # tool schemas included, less the compaction check's margin, and never pushed under
-        # the floor. A caller's own smaller cap is untouched. Before the rename below, so
-        # OpenAI's ``max_completion_tokens`` carries the clamped value.
+        # the default or a caller's, is held to the window less the prompt's token count, tool
+        # schemas included, less the compaction check's margin, and never pushed under the
+        # floor. A caller's own smaller cap is untouched. The count is the tokenizer's, as
+        # ``count_tokens`` makes it: the four-characters-a-token estimate ran 44% low on
+        # id-dense tool output (measured 2026-10-15), which would leave the refused cap as it
+        # was. Before the rename below, so OpenAI's ``max_completion_tokens`` carries the
+        # clamped value.
         cap = call_kwargs.get("max_tokens")
         cap_window = self.capabilities().context_window
         if isinstance(cap, int) and cap_window:
-            prompt = self._rough_token_estimate(wire_messages)
-            if tools:
-                prompt += len(json.dumps(tools)) // 4
+            prompt = self._wire_token_count(wire_messages, tools)
             room = cap_window - int(cap_window * _CLAMP_MARGIN_FRACTION) - prompt
             if cap > room:
                 call_kwargs["max_tokens"] = max(room, min(cap, _MIN_CLAMPED_OUTPUT_TOKENS))
@@ -2656,21 +2657,33 @@ class LiteLLMProvider(Provider):
         yield StreamDone(finish_reason=finish_reason)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
-        wire_messages = self._translate_messages(messages, system)
+        return self._wire_token_count(self._translate_messages(messages, system))
+
+    def _wire_token_count(
+        self, wire_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> int:
+        """litellm's token count of a request, its tool schemas included when given; the rough
+        estimate when the counter fails or answers with anything but a count. Shared by
+        :meth:`count_tokens` and the output-cap clamp of :meth:`_build_kwargs` (ADR-0308)."""
+        rough = self._rough_token_estimate(wire_messages)
+        counted: dict[str, Any] = {"model": self.model, "messages": wire_messages}
+        if tools:
+            rough += len(json.dumps(tools)) // 4
+            counted["tools"] = tools
         try:
-            count = litellm.token_counter(model=self.model, messages=wire_messages)
+            count = litellm.token_counter(**counted)
         except Exception:
-            return self._rough_token_estimate(wire_messages)
+            return rough
         # bool is an int subclass; reject it (and any non-numeric) explicitly.
         if isinstance(count, bool):
-            return self._rough_token_estimate(wire_messages)
+            return rough
         if isinstance(count, int):
-            return count if count >= 0 else self._rough_token_estimate(wire_messages)
+            return count if count >= 0 else rough
         try:
             coerced = int(count)
         except (TypeError, ValueError):
-            return self._rough_token_estimate(wire_messages)
-        return coerced if coerced >= 0 else self._rough_token_estimate(wire_messages)
+            return rough
+        return coerced if coerced >= 0 else rough
 
     @staticmethod
     def _rough_token_estimate(wire_messages: list[dict[str, Any]]) -> int:
