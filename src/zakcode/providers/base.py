@@ -265,7 +265,9 @@ class TimedOut(RateLimited):
     A first-chunk expiry under a LEARNED bound (ADR-0248: the prompt-scaled wait
     between the stall floor and the whole-call ceiling) carries a descriptive
     ``bound`` instead of a knob name, because no knob set it; its message says
-    what the next attempt will wait.
+    what the next attempt will wait. So does a 504 that an ingress in front of the
+    API answered before the client ceiling expired, ``gateway ingress 504``: the
+    server side cut that call, and no knob here would have helped (ADR-0306).
     """
 
     def __init__(
