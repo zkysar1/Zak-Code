@@ -18956,3 +18956,46 @@ verdict: the clamp removed turned 9 red; the margin ignored, 8; the tool schemas
 2; the floor raising a caller's smaller cap, 1; a caller's own cap never clamped, 1; OpenAI's renamed cap not clamped,
 1; every cap set to the room, raised too, 4; the margin drifting from the compaction check's, 9; the floor changed, 1;
 the clamp counting four characters a token, 8; and a failing counter not caught, 2. `uv run poe check` is green: 5,926 passed, 22 skipped.
+
+## ADR-0309: one short recipe for LiteLLM-gateway users, held to the code it describes
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was asked on 2026-10-14, with the reports behind ADR-0302 to ADR-0308, that what a user behind a LiteLLM
+1.9x gateway in front of Bedrock/Vertex needs to know be documented generically in one short section: the per-route
+refusals of stop, tools and temperature, silent fallbacks and `disable_fallbacks`, `ZAKCODE_EXTRA_BODY`, the per-entry
+tool mode, and the `unpriced` display with its effect under `ZAKCODE_MAX_COST_USD`. Each was already true and written
+down, but in a setting row or an ADR, where a user setting up a gateway does not look.
+
+**Decision.** `docs/CONFIG.md` gains "Recipe: behind a LiteLLM gateway", beside the self-hosted pod and Vertex recipes
+under "Model / provider". It gives the three settings that reach a gateway; quotes the four refusals Zak Code reads (the
+two stop wordings of ADR-0296, the temperature and tool-use wordings of ADR-0303) with what each changes; names the
+per-entry `tool_calling_mode` for a route that takes tools and drops them (ADR-0304); gives
+`ZAKCODE_EXTRA_BODY={"disable_fallbacks": true}` as opt-in, with the fallback warning it replaces (ADR-0305) and the
+1.61 refusal that makes it opt-in; says what `ZAKCODE_EXTRA_BODY` does with a field a route refuses (ADR-0181); and says
+what `unpriced` and `at least $x, some calls unpriced` mean, that `ZAKCODE_MAX_COST_USD` then stops the turn with
+`stop_reason="budget_unpriced"` by design, and that `ZAKCODE_MAX_TOKENS` bounds tokens without a price (ADR-0302). One
+closing sentence names the ingress 504, the output cap retry and the clamp (ADR-0306 to ADR-0308).
+
+Stated choices. The setting rows keep their detail, and the recipe points at the ADRs rather than repeat it, so it stays
+short: 53 lines. It is generic: one placeholder model, `openai/route-a`, one placeholder host, `gateway.invalid`, and no
+route or model names. The quoted refusals are the clouds' own words as the gateway relays them, because those are what a
+user will see in a log. A test holds the recipe to the code, so a change to a classifier, the renderer, a stop reason or
+a setting name that leaves the recipe stale fails the suite rather than misleading a reader.
+
+Not verified: a live gateway. The wordings are the reports'.
+
+**Consequences.** A user setting up a gateway finds in one place what Zak Code does on its own and what they must name.
+A change to any of the facts the recipe quotes now needs the recipe changed with it.
+
+The proof. `tests/test_gateway_recipe_docs.py` (8 tests). The recipe sits under "Model / provider" and is at most 60
+lines; each refusal it quotes is read by the classifier for that refusal and by no other, and the stop length it quotes
+is read as 10; the fallback switch is the JSON it names; the cost words are what `cost_text` renders; the stop reason is
+one the loop assigns; every `ZAKCODE_` name is a setting, and the four settings it names in backticks exist; it names
+each topic asked for; and the only host it names is `gateway.invalid`. Against main all 8 fail, the section being
+absent. Eleven mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the
+section's heading changed turned 8 red; a quoted stop refusal reworded so no classifier reads it, 1; the quoted limit
+changed, 1; the fallback switch not the JSON it names, 1; the floor wording not the renderer's, 1; the stop reason not
+the loop's, 1; a setting that does not exist, 3; a real host named, 1; the per-entry tool mode not named, 1; and on the
+code side, the renderer's words changed, 1, and the temperature classifier changed, 1. `uv run poe check` is green:
+5,934 passed, 22 skipped.
