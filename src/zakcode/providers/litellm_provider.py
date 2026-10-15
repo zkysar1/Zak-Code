@@ -743,7 +743,8 @@ _OLLAMA_NUM_CTX_CAP = 16_384
 #: bounded). Fixed on purpose: not a knob. Per-call callers (side-calls with tighter
 #: budgets) still override it, and so does the compaction summarizer with a larger one: a
 #: reasoning model's thinking is billed against this cap, and at 8,192 it cut summaries off
-#: before they ended (ADR-0275).
+#: before they ended (ADR-0275). The loop's reasoning-overflow retry asks for twice it, for
+#: that one call, where the window has room (ADR-0307).
 _MAX_COMPLETION_TOKENS = 8_192
 
 #: The share of the window an output cap leaves unclaimed when it is clamped to the room the
