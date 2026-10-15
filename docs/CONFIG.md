@@ -238,6 +238,60 @@ enumerate with `gcloud ai model-garden models list --project=<p>` rather than gu
 and a 404 `publisher model not found` means *reached and authenticated, wrong model id* —
 not a permissions or networking problem.
 
+### Recipe: behind a LiteLLM gateway
+
+A LiteLLM 1.9x gateway in front of Bedrock/Vertex serves each model as an alias on one
+OpenAI-compatible endpoint. Reach it like any such server:
+
+```bash
+ZAKCODE_DEFAULT_MODEL=openai/route-a
+ZAKCODE_API_BASE=https://gateway.invalid/v1
+ZAKCODE_API_KEY=...              # the gateway's key, in ~/.zakcode/.env
+```
+
+The routes behind one endpoint differ in what they accept, and the gateway relays each
+cloud's refusal in its own words. Zak Code handles these; what it cannot detect, you name.
+
+**A route refuses a field.** These HTTP 400s are read, learned for the session, and answered
+by re-issuing the call without the field, one refused request each, once per provider
+(ADR-0296, ADR-0303):
+
+* `This model doesn't support the stopSequences field. Remove stopSequences and try again.`
+  No stop list is sent, the text tool protocol's included.
+* `The stop sequence you provided at index 0 is longer than the model limit of 10 characters.`
+  Only stop sequences shorter than the limit are sent.
+* `This model doesn't support the temperature field. Remove temperature and try again.`
+  No temperature is sent, neither the configured `temperature` nor a side call's 0.0.
+* `This model doesn't support tool use.` The session moves to the text tool protocol.
+
+**A route takes tools and drops them.** It answers HTTP 200 with no tool call, so there is
+no refusal to learn from. Give that route its own protocol under `default_model=zakpick`:
+`zakpick_models[...].tool_calling_mode` set to `text`. An entry that names no mode inherits
+`tool_calling_mode` (ADR-0304).
+
+**Silent fallbacks.** The gateway may answer with a model other than the one you named, at
+HTTP 200. Each such pair is one warning naming both, on the streamed path and the buffered
+one, read from the gateway's own headers (ADR-0305). To have it fail instead:
+`ZAKCODE_EXTRA_BODY={"disable_fallbacks": true}`. It is opt-in, because a gateway as old as
+1.61 refuses a body field it does not know.
+
+**`ZAKCODE_EXTRA_BODY`** is merged into every request body. A field a route refuses by name
+is dropped for the session and the call re-issued once (ADR-0181). Per-entry thinking is
+`zakpick_models[...].thinking`, merged over it.
+
+**Cost.** litellm's price map has no entry for most gateway aliases, and a streamed call
+through the gateway reports no cost, so most turns cannot be priced. The footer and `/cost`
+then read `unpriced`, or `at least $x, some calls unpriced` when some calls were priced,
+sub-agents' buffered calls for instance; no rate is guessed (ADR-0302). With
+`ZAKCODE_MAX_COST_USD` set, an unpriced call leaves that ceiling unenforceable, so the turn
+stops there with `stop_reason="budget_unpriced"`, by design. `ZAKCODE_MAX_TOKENS` bounds
+tokens instead, and needs no price.
+
+The gateway's ingress cutting a long buffered call reads as a timeout naming the ingress
+(ADR-0306); reasoning that exhausts the output cap is retried with twice the cap where the
+window has room (ADR-0307); and a window that counts the requested output against the
+prompt gets a cap that fits (ADR-0308).
+
 ## Agent behavior & permissions
 
 | Field | Env var | Default | Meaning |
