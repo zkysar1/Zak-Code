@@ -63,6 +63,11 @@ class LLMResult(BaseModel):
     #: A gateway's fallback to another model is warned on both paths, from its own response
     #: headers (ADR-0305).
     served_model: str | None = None
+    #: The output cap this call was sent when the provider held it under the one asked for, so
+    #: that the room the window left the prompt, not the model's cap or the caller's, bounded
+    #: the answer (ADR-0308); ``None`` when the cap went out as asked. A reasoning overflow
+    #: under such a cap compacts before its retry (ADR-0310).
+    clamped_output_cap: int | None = None
     usage: Usage = Field(default_factory=Usage)
     raw: dict[str, Any] | None = None
 
@@ -206,6 +211,8 @@ class StreamDone(BaseModel):
 
     event: Literal["done"] = "done"
     finish_reason: str | None = None
+    #: As :attr:`LLMResult.clamped_output_cap`, for the streamed call (ADR-0310).
+    clamped_output_cap: int | None = None
 
 
 ProviderStreamEvent = Annotated[
@@ -766,7 +773,9 @@ class Provider(ABC):
                 arguments_delta=json.dumps(call.arguments),
             )
         yield StreamUsage(usage=result.usage)
-        yield StreamDone(finish_reason=result.finish_reason)
+        yield StreamDone(
+            finish_reason=result.finish_reason, clamped_output_cap=result.clamped_output_cap
+        )
 
 
 __all__ = [

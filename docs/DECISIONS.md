@@ -18885,6 +18885,9 @@ its own read as silence, 1; the streamed give-up status keeping the old words, 1
 them, 2; the buffered call dropping the cap it was given, 9; and the streamed call dropping it, 4. `uv run poe check` is
 green: 5,908 passed, 22 skipped.
 
+**Amended by ADR-0310 (2026-10-15):** an overflow under a cap the window held down (ADR-0308) compacts before its retry,
+so the retry's room is measured on the prompt that is left.
+
 ## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt, counted by the tokenizer
 
 **Status:** Accepted (2026-10-15)
@@ -18957,6 +18960,10 @@ verdict: the clamp removed turned 9 red; the margin ignored, 8; the tool schemas
 1; every cap set to the room, raised too, 4; the margin drifting from the compaction check's, 9; the floor changed, 1;
 the clamp counting four characters a token, 8; and a failing counter not caught, 2. `uv run poe check` is green: 5,926 passed, 22 skipped.
 
+**Amended by ADR-0310 (2026-10-15):** a call the clamp held under its cap says so on its result, and when its reasoning
+fills that cap with nothing visible, the loop compacts before the overflow retry. An answer that ends on a clamped cap
+with text still continues through the length path.
+
 ## ADR-0309: one short recipe for LiteLLM-gateway users, held to the code it describes
 
 **Status:** Accepted (2026-10-15)
@@ -18999,6 +19006,88 @@ changed, 1; the fallback switch not the JSON it names, 1; the floor wording not 
 the loop's, 1; a setting that does not exist, 3; a real host named, 1; the per-entry tool mode not named, 1; and on the
 code side, the renderer's words changed, 1, and the temperature classifier changed, 1. `uv run poe check` is green:
 5,934 passed, 22 skipped.
+
+## ADR-0310: a reasoning overflow under a cap the window clamped compacts before its retry
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-15, from a re-test of main through a LiteLLM 1.9x gateway in front of
+Bedrock/Vertex, that the clamp of ADR-0308 turned an overflow the loop used to recover into a give-up. A route whose
+window is 32,768 tokens refuses a request whose prompt plus requested output passes the window, and a reasoning model
+there needed about 7,000 output tokens. With 25,000 tokens of prompt the clamp held the 8,192 default to the 6,130 the
+window left, the reasoning filled it, and the call ended `length` with nothing visible. The overflow retry of ADR-0307
+found no room past the default on that prompt, so it asked for the default, the clamp held that to the same room less
+the rail, and after the third try the turn gave up with "output cap exhausted by reasoning". Before the clamp the route
+refused the request, the provider read the refusal as an overflow (ADR-0293), the loop compacted the transcript
+(ADR-0083), and the retry answered. With the clamp every request fits, so nothing is refused and nothing compacts.
+
+Read here on 2026-10-15, three numbers make a band where this happens. The provider sends the 8,192 default
+(`_MAX_COMPLETION_TOKENS`), and the clamp holds it to the window less the compaction check's 5% margin less the prompt.
+The compaction threshold reserves `_answer_room` under the window less the same margin, 4,096 for an alias with no
+declared output cap, between the 0.8 and 0.9 fractions (ADR-0240). So a prompt past the window less 5% less 8,192, and
+not past the threshold, is clamped and not compacted: 22,939 to 27,034 tokens on a 32,768-token window, and 113,409 to
+115,200 on 128,000, where the 0.9 fraction caps the threshold. A threshold that reserved the 8,192 would not close it:
+the 0.8 floor keeps the threshold at 26,214 on 32,768.
+
+**Decision.**
+
+* The provider says when it held a call's cap under the one asked for. `LLMResult.clamped_output_cap` and
+  `StreamDone.clamped_output_cap` carry the cap that call was sent, and are `None` when the cap went out as asked. A
+  caller's cap that the floor keeps went out as asked. The base provider's default stream and the text tool protocol's
+  stream carry it from the result they replay.
+* When such a call ends on its cap (`length`) with nothing visible, the loop compacts before the overflow retry, with
+  the first rung of the ladder a refused request runs (ADR-0083): a summary, or eliding old tool outputs when the
+  summarizer fails. The overflow retry is then sized to the prompt that is left (ADR-0307). Every such overflow does
+  this, on both paths. The trace notes it (`overflow_compacted`, with the cap), and the streamed status says it.
+* Left as before: reasoning that stopped on its own under a clamp, an overflow under a cap the window did not lower, and
+  a clamped call that answered.
+
+Stated choices. The seam is the overflow, not the threshold. A threshold that reserved the cap is defeated by the 0.8
+floor, as above, and would take room from the prompt on every window, where only a call the window held down and the
+reasoning filled needs it. The loop learns of the clamp from the provider, which counted the prompt with its tokenizer
+(ADR-0308). The loop's own count is the anchored estimate, and two counts can disagree at the edge of the room. The
+three numbers are tied, not reconciled: a test holds the clamp's margin to the compaction check's, the overflow retry's
+floor to the provider's default, the answer room of an unmapped alias to 4,096, and the band's edges on both windows to
+the values above, so moving any of them fails the suite. Reasoning that stopped on its own is left alone because the cap
+did not end it, and a smaller prompt would not either. Nothing counts these compactions. After one summary the prompt is
+below the band, so another needs the turn to fill the band again, and the empty-completion retries, two in a row, bound
+how many come before a give-up. A long turn that fills the band again compacts again, as a refused request did before
+the clamp. The provider records the clamp on itself while it builds the request and each call path reads it right after
+each build, with no await between, so a call made in between cannot change what a result says.
+
+Rejected: a threshold that reserves the cap, for the reasons above; compacting on every reasoning overflow, which would
+summarize a conversation whose call had room the window did not take; and a counted bound on these compactions, which
+would leave a long autonomous turn that fills the band more than once to give up.
+
+Not verified: a live route. The 7,000-token need and the shapes are the report's; the tests send them from a stand-in.
+
+**Consequences.** On the measured route a hard turn in the band compacts once, and the retry answers where the turn gave
+up. In the stand-in, a first call with 24,993 tokens of prompt is sent 6,137, a summary brings the prompt to 8,583, and
+the retry is sent 16,384 and answers. That costs one summary call for each such overflow, the call a refused request led
+to before the clamp, without the refused request. A route that always overflows compacts once and gives up as before.
+ADR-0307 and ADR-0308 are amended for such a call.
+
+The proof. `tests/test_clamped_overflow_compacts.py` (22 tests). A stand-in route counts one token a character, refuses
+a request whose prompt plus requested output passes its window, summarizes when asked to compact, and answers only when
+its cap leaves room for the reasoning it needs. On 32,768 tokens with a 25,000-token prompt and a 7,000-token need, and
+on 128,000 with 114,000 and 8,000, on each path, the first call sits in the band under the need, one summary follows,
+and the retry, with a smaller prompt and at least the need, answers, with no request refused. A route that always
+overflows compacts once and gives up naming the output cap. A long turn whose tool output fills the band again compacts
+again, on each path. Left alone: reasoning that stopped on its own under a clamp; and, on each path, a prompt below the
+band, a clamped call with room enough, and an overflow the clamp did not cause. The provider says when the clamp held
+the cap, buffered and streamed, and only then; a clamp is not carried to the next call; a caller's cap the floor kept is
+not called clamped; and the default stream and the text tool protocol's keep it. The band test ties the three numbers.
+Against main, 13 of the 22 fail: the six turns that gave up, the one that never compacted, and the six that read the new
+field. The 9 that pass are the controls: the band on each window, the stop of its own, and the three left-alone cases on
+each path. Eighteen mutations were run on 2026-10-15, each from a green baseline and restored to green, with the red
+tests counted from the verdict: the buffered gate not given the clamp turned 4 red; the streamed gate, 3; the streamed
+loop not reading the done event's clamp, 3; the helper compacting whatever held the cap, 3; ignoring the finish reason,
+1; the ladder starting on its second rung, 7; the compaction not noted under its kind, 6; the streamed status not saying
+why, 2; the clamp not recorded, 9; a cap the floor kept recorded as clamped, 1; a clamp outliving its request, 2;
+`acomplete` not reading its request's clamp, 6; `astream` not reading it, 4; its done event dropping it, 4; the buffered
+result not stamped, 6; the default stream dropping it, 1; and the text tool protocol's stream dropping it, 1. One stayed
+green, an equivalent: `acomplete` not reading the clamp again after a repaired request is rebuilt, since no repair
+changes the prompt, the tools or the cap. `uv run poe check` is green: 5,956 passed, 22 skipped.
 
 ## ADR-0311: a refusal of tool use, temperature or stop is read at the start of the provider's own message, not anywhere in a 4xx that only quotes it
 
