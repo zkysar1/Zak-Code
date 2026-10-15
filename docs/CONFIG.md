@@ -380,3 +380,14 @@ invoice — the exact inverse of the failure the ruling above protects against. 
 strictly inside the host's own reaper rather than replacing it: an environment server stops
 an idle vessel through the seeded file world's tick at roughly 33 minutes, nothing here
 touches that dial, and that bound remains the backstop.
+
+**Learned refusals last one turn here.** The server builds a new agent, and so a new
+provider, for each turn: each `POST /chat` and `POST /chat/stream`, and each say a served
+run takes. `POST /complete` builds its own provider too. So what a provider learns from a
+route's refusal lasts that turn, where the CLI keeps it for the session: the switch to the
+text tool protocol, `reasoning_effort` set to `none` for a call with tools, a dropped
+`temperature` or stop list, a stop length limit, a field refused by name (ADR-0181,
+ADR-0188, ADR-0296, ADR-0303). The next turn learns it again, one refused request each. A
+route that refuses tool use can skip that request by taking the text protocol from the
+start: `tool_calling_mode` set to `text`, or `zakpick_models[...].tool_calling_mode` for
+one entry (ADR-0304).
