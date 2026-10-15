@@ -1631,7 +1631,9 @@ class LiteLLMProvider(Provider):
         # backend echoing a token) from the vendor message BEFORE it propagates to any
         # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
         # An ingress's web page in the message keeps its words and loses its markup (ADR-0306).
-        message = _page_text(redact_secrets(str(exc))[0])
+        # The words are redacted again once decoded: an assignment written with entities
+        # (``&quot;api_key&quot;: ...``) is only an assignment after the unescape (ADR-0312).
+        message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
