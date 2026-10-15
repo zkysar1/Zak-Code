@@ -17,6 +17,9 @@ The gateway says so itself, in response headers that litellm keeps, on both path
 On any other backend the keys are absent. Hermetic: no network, no credentials. The header names
 are litellm's; the values are neutral. The wire tests at the end send the headers through
 litellm's own HTTP client, so the dictionary the provider reads is the one litellm builds.
+
+A count above 0 with the very model group asked for, the model string less its provider prefix,
+is no fallback: nothing answered instead, and nothing is warned (ADR-0316).
 """
 
 from __future__ import annotations
@@ -239,6 +242,41 @@ async def test_no_warning_without_a_fallback(
             pass
 
     assert _warnings(caplog) == []
+
+
+@pytest.mark.parametrize(
+    "model, group, warned",
+    [
+        pytest.param(ROUTE, "route-a", False, id="the-asked-alias"),
+        pytest.param("openai/team/route-a", "team/route-a", False, id="an-alias-with-a-slash"),
+        pytest.param("openai/team/route-a", "route-a", True, id="its-last-segment-only"),
+    ],
+)
+@pytest.mark.parametrize("path", ["buffered", "streamed"])
+async def test_a_fallback_answered_by_the_asked_model_group_is_not_warned(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    path: str,
+    model: str,
+    group: str,
+    warned: bool,
+) -> None:
+    """ADR-0316: a gateway can count fallbacks and still answer from the group asked for, the
+    model string less its provider prefix. Nothing answered instead, so nothing is warned."""
+    caplog.set_level(logging.WARNING, logger="zakcode.providers")
+    headers = {ATTEMPTS: "2", GROUP: group, NAME: "vendor/route-a-2"}
+    provider = LiteLLMProvider(
+        model=model, api_base=GATEWAY, api_key="sk-test", context_window=131_072
+    )
+    if path == "buffered":
+        monkeypatch.setattr(lp.litellm, "acompletion", _buffered(_response(headers)))
+        await provider.acomplete(_MSGS)
+    else:
+        monkeypatch.setattr(lp.litellm, "acompletion", _streamed(_Stream(headers)))
+        async for _ in provider.astream(_MSGS):
+            pass
+
+    assert len(_warnings(caplog)) == (1 if warned else 0)
 
 
 async def test_a_served_name_that_differs_is_not_a_fallback(

@@ -65,6 +65,7 @@ from zakcode.providers.base import (
     WindowResolution,
     context_overflow_marker,
     quota_exhaustion_marker,
+    quoted_provider_message,
     rejected_request_field,
     stop_field_unsupported,
     stop_length_limit,
@@ -1494,7 +1495,7 @@ class LiteLLMProvider(Provider):
             "— sending 'none' with tools for the rest of this session and re-issuing "
             "the call",
             self.model,
-            " ".join(message.split())[:200],
+            quoted_provider_message(message),
         )
         return True
 
@@ -1525,7 +1526,7 @@ class LiteLLMProvider(Provider):
             "session and re-issuing the call without it",
             self.model,
             field,
-            " ".join(message.split())[:200],
+            quoted_provider_message(message),
         )
         return True
 
@@ -1565,7 +1566,7 @@ class LiteLLMProvider(Provider):
             "the call without it",
             self.model,
             refused,
-            " ".join(message.split())[:200],
+            quoted_provider_message(message),
         )
         return True
 
@@ -1590,7 +1591,7 @@ class LiteLLMProvider(Provider):
             "%s refused the temperature field (%s) — leaving it out for the rest of this "
             "session and re-issuing the call without it",
             self.model,
-            " ".join(message.split())[:200],
+            quoted_provider_message(message),
         )
         return True
 
@@ -1707,9 +1708,12 @@ class LiteLLMProvider(Provider):
             if getattr(exc, "status_code", None) == 504:
                 # Unless the SERVER side cut the call (ADR-0306): litellm raises its Timeout
                 # for an ingress's 504 and keeps the status (measured on 1.86.2; a client
-                # timeout carries 408), so the notice names the ingress, not the client
+                # timeout carries 408), so the notice names the server side, not the client
                 # ceiling, which had not expired. A 504 under another class stays an outage.
-                return TimedOut(message, retry_after=retry_after, bound="gateway ingress 504")
+                # litellm raises the same for the gateway's own JSON 504, so only the
+                # ingress's web page names the ingress (ADR-0316).
+                bound = "gateway ingress 504" if _HTML_PAGE.search(str(exc)) else "gateway 504"
+                return TimedOut(message, retry_after=retry_after, bound=bound)
             return TimedOut(message, retry_after=retry_after)
         if cls._is_a(
             exc,
@@ -2184,6 +2188,10 @@ class LiteLLMProvider(Provider):
         group = headers.get(_FALLBACK_GROUP_HEADER)
         name = headers.get(_FALLBACK_NAME_HEADER)
         answered = str(group or name or "a model it did not name")
+        # The group asked for, the model string less its provider prefix, answered after all:
+        # nothing answered instead (ADR-0316).
+        if answered == self.model.split("/", 1)[-1]:
+            return
         if (self.model, answered) in self._fallbacks_seen:
             return
         self._fallbacks_seen.add((self.model, answered))

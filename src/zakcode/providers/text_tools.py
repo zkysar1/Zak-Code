@@ -66,6 +66,7 @@ from zakcode.providers.base import (
     StreamUsage,
     ToolCall,
     ToolUseRefused,
+    quoted_provider_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -688,7 +689,7 @@ class TextToolCallingProvider(Provider):
                 "%s refused tool use (%s) — using the text tool protocol for the rest of this "
                 "session and re-issuing the call",
                 self.model_id(),
-                " ".join(str(exc).split())[:200],
+                quoted_provider_message(exc),
             )
 
     @staticmethod
