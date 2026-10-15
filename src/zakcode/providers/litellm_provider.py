@@ -254,11 +254,49 @@ _LiteLLMPermissionError = _resolve_exc_type("PermissionDeniedError")
 _LiteLLMContextWindowError = _resolve_exc_type("ContextWindowExceededError")
 _LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
 
-#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306).
+#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306):
+#: the openings of the blocks whose contents are not words, each kind's closing tag, and a tag.
 _HTML_PAGE = re.compile(r"<(?:!doctype\s+)?html[\s>]", re.IGNORECASE)
-_HTML_HEAD = re.compile(r"<head\b.*?</head\s*>", re.IGNORECASE | re.DOTALL)
-_HTML_CODE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_HEAD = re.compile(r"<(head)\b", re.IGNORECASE)
+_HTML_CODE = re.compile(r"<(script|style)\b", re.IGNORECASE)
+_HTML_CLOSE = {
+    kind: re.compile(rf"</{kind}\s*>", re.IGNORECASE) for kind in ("head", "script", "style")
+}
 _HTML_TAG = re.compile(r"<[^>]*>")
+
+
+def _drop_blocks(page: str, opening: re.Pattern[str]) -> str:
+    """``page`` with each block that ``opening`` starts, through the first closing tag of its
+    kind, replaced by a space (ADR-0313).
+
+    It returns what ``re.sub(r"<(kind)\\b.*?</\\1\\s*>", " ", page, flags=re.I | re.S)`` returns,
+    in linear time. That pattern rescans the rest of the page from every opening with no closing
+    tag after it, so a page of unclosed openings took seconds. Such an opening is skipped unread.
+    """
+    last: dict[str, int] = {}
+    kept: list[str] = []
+    pos = 0
+    for found in opening.finditer(page):
+        if found.start() < pos:
+            continue
+        kind = found.group(1).lower()
+        if kind not in last:
+            last[kind] = max((m.start() for m in _HTML_CLOSE[kind].finditer(page)), default=-1)
+        close = _HTML_CLOSE[kind].search(page, found.end()) if last[kind] >= found.end() else None
+        if close is None:
+            continue
+        kept += [page[pos : found.start()], " "]
+        pos = close.end()
+    kept.append(page[pos:])
+    return "".join(kept)
+
+
+def _drop_tags(text: str) -> str:
+    """``text`` with each tag replaced by a space, as ``_HTML_TAG`` matches one, in linear time
+    (ADR-0313). No tag closes after the last ``>``, so the pattern runs only up to it: tried from
+    every ``<`` of a run with no ``>`` after it, it rescanned the run each time."""
+    end = text.rfind(">") + 1
+    return _HTML_TAG.sub(" ", text[:end]) + text[end:]
 
 
 def _page_text(message: str) -> str:
@@ -267,15 +305,16 @@ def _page_text(message: str) -> str:
     An ingress or proxy in front of an API answers some failures with a web page, and litellm
     puts the page in its exception's message, so its markup reached the turn's error. The body's
     text is kept, or the title's when the body has none. A message with no page is returned as
-    it is, so angle brackets in an ordinary message survive.
+    it is, so angle brackets in an ordinary message survive. The work is linear in the page's
+    length, however the page is broken (ADR-0313): this runs on the event loop.
     """
     found = _HTML_PAGE.search(message)
     if found is None:
         return message
-    page = _HTML_CODE.sub(" ", message[found.start() :])
-    text = " ".join(html.unescape(_HTML_TAG.sub(" ", _HTML_HEAD.sub(" ", page))).split())
+    page = _drop_blocks(message[found.start() :], _HTML_CODE)
+    text = " ".join(html.unescape(_drop_tags(_drop_blocks(page, _HTML_HEAD))).split())
     if not text:
-        text = " ".join(html.unescape(_HTML_TAG.sub(" ", page)).split())
+        text = " ".join(html.unescape(_drop_tags(page)).split())
     return f"{message[: found.start()].rstrip()} {text}".strip()
 
 

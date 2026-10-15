@@ -19214,3 +19214,58 @@ before the page, and the page with no credential. Four mutations were run (2026-
 the verdict. Three went green, red, green: the fix reverted turned 12 red; both redactions run before the decoding, 12;
 and the page not decoded, 14, one of them ADR-0306's own entity test. The fourth, the raw text's redaction dropped,
 stayed green, as stated above. `uv run poe check` is green: 5,951 passed, 22 skipped.
+
+## ADR-0313: a web page in a provider error is reduced to its words in linear time, however the page is broken
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that `_page_text` (ADR-0306) takes time quadratic in the
+length of a malformed page. Each of its three patterns, `<head\b.*?</head\s*>`, `<(script|style)\b.*?</\1\s*>` and
+`<[^>]*>`, rescans the rest of the page from every opening that never closes. Only a message with a page in it pays.
+The error mapping is plain synchronous code inside an async turn, so such a page blocks the event loop for that long,
+and `zakcode webapp` serves every session from one loop. The review measured `<html>` and 4,000 `<head` at about 0.5 to
+1.6 s, and `<html>` and 50,000 `<` at about 1.4 to 5.6 s, depending on load.
+
+Measured here on 2026-10-15 on main, in one run: `_map_error` took 4.0 s on `<html>` and 120,000 `<`, and 1.5 to 2.1 s
+on 10,000 unclosed `<head`, `<script` or `<style`. `_page_text` took 41 s on 50,000 unclosed `<head` and 54 s on 50,000
+unclosed `<script`. A well-formed 2 MB page took 0.07 s.
+
+**Decision.**
+
+* `_page_text` reads a page in one pass. A `head`, `script` or `style` block is found by its opening and the first
+  closing tag of its kind after it. An opening after the last closing tag of its kind is skipped without a search,
+  since no block can start there. The tag pattern runs only up to the last `>`, since no tag closes after it.
+* The text is the patterns' text, byte for byte: the tests compare the two on every page they write and on 3,000
+  generated fragments. The words, the title when the body has none, the entities and the text before the page are what
+  ADR-0306 made them.
+
+Stated choices. The review offered a cap on the text before the patterns, or html.parser. This takes neither: it keeps
+the patterns' reading and drops only their rescans, so no page reads differently and no length has to be chosen. It is
+about 40 lines where a cap is one.
+
+Rejected, both measured here on 2026-10-15 with Python 3.11.16: a cap, and html.parser. A cap's time grows with the
+square of its length: at most 12 ms at 4,000 characters on the pages above, 0.07 to 0.21 s at 16,000 and 1.2 to 3.6 s
+at 64,000. And a page whose markup before its words is longer than the cap reads as that markup: with a 4,000-character
+cap, an 11,350-character page whose head carries a style sheet read `502 Bad Gateway p { margin: 0; padding: 0 } ...`,
+where the patterns read `502 Bad Gateway The upstream server did not answer.` html.parser is fast on these pages, 0.2 to
+77 ms, but reads broken markup its own way. A reduction written with it to ADR-0306's rule differed from the patterns on
+4 of the 14 pages the tests write and on 1,392 of the 3,000 generated fragments: `<html><<b>bold</b> a < b and c > d <i`
+read `< bold a < b and c > d`, where the patterns read `bold a d <i`. Which reading is better is a question for
+ADR-0306, not a fix of its speed.
+
+Not verified: a live page, and the maintainer's machine. The pages are the tests' own, and the timings are this
+machine's.
+
+**Consequences.** A broken or hostile page in a provider error costs the event loop milliseconds where it cost seconds.
+Every message reads as it did. The well-formed 2 MB page takes 0.05 s.
+
+The proof. `tests/test_page_text_linear.py` (50 tests). Five malformed pages of 50,000 to 120,000 characters are mapped
+by `_map_error` within 0.5 s, and pages of 50,000 unclosed `<head` and `<script`, 250,000 and 350,000 characters, are
+reduced within 0.5 s; the reduction takes 1.5 to 11 ms on each here. Fourteen pages the tests write, each with three
+prefixes, read as main's patterns read them, and so do 3,000 generated fragments of tags, entities and text. Against
+main, 7 of the 50 fail: every timed case, at 1.5 to 54 s. The 43 that pass compare main's patterns with themselves.
+ADR-0306's 18 tests in `tests/test_ingress_504.py` pass unchanged. Seven mutations were each run green, red, green
+(2026-10-15), with the red tests counted from the verdict: the tag pass run past the last `>` turned 3 red; an opening
+that cannot close searched anyway, 2; an upper-case opening not folded to its kind, 4; a closing tag right after its
+opening not seen, 1; the last `>` left out of the tag pass, 50; an opening inside a dropped block not skipped, 4; and
+scripts and styles kept, 14, one of them ADR-0306's own test. `uv run poe check` is green: 5,984 passed, 22 skipped.
