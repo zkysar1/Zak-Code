@@ -203,10 +203,12 @@ Two failure modes worth recognising, both of which look like something else:
   host, a lenient proxy may substitute its default and answer normally. Check `/v1/models`
   for the exact alias; on the inference server, `ZDS_STRICT_MODEL=1` turns the
   substitution into a 404 and every substitution is logged either way.
-- **An empty reply that took minutes.** Thinking tokens count against `max_tokens`, so a
-  reasoning model can spend the whole budget thinking and return nothing — `finish_reason`
-  is `length` and the content is empty. Raise `max_tokens` or set `thinking: false`
-  (measured on Qwen3.8-27B: a 3000-token budget was fully consumed by reasoning, 0 answer).
+- **An empty reply that took minutes.** Thinking tokens count against the per-call output
+  cap, so a reasoning model can spend the whole cap thinking and return nothing —
+  `finish_reason` is `length` and the content is empty (measured on Qwen3.8-27B: a
+  3000-token budget was fully consumed by reasoning, 0 answer). The loop asks again with
+  thinking off and twice the cap, where the window has room (ADR-0307); `thinking: false`
+  saves the first try. The `max_tokens` setting below is a cumulative budget, not this cap.
 
 ### Recipe: Vertex AI (Gemini) on Google Cloud
 

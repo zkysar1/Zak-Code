@@ -2266,6 +2266,11 @@ plain silence unchanged, consecutive budget, consecutive overflows still give up
 astream forwards thinking) and tests/test_local_only.py (a per-call body merges over the
 instance body).
 
+**Amended by ADR-0307 (2026-10-15):** the retry also asks for twice the output cap where the
+model's declared cap and the window leave room, because a route that ignores the switch
+otherwise retries with the room it just exhausted, and a refusal of the retry's switch or cap
+that names neither drops one and re-issues the call. Thinking off stays the first remedy.
+
 ## ADR-0057: A stuck model gets investigative steps, not advice — decompose-on-stuck
 
 **Status.** Accepted (2026-08-28).
@@ -18792,3 +18797,85 @@ for the ingress, 3, one of them ADR-0224's own test in `tests/test_provider.py`;
 bound, 6; a client timeout's 408 taken for the ingress, 3; any angle bracket taken for a page, 1; the head's title kept
 beside the body, 8; no title when the body has no words, 1; scripts and styles kept, 1; entities left escaped, 1; and
 the text before the page dropped, 7. `uv run poe check` is green: 5,887 passed, 22 skipped.
+
+## ADR-0307: a reasoning-overflow retry asks for twice the output cap where the model and the window leave room, a refusal of its overrides that names neither drops one and re-issues the call, and a give-up after overflows names the output cap
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+every call asks for the 8,192-token output cap of ADR-0018, and that `Settings.max_tokens` is a cumulative budget, not
+that cap. On Bedrock a reasoning model's thinking counts against the cap, so a hard turn can end `finish_reason=length`
+with nothing visible. The reasoning-overflow rail (ADR-0056) then re-issues the call with thinking off, in llama.cpp's
+spelling, `chat_template_kwargs`. By the report, measured on six routes with fallbacks off: three took the switch with
+HTTP 200 and showed no sign of it doing anything, one of them still producing 45 reasoning tokens with it off; two
+refused it by name, which ADR-0181 learns and drops; and one refused it naming nothing, "The model returned the
+following errors: Validation Error", which cannot be learned, so that retry failed as `RequestFailed` and ended the
+turn. A route that always overflows cost three 8,192-token calls, 24,576 billed output tokens, and then the give-up read
+"the model went silent".
+
+Read here on 2026-10-15: `_call_provider` passed the retry only its `extra_body`, so the retry asked for the same cap as
+the call that overflowed, and where the switch is ignored it had exactly that call's room. A 4xx that names nothing
+reaches the loop as the generic `RequestFailed`, and the loop's provider-error branch ended the turn on it. The give-up
+note was the same words whatever the empty completions had been.
+
+**Decision.**
+
+* An overflow retry asks for 16,384 output tokens, twice the default, for that one call. The model's declared output cap
+  holds it lower, and so does the window: the room left after the prompt, counted as the compaction check counts it
+  (ADR-0077), less that count's 5% margin (ADR-0240). When that leaves no more than 8,192 the retry keeps the default. A
+  second overflow retry asks for the same 16,384, never twice it again. The trace notes the cap each raised retry asks
+  for (`overflow_output_cap`). Both paths, buffered and streamed.
+* A refusal of an overflow retry that names nothing, the generic `RequestFailed`, drops one of the retry's overrides and
+  re-issues the call: the thinking switch first, then the raised cap. The request without them was taken a call earlier.
+  With both gone, a refusal ends the turn as before, and any other failure of the retry is handled as before. The trace
+  notes each drop with the refusal's text (`overflow_retry_refused`), and the streamed path says it in a status line.
+* A give-up after reasoning overflows says so. When the last completion ended on the output cap, the note reads "output
+  cap exhausted by reasoning — repeated overflows, no answer" and the streamed status "stopping: reasoning exhausted the
+  output cap (no answer)". When the model reasoned and stopped on its own, both say it reasoned without answering. Plain
+  silence keeps "the model went silent".
+
+Stated choices. Thinking off stays the first remedy: on a self-hosted server it is the measured, working spelling
+(ADR-0181), and a cap is a ceiling, so a retry that answers early is billed no more for the raise. ADR-0056 turned down
+a bigger budget on this path because a 32k retry on the pod's 27B model takes tens of minutes. This one doubles to
+16,384, and on the pod, where the switch is honored, only a retry that still overflows spends it: up to 16,384 tokens
+instead of 8,192, the price of room on a route that ignores the switch. The cap doubles once, as the report asked, and a
+call that reasons past 16,384 tokens has run away, the judgement ADR-0275 makes of a summary at 32,768. The window bound
+uses the loop's anchored count, not the provider's estimate, so the retry trusts the count the compaction check trusts.
+A refusal that names nothing is not learned for the session: nothing in it says which override it refused, so each
+overflow retry tries the switch again, at the cost of one refused request. The switch goes first because it is the
+override the report measured refused. The cap goes second because a route may hold a lower output limit than 16,384 and
+say so in words this does not read.
+
+Rejected: dropping both overrides at the first refusal that names nothing, which leaves the measured route, the one that
+refuses the switch, no more room than the call that overflowed; and learning such a refusal for the session, which would
+make a guess about one call a standing state.
+
+Not verified: a live route. The refusal's words and the shapes are the report's; the tests send them from a stand-in.
+
+**Consequences.** A hard turn on a route whose thinking counts against the cap gets twice the room on its retry, and the
+route that refuses the switch naming nothing answers instead of ending the turn. A route that always overflows now costs
+up to 8,192 + 16,384 + 16,384 = 40,960 output tokens before the give-up, which names the output cap. ADR-0056's "Why
+thinking off, not a bigger budget" is amended for the retry's cap only. A route that refuses the raised call for its
+window because the count was wrong is compacted and retried as any overflow is (ADR-0083).
+
+The proof. `tests/test_overflow_retry_cap.py` (21 tests). On a route that always overflows, the first call is sent the
+default and each retry twice it, on each path; a retry with the room it needed answers; the raise is for that one call;
+a declared output cap of 12,000 holds it to 12,000; a declared cap of 8,192 leaves the retry at the default; a
+32,768-token window with an 18,000-token prompt holds it to 13,130, and one with 24,000 leaves it at the default. The
+give-up names the output cap and reasoning on each path, a give-up after reasoning that stopped on its own does not name
+the cap, and plain silence still reads as silence. A refusal of the switch that names nothing does not end the turn, on
+each path, and the retry goes on with its raised cap; a route that refuses the raised cap too gets the plain call; a
+refused call with nothing of the retry on it still ends the turn; and an auth failure of the retry is not taken for a
+refusal. On the wire, through the provider and a faked `litellm.acompletion`, buffered and streamed: the route is sent
+8,192 and then 16,384 twice, and a refusal of the switch that names nothing is re-issued without the switch and at
+16,384, with nothing learned. Against main, 16 of the 21 fail: every case the raise, the wording or the refusal decides.
+The 5 that pass are the controls: a declared cap of 8,192 and a window with no room past the default, plain silence, a
+refused call with nothing of the retry on it, and an auth failure of the retry. Eighteen mutations were each run green,
+red, green (2026-10-15), with the red tests counted from the verdict: the buffered retry asking for no more turned 9
+red; the streamed retry, 4; the declared output cap ignored, 2; the window ignored, 2; the count's margin ignored, 2; a
+room no higher than the default sent anyway, 2; every buffered call raised, not only the retry, 12; the buffered refusal
+ending the turn, 3; the streamed one, 2; any failure of the retry taken for a refusal, 1; the raised cap dropped before
+the switch, 5; both overrides dropped at once, 5; the give-up never naming the output cap, 2; reasoning that stopped on
+its own read as silence, 1; the streamed give-up status keeping the old words, 1; the buffered give-up note keeping
+them, 2; the buffered call dropping the cap it was given, 9; and the streamed call dropping it, 4. `uv run poe check` is
+green: 5,908 passed, 22 skipped.
