@@ -18409,3 +18409,57 @@ and the working folder. Three mutations were each run green, red, green (2026-10
 tests red, the in-process working folder dropped turned 2, and the `pushd` line dropped turned 1. The end to end, run
 locally on uv 0.12.5, stopped at the reinstall with `File not found` before the change and passes after it. `uv run poe
 check` is green: 5,778 passed, 22 skipped.
+
+## ADR-0302: `/observe` and `/nudge` publish through a temp file of their own, because the routes run on threads that share one PID
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** `POST /observe` and `POST /nudge` stage their file with a temp write and an `os.replace`: `.observation` and
+`.nudge` in the workspace root. The temp was named for the process, `.observation.<pid>.tmp` and `.nudge.<pid>.tmp`. Both
+routes are plain `def` handlers, which Starlette runs on worker threads, and every worker thread of one server has the same
+PID. Two overlapping POSTs to a route therefore wrote the same temp path. The first `os.replace` moved it, the second found
+nothing to move and raised `FileNotFoundError`, and that request answered 500 with its frame or suggestion unwritten. The
+error was reported from a live `serve.log`; that log is not in this repo and was not re-read here.
+The window between the temp write and the rename is microseconds wide, so a test that only fires threads at the route
+passes on the broken code most runs.
+
+**Decision.**
+
+* `zakcode.session.atomic_write.write_text_atomic(path, text)` writes `text` to a temp file in `path`'s own directory, named
+  with a fresh `uuid4` hex (the idiom `SessionStore.save` already uses), and `os.replace`s it onto `path`. The rename stays one
+  atomic step on one filesystem. If the write or the rename fails, the temp is removed and the exception propagates, with
+  `path` as it was.
+* `/observe` and `/nudge` publish through it. Nothing else about either route changes: the staged bytes, the 429 on a pending
+  `.nudge`, and the latest-wins supersession and change carry on `/observe` are as they were.
+
+Rejected: `tempfile.mkstemp`, because it creates the file with mode 0600 and `os.replace` would carry that mode onto the
+staged file, where today it takes the umask default, and this change has no reason to alter who can read it; a lock around
+the write and the rename, which holds for the threads of one server and not for two server processes on one workspace,
+where the PID in the old name was the only thing keeping their temps apart; and a retry on `FileNotFoundError`, which leaves
+both writers on one temp path and fixes one exit of the symptom, not the shared file.
+
+Not verified: the live `serve.log`. This change is measured against a test that forces the interleaving, not against a
+sidecar serving concurrent POSTs; whether a deployed sidecar logs no `FileNotFoundError` on these temps waits for a build
+that carries this change to serve traffic. `write_say` and `request_interrupt` in `session/say_inbox.py` name their temp the
+same way (the PID and no per-call part) and run on request threads with no `OSError` guard. They were read, not run, and are
+not changed here. On Windows, `os.replace` onto a file another process holds open can still raise, as before; the new tests
+run on CI's `windows-latest` cell and were run here on Linux only.
+
+**Consequences.** Overlapping POSTs no longer fail on the temp; the request whose rename lands last stands. For `/observe`
+that is its own latest-wins rule. For `/nudge` it exposes that the single-slot refusal is check then act: two suggestions
+that both pass the `exists()` check before either rename now both answer 200 and the later replaces the earlier, where
+before the later answered 500. By the code's reading, two change frames racing in `/observe` lose the same way, because the
+change carry reads the frame already on disk and a racing frame is not on disk yet. Neither was measured. Closing those
+windows needs an exclusive publish, or a lock held across the check and the write, and is a separate change. A crash between
+the write and the rename leaves one `.observation.<hex>.tmp` or `.nudge.<hex>.tmp` per crash, where the PID name was
+overwritten by the next process to reuse the PID; nothing reads or sweeps either.
+
+The proof. `tests/test_server_staged_write_race.py` drives eight writers at each route from eight threads and holds every
+`os.replace` onto the staged file at a barrier until all eight have written their temp, so the interleaving production
+reaches by chance happens every time. Both tests fail against the pre-change source: over five rounds the route answered
+`FileNotFoundError` to 35 of 40 writers and 200 to 5, for `/observe` and again for `/nudge`. With the change, 40 of 40
+answer 200 and no temp is left, and the staged file parses as one writer's whole frame. `tests/test_atomic_write.py` pins
+the failure contract: a refused rename leaves the old file and no temp. Four mutations were each run green, red, green
+(2026-10-15): the helper's name put back to the PID turned both route tests red with `FileNotFoundError`, the cleanup
+dropped turned the refused-rename test red, and each route's call put back to its old PID-keyed lines turned only that
+route's test red. `ruff check`, `ruff format --check`, `mypy` and the full suite are green: 5,782 passed, 22 skipped.
