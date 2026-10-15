@@ -59,6 +59,8 @@ class LLMResult(BaseModel):
     #: only place the two are ever seen side by side. ``None`` when the backend echoed no
     #: model at all. Buffered calls only: a STREAMED call has no such fact to carry, because
     #: litellm stamps the requested model onto every chunk it builds (measured 2026-09-22).
+    #: A gateway's fallback to another model is warned on both paths, from its own response
+    #: headers (ADR-0305).
     served_model: str | None = None
     usage: Usage = Field(default_factory=Usage)
     raw: dict[str, Any] | None = None
