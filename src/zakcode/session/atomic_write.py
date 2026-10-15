@@ -3,7 +3,7 @@
 ``os.replace`` makes the final rename atomic, but only for a temp file that is the caller's
 own. A temp name built from the PID is shared by every thread of the server, and the sync
 routes run on its worker threads, so two overlapping calls wrote the SAME temp path and the
-second ``os.replace`` found nothing left to rename and failed (ADR-0302). The name here
+second ``os.replace`` found nothing left to rename and failed (ADR-0318). The name here
 carries a fresh random suffix instead.
 """
 

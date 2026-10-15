@@ -1,4 +1,4 @@
-"""Tests for ``write_text_atomic`` — publish a text file whole, or not at all (ADR-0302).
+"""Tests for ``write_text_atomic`` — publish a text file whole, or not at all (ADR-0318).
 
 The concurrency half lives in ``test_server_staged_write_race.py``, where it is driven through
 the two routes that depend on it. What is pinned here is the failure contract the routes

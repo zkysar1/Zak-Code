@@ -4,7 +4,7 @@
 name used to carry only the PID (``.observation.<pid>.tmp``), but both routes are sync
 ``def`` handlers, which Starlette runs on worker threads that all share one PID. Two
 overlapping POSTs therefore wrote the SAME temp path: the first ``os.replace`` consumed it
-and the second raised ``FileNotFoundError`` and answered 500 (ADR-0302).
+and the second raised ``FileNotFoundError`` and answered 500 (ADR-0318).
 
 The window is microseconds wide, so firing threads at the route proves nothing: it passes
 on the broken code most runs. These tests close the window on purpose. Every ``os.replace``

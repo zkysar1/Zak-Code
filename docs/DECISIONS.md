@@ -19367,7 +19367,7 @@ the walk reads, by served by, 6, the fallback warning, 2, the refused temperatur
 prompt-cache note, 1, the zakpick startup line, 1, and the `auto` resolution line, 1. `uv run poe check` is green:
 5,971 passed, 22 skipped.
 
-## ADR-0302: `/observe` and `/nudge` publish through a temp file of their own, because the routes run on threads that share one PID
+## ADR-0318: `/observe` and `/nudge` publish through a temp file of their own, because the routes run on threads that share one PID
 
 **Status:** Accepted (2026-10-15)
 
