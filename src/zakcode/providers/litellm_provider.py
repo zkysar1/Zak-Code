@@ -753,6 +753,14 @@ _FIRST_CHUNK_MARGIN = 2.0
 #: this many tokens (llama.cpp's default micro-batch; servers batch at this scale or above).
 _PREFILL_BATCH_TOKENS = 512
 
+#: A LiteLLM gateway's own account of a fallback (ADR-0305), in the response headers litellm keeps
+#: under ``_hidden_params['additional_headers']``, on a buffered response and on a stream before
+#: its first chunk: the fallbacks it attempted (``0`` on a normal answer), the model group that
+#: answered, and the deployment behind it. Absent on any other backend.
+_FALLBACK_ATTEMPTS_HEADER = "llm_provider-x-litellm-attempted-fallbacks"
+_FALLBACK_GROUP_HEADER = "llm_provider-x-litellm-model-group"
+_FALLBACK_NAME_HEADER = "llm_provider-x-litellm-model-name"
+
 
 class LiteLLMProvider(Provider):
     """A :class:`Provider` backed by litellm.
@@ -790,6 +798,9 @@ class LiteLLMProvider(Provider):
         #: echo is recorded on EVERY result; this set keeps the operator-facing log to one
         #: line per distinct answerer instead of one line per call.
         self._served_seen: set[str] = set()
+        #: (asked, answered) pairs already warned of by :meth:`_warn_on_fallback` (ADR-0305), so
+        #: a gateway that keeps falling back costs one line per pair, not one per call.
+        self._fallbacks_seen: set[tuple[str, str]] = set()
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
@@ -2088,6 +2099,38 @@ class LiteLLMProvider(Provider):
                 await asyncio.sleep(wait)
             self._last_request_started = time.monotonic()
 
+    def _warn_on_fallback(self, response: Any) -> None:
+        """Warn once per (asked, answered) pair when the gateway answered with another model.
+
+        The gateway's own headers say so (ADR-0305), on a buffered response and on a stream
+        before its first chunk, so both paths read them here. The name a response carries is not
+        the test: it differs from the request in ordinary calls (ADR-0214). A backend that sends
+        none of these headers is left as it was.
+        """
+        hidden = _get(response, "_hidden_params")
+        headers = hidden.get("additional_headers") if isinstance(hidden, dict) else None
+        if not isinstance(headers, dict):
+            return
+        try:
+            attempts = int(str(headers.get(_FALLBACK_ATTEMPTS_HEADER, "0")))
+        except ValueError:
+            return
+        if attempts <= 0:
+            return
+        group = headers.get(_FALLBACK_GROUP_HEADER)
+        name = headers.get(_FALLBACK_NAME_HEADER)
+        answered = str(group or name or "a model it did not name")
+        if (self.model, answered) in self._fallbacks_seen:
+            return
+        self._fallbacks_seen.add((self.model, answered))
+        logger.warning(
+            "%s: the gateway answered with %s%s instead, after %d attempted fallback(s)",
+            self.model,
+            answered,
+            f" ({name})" if group and name else "",
+            attempts,
+        )
+
     async def acomplete(
         self,
         messages: list[Message],
@@ -2154,6 +2197,7 @@ class LiteLLMProvider(Provider):
         if result.served_model is not None and result.served_model not in self._served_seen:
             self._served_seen.add(result.served_model)
             logger.info("%s: served by %s", self.model, result.served_model)
+        self._warn_on_fallback(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
         # logged — model, latency, token counts, and litellm-computed cost only.
         logger.debug(
@@ -2474,6 +2518,8 @@ class LiteLLMProvider(Provider):
                     # Of the request about to be sent, so a repaired re-issue is read as sent.
                     carried = _carries_cache_breakpoint(call_kwargs)
                     resp = await litellm.acompletion(**call_kwargs)
+                    # A gateway's fallback headers are on the stream before its first chunk.
+                    self._warn_on_fallback(resp)
                     async for chunk in self._bounded_chunks(
                         resp, prompt_estimate=prompt_estimate, started=started
                     ):
@@ -2485,7 +2531,8 @@ class LiteLLMProvider(Provider):
                         # 11 chunks and litellm handed back the requested id on all 11 -- so
                         # reading it here would record the request as if it were the answer,
                         # which is the exact defect ADR-0214 exists to prevent. The buffered
-                        # path keeps the server's own name; this one has no channel for it.
+                        # path keeps the server's own name; this one has no channel for it,
+                        # save a gateway's fallback headers, read above (ADR-0305).
                         delta = _stream_delta(chunk)
                         if delta is not None:
                             (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)

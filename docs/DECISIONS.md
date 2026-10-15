@@ -18652,3 +18652,79 @@ entry's mode never passed, 5; the wrapper built in the setting's mode, 7; the se
 the mode not normalised, 2; an unknown mode accepted, 1; and an entry naming `auto` unless told, 3. A hand-built agent in
 `tests/test_local_only.py`, which sets each attribute the seam reads, now sets this one too. `uv run poe check` is green:
 5,849 passed, 22 skipped.
+
+## ADR-0305: a gateway's fallback to another model is one warning per pair naming both, on the buffered and the streamed path, read from the gateway's own headers
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+the gateway can answer at HTTP 200 with a model other than the one asked for: a route asked for with native tools was
+answered by another route, with a valid tool call, and a route asked for with `temperature` by a sibling. On the
+buffered path the only trace was ADR-0214's INFO line on the first sight of a name, and nothing reads `served_model` but
+that line. On the streamed path, the one the loop uses, there was none: litellm stamps the requested model on every
+chunk it builds, as ADR-0214 measured and the report measured again, so the answerer's name never reaches `chunk.model`.
+The report's reason is provenance: the model that is logged, billed and shown is not the model that wrote the code, and
+`auto` tool mode decides from static flags, so a fallback's answer reads as native tool support. No earlier branch or
+pull request handles this: no ref is named for one, and no pull request or commit mentions these headers or
+`disable_fallbacks`.
+
+The gateway says so itself. The report measured, on a stream, that the object `await litellm.acompletion(...)` returns
+carries `_hidden_params['additional_headers']` before the first chunk, with `llm_provider-x-litellm-attempted-fallbacks`
+at `1`, `llm_provider-x-litellm-model-group` naming the model group that answered and
+`llm_provider-x-litellm-model-name` the deployment behind it; the count reads `0` on a normal answer, and other
+providers send no such keys. Measured here on 2026-10-15, with litellm 1.86.2 and a loopback server that sends those
+three headers: litellm keeps them, under that prefix, on a buffered response and on the stream wrapper before its first
+chunk; the buffered response's `model` reads the server's name; and both streamed chunks read the requested one, though
+the server's chunks named the other.
+
+**Decision.**
+
+* Both paths read the three headers off the response litellm returns: the buffered path once the response is read, the
+  streamed path before its first chunk. When the attempted count is above 0, the provider warns, naming the model asked
+  for, the model group that answered and the deployment behind it:
+  `openai/route-a: the gateway answered with route-b (vendor/route-b-1) instead, after 1 attempted fallback(s)`. With no
+  group it names the deployment, and with neither it says "a model it did not name".
+* One warning per pair of asked and answered model, per provider, as ADR-0214 spends one INFO line per answerer: the
+  provider keeps the pairs it has warned of. A second answerer is warned of in its turn.
+* A count of 0, an unreadable count, no count and no headers at all are no fallback, and nothing is printed. A backend
+  that sends none of these headers is left as it was.
+* The CLI prints zakcode's WARNING records (`cli/logsink.py`), so the warning reaches the terminal.
+* `docs/CONFIG.md` documents `ZAKCODE_EXTRA_BODY={"disable_fallbacks": true}` at the `extra_body` row, as opt-in.
+  `served_model`'s docstring says a fallback is warned on both paths.
+
+Stated choices. The buffered trigger is the gateway's header, where the report asked for the served name differing from
+the request. ADR-0214 records that names differ in ordinary calls: `openai/x` against `x` is the ordinary shape of a
+correct call, and a self-hosted server answers an alias with the weights it maps to and echoes the weights file's name.
+It chose first sighting over a mismatch rule for that reason, and a warning on a mismatch would call each of them a
+fallback, while the header is there on this path too. ADR-0214's INFO line is unchanged. The answerer is recorded in the
+warning and in the provider's set of pairs, not in a new field: `served_model` has no reader but its INFO line, and a
+field on `StreamDone` would be a second fact nothing reads. ADR-0214 declined a self-hosted pod's own response header as
+one fleet's convention. These headers are the LiteLLM proxy's, which litellm, the library this provider is built on,
+keeps for its callers under its own prefix, and reading them where they are absent does nothing. `disable_fallbacks` is
+documented and never sent: it is opt-in because, by the report, a gateway as old as 1.61 refuses a body field it does
+not know. That is the report's claim and is not measured here.
+
+Rejected: a warning on every fallback call, which costs a line per call on a gateway that keeps falling back; sending
+`disable_fallbacks` by default, which the report says an older gateway refuses; and reading the answerer from the
+stream's own body, which litellm's stream wrapper overwrites before any caller sees it.
+
+Not verified: a live gateway. The header names and values are the report's measurement and litellm's own; the tests send
+them from a stand-in. That a fallback's answer is worse than the asked model's is not claimed: the warning says which
+model answered, and nothing more.
+
+**Consequences.** A gateway's fallback is a warning naming both models, once per pair, on both paths. A backend that
+sends none of these headers is unchanged, and so are ADR-0214's INFO line and `served_model`.
+
+The proof. `tests/test_gateway_fallback.py` (20 tests): a buffered fallback is one warning naming both models and the
+deployment, word for word; the same pair again is silent and a second answerer is warned of; an answerer with no group
+is named by its deployment, and one with neither as a model it did not name; a streamed fallback is warned of before the
+first chunk is read, and once; no warning for a count of 0, no count, an unreadable count, no gateway headers or no
+headers at all, on each path; a served name that differs with no fallback header is ADR-0214's INFO line and no warning;
+and the headers sent through litellm's own HTTP client, at counts 1 and 0, on each path. Against main, 7 of the 20 fail:
+every fallback case, buffered, streamed and through the client. The 13 that pass are the controls. Twelve mutations were
+each run green, red, green (2026-10-15), with the red tests counted from the verdict: the buffered path never reading
+the headers turned 5 red; the streamed path never reading them, 2; a count of 0 read as a fallback, 8; every call
+warning again, 1; one warning per asked model whoever answered, 1; the deployment named in place of the group, 1; the
+headers looked for in the wrong dictionary, 7; a missing count read as a fallback, 4; the header looked for without
+litellm's prefix, 7; the deployment left out of the warning, 1; a served name that differs warned as a fallback, 3; and
+the streamed warning moved after the first chunk, 1. `uv run poe check` is green: 5,869 passed, 22 skipped.
