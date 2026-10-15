@@ -176,6 +176,7 @@ from zakcode.providers.base import (
     ToolCall,
     UnknownContextWindow,
 )
+from zakcode.providers.labels import ModelRef, display_model_id
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
@@ -3853,7 +3854,7 @@ class AgentLoop:
                 logger.info(
                     "prompt cache defeated by the per-call tail on %s (flat at %d, then %d after "
                     "a %d-token tail-less call); the tail now rests every other call (ADR-0193)",
-                    model,
+                    ModelRef(model),
                     flat_read,
                     read,
                     rested_prompt,
@@ -3864,7 +3865,7 @@ class AgentLoop:
             logger.info(
                 "prompt cache probe on %s: cache read %d after a %d-token tail-less call — the "
                 "tail is not what holds it at %d (miss %d of %d; ADR-0193)",
-                model,
+                ModelRef(model),
                 read,
                 rested_prompt,
                 flat_read,
@@ -9656,9 +9657,10 @@ class AgentLoop:
                         # Transparency (ADR-0033): the route was a trace-only note, so an
                         # operator watching a small model flail could not see which model
                         # was flailing. One dim line per route change.
-                        yield AgentStatus(
-                            message=f"route: {category} → {_provider_label(self.provider)}"
+                        routed = display_model_id(
+                            _provider_label(self.provider), self.settings.provider_labels
                         )
+                        yield AgentStatus(message=f"route: {category} → {routed}")
 
                 provider_failure: str | None = None
                 retry_attempts = 0

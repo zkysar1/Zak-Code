@@ -18999,3 +18999,100 @@ changed, 1; the fallback switch not the JSON it names, 1; the floor wording not 
 the loop's, 1; a setting that does not exist, 3; a real host named, 1; the per-entry tool mode not named, 1; and on the
 code side, the renderer's words changed, 1, and the temperature classifier changed, 1. `uv run poe check` is green:
 5,934 passed, 22 skipped.
+
+## ADR-0314: `provider_labels` names the provider token in the text a person reads, and nothing a machine reads changes
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-15, from a re-test of main at 89e78f7 through a LiteLLM 1.9x gateway in front
+of Bedrock/Vertex, that "openai" prints all over the output and names nothing the user runs. The token is litellm's
+protocol, not the vendor: a zakpick entry's `source: "openai"` and the `openai/<alias>` prefix of a model string pick
+litellm's OpenAI-compatible provider, nothing goes to OpenAI, and the API base row shows the real endpoint. The report
+listed where it prints: the `zakcode info` model rows and `/model` (`describe_zakpick`), the grey call rows that
+`transcript_line` builds from litellm's own record, the route status (`loop.py`, through `_provider_label`), and the
+provider's notices that name the model string (served by, the refused field and temperature, the tool-use refusal in
+`text_tools.py`, and ADR-0305's fallback warning). It asked for one display-only setting read the way
+`ZAKCODE_EXTRA_BODY` is, empty by default with the output byte-identical to today, one small helper that every display
+site calls so that a test can walk the sites, the setting shown in `zakcode info`, and the gateway recipe to document
+it.
+
+**Decision.**
+
+* `Settings.provider_labels` (`ZAKCODE_PROVIDER_LABELS`) is a `dict[str, str]` read from a JSON object as `extra_body`
+  is, `{}` by default. A malformed value fails the way `ZAKCODE_EXTRA_BODY` does, with the setting's name in the error,
+  and a label that is not text is refused.
+* `zakcode/providers/labels.py` holds the mapping. `provider_label(token, labels)` names a token.
+  `display_model_id(model_id, labels)` replaces the leading token of a model id, the text before its first `/`, and
+  only when that whole token is a key: under `{"openai": "Gateway"}`, `openai/route-a` reads `Gateway/route-a`, while
+  `openai-compatible/route-a`, `bedrock/converse/openai.route-c-1:0` and a bare `openai` read as they are. With no
+  labels both return their input.
+* Text built for a person calls them: the Model row of `zakcode info` in each form (a model, `auto`, and zakpick's
+  `route-a (Gateway)`), its context-window rows, `/model`, the banner's provider after the dot, the `/cost` rows by
+  model, the provider after the dot of a grey call row (`call route-a · Gateway`), and the route status
+  (`route: quick_code → Gateway/route-a`). The route status is an `AgentStatus` message, text for a person, and is
+  labelled where the loop makes it.
+* A log call hands a model id over as `ModelRef`, a marker whose `str()` and `repr()` are the id's, so every formatter,
+  the log file's included, renders the record byte for byte as before. The transcript handler (ADR-0186) shows each
+  `ModelRef` labelled and leaves the record as it is, and the labelled text is scrubbed like every other row. The
+  provider's notices pass one, as do the loop's two prompt-cache notes and the Agent's two startup lines (the `auto`
+  resolution and zakpick's startup model). A test walks every log call in the package and fails on one that hands a
+  model id over bare.
+* The transcript handler is installed before any settings load. `_build_chat_agent` now loads the settings, hands
+  their labels to the handler, and builds the Agent from those settings, so the lines the Agent logs while it is built
+  are labelled too. `/clear` and `/resume` build through the same function.
+* `zakcode info` shows the setting when it is set, as `Provider labels: {"openai": "Gateway"} (display only)` under the
+  Provider row, which keeps the token as configured.
+* `docs/CONFIG.md` gains the setting's row and four lines in the gateway recipe, with
+  `ZAKCODE_PROVIDER_LABELS={"openai": "Gateway"}`.
+
+Stated choices. Nothing a machine reads changes: the model string sent, the `source` of a zakpick entry, the session,
+trace and transcript JSON, the log file, the server's API, and every event field but a status line's text keep the
+token. A name the backend reported, the model that served a call or the gateway's fallback group, is shown as it came:
+the label is for the token this configuration chose, and a backend's own name may carry a prefix that is the vendor.
+The failover note (`model failover: … -> …` and `switching model: …`) is left as it is. Its description is one string
+that the loop logs and shows as a status, so labelling it means changing the failover seam to hand the two models over
+apart, a change of its own, and it prints only when a call fails over. The startup window warnings are left for the
+same reason: each is one string, logged and shown. `zakcode status`, which reads other sessions' status files and
+loads no settings, keeps the token, and so does the JSON a configured status-line command is given. The web page's
+model chip reads `SessionInfo.model`, an API field, so it keeps the token; a label there needs a new field. The log
+calls are labelled at the display end, rather than each call building a labelled string, because that is what keeps
+the log file byte-identical: the record a call makes is rendered twice, as it was and as a person reads it.
+
+Rejected: displaying `openai-compatible` for the token, with no setting, wherever a route's API base is not OpenAI's own
+host, which the report offered as an optional second change. It changes the default output for every gateway user,
+the maintainer's own runs among them, where the report asked for the default to stay byte-identical, and the opt-in
+label covers the need. A label applied by substring, which renames `openai` inside `bedrock/converse/openai.…` and
+`openai-compatible/…`. Labelling inside the log record, which writes the label into the log file.
+
+Not verified: a live run through a gateway. The tests drive the chat, the loop and the provider against stand-ins.
+
+**Consequences.** With the setting empty every line is what it was. With `{"openai": "Gateway"}` a person reads
+`Gateway` where the token was, and the log file, the wire and the stored records keep `openai`. A new display site is
+one call, and a new log line that names a model hands over a `ModelRef` or fails the walk. A log record's argument for
+a model id is now a `ModelRef`, not a `str`: every formatter renders it as the id, and a handler that reads
+`record.args` itself sees an object.
+
+The proof. `tests/test_provider_labels.py` (37 tests): the leading token replaced and never a substring (five shapes),
+and no labels returning the input; the setting read from the environment, a malformed value failing as `extra_body`'s
+does and naming the setting (two values), and a label that is not text refused; zakpick's summary, the info Model row
+with the labels row and the Provider row, the `auto` row and the context-window rows (resolved and failed) labelled, and
+the summary and the panel unchanged without the setting; in the chat, the banner, `/model`, `/cost` by model and the
+call row labelled with no `openai` left on screen, the chat unchanged without the setting, an empty mapping printing
+what no setting prints, a line the Agent logs while it is built labelled, and the log file keeping the token; the route
+status labelled, and unchanged without the setting; four notices (served by, the fallback, the refused temperature, the
+refused tool use) labelled on screen with the record left as it was, and each one's log-file text and unlabelled row
+byte-identical to the record with the plain id; the served name shown as the backend reported it; a labelled row
+scrubbed; the walk over every log call; and the wire's model string, a zakpick entry's `source` and the session record
+keeping the token. Against main, 26 of the 37 fail. The 11 that pass are the controls: each surface unchanged without
+the setting, the log file, the four notices' byte-identity, and what a machine reads. Thirty-two mutations were each run
+green, red, green (2026-10-15), with the red tests counted from the verdict: a model id never relabelled turned 13 red;
+a label replacing a substring, 5; a token matched by its prefix, 1; `provider_label` ignoring the labels, 4; the log
+file rendering a model id differently, 4; the call row keeping the token, 1; a notice's model id not labelled, 6; the
+handler never passing its labels, 2; the session's labels never reaching the handler, 2; a labelled row not scrubbed, 1;
+the record itself rewritten with the labels, 4; a label that is not text accepted, 1; any value accepted, 8; the zakpick
+summary keeping the source token, 2; and the token kept by the `auto` row, the info Model row, the banner, `/model`,
+`/cost` and the route status, 1 each, and by the context-window rows, 2; info never showing the setting, 1, and showing
+it when it is empty, 1; the labels handed over only after the Agent is built, 1; and a model id handed over bare, which
+the walk reads, by served by, 6, the fallback warning, 2, the refused temperature, 2, the refused tool use, 2, each
+prompt-cache note, 1, the zakpick startup line, 1, and the `auto` resolution line, 1. `uv run poe check` is green:
+5,971 passed, 22 skipped.

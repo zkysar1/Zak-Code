@@ -84,6 +84,7 @@ from zakcode.providers.hipaa import (
     check_chat_completions_only,
     check_model,
 )
+from zakcode.providers.labels import ModelRef
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
@@ -966,7 +967,7 @@ class LiteLLMProvider(Provider):
                 "reasoning-capable (or is reached through a generic api_base, where the "
                 "server's own body form via extra_body applies): the level is not sent",
                 self.reasoning_effort,
-                self.model,
+                ModelRef(self.model),
             )
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
@@ -1493,7 +1494,7 @@ class LiteLLMProvider(Provider):
             "%s takes function tools only with reasoning_effort='none' on this route (%s) "
             "— sending 'none' with tools for the rest of this session and re-issuing "
             "the call",
-            self.model,
+            ModelRef(self.model),
             " ".join(message.split())[:200],
         )
         return True
@@ -1523,7 +1524,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused the request field %r (%s) — dropping it for the rest of this "
             "session and re-issuing the call without it",
-            self.model,
+            ModelRef(self.model),
             field,
             " ".join(message.split())[:200],
         )
@@ -1563,7 +1564,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused %s (%s) — leaving it out for the rest of this session and re-issuing "
             "the call without it",
-            self.model,
+            ModelRef(self.model),
             refused,
             " ".join(message.split())[:200],
         )
@@ -1589,7 +1590,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused the temperature field (%s) — leaving it out for the rest of this "
             "session and re-issuing the call without it",
-            self.model,
+            ModelRef(self.model),
             " ".join(message.split())[:200],
         )
         return True
@@ -2010,7 +2011,7 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: %s not sent -- deprecated for this Gemini generation; sampling is "
                     "steered from the system instructions and the model applies its own default",
-                    self.model,
+                    ModelRef(self.model),
                     ", ".join(dropped),
                 )
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
@@ -2039,7 +2040,7 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: this provider answered a tool call by asking for "
                     "reasoning_effort='none', so the configured %r is not sent",
-                    self.model,
+                    ModelRef(self.model),
                     configured,
                 )
             if self._effort_none_demanded_by_server or configured is None:
@@ -2189,7 +2190,7 @@ class LiteLLMProvider(Provider):
         self._fallbacks_seen.add((self.model, answered))
         logger.warning(
             "%s: the gateway answered with %s%s instead, after %d attempted fallback(s)",
-            self.model,
+            ModelRef(self.model),
             answered,
             f" ({name})" if group and name else "",
             attempts,
@@ -2260,13 +2261,13 @@ class LiteLLMProvider(Provider):
         # one whose backend swapped underneath it spends two, and the second is the finding.
         if result.served_model is not None and result.served_model not in self._served_seen:
             self._served_seen.add(result.served_model)
-            logger.info("%s: served by %s", self.model, result.served_model)
+            logger.info("%s: served by %s", ModelRef(self.model), result.served_model)
         self._warn_on_fallback(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
         # logged — model, latency, token counts, and litellm-computed cost only.
         logger.debug(
             "%s: %.2fs, %d+%d tokens, $%.6f",
-            self.model,
+            ModelRef(self.model),
             time.perf_counter() - start,
             result.usage.prompt_tokens,
             result.usage.completion_tokens,
