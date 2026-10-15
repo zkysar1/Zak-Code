@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import html
 import inspect
 import json
 import logging
@@ -252,6 +253,30 @@ _LiteLLMAuthError = _resolve_exc_type("AuthenticationError")
 _LiteLLMPermissionError = _resolve_exc_type("PermissionDeniedError")
 _LiteLLMContextWindowError = _resolve_exc_type("ContextWindowExceededError")
 _LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
+
+#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306).
+_HTML_PAGE = re.compile(r"<(?:!doctype\s+)?html[\s>]", re.IGNORECASE)
+_HTML_HEAD = re.compile(r"<head\b.*?</head\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_CODE = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG = re.compile(r"<[^>]*>")
+
+
+def _page_text(message: str) -> str:
+    """``message`` with the HTML page in it reduced to the page's words (ADR-0306).
+
+    An ingress or proxy in front of an API answers some failures with a web page, and litellm
+    puts the page in its exception's message, so its markup reached the turn's error. The body's
+    text is kept, or the title's when the body has none. A message with no page is returned as
+    it is, so angle brackets in an ordinary message survive.
+    """
+    found = _HTML_PAGE.search(message)
+    if found is None:
+        return message
+    page = _HTML_CODE.sub(" ", message[found.start() :])
+    text = " ".join(html.unescape(_HTML_TAG.sub(" ", _HTML_HEAD.sub(" ", page))).split())
+    if not text:
+        text = " ".join(html.unescape(_HTML_TAG.sub(" ", page)).split())
+    return f"{message[: found.start()].rstrip()} {text}".strip()
 
 
 def _is_ollama_model(model: str) -> bool:
@@ -1592,7 +1617,8 @@ class LiteLLMProvider(Provider):
         # Scrub credential-shaped text (e.g. a gateway api_base with embedded creds, or a
         # backend echoing a token) from the vendor message BEFORE it propagates to any
         # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
-        message = redact_secrets(str(exc))[0]
+        # An ingress's web page in the message keeps its words and loses its markup (ADR-0306).
+        message = _page_text(redact_secrets(str(exc))[0])
 
         if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
@@ -1665,6 +1691,12 @@ class LiteLLMProvider(Provider):
         if cls._is_a(exc, None, "Timeout", "APITimeoutError"):
             # The client timeout expired. Retried like a rate limit, but reported
             # truthfully — see TimedOut's docstring for why the distinction matters.
+            if getattr(exc, "status_code", None) == 504:
+                # Unless the SERVER side cut the call (ADR-0306): litellm raises its Timeout
+                # for an ingress's 504 and keeps the status (measured on 1.86.2; a client
+                # timeout carries 408), so the notice names the ingress, not the client
+                # ceiling, which had not expired. A 504 under another class stays an outage.
+                return TimedOut(message, retry_after=retry_after, bound="gateway ingress 504")
             return TimedOut(message, retry_after=retry_after)
         if cls._is_a(
             exc,

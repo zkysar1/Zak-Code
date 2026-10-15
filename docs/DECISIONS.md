@@ -18728,3 +18728,67 @@ warning again, 1; one warning per asked model whoever answered, 1; the deploymen
 headers looked for in the wrong dictionary, 7; a missing count read as a fallback, 4; the header looked for without
 litellm's prefix, 7; the deployment left out of the warning, 1; a served name that differs warned as a fallback, 3; and
 the streamed warning moved after the first chunk, 1. `uv run poe check` is green: 5,869 passed, 22 skipped.
+
+## ADR-0306: a `Timeout` that carries a 504 is named as the ingress's, and a web page in a provider error reads as its words
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+the ingress in front of the gateway cuts a long buffered call at exactly 120 s with an HTML "504 Gateway Time-out" page,
+with no JSON and no gateway headers. litellm raises its `Timeout` for it, and `_map_error` returned `TimedOut` with the
+default bound, so the loop's retry notice read `request timed out (ZAKCODE_REQUEST_TIMEOUT)`, naming a client ceiling
+that defaults to 600 s and had not expired, and the page's HTML reached `TurnResult.error` verbatim. By the report, only
+buffered callers meet it: sub-agents, the server's buffered calls, classify, judge, structured output and the side
+calls. The interactive CLI streams.
+
+Measured here on 2026-10-15, with litellm 1.86.2 and a loopback server that answers with that page: litellm raises
+`Timeout` carrying `status_code` 504 and the page in its message. Through the provider one request goes out, and the
+`TimedOut` names `ZAKCODE_REQUEST_TIMEOUT` with the page in its text. A client-side read timeout reaches the provider as
+litellm's `Timeout` with its default status, 408, on both paths.
+
+**Decision.**
+
+* A `Timeout` that carries a 504 becomes `TimedOut` with `bound="gateway ingress 504"`, so the notice reads
+  `request timed out (gateway ingress 504)`. It is retried as any `TimedOut` is, at most three times. A client timeout
+  keeps `ZAKCODE_REQUEST_TIMEOUT`.
+* A web page in any provider error's message is reduced to its words before the message is classified or shown: the
+  body's text, without scripts or styles and with entities decoded, or the title's when the body has none. The text
+  before the page stays. A message with no page is left as it is, angle brackets and all.
+* `TimedOut`'s docstring names the new bound, and `docs/CONFIG.md` says at the `request_timeout` row that raising that
+  ceiling does not help with an ingress's 504.
+
+Stated choices. The arm keys on litellm's `Timeout` carrying the status, where the report asked for an arm for a 504 or
+an HTML body. A 504 under another class, which another backend may send, stays `ProviderUnavailable`: ADR-0224 retries
+an outage under the 900 s horizon because a restart takes longer than the three fixed attempts `TimedOut` gets, and
+`tests/test_provider.py` pins a 504 that way. This change does not reopen that. An HTML body alone is not a timeout
+either: an ingress answers a 502, a 413 or a 403 with a page too, so for any other status only the markup goes and the
+class stays what it was. The long buffered callers are not moved to `astream`, which the report offered as worth
+considering: it changes the transport of six callers, each with its own handling of the result, and is a change of its
+own. Until then, each retry of a call that the ingress cuts at 120 s costs another 120 s, at most three times.
+
+Rejected: mapping any 504 to `TimedOut`, which moves a 5xx outage onto the shorter bound ADR-0224 turned down; taking
+any message with a web page in it for a timeout; and stripping every angle bracket, which would remove a `<tool_call>`
+quoted in a refusal.
+
+Not verified: a live ingress. The page is the report's and the status litellm's; the tests send them from a stand-in.
+
+**Consequences.** An ingress's 504 is named as one in the retry notice, and the turn's error reads
+`... OpenAIException - 504 Gateway Time-out`. Any provider error that carries a web page reads as the page's words. A
+client timeout, and a 504 under an outage class, are handled as before.
+
+The proof. `tests/test_ingress_504.py` (18 tests): an HTML 504 under `Timeout` is the ingress's timeout with the page's
+text, word for word; a `Timeout` or `APITimeoutError` carrying a 504 names the ingress with no page; a 504 under
+`InternalServerError` or `APIError` stays an outage and loses its tags; a client timeout with no status or 408 keeps the
+client ceiling; a 502 and a 403 page keep their classes and lose their tags; a title-only page reads as its title; a
+page's script, style and entities do not reach the text; a message with a `<tool_call>` and no page is left alone; the
+ingress's page through litellm's own HTTP client is the ingress's timeout on each path, and a client read timeout
+through it keeps the client ceiling on each path; a buffered turn that the ingress cuts once recovers, with the notice
+naming the ingress; and a turn it keeps cutting ends with the page's text and no tags. Against main, 13 of the 18 fail:
+every case that an ingress's 504 or a page decides. The 5 that pass are the controls: a client timeout with no status or
+408, a client read timeout through litellm's client on each path, and a `<tool_call>` in a message with no page. Eleven
+mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the page left in
+the message turned 10 red; a `Timeout` carrying a 504 named as the client ceiling, 6; a 504 under an outage class taken
+for the ingress, 3, one of them ADR-0224's own test in `tests/test_provider.py`; the ingress arm keeping the default
+bound, 6; a client timeout's 408 taken for the ingress, 3; any angle bracket taken for a page, 1; the head's title kept
+beside the body, 8; no title when the body has no words, 1; scripts and styles kept, 1; entities left escaped, 1; and
+the text before the page dropped, 7. `uv run poe check` is green: 5,887 passed, 22 skipped.
