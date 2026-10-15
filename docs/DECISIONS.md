@@ -18999,3 +18999,56 @@ changed, 1; the fallback switch not the JSON it names, 1; the floor wording not 
 the loop's, 1; a setting that does not exist, 3; a real host named, 1; the per-entry tool mode not named, 1; and on the
 code side, the renderer's words changed, 1, and the temperature classifier changed, 1. `uv run poe check` is green:
 5,934 passed, 22 skipped.
+
+## ADR-0317: under `zakcode webapp` what a provider learns from a refusal lasts one turn, and `docs/CONFIG.md` says so
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that the HTTP server builds a new agent, and so a new
+provider, for every turn: `_default_agent_factory` runs for each `POST /chat` and `POST /chat/stream` and for each say a
+served run takes (`server/app.py` 1068, 1094 and 2248), and `POST /complete` builds its own provider (1160). What a
+provider learns from a route's refusal is therefore learned again on each turn, one refused request each: the switch to
+the text tool protocol and a dropped `temperature` (ADR-0303), `reasoning_effort` set to `none` for a call with tools
+(ADR-0188), a dropped stop list or a stop length limit (ADR-0296), and a field refused by name (ADR-0181).
+`docs/CONFIG.md` says these hold "for the rest of the session", which is true of the CLI. The review asked to carry the
+learned state across the requests of one session, keyed by session and model, if that stays small and safe, or else to
+say in `docs/CONFIG.md` that the server learns per request.
+
+**Decision.** `docs/CONFIG.md` says it, at the end of the server's section: a learned refusal lasts one turn there,
+where the CLI keeps it for the session, and the next turn pays one refused request to learn it again. A route that
+refuses tool use can skip that request by taking the text protocol from the start, with `tool_calling_mode` set to
+`text` or with the entry's own `zakpick_models[...].tool_calling_mode` (ADR-0304). No code changes.
+
+Stated choices. The docs, because carrying the state is neither small nor safe to do in one change now. The agent has
+no seam for it: its one way to take a provider is `provider=`, which marks the provider injected and so turns off auto
+resolution, zakpick routing, the per-model role providers, model failover, and the local-only, HIPAA and context-window
+checks at startup. A carried provider needs a new parameter that turns off none of these, for the default provider and
+for each role provider the agent caches. A provider is also carried whole. Beside what it learned, it keeps nine other
+fields that change as it runs, among them the warnings it gives once, its request pacing and its prefill estimate, and
+each would have to be judged for whether it may outlive a turn: carried, the fallback warning of ADR-0305 would show
+once a session, where it now shows once a turn. And the server would hold a set of providers for each session and model
+it has served, so the store needs a bound and an eviction. Concurrency within a session is not the obstacle: the server
+already runs one turn of a session at a time, and refuses a second with HTTP 409. So a served run pays one refused
+request per learned refusal per turn, and this is recorded so that the change can be made on its own.
+
+The setting rows that say "for the rest of the session" are left as they are: they are true of the CLI, and the
+server's section now qualifies them. The gateway recipe (ADR-0309) is left as it is too: what is particular to the
+server belongs in the server's section, and the recipe is held to 60 lines.
+
+Not verified: a served run against a route that refuses. The rebuild per turn is read from the code and held by the
+tests, and the cost of each refusal is the one ADR-0181, ADR-0188, ADR-0296 and ADR-0303 give it.
+
+**Consequences.** A reader of `docs/CONFIG.md` learns that a served route which refuses something pays for it once a
+turn, and how to skip the tool-use refusal. A change that keeps a provider across turns fails the tests below until the
+paragraph changes with it.
+
+The proof. `tests/test_webapp_learned_state_docs.py` (4 tests). The server's section says learned refusals last one
+turn, and names the CLI, the four ADRs and `tool_calling_mode`, which is a setting; the routes it names are the
+server's; two turns of one session through the real `_default_agent_factory` get two providers, the second with none of
+what the first learned (the tool-use latch, the refused fields, the stop limit); and two `POST /complete` providers are
+two, the second with no refused field. Against main, 2 of the 4 fail, the paragraph being absent. The 2 that pass hold
+the paragraph to the code, which is as it was. Nine mutations were each run green, red, green (2026-10-15), with the
+red tests counted from the verdict: the paragraph's lead changed turned 2 red; a route the server does not have, 1;
+ADR-0303 no longer named, 1; ADR-0188 no longer named, 1; the turn no longer the unit, 1; a setting that does not
+exist, 1; and on the code side, the refused fields carried to the next provider, 2; the server keeping one agent per
+session, 1; and the tool-use latch set from the start, 1. `uv run poe check` is green: 5,938 passed, 22 skipped.
