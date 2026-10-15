@@ -839,6 +839,10 @@ class LiteLLMProvider(Provider):
         #: (asked, answered) pairs already warned of by :meth:`_warn_on_fallback` (ADR-0305), so
         #: a gateway that keeps falling back costs one line per pair, not one per call.
         self._fallbacks_seen: set[tuple[str, str]] = set()
+        #: The cap the request :meth:`_build_kwargs` last built was clamped to (ADR-0308), or
+        #: None when it went out as asked. Read right after each build, with no await between,
+        #: onto that call's result (ADR-0310).
+        self._clamped_output_cap: int | None = None
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
@@ -2055,7 +2059,10 @@ class LiteLLMProvider(Provider):
         # ``count_tokens`` makes it: the four-characters-a-token estimate ran 44% low on
         # id-dense tool output (measured 2026-10-15), which would leave the refused cap as it
         # was. Before the rename below, so OpenAI's ``max_completion_tokens`` carries the
-        # clamped value.
+        # clamped value. A cap held under the one asked for is recorded for the call's result:
+        # a reasoning model can fill it and end on it with nothing visible, and no refusal will
+        # come to compact the prompt that took the room, so the loop does (ADR-0310).
+        self._clamped_output_cap = None
         cap = call_kwargs.get("max_tokens")
         cap_window = self.capabilities().context_window
         if isinstance(cap, int) and cap_window:
@@ -2063,6 +2070,8 @@ class LiteLLMProvider(Provider):
             room = cap_window - int(cap_window * _CLAMP_MARGIN_FRACTION) - prompt
             if cap > room:
                 call_kwargs["max_tokens"] = max(room, min(cap, _MIN_CLAMPED_OUTPUT_TOKENS))
+                if call_kwargs["max_tokens"] < cap:
+                    self._clamped_output_cap = call_kwargs["max_tokens"]
         # OpenAI's own API is where litellm's knowledge of a model NAME is the weak link. Its
         # param mapper recognises the names of the families it has shipped support for (gpt-5*,
         # the o-series) and treats any other OpenAI name as a plain chat model, and gpt-6-luna on
@@ -2213,6 +2222,7 @@ class LiteLLMProvider(Provider):
             prompt_cache_key=prompt_cache_key,
             **kw,
         )
+        clamped = self._clamped_output_cap
 
         await self._pace()
         start = time.perf_counter()
@@ -2247,10 +2257,12 @@ class LiteLLMProvider(Provider):
                     prompt_cache_key=prompt_cache_key,
                     **kw,
                 )
+                clamped = self._clamped_output_cap
 
         result = self._normalize(
             response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
         )
+        result.clamped_output_cap = clamped  # ADR-0310: what the request that answered carried
         # Announce the answerer on the FIRST sighting of each distinct name (ADR-0214),
         # rather than on a mismatch with ``self.model``. A mismatch rule would have to
         # decide when two spellings are "the same model" -- ``openai/x`` against ``x`` is
@@ -2553,8 +2565,10 @@ class LiteLLMProvider(Provider):
         # The first chunk waits out the prefill, so its bound is sized to the prompt
         # (ADR-0248). The rough count is the same one the rate was learned against.
         prompt_estimate = max(self._rough_token_estimate(wire_messages), 1)
+        clamped: int | None = None  # the clamp of the request last built (ADR-0310)
 
         def build() -> dict[str, Any]:
+            nonlocal clamped
             call_kwargs = self._build_kwargs(
                 wire_messages,
                 tools,
@@ -2562,6 +2576,7 @@ class LiteLLMProvider(Provider):
                 prompt_cache_key=prompt_cache_key,
                 **kw,
             )
+            clamped = self._clamped_output_cap
             call_kwargs["stream"] = True
             call_kwargs["stream_options"] = {"include_usage": True}
             return call_kwargs
@@ -2654,7 +2669,7 @@ class LiteLLMProvider(Provider):
             }
 
         self._raise_if_filtered(finish_reason, delivered=delivered, usage=streamed_usage)
-        yield StreamDone(finish_reason=finish_reason)
+        yield StreamDone(finish_reason=finish_reason, clamped_output_cap=clamped)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
         return self._wire_token_count(self._translate_messages(messages, system))
