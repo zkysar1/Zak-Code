@@ -158,11 +158,30 @@ class ZakpickModel(BaseModel):
     #: not the model behind it. The default model's own switch is ``Settings.prompt_caching``;
     #: an entry never inherits it, so one category's opt-in cannot reach another model.
     prompt_caching: bool = False
+    #: How tools reach this entry's route (ADR-0304): ``auto``, ``native`` or ``text``, as
+    #: ``Settings.tool_calling_mode`` takes them, for a route that differs from the others behind
+    #: one endpoint, such as one that accepts ``tools`` and drops them with no error to learn
+    #: from. ``None`` (the default) inherits ``Settings.tool_calling_mode``, never another
+    #: entry's mode, and ``auto`` is resolved for this entry's own model as the global one is.
+    tool_calling_mode: str | None = None
 
     @field_validator("reasoning_effort", mode="before")
     @classmethod
     def _normalise_reasoning_effort(cls, value: object) -> str | None:
         return normalise_reasoning_effort(value)
+
+    @field_validator("tool_calling_mode", mode="before")
+    @classmethod
+    def _known_tool_calling_mode(cls, value: object) -> str | None:
+        # Imported here: the providers package imports this module while it loads.
+        from zakcode.providers.text_tools import TOOL_CALLING_MODES
+
+        if value is None:
+            return None
+        mode = str(value).strip().lower()
+        if mode not in TOOL_CALLING_MODES:
+            raise ValueError(f"tool_calling_mode must be auto, native or text, not {value!r}")
+        return mode
 
     @model_validator(mode="after")
     def _thinking_off_takes_no_depth(self) -> ZakpickModel:
