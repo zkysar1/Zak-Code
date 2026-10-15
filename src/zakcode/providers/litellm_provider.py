@@ -746,6 +746,17 @@ _OLLAMA_NUM_CTX_CAP = 16_384
 #: before they ended (ADR-0275).
 _MAX_COMPLETION_TOKENS = 8_192
 
+#: The share of the window an output cap leaves unclaimed when it is clamped to the room the
+#: prompt leaves (ADR-0308): the compaction check's own margin on a token estimate
+#: (``zakcode.agent.compact.ESTIMATE_MARGIN_FRACTION``, ADR-0240), held equal by a test since
+#: this package cannot import the agent's.
+_CLAMP_MARGIN_FRACTION = 0.05
+
+#: The least output the clamp leaves a call (ADR-0308). Below it an answer is a few words, so
+#: a prompt that leaves less room is sent this and, where the route refuses it, overflows into
+#: the loop's compaction as before.
+_MIN_CLAMPED_OUTPUT_TOKENS = 1_024
+
 
 #: Minimum seconds between request STARTS on one provider instance (traffic
 #: smoothing). Google's dynamic-shared-quota guidance pairs exponential backoff with
@@ -2031,6 +2042,24 @@ class LiteLLMProvider(Provider):
                 )
             if self._effort_none_demanded_by_server or configured is None:
                 call_kwargs["reasoning_effort"] = "none"
+        # The output cap fits the window (ADR-0308). A route that adds the requested output to
+        # the prompt refuses the sum when it passes the window, "you requested 8192 output
+        # tokens and your prompt contains at least 24577 input tokens" on a 32,768-token route
+        # (reported 2026-10-14), and the compaction threshold leaves the prompt only the answer
+        # room of ``_answer_room`` below the window, 4,096 for an unmapped alias. So any cap,
+        # the default or a caller's, is held to the window less the prompt's rough estimate,
+        # tool schemas included, less the compaction check's margin, and never pushed under
+        # the floor. A caller's own smaller cap is untouched. Before the rename below, so
+        # OpenAI's ``max_completion_tokens`` carries the clamped value.
+        cap = call_kwargs.get("max_tokens")
+        cap_window = self.capabilities().context_window
+        if isinstance(cap, int) and cap_window:
+            prompt = self._rough_token_estimate(wire_messages)
+            if tools:
+                prompt += len(json.dumps(tools)) // 4
+            room = cap_window - int(cap_window * _CLAMP_MARGIN_FRACTION) - prompt
+            if cap > room:
+                call_kwargs["max_tokens"] = max(room, min(cap, _MIN_CLAMPED_OUTPUT_TOKENS))
         # OpenAI's own API is where litellm's knowledge of a model NAME is the weak link. Its
         # param mapper recognises the names of the families it has shipped support for (gpt-5*,
         # the o-series) and treats any other OpenAI name as a plain chat model, and gpt-6-luna on
