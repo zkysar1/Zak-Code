@@ -278,6 +278,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Display-only names for provider tokens (ADR-0314). The token of ``openai/<alias>`` is
+    # litellm's OpenAI-compatible protocol, not the vendor, so through a gateway "openai" names
+    # nothing a person cares about. A label replaces the token in text built for a person (the
+    # info and /model rows, the banner, /cost, the grey call rows, the route status and the
+    # provider's notices) and nowhere else: the wire, the config, the session, trace and
+    # transcript JSON, the log file and the server's API keep the token. Empty (the default)
+    # leaves every line as it was.
+    #
+    # From an env var: a JSON object, e.g. ZAKCODE_PROVIDER_LABELS={"openai":"Gateway"}
+    provider_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Display-only names for provider tokens, shown where a person reads the provider "
+            "(info, /model, the banner, call rows, the route status, notices), e.g. "
+            '{"openai":"Gateway"}. Never changes what is sent or stored.'
+        ),
+    )
+
     # Sent verbatim as litellm's ``extra_headers`` on every completion request.
     #
     # The motivating case is per-instance attribution on a self-hosted pod, and the
