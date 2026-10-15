@@ -12,6 +12,7 @@ M0 implements the non-streaming path (:meth:`Provider.acomplete`); streaming
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from abc import ABC, abstractmethod
@@ -62,6 +63,11 @@ class LLMResult(BaseModel):
     #: A gateway's fallback to another model is warned on both paths, from its own response
     #: headers (ADR-0305).
     served_model: str | None = None
+    #: The output cap this call was sent when the provider held it under the one asked for, so
+    #: that the room the window left the prompt, not the model's cap or the caller's, bounded
+    #: the answer (ADR-0308); ``None`` when the cap went out as asked. A reasoning overflow
+    #: under such a cap compacts before its retry (ADR-0310).
+    clamped_output_cap: int | None = None
     usage: Usage = Field(default_factory=Usage)
     raw: dict[str, Any] | None = None
 
@@ -205,6 +211,8 @@ class StreamDone(BaseModel):
 
     event: Literal["done"] = "done"
     finish_reason: str | None = None
+    #: As :attr:`LLMResult.clamped_output_cap`, for the streamed call (ADR-0310).
+    clamped_output_cap: int | None = None
 
 
 ProviderStreamEvent = Annotated[
@@ -531,6 +539,81 @@ def rejected_request_field(text: str | BaseException, sent: Iterable[str]) -> st
     return None
 
 
+#: The most of a provider's own message that :func:`provider_message` returns (ADR-0311). A
+#: refusal is one short sentence at the start of the message, 157 characters at the longest
+#: measured, so a few hundred hold it with room to spare.
+PROVIDER_MESSAGE_MAX_CHARS = 400
+#: One wrapper in front of a provider's message, as litellm and a LiteLLM proxy put it there: the
+#: class name (``litellm.BadRequestError: ``), the provider tag (``OpenAIException - ``,
+#: ``BedrockException - ``) and the openai SDK's status prefix, which litellm keeps when it found
+#: no message in the body (``Error code: 400 - ``).
+_MESSAGE_WRAPPER = re.compile(
+    r"(?:litellm\.)?\w*Error:\s*|\w*Exception\s+-\s+|Error code:\s*\d{3}\s+-\s+"
+)
+_MESSAGE_LAYERS = 8
+#: The largest body :func:`provider_message` parses as a Python literal. The openai SDK prints a
+#: body it found no message in as the dict's repr (``Error code: 400 - {'error': '...'}``), and a
+#: body that carries a refusal is a few hundred characters.
+_LITERAL_BODY_MAX_CHARS = 16_384
+
+
+def _envelope_message(text: str) -> str | None:
+    """The message of the error object that opens ``text``, else None.
+
+    The object is JSON, or the repr the openai SDK prints; its message is the body's
+    ``message``, its ``error.message`` or a string ``error``, or a string ``detail``.
+    """
+    if not text.startswith("{"):
+        return None
+    body: Any
+    try:
+        body = json.JSONDecoder().raw_decode(text)[0]
+    except ValueError:
+        if len(text) > _LITERAL_BODY_MAX_CHARS:
+            return None
+        try:
+            body = ast.literal_eval(text)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    nested = error.get("message") if isinstance(error, dict) else error
+    for candidate in (body.get("message"), nested, body.get("detail")):
+        if isinstance(candidate, str):
+            return candidate
+    return None
+
+
+def provider_message(text: str | BaseException) -> str:
+    """The provider's own message in an error ``text``, at most ``PROVIDER_MESSAGE_MAX_CHARS``.
+
+    litellm's text is layered (ADR-0311): its wrapper (``litellm.BadRequestError: OpenAIException
+    - ``), then the gateway's answer, which from a LiteLLM proxy is the same wrapper again around
+    the vendor's JSON body and the router's trailer (``BedrockException - {"message":"..."}.
+    Received Model Group=...``). This peels the wrappers and opens the envelopes down to the
+    innermost message. Text with neither is its own message, cut the same way.
+    """
+    message = str(text).strip()
+    for _ in range(_MESSAGE_LAYERS):
+        wrapper = _MESSAGE_WRAPPER.match(message)
+        if wrapper is not None:
+            message = message[wrapper.end() :].lstrip()
+            continue
+        inner = _envelope_message(message)
+        if inner is None:
+            break
+        message = inner.strip()
+    return message[:PROVIDER_MESSAGE_MAX_CHARS]
+
+
+#: What may open a provider's message before the words of a refusal (ADR-0311): a short subject
+#: (``This model``, ``Model route-a``), at most four words, none of them carrying a quote mark. A
+#: backend that refuses says so at the start of its message; a sentence that a 400 about
+#: something else only QUOTES, as a validation error printing the offending input does, sits
+#: after a quote mark or after more words than that, and is not read.
+_REFUSAL_SUBJECT = r"(?:[^\s'\"‘’“”]+\s+){0,4}?"
+
 #: How a backend refuses the ``stop`` it was sent (ADR-0296). ``stop`` is a top-level argument
 #: and neither sentence names it the way the phrasings above name a field, so the two are read
 #: apart from them. Both are the MEASURED wordings (2026-10-14, two open models behind an
@@ -538,53 +621,59 @@ def rejected_request_field(text: str | BaseException, sent: Iterable[str]) -> st
 #: at all, the second from one that takes a stop of a bounded length. Like the lists above they
 #: are a judgement call and the one place to extend when a vendor words it differently. A
 #: pattern alone NEVER decides anything: the caller reads them only for a 4xx that answered a
-#: request which carried a ``stop``.
+#: request which carried a ``stop``, and only at the start of the provider's own message
+#: (ADR-0311).
 _STOP_UNSUPPORTED = re.compile(
-    r"(?:doesn['’]?t|does not) support the stop[_ ]?sequences field", re.IGNORECASE
+    _REFUSAL_SUBJECT + r"(?:doesn['’]?t|does not) support the stop[_ ]?sequences field",
+    re.IGNORECASE,
 )
 _STOP_LENGTH_LIMIT = re.compile(
-    r"stop sequence\b.{0,80}?\blonger than the model limit of (\d+) characters?",
-    re.IGNORECASE | re.DOTALL,
+    _REFUSAL_SUBJECT
+    + r"stop sequence\b[^'\"‘’“”]{0,80}?\blonger than the model limit of (\d+) characters?",
+    re.IGNORECASE,
 )
 
 
 def stop_field_unsupported(text: str | BaseException) -> bool:
-    """Whether ``text`` says the model takes no ``stop`` at all."""
-    return _STOP_UNSUPPORTED.search(str(text)) is not None
+    """Whether the provider's message in ``text`` says the model takes no ``stop`` at all."""
+    return _STOP_UNSUPPORTED.match(provider_message(text)) is not None
 
 
 def stop_length_limit(text: str | BaseException) -> int | None:
-    """The length ``text`` limits a stop sequence to, in characters, else None.
+    """The length the provider's message in ``text`` limits a stop sequence to, else None.
 
     The sentence says a sequence is "longer than the model limit of N characters" and asks for
     one "shorter than N characters". The two differ at exactly N, and a sequence of N that is
     refused costs the turn this reading exists to save, so a caller keeps only sequences
     STRICTLY shorter than N, which both readings accept.
     """
-    match = _STOP_LENGTH_LIMIT.search(str(text))
+    match = _STOP_LENGTH_LIMIT.match(provider_message(text))
     return int(match.group(1)) if match else None
 
 
 #: How a backend refuses the ``temperature`` and the tools a request carried (ADR-0303). The
 #: MEASURED wordings (2026-10-14, a LiteLLM 1.9x gateway in front of Bedrock/Vertex relaying a
 #: 400 in Bedrock's words): ``This model doesn't support the temperature field. Remove
-#: temperature and try again.`` and ``This model doesn't support tool use.`` As with the stop
-#: sentences above, a pattern alone NEVER decides anything: the caller reads them only for a
-#: 4xx that answered a request which carried the field.
+#: temperature and try again.`` and ``This model doesn't support tool use.``, which on the
+#: streamed path goes on ``in streaming mode.`` As with the stop sentences above, a pattern
+#: alone NEVER decides anything: the caller reads them only for a 4xx that answered a request
+#: which carried the field, and only at the start of the provider's own message (ADR-0311).
 _TEMPERATURE_UNSUPPORTED = re.compile(
-    r"(?:doesn['’]?t|does not) support the temperature field", re.IGNORECASE
+    _REFUSAL_SUBJECT + r"(?:doesn['’]?t|does not) support the temperature field", re.IGNORECASE
 )
-_TOOL_USE_UNSUPPORTED = re.compile(r"(?:doesn['’]?t|does not) support tool use", re.IGNORECASE)
+_TOOL_USE_UNSUPPORTED = re.compile(
+    _REFUSAL_SUBJECT + r"(?:doesn['’]?t|does not) support tool use", re.IGNORECASE
+)
 
 
 def temperature_field_unsupported(text: str | BaseException) -> bool:
-    """Whether ``text`` says the model takes no ``temperature``."""
-    return _TEMPERATURE_UNSUPPORTED.search(str(text)) is not None
+    """Whether the provider's message in ``text`` says the model takes no ``temperature``."""
+    return _TEMPERATURE_UNSUPPORTED.match(provider_message(text)) is not None
 
 
 def tool_use_unsupported(text: str | BaseException) -> bool:
-    """Whether ``text`` says the model takes no function tools."""
-    return _TOOL_USE_UNSUPPORTED.search(str(text)) is not None
+    """Whether the provider's message in ``text`` says the model takes no function tools."""
+    return _TOOL_USE_UNSUPPORTED.match(provider_message(text)) is not None
 
 
 # ── Provider ABC ─────────────────────────────────────────────────────────────
@@ -684,7 +773,9 @@ class Provider(ABC):
                 arguments_delta=json.dumps(call.arguments),
             )
         yield StreamUsage(usage=result.usage)
-        yield StreamDone(finish_reason=result.finish_reason)
+        yield StreamDone(
+            finish_reason=result.finish_reason, clamped_output_cap=result.clamped_output_cap
+        )
 
 
 __all__ = [
