@@ -321,6 +321,7 @@ def test_same_model_different_thinking_gets_different_providers() -> None:
     )
     agent._provider_injected = False
     agent._provider_cache = {}
+    agent._startup_tool_calling_mode = None
 
     off = agent._provider_for(
         "openai/zds-qwen3.8-27b", extra_body={"chat_template_kwargs": {"enable_thinking": False}}

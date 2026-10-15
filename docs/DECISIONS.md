@@ -18581,3 +18581,74 @@ check, 8; the streamed fallback taking the refusal for one after the first event
 18; a stop limit that nothing sent reaches learned again, 2; and the wrapper re-raising a buffered refusal instead of
 answering it, 7. Two earlier batches ran against the earlier versions above; the first was also spoiled by a test added
 while it ran. `uv run poe check` is green: 5,836 passed, 22 skipped.
+
+## ADR-0304: a zakpick entry may name its own `tool_calling_mode`, an entry that names none inherits the setting, and a call with no route keeps the startup entry's mode on the startup model
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that one
+route accepts `tools` and drops them: it answers HTTP 200 with no tool call and a reply saying it has no such tool, with
+the gateway's fallbacks on or off, so there is no refusal to learn from (ADR-0303 learns from a refusal). The same route
+refuses `stop`, so it needs the text protocol together with ADR-0296. The report counts twelve other routes behind the
+same endpoint that do native tools genuinely. `tool_calling_mode` was global: `_build_provider` read it from `Settings`
+for every provider, and `auto` sends an unmapped `openai/<alias>` its tools natively, so one zakpick could not hold that
+route beside a native one. Against main, an entry that names a mode is accepted and the field dropped without a word:
+`ZakpickModel` has no such attribute, and every provider is built in the global mode.
+
+**Decision.**
+
+* `ZakpickModel` takes an optional `tool_calling_mode`, `auto`, `native` or `text`, read without regard to case or
+  surrounding space; anything else is refused at load, naming the three. `None`, the default, inherits
+  `Settings.tool_calling_mode`.
+* `_resolve_task_provider` passes the entry's mode to `_provider_for`, and the setting's when the entry names none, so a
+  category's call always carries a mode.
+* `_provider_for` keys its provider cache on the mode, and hands the default model the startup provider only in the mode
+  that provider was built in, or with no mode at all. Two categories that name one model in two modes get two providers;
+  in one mode, one.
+* `_build_provider` gives the mode to the wrapper, its one reader: `LiteLLMProvider` does not read it. `None` is a caller
+  with no route to speak for, a failover or a role override, as it is for the caching switch (ADR-0298): the default
+  model is then built in the startup entry's mode, and any other model in the setting's.
+* The startup entry's mode is kept on the agent. It is not copied into the settings copy that carries that entry's window
+  and caching switch (ADR-0066, ADR-0298), because that copy is what an entry naming no mode would inherit from.
+* `docs/CONFIG.md` says so at the `zakpick_models` and `tool_calling_mode` rows.
+
+Stated choices. The mode takes no copy of the settings, where the report placed it in `_build_provider`'s shortcut and
+settings update as well. Nothing but the wrapper reads it, so a settings copy per mode would build the same provider
+through a second object and change the shortcut's condition for nothing; I am choosing the narrower change. A call with
+no mode keeps the startup entry's mode on the startup model, because the entry's word is about that model's route: a
+failover onto a route that drops tools would otherwise send it tools natively again. On any other model it takes the
+setting's, even where some entry names that model in another mode, because a failover is not an entry; looking an entry
+up by its model would be a separate change.
+
+Rejected: copying the startup entry's mode into the settings, which hands the mode of whichever category the session
+started on to every entry that names none; choosing the protocol by model name, a list that needs an owner, as ADR-0296
+says; and learning the drop from the route's reply, which is the model's own prose and not a refusal, so no wording of it
+is a contract.
+
+Not verified: a live gateway. The tests build the providers and read their modes, and nothing is sent. That the route
+drops its tools is the report's measurement, and that a model behind it does good agent work through the text protocol is
+not claimed.
+
+**Consequences.** A zakpick can hold a route that drops tools beside native ones: its entry says `text`, and only that
+entry's calls go through the text protocol. An entry that names no mode is built as before. One model named in two modes
+is built twice, once per mode. A failover onto the startup model keeps that entry's mode; onto any other model it takes
+the setting's, as before.
+
+The proof. `tests/test_zakpick_tool_mode.py` (13 tests): an entry takes `text`, `Native` and ` auto ` as `text`, `native`
+and `auto`, names none unless told, and is refused at load for an unknown mode; two entries in different modes get
+providers in those modes, and the startup provider is built in its entry's; one model in two modes gets two providers,
+and in one mode the one startup provider; the same for a model the session did not start on, where the cache keeps them
+apart; a call with no route is handed the startup provider, in its entry's mode; a mode alone keys the cache; an entry
+without the field inherits the setting; the startup entry's mode is not inherited by an entry that names none, on the
+startup model or another; and an entry's `auto` is resolved for its own model, so a local Ollama model is answered
+through the text protocol. Against main, 12 of the 13 fail: four because the entry has no such field, one because an
+unknown mode is not refused, six because every provider comes out in the global mode, and one because the seam takes no
+mode. The one that passes is an entry without the field inheriting the setting, the control. Fourteen mutations were each
+run green, red, green (2026-10-15), with the red tests counted from the verdict: the shortcut ignoring the mode turned 3
+red; the shortcut comparing with the setting's mode only, 3; the cache key leaving the mode out, 2; a mode alone not
+keying the cache, 1; a call with no mode taking the setting's on the startup model too, 4; the startup entry's mode never
+recorded, 5; that mode copied into the settings, 1; an entry that names none passed on as a call with no route, 1; the
+entry's mode never passed, 5; the wrapper built in the setting's mode, 7; the seam dropping the mode before the build, 6;
+the mode not normalised, 2; an unknown mode accepted, 1; and an entry naming `auto` unless told, 3. A hand-built agent in
+`tests/test_local_only.py`, which sets each attribute the seam reads, now sets this one too. `uv run poe check` is green:
+5,849 passed, 22 skipped.
