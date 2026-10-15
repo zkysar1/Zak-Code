@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import html
 import inspect
 import json
 import logging
@@ -59,6 +60,7 @@ from zakcode.providers.base import (
     StreamUsage,
     TimedOut,
     ToolCall,
+    ToolUseRefused,
     UnknownContextWindow,
     WindowResolution,
     context_overflow_marker,
@@ -66,6 +68,8 @@ from zakcode.providers.base import (
     rejected_request_field,
     stop_field_unsupported,
     stop_length_limit,
+    temperature_field_unsupported,
+    tool_use_unsupported,
 )
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
@@ -80,6 +84,7 @@ from zakcode.providers.hipaa import (
     check_chat_completions_only,
     check_model,
 )
+from zakcode.providers.labels import ModelRef
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.thinking import (
@@ -249,6 +254,69 @@ _LiteLLMAuthError = _resolve_exc_type("AuthenticationError")
 _LiteLLMPermissionError = _resolve_exc_type("PermissionDeniedError")
 _LiteLLMContextWindowError = _resolve_exc_type("ContextWindowExceededError")
 _LiteLLMRateLimitError = _resolve_exc_type("RateLimitError")
+
+#: An HTML page inside an error message, and the parts of one that are not its words (ADR-0306):
+#: the openings of the blocks whose contents are not words, each kind's closing tag, and a tag.
+_HTML_PAGE = re.compile(r"<(?:!doctype\s+)?html[\s>]", re.IGNORECASE)
+_HTML_HEAD = re.compile(r"<(head)\b", re.IGNORECASE)
+_HTML_CODE = re.compile(r"<(script|style)\b", re.IGNORECASE)
+_HTML_CLOSE = {
+    kind: re.compile(rf"</{kind}\s*>", re.IGNORECASE) for kind in ("head", "script", "style")
+}
+_HTML_TAG = re.compile(r"<[^>]*>")
+
+
+def _drop_blocks(page: str, opening: re.Pattern[str]) -> str:
+    """``page`` with each block that ``opening`` starts, through the first closing tag of its
+    kind, replaced by a space (ADR-0313).
+
+    It returns what ``re.sub(r"<(kind)\\b.*?</\\1\\s*>", " ", page, flags=re.I | re.S)`` returns,
+    in linear time. That pattern rescans the rest of the page from every opening with no closing
+    tag after it, so a page of unclosed openings took seconds. Such an opening is skipped unread.
+    """
+    last: dict[str, int] = {}
+    kept: list[str] = []
+    pos = 0
+    for found in opening.finditer(page):
+        if found.start() < pos:
+            continue
+        kind = found.group(1).lower()
+        if kind not in last:
+            last[kind] = max((m.start() for m in _HTML_CLOSE[kind].finditer(page)), default=-1)
+        close = _HTML_CLOSE[kind].search(page, found.end()) if last[kind] >= found.end() else None
+        if close is None:
+            continue
+        kept += [page[pos : found.start()], " "]
+        pos = close.end()
+    kept.append(page[pos:])
+    return "".join(kept)
+
+
+def _drop_tags(text: str) -> str:
+    """``text`` with each tag replaced by a space, as ``_HTML_TAG`` matches one, in linear time
+    (ADR-0313). No tag closes after the last ``>``, so the pattern runs only up to it: tried from
+    every ``<`` of a run with no ``>`` after it, it rescanned the run each time."""
+    end = text.rfind(">") + 1
+    return _HTML_TAG.sub(" ", text[:end]) + text[end:]
+
+
+def _page_text(message: str) -> str:
+    """``message`` with the HTML page in it reduced to the page's words (ADR-0306).
+
+    An ingress or proxy in front of an API answers some failures with a web page, and litellm
+    puts the page in its exception's message, so its markup reached the turn's error. The body's
+    text is kept, or the title's when the body has none. A message with no page is returned as
+    it is, so angle brackets in an ordinary message survive. The work is linear in the page's
+    length, however the page is broken (ADR-0313): this runs on the event loop.
+    """
+    found = _HTML_PAGE.search(message)
+    if found is None:
+        return message
+    page = _drop_blocks(message[found.start() :], _HTML_CODE)
+    text = " ".join(html.unescape(_drop_tags(_drop_blocks(page, _HTML_HEAD))).split())
+    if not text:
+        text = " ".join(html.unescape(_drop_tags(page)).split())
+    return f"{message[: found.start()].rstrip()} {text}".strip()
 
 
 def _is_ollama_model(model: str) -> bool:
@@ -715,8 +783,21 @@ _OLLAMA_NUM_CTX_CAP = 16_384
 #: bounded). Fixed on purpose: not a knob. Per-call callers (side-calls with tighter
 #: budgets) still override it, and so does the compaction summarizer with a larger one: a
 #: reasoning model's thinking is billed against this cap, and at 8,192 it cut summaries off
-#: before they ended (ADR-0275).
+#: before they ended (ADR-0275). The loop's reasoning-overflow retry asks for twice it, for
+#: that one call, where the window has room (ADR-0307). Whoever sets it, the cap a call is
+#: sent is held to the room the window leaves the prompt (ADR-0308).
 _MAX_COMPLETION_TOKENS = 8_192
+
+#: The share of the window an output cap leaves unclaimed when it is clamped to the room the
+#: prompt leaves (ADR-0308): the compaction check's own margin on a token estimate
+#: (``zakcode.agent.compact.ESTIMATE_MARGIN_FRACTION``, ADR-0240), held equal by a test since
+#: this package cannot import the agent's.
+_CLAMP_MARGIN_FRACTION = 0.05
+
+#: The least output the clamp leaves a call (ADR-0308). Below it an answer is a few words, so
+#: a prompt that leaves less room is sent this and, where the route refuses it, overflows into
+#: the loop's compaction as before.
+_MIN_CLAMPED_OUTPUT_TOKENS = 1_024
 
 
 #: Minimum seconds between request STARTS on one provider instance (traffic
@@ -727,6 +808,14 @@ _MAX_COMPLETION_TOKENS = 8_192
 #: on real calls (every model call takes longer than this) — it only shaves the
 #: burst edge. Fixed, not a knob (no-knobs ruling).
 _MIN_REQUEST_INTERVAL_S = 1.0
+
+#: How many times one call may be re-issued after a refusal the provider learned from
+#: (ADR-0303): three, the number of distinct refusals measured on one route (stop, temperature,
+#: tool use). A refusal of tool use spends none of them, since the text-protocol wrapper answers
+#: it with a new call, which leaves one for a field ADR-0181 learns. A refusal that teaches
+#: nothing new is reported as it is, so this bounds only a route that keeps finding new things
+#: to refuse. Fixed, not a knob.
+_MAX_REQUEST_REPAIRS = 3
 
 #: The first chunk of a streaming call waits out the prefill, and a prefill is as long as
 #: its prompt (ADR-0248). That chunk's bound is the prompt's estimated size times the
@@ -741,6 +830,14 @@ _FIRST_CHUNK_MARGIN = 2.0
 #: rate a hundred times slower than the backend's. Every observation is charged at least
 #: this many tokens (llama.cpp's default micro-batch; servers batch at this scale or above).
 _PREFILL_BATCH_TOKENS = 512
+
+#: A LiteLLM gateway's own account of a fallback (ADR-0305), in the response headers litellm keeps
+#: under ``_hidden_params['additional_headers']``, on a buffered response and on a stream before
+#: its first chunk: the fallbacks it attempted (``0`` on a normal answer), the model group that
+#: answered, and the deployment behind it. Absent on any other backend.
+_FALLBACK_ATTEMPTS_HEADER = "llm_provider-x-litellm-attempted-fallbacks"
+_FALLBACK_GROUP_HEADER = "llm_provider-x-litellm-model-group"
+_FALLBACK_NAME_HEADER = "llm_provider-x-litellm-model-name"
 
 
 class LiteLLMProvider(Provider):
@@ -779,6 +876,13 @@ class LiteLLMProvider(Provider):
         #: echo is recorded on EVERY result; this set keeps the operator-facing log to one
         #: line per distinct answerer instead of one line per call.
         self._served_seen: set[str] = set()
+        #: (asked, answered) pairs already warned of by :meth:`_warn_on_fallback` (ADR-0305), so
+        #: a gateway that keeps falling back costs one line per pair, not one per call.
+        self._fallbacks_seen: set[tuple[str, str]] = set()
+        #: The cap the request :meth:`_build_kwargs` last built was clamped to (ADR-0308), or
+        #: None when it went out as asked. Read right after each build, with no await between,
+        #: onto that call's result (ADR-0310).
+        self._clamped_output_cap: int | None = None
         resolved_model = model
         resolved_temperature = temperature
         resolved_api_base = api_base
@@ -906,7 +1010,7 @@ class LiteLLMProvider(Provider):
                 "reasoning-capable (or is reached through a generic api_base, where the "
                 "server's own body form via extra_body applies): the level is not sent",
                 self.reasoning_effort,
-                self.model,
+                ModelRef(self.model),
             )
         #: Extra HTTP headers, with {hostname}/{pid} already expanded ONCE here rather
         #: than per call — the values are constant for the process, and expanding at
@@ -1433,7 +1537,7 @@ class LiteLLMProvider(Provider):
             "%s takes function tools only with reasoning_effort='none' on this route (%s) "
             "— sending 'none' with tools for the rest of this session and re-issuing "
             "the call",
-            self.model,
+            ModelRef(self.model),
             " ".join(message.split())[:200],
         )
         return True
@@ -1444,7 +1548,7 @@ class LiteLLMProvider(Provider):
         True when ``exc`` is a request rejection that names a field WE added — a key of
         the ``extra_body`` this call sent, or the wire spelling of the rendered thinking
         switch — in which case the field joins ``rejected_request_fields`` (so no later
-        request of this session carries it) and the caller re-issues the call once.
+        request of this session carries it) and the caller re-issues the call.
         False for every other failure, which maps through the taxonomy as before. The
         "one we sent" gate is what keeps this honest: a provider refusing ``tools`` or
         ``messages`` is a defect to surface, never a field to strip.
@@ -1463,7 +1567,7 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused the request field %r (%s) — dropping it for the rest of this "
             "session and re-issuing the call without it",
-            self.model,
+            ModelRef(self.model),
             field,
             " ".join(message.split())[:200],
         )
@@ -1475,17 +1579,22 @@ class LiteLLMProvider(Provider):
         True when ``exc`` is a request rejection of a call that CARRIED a ``stop`` and says, in
         one of the two measured wordings, either that the model takes no stop at all (``stop``
         joins ``rejected_request_fields``) or that a stop sequence may not reach some length
-        (``max_stop_chars``, which only ever goes down). ``_build_kwargs`` then leaves the
-        refused part out of every later request, and the caller re-issues the call once.
-        False for every other failure, which maps through the taxonomy as before. The "we sent
-        one" gate is what keeps this honest, as in ADR-0181: a sentence about a stop that
-        answers a request with none is a defect to surface, never something to repair.
+        that one it carried reaches (``max_stop_chars``, which only ever goes down).
+        ``_build_kwargs`` then leaves the refused part out of every later request, and the
+        caller re-issues the call. False for every other failure, which maps through the
+        taxonomy as before. The "we sent one" gate is what keeps this honest, as in ADR-0181: a
+        sentence about a stop that answers a request with none is a defect to surface, never
+        something to repair, and so is a limit that nothing the request carried reaches, which
+        a re-issue would only send again (ADR-0303).
         """
         if not call_kwargs.get("stop") or not self._is_request_rejection(exc):
             return False
         message = redact_secrets(str(exc))[0]
         limit = stop_length_limit(message)
         if limit is not None:
+            stop = call_kwargs["stop"]
+            if all(len(s) < limit for s in ([stop] if isinstance(stop, str) else stop)):
+                return False
             known = self.max_stop_chars
             self.max_stop_chars = limit if known is None else min(known, limit)
             refused = f"stop sequences of {limit} characters or more"
@@ -1498,11 +1607,48 @@ class LiteLLMProvider(Provider):
         logger.warning(
             "%s refused %s (%s) — leaving it out for the rest of this session and re-issuing "
             "the call without it",
-            self.model,
+            ModelRef(self.model),
             refused,
             " ".join(message.split())[:200],
         )
         return True
+
+    def _refuse_temperature(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Learn that the backend will not take the ``temperature`` this call sent (ADR-0303).
+
+        True when ``exc`` is a request rejection of a call that CARRIED a ``temperature``, a
+        0.0 included, and says in the measured wording that the model takes none:
+        ``temperature`` joins ``rejected_request_fields``, ``_build_kwargs`` leaves it out of
+        every later request, and the caller re-issues the call. The backend's own default then
+        applies, as it does when no temperature is configured. Same gate as ``_refuse_stop``: a
+        sentence about a temperature that answers a request with none is a defect to surface.
+        """
+        if call_kwargs.get("temperature") is None or not self._is_request_rejection(exc):
+            return False
+        message = redact_secrets(str(exc))[0]
+        if not temperature_field_unsupported(message):
+            return False
+        if "temperature" not in self.rejected_request_fields:
+            self.rejected_request_fields.append("temperature")
+        logger.warning(
+            "%s refused the temperature field (%s) — leaving it out for the rest of this "
+            "session and re-issuing the call without it",
+            ModelRef(self.model),
+            " ".join(message.split())[:200],
+        )
+        return True
+
+    def _refuses_tool_use(self, exc: Exception, call_kwargs: dict[str, Any]) -> bool:
+        """Whether ``exc`` refuses the function tools this call sent (ADR-0303).
+
+        A request rejection of a call that CARRIED ``tools``, in the measured wording. Not a
+        field to strip, since the call needs its tools: the caller raises
+        :class:`ToolUseRefused`, which the text-protocol wrapper answers by carrying the tools
+        in the prompt instead. Nothing is learned here; the wrapper keeps what it learned.
+        """
+        if not call_kwargs.get("tools") or not self._is_request_rejection(exc):
+            return False
+        return tool_use_unsupported(redact_secrets(str(exc))[0])
 
     @classmethod
     def _map_error(cls, exc: Exception) -> ProviderError:
@@ -1528,7 +1674,10 @@ class LiteLLMProvider(Provider):
         # Scrub credential-shaped text (e.g. a gateway api_base with embedded creds, or a
         # backend echoing a token) from the vendor message BEFORE it propagates to any
         # display / log / HTTP error body / traceback. (audit3 #8 / GUARDRAILS §6)
-        message = redact_secrets(str(exc))[0]
+        # An ingress's web page in the message keeps its words and loses its markup (ADR-0306).
+        # The words are redacted again once decoded: an assignment written with entities
+        # (``&quot;api_key&quot;: ...``) is only an assignment after the unescape (ADR-0312).
+        message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
@@ -1601,6 +1750,12 @@ class LiteLLMProvider(Provider):
         if cls._is_a(exc, None, "Timeout", "APITimeoutError"):
             # The client timeout expired. Retried like a rate limit, but reported
             # truthfully — see TimedOut's docstring for why the distinction matters.
+            if getattr(exc, "status_code", None) == 504:
+                # Unless the SERVER side cut the call (ADR-0306): litellm raises its Timeout
+                # for an ingress's 504 and keeps the status (measured on 1.86.2; a client
+                # timeout carries 408), so the notice names the ingress, not the client
+                # ceiling, which had not expired. A 504 under another class stays an outage.
+                return TimedOut(message, retry_after=retry_after, bound="gateway ingress 504")
             return TimedOut(message, retry_after=retry_after)
         if cls._is_a(
             exc,
@@ -1862,6 +2017,10 @@ class LiteLLMProvider(Provider):
                 call_kwargs["stop"] = fits
             else:
                 call_kwargs.pop("stop")
+        # A temperature this backend has refused (ADR-0303), whoever set it: the configured one
+        # and the 0.0 a side call passes through ``kw`` are left out alike.
+        if "temperature" in self.rejected_request_fields:
+            call_kwargs.pop("temperature", None)
         # OpenAI gpt-5 reasoning models accept ONLY temperature=1; any other value is a
         # 400. Normalise AFTER the update above so this covers BOTH the main loop's
         # configured temperature AND the structured path's per-call temperature=0
@@ -1897,7 +2056,7 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: %s not sent -- deprecated for this Gemini generation; sampling is "
                     "steered from the system instructions and the model applies its own default",
-                    self.model,
+                    ModelRef(self.model),
                     ", ".join(dropped),
                 )
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
@@ -1926,11 +2085,35 @@ class LiteLLMProvider(Provider):
                 logger.info(
                     "%s: this provider answered a tool call by asking for "
                     "reasoning_effort='none', so the configured %r is not sent",
-                    self.model,
+                    ModelRef(self.model),
                     configured,
                 )
             if self._effort_none_demanded_by_server or configured is None:
                 call_kwargs["reasoning_effort"] = "none"
+        # The output cap fits the window (ADR-0308). A route that adds the requested output to
+        # the prompt refuses the sum when it passes the window, "you requested 8192 output
+        # tokens and your prompt contains at least 24577 input tokens" on a 32,768-token route
+        # (reported 2026-10-14), and the compaction threshold leaves the prompt only the answer
+        # room of ``_answer_room`` below the window, 4,096 for an unmapped alias. So any cap,
+        # the default or a caller's, is held to the window less the prompt's token count, tool
+        # schemas included, less the compaction check's margin, and never pushed under the
+        # floor. A caller's own smaller cap is untouched. The count is the tokenizer's, as
+        # ``count_tokens`` makes it: the four-characters-a-token estimate ran 44% low on
+        # id-dense tool output (measured 2026-10-15), which would leave the refused cap as it
+        # was. Before the rename below, so OpenAI's ``max_completion_tokens`` carries the
+        # clamped value. A cap held under the one asked for is recorded for the call's result:
+        # a reasoning model can fill it and end on it with nothing visible, and no refusal will
+        # come to compact the prompt that took the room, so the loop does (ADR-0310).
+        self._clamped_output_cap = None
+        cap = call_kwargs.get("max_tokens")
+        cap_window = self.capabilities().context_window
+        if isinstance(cap, int) and cap_window:
+            prompt = self._wire_token_count(wire_messages, tools)
+            room = cap_window - int(cap_window * _CLAMP_MARGIN_FRACTION) - prompt
+            if cap > room:
+                call_kwargs["max_tokens"] = max(room, min(cap, _MIN_CLAMPED_OUTPUT_TOKENS))
+                if call_kwargs["max_tokens"] < cap:
+                    self._clamped_output_cap = call_kwargs["max_tokens"]
         # OpenAI's own API is where litellm's knowledge of a model NAME is the weak link. Its
         # param mapper recognises the names of the families it has shipped support for (gpt-5*,
         # the o-series) and treats any other OpenAI name as a plain chat model, and gpt-6-luna on
@@ -2031,6 +2214,38 @@ class LiteLLMProvider(Provider):
                 await asyncio.sleep(wait)
             self._last_request_started = time.monotonic()
 
+    def _warn_on_fallback(self, response: Any) -> None:
+        """Warn once per (asked, answered) pair when the gateway answered with another model.
+
+        The gateway's own headers say so (ADR-0305), on a buffered response and on a stream
+        before its first chunk, so both paths read them here. The name a response carries is not
+        the test: it differs from the request in ordinary calls (ADR-0214). A backend that sends
+        none of these headers is left as it was.
+        """
+        hidden = _get(response, "_hidden_params")
+        headers = hidden.get("additional_headers") if isinstance(hidden, dict) else None
+        if not isinstance(headers, dict):
+            return
+        try:
+            attempts = int(str(headers.get(_FALLBACK_ATTEMPTS_HEADER, "0")))
+        except ValueError:
+            return
+        if attempts <= 0:
+            return
+        group = headers.get(_FALLBACK_GROUP_HEADER)
+        name = headers.get(_FALLBACK_NAME_HEADER)
+        answered = str(group or name or "a model it did not name")
+        if (self.model, answered) in self._fallbacks_seen:
+            return
+        self._fallbacks_seen.add((self.model, answered))
+        logger.warning(
+            "%s: the gateway answered with %s%s instead, after %d attempted fallback(s)",
+            ModelRef(self.model),
+            answered,
+            f" ({name})" if group and name else "",
+            attempts,
+        )
+
     async def acomplete(
         self,
         messages: list[Message],
@@ -2049,39 +2264,47 @@ class LiteLLMProvider(Provider):
             prompt_cache_key=prompt_cache_key,
             **kw,
         )
+        clamped = self._clamped_output_cap
 
         await self._pace()
         start = time.perf_counter()
-        try:
-            response = await litellm.acompletion(**call_kwargs)
-        except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
-            if not (
-                self._wants_effort_none(exc, call_kwargs)
-                or self._refuse_rejected_field(exc, call_kwargs)
-                or self._refuse_stop(exc, call_kwargs)
-            ):
-                raise self._map_error(exc) from exc
-            # The provider named a field of ours it will not take (ADR-0181), or named
-            # the one value it WILL take for the tools+reasoning pairing, or said it takes
-            # no stop (or only a short one, ADR-0296): the flag / ``rejected_request_fields``
-            # / ``max_stop_chars`` is updated, so the rebuilt request has the accepted
-            # shape — the SAME logical call, re-issued once. A second refusal is reported
-            # as is.
-            call_kwargs = self._build_kwargs(
-                wire_messages,
-                tools,
-                response_format=response_format,
-                prompt_cache_key=prompt_cache_key,
-                **kw,
-            )
+        repairs = 0
+        while True:
             try:
                 response = await litellm.acompletion(**call_kwargs)
-            except Exception as again:  # noqa: BLE001 - mapped to taxonomy below
-                raise self._map_error(again) from again
+                break
+            except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+                if self._refuses_tool_use(exc, call_kwargs):
+                    raise ToolUseRefused(str(self._map_error(exc))) from exc
+                if repairs >= _MAX_REQUEST_REPAIRS or not (
+                    self._wants_effort_none(exc, call_kwargs)
+                    or self._refuse_rejected_field(exc, call_kwargs)
+                    or self._refuse_stop(exc, call_kwargs)
+                    or self._refuse_temperature(exc, call_kwargs)
+                ):
+                    raise self._map_error(exc) from exc
+                # The provider named a field of ours it will not take (ADR-0181), or named
+                # the one value it WILL take for the tools+reasoning pairing, or said it takes
+                # no stop (or only a short one, ADR-0296) or no temperature (ADR-0303): the
+                # flag / ``rejected_request_fields`` / ``max_stop_chars`` is updated, so the
+                # rebuilt request has the accepted shape — the SAME logical call, re-issued.
+                # A route can refuse several of these one at a time, so a call is re-issued
+                # once per refusal it learns from, up to ``_MAX_REQUEST_REPAIRS``; a refusal
+                # it cannot learn from, or one past the bound, is reported as is.
+                repairs += 1
+                call_kwargs = self._build_kwargs(
+                    wire_messages,
+                    tools,
+                    response_format=response_format,
+                    prompt_cache_key=prompt_cache_key,
+                    **kw,
+                )
+                clamped = self._clamped_output_cap
 
         result = self._normalize(
             response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
         )
+        result.clamped_output_cap = clamped  # ADR-0310: what the request that answered carried
         # Announce the answerer on the FIRST sighting of each distinct name (ADR-0214),
         # rather than on a mismatch with ``self.model``. A mismatch rule would have to
         # decide when two spellings are "the same model" -- ``openai/x`` against ``x`` is
@@ -2091,12 +2314,13 @@ class LiteLLMProvider(Provider):
         # one whose backend swapped underneath it spends two, and the second is the finding.
         if result.served_model is not None and result.served_model not in self._served_seen:
             self._served_seen.add(result.served_model)
-            logger.info("%s: served by %s", self.model, result.served_model)
+            logger.info("%s: served by %s", ModelRef(self.model), result.served_model)
+        self._warn_on_fallback(response)
         # Operator-facing call accounting (audit P1-5). Message contents are never
         # logged — model, latency, token counts, and litellm-computed cost only.
         logger.debug(
             "%s: %.2fs, %d+%d tokens, $%.6f",
-            self.model,
+            ModelRef(self.model),
             time.perf_counter() - start,
             result.usage.prompt_tokens,
             result.usage.completion_tokens,
@@ -2383,8 +2607,10 @@ class LiteLLMProvider(Provider):
         # The first chunk waits out the prefill, so its bound is sized to the prompt
         # (ADR-0248). The rough count is the same one the rate was learned against.
         prompt_estimate = max(self._rough_token_estimate(wire_messages), 1)
+        clamped: int | None = None  # the clamp of the request last built (ADR-0310)
 
         def build() -> dict[str, Any]:
+            nonlocal clamped
             call_kwargs = self._build_kwargs(
                 wire_messages,
                 tools,
@@ -2392,6 +2618,7 @@ class LiteLLMProvider(Provider):
                 prompt_cache_key=prompt_cache_key,
                 **kw,
             )
+            clamped = self._clamped_output_cap
             call_kwargs["stream"] = True
             call_kwargs["stream_options"] = {"include_usage": True}
             return call_kwargs
@@ -2403,7 +2630,7 @@ class LiteLLMProvider(Provider):
         chunks = 0
         delivered = False  # any text or tool-call fragment reached the caller
         streamed_usage: Usage | None = None  # summed as the loop sums it, for a filtered end
-        repaired = False  # the one ADR-0181 re-issue this call may spend
+        repairs = 0  # re-issues this call has spent, at most _MAX_REQUEST_REPAIRS (ADR-0303)
         await self._pace()
         try:
             while True:
@@ -2412,6 +2639,8 @@ class LiteLLMProvider(Provider):
                     # Of the request about to be sent, so a repaired re-issue is read as sent.
                     carried = _carries_cache_breakpoint(call_kwargs)
                     resp = await litellm.acompletion(**call_kwargs)
+                    # A gateway's fallback headers are on the stream before its first chunk.
+                    self._warn_on_fallback(resp)
                     async for chunk in self._bounded_chunks(
                         resp, prompt_estimate=prompt_estimate, started=started
                     ):
@@ -2423,7 +2652,8 @@ class LiteLLMProvider(Provider):
                         # 11 chunks and litellm handed back the requested id on all 11 -- so
                         # reading it here would record the request as if it were the answer,
                         # which is the exact defect ADR-0214 exists to prevent. The buffered
-                        # path keeps the server's own name; this one has no channel for it.
+                        # path keeps the server's own name; this one has no channel for it,
+                        # save a gateway's fallback headers, read above (ADR-0305).
                         delta = _stream_delta(chunk)
                         if delta is not None:
                             (head if len(head) < _STREAM_SAMPLE_EDGE else tail).append(delta)
@@ -2454,17 +2684,21 @@ class LiteLLMProvider(Provider):
                 except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
                     # A field refusal arrives at request time, before any chunk — so
                     # nothing has been yielded and the rebuilt request can be re-issued in
-                    # place (ADR-0181, and the stop list, ADR-0296). Anything after the
-                    # first chunk is a real failure.
+                    # place (ADR-0181, the stop list, ADR-0296, and the temperature,
+                    # ADR-0303), once per refusal learned. A refusal of the tools is the
+                    # wrapper's to answer. Anything after the first chunk is a real failure.
+                    if chunks == 0 and self._refuses_tool_use(exc, call_kwargs):
+                        raise ToolUseRefused(str(self._map_error(exc))) from exc
                     if (
                         chunks == 0
-                        and not repaired
+                        and repairs < _MAX_REQUEST_REPAIRS
                         and (
                             self._refuse_rejected_field(exc, call_kwargs)
                             or self._refuse_stop(exc, call_kwargs)
+                            or self._refuse_temperature(exc, call_kwargs)
                         )
                     ):
-                        repaired = True
+                        repairs += 1
                         call_kwargs = build()
                         continue
                     raise self._map_error(exc) from exc
@@ -2477,24 +2711,36 @@ class LiteLLMProvider(Provider):
             }
 
         self._raise_if_filtered(finish_reason, delivered=delivered, usage=streamed_usage)
-        yield StreamDone(finish_reason=finish_reason)
+        yield StreamDone(finish_reason=finish_reason, clamped_output_cap=clamped)
 
     def count_tokens(self, messages: list[Message], *, system: str | None = None) -> int:
-        wire_messages = self._translate_messages(messages, system)
+        return self._wire_token_count(self._translate_messages(messages, system))
+
+    def _wire_token_count(
+        self, wire_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> int:
+        """litellm's token count of a request, its tool schemas included when given; the rough
+        estimate when the counter fails or answers with anything but a count. Shared by
+        :meth:`count_tokens` and the output-cap clamp of :meth:`_build_kwargs` (ADR-0308)."""
+        rough = self._rough_token_estimate(wire_messages)
+        counted: dict[str, Any] = {"model": self.model, "messages": wire_messages}
+        if tools:
+            rough += len(json.dumps(tools)) // 4
+            counted["tools"] = tools
         try:
-            count = litellm.token_counter(model=self.model, messages=wire_messages)
+            count = litellm.token_counter(**counted)
         except Exception:
-            return self._rough_token_estimate(wire_messages)
+            return rough
         # bool is an int subclass; reject it (and any non-numeric) explicitly.
         if isinstance(count, bool):
-            return self._rough_token_estimate(wire_messages)
+            return rough
         if isinstance(count, int):
-            return count if count >= 0 else self._rough_token_estimate(wire_messages)
+            return count if count >= 0 else rough
         try:
             coerced = int(count)
         except (TypeError, ValueError):
-            return self._rough_token_estimate(wire_messages)
-        return coerced if coerced >= 0 else self._rough_token_estimate(wire_messages)
+            return rough
+        return coerced if coerced >= 0 else rough
 
     @staticmethod
     def _rough_token_estimate(wire_messages: list[dict[str, Any]]) -> int:

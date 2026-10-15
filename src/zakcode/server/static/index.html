@@ -785,6 +785,14 @@
     const [whole, frac] = (c || 0).toFixed(4).split(".");
     return "$" + whole + "." + frac.replace(/0+$/, "").padEnd(2, "0");
   }
+  // The cost slot (ADR-0302). With cost_unpriced set, cost_usd sums only the calls that could be
+  // priced: nothing priced reads "unpriced", not a $0.00 that looks free, and some priced reads as
+  // the floor it is.
+  function costText(usage) {
+    const figure = fmtCost(usage.cost_usd || 0);
+    if (!usage.cost_unpriced) return figure;
+    return (usage.cost_usd || 0) > 0 ? "at least " + figure + ", some calls unpriced" : "unpriced";
+  }
   // The prompt's cached share (ADR-0021), with Python's round(): an exact .5 goes to even.
   function cachePercent(cached, prompt) {
     const x = 100 * cached / prompt;
@@ -803,7 +811,7 @@
       tokens += " (" + cachePercent(usage.cache_unsplit_tokens, usage.prompt_tokens) +
         "% cached, read/write unknown)";
     }
-    const parts = [label, iterations + " iterations", tokens, fmtCost(usage.cost_usd || 0)];
+    const parts = [label, iterations + " iterations", tokens, costText(usage)];
     if (seconds !== null) parts.push(fmtDur(seconds));
     return parts.join(" · ");
   }
@@ -820,7 +828,7 @@
     return typeof from === "number" && typeof to === "number" ? Math.max(0, to - from) : null;
   }
   function emptyUsage() {
-    return { total_tokens: 0, cost_usd: 0, prompt_tokens: 0, cache_read_tokens: 0, cache_unsplit_tokens: 0 };
+    return { total_tokens: 0, cost_usd: 0, prompt_tokens: 0, cache_read_tokens: 0, cache_unsplit_tokens: 0, cost_unpriced: false };
   }
 
   function titleCase(name) {
@@ -1290,7 +1298,12 @@
         return;
       case "usage":
         if (ev.usage) {
-          for (const key of Object.keys(turnUsage)) turnUsage[key] += ev.usage[key] || 0;
+          for (const key of Object.keys(turnUsage)) {
+            // The flag is sticky, as the terminal's Usage.__add__ keeps it (ADR-0302).
+            turnUsage[key] = key === "cost_unpriced"
+              ? turnUsage[key] || Boolean(ev.usage[key])
+              : turnUsage[key] + (ev.usage[key] || 0);
+          }
         }
         return;
       case "done":

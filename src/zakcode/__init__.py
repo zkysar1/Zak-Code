@@ -39,6 +39,7 @@ from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.messages import Message
 from zakcode.permissions import PermissionPolicy, PermissionPrompter
 from zakcode.providers.base import Provider, ProviderError, UnknownContextWindow, WindowResolution
+from zakcode.providers.labels import ModelRef
 from zakcode.providers.resolve import AUTO_SENTINEL, ZAKPICK_SENTINEL, ResolvedModel
 from zakcode.providers.routing import DifficultyVerdict
 from zakcode.session.status_file import get_writer as _status_writer
@@ -482,6 +483,8 @@ class Agent:
         # applies). Gate all zakpick behavior on ``self._zakpick`` — default_model is rewritten
         # to the startup model below.
         self._zakpick = False
+        #: The zakpick startup entry's own tool protocol (ADR-0304); None inherits the setting.
+        self._startup_tool_calling_mode: str | None = None
         if not self._provider_injected and self.settings.default_model == AUTO_SENTINEL:
             from zakcode.providers.resolve import resolver_for
 
@@ -491,7 +494,7 @@ class Agent:
             )
             logger.info(
                 "auto model resolution: %s (%s)",
-                self.model_resolution.model,
+                ModelRef(self.model_resolution.model),
                 self.model_resolution.reason,
             )
         elif not self._provider_injected and self.settings.default_model == ZAKPICK_SENTINEL:
@@ -513,7 +516,13 @@ class Agent:
                     "prompt_caching": startup_spec.prompt_caching,
                 }
             )
-            logger.info("zakpick: routing per task category; startup model %s", startup_model)
+            # The entry's tool protocol (ADR-0304) does NOT travel into the copied settings:
+            # an entry that names no mode inherits the global setting, so a copy would hand
+            # the startup entry's mode to every other entry. It is kept for this model alone.
+            self._startup_tool_calling_mode = startup_spec.tool_calling_mode
+            logger.info(
+                "zakpick: routing per task category; startup model %s", ModelRef(startup_model)
+            )
         #: Every effective model's context window and its source (ADR-0066), by label —
         #: filled by ``_assert_context_windows`` for the info panel and the skill-fit check.
         self.context_windows: dict[str, WindowResolution] = {}
@@ -1586,6 +1595,7 @@ class Agent:
         context_window: int | None = None,
         reasoning_effort: str | None = None,
         prompt_caching: bool | None = None,
+        tool_calling_mode: str | None = None,
     ) -> Provider:
         """Build a settings-based provider for ``model`` (litellm wrapped in the text-tool
         protocol) — the same construction used for the default model and for per-role overrides.
@@ -1600,7 +1610,11 @@ class Agent:
         route's own word and REPLACES the settings' value; ``None`` is a caller that has no
         route to speak for (a failover, a role override), and then only the default model
         keeps the settings' switch. Any other model is built with it off: the switch was
-        given for one route, and a different model must not inherit it.
+        given for one route, and a different model must not inherit it. ``tool_calling_mode``
+        (an entry's own mode, ADR-0304) REPLACES the settings' mode for this provider; ``None``
+        is a caller with no route to speak for, and then the default model keeps the mode of
+        the entry the session started on and any other model takes the settings' mode. It
+        goes to the wrapper, its one reader, so it takes no copy of the settings.
         """
         from zakcode.providers.endpoints import model_uses_generic_endpoint
         from zakcode.providers.litellm_provider import LiteLLMProvider
@@ -1652,9 +1666,13 @@ class Agent:
             if extra_body:
                 update["extra_body"] = {**(self.settings.extra_body or {}), **extra_body}
             role_settings = self.settings.model_copy(update=update)
+        if tool_calling_mode is None:
+            tool_calling_mode = (
+                self._startup_tool_calling_mode if model == self.settings.default_model else None
+            ) or self.settings.tool_calling_mode
         return TextToolCallingProvider(
             LiteLLMProvider(role_settings),
-            mode=_resolve_tool_calling_mode(role_settings.tool_calling_mode, model),
+            mode=_resolve_tool_calling_mode(tool_calling_mode, model),
             single_tool_per_turn=True,
         )
 
@@ -1702,6 +1720,7 @@ class Agent:
         context_window: int | None = None,
         reasoning_effort: str | None = None,
         prompt_caching: bool | None = None,
+        tool_calling_mode: str | None = None,
     ) -> Provider:
         """Resolve a per-role model string to a :class:`Provider` (the model-routing seam).
 
@@ -1716,7 +1735,10 @@ class Agent:
         ``context_window`` (the category entry's declared window, ADR-0066),
         ``reasoning_effort`` (the category's reasoning depth, ADR-0182) and ``prompt_caching``
         (the entry's cache-breakpoint switch, ADR-0298) are keyed the same way for the same
-        reason: two categories can name one model and disagree on the switch.
+        reason: two categories can name one model and disagree on the switch. So is
+        ``tool_calling_mode`` (the entry's tool protocol, ADR-0304), and the default model is
+        handed the default provider only in the mode that provider was built in, or with no
+        mode at all.
         """
         if not model or self._provider_injected:
             return self.provider
@@ -1725,6 +1747,8 @@ class Agent:
             and not extra_body
             and reasoning_effort is None
             and prompt_caching in (None, self.settings.prompt_caching)
+            and tool_calling_mode
+            in (None, self._startup_tool_calling_mode or self.settings.tool_calling_mode)
         ):
             return self.provider
         key = model
@@ -1733,10 +1757,11 @@ class Agent:
             or context_window is not None
             or reasoning_effort is not None
             or prompt_caching is not None
+            or tool_calling_mode is not None
         ):
             key = (
                 f"{model}\x00{sorted((extra_body or {}).items())!r}\x00{context_window}"
-                f"\x00{reasoning_effort}\x00{prompt_caching}"
+                f"\x00{reasoning_effort}\x00{prompt_caching}\x00{tool_calling_mode}"
             )
         if key not in self._provider_cache:
             self._provider_cache[key] = self._build_provider(
@@ -1745,6 +1770,7 @@ class Agent:
                 context_window=context_window,
                 reasoning_effort=reasoning_effort,
                 prompt_caching=prompt_caching,
+                tool_calling_mode=tool_calling_mode,
             )
         return self._provider_cache[key]
 
@@ -1777,6 +1803,9 @@ class Agent:
                 context_window=spec.context_window,
                 reasoning_effort=spec.reasoning_effort,
                 prompt_caching=spec.prompt_caching,
+                # An entry that names no mode inherits the setting (ADR-0304), resolved here so
+                # that None below stays the word of a caller with no route to speak for.
+                tool_calling_mode=spec.tool_calling_mode or self.settings.tool_calling_mode,
             ),
             model,
         )

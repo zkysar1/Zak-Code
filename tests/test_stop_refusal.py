@@ -403,8 +403,8 @@ async def test_a_refusal_of_a_stop_we_never_sent_is_surfaced_not_repaired(
 
 @pytest.mark.parametrize("how", HOWS)
 async def test_the_repair_is_spent_once_per_call(monkeypatch: pytest.MonkeyPatch, how: str) -> None:
-    """A gateway that refuses the re-issued request too is reported as is. The mechanism never
-    loops."""
+    """A gateway that refuses the re-issued request too, for a stop it was no longer sent, is
+    reported as is: that refusal teaches nothing, so it is not repaired (ADR-0303)."""
     gateway = StopGateway(always_refuse=True)
     monkeypatch.setattr(lp.litellm, "acompletion", gateway)
 

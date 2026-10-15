@@ -771,6 +771,11 @@ NOT deterministic — local validation plus the bounded repair retries are what 
 reliable. The no-knobs contract is intact: this is provider-capability normalisation at the
 provider layer, not a vendor special case leaking into the loop.
 
+**Amended by ADR-0308 (2026-10-15):** the cap a call is sent, this one or a caller's, is held
+to the room the window leaves the prompt, never under 1,024, because a route that adds the
+requested output to the prompt refuses the sum, and the compaction threshold leaves the
+prompt only 4,096 of answer room on an alias with no declared output cap.
+
 ## ADR-0019 — A missing optional capability is an executable remedy, not an absence; web egress carries privacy floors
 
 - **Status:** Accepted (shipped, 2026-08-26).
@@ -2265,6 +2270,11 @@ thinking off, one-shot, after prior text, thought-then-stopped and length-only s
 plain silence unchanged, consecutive budget, consecutive overflows still give up, default
 astream forwards thinking) and tests/test_local_only.py (a per-call body merges over the
 instance body).
+
+**Amended by ADR-0307 (2026-10-15):** the retry also asks for twice the output cap where the
+model's declared cap and the window leave room, because a route that ignores the switch
+otherwise retries with the room it just exhausted, and a refusal of the retry's switch or cap
+that names neither drops one and re-issues the call. Thinking off stays the first remedy.
 
 ## ADR-0057: A stuck model gets investigative steps, not advice — decompose-on-stuck
 
@@ -18409,6 +18419,953 @@ and the working folder. Three mutations were each run green, red, green (2026-10
 tests red, the in-process working folder dropped turned 2, and the `pushd` line dropped turned 1. The end to end, run
 locally on uv 0.12.5, stopped at the reinstall with `File not found` before the change and passes after it. `uv run poe
 check` is green: 5,778 passed, 22 skipped.
+
+## ADR-0302: a cost that could not be priced reads `unpriced`, and a total with some unpriced calls reads as a floor, in the footer, `/cost` and the web page
+
+**Status:** Accepted (2026-10-14)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that the
+cost footer prints `$0.00` for calls Zak Code already knows it could not price. On that gateway a streamed call carries no
+cost (the final usage has token fields only, and the stream's hidden params and headers carry no response cost) and
+litellm's price map has no entry for most of its aliases, so the provider returns `cost_usd=0.0` with `cost_unpriced=True`,
+while a buffered call is priced from the gateway's own figure. `Usage.__add__` keeps the flag sticky and the budget honours
+it (`budget_unpriced`), but every display read `cost_usd` alone: the turn footer, the `/cost` total and its per-model rows,
+and the web page's footer. A 40k to 110k token run ended with `$0.00`, and where budgets exist zero reads as free.
+
+**Decision.**
+
+* One rule, `cost_text(usage, figure)` in `cli/render.py`, decides what a display shows in place of the figure it was
+  handed: the figure when `cost_unpriced` is not set; `unpriced` when it is set and nothing was priced (`cost_usd` is 0);
+  and `at least <figure>, some calls unpriced` when it is set and some calls were priced, which is the case when sub-agents
+  run buffered and are priced by the gateway while the main turn streams and is not. Each display keeps its own figure
+  format (the footer's trimmed one, `/cost`'s four places), and the rule wraps it.
+* The footer, the `/cost` total and each per-model row go through it. The web page's footer mirrors it as `costText`
+  beside `fmtCost`, inside the block the parity test checks against the terminal.
+* The page's own sum of a turn's usage frames keeps `cost_unpriced` the way `Usage.__add__` does. The server sends no
+  done frame after a cancel, so the page draws a cancelled turn's footer from that sum, and it summed five numeric fields
+  only: a cancelled turn on such a route would still have read `$0.00`. The terminal's footer already falls back to a
+  `Usage` sum.
+* No rate is guessed for the unpriced calls, for the reason the provider gives where it declines to: a guessed price
+  printed as a cost is a fabricated measurement.
+* `docs/CONFIG.md` says, at `ZAKCODE_MAX_COST_USD`, that with a ceiling set an unpriced call stops the turn with
+  `budget_unpriced`, by design, since the ceiling cannot be enforced.
+
+Rejected: printing `$0.00 (unpriced)`, which keeps the zero that reads as free in front of the word that corrects it; and
+counting priced and unpriced calls to tell "some priced at nothing" from "none priced", because a priced call that costs
+exactly nothing beside an unpriced one reads `unpriced` either way and neither word claims a spend. Not done, as the report
+allows: a user-declared price per zakpick entry, which would let the ceiling work on gateway aliases with a number the user
+supplies. It is a separate change with its own contract.
+
+Not verified: a live gateway. The three states are built from `Usage` records as the provider produces them; that a
+streamed call on the reported gateway arrives with `cost_unpriced=True` is the report's own measurement. The server's
+JSON is not changed: every done frame and every `POST /chat` reply carries `usage.cost_unpriced` beside `usage.cost_usd`
+(measured through `event_to_dict` and `ChatResponse`), while the reply's top-level `cost_usd` stays the bare figure, so a
+client that reads that field alone still sees `0.0`. The log line of a turn its budget stopped prints the bare figure too;
+it is a log record, not a display, and is unchanged.
+
+**Consequences.** A session on a gateway alias that streams now ends with `unpriced` where it ended with `$0.00`, and a
+session where only sub-agents were priced ends with `at least $x, some calls unpriced`. A priced session reads exactly as
+before, on every display.
+
+The proof. `tests/test_render.py`: the footer for a priced turn (the figure, no `unpriced`), a turn with nothing priced
+(`unpriced`, no `$0.00`) and a mixed one (`at least $0.0252, some calls unpriced`). `tests/test_cli_chat.py`: `/cost` for
+the same three states, each with two models, so the total and both per-model rows are read; the mixed case has one model
+with a priced and an unpriced call and one with an unpriced call only, so one row is a floor and the other `unpriced`.
+`tests/test_webclient_parity.py`: the whole footer line, terminal against page, now also for a turn with nothing priced
+and a mixed one. `tests/test_webclient_turn_clock.py`: a cancelled turn's footer, drawn by the page's own script under
+node from the usage frames it summed, for two priced calls (`$0.0426`), two unpriced ones (`unpriced`) and one of each
+(`at least $0.0213, some calls unpriced`). Against the pre-change source, 4 of the 6 new terminal tests fail (the priced
+cases pass, as controls), the cancelled-turn test fails reading `$0.00`, and the parity test fails once the terminal is
+changed and the page is not. Five mutations were each run green, red, green (2026-10-14 and 2026-10-15): the flag
+ignored turned 5 tests red, the mixed case reported as `unpriced` 3, the per-model rows left on the bare figure 2, the
+page left on the bare figure 1, and the page's sum dropping the flag 1. `uv run poe check` is green: 5,785 passed, 22
+skipped.
+
+## ADR-0303: a refused `temperature` is learned like a refused stop, a refusal of tool use moves the session to the text protocol, and one call is repaired once per refusal it learns from, at most three times
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that a
+route which refuses `temperature` or tool use ends the turn, where one that refuses `stop` now recovers (ADR-0296). The
+gateway relays two more 400s in Bedrock's own words:
+
+* `This model doesn't support the temperature field. Remove temperature and try again.`
+* `This model doesn't support tool use.`
+
+Against main, `acomplete` on a route that answers either sentence raised `RequestFailed` on every call: one request per
+call, nothing learned, nothing re-issued. A temperature reaches the wire whenever `ZAKCODE_TEMPERATURE` is set, and from
+the side calls that pass `temperature=0.0` per call. ADR-0181's repair offers `_refuse_rejected_field` only the keys of
+`extra_body` and the rendered thinking switch, and leaves `tools` alone on purpose, while
+`TextToolCallingProvider._use_text_mode` chooses the protocol from static capabilities only, so nothing a route said
+could move it to the text protocol. And ADR-0296 repaired one refusal per call, so a route that refused `stop` and then
+`temperature` lost the call at the second refusal, though each was repairable alone.
+
+**Decision.**
+
+* `providers/base.py` reads the two sentences: `temperature_field_unsupported(text)` and `tool_use_unsupported(text)`,
+  each with `doesn't`, `doesn’t` or `does not`, bare, behind litellm's prefix or inside a JSON body.
+* `LiteLLMProvider._refuse_temperature` learns from a 4xx in the first wording that answers a call which carried a
+  `temperature`, a 0.0 included: `temperature` joins `rejected_request_fields` and the call is re-issued.
+  `_build_kwargs` leaves it out of every later request, after `call_kwargs.update(kw)`, so the configured value and a
+  side call's 0.0 are left out alike and the backend's own default applies, as it does when none is configured.
+* Tool use is not a field to strip, because the call needs its tools. A 4xx in the second wording that answers a call
+  which carried `tools` is raised as `ToolUseRefused`, a `RequestFailed`, from both call paths: at once on the buffered
+  one, before the first chunk on the streamed one. `TextToolCallingProvider` catches it on its native path, in `native`
+  and `auto` mode alike, latches the refusal for the instance with one WARNING, and answers the call through the text
+  protocol, which carries the tools in the prompt; `_use_text_mode` then sends every later call with tools that way. A
+  refusal raised after the stream's first event is a real failure and is raised as it is. Without the wrapper,
+  `ToolUseRefused` is the `RequestFailed` it always was.
+* The buffered call goes on through the text protocol in place: its native attempt is skipped in text mode and falls
+  through to the text body on a refusal, so the re-issue cannot be sent native again whatever the mode check says. The
+  streamed call is answered from `acomplete`, which makes at most one native attempt. The first version re-dispatched
+  through the wrapper itself, and a mutation that took the latch out of the mode check made it call itself on every
+  refusal: that run took 11 minutes, where each of the others took about 15 seconds. Every call to the inner provider
+  stays inside the wrapper's own `acomplete` and `astream`, which is what ADR-0276's scan of provider calls allows: a
+  second version that moved them into helpers failed that scan.
+* One call is repaired once per refusal it learns from, up to `_MAX_REQUEST_REPAIRS = 3` re-issues, on both paths, where
+  ADR-0296 allowed one: a stop, a temperature and a field ADR-0181 learns can each be refused on one call and the call
+  still answered. The wrapper's switch to the text protocol is not one of the three: it is a new call to the provider,
+  whose count starts again.
+* What keeps the bound from being a retry count is each learner's own gate: once a refusal is learned, the re-issued
+  request no longer carries what was refused, so the same sentence again teaches nothing and is reported as it is.
+  ADR-0296's stop-length learner lacked that gate. It learned any limit from a call that sent any stop, so with three
+  repairs a route that quoted the same limit again was sent the request it had just refused, twice more (measured: four
+  requests where two are right). `_refuse_stop` now learns a limit only when a sequence the call carried reaches it. A
+  stricter limit still tightens what was learned, and a looser one that answers a call sent before the stricter one was
+  learned is still repaired, through the filter, as ADR-0296 has it.
+* `docs/CONFIG.md` says both, at the `temperature` and `tool_calling_mode` rows.
+
+Stated choices. The latch overrides `native` mode. A route that says it takes no tools cannot be served natively, and the
+text protocol is the one way the call keeps its tools; the WARNING names the switch. Failing the turn in `native` mode
+instead can be built, and I am choosing not to: the report's own setup sets `native` for every route behind one endpoint
+and asks for exactly this recovery. The owner asking for a strict `native` would change it. The bound is a constant, not a
+knob, under the standing rule of one contract, no knobs: three is the number of distinct refusals measured on one route.
+The tool refusal is handled in the wrapper because the wrapper owns the text protocol; the provider only reports what it
+was told.
+
+Rejected: stripping `tools` and re-issuing, which answers a different question; choosing the protocol or the fields by
+model name, a list that needs an owner, as ADR-0296 says; folding the two wordings into ADR-0181's patterns, since neither
+names a field the way those do and tool use is not a field; and having `LiteLLMProvider` switch protocols itself, which
+would put the text protocol in two places.
+
+Not verified: a live gateway. The two sentences are the report's, byte for byte. The gateway that answers them in the
+tests is scripted from the wording, and its order of refusals (tools, then stop, then temperature, one per request) is
+scripted from the report, not captured; with one refusal learned per request the bound covers any order of the three.
+The wire tests send both sentences through litellm's own HTTP client, so what the provider reads is the exception litellm
+raises. That a model behind such a route does good agent work through the text protocol is not claimed.
+
+**Consequences.** A route that refuses `temperature` costs one re-issued call the first time and none after; the side
+calls' 0.0 no longer reaches it, so on that route they sample at the backend's default. A route that refuses tool use
+costs one re-issued call, then the session talks the text protocol, which sends the stop list: a route that refuses
+tools, stop and temperature wastes three requests on the first call and none after. What was learned lives on the
+provider and wrapper instances and is not kept across processes, so a new instance asks for native tools again. This
+amends the one re-issue per call of ADR-0181 and ADR-0296, and ADR-0296's stop-length learner, as above. ADR-0181's test
+of the old rule, `test_the_repair_is_spent_once_per_call`, refused two different fields in one call and required the
+second to be reported; it is now two tests in `tests/test_provider_field_rejection.py`: another field refused in the same
+call is learned too, and the same refusal again is reported as it is.
+
+The proof. `tests/test_temperature_tools_refusal.py` (50 tests) reads both sentences verbatim, bare, behind litellm's
+prefix and as JSON, with both apostrophes and `does not`, and reads neither in the stop sentences and other complaints.
+For temperature, through `acomplete` and `astream` each: an ordinary route gets the temperature it was given; a refusing
+one is asked once more without it, and not asked again; a side call's 0.0 is learned the same way; a refusal of a
+temperature that was never sent and a 5xx quoting the sentence are surfaced. For the repair: a call carrying a stop and a
+temperature to a route that refuses both completes in three requests; a route that teaches something new on every
+request is given four, and the fourth refusal is reported; a repeated limit that teaches nothing is reported after the
+one repair it taught. For tool use, buffered and streamed, in `native` and in `auto`: the call is answered through the
+text protocol (the re-issued request carries no `tools`, the protocol in its system prompt and the text protocol's stop
+list) and its call is parsed; the protocol is kept for the session; a new instance asks for native tools again; a refusal
+of a call that sent no tools is surfaced as the plain failure it was; and a route that refuses tools, stop and
+temperature answers with one wasted request per refusal, and the next call wastes none. The real agent loop, buffered and
+streamed, goes on past its first iteration with three requests, of which only the first carries `tools`. Both sentences
+are also sent through litellm's own HTTP client. Against main, 41 of the 50 fail; the loop's failure is a
+`provider_error` on `This model doesn't support tool use.`, the report's symptom. The 9 that pass are the ordinary-route
+control and the never-sent guard on both paths, the 5xx guard, the two tests that show what litellm raises, and the
+repeated limit on both paths, which main's single repair already meets: that test guards the raised bound. In
+`tests/test_provider_field_rejection.py`, another field refused in the same call being learned too fails against main,
+and the same refusal again being reported passes there, as the guard that the mechanism never loops. Fourteen mutations
+were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the learned temperature never
+left out turned 11 red; the temperature sentence never read, 11; the temperature's "we sent one" gate removed, 2; a
+temperature of 0.0 read as none sent, 2; the bound back to one repair, 6; a fourth repair allowed, 2; the buffered tool
+refusal not raised as such, 7; the streamed one, 5; the "we sent tools" gate removed, 2; the latch left out of the mode
+check, 8; the streamed fallback taking the refusal for one after the first event, 5; the tool-use sentence never read,
+18; a stop limit that nothing sent reaches learned again, 2; and the wrapper re-raising a buffered refusal instead of
+answering it, 7. Two earlier batches ran against the earlier versions above; the first was also spoiled by a test added
+while it ran. `uv run poe check` is green: 5,836 passed, 22 skipped.
+
+## ADR-0304: a zakpick entry may name its own `tool_calling_mode`, an entry that names none inherits the setting, and a call with no route keeps the startup entry's mode on the startup model
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that one
+route accepts `tools` and drops them: it answers HTTP 200 with no tool call and a reply saying it has no such tool, with
+the gateway's fallbacks on or off, so there is no refusal to learn from (ADR-0303 learns from a refusal). The same route
+refuses `stop`, so it needs the text protocol together with ADR-0296. The report counts twelve other routes behind the
+same endpoint that do native tools genuinely. `tool_calling_mode` was global: `_build_provider` read it from `Settings`
+for every provider, and `auto` sends an unmapped `openai/<alias>` its tools natively, so one zakpick could not hold that
+route beside a native one. Against main, an entry that names a mode is accepted and the field dropped without a word:
+`ZakpickModel` has no such attribute, and every provider is built in the global mode.
+
+**Decision.**
+
+* `ZakpickModel` takes an optional `tool_calling_mode`, `auto`, `native` or `text`, read without regard to case or
+  surrounding space; anything else is refused at load, naming the three. `None`, the default, inherits
+  `Settings.tool_calling_mode`.
+* `_resolve_task_provider` passes the entry's mode to `_provider_for`, and the setting's when the entry names none, so a
+  category's call always carries a mode.
+* `_provider_for` keys its provider cache on the mode, and hands the default model the startup provider only in the mode
+  that provider was built in, or with no mode at all. Two categories that name one model in two modes get two providers;
+  in one mode, one.
+* `_build_provider` gives the mode to the wrapper, its one reader: `LiteLLMProvider` does not read it. `None` is a caller
+  with no route to speak for, a failover or a role override, as it is for the caching switch (ADR-0298): the default
+  model is then built in the startup entry's mode, and any other model in the setting's.
+* The startup entry's mode is kept on the agent. It is not copied into the settings copy that carries that entry's window
+  and caching switch (ADR-0066, ADR-0298), because that copy is what an entry naming no mode would inherit from.
+* `docs/CONFIG.md` says so at the `zakpick_models` and `tool_calling_mode` rows.
+
+Stated choices. The mode takes no copy of the settings, where the report placed it in `_build_provider`'s shortcut and
+settings update as well. Nothing but the wrapper reads it, so a settings copy per mode would build the same provider
+through a second object and change the shortcut's condition for nothing; I am choosing the narrower change. A call with
+no mode keeps the startup entry's mode on the startup model, because the entry's word is about that model's route: a
+failover onto a route that drops tools would otherwise send it tools natively again. On any other model it takes the
+setting's, even where some entry names that model in another mode, because a failover is not an entry; looking an entry
+up by its model would be a separate change.
+
+Rejected: copying the startup entry's mode into the settings, which hands the mode of whichever category the session
+started on to every entry that names none; choosing the protocol by model name, a list that needs an owner, as ADR-0296
+says; and learning the drop from the route's reply, which is the model's own prose and not a refusal, so no wording of it
+is a contract.
+
+Not verified: a live gateway. The tests build the providers and read their modes, and nothing is sent. That the route
+drops its tools is the report's measurement, and that a model behind it does good agent work through the text protocol is
+not claimed.
+
+**Consequences.** A zakpick can hold a route that drops tools beside native ones: its entry says `text`, and only that
+entry's calls go through the text protocol. An entry that names no mode is built as before. One model named in two modes
+is built twice, once per mode. A failover onto the startup model keeps that entry's mode; onto any other model it takes
+the setting's, as before.
+
+The proof. `tests/test_zakpick_tool_mode.py` (13 tests): an entry takes `text`, `Native` and ` auto ` as `text`, `native`
+and `auto`, names none unless told, and is refused at load for an unknown mode; two entries in different modes get
+providers in those modes, and the startup provider is built in its entry's; one model in two modes gets two providers,
+and in one mode the one startup provider; the same for a model the session did not start on, where the cache keeps them
+apart; a call with no route is handed the startup provider, in its entry's mode; a mode alone keys the cache; an entry
+without the field inherits the setting; the startup entry's mode is not inherited by an entry that names none, on the
+startup model or another; and an entry's `auto` is resolved for its own model, so a local Ollama model is answered
+through the text protocol. Against main, 12 of the 13 fail: four because the entry has no such field, one because an
+unknown mode is not refused, six because every provider comes out in the global mode, and one because the seam takes no
+mode. The one that passes is an entry without the field inheriting the setting, the control. Fourteen mutations were each
+run green, red, green (2026-10-15), with the red tests counted from the verdict: the shortcut ignoring the mode turned 3
+red; the shortcut comparing with the setting's mode only, 3; the cache key leaving the mode out, 2; a mode alone not
+keying the cache, 1; a call with no mode taking the setting's on the startup model too, 4; the startup entry's mode never
+recorded, 5; that mode copied into the settings, 1; an entry that names none passed on as a call with no route, 1; the
+entry's mode never passed, 5; the wrapper built in the setting's mode, 7; the seam dropping the mode before the build, 6;
+the mode not normalised, 2; an unknown mode accepted, 1; and an entry naming `auto` unless told, 3. A hand-built agent in
+`tests/test_local_only.py`, which sets each attribute the seam reads, now sets this one too. `uv run poe check` is green:
+5,849 passed, 22 skipped.
+
+## ADR-0305: a gateway's fallback to another model is one warning per pair naming both, on the buffered and the streamed path, read from the gateway's own headers
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+the gateway can answer at HTTP 200 with a model other than the one asked for: a route asked for with native tools was
+answered by another route, with a valid tool call, and a route asked for with `temperature` by a sibling. On the
+buffered path the only trace was ADR-0214's INFO line on the first sight of a name, and nothing reads `served_model` but
+that line. On the streamed path, the one the loop uses, there was none: litellm stamps the requested model on every
+chunk it builds, as ADR-0214 measured and the report measured again, so the answerer's name never reaches `chunk.model`.
+The report's reason is provenance: the model that is logged, billed and shown is not the model that wrote the code, and
+`auto` tool mode decides from static flags, so a fallback's answer reads as native tool support. No earlier branch or
+pull request handles this: no ref is named for one, and no pull request or commit mentions these headers or
+`disable_fallbacks`.
+
+The gateway says so itself. The report measured, on a stream, that the object `await litellm.acompletion(...)` returns
+carries `_hidden_params['additional_headers']` before the first chunk, with `llm_provider-x-litellm-attempted-fallbacks`
+at `1`, `llm_provider-x-litellm-model-group` naming the model group that answered and
+`llm_provider-x-litellm-model-name` the deployment behind it; the count reads `0` on a normal answer, and other
+providers send no such keys. Measured here on 2026-10-15, with litellm 1.86.2 and a loopback server that sends those
+three headers: litellm keeps them, under that prefix, on a buffered response and on the stream wrapper before its first
+chunk; the buffered response's `model` reads the server's name; and both streamed chunks read the requested one, though
+the server's chunks named the other.
+
+**Decision.**
+
+* Both paths read the three headers off the response litellm returns: the buffered path once the response is read, the
+  streamed path before its first chunk. When the attempted count is above 0, the provider warns, naming the model asked
+  for, the model group that answered and the deployment behind it:
+  `openai/route-a: the gateway answered with route-b (vendor/route-b-1) instead, after 1 attempted fallback(s)`. With no
+  group it names the deployment, and with neither it says "a model it did not name".
+* One warning per pair of asked and answered model, per provider, as ADR-0214 spends one INFO line per answerer: the
+  provider keeps the pairs it has warned of. A second answerer is warned of in its turn.
+* A count of 0, an unreadable count, no count and no headers at all are no fallback, and nothing is printed. A backend
+  that sends none of these headers is left as it was.
+* The CLI prints zakcode's WARNING records (`cli/logsink.py`), so the warning reaches the terminal.
+* `docs/CONFIG.md` documents `ZAKCODE_EXTRA_BODY={"disable_fallbacks": true}` at the `extra_body` row, as opt-in.
+  `served_model`'s docstring says a fallback is warned on both paths.
+
+Stated choices. The buffered trigger is the gateway's header, where the report asked for the served name differing from
+the request. ADR-0214 records that names differ in ordinary calls: `openai/x` against `x` is the ordinary shape of a
+correct call, and a self-hosted server answers an alias with the weights it maps to and echoes the weights file's name.
+It chose first sighting over a mismatch rule for that reason, and a warning on a mismatch would call each of them a
+fallback, while the header is there on this path too. ADR-0214's INFO line is unchanged. The answerer is recorded in the
+warning and in the provider's set of pairs, not in a new field: `served_model` has no reader but its INFO line, and a
+field on `StreamDone` would be a second fact nothing reads. ADR-0214 declined a self-hosted pod's own response header as
+one fleet's convention. These headers are the LiteLLM proxy's, which litellm, the library this provider is built on,
+keeps for its callers under its own prefix, and reading them where they are absent does nothing. `disable_fallbacks` is
+documented and never sent: it is opt-in because, by the report, a gateway as old as 1.61 refuses a body field it does
+not know. That is the report's claim and is not measured here.
+
+Rejected: a warning on every fallback call, which costs a line per call on a gateway that keeps falling back; sending
+`disable_fallbacks` by default, which the report says an older gateway refuses; and reading the answerer from the
+stream's own body, which litellm's stream wrapper overwrites before any caller sees it.
+
+Not verified: a live gateway. The header names and values are the report's measurement and litellm's own; the tests send
+them from a stand-in. That a fallback's answer is worse than the asked model's is not claimed: the warning says which
+model answered, and nothing more.
+
+**Consequences.** A gateway's fallback is a warning naming both models, once per pair, on both paths. A backend that
+sends none of these headers is unchanged, and so are ADR-0214's INFO line and `served_model`.
+
+The proof. `tests/test_gateway_fallback.py` (20 tests): a buffered fallback is one warning naming both models and the
+deployment, word for word; the same pair again is silent and a second answerer is warned of; an answerer with no group
+is named by its deployment, and one with neither as a model it did not name; a streamed fallback is warned of before the
+first chunk is read, and once; no warning for a count of 0, no count, an unreadable count, no gateway headers or no
+headers at all, on each path; a served name that differs with no fallback header is ADR-0214's INFO line and no warning;
+and the headers sent through litellm's own HTTP client, at counts 1 and 0, on each path. Against main, 7 of the 20 fail:
+every fallback case, buffered, streamed and through the client. The 13 that pass are the controls. Twelve mutations were
+each run green, red, green (2026-10-15), with the red tests counted from the verdict: the buffered path never reading
+the headers turned 5 red; the streamed path never reading them, 2; a count of 0 read as a fallback, 8; every call
+warning again, 1; one warning per asked model whoever answered, 1; the deployment named in place of the group, 1; the
+headers looked for in the wrong dictionary, 7; a missing count read as a fallback, 4; the header looked for without
+litellm's prefix, 7; the deployment left out of the warning, 1; a served name that differs warned as a fallback, 3; and
+the streamed warning moved after the first chunk, 1. `uv run poe check` is green: 5,869 passed, 22 skipped.
+
+## ADR-0306: a `Timeout` that carries a 504 is named as the ingress's, and a web page in a provider error reads as its words
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+the ingress in front of the gateway cuts a long buffered call at exactly 120 s with an HTML "504 Gateway Time-out" page,
+with no JSON and no gateway headers. litellm raises its `Timeout` for it, and `_map_error` returned `TimedOut` with the
+default bound, so the loop's retry notice read `request timed out (ZAKCODE_REQUEST_TIMEOUT)`, naming a client ceiling
+that defaults to 600 s and had not expired, and the page's HTML reached `TurnResult.error` verbatim. By the report, only
+buffered callers meet it: sub-agents, the server's buffered calls, classify, judge, structured output and the side
+calls. The interactive CLI streams.
+
+Measured here on 2026-10-15, with litellm 1.86.2 and a loopback server that answers with that page: litellm raises
+`Timeout` carrying `status_code` 504 and the page in its message. Through the provider one request goes out, and the
+`TimedOut` names `ZAKCODE_REQUEST_TIMEOUT` with the page in its text. A client-side read timeout reaches the provider as
+litellm's `Timeout` with its default status, 408, on both paths.
+
+**Decision.**
+
+* A `Timeout` that carries a 504 becomes `TimedOut` with `bound="gateway ingress 504"`, so the notice reads
+  `request timed out (gateway ingress 504)`. It is retried as any `TimedOut` is, at most three times. A client timeout
+  keeps `ZAKCODE_REQUEST_TIMEOUT`.
+* A web page in any provider error's message is reduced to its words before the message is classified or shown: the
+  body's text, without scripts or styles and with entities decoded, or the title's when the body has none. The text
+  before the page stays. A message with no page is left as it is, angle brackets and all.
+* `TimedOut`'s docstring names the new bound, and `docs/CONFIG.md` says at the `request_timeout` row that raising that
+  ceiling does not help with an ingress's 504.
+
+Stated choices. The arm keys on litellm's `Timeout` carrying the status, where the report asked for an arm for a 504 or
+an HTML body. A 504 under another class, which another backend may send, stays `ProviderUnavailable`: ADR-0224 retries
+an outage under the 900 s horizon because a restart takes longer than the three fixed attempts `TimedOut` gets, and
+`tests/test_provider.py` pins a 504 that way. This change does not reopen that. An HTML body alone is not a timeout
+either: an ingress answers a 502, a 413 or a 403 with a page too, so for any other status only the markup goes and the
+class stays what it was. The long buffered callers are not moved to `astream`, which the report offered as worth
+considering: it changes the transport of six callers, each with its own handling of the result, and is a change of its
+own. Until then, each retry of a call that the ingress cuts at 120 s costs another 120 s, at most three times.
+
+Rejected: mapping any 504 to `TimedOut`, which moves a 5xx outage onto the shorter bound ADR-0224 turned down; taking
+any message with a web page in it for a timeout; and stripping every angle bracket, which would remove a `<tool_call>`
+quoted in a refusal.
+
+Not verified: a live ingress. The page is the report's and the status litellm's; the tests send them from a stand-in.
+
+**Consequences.** An ingress's 504 is named as one in the retry notice, and the turn's error reads
+`... OpenAIException - 504 Gateway Time-out`. Any provider error that carries a web page reads as the page's words. A
+client timeout, and a 504 under an outage class, are handled as before.
+
+The proof. `tests/test_ingress_504.py` (18 tests): an HTML 504 under `Timeout` is the ingress's timeout with the page's
+text, word for word; a `Timeout` or `APITimeoutError` carrying a 504 names the ingress with no page; a 504 under
+`InternalServerError` or `APIError` stays an outage and loses its tags; a client timeout with no status or 408 keeps the
+client ceiling; a 502 and a 403 page keep their classes and lose their tags; a title-only page reads as its title; a
+page's script, style and entities do not reach the text; a message with a `<tool_call>` and no page is left alone; the
+ingress's page through litellm's own HTTP client is the ingress's timeout on each path, and a client read timeout
+through it keeps the client ceiling on each path; a buffered turn that the ingress cuts once recovers, with the notice
+naming the ingress; and a turn it keeps cutting ends with the page's text and no tags. Against main, 13 of the 18 fail:
+every case that an ingress's 504 or a page decides. The 5 that pass are the controls: a client timeout with no status or
+408, a client read timeout through litellm's client on each path, and a `<tool_call>` in a message with no page. Eleven
+mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the page left in
+the message turned 10 red; a `Timeout` carrying a 504 named as the client ceiling, 6; a 504 under an outage class taken
+for the ingress, 3, one of them ADR-0224's own test in `tests/test_provider.py`; the ingress arm keeping the default
+bound, 6; a client timeout's 408 taken for the ingress, 3; any angle bracket taken for a page, 1; the head's title kept
+beside the body, 8; no title when the body has no words, 1; scripts and styles kept, 1; entities left escaped, 1; and
+the text before the page dropped, 7. `uv run poe check` is green: 5,887 passed, 22 skipped.
+
+**Amended by ADR-0312 (2026-10-15):** the page's words are redacted again once they are decoded, so a credential
+assignment written with entities in the page is redacted.
+
+## ADR-0307: a reasoning-overflow retry asks for twice the output cap where the model and the window leave room, a refusal of its overrides that names neither drops one and re-issues the call, and a give-up after overflows names the output cap
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that
+every call asks for the 8,192-token output cap of ADR-0018, and that `Settings.max_tokens` is a cumulative budget, not
+that cap. On Bedrock a reasoning model's thinking counts against the cap, so a hard turn can end `finish_reason=length`
+with nothing visible. The reasoning-overflow rail (ADR-0056) then re-issues the call with thinking off, in llama.cpp's
+spelling, `chat_template_kwargs`. By the report, measured on six routes with fallbacks off: three took the switch with
+HTTP 200 and showed no sign of it doing anything, one of them still producing 45 reasoning tokens with it off; two
+refused it by name, which ADR-0181 learns and drops; and one refused it naming nothing, "The model returned the
+following errors: Validation Error", which cannot be learned, so that retry failed as `RequestFailed` and ended the
+turn. A route that always overflows cost three 8,192-token calls, 24,576 billed output tokens, and then the give-up read
+"the model went silent".
+
+Read here on 2026-10-15: `_call_provider` passed the retry only its `extra_body`, so the retry asked for the same cap as
+the call that overflowed, and where the switch is ignored it had exactly that call's room. A 4xx that names nothing
+reaches the loop as the generic `RequestFailed`, and the loop's provider-error branch ended the turn on it. The give-up
+note was the same words whatever the empty completions had been.
+
+**Decision.**
+
+* An overflow retry asks for 16,384 output tokens, twice the default, for that one call. The model's declared output cap
+  holds it lower, and so does the window: the room left after the prompt, counted as the compaction check counts it
+  (ADR-0077), less that count's 5% margin (ADR-0240). When that leaves no more than 8,192 the retry keeps the default. A
+  second overflow retry asks for the same 16,384, never twice it again. The trace notes the cap each raised retry asks
+  for (`overflow_output_cap`). Both paths, buffered and streamed.
+* A refusal of an overflow retry that names nothing, the generic `RequestFailed`, drops one of the retry's overrides and
+  re-issues the call: the thinking switch first, then the raised cap. The request without them was taken a call earlier.
+  With both gone, a refusal ends the turn as before, and any other failure of the retry is handled as before. The trace
+  notes each drop with the refusal's text (`overflow_retry_refused`), and the streamed path says it in a status line.
+* A give-up after reasoning overflows says so. When the last completion ended on the output cap, the note reads "output
+  cap exhausted by reasoning — repeated overflows, no answer" and the streamed status "stopping: reasoning exhausted the
+  output cap (no answer)". When the model reasoned and stopped on its own, both say it reasoned without answering. Plain
+  silence keeps "the model went silent".
+
+Stated choices. Thinking off stays the first remedy: on a self-hosted server it is the measured, working spelling
+(ADR-0181), and a cap is a ceiling, so a retry that answers early is billed no more for the raise. ADR-0056 turned down
+a bigger budget on this path because a 32k retry on the pod's 27B model takes tens of minutes. This one doubles to
+16,384, and on the pod, where the switch is honored, only a retry that still overflows spends it: up to 16,384 tokens
+instead of 8,192, the price of room on a route that ignores the switch. The cap doubles once, as the report asked, and a
+call that reasons past 16,384 tokens has run away, the judgement ADR-0275 makes of a summary at 32,768. The window bound
+uses the loop's anchored count, not the provider's estimate, so the retry trusts the count the compaction check trusts.
+A refusal that names nothing is not learned for the session: nothing in it says which override it refused, so each
+overflow retry tries the switch again, at the cost of one refused request. The switch goes first because it is the
+override the report measured refused. The cap goes second because a route may hold a lower output limit than 16,384 and
+say so in words this does not read.
+
+Rejected: dropping both overrides at the first refusal that names nothing, which leaves the measured route, the one that
+refuses the switch, no more room than the call that overflowed; and learning such a refusal for the session, which would
+make a guess about one call a standing state.
+
+Not verified: a live route. The refusal's words and the shapes are the report's; the tests send them from a stand-in.
+
+**Consequences.** A hard turn on a route whose thinking counts against the cap gets twice the room on its retry, and the
+route that refuses the switch naming nothing answers instead of ending the turn. A route that always overflows now costs
+up to 8,192 + 16,384 + 16,384 = 40,960 output tokens before the give-up, which names the output cap. ADR-0056's "Why
+thinking off, not a bigger budget" is amended for the retry's cap only. A route that refuses the raised call for its
+window because the count was wrong is compacted and retried as any overflow is (ADR-0083).
+
+The proof. `tests/test_overflow_retry_cap.py` (21 tests). On a route that always overflows, the first call is sent the
+default and each retry twice it, on each path; a retry with the room it needed answers; the raise is for that one call;
+a declared output cap of 12,000 holds it to 12,000; a declared cap of 8,192 leaves the retry at the default; a
+32,768-token window with an 18,000-token prompt holds it to 13,130, and one with 24,000 leaves it at the default. The
+give-up names the output cap and reasoning on each path, a give-up after reasoning that stopped on its own does not name
+the cap, and plain silence still reads as silence. A refusal of the switch that names nothing does not end the turn, on
+each path, and the retry goes on with its raised cap; a route that refuses the raised cap too gets the plain call; a
+refused call with nothing of the retry on it still ends the turn; and an auth failure of the retry is not taken for a
+refusal. On the wire, through the provider and a faked `litellm.acompletion`, buffered and streamed: the route is sent
+8,192 and then 16,384 twice, and a refusal of the switch that names nothing is re-issued without the switch and at
+16,384, with nothing learned. Against main, 16 of the 21 fail: every case the raise, the wording or the refusal decides.
+The 5 that pass are the controls: a declared cap of 8,192 and a window with no room past the default, plain silence, a
+refused call with nothing of the retry on it, and an auth failure of the retry. Eighteen mutations were each run green,
+red, green (2026-10-15), with the red tests counted from the verdict: the buffered retry asking for no more turned 9
+red; the streamed retry, 4; the declared output cap ignored, 2; the window ignored, 2; the count's margin ignored, 2; a
+room no higher than the default sent anyway, 2; every buffered call raised, not only the retry, 12; the buffered refusal
+ending the turn, 3; the streamed one, 2; any failure of the retry taken for a refusal, 1; the raised cap dropped before
+the switch, 5; both overrides dropped at once, 5; the give-up never naming the output cap, 2; reasoning that stopped on
+its own read as silence, 1; the streamed give-up status keeping the old words, 1; the buffered give-up note keeping
+them, 2; the buffered call dropping the cap it was given, 9; and the streamed call dropping it, 4. `uv run poe check` is
+green: 5,908 passed, 22 skipped.
+
+**Amended by ADR-0310 (2026-10-15):** an overflow under a cap the window held down (ADR-0308) compacts before its retry,
+so the retry's room is measured on the prompt that is left.
+
+## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt, counted by the tokenizer
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-14, from runs through a LiteLLM 1.9x gateway in front of Bedrock/Vertex, that a
+route whose window is 32,768 tokens adds the requested output to the prompt and refuses the sum: "This model's maximum
+context length is 32768 tokens. However, you requested 8192 output tokens and your prompt contains at least 24577 input
+tokens, for a total of at least 32769 tokens. Please reduce the length of the input prompt or the number of requested
+output tokens." Every call asks for the 8,192-token cap of ADR-0018, while the loop's fit check keeps only
+`_answer_room` free below the window, 4,096 for an alias with no declared output cap. On that window the compaction
+threshold is 27,034 (ADR-0240: the window, less its 5% margin, less 4,096), so a prompt of 24,577 to 27,034 tokens went
+out uncompacted and was refused. The provider reads that refusal as an overflow (ADR-0293), and the loop compacts and
+retries, one wasted request each time, and no help at all when the prompt's fixed overhead alone fills the room. A
+larger reserve would not close it: the threshold's 0.8 floor still lets 26,214 through. The report proposed clamping the
+cap with the provider's rough estimate, four characters a token.
+
+Measured here on 2026-10-15, that estimate is the wrong count for this: on generated id-dense JSONL tool output, goal
+ids, short shas, timestamps and paths, it came to 0.56 of litellm's tokenizer; on plain English 1.29; on Python source
+1.01. That is the shortfall ADR-0077 met in the compaction check. A clamp from it would leave the refused cap unchanged
+on exactly the dense prompts that fill a window, and would over-clamp prose.
+
+**Decision.**
+
+* The provider holds the output cap of every call to the room the window leaves: the window, less the prompt's token
+  count, tool schemas included, less the compaction check's 5% margin. The default and a caller's own cap alike: the
+  compaction summarizer's 32,768 (ADR-0275) and the overflow retry's raise (ADR-0307) are held to it too. A cap already
+  within the room is sent as it is.
+* The count is litellm's tokenizer, the one `count_tokens` uses, with the tool schemas passed to it. When the counter
+  fails, or answers with anything but a count, the rough estimate stands in, as it already did for `count_tokens`. Both
+  now go through one method, `_wire_token_count`, and `count_tokens` calls the counter exactly as before.
+* The clamp never goes under 1,024 tokens, and never raises a caller's cap that is smaller than that.
+* It runs before the rename to `max_completion_tokens` on OpenAI's own API (ADR-0279), so the renamed cap is clamped.
+  The window is the one `capabilities()` reports, which the provider always has (ADR-0066); a sentinel with none is left
+  alone.
+
+Stated choices. The seam is the provider, not the loop: every call funnels through `_build_kwargs`, side calls and the
+summarizer included, and the provider holds the wire messages it counts. The counter costs 11 to 24 ms on 50,000 to
+105,000 tokens (measured), against calls that take seconds. It is litellm's default tokenizer for an alias it does not
+know, not the route's own; the margin covers that difference, and a route that still refuses meets the overflow recovery
+as before. The margin is the compaction check's own, held equal by a test, since the providers package does not import
+the agent's. Under the floor an answer is a few words, so a prompt that leaves less is sent the floor and, if refused,
+compacted as before.
+
+Rejected: raising `_answer_room`'s 4,096 to the cap, which the 0.8 floor defeats, as the report showed, and which would
+take room from the prompt on every window, not only on a route that adds the two; and the rough estimate as the count,
+for the measured reason above.
+
+Not verified: a live route. The refusal's words are the report's; the tests send them from a stand-in that counts the
+prompt as the clamp does.
+
+**Consequences.** On a window the prompt has nearly filled, a call asks for less output than 8,192 rather than being
+refused. An answer longer than the room it was given ends `finish_reason=length` and continues through the loop's length
+path, as an answer over 8,192 always has. On a large window nothing changes: with 26,000 tokens of prompt on 131,072 the
+cap is 8,192. Each call is counted once more, at the cost measured above.
+
+The proof. `tests/test_output_cap_clamp.py` (18 tests). Most stand in a tokenizer of one token a character, so the
+numbers are exact. A 32,768-token window with a 26,000-token prompt sends 5,130 in one request, buffered and streamed.
+On id-dense JSONL that litellm's tokenizer counts at 26,469 and the rough estimate at 14,554, the route counting the
+same way, the call is sent 4,661 and taken; the rough estimate would have left 8,192, which the route refuses. A counter
+that fails falls back to the rough estimate. Tool schemas count against the room. A prompt with room keeps 8,192; room
+of exactly 8,192 keeps it, and one token less clamps by one. A prompt that fills the window is sent the floor, and its
+refusal is the overflow; a caller's 200 under the floor is kept. The summarizer's 32,768 is clamped; a caller's 512 is
+kept. OpenAI's own API is sent the clamped `max_completion_tokens`. A 131,072-token window is untouched. The margin
+equals the compaction check's. Against main, 10 of the 18 fail: every case the clamp decides, and the margin's equality.
+The 8 that pass are the controls: the fixture's count, the stand-in refusing 8,192 on 26,000 as an overflow, a prompt
+with room on each path, room of exactly the default, a caller's cap under the floor, a caller's smaller cap, and the
+large window. Twelve mutations were each run green, red, green (2026-10-15), with the red tests counted from the
+verdict: the clamp removed turned 9 red; the margin ignored, 8; the tool schemas not passed to the counter, 1; no floor,
+2; the floor raising a caller's smaller cap, 1; a caller's own cap never clamped, 1; OpenAI's renamed cap not clamped,
+1; every cap set to the room, raised too, 4; the margin drifting from the compaction check's, 9; the floor changed, 1;
+the clamp counting four characters a token, 8; and a failing counter not caught, 2. `uv run poe check` is green: 5,926 passed, 22 skipped.
+
+**Amended by ADR-0310 (2026-10-15):** a call the clamp held under its cap says so on its result, and when its reasoning
+fills that cap with nothing visible, the loop compacts before the overflow retry. An answer that ends on a clamped cap
+with text still continues through the length path.
+
+## ADR-0309: one short recipe for LiteLLM-gateway users, held to the code it describes
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was asked on 2026-10-14, with the reports behind ADR-0302 to ADR-0308, that what a user behind a LiteLLM
+1.9x gateway in front of Bedrock/Vertex needs to know be documented generically in one short section: the per-route
+refusals of stop, tools and temperature, silent fallbacks and `disable_fallbacks`, `ZAKCODE_EXTRA_BODY`, the per-entry
+tool mode, and the `unpriced` display with its effect under `ZAKCODE_MAX_COST_USD`. Each was already true and written
+down, but in a setting row or an ADR, where a user setting up a gateway does not look.
+
+**Decision.** `docs/CONFIG.md` gains "Recipe: behind a LiteLLM gateway", beside the self-hosted pod and Vertex recipes
+under "Model / provider". It gives the three settings that reach a gateway; quotes the four refusals Zak Code reads (the
+two stop wordings of ADR-0296, the temperature and tool-use wordings of ADR-0303) with what each changes; names the
+per-entry `tool_calling_mode` for a route that takes tools and drops them (ADR-0304); gives
+`ZAKCODE_EXTRA_BODY={"disable_fallbacks": true}` as opt-in, with the fallback warning it replaces (ADR-0305) and the
+1.61 refusal that makes it opt-in; says what `ZAKCODE_EXTRA_BODY` does with a field a route refuses (ADR-0181); and says
+what `unpriced` and `at least $x, some calls unpriced` mean, that `ZAKCODE_MAX_COST_USD` then stops the turn with
+`stop_reason="budget_unpriced"` by design, and that `ZAKCODE_MAX_TOKENS` bounds tokens without a price (ADR-0302). One
+closing sentence names the ingress 504, the output cap retry and the clamp (ADR-0306 to ADR-0308).
+
+Stated choices. The setting rows keep their detail, and the recipe points at the ADRs rather than repeat it, so it stays
+short: 53 lines. It is generic: one placeholder model, `openai/route-a`, one placeholder host, `gateway.invalid`, and no
+route or model names. The quoted refusals are the clouds' own words as the gateway relays them, because those are what a
+user will see in a log. A test holds the recipe to the code, so a change to a classifier, the renderer, a stop reason or
+a setting name that leaves the recipe stale fails the suite rather than misleading a reader.
+
+Not verified: a live gateway. The wordings are the reports'.
+
+**Consequences.** A user setting up a gateway finds in one place what Zak Code does on its own and what they must name.
+A change to any of the facts the recipe quotes now needs the recipe changed with it.
+
+The proof. `tests/test_gateway_recipe_docs.py` (8 tests). The recipe sits under "Model / provider" and is at most 60
+lines; each refusal it quotes is read by the classifier for that refusal and by no other, and the stop length it quotes
+is read as 10; the fallback switch is the JSON it names; the cost words are what `cost_text` renders; the stop reason is
+one the loop assigns; every `ZAKCODE_` name is a setting, and the four settings it names in backticks exist; it names
+each topic asked for; and the only host it names is `gateway.invalid`. Against main all 8 fail, the section being
+absent. Eleven mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: the
+section's heading changed turned 8 red; a quoted stop refusal reworded so no classifier reads it, 1; the quoted limit
+changed, 1; the fallback switch not the JSON it names, 1; the floor wording not the renderer's, 1; the stop reason not
+the loop's, 1; a setting that does not exist, 3; a real host named, 1; the per-entry tool mode not named, 1; and on the
+code side, the renderer's words changed, 1, and the temperature classifier changed, 1. `uv run poe check` is green:
+5,934 passed, 22 skipped.
+
+## ADR-0310: a reasoning overflow under a cap the window clamped compacts before its retry
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-15, from a re-test of main through a LiteLLM 1.9x gateway in front of
+Bedrock/Vertex, that the clamp of ADR-0308 turned an overflow the loop used to recover into a give-up. A route whose
+window is 32,768 tokens refuses a request whose prompt plus requested output passes the window, and a reasoning model
+there needed about 7,000 output tokens. With 25,000 tokens of prompt the clamp held the 8,192 default to the 6,130 the
+window left, the reasoning filled it, and the call ended `length` with nothing visible. The overflow retry of ADR-0307
+found no room past the default on that prompt, so it asked for the default, the clamp held that to the same room less
+the rail, and after the third try the turn gave up with "output cap exhausted by reasoning". Before the clamp the route
+refused the request, the provider read the refusal as an overflow (ADR-0293), the loop compacted the transcript
+(ADR-0083), and the retry answered. With the clamp every request fits, so nothing is refused and nothing compacts.
+
+Read here on 2026-10-15, three numbers make a band where this happens. The provider sends the 8,192 default
+(`_MAX_COMPLETION_TOKENS`), and the clamp holds it to the window less the compaction check's 5% margin less the prompt.
+The compaction threshold reserves `_answer_room` under the window less the same margin, 4,096 for an alias with no
+declared output cap, between the 0.8 and 0.9 fractions (ADR-0240). So a prompt past the window less 5% less 8,192, and
+not past the threshold, is clamped and not compacted: 22,939 to 27,034 tokens on a 32,768-token window, and 113,409 to
+115,200 on 128,000, where the 0.9 fraction caps the threshold. A threshold that reserved the 8,192 would not close it:
+the 0.8 floor keeps the threshold at 26,214 on 32,768.
+
+**Decision.**
+
+* The provider says when it held a call's cap under the one asked for. `LLMResult.clamped_output_cap` and
+  `StreamDone.clamped_output_cap` carry the cap that call was sent, and are `None` when the cap went out as asked. A
+  caller's cap that the floor keeps went out as asked. The base provider's default stream and the text tool protocol's
+  stream carry it from the result they replay.
+* When such a call ends on its cap (`length`) with nothing visible, the loop compacts before the overflow retry, with
+  the first rung of the ladder a refused request runs (ADR-0083): a summary, or eliding old tool outputs when the
+  summarizer fails. The overflow retry is then sized to the prompt that is left (ADR-0307). Every such overflow does
+  this, on both paths. The trace notes it (`overflow_compacted`, with the cap), and the streamed status says it.
+* Left as before: reasoning that stopped on its own under a clamp, an overflow under a cap the window did not lower, and
+  a clamped call that answered.
+
+Stated choices. The seam is the overflow, not the threshold. A threshold that reserved the cap is defeated by the 0.8
+floor, as above, and would take room from the prompt on every window, where only a call the window held down and the
+reasoning filled needs it. The loop learns of the clamp from the provider, which counted the prompt with its tokenizer
+(ADR-0308). The loop's own count is the anchored estimate, and two counts can disagree at the edge of the room. The
+three numbers are tied, not reconciled: a test holds the clamp's margin to the compaction check's, the overflow retry's
+floor to the provider's default, the answer room of an unmapped alias to 4,096, and the band's edges on both windows to
+the values above, so moving any of them fails the suite. Reasoning that stopped on its own is left alone because the cap
+did not end it, and a smaller prompt would not either. Nothing counts these compactions. After one summary the prompt is
+below the band, so another needs the turn to fill the band again, and the empty-completion retries, two in a row, bound
+how many come before a give-up. A long turn that fills the band again compacts again, as a refused request did before
+the clamp. The provider records the clamp on itself while it builds the request and each call path reads it right after
+each build, with no await between, so a call made in between cannot change what a result says.
+
+Rejected: a threshold that reserves the cap, for the reasons above; compacting on every reasoning overflow, which would
+summarize a conversation whose call had room the window did not take; and a counted bound on these compactions, which
+would leave a long autonomous turn that fills the band more than once to give up.
+
+Not verified: a live route. The 7,000-token need and the shapes are the report's; the tests send them from a stand-in.
+
+**Consequences.** On the measured route a hard turn in the band compacts once, and the retry answers where the turn gave
+up. In the stand-in, a first call with 24,993 tokens of prompt is sent 6,137, a summary brings the prompt to 8,583, and
+the retry is sent 16,384 and answers. That costs one summary call for each such overflow, the call a refused request led
+to before the clamp, without the refused request. A route that always overflows compacts once and gives up as before.
+ADR-0307 and ADR-0308 are amended for such a call.
+
+The proof. `tests/test_clamped_overflow_compacts.py` (22 tests). A stand-in route counts one token a character, refuses
+a request whose prompt plus requested output passes its window, summarizes when asked to compact, and answers only when
+its cap leaves room for the reasoning it needs. On 32,768 tokens with a 25,000-token prompt and a 7,000-token need, and
+on 128,000 with 114,000 and 8,000, on each path, the first call sits in the band under the need, one summary follows,
+and the retry, with a smaller prompt and at least the need, answers, with no request refused. A route that always
+overflows compacts once and gives up naming the output cap. A long turn whose tool output fills the band again compacts
+again, on each path. Left alone: reasoning that stopped on its own under a clamp; and, on each path, a prompt below the
+band, a clamped call with room enough, and an overflow the clamp did not cause. The provider says when the clamp held
+the cap, buffered and streamed, and only then; a clamp is not carried to the next call; a caller's cap the floor kept is
+not called clamped; and the default stream and the text tool protocol's keep it. The band test ties the three numbers.
+Against main, 13 of the 22 fail: the six turns that gave up, the one that never compacted, and the six that read the new
+field. The 9 that pass are the controls: the band on each window, the stop of its own, and the three left-alone cases on
+each path. Eighteen mutations were run on 2026-10-15, each from a green baseline and restored to green, with the red
+tests counted from the verdict: the buffered gate not given the clamp turned 4 red; the streamed gate, 3; the streamed
+loop not reading the done event's clamp, 3; the helper compacting whatever held the cap, 3; ignoring the finish reason,
+1; the ladder starting on its second rung, 7; the compaction not noted under its kind, 6; the streamed status not saying
+why, 2; the clamp not recorded, 9; a cap the floor kept recorded as clamped, 1; a clamp outliving its request, 2;
+`acomplete` not reading its request's clamp, 6; `astream` not reading it, 4; its done event dropping it, 4; the buffered
+result not stamped, 6; the default stream dropping it, 1; and the text tool protocol's stream dropping it, 1. One stayed
+green, an equivalent: `acomplete` not reading the clamp again after a repaired request is rebuilt, since no repair
+changes the prompt, the tools or the cap. `uv run poe check` is green: 5,956 passed, 22 skipped.
+
+## ADR-0311: a refusal of tool use, temperature or stop is read at the start of the provider's own message, not anywhere in a 4xx that only quotes it
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A hostile review of ADR-0303 found on 2026-10-15 that the refusal readers are substring matches over the
+whole text of a 4xx. `tool_use_unsupported` and `temperature_field_unsupported` (ADR-0303), and `stop_field_unsupported`
+and `stop_length_limit` (ADR-0296), searched the whole redacted exception text, and their gates ask only for a request
+rejection (a 400 or a 422) of a request that carried the field. So a 400 about something else that merely QUOTES one of
+the sentences, as a validation error that prints the offending input does, read as the refusal, and was learned for the
+rest of the session: the provider moved to the text protocol, or dropped a configured temperature of 0, or the stop. The
+echo is realistic: this repository's own docs and tests carry every one of the sentences, and an agent sends files like
+those to the model. Measured here with litellm's own client against a patched transport, on three echo shapes: a
+pydantic validation error (`... input_value={'text': "notes: This model doesn't support tool use."} ...`), Bedrock's
+validator quoting the value through a LiteLLM proxy, and a FastAPI `detail` body carrying the input. Against main all
+three read as each refusal, and a call that met one on either path latched its provider.
+
+The report proposed reading the sentence from the provider's own message, the `message` of the error object, bounded to
+a few hundred characters, and falling back to the whole text only when it is short. Measured here, that alone still
+reads two of the three shapes: the pydantic error and Bedrock's validator both quote the offending value INSIDE their
+own message, 138 and 36 characters in.
+
+**Decision.**
+
+* `providers/base.py` gains `provider_message(text)`, the provider's own message in an error's text. It peels the
+  wrappers litellm and a LiteLLM proxy put in front of it (`litellm.BadRequestError: `, `OpenAIException - `,
+  `BedrockException - `, and the openai SDK's `Error code: 400 - `, which litellm keeps when it found no message in the
+  body) and opens the error object they wrap, as JSON or as the repr that SDK prints, down to the innermost message: the
+  body's `message`, its `error.message` or a string `error`, or a string `detail`. It returns at most
+  `PROVIDER_MESSAGE_MAX_CHARS`, 400 characters; the longest measured refusal is 157. A repr is parsed with
+  `ast.literal_eval`, which evaluates literals only, and only up to 16,384 characters.
+* The four readers match only at the START of that message, after at most four words of subject (`This model`, `Model
+  route-a`), none of them carrying a quote mark. A backend that refuses says so at the start of its message; a sentence
+  that a 400 only quotes sits after a quote mark, or after more words than that.
+* Every measured wording still reads: the sentences of ADR-0296 and ADR-0303 bare, behind litellm's wrapper, inside a
+  JSON body, and behind a LiteLLM proxy's own wrapper around Bedrock's JSON with the router's trailer
+  (`litellm.BadRequestError: OpenAIException - litellm.BadRequestError: BedrockException - {"message":"..."}. Received
+  Model Group=...`), and the streamed tool-use wording, which goes on `in streaming mode.`.
+* The gates are unchanged: a request rejection, of a call that carried the field.
+
+Stated choices. The two subject rules each catch an echo the other misses: a short validator message whose quoted value
+is one word in (`Value '...' at ...`) passes the word bound and stops at the quote mark, and a gateway's own message
+that carries the content unquoted after a longer preamble stops at the word bound. A refusal worded after a longer
+preamble is no longer read, and its call fails as it did before ADR-0303; none is measured. ADR-0181's named-field
+patterns (`rejected_request_field`) and the reasoning-effort remedy that `_wants_effort_none` reads search the whole
+text in the same way. Their gate is narrower, a field this call sent named in the provider's words, and they are left
+for a change of their own.
+
+Rejected: the bounded search the report proposed, for the measured reason above; requiring the sentence to be the whole
+message, since `Remove temperature and try again.` and `in streaming mode.` follow it; and removing quoted spans before
+a search anywhere, which an unclosed quote in an echo defeats.
+
+Not verified: a live gateway. The sentences are the reports', byte for byte; the echo bodies are built in the shapes
+those validators print, not captured from one.
+
+**Consequences.** A 400 that only quotes a refusal is surfaced as the `RequestFailed` it is: that call fails, nothing is
+learned, and the next call is sent as before. A real refusal is learned as ADR-0296 and ADR-0303 have it. This amends
+the readers of both.
+
+The proof. `tests/test_refusal_from_message.py` (131 tests). The readers: the live bodies, bare and proxied, read as
+their own refusal and no other, the streamed wording included; bodies litellm prints as a repr are read; a raw JSON body
+is read by its `message` and its `error.message`; a refusal that opens a long message is read; and five echo shapes, the
+three above, a short validator message and an unquoted preamble, each with the sentence as it is and inside notes, read
+as no refusal, as does a sentence 200,000 characters into a text. `provider_message` returns the innermost message of
+the proxied body and is bounded. The call paths, `acomplete` and `astream` each: an echo of the tool-use sentence fails
+the call as a plain `RequestFailed` and the next call still sends its tools; an echo of the temperature sentence keeps a
+temperature of 0 on the next call; an echo of either stop sentence keeps the stop; and the live bodies, bare and
+proxied, still move the session to the text protocol, the streamed wording included, still drop the temperature, and
+still teach the stop field and the stop limit. Against main, 92 of the 131 fail: every echo case, the long text, and
+`provider_message`, which main does not have. The 39 that pass are the controls: the live bodies, the repr and raw JSON
+bodies, and the message that opens with its refusal. Twelve mutations were each run green, red, green (2026-10-15), with
+the red tests counted from the verdict: the wrappers not peeled turned 73 red; no envelope opened, 30; the tool-use
+sentence read anywhere in the text, 31; the temperature sentence, 20; the stop field, 20; the stop limit, 20; no bound
+on the subject's words, 18; quote marks allowed in the subject, 18; the message not bounded, 1; `error.message` and a
+string `error` not read, 6; a string `detail` not read, 5; and a repr body not parsed, 10. `uv run poe check` is green:
+6,065 passed, 22 skipped.
+
+## ADR-0312: a web page's words are redacted once they are decoded, so a credential written with entities in an error page is redacted
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that `_map_error` redacted the exception's raw text and only
+then reduced a web page in it to its words (ADR-0306), decoding the page's entities. A credential assignment written with
+entities, `&quot;api_key&quot;: &quot;...&quot;` or the numeric `&#34;` and `&#x22;`, is not an assignment to the
+redactor, and the decoding then made it an ordinary one, in the message that reaches the turn's error. The gap is older
+than ADR-0306, which kept the order: before it, the page reached the error whole, and the value with it.
+
+Measured here on 2026-10-15 with a value built at run time: on main the value was present in the mapped error for all
+three entity forms, under a 502, a 504 and a 400, and through litellm's own HTTP client on the buffered and the streamed
+path. It was absent for the plain form.
+
+**Decision.**
+
+* `_map_error` redacts the message again after the page in it is reduced to its words and decoded. The redaction of the
+  raw text stays, as the review asked.
+* Nothing else changes: the words, the class and the bound are what ADR-0306 gave them.
+
+Stated choices. The second pass runs on every message, with a page or without. A message with no page comes back from
+`_page_text` as it went in, and the second pass finds nothing the first left, so one line serves both. The raw text's
+pass is kept although no test separates it from the second: every shape it catches survives the reduction for the second
+pass to catch, and a mutation that dropped it stayed green. It stays as a guard against a later change to the reduction.
+
+Not covered. A message with no page is not decoded, as ADR-0306 decided, so an assignment written with entities outside
+a page is still not seen. Its value stays visible between the entities, on main and after this change.
+
+Rejected: decoding every message before redacting it, which would rewrite the entities of every ordinary provider error
+as well.
+
+Not verified: a live page that carries a credential. The pages in the tests are stand-ins.
+
+**Consequences.** A credential assignment in an error page is redacted whichever way its quotes are written. A page with
+no credential reads as before, and so does every message without a page.
+
+The proof. `tests/test_page_text_redaction.py` (17 tests). An assignment with named, decimal or hex entity quotes in a
+page is redacted under a 502, a 504 and a 400, and the page's words survive; the plain form is redacted as before under
+each; a credential before the page is redacted as before; a page with no credential reads word for word as before; the
+named form sent through litellm's own HTTP client is redacted on each path; and a turn that keeps meeting the page ends
+with an error that does not carry the value. Every check is a boolean. Against main, 12 of the 17 fail: every entity
+case, both client paths and the turn. The 5 that pass are the controls: the plain form under each class, the credential
+before the page, and the page with no credential. Four mutations were run (2026-10-15), with the red tests counted from
+the verdict. Three went green, red, green: the fix reverted turned 12 red; both redactions run before the decoding, 12;
+and the page not decoded, 14, one of them ADR-0306's own entity test. The fourth, the raw text's redaction dropped,
+stayed green, as stated above. `uv run poe check` is green: 5,951 passed, 22 skipped.
+
+## ADR-0313: a web page in a provider error is reduced to its words in linear time, however the page is broken
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that `_page_text` (ADR-0306) takes time quadratic in the
+length of a malformed page. Each of its three patterns, `<head\b.*?</head\s*>`, `<(script|style)\b.*?</\1\s*>` and
+`<[^>]*>`, rescans the rest of the page from every opening that never closes. Only a message with a page in it pays.
+The error mapping is plain synchronous code inside an async turn, so such a page blocks the event loop for that long,
+and `zakcode webapp` serves every session from one loop. The review measured `<html>` and 4,000 `<head` at about 0.5 to
+1.6 s, and `<html>` and 50,000 `<` at about 1.4 to 5.6 s, depending on load.
+
+Measured here on 2026-10-15 on main, in one run: `_map_error` took 4.0 s on `<html>` and 120,000 `<`, and 1.5 to 2.1 s
+on 10,000 unclosed `<head`, `<script` or `<style`. `_page_text` took 41 s on 50,000 unclosed `<head` and 54 s on 50,000
+unclosed `<script`. A well-formed 2 MB page took 0.07 s.
+
+**Decision.**
+
+* `_page_text` reads a page in one pass. A `head`, `script` or `style` block is found by its opening and the first
+  closing tag of its kind after it. An opening after the last closing tag of its kind is skipped without a search,
+  since no block can start there. The tag pattern runs only up to the last `>`, since no tag closes after it.
+* The text is the patterns' text, byte for byte: the tests compare the two on every page they write and on 3,000
+  generated fragments. The words, the title when the body has none, the entities and the text before the page are what
+  ADR-0306 made them.
+
+Stated choices. The review offered a cap on the text before the patterns, or html.parser. This takes neither: it keeps
+the patterns' reading and drops only their rescans, so no page reads differently and no length has to be chosen. It is
+about 40 lines where a cap is one.
+
+Rejected, both measured here on 2026-10-15 with Python 3.11.16: a cap, and html.parser. A cap's time grows with the
+square of its length: at most 12 ms at 4,000 characters on the pages above, 0.07 to 0.21 s at 16,000 and 1.2 to 3.6 s
+at 64,000. And a page whose markup before its words is longer than the cap reads as that markup: with a 4,000-character
+cap, an 11,350-character page whose head carries a style sheet read `502 Bad Gateway p { margin: 0; padding: 0 } ...`,
+where the patterns read `502 Bad Gateway The upstream server did not answer.` html.parser is fast on these pages, 0.2 to
+77 ms, but reads broken markup its own way. A reduction written with it to ADR-0306's rule differed from the patterns on
+4 of the 14 pages the tests write and on 1,392 of the 3,000 generated fragments: `<html><<b>bold</b> a < b and c > d <i`
+read `< bold a < b and c > d`, where the patterns read `bold a d <i`. Which reading is better is a question for
+ADR-0306, not a fix of its speed.
+
+Not verified: a live page, and the maintainer's machine. The pages are the tests' own, and the timings are this
+machine's.
+
+**Consequences.** A broken or hostile page in a provider error costs the event loop milliseconds where it cost seconds.
+Every message reads as it did. The well-formed 2 MB page takes 0.05 s.
+
+The proof. `tests/test_page_text_linear.py` (50 tests). Five malformed pages of 50,000 to 120,000 characters are mapped
+by `_map_error` within 0.5 s, and pages of 50,000 unclosed `<head` and `<script`, 250,000 and 350,000 characters, are
+reduced within 0.5 s; the reduction takes 1.5 to 11 ms on each here. Fourteen pages the tests write, each with three
+prefixes, read as main's patterns read them, and so do 3,000 generated fragments of tags, entities and text. Against
+main, 7 of the 50 fail: every timed case, at 1.5 to 54 s. The 43 that pass compare main's patterns with themselves.
+ADR-0306's 18 tests in `tests/test_ingress_504.py` pass unchanged. Seven mutations were each run green, red, green
+(2026-10-15), with the red tests counted from the verdict: the tag pass run past the last `>` turned 3 red; an opening
+that cannot close searched anyway, 2; an upper-case opening not folded to its kind, 4; a closing tag right after its
+opening not seen, 1; the last `>` left out of the tag pass, 50; an opening inside a dropped block not skipped, 4; and
+scripts and styles kept, 14, one of them ADR-0306's own test. `uv run poe check` is green: 5,984 passed, 22 skipped.
+
+## ADR-0314: `provider_labels` names the provider token in the text a person reads, and nothing a machine reads changes
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** It was reported on 2026-10-15, from a re-test of main at 89e78f7 through a LiteLLM 1.9x gateway in front
+of Bedrock/Vertex, that "openai" prints all over the output and names nothing the user runs. The token is litellm's
+protocol, not the vendor: a zakpick entry's `source: "openai"` and the `openai/<alias>` prefix of a model string pick
+litellm's OpenAI-compatible provider, nothing goes to OpenAI, and the API base row shows the real endpoint. The report
+listed where it prints: the `zakcode info` model rows and `/model` (`describe_zakpick`), the grey call rows that
+`transcript_line` builds from litellm's own record, the route status (`loop.py`, through `_provider_label`), and the
+provider's notices that name the model string (served by, the refused field and temperature, the tool-use refusal in
+`text_tools.py`, and ADR-0305's fallback warning). It asked for one display-only setting read the way
+`ZAKCODE_EXTRA_BODY` is, empty by default with the output byte-identical to today, one small helper that every display
+site calls so that a test can walk the sites, the setting shown in `zakcode info`, and the gateway recipe to document
+it.
+
+**Decision.**
+
+* `Settings.provider_labels` (`ZAKCODE_PROVIDER_LABELS`) is a `dict[str, str]` read from a JSON object as `extra_body`
+  is, `{}` by default. A malformed value fails the way `ZAKCODE_EXTRA_BODY` does, with the setting's name in the error,
+  and a label that is not text is refused.
+* `zakcode/providers/labels.py` holds the mapping. `provider_label(token, labels)` names a token.
+  `display_model_id(model_id, labels)` replaces the leading token of a model id, the text before its first `/`, and
+  only when that whole token is a key: under `{"openai": "Gateway"}`, `openai/route-a` reads `Gateway/route-a`, while
+  `openai-compatible/route-a`, `bedrock/converse/openai.route-c-1:0` and a bare `openai` read as they are. With no
+  labels both return their input.
+* Text built for a person calls them: the Model row of `zakcode info` in each form (a model, `auto`, and zakpick's
+  `route-a (Gateway)`), its context-window rows, `/model`, the banner's provider after the dot, the `/cost` rows by
+  model, the provider after the dot of a grey call row (`call route-a · Gateway`), and the route status
+  (`route: quick_code → Gateway/route-a`). The route status is an `AgentStatus` message, text for a person, and is
+  labelled where the loop makes it.
+* A log call hands a model id over as `ModelRef`, a marker whose `str()` and `repr()` are the id's, so every formatter,
+  the log file's included, renders the record byte for byte as before. The transcript handler (ADR-0186) shows each
+  `ModelRef` labelled and leaves the record as it is, and the labelled text is scrubbed like every other row. The
+  provider's notices pass one, as do the loop's two prompt-cache notes and the Agent's two startup lines (the `auto`
+  resolution and zakpick's startup model). A test walks every log call in the package and fails on one that hands a
+  model id over bare.
+* The transcript handler is installed before any settings load. `_build_chat_agent` now loads the settings, hands
+  their labels to the handler, and builds the Agent from those settings, so the lines the Agent logs while it is built
+  are labelled too. `/clear` and `/resume` build through the same function.
+* `zakcode info` shows the setting when it is set, as `Provider labels: {"openai": "Gateway"} (display only)` under the
+  Provider row, which keeps the token as configured.
+* `docs/CONFIG.md` gains the setting's row and four lines in the gateway recipe, with
+  `ZAKCODE_PROVIDER_LABELS={"openai": "Gateway"}`.
+
+Stated choices. Nothing a machine reads changes: the model string sent, the `source` of a zakpick entry, the session,
+trace and transcript JSON, the log file, the server's API, and every event field but a status line's text keep the
+token. A name the backend reported, the model that served a call or the gateway's fallback group, is shown as it came:
+the label is for the token this configuration chose, and a backend's own name may carry a prefix that is the vendor.
+The failover note (`model failover: … -> …` and `switching model: …`) is left as it is. Its description is one string
+that the loop logs and shows as a status, so labelling it means changing the failover seam to hand the two models over
+apart, a change of its own, and it prints only when a call fails over. The startup window warnings are left for the
+same reason: each is one string, logged and shown. `zakcode status`, which reads other sessions' status files and
+loads no settings, keeps the token, and so does the JSON a configured status-line command is given. The web page's
+model chip reads `SessionInfo.model`, an API field, so it keeps the token; a label there needs a new field. The log
+calls are labelled at the display end, rather than each call building a labelled string, because that is what keeps
+the log file byte-identical: the record a call makes is rendered twice, as it was and as a person reads it.
+
+Rejected: displaying `openai-compatible` for the token, with no setting, wherever a route's API base is not OpenAI's own
+host, which the report offered as an optional second change. It changes the default output for every gateway user,
+the maintainer's own runs among them, where the report asked for the default to stay byte-identical, and the opt-in
+label covers the need. A label applied by substring, which renames `openai` inside `bedrock/converse/openai.…` and
+`openai-compatible/…`. Labelling inside the log record, which writes the label into the log file.
+
+Not verified: a live run through a gateway. The tests drive the chat, the loop and the provider against stand-ins.
+
+**Consequences.** With the setting empty every line is what it was. With `{"openai": "Gateway"}` a person reads
+`Gateway` where the token was, and the log file, the wire and the stored records keep `openai`. A new display site is
+one call, and a new log line that names a model hands over a `ModelRef` or fails the walk. A log record's argument for
+a model id is now a `ModelRef`, not a `str`: every formatter renders it as the id, and a handler that reads
+`record.args` itself sees an object.
+
+The proof. `tests/test_provider_labels.py` (37 tests): the leading token replaced and never a substring (five shapes),
+and no labels returning the input; the setting read from the environment, a malformed value failing as `extra_body`'s
+does and naming the setting (two values), and a label that is not text refused; zakpick's summary, the info Model row
+with the labels row and the Provider row, the `auto` row and the context-window rows (resolved and failed) labelled, and
+the summary and the panel unchanged without the setting; in the chat, the banner, `/model`, `/cost` by model and the
+call row labelled with no `openai` left on screen, the chat unchanged without the setting, an empty mapping printing
+what no setting prints, a line the Agent logs while it is built labelled, and the log file keeping the token; the route
+status labelled, and unchanged without the setting; four notices (served by, the fallback, the refused temperature, the
+refused tool use) labelled on screen with the record left as it was, and each one's log-file text and unlabelled row
+byte-identical to the record with the plain id; the served name shown as the backend reported it; a labelled row
+scrubbed; the walk over every log call; and the wire's model string, a zakpick entry's `source` and the session record
+keeping the token. Against main, 26 of the 37 fail. The 11 that pass are the controls: each surface unchanged without
+the setting, the log file, the four notices' byte-identity, and what a machine reads. Thirty-two mutations were each run
+green, red, green (2026-10-15), with the red tests counted from the verdict: a model id never relabelled turned 13 red;
+a label replacing a substring, 5; a token matched by its prefix, 1; `provider_label` ignoring the labels, 4; the log
+file rendering a model id differently, 4; the call row keeping the token, 1; a notice's model id not labelled, 6; the
+handler never passing its labels, 2; the session's labels never reaching the handler, 2; a labelled row not scrubbed, 1;
+the record itself rewritten with the labels, 4; a label that is not text accepted, 1; any value accepted, 8; the zakpick
+summary keeping the source token, 2; and the token kept by the `auto` row, the info Model row, the banner, `/model`,
+`/cost` and the route status, 1 each, and by the context-window rows, 2; info never showing the setting, 1, and showing
+it when it is empty, 1; the labels handed over only after the Agent is built, 1; and a model id handed over bare, which
+the walk reads, by served by, 6, the fallback warning, 2, the refused temperature, 2, the refused tool use, 2, each
+prompt-cache note, 1, the zakpick startup line, 1, and the `auto` resolution line, 1. `uv run poe check` is green:
+5,971 passed, 22 skipped.
 
 ## ADR-0302: `/observe` and `/nudge` publish through a temp file of their own, because the routes run on threads that share one PID
 

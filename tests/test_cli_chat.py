@@ -166,6 +166,66 @@ def test_chat_cost_marks_a_cached_prompt_whose_read_and_write_are_unknown(monkey
     assert "prompt 1003, 1000 cached, read/write unknown / completion 5" in shown
 
 
+_ROUTE_A, _ROUTE_B = "openai/route-a", "openai/route-b"
+
+
+@pytest.mark.parametrize(
+    ("usages", "total", "rows"),
+    [
+        (
+            [
+                Usage(total_tokens=10, cost_usd=0.02, model=_ROUTE_A),
+                Usage(total_tokens=10, cost_usd=0.01, model=_ROUTE_B),
+            ],
+            "$0.0300",
+            {_ROUTE_A: "$0.0200", _ROUTE_B: "$0.0100"},
+        ),
+        (
+            [
+                Usage(total_tokens=10, cost_unpriced=True, model=_ROUTE_A),
+                Usage(total_tokens=10, cost_unpriced=True, model=_ROUTE_B),
+            ],
+            "unpriced",
+            {_ROUTE_A: "unpriced", _ROUTE_B: "unpriced"},
+        ),
+        (
+            # A sub-agent's buffered call priced by the gateway, the streamed turn not (ADR-0302).
+            [
+                Usage(total_tokens=10, cost_usd=0.02, model=_ROUTE_A),
+                Usage(total_tokens=10, cost_unpriced=True, model=_ROUTE_A),
+                Usage(total_tokens=10, cost_unpriced=True, model=_ROUTE_B),
+            ],
+            "at least $0.0200, some calls unpriced",
+            {_ROUTE_A: "at least $0.0200, some calls unpriced", _ROUTE_B: "unpriced"},
+        ),
+    ],
+    ids=["priced", "unpriced", "mixed"],
+)
+def test_chat_cost_says_when_the_cost_could_not_be_priced(
+    monkeypatch, usages: list[Usage], total: str, rows: dict[str, str]
+) -> None:
+    import re
+
+    class GatewayAgent(FakeAgent):
+        events = [AgentTextDelta(text="ok\n"), AgentDone(stop_reason="completed", iterations=1)]
+
+        def astream_turn(self, text: str) -> AsyncIterator[AgentEvent]:
+            for usage in usages:
+                self.session.add_usage(usage)
+            return super().astream_turn(text)
+
+    monkeypatch.setattr(zakcode, "Agent", GatewayAgent)
+    result = runner.invoke(app, ["cli"], input="hello\n/cost\n/exit\n")
+    assert result.exit_code == 0
+    shown = " ".join(result.stdout.split())  # the console may wrap the line
+    tokens = sum(u.total_tokens for u in usages)
+    line = rf"total={tokens} tok \(prompt 0 / completion 0\) \S+ {re.escape(total)}"
+    assert re.search(line + r"(\s|$)", shown), shown
+    for model, cost in rows.items():
+        n = sum(u.total_tokens for u in usages if u.model == model)
+        assert re.search(rf"{re.escape(model)} \S+ {n} tok \S+ {re.escape(cost)}(\s|$)", shown)
+
+
 def test_chat_headless_prompt_runs_once_and_exits_zero(monkeypatch) -> None:
     # `-p TASK` runs a single turn (no REPL, no banner) and exits 0 when the turn completes.
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)

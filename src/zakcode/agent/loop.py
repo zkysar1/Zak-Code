@@ -111,7 +111,7 @@ from pydantic import BaseModel, Field
 
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
-from zakcode.agent.compact import Compactor, is_summary
+from zakcode.agent.compact import ESTIMATE_MARGIN_FRACTION, Compactor, is_summary
 from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.pinned_inputs import change_notice
@@ -166,6 +166,7 @@ from zakcode.providers.base import (
     ProviderStreamEvent,
     ProviderUnavailable,
     RateLimited,
+    RequestFailed,
     StreamDone,
     StreamTextDelta,
     StreamThinkingDelta,
@@ -175,6 +176,7 @@ from zakcode.providers.base import (
     ToolCall,
     UnknownContextWindow,
 )
+from zakcode.providers.labels import ModelRef, display_model_id
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
@@ -712,6 +714,16 @@ _REASONING_OVERFLOW_NUDGE = (
     "3. ONE sentence stating what is blocking you.\n"
     "Nothing else — no apologies, no restated plans."
 )
+#: The output cap a reasoning-overflow retry asks for, its thinking included (ADR-0307): twice
+#: the per-completion default every call gets (ADR-0018), the 8,192 that
+#: :data:`_SUMMARY_OUTPUT_FLOOR` names. Thinking off is not a remedy everywhere: reported
+#: 2026-10-14 through a LiteLLM gateway in front of Bedrock, three of six routes took the
+#: switch with no sign of it, and a Bedrock reasoning model's thinking counts against the cap,
+#: so a hard turn can end on ``length`` with nothing visible, and a retry at the same cap with
+#: the switch ignored has no more room than the call that overflowed. Each overflow retry asks
+#: for this much and never doubles it again. The model's declared output cap and the window
+#: hold it lower (:meth:`AgentLoop._overflow_output_room`).
+_OVERFLOW_OUTPUT_TOKENS = 2 * _SUMMARY_OUTPUT_FLOOR
 
 
 def _silent_detail(generated: int, finish_reason: str | None = None) -> str:
@@ -749,6 +761,39 @@ def _reasoning_overflow_nudge(skill: str | None) -> str:
         "" if skill is None else f", and the /{skill} sequence you are running is not finished"
     )
     return _REASONING_OVERFLOW_NUDGE.format(sequence=sequence)
+
+
+def _without_refused_override(
+    extra_body: dict[str, object] | None, max_tokens: int | None
+) -> tuple[dict[str, object] | None, int | None, str]:
+    """The overflow retry's overrides with one of them dropped after a refusal that named
+    neither (ADR-0307), the thinking switch first, and what was dropped."""
+    if extra_body:
+        return None, max_tokens, "the thinking switch"
+    return extra_body, None, "the raised output cap"
+
+
+def _gave_up_wording(overflow: bool, finish_reason: str | None) -> tuple[str, str]:
+    """What a give-up says, as its trace note and its status line (ADR-0307).
+
+    After reasoning overflows it names them, and the output cap when the last completion ended
+    on it: a route whose thinking counts against the cap ends every try that way, and "the
+    model went silent" sent the reader after another failure. Plain silence keeps its words.
+    """
+    if overflow and finish_reason in _LENGTH_FINISH_REASONS:
+        return (
+            "output cap exhausted by reasoning — repeated overflows, no answer",
+            "stopping: reasoning exhausted the output cap (no answer)",
+        )
+    if overflow:
+        return (
+            "model reasoned without answering — repeated overflows",
+            "stopping: the model reasoned without answering (no answer)",
+        )
+    return (
+        "model went silent — repeated empty completions",
+        "stopping: the model went silent (no output)",
+    )
 
 
 def _investigation_rail(diagnosis: str, steps: list[Task], *, fresh: bool) -> str:
@@ -3385,6 +3430,35 @@ class AgentLoop:
         )
         return max(estimate, output_chars // _CLAMP_CHARS_PER_TOKEN)
 
+    def _overflow_output_room(self, messages: list[Message]) -> int | None:
+        """The output cap a reasoning-overflow retry of ``messages`` asks for (ADR-0307), or
+        None for the default every call gets.
+
+        :data:`_OVERFLOW_OUTPUT_TOKENS`, held to the model's declared ``max_output``, which a
+        hosted API enforces with an error (ADR-0275), and to what the window leaves after the
+        prompt, counted as the compaction check counts it, and that count's worst error
+        (:data:`~zakcode.agent.compact.ESTIMATE_MARGIN_FRACTION`), since a server may refuse
+        a request whose prompt and cap together exceed its window. None when that leaves no
+        more than the default, which the retry then keeps.
+        """
+        caps = self.provider.capabilities()
+        window = caps.context_window or self._window()
+        prompt = self._count_tokens_anchored(messages)
+        room = min(
+            _OVERFLOW_OUTPUT_TOKENS,
+            caps.max_output or _OVERFLOW_OUTPUT_TOKENS,
+            window - int(window * ESTIMATE_MARGIN_FRACTION) - prompt,
+        )
+        if room <= _SUMMARY_OUTPUT_FLOOR:
+            return None
+        self._note(
+            "intervention",
+            f"reasoning overflow — the retry asks for {room:,} output tokens",
+            kind="overflow_output_cap",
+            max_tokens=room,
+        )
+        return room
+
     async def compact_now(self, *, trigger: str = "manual") -> bool:
         """Force a compaction regardless of threshold.
 
@@ -3556,6 +3630,36 @@ class AgentLoop:
         if attempt == 0 and await self.compact_now(trigger="auto"):
             return True
         return await self.elide_now(trigger="auto")
+
+    async def _compact_for_clamped_overflow(
+        self, finish_reason: str | None, clamped_cap: int | None
+    ) -> bool:
+        """Compact before a reasoning-overflow retry when the window held the call down
+        (ADR-0310), and say so. False when that was not the case, or nothing could shrink.
+
+        A call the provider clamped to the room the window left its prompt (ADR-0308), and that
+        ended on that cap with nothing visible, overflowed because the prompt took the room. No
+        refusal will come to compact it, since the clamp made the request fit, and the overflow
+        retry (:meth:`_overflow_output_room`) finds no room past the default on that prompt. So
+        the ladder a refusal would have run (:meth:`_recover_context`) runs here, from its first
+        rung, and the retry is sized to the prompt that is left. It runs once for each such
+        overflow, and the empty-completion retries it rides on bound how many come in a row. A
+        call that ran out of a cap the window did not lower is left to the retry as before.
+        """
+        if (
+            clamped_cap is None
+            or finish_reason not in _LENGTH_FINISH_REASONS
+            or not await self._recover_context(0)
+        ):
+            return False
+        self._note(
+            "intervention",
+            f"the window held the call to {clamped_cap:,} output tokens and the reasoning filled "
+            f"them — {self.last_compaction} so the retry has room",
+            kind="overflow_compacted",
+            clamped_output_cap=clamped_cap,
+        )
+        return True
 
     def _grant_iteration(self, iterations_done: int) -> bool:
         """Whether the loop may run another iteration (and reserve it if so).
@@ -3780,7 +3884,7 @@ class AgentLoop:
                 logger.info(
                     "prompt cache defeated by the per-call tail on %s (flat at %d, then %d after "
                     "a %d-token tail-less call); the tail now rests every other call (ADR-0193)",
-                    model,
+                    ModelRef(model),
                     flat_read,
                     read,
                     rested_prompt,
@@ -3791,7 +3895,7 @@ class AgentLoop:
             logger.info(
                 "prompt cache probe on %s: cache read %d after a %d-token tail-less call — the "
                 "tail is not what holds it at %d (miss %d of %d; ADR-0193)",
-                model,
+                ModelRef(model),
                 read,
                 rested_prompt,
                 flat_read,
@@ -5260,11 +5364,13 @@ class AgentLoop:
         system: str,
         tools: list[dict[str, Any]] | None,
         extra_body: dict[str, object] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResult:
         """One buffered completion with bounded ``RateLimited`` retry (audit P0-4).
 
         ``extra_body`` is a per-call request-body override (the reasoning-overflow retry's
-        thinking switch, ADR-0056), applied to every attempt of this one logical call.
+        thinking switch, ADR-0056), applied to every attempt of this one logical call, and so
+        is ``max_tokens``, that retry's output cap (ADR-0307).
 
         Only ``RateLimited`` is retried, ``retry_after``-aware, because a 429 is the
         one failure class where waiting is the documented remedy: a PURE rate limit
@@ -5282,6 +5388,8 @@ class AgentLoop:
         async def complete(call_kw: dict[str, Any]) -> LLMResult:
             if extra_body:
                 call_kw["extra_body"] = extra_body
+            if max_tokens:
+                call_kw["max_tokens"] = max_tokens
             call_started = time.monotonic()
             _status_writer().set_model_call_start(self.session.id, model=self.provider.model_id())
             try:
@@ -7908,9 +8016,13 @@ class AgentLoop:
                     main_category = category
                     self._note("route", category, category=category)
 
-            # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off;
-            # computed before the retry loop so a compaction retry keeps the override.
+            # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off, and
+            # with room to answer past its reasoning where the window has it (ADR-0307);
+            # computed before the retry loop so a compaction retry keeps the overrides.
             call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
+            call_max_tokens = (
+                self._overflow_output_room(call_messages) if thinking_off_next_call else None
+            )
             thinking_off_next_call = False
             result: LLMResult | None = None
             context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
@@ -7921,6 +8033,7 @@ class AgentLoop:
                         system=system,
                         tools=tool_defs or None,
                         extra_body=call_extra_body,
+                        max_tokens=call_max_tokens,
                     )
                 except ContextWindowExceeded as exc:
                     # The request overflowed the model's window. Force a compaction and
@@ -7966,6 +8079,25 @@ class AgentLoop:
                     self._refund_iteration()
                     break
                 except ProviderError as exc:
+                    # A refusal of the overflow retry's own overrides that names neither
+                    # (ADR-0307). The provider learns a field a refusal names (ADR-0181), but
+                    # one route refused the thinking switch naming nothing ("The model returned
+                    # the following errors: Validation Error"), and the retry ended the turn.
+                    # The call without them was taken a moment ago, so each such refusal drops
+                    # one, the switch first, and the call is re-issued. Only the generic class
+                    # reads as a refusal; any other failure goes on as before.
+                    if type(exc) is RequestFailed and (call_extra_body or call_max_tokens):
+                        call_extra_body, call_max_tokens, dropped = _without_refused_override(
+                            call_extra_body, call_max_tokens
+                        )
+                        self._note(
+                            "intervention",
+                            f"the provider refused {dropped} without naming it — re-issuing "
+                            "the call without it",
+                            kind="overflow_retry_refused",
+                            error=str(exc),
+                        )
+                        continue
                     # Runtime model failover (PKG-AUTO): once per turn, a NON-rate-limit
                     # failure may swap to a replacement provider and retry in place.
                     # (A RateLimited reaching here already exhausted its retry budget —
@@ -8428,6 +8560,9 @@ class AgentLoop:
                                 kind="reasoning_overflow",
                             )
                             rail = _reasoning_overflow_nudge(composed_skill)
+                            await self._compact_for_clamped_overflow(
+                                result.finish_reason, result.clamped_output_cap
+                            )
                         else:
                             generated = result.usage.completion_tokens
                             self._note(
@@ -8468,7 +8603,7 @@ class AgentLoop:
                     stop_reason = "gave_up"
                     self._note(
                         "intervention",
-                        "model went silent — repeated empty completions",
+                        _gave_up_wording(overflow, result.finish_reason)[0],
                         kind="gave_up",
                     )
                     self._refund_iteration()
@@ -9555,9 +9690,10 @@ class AgentLoop:
                         # Transparency (ADR-0033): the route was a trace-only note, so an
                         # operator watching a small model flail could not see which model
                         # was flailing. One dim line per route change.
-                        yield AgentStatus(
-                            message=f"route: {category} → {_provider_label(self.provider)}"
+                        routed = display_model_id(
+                            _provider_label(self.provider), self.settings.provider_labels
                         )
+                        yield AgentStatus(message=f"route: {category} → {routed}")
 
                 provider_failure: str | None = None
                 retry_attempts = 0
@@ -9581,8 +9717,13 @@ class AgentLoop:
                 # The accumulators are rebuilt per attempt so a retried call can never
                 # inherit partial state.
                 stream_finish_reason: str | None = None
-                # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off.
+                stream_clamped_cap: int | None = None  # the cap the window held it to (ADR-0310)
+                # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off, and
+                # with room to answer past its reasoning where the window has it (ADR-0307).
                 call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
+                call_max_tokens = (
+                    self._overflow_output_room(call_messages) if thinking_off_next_call else None
+                )
                 thinking_off_next_call = False
                 context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
                 while True:
@@ -9609,6 +9750,8 @@ class AgentLoop:
                     )
                     if call_extra_body:
                         call_kw["extra_body"] = call_extra_body
+                    if call_max_tokens:
+                        call_kw["max_tokens"] = call_max_tokens
                     saw_thinking = False  # a reasoning channel arrived on THIS attempt
                     _status_writer().set_model_call_start(
                         self.session.id, model=self.provider.model_id()
@@ -9676,6 +9819,7 @@ class AgentLoop:
                                 # stop_reason, but a ``length`` finish triggers truncation
                                 # continuation below (parity #5), so capture it here.
                                 stream_finish_reason = ev.finish_reason
+                                stream_clamped_cap = ev.clamped_output_cap
                                 break
                         # The attempt streamed to completion without raising — commit its
                         # usage exactly once. A retried/terminal attempt leaves via the
@@ -9828,6 +9972,31 @@ class AgentLoop:
                             f"{context_recoveries}/{_MAX_CONTEXT_RECOVERY} attempts)"
                         )
                     except ProviderError as exc:
+                        # A refusal of the overflow retry's own overrides that names neither
+                        # (ADR-0307) — see the buffered twin. It answers the request, so it
+                        # arrives before any chunk.
+                        if (
+                            not received_any
+                            and type(exc) is RequestFailed
+                            and (call_extra_body or call_max_tokens)
+                        ):
+                            call_extra_body, call_max_tokens, dropped = _without_refused_override(
+                                call_extra_body, call_max_tokens
+                            )
+                            self._note(
+                                "intervention",
+                                f"the provider refused {dropped} without naming it — "
+                                "re-issuing the call without it",
+                                kind="overflow_retry_refused",
+                                error=str(exc),
+                            )
+                            yield AgentStatus(
+                                message=(
+                                    f"the provider refused {dropped} without naming it; "
+                                    "re-issuing the call without it"
+                                )
+                            )
+                            continue
                         # Runtime model failover (PKG-AUTO), streaming twin: only
                         # before any event reached the client — a later retry would
                         # re-yield text already rendered, so mid-stream stays terminal.
@@ -10354,6 +10523,13 @@ class AgentLoop:
                                 )
                                 rail = _reasoning_overflow_nudge(composed_skill)
                                 status = "reasoning overflow; retrying with thinking off"
+                                if await self._compact_for_clamped_overflow(
+                                    stream_finish_reason, stream_clamped_cap
+                                ):
+                                    status = (
+                                        f"reasoning overflow under a cap the window held down; "
+                                        f"{self.last_compaction}; retrying with thinking off"
+                                    )
                             else:
                                 generated = attempt_usage.completion_tokens
                                 silent = _silent_detail(generated, stream_finish_reason)
@@ -10395,13 +10571,10 @@ class AgentLoop:
                             yield AgentStatus(message=self._veto_status())
                             continue
                         stop_reason = "gave_up"
-                        self._note(
-                            "intervention",
-                            "model went silent — repeated empty completions",
-                            kind="gave_up",
-                        )
+                        note, status = _gave_up_wording(overflow, stream_finish_reason)
+                        self._note("intervention", note, kind="gave_up")
                         self._refund_iteration()
-                        yield AgentStatus(message="stopping: the model went silent (no output)")
+                        yield AgentStatus(message=status)
                         break
                     # Broken-record guard (ADR-0026) — see the buffered twin.
                     if assistant_text and len(assistant_text) >= _BROKEN_RECORD_MIN_CHARS:
