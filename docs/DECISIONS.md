@@ -19088,3 +19088,79 @@ why, 2; the clamp not recorded, 9; a cap the floor kept recorded as clamped, 1; 
 result not stamped, 6; the default stream dropping it, 1; and the text tool protocol's stream dropping it, 1. One stayed
 green, an equivalent: `acomplete` not reading the clamp again after a repaired request is rebuilt, since no repair
 changes the prompt, the tools or the cap. `uv run poe check` is green: 5,956 passed, 22 skipped.
+
+## ADR-0311: a refusal of tool use, temperature or stop is read at the start of the provider's own message, not anywhere in a 4xx that only quotes it
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A hostile review of ADR-0303 found on 2026-10-15 that the refusal readers are substring matches over the
+whole text of a 4xx. `tool_use_unsupported` and `temperature_field_unsupported` (ADR-0303), and `stop_field_unsupported`
+and `stop_length_limit` (ADR-0296), searched the whole redacted exception text, and their gates ask only for a request
+rejection (a 400 or a 422) of a request that carried the field. So a 400 about something else that merely QUOTES one of
+the sentences, as a validation error that prints the offending input does, read as the refusal, and was learned for the
+rest of the session: the provider moved to the text protocol, or dropped a configured temperature of 0, or the stop. The
+echo is realistic: this repository's own docs and tests carry every one of the sentences, and an agent sends files like
+those to the model. Measured here with litellm's own client against a patched transport, on three echo shapes: a
+pydantic validation error (`... input_value={'text': "notes: This model doesn't support tool use."} ...`), Bedrock's
+validator quoting the value through a LiteLLM proxy, and a FastAPI `detail` body carrying the input. Against main all
+three read as each refusal, and a call that met one on either path latched its provider.
+
+The report proposed reading the sentence from the provider's own message, the `message` of the error object, bounded to
+a few hundred characters, and falling back to the whole text only when it is short. Measured here, that alone still
+reads two of the three shapes: the pydantic error and Bedrock's validator both quote the offending value INSIDE their
+own message, 138 and 36 characters in.
+
+**Decision.**
+
+* `providers/base.py` gains `provider_message(text)`, the provider's own message in an error's text. It peels the
+  wrappers litellm and a LiteLLM proxy put in front of it (`litellm.BadRequestError: `, `OpenAIException - `,
+  `BedrockException - `, and the openai SDK's `Error code: 400 - `, which litellm keeps when it found no message in the
+  body) and opens the error object they wrap, as JSON or as the repr that SDK prints, down to the innermost message: the
+  body's `message`, its `error.message` or a string `error`, or a string `detail`. It returns at most
+  `PROVIDER_MESSAGE_MAX_CHARS`, 400 characters; the longest measured refusal is 157. A repr is parsed with
+  `ast.literal_eval`, which evaluates literals only, and only up to 16,384 characters.
+* The four readers match only at the START of that message, after at most four words of subject (`This model`, `Model
+  route-a`), none of them carrying a quote mark. A backend that refuses says so at the start of its message; a sentence
+  that a 400 only quotes sits after a quote mark, or after more words than that.
+* Every measured wording still reads: the sentences of ADR-0296 and ADR-0303 bare, behind litellm's wrapper, inside a
+  JSON body, and behind a LiteLLM proxy's own wrapper around Bedrock's JSON with the router's trailer
+  (`litellm.BadRequestError: OpenAIException - litellm.BadRequestError: BedrockException - {"message":"..."}. Received
+  Model Group=...`), and the streamed tool-use wording, which goes on `in streaming mode.`.
+* The gates are unchanged: a request rejection, of a call that carried the field.
+
+Stated choices. The two subject rules each catch an echo the other misses: a short validator message whose quoted value
+is one word in (`Value '...' at ...`) passes the word bound and stops at the quote mark, and a gateway's own message
+that carries the content unquoted after a longer preamble stops at the word bound. A refusal worded after a longer
+preamble is no longer read, and its call fails as it did before ADR-0303; none is measured. ADR-0181's named-field
+patterns (`rejected_request_field`) and the reasoning-effort remedy that `_wants_effort_none` reads search the whole
+text in the same way. Their gate is narrower, a field this call sent named in the provider's words, and they are left
+for a change of their own.
+
+Rejected: the bounded search the report proposed, for the measured reason above; requiring the sentence to be the whole
+message, since `Remove temperature and try again.` and `in streaming mode.` follow it; and removing quoted spans before
+a search anywhere, which an unclosed quote in an echo defeats.
+
+Not verified: a live gateway. The sentences are the reports', byte for byte; the echo bodies are built in the shapes
+those validators print, not captured from one.
+
+**Consequences.** A 400 that only quotes a refusal is surfaced as the `RequestFailed` it is: that call fails, nothing is
+learned, and the next call is sent as before. A real refusal is learned as ADR-0296 and ADR-0303 have it. This amends
+the readers of both.
+
+The proof. `tests/test_refusal_from_message.py` (131 tests). The readers: the live bodies, bare and proxied, read as
+their own refusal and no other, the streamed wording included; bodies litellm prints as a repr are read; a raw JSON body
+is read by its `message` and its `error.message`; a refusal that opens a long message is read; and five echo shapes, the
+three above, a short validator message and an unquoted preamble, each with the sentence as it is and inside notes, read
+as no refusal, as does a sentence 200,000 characters into a text. `provider_message` returns the innermost message of
+the proxied body and is bounded. The call paths, `acomplete` and `astream` each: an echo of the tool-use sentence fails
+the call as a plain `RequestFailed` and the next call still sends its tools; an echo of the temperature sentence keeps a
+temperature of 0 on the next call; an echo of either stop sentence keeps the stop; and the live bodies, bare and
+proxied, still move the session to the text protocol, the streamed wording included, still drop the temperature, and
+still teach the stop field and the stop limit. Against main, 92 of the 131 fail: every echo case, the long text, and
+`provider_message`, which main does not have. The 39 that pass are the controls: the live bodies, the repr and raw JSON
+bodies, and the message that opens with its refusal. Twelve mutations were each run green, red, green (2026-10-15), with
+the red tests counted from the verdict: the wrappers not peeled turned 73 red; no envelope opened, 30; the tool-use
+sentence read anywhere in the text, 31; the temperature sentence, 20; the stop field, 20; the stop limit, 20; no bound
+on the subject's words, 18; quote marks allowed in the subject, 18; the message not bounded, 1; `error.message` and a
+string `error` not read, 6; a string `detail` not read, 5; and a repr body not parsed, 10. `uv run poe check` is green:
+6,065 passed, 22 skipped.
