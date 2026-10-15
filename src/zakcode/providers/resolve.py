@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from zakcode.providers.base import ProviderError
+from zakcode.providers.labels import display_model_id
 from zakcode.providers.registry import get_capabilities
 
 logger = logging.getLogger("zakcode.providers")
@@ -386,4 +387,5 @@ def describe_resolution(settings: object) -> str:
     except ModelResolutionError as exc:
         first = str(exc).splitlines()[0]
         return f"auto → UNRESOLVED ({first})"
-    return f"auto → {resolved.model} ({resolved.reason})"
+    shown = display_model_id(resolved.model, getattr(settings, "provider_labels", None))
+    return f"auto → {shown} ({resolved.reason})"
