@@ -3631,6 +3631,36 @@ class AgentLoop:
             return True
         return await self.elide_now(trigger="auto")
 
+    async def _compact_for_clamped_overflow(
+        self, finish_reason: str | None, clamped_cap: int | None
+    ) -> bool:
+        """Compact before a reasoning-overflow retry when the window held the call down
+        (ADR-0310), and say so. False when that was not the case, or nothing could shrink.
+
+        A call the provider clamped to the room the window left its prompt (ADR-0308), and that
+        ended on that cap with nothing visible, overflowed because the prompt took the room. No
+        refusal will come to compact it, since the clamp made the request fit, and the overflow
+        retry (:meth:`_overflow_output_room`) finds no room past the default on that prompt. So
+        the ladder a refusal would have run (:meth:`_recover_context`) runs here, from its first
+        rung, and the retry is sized to the prompt that is left. It runs once for each such
+        overflow, and the empty-completion retries it rides on bound how many come in a row. A
+        call that ran out of a cap the window did not lower is left to the retry as before.
+        """
+        if (
+            clamped_cap is None
+            or finish_reason not in _LENGTH_FINISH_REASONS
+            or not await self._recover_context(0)
+        ):
+            return False
+        self._note(
+            "intervention",
+            f"the window held the call to {clamped_cap:,} output tokens and the reasoning filled "
+            f"them — {self.last_compaction} so the retry has room",
+            kind="overflow_compacted",
+            clamped_output_cap=clamped_cap,
+        )
+        return True
+
     def _grant_iteration(self, iterations_done: int) -> bool:
         """Whether the loop may run another iteration (and reserve it if so).
 
@@ -8530,6 +8560,9 @@ class AgentLoop:
                                 kind="reasoning_overflow",
                             )
                             rail = _reasoning_overflow_nudge(composed_skill)
+                            await self._compact_for_clamped_overflow(
+                                result.finish_reason, result.clamped_output_cap
+                            )
                         else:
                             generated = result.usage.completion_tokens
                             self._note(
@@ -9684,6 +9717,7 @@ class AgentLoop:
                 # The accumulators are rebuilt per attempt so a retried call can never
                 # inherit partial state.
                 stream_finish_reason: str | None = None
+                stream_clamped_cap: int | None = None  # the cap the window held it to (ADR-0310)
                 # A reasoning-overflow retry (ADR-0056) runs this ONE call with thinking off, and
                 # with room to answer past its reasoning where the window has it (ADR-0307).
                 call_extra_body = thinking_extra_body(False) if thinking_off_next_call else None
@@ -9785,6 +9819,7 @@ class AgentLoop:
                                 # stop_reason, but a ``length`` finish triggers truncation
                                 # continuation below (parity #5), so capture it here.
                                 stream_finish_reason = ev.finish_reason
+                                stream_clamped_cap = ev.clamped_output_cap
                                 break
                         # The attempt streamed to completion without raising — commit its
                         # usage exactly once. A retried/terminal attempt leaves via the
@@ -10488,6 +10523,13 @@ class AgentLoop:
                                 )
                                 rail = _reasoning_overflow_nudge(composed_skill)
                                 status = "reasoning overflow; retrying with thinking off"
+                                if await self._compact_for_clamped_overflow(
+                                    stream_finish_reason, stream_clamped_cap
+                                ):
+                                    status = (
+                                        f"reasoning overflow under a cap the window held down; "
+                                        f"{self.last_compaction}; retrying with thinking off"
+                                    )
                             else:
                                 generated = attempt_usage.completion_tokens
                                 silent = _silent_detail(generated, stream_finish_reason)
