@@ -18888,6 +18888,10 @@ green: 5,908 passed, 22 skipped.
 **Amended by ADR-0310 (2026-10-15):** an overflow under a cap the window held down (ADR-0308) compacts before its retry,
 so the retry's room is measured on the prompt that is left.
 
+**Amended by ADR-0315 (2026-10-15):** a refusal that names neither override is learned for the provider once that
+provider takes the call without the override dropped last, and the session's later overflow retries to it leave that
+override off.
+
 ## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt, counted by the tokenizer
 
 **Status:** Accepted (2026-10-15)
@@ -19088,3 +19092,73 @@ why, 2; the clamp not recorded, 9; a cap the floor kept recorded as clamped, 1; 
 result not stamped, 6; the default stream dropping it, 1; and the text tool protocol's stream dropping it, 1. One stayed
 green, an equivalent: `acomplete` not reading the clamp again after a repaired request is rebuilt, since no repair
 changes the prompt, the tools or the cap. `uv run poe check` is green: 5,956 passed, 22 skipped.
+
+## ADR-0315: an override of the overflow retry that a provider refused naming neither is left off its later retries for the session, and the re-issue bound is stated
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** Read on 2026-10-15. A refusal of the overflow retry that names nothing drops one of the retry's overrides,
+the thinking switch first and the raised cap second (ADR-0307), from that call's own copies, so nothing was kept. Where
+the raised cap is the offender, on a route that holds an output limit of its own under 16,384 and refuses a cap past it
+naming nothing, every overflow retry of the session paid two refused requests, and the request that was taken carried
+neither override, so a model that needs thinking off to answer never got it. ADR-0307 chose this: nothing in such a
+refusal says which override it refused, and learning it would make a guess about one call a standing state. CONFIG.md
+also said, in four places, that a call whose field a provider refuses by name is "re-issued once" (ADR-0181). That holds
+for one refusal. With several, a call is re-issued once per refusal learned, at most three times
+(`_MAX_REQUEST_REPAIRS`, ADR-0303).
+
+**Decision.**
+
+* When a refusal that names nothing drops an override and the same provider then takes the call, the override dropped
+  last is the one that let it through. The loop remembers it for that provider for the rest of the session, and later
+  overflow retries to that provider leave it off: a provider that refused the raised cap is sent the switch alone, and
+  one that refused the switch is sent the raised cap alone. The trace notes it (`overflow_override_learned`). Both
+  paths.
+* An override is learned only when the provider that refused it took the call without it. A call that is not taken
+  teaches nothing, and neither does one that failed over and another provider took.
+* It is kept per provider, by the provider object, so a routed or failed-over provider learns its own. It lasts the
+  session: the loop holds it, and a new session starts clean. Where an agent is built for each request, as the web
+  server does, it lasts that request.
+* CONFIG.md's four rows say a call is re-issued once per refusal learned, at most three times, and a test holds that to
+  `_MAX_REQUEST_REPAIRS`.
+
+Stated choices. The evidence is a pair, not one call: the request with the override was refused, and the same request
+without it was taken, by the same provider. That is the comparison ADR-0307 lacked. At a refusal of both overrides
+nothing says which was refused, and nothing is learned there; what is learned is the override whose drop let the call
+through. On a route that refuses both, the cap is learned on the first retry and the switch on the next, each paid for
+once. It is kept on the loop, not on the provider: the overrides are the loop's, and the provider cannot tell a refusal
+of one from a refusal of the other. The provider object is the key because the router hands back the same provider for a
+model from its cache, and the entry holds the provider, so its id is not reused while the entry lives. A route that
+refuses only the pair, taking each alone, loses the switch, since the switch is dropped first and its drop lets the call
+through. That is the order ADR-0307 chose, and no such route was measured.
+
+Rejected: learning at each refusal, which on a route that refuses the cap would learn the switch too and send neither;
+keeping it on the provider, as a field refused by name is kept (ADR-0181), which would make the provider hold a decision
+of the loop's; and keeping it past the session, which would make one route's answer on one day a standing state.
+
+Not verified: a live route. The refusal's words are the report's of ADR-0307; the tests send them from stand-ins.
+
+**Consequences.** On a route that refuses the raised cap naming nothing, the first overflow retry of a session still
+pays two refused requests, and each later one pays none and carries the switch, so a model that answers with thinking
+off now can. On the measured route that refuses the switch, each later retry pays none. ADR-0307 is amended: a refusal
+that names nothing is learned once the same provider takes the call without the override dropped last.
+
+The proof. `tests/test_overflow_refusal_learned.py` (12 tests). Scripted routes, on each path: a route that refuses the
+raised cap pays two refusals on the first retry, learns the cap, and the next retry sends the switch alone; a route that
+refuses the switch learns it, and the next retry sends the raised cap alone. A route that refuses both is taught each
+once: two refusals, then one, then none. Left alone: another provider is sent both overrides; a call that another
+provider took after a failover teaches nothing, on each path, while its refusal is still noted; and a new session is
+sent both again. On the wire, through the provider and a faked `litellm.acompletion`, buffered and streamed, a route
+that holds an output limit of 12,000 and refuses past it naming nothing, whose model answers within 2,000 tokens only
+with thinking off, is sent 8,192, then 16,384 with the switch and without it, both refused, then 8,192 plain, which
+overflows, then 8,192 with the switch, which answers, where the turn used to give up. A docs test holds CONFIG.md's four
+rows to `_MAX_REQUEST_REPAIRS`. Against main with ADR-0310, 8 of the 12 fail: the two offenders on each path, the route
+that refuses both, the wire case on each path, and the docs test. The 4 that pass are the controls: another provider,
+the failover on each path, and a new session. Fourteen mutations were run on 2026-10-15, each from a green baseline and
+restored to green, with the red tests counted from the verdict: a learned switch sent again turned 3 red; a learned cap
+sent again, 5; what one provider refused applied to every provider, 1; the buffered path not keeping what it dropped, 4;
+the streamed path, 3; the buffered path never learning, 4; the streamed path, 3; a call another provider took teaching
+the first, 2; every dropped override learned at the drop, 5; the override dropped first learned rather than the last, 2;
+the learning kept for the process rather than the session, 1; the learning not noted under its kind, 4; one CONFIG.md
+row back to "re-issued once", 1; and the bound changed in the code, 1. `uv run poe check` is green: 5,968 passed, 22
+skipped.
