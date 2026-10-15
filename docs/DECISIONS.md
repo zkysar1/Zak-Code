@@ -18891,6 +18891,10 @@ green: 5,908 passed, 22 skipped.
 **Amended by ADR-0310 (2026-10-15):** an overflow under a cap the window held down (ADR-0308) compacts before its retry,
 so the retry's room is measured on the prompt that is left.
 
+**Amended by ADR-0315 (2026-10-15):** a refusal that names neither override is learned for the provider once that
+provider takes the call without the override dropped last, and the session's later overflow retries to it leave that
+override off.
+
 ## ADR-0308: the per-call output cap is clamped to the room the window leaves the prompt, counted by the tokenizer
 
 **Status:** Accepted (2026-10-15)
@@ -19366,6 +19370,219 @@ it when it is empty, 1; the labels handed over only after the Agent is built, 1;
 the walk reads, by served by, 6, the fallback warning, 2, the refused temperature, 2, the refused tool use, 2, each
 prompt-cache note, 1, the zakpick startup line, 1, and the `auto` resolution line, 1. `uv run poe check` is green:
 5,971 passed, 22 skipped.
+
+## ADR-0315: an override of the overflow retry that a provider refused naming neither is left off its later retries for the session, and the re-issue bound is stated
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** Read on 2026-10-15. A refusal of the overflow retry that names nothing drops one of the retry's overrides,
+the thinking switch first and the raised cap second (ADR-0307), from that call's own copies, so nothing was kept. Where
+the raised cap is the offender, on a route that holds an output limit of its own under 16,384 and refuses a cap past it
+naming nothing, every overflow retry of the session paid two refused requests, and the request that was taken carried
+neither override, so a model that needs thinking off to answer never got it. ADR-0307 chose this: nothing in such a
+refusal says which override it refused, and learning it would make a guess about one call a standing state. CONFIG.md
+also said, in four places, that a call whose field a provider refuses by name is "re-issued once" (ADR-0181). That holds
+for one refusal. With several, a call is re-issued once per refusal learned, at most three times
+(`_MAX_REQUEST_REPAIRS`, ADR-0303).
+
+**Decision.**
+
+* When a refusal that names nothing drops an override and the same provider then takes the call, the override dropped
+  last is the one that let it through. The loop remembers it for that provider for the rest of the session, and later
+  overflow retries to that provider leave it off: a provider that refused the raised cap is sent the switch alone, and
+  one that refused the switch is sent the raised cap alone. The trace notes it (`overflow_override_learned`). Both
+  paths.
+* An override is learned only when the provider that refused it took the call without it. A call that is not taken
+  teaches nothing, and neither does one that failed over and another provider took.
+* It is kept per provider, by the provider object, so a routed or failed-over provider learns its own. It lasts the
+  session: the loop holds it, and a new session starts clean. Where an agent is built for each request, as the web
+  server does, it lasts that request.
+* CONFIG.md's four rows say a call is re-issued once per refusal learned, at most three times, and a test holds that to
+  `_MAX_REQUEST_REPAIRS`.
+
+Stated choices. The evidence is a pair, not one call: the request with the override was refused, and the same request
+without it was taken, by the same provider. That is the comparison ADR-0307 lacked. At a refusal of both overrides
+nothing says which was refused, and nothing is learned there; what is learned is the override whose drop let the call
+through. On a route that refuses both, the cap is learned on the first retry and the switch on the next, each paid for
+once. It is kept on the loop, not on the provider: the overrides are the loop's, and the provider cannot tell a refusal
+of one from a refusal of the other. The provider object is the key because the router hands back the same provider for a
+model from its cache, and the entry holds the provider, so its id is not reused while the entry lives. A route that
+refuses only the pair, taking each alone, loses the switch, since the switch is dropped first and its drop lets the call
+through. That is the order ADR-0307 chose, and no such route was measured.
+
+Rejected: learning at each refusal, which on a route that refuses the cap would learn the switch too and send neither;
+keeping it on the provider, as a field refused by name is kept (ADR-0181), which would make the provider hold a decision
+of the loop's; and keeping it past the session, which would make one route's answer on one day a standing state.
+
+Not verified: a live route. The refusal's words are the report's of ADR-0307; the tests send them from stand-ins.
+
+**Consequences.** On a route that refuses the raised cap naming nothing, the first overflow retry of a session still
+pays two refused requests, and each later one pays none and carries the switch, so a model that answers with thinking
+off now can. On the measured route that refuses the switch, each later retry pays none. ADR-0307 is amended: a refusal
+that names nothing is learned once the same provider takes the call without the override dropped last.
+
+The proof. `tests/test_overflow_refusal_learned.py` (12 tests). Scripted routes, on each path: a route that refuses the
+raised cap pays two refusals on the first retry, learns the cap, and the next retry sends the switch alone; a route that
+refuses the switch learns it, and the next retry sends the raised cap alone. A route that refuses both is taught each
+once: two refusals, then one, then none. Left alone: another provider is sent both overrides; a call that another
+provider took after a failover teaches nothing, on each path, while its refusal is still noted; and a new session is
+sent both again. On the wire, through the provider and a faked `litellm.acompletion`, buffered and streamed, a route
+that holds an output limit of 12,000 and refuses past it naming nothing, whose model answers within 2,000 tokens only
+with thinking off, is sent 8,192, then 16,384 with the switch and without it, both refused, then 8,192 plain, which
+overflows, then 8,192 with the switch, which answers, where the turn used to give up. A docs test holds CONFIG.md's four
+rows to `_MAX_REQUEST_REPAIRS`. Against main with ADR-0310, 8 of the 12 fail: the two offenders on each path, the route
+that refuses both, the wire case on each path, and the docs test. The 4 that pass are the controls: another provider,
+the failover on each path, and a new session. Fourteen mutations were run on 2026-10-15, each from a green baseline and
+restored to green, with the red tests counted from the verdict: a learned switch sent again turned 3 red; a learned cap
+sent again, 5; what one provider refused applied to every provider, 1; the buffered path not keeping what it dropped, 4;
+the streamed path, 3; the buffered path never learning, 4; the streamed path, 3; a call another provider took teaching
+the first, 2; every dropped override learned at the drop, 5; the override dropped first learned rather than the last, 2;
+the learning kept for the process rather than the session, 1; the learning not noted under its kind, 4; one CONFIG.md
+row back to "re-issued once", 1; and the bound changed in the code, 1. `uv run poe check` is green: 5,968 passed, 22
+skipped.
+
+## ADR-0316: a 504 names the ingress only with its web page, a refusal warning quotes the provider's own message cut at a word, and a fallback to the group asked for is not warned of
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** Among the smaller items of a hostile review on 2026-10-15 of ADR-0302 to ADR-0309 are these four.
+
+* The 504 label over-claims (ADR-0306). `_map_error` named every 504 that litellm raises as `Timeout` with the bound
+  `gateway ingress 504`, which the retry notice prints. Measured here on 2026-10-15 with litellm 1.86.2 and a patched
+  transport: litellm raises the same `Timeout` carrying 504 for the gateway's own JSON 504, on both paths, for a LiteLLM
+  proxy's error object (`litellm.Timeout: Connection timed out after 120.0 seconds.`) and for a bare message. Only the
+  ingress answers with a web page, so the label claimed an ingress for a 504 the gateway sent itself.
+* The refusal warnings quote litellm's text (ADR-0181, ADR-0188, ADR-0296, ADR-0303). Each warning that a learned
+  refusal prints quoted the whole exception text, whitespace collapsed and cut at its 200th character. Behind a LiteLLM
+  proxy that text is litellm's wrapper, the proxy's own wrapper and Bedrock's JSON, and the cut falls where it falls:
+  measured here, the stop limit's warning ended `... characters. Try again` and the tool-use warning `... Available
+  Model Group Fallbacks=`.
+* The fallback warning can name the group asked for (ADR-0305). With an attempted count above 0, the warning read `the
+  gateway answered with X instead` whatever X was, the very model group asked for included: the model string less its
+  provider prefix. Read here in litellm 1.86.2's router: a fallback never goes to the group it falls back from, but the
+  fallback's own fallbacks can come back to it, and the group header names the group that answered.
+* The clamp and a thinking budget (ADR-0308). Checked offline here on litellm 1.86.2:
+  `get_optional_params(model="claude-sonnet-4-5", custom_llm_provider="anthropic", max_tokens=3000,
+  reasoning_effort=...)` keeps `max_tokens` at 3,000 next to a thinking `budget_tokens` of 1,024 for `low`, 2,048 for
+  `medium` and 4,096 for `high`, and Anthropic requires `max_tokens` above the budget. The clamp holds the cap to the
+  room the window leaves, down to its floor of 1,024, so on a nearly full window it can put the cap at or under the
+  budget the call carries. The old fixed 8,192 stayed above every budget litellm maps an effort to. The API's refusal
+  was not exercised.
+
+**Decision.**
+
+* A `Timeout` carrying a 504 names the ingress, `gateway ingress 504`, only when its text holds a web page
+  (`_HTML_PAGE`, the match by which ADR-0306 reduces a page to its words). Without one it is `gateway 504`, and the
+  notice reads `request timed out (gateway 504)`. Both are `TimedOut`, retried as before. The page is looked for in
+  litellm's text, not in the message `_map_error` keeps, which has lost its markup by then.
+* `providers/base.py` gains `quoted_provider_message(text)`: the provider's own message, found as ADR-0311's
+  `provider_message` finds it but taken whole, with its whitespace collapsed. Past `PROVIDER_QUOTE_MAX_CHARS`, 200
+  characters, it is cut after the last whole word that fits and ends in an ellipsis; a single word longer than that is
+  cut inside it. The five refusal warnings quote it: tool use (`text_tools.py`), the temperature, the stop field and the
+  stop limit, a field refused by name, and the reasoning-effort remedy.
+* `_warn_on_fallback` says nothing when the answerer it would name, the group or, with no group, the deployment, is the
+  model asked for less its provider prefix: `route-a` for `openai/route-a`, `team/route-a` for `openai/team/route-a`.
+  Any other answerer is warned of as before.
+* The thinking-budget case is recorded here. The clamp is unchanged.
+* `TimedOut`'s docstring and the `request_timeout` row of `docs/CONFIG.md` name the gateway's own 504.
+
+Stated choices. For the fallback warning the review offered saying nothing or saying "served by X". Nothing is said: the
+warning exists to name a model that answered instead of the one asked for, and none did. On the buffered path ADR-0214's
+INFO line still names the server's own name. Only the provider prefix is dropped, so an alias with a slash in it is
+compared whole. The review listed four refusal warnings; the fifth, ADR-0188's reasoning-effort remedy, quoted the same
+way and changes with them. The quote is taken from the whole message rather than `provider_message`'s 400 characters, so
+a cut is marked wherever text was left out. For the thinking budget the review offered keeping the clamp above the
+budget the call carries, by lowering the effort for that call when the room is too small, or recording the case. It is
+recorded, because the refusal it predicts was not exercised. ADR-0310 keeps the clamp's arithmetic and compacts before
+an overflow retry when the clamp held a call's cap down. It does not reach this case, which is a refusal and not a call
+that ended on its cap.
+
+Rejected: naming the ingress for any 504 that is not JSON, since a plain-text 504 does not say which side sent it; a
+"served by" warning for the group asked for, for the reason above; and changing the clamp here.
+
+Not verified: a live gateway. The JSON 504 bodies are built in the shapes litellm and a LiteLLM proxy produce, not
+captured from one. The fallback to the group asked for is read from litellm's router, not seen. The thinking-budget
+refusal is the review's reading of Anthropic's rule, checked against litellm's mapping offline only.
+
+**Consequences.** A 504 with no page names the gateway in the retry notice; one with a page reads as before. A refusal
+warning quotes the backend's sentence, `openai/route-a refused the temperature field (This model doesn't support the
+temperature field. Remove temperature and try again.) — leaving it out ...`, behind a LiteLLM proxy as for a bare
+gateway, and a long message ends at a word with an ellipsis. Nothing learned changes. A fallback that comes back to the
+group asked for prints nothing. The clamp is as ADR-0308 has it.
+
+The proof. `tests/test_ingress_504.py` (26 tests): a `Timeout` or `APITimeoutError` carrying a 504 names the ingress
+with the page and the gateway without one; the gateway's own JSON 504 through litellm's own client, as a proxy's error
+object and as a bare message, names the gateway on each path; and a buffered turn whose first call meets it recovers
+with the notice `request timed out (gateway 504)`. `tests/test_gateway_fallback.py` (26 tests): a fallback answered by
+the group asked for is silent on each path, for a plain alias and for one with a slash, and an answerer that is only the
+alias's last segment is still warned of. `tests/test_refusal_wording.py` (30 tests): each of the five warnings, for the
+live bodies bare and behind a LiteLLM proxy and on each path that learns it, quotes the backend's sentence and nothing
+else; a long message is quoted up to the last word that fits, with an ellipsis; and the quote collapses whitespace, cuts
+inside a word only when the word is longer than the limit, keeps a message of exactly the limit whole, and is taken from
+the whole message. Against the code before this change, 42 of these 82 fail: the gateway's 504 everywhere it is named,
+the fallback to the asked group, and every warning and quote case. The 40 that pass are the controls: ADR-0305's and
+ADR-0306's tests as they were, the page variants of the changed test, and the warned last-segment case. Eighteen
+mutations were each run green, red, green (2026-10-15), with the red tests counted from the verdict: every 504 named the
+ingress's turned 8 red; no 504 named the ingress's, 6; the page looked for in the message after its markup went, 6;
+litellm's whole text quoted, 25; the cut made inside a word, 2; no ellipsis on a cut, 6; the quote taken from the
+bounded message, 1; the whitespace not collapsed, 2; a word that ends at the limit dropped, 3; a message of exactly the
+limit cut, 1; the tool-use warning quoting litellm's text, 4; the reasoning-effort warning, 2; the field warning, 4; the
+stop warning, 8; the temperature warning, 6; a fallback to the group asked for warned of, 4; the alias read as the model
+string's last segment, 4; and the alias compared with its provider prefix, 4. `uv run poe check` is green: 6,109 passed,
+22 skipped.
+
+## ADR-0317: under `zakcode webapp` what a provider learns from a refusal lasts one turn, and `docs/CONFIG.md` says so
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that the HTTP server builds a new agent, and so a new
+provider, for every turn: `_default_agent_factory` runs for each `POST /chat` and `POST /chat/stream` and for each say a
+served run takes (`server/app.py` 1068, 1094 and 2248), and `POST /complete` builds its own provider (1160). What a
+provider learns from a route's refusal is therefore learned again on each turn, one refused request each: the switch to
+the text tool protocol and a dropped `temperature` (ADR-0303), `reasoning_effort` set to `none` for a call with tools
+(ADR-0188), a dropped stop list or a stop length limit (ADR-0296), and a field refused by name (ADR-0181).
+`docs/CONFIG.md` says these hold "for the rest of the session", which is true of the CLI. The review asked to carry the
+learned state across the requests of one session, keyed by session and model, if that stays small and safe, or else to
+say in `docs/CONFIG.md` that the server learns per request.
+
+**Decision.** `docs/CONFIG.md` says it, at the end of the server's section: a learned refusal lasts one turn there,
+where the CLI keeps it for the session, and the next turn pays one refused request to learn it again. A route that
+refuses tool use can skip that request by taking the text protocol from the start, with `tool_calling_mode` set to
+`text` or with the entry's own `zakpick_models[...].tool_calling_mode` (ADR-0304). No code changes.
+
+Stated choices. The docs, because carrying the state is neither small nor safe to do in one change now. The agent has
+no seam for it: its one way to take a provider is `provider=`, which marks the provider injected and so turns off auto
+resolution, zakpick routing, the per-model role providers, model failover, and the local-only, HIPAA and context-window
+checks at startup. A carried provider needs a new parameter that turns off none of these, for the default provider and
+for each role provider the agent caches. A provider is also carried whole. Beside what it learned, it keeps nine other
+fields that change as it runs, among them the warnings it gives once, its request pacing and its prefill estimate, and
+each would have to be judged for whether it may outlive a turn: carried, the fallback warning of ADR-0305 would show
+once a session, where it now shows once a turn. And the server would hold a set of providers for each session and model
+it has served, so the store needs a bound and an eviction. Concurrency within a session is not the obstacle: the server
+already runs one turn of a session at a time, and refuses a second with HTTP 409. So a served run pays one refused
+request per learned refusal per turn, and this is recorded so that the change can be made on its own.
+
+The setting rows that say "for the rest of the session" are left as they are: they are true of the CLI, and the
+server's section now qualifies them. The gateway recipe (ADR-0309) is left as it is too: what is particular to the
+server belongs in the server's section, and the recipe is held to 60 lines.
+
+Not verified: a served run against a route that refuses. The rebuild per turn is read from the code and held by the
+tests, and the cost of each refusal is the one ADR-0181, ADR-0188, ADR-0296 and ADR-0303 give it.
+
+**Consequences.** A reader of `docs/CONFIG.md` learns that a served route which refuses something pays for it once a
+turn, and how to skip the tool-use refusal. A change that keeps a provider across turns fails the tests below until the
+paragraph changes with it.
+
+The proof. `tests/test_webapp_learned_state_docs.py` (4 tests). The server's section says learned refusals last one
+turn, and names the CLI, the four ADRs and `tool_calling_mode`, which is a setting; the routes it names are the
+server's; two turns of one session through the real `_default_agent_factory` get two providers, the second with none of
+what the first learned (the tool-use latch, the refused fields, the stop limit); and two `POST /complete` providers are
+two, the second with no refused field. Against main, 2 of the 4 fail, the paragraph being absent. The 2 that pass hold
+the paragraph to the code, which is as it was. Nine mutations were each run green, red, green (2026-10-15), with the
+red tests counted from the verdict: the paragraph's lead changed turned 2 red; a route the server does not have, 1;
+ADR-0303 no longer named, 1; ADR-0188 no longer named, 1; the turn no longer the unit, 1; a setting that does not
+exist, 1; and on the code side, the refused fields carried to the next provider, 2; the server keeping one agent per
+session, 1; and the tool-use latch set from the start, 1. `uv run poe check` is green: 5,938 passed, 22 skipped.
 
 ## ADR-0318: `/observe` and `/nudge` publish through a temp file of their own, because the routes run on threads that share one PID
 

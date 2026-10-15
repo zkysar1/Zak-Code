@@ -275,7 +275,9 @@ class TimedOut(RateLimited):
     ``bound`` instead of a knob name, because no knob set it; its message says
     what the next attempt will wait. So does a 504 that an ingress in front of the
     API answered before the client ceiling expired, ``gateway ingress 504``: the
-    server side cut that call, and no knob here would have helped (ADR-0306).
+    server side cut that call, and no knob here would have helped (ADR-0306). Only
+    the ingress's web page names the ingress; a 504 the gateway answers itself, as
+    JSON, is ``gateway 504`` (ADR-0316).
     """
 
     def __init__(
@@ -585,15 +587,8 @@ def _envelope_message(text: str) -> str | None:
     return None
 
 
-def provider_message(text: str | BaseException) -> str:
-    """The provider's own message in an error ``text``, at most ``PROVIDER_MESSAGE_MAX_CHARS``.
-
-    litellm's text is layered (ADR-0311): its wrapper (``litellm.BadRequestError: OpenAIException
-    - ``), then the gateway's answer, which from a LiteLLM proxy is the same wrapper again around
-    the vendor's JSON body and the router's trailer (``BedrockException - {"message":"..."}.
-    Received Model Group=...``). This peels the wrappers and opens the envelopes down to the
-    innermost message. Text with neither is its own message, cut the same way.
-    """
+def _innermost_message(text: str | BaseException) -> str:
+    """The provider's own message in an error ``text``, whole: see :func:`provider_message`."""
     message = str(text).strip()
     for _ in range(_MESSAGE_LAYERS):
         wrapper = _MESSAGE_WRAPPER.match(message)
@@ -604,7 +599,40 @@ def provider_message(text: str | BaseException) -> str:
         if inner is None:
             break
         message = inner.strip()
-    return message[:PROVIDER_MESSAGE_MAX_CHARS]
+    return message
+
+
+def provider_message(text: str | BaseException) -> str:
+    """The provider's own message in an error ``text``, at most ``PROVIDER_MESSAGE_MAX_CHARS``.
+
+    litellm's text is layered (ADR-0311): its wrapper (``litellm.BadRequestError: OpenAIException
+    - ``), then the gateway's answer, which from a LiteLLM proxy is the same wrapper again around
+    the vendor's JSON body and the router's trailer (``BedrockException - {"message":"..."}.
+    Received Model Group=...``). This peels the wrappers and opens the envelopes down to the
+    innermost message. Text with neither is its own message, cut the same way.
+    """
+    return _innermost_message(text)[:PROVIDER_MESSAGE_MAX_CHARS]
+
+
+#: The most of a provider's message that a warning quotes (ADR-0316), the ellipsis included.
+PROVIDER_QUOTE_MAX_CHARS = 200
+
+
+def quoted_provider_message(text: str | BaseException) -> str:
+    """The provider's own message in an error ``text``, as a warning quotes it (ADR-0316).
+
+    Its whitespace is collapsed, and a message longer than ``PROVIDER_QUOTE_MAX_CHARS`` is cut
+    after the last whole word that fits, with an ellipsis; a single word longer than that is cut
+    inside it. A warning used to quote litellm's whole text, wrappers and all, cut at the 200th
+    character wherever it fell.
+    """
+    message = " ".join(_innermost_message(text).split())
+    if len(message) <= PROVIDER_QUOTE_MAX_CHARS:
+        return message
+    head = message[: PROVIDER_QUOTE_MAX_CHARS - 1]
+    if message[PROVIDER_QUOTE_MAX_CHARS - 1] != " ":
+        head = head.rpartition(" ")[0] or head
+    return head + "…"
 
 
 #: What may open a provider's message before the words of a refusal (ADR-0311): a short subject

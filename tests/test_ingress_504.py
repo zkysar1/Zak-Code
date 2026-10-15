@@ -11,6 +11,11 @@ Measured 2026-10-15 with litellm 1.86.2 against a loopback server sending that p
 ``Timeout`` carrying ``status_code`` 504 and the page in its message, where a client timeout's
 ``Timeout`` carries 408. Hermetic: no network, no credentials. The wire tests send the page
 through litellm's own HTTP client.
+
+Only the page says that an ingress cut the call (ADR-0316). The gateway answers a 504 of its own
+as JSON, with no page, when its call to the backend timed out, and litellm raises the same
+``Timeout`` carrying 504 for it (measured 2026-10-15, on both paths). That one is named as the
+gateway's.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 
 INGRESS = "gateway ingress 504"
+GATEWAY_504 = "gateway 504"
 PAGE = (
     "<html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n<body>\r\n"
     "<center><h1>504 Gateway Time-out</h1></center>\r\n</body>\r\n</html>\r\n"
@@ -69,13 +75,30 @@ def test_an_html_504_is_a_timeout_the_ingress_imposed_with_the_page_text_and_no_
     assert str(mapped) == "litellm.Timeout: Timeout Error: OpenAIException - 504 Gateway Time-out"
 
 
+@pytest.mark.parametrize(
+    "message, bound, text",
+    [
+        pytest.param(
+            f"OpenAIException - {PAGE}",
+            INGRESS,
+            "OpenAIException - 504 Gateway Time-out",
+            id="page",
+        ),
+        pytest.param(
+            "upstream request timeout", GATEWAY_504, "upstream request timeout", id="no-page"
+        ),
+    ],
+)
 @pytest.mark.parametrize("name", ["Timeout", "APITimeoutError"])
-def test_a_timeout_carrying_a_504_names_the_ingress_with_or_without_a_page(name: str) -> None:
-    mapped = LiteLLMProvider._map_error(_vendor(name, "upstream request timeout", 504))
+def test_a_timeout_carrying_a_504_names_the_ingress_only_with_its_page(
+    name: str, message: str, bound: str, text: str
+) -> None:
+    """ADR-0316: a 504 with no page is the gateway's own, not its ingress's."""
+    mapped = LiteLLMProvider._map_error(_vendor(name, message, 504))
 
     assert isinstance(mapped, TimedOut)
-    assert mapped.bound == INGRESS
-    assert str(mapped) == "upstream request timeout"
+    assert mapped.bound == bound
+    assert str(mapped) == text
 
 
 @pytest.mark.parametrize("name", ["InternalServerError", "APIError"])
@@ -159,15 +182,35 @@ _CHAT_BODY: dict[str, Any] = {
 }
 
 
+#: The gateway's own 504 when its call to the backend timed out: JSON, no page. A LiteLLM proxy's
+#: error object, and a bare message.
+GATEWAY_504_BODIES = [
+    pytest.param(
+        {
+            "error": {
+                "message": "litellm.Timeout: Connection timed out after 120.0 seconds.",
+                "type": None,
+                "param": None,
+                "code": "504",
+            }
+        },
+        id="proxy-error",
+    ),
+    pytest.param({"message": "upstream request timeout"}, id="bare-message"),
+]
+
+
 @pytest.fixture
-def ingress(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Every request litellm's own client sends is answered with the next scripted status: 504
-    with the ingress's page, or 200 with a completion. The list is the script, consumed in order;
-    the last entry repeats."""
-    script: list[int] = []
+def ingress(monkeypatch: pytest.MonkeyPatch) -> list[int | dict[str, Any]]:
+    """Every request litellm's own client sends is answered with the next scripted entry: 504
+    with the ingress's page, 200 with a completion, or a body, which the gateway sends as its own
+    JSON 504. The list is the script, consumed in order; the last entry repeats."""
+    script: list[int | dict[str, Any]] = []
 
     async def send(self: httpx.AsyncClient, request: httpx.Request, **kw: Any) -> httpx.Response:
         status = script.pop(0) if len(script) > 1 else script[0]
+        if isinstance(status, dict):
+            return httpx.Response(504, json=status, request=request)
         if status == 504:
             return httpx.Response(
                 504, content=PAGE.encode(), headers={"content-type": "text/html"}, request=request
@@ -204,6 +247,25 @@ async def test_the_ingress_page_through_litellms_client(ingress: list[int], path
     assert caught.value.bound == INGRESS
     assert _no_tags(str(caught.value))
     assert str(caught.value).count("504 Gateway Time-out") == 1
+
+
+@pytest.mark.parametrize("body", GATEWAY_504_BODIES)
+@pytest.mark.parametrize("path", ["buffered", "streamed"])
+async def test_the_gateways_own_json_504_through_litellms_client_names_the_gateway(
+    ingress: list[int | dict[str, Any]], path: str, body: dict[str, Any]
+) -> None:
+    """ADR-0316: litellm raises the same Timeout carrying 504 for it, and it is no ingress's."""
+    ingress.append(body)
+    provider = _provider()
+
+    with pytest.raises(TimedOut) as caught:
+        if path == "buffered":
+            await provider.acomplete(_MSGS)
+        else:
+            async for _ in provider.astream(_MSGS):
+                pass
+
+    assert caught.value.bound == GATEWAY_504
 
 
 @pytest.mark.parametrize("path", ["buffered", "streamed"])
@@ -264,6 +326,25 @@ def test_the_retry_notice_names_the_ingress_and_the_turn_recovers(
     assert result.stop_reason == "completed"
     notices = [r.getMessage() for r in caplog.records if "retrying" in r.getMessage()]
     assert [n.split(";")[0] for n in notices] == [f"request timed out ({INGRESS})"]
+
+
+@pytest.mark.parametrize("body", GATEWAY_504_BODIES)
+def test_the_retry_notice_names_the_gateway_for_its_own_504(
+    ingress: list[int | dict[str, Any]],
+    fast_sleep: list[float],
+    caplog: pytest.LogCaptureFixture,
+    body: dict[str, Any],
+) -> None:
+    """ADR-0316: the gateway's own JSON 504 is not named as its ingress's in the notice."""
+    ingress.extend([body, 200])
+    loop = _make_loop(_provider())
+
+    with caplog.at_level(logging.WARNING, logger="zakcode.agent.loop"):
+        result = asyncio.run(loop.arun_turn("hi"))
+
+    assert result.stop_reason == "completed"
+    notices = [r.getMessage() for r in caplog.records if "retrying" in r.getMessage()]
+    assert [n.split(";")[0] for n in notices] == [f"request timed out ({GATEWAY_504})"]
 
 
 def test_a_turn_the_ingress_keeps_cutting_ends_with_the_page_text_and_no_tags(
