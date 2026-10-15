@@ -18803,6 +18803,9 @@ bound, 6; a client timeout's 408 taken for the ingress, 3; any angle bracket tak
 beside the body, 8; no title when the body has no words, 1; scripts and styles kept, 1; entities left escaped, 1; and
 the text before the page dropped, 7. `uv run poe check` is green: 5,887 passed, 22 skipped.
 
+**Amended by ADR-0312 (2026-10-15):** the page's words are redacted again once they are decoded, so a credential
+assignment written with entities in the page is redacted.
+
 ## ADR-0307: a reasoning-overflow retry asks for twice the output cap where the model and the window leave room, a refusal of its overrides that names neither drops one and re-issues the call, and a give-up after overflows names the output cap
 
 **Status:** Accepted (2026-10-15)
@@ -19164,3 +19167,50 @@ sentence read anywhere in the text, 31; the temperature sentence, 20; the stop f
 on the subject's words, 18; quote marks allowed in the subject, 18; the message not bounded, 1; `error.message` and a
 string `error` not read, 6; a string `detail` not read, 5; and a repr body not parsed, 10. `uv run poe check` is green:
 6,065 passed, 22 skipped.
+
+## ADR-0312: a web page's words are redacted once they are decoded, so a credential written with entities in an error page is redacted
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** A review of main at 89e78f7 on 2026-10-15 found that `_map_error` redacted the exception's raw text and only
+then reduced a web page in it to its words (ADR-0306), decoding the page's entities. A credential assignment written with
+entities, `&quot;api_key&quot;: &quot;...&quot;` or the numeric `&#34;` and `&#x22;`, is not an assignment to the
+redactor, and the decoding then made it an ordinary one, in the message that reaches the turn's error. The gap is older
+than ADR-0306, which kept the order: before it, the page reached the error whole, and the value with it.
+
+Measured here on 2026-10-15 with a value built at run time: on main the value was present in the mapped error for all
+three entity forms, under a 502, a 504 and a 400, and through litellm's own HTTP client on the buffered and the streamed
+path. It was absent for the plain form.
+
+**Decision.**
+
+* `_map_error` redacts the message again after the page in it is reduced to its words and decoded. The redaction of the
+  raw text stays, as the review asked.
+* Nothing else changes: the words, the class and the bound are what ADR-0306 gave them.
+
+Stated choices. The second pass runs on every message, with a page or without. A message with no page comes back from
+`_page_text` as it went in, and the second pass finds nothing the first left, so one line serves both. The raw text's
+pass is kept although no test separates it from the second: every shape it catches survives the reduction for the second
+pass to catch, and a mutation that dropped it stayed green. It stays as a guard against a later change to the reduction.
+
+Not covered. A message with no page is not decoded, as ADR-0306 decided, so an assignment written with entities outside
+a page is still not seen. Its value stays visible between the entities, on main and after this change.
+
+Rejected: decoding every message before redacting it, which would rewrite the entities of every ordinary provider error
+as well.
+
+Not verified: a live page that carries a credential. The pages in the tests are stand-ins.
+
+**Consequences.** A credential assignment in an error page is redacted whichever way its quotes are written. A page with
+no credential reads as before, and so does every message without a page.
+
+The proof. `tests/test_page_text_redaction.py` (17 tests). An assignment with named, decimal or hex entity quotes in a
+page is redacted under a 502, a 504 and a 400, and the page's words survive; the plain form is redacted as before under
+each; a credential before the page is redacted as before; a page with no credential reads word for word as before; the
+named form sent through litellm's own HTTP client is redacted on each path; and a turn that keeps meeting the page ends
+with an error that does not carry the value. Every check is a boolean. Against main, 12 of the 17 fail: every entity
+case, both client paths and the turn. The 5 that pass are the controls: the plain form under each class, the credential
+before the page, and the page with no credential. Four mutations were run (2026-10-15), with the red tests counted from
+the verdict. Three went green, red, green: the fix reverted turned 12 red; both redactions run before the decoding, 12;
+and the page not decoded, 14, one of them ADR-0306's own entity test. The fourth, the raw text's redaction dropped,
+stayed green, as stated above. `uv run poe check` is green: 5,951 passed, 22 skipped.
