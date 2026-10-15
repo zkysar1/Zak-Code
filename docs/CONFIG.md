@@ -289,8 +289,9 @@ tokens instead, and needs no price.
 
 The gateway's ingress cutting a long buffered call reads as a timeout naming the ingress
 (ADR-0306); reasoning that exhausts the output cap is retried with twice the cap where the
-window has room (ADR-0307); and a window that counts the requested output against the
-prompt gets a cap that fits (ADR-0308).
+window has room (ADR-0307); a window that counts the requested output against the prompt
+gets a cap that fits (ADR-0308); and when reasoning fills that cap, the loop compacts before
+it asks again (ADR-0310).
 
 ## Agent behavior & permissions
 

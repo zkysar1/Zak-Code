@@ -892,7 +892,9 @@ class TextToolCallingProvider(Provider):
                 arguments_delta=json.dumps(call.arguments, default=str),
             )
         yield StreamUsage(usage=result.usage)
-        yield StreamDone(finish_reason=result.finish_reason)
+        yield StreamDone(
+            finish_reason=result.finish_reason, clamped_output_cap=result.clamped_output_cap
+        )
 
     def _record_text_overhead(self, protocol: str) -> None:
         """Remember the injected protocol's token cost (see ``_text_overhead_tokens``)."""
