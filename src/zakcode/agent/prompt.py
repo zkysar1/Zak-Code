@@ -74,9 +74,10 @@ README_FILENAME = "README.md"
 SURVEY_MAX_ENTRIES = 150
 SURVEY_MAX_DEPTH = 3
 #: zakcode's own runtime markers in the workspace root (the say-inbox busy lease, the server's
-#: current-session and run-stop-reason files). They are not project files, and the first survey
-#: cell listed `.busy` ahead of CONTRIBUTING.md (ADR-0164) -- hidden at any depth.
-_SURVEY_HIDDEN = frozenset({".busy", ".current-session", ".run-stop-reason"})
+#: current-session and run-stop-reason files, and its served marker, ADR-0320). They are not
+#: project files, and the first survey cell listed `.busy` ahead of CONTRIBUTING.md (ADR-0164)
+#: -- hidden at any depth.
+_SURVEY_HIDDEN = frozenset({".busy", ".current-session", ".run-stop-reason", ".served"})
 
 #: Markers that identify a project (VCS) root. The context-file ascent stops here, INCLUSIVE: a
 #: guide ABOVE the project — ``~/CLAUDE.md``, a shared-box ``/home/.../AGENTS.md`` the operator

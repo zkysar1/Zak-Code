@@ -188,7 +188,15 @@ from zakcode.session.observation_inbox import (
     read_observation,
     render_observation,
 )
-from zakcode.session.say_inbox import BusyLease, busy_path, read_say, say_path, say_pending
+from zakcode.session.say_inbox import (
+    BusyLease,
+    busy_elsewhere,
+    busy_path,
+    read_say,
+    say_path,
+    say_pending,
+    served_path,
+)
 from zakcode.session.status_file import get_writer as _status_writer
 from zakcode.session.store import Session, SessionStore
 from zakcode.tasks import (
@@ -7543,7 +7551,11 @@ class AgentLoop:
         step_seam = finished > self._say_prev_finished
         self._say_prev_finished = finished  # every boundary, so the delta is boundary-local
         path = say_path(self.workspace_root)
-        if not typed and not say_pending(path):
+        # ADR-0320: while another process serves the workspace, a say in the slot was written
+        # for the chat that server has open, so a turn here leaves it there.
+        if not typed and (
+            not say_pending(path) or busy_elsewhere(served_path(self.workspace_root))
+        ):
             self._say_waited = 0
             return None
         mid_step = (

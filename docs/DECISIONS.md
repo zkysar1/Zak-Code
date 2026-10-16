@@ -2464,6 +2464,9 @@ main loop holds it for the turn in both twins while a bare loop never claims; th
 still takes a say written mid-turn; the idle REPL mux and the serve consumer beat stand
 back and resume once the marker is stale or gone).
 
+**Amended by ADR-0320 (2026-10-16):** on a workspace `zakcode webapp` serves, the slot is the server's
+between turns too: while its `.served` marker is fresh, a REPL there reads no say and clears or obeys no interrupt.
+
 ## ADR-0061: The hook-transcript projection follows the store — it is the conversation, so it lives where the conversation lives
 
 **Status.** Accepted (shipped, 2026-08-28).
@@ -19669,3 +19672,73 @@ chat not wired, 1; and a frame of the chat the page left kept. That one stayed g
 errors its stream before another frame is read, so a test against a real fetch cannot deliver one. The check stays for a
 chunk already read when the abort lands, whose rows and cursor would otherwise land in the next chat. `uv run poe check`
 is green: 6,281 passed, 22 skipped.
+
+## ADR-0320: a served workspace's say slot and interrupt file are the server's, so a terminal on the same workspace leaves the page's message and its Stop alone
+
+**Status:** Accepted (2026-10-16)
+
+**Context.** ADR-0319 lets the page open any saved chat, and every say the page sends names the chat it shows. The
+owner asked on 2026-10-16 what happens when someone opens an older chat in the middle of a conversation: does the
+running agent clear the old one and resume the other, or merge the two. The server's half answers it. A switch is
+refused while a turn runs or a message waits, and each turn loads the chat the marker names whole, so nothing is merged
+and the chat left behind is saved as it was. The gap was the other reader of the same files. The say slot is one file
+per workspace (ADR-0060), and a terminal REPL left open on the same workspace reads it too: its input mux polls every
+0.3 s between its own turns, against the server's 0.5 s beat, and stands back only while another process's turn holds
+the busy marker. Nothing told it the workspace was served. Measured 2026-10-16 with the page's own routes and the REPL's
+own mux in one process, the REPL took the page's say for the chat on screen ten times in ten and ran it in its own
+conversation, while the page waited on a chat that never heard it. With the REPL in a separate process it took it in
+four runs of six. The interrupt file has the same shape. An idle REPL clears it at every poll as a stale signal, and in
+one trial of eight it cleared the page's Stop before the served turn's watcher read it, so that turn ran on. A REPL in
+the middle of a turn would read both as its own: its permission prompt would take a "y" the page sent as an answer, its
+boundary poll (ADR-0051) would fold the page's message into its own conversation, and its file watcher would stop its
+own turn on the page's Stop.
+
+**Decision.** While `zakcode webapp` serves a workspace, the say slot and the interrupt file are the server's.
+
+- The server marks the workspace `<workspace>/.served` while its say consumer runs (`say_inbox.py`). It claims the
+  marker in lifespan startup, before the first request, keeps it fresh with the busy marker's own lease (`BusyLease`,
+  touched every 30 s), and removes it when the consumer stops. A server that starts takes the marker over (`take_over`):
+  a predecessor killed in the middle of a run leaves its marker fresh for two minutes, and the service unit restarts the
+  server after every crash (ADR-0319). A server that starts ended (ADR-0256) runs no consumer and marks nothing.
+- While a fresh marker names another process, a REPL reads no say and clears, reports or obeys no stop. That covers
+  the idle wait and its non-blocking peek, the permission prompt, the turn's interrupt-file watcher, the main loop's
+  boundary poll (`agent/loop.py`) and the clear at REPL start. The REPL's own keyboard, Ctrl-C, wake-ups and
+  background-command reports are unchanged.
+- Staleness decides, as for the busy marker: a marker older than 120 s names nobody, so a server that dies stops
+  holding a REPL back two minutes later.
+- The server's own readers are unchanged, and so is every workspace no server serves.
+- The workspace survey hides `.served`, as it hides `.busy` (ADR-0164).
+- The page's switch refusal says whose turn is running. A turn in another process on the workspace reads "a turn is
+  running in another session on this workspace; let it finish, then switch", not "in this chat", because the page's
+  Stop is not the way to end it.
+
+Stated choices. The page's say could carry its chat's id into the slot, and a REPL could take only the says addressed to
+its own session. That changes a contract every producer and reader speaks (`zakcode say`, the cockpit's say box, the
+vessel, both permission prompters, the re-queue of held says), and it would leave the interrupt file to the race. One
+rule covers both files, and it is what ADR-0319 already says of a say that names no chat: a say written on a served
+workspace, by the page, `zakcode say` or the vessel, is for the chat the server has open. The marker is per process,
+like the busy marker, so two processes are the case it settles; one process that runs both a server and a REPL is not a
+deployment. It does not make a REPL beside a server a second correspondent: a terminal on a served workspace is a side
+conversation with its own keyboard (ADR-0060). A cockpit pane, whose only door is its say box, receives nothing while
+the workspace is served, and its say box reaches the server's chat instead. Like `.current-session`, the marker sits at
+the workspace root for as long as the server runs, so a host framework that commits with `git add -A` should ignore it
+beside `.busy`.
+
+Not verified: a browser, or a Windows console. The tests drive the page's routes, the REPL's own mux and turn runner,
+the main loop, and the REPL as a child process.
+
+**Consequences.** A message sent from the page runs on the chat the page shows, whatever terminal is open on the
+workspace, and the page's Stop stops the page's turn. A terminal opened on a served workspace keeps its keyboard and
+its own turns. A server that crashes and restarts marks the workspace again at once.
+
+The proof. `tests/test_served_marker.py`, 12 tests. The field shape runs the page's routes against a REPL idle in a
+child process: the server runs the say on the chat the page opened, and the REPL stands back for its whole wait. Run
+against main's code, server and REPL both, it went red in 4 runs of 6. It is a race there, so the unit tests carry the
+deterministic proof. 15 mutations were each run against a copy of the repository they break, one site at a time
+(2026-10-16), and each turned the suite red, counted from the verdict: the take-over ignored, 1 red; the marker never
+claimed, 2, never released, 1, or claimed by a server that starts ended, 1; the idle wait and the prompt reading a
+served slot, 2; the idle wait clearing a served stop, 1; the prompt reporting one, 1; the peek reading a served slot, 1,
+or clearing a served stop, 2; the main loop's boundary poll reading a served slot, 1, or standing back behind its own
+server's marker, 1; the turn's watcher obeying a served stop, 1; the REPL clearing one at start, 1; the refusal's old
+wording, 1; and the survey listing `.served`, 1 (`tests/test_prompt.py`). The project's check (`ruff check`, `ruff
+format --check`, `mypy src/zakcode`, `pytest`) is green: 6,293 passed, 22 skipped.
