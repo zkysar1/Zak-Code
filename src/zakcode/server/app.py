@@ -82,11 +82,13 @@ from zakcode.server.wire import (
     ChatResponse,
     CompleteRequest,
     CompleteResponse,
+    CurrentSessionRequest,
     NudgeRequest,
     ObserveRequest,
     RunStopRequest,
     SayRequest,
     SessionInfo,
+    SessionSummary,
     SessionTranscript,
     ToolInfo,
     TranscriptMessage,
@@ -684,6 +686,28 @@ def _boot_id() -> str | None:
     return value or None
 
 
+#: The longest a chat's title runs in the chat list (ADR-0319). The page cuts what it cannot fit.
+_CHAT_TITLE_CHARS = 80
+
+
+def _chat_title(session: Session, redact: Callable[[str], str]) -> str:
+    """A saved conversation's title in the chat list: its first ask on one line, redacted, cut
+    at a word (ADR-0319). Empty when nothing was asked in it.
+
+    The first ask is the pinned ``task`` (ADR-0233), which a compaction does not move, else
+    its first user message with text. It is redacted before its lines are joined, so a
+    credential written over several lines is still one to the redactor.
+    """
+    text = session.task or next(
+        (m.text for m in session.messages if m.role == "user" and m.text.strip()), ""
+    )
+    line = " ".join(redact(text).split())
+    if len(line) <= _CHAT_TITLE_CHARS:
+        return line
+    head = line[: _CHAT_TITLE_CHARS + 1]
+    return (head.rsplit(" ", 1)[0] if " " in head else head[:_CHAT_TITLE_CHARS]) + "…"
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -692,6 +716,7 @@ def create_app(
     provider_factory: ProviderFactory | None = None,
     tool_registry: ToolRegistry | None = None,
     on_run_end: Callable[[str], Awaitable[None]] | None = None,
+    new_session: bool = False,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
@@ -706,6 +731,10 @@ def create_app(
     WHEN a run ends; the caller owns what that means — ``zakcode webapp`` uses it to bring
     the server down so the vessel stops billing. Omitted, the run is unbounded and this is
     inert, which is the in-process/embedded default.
+
+    ``new_session`` opens the run on a new conversation, as the web page's New chat does
+    (``zakcode webapp --new-session``, ADR-0319). Without it the run continues the
+    workspace's current conversation, which is what a restart must do.
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
@@ -766,6 +795,12 @@ def create_app(
     # honors the SAME per-session reservation (in addition to its per-connection guard),
     # so a WS turn cannot overlap another WS client's or a REST turn on one session.
     inflight: set[str] = set()
+
+    # Held while a say is checked against the current conversation and queued, and while the
+    # current conversation changes (ADR-0319). A say then lands either before the change, which
+    # refuses because a message is queued, or after it, and is refused for naming the
+    # conversation the change replaced. A lock and not the event loop: `/say` runs on a thread.
+    current_lock = threading.Lock()
 
     # Read-only watch fan-out (P0-3). Every turn tees its AgentEvents into the per-session
     # bus; GET /watch tails that bus, projecting each event to a secret-redacted SafeEvent.
@@ -895,6 +930,77 @@ def create_app(
             with contextlib.suppress(OSError):
                 (_workspace_root / ".current-session").unlink()
             raise
+
+    @app.put("/sessions/current")
+    async def set_current_session(request: CurrentSessionRequest) -> SessionInfo:
+        """Make a saved conversation, or a new one, the workspace's current one (ADR-0319).
+
+        ``session_id`` names the conversation to open. ``null`` opens a new one, or keeps the
+        current one while nothing is in it, so New chat pressed twice leaves one empty chat. The
+        next turn runs on it with its whole history, since each turn loads the conversation the
+        marker names. Every page watching the conversation it replaces gets a
+        ``session_rotated`` frame and follows. 404 for an unknown id. 409 while a turn runs or a
+        say or a suggestion is queued: a turn reads the marker as it starts, and a queued message
+        was written for the conversation on screen. Async on purpose: the say consumer runs on
+        the event loop, so no turn can start between the check and the change.
+        """
+        with current_lock:
+            refusal = _switch_refusal()
+            if refusal is not None:
+                raise HTTPException(status_code=409, detail=refusal)
+            if request.session_id is None:
+                session = _new_chat()
+            else:
+                session = _load_session_or_404(request.session_id)
+            try:
+                _make_current(session)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=503, detail=f"could not change the current chat: {exc}"
+                ) from exc
+        return SessionInfo.from_session(session)
+
+    # The chat list asks again after every turn. A summary is kept against its file's mtime,
+    # so only a conversation saved since the last ask is read again.
+    chat_summaries: dict[str, tuple[float, str, int]] = {}
+
+    @app.get("/sessions/recent")
+    def recent_sessions(limit: int = 50) -> list[SessionSummary]:
+        """The saved conversations as the web page's chat list shows them, newest first
+        (ADR-0319). Each is titled by its first ask (:func:`_chat_title`) and dated by its last
+        save. One with nothing asked in it is left out unless it is the current one: a new chat
+        nobody has written in yet is still the chat on screen. ``limit`` caps the list, 1 to 500.
+        """
+        limit = max(1, min(limit, 500))
+        current = _current_session_id()
+        chats: list[SessionSummary] = []
+        for session_id, mtime in resolved_store.list_recent():
+            if len(chats) >= limit:
+                break
+            known = chat_summaries.get(session_id)
+            if known is None or known[0] != mtime:
+                try:
+                    session = resolved_store.load(session_id)
+                except (SessionNotFound, SessionCorruptError, SessionVersionError):
+                    continue  # gone since the listing, or unreadable: skipped as GET /sessions does
+                except Exception:  # noqa: BLE001 — an UNEXPECTED read error (perms/IO): skip but log
+                    logger.warning("skipping unreadable session %r in the chat list", session_id)
+                    continue
+                known = (mtime, _chat_title(session, safe_projection.redact), len(session.messages))
+                chat_summaries[session_id] = known
+            _, title, count = known
+            if not title and session_id != current:
+                continue
+            chats.append(
+                SessionSummary(
+                    id=session_id,
+                    title=title,
+                    updated_at=datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds"),
+                    message_count=count,
+                    current=session_id == current,
+                )
+            )
+        return chats
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str) -> SessionInfo:
@@ -1327,6 +1433,56 @@ def create_app(
             return None
         return value or None
 
+    def _switch_refusal() -> str | None:
+        """Why the current conversation cannot change now, or None when it can (ADR-0319): a
+        turn running here or in another process on this workspace, or a say or a suggestion
+        queued for the conversation on screen."""
+        workspace = resolved_settings.workspace_root
+        if inflight or busy_elsewhere(busy_path(workspace)):
+            return "a turn is running in this chat; stop it or let it finish, then switch"
+        if say_pending(say_path(workspace)) or _nudge_pending():
+            return "a message is queued for this chat; let it run, then switch"
+        return None
+
+    def _new_chat() -> Session:
+        """The conversation a new chat opens on: the current one while nothing is in it, so a
+        second New chat, or a second start with ``--new-session``, leaves one empty chat."""
+        current = _load_current_session()
+        if current is not None and not current.messages:
+            return current
+        session = Session(
+            cwd=str(resolved_settings.workspace_root),
+            model=resolved_settings.default_model,
+        )
+        resolved_store.save(session)
+        return session
+
+    def _make_current(session: Session) -> None:
+        """Point the ``.current-session`` marker at ``session`` and tell the pages watching the
+        conversation it replaces to follow, with a ``session_rotated`` frame (ADR-0319).
+
+        The marker is written beside itself and moved into place, so no reader finds it empty: a
+        turn that read an empty marker would start a conversation of its own. Raises OSError
+        when it cannot be written, with the marker as it was."""
+        previous = _current_session_id()
+        if previous == session.id:
+            return
+        marker = _workspace_root / ".current-session"
+        staged = marker.with_name(f".current-session.{os.getpid()}.tmp")
+        try:
+            staged.write_text(session.id + "\n", encoding="utf-8")
+            os.replace(staged, marker)
+        except OSError:
+            with contextlib.suppress(OSError):
+                staged.unlink()
+            raise
+        bus = event_bus_registry.get(previous) if previous is not None else None
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                bus.publish(
+                    WatchMarkerRequest(event="session_rotated", reason="another chat was opened")
+                )
+
     def _record_run_stop_reason(reason: str) -> None:
         """Record this run's ending beside the session it belongs to.
 
@@ -1718,14 +1874,21 @@ def create_app(
         while one is pending (single-slot queue — the sender waits for the agent to
         finish its current thought). Bearer-gated by the server middleware; the gateway
         is the sanitization + rate-limit + ownership trust boundary — here we only
-        length-cap and queue.
+        length-cap and queue. A say that names the conversation it was written for
+        (``session_id``; the web page sends it) is refused with 409 while another one is
+        current, and nothing is queued (ADR-0319).
         """
         text = (request.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="text required")
         text = text[:SAY_MAX_CHARS]
-        if not write_say(say_path(resolved_settings.workspace_root), text):
-            raise HTTPException(status_code=429, detail="a message is already pending")
+        with current_lock:
+            if request.session_id is not None and request.session_id != _current_session_id():
+                raise HTTPException(
+                    status_code=409, detail="that chat is no longer the current one"
+                )
+            if not write_say(say_path(resolved_settings.workspace_root), text):
+                raise HTTPException(status_code=429, detail="a message is already pending")
         return {"queued": True}
 
     # ── Vessel-to-mind perception intake (Portability P4) ────────────────────────
@@ -3290,6 +3453,20 @@ def create_app(
                 _workspace_root / ".run-stop-reason",
             )
             return
+        if new_session:
+            # `zakcode webapp --new-session` (ADR-0319): the run opens on a new chat, as New
+            # chat does, unless a turn or a message is pending for the current one. A start that
+            # keeps this boot's cap returned above: it is that run's restart, not a new run.
+            refusal = _switch_refusal()
+            if refusal is None:
+                try:
+                    opened = _new_chat()
+                    _make_current(opened)
+                    logger.info("new session: opened chat %s", opened.id)
+                except OSError as exc:
+                    refusal = str(exc)
+            if refusal is not None:
+                logger.warning("new session: kept the current chat (%s)", refusal)
         consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
 
     def _graceful_stop_budget() -> float:

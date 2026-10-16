@@ -145,6 +145,11 @@ uv run zakcode webapp            # FastAPI on http://127.0.0.1:8000 (loopback-on
 # then open http://127.0.0.1:8000/ for the bundled web client
 ```
 
+The page lists your saved chats beside the conversation. **New chat** starts a fresh one, and
+choosing an older chat opens it with its whole history, so your next message continues it.
+`zakcode webapp` reopens the last chat, so a restart keeps the conversation;
+`zakcode webapp --new-session` starts on a new chat instead.
+
 REST + SSE + WebSocket all wrap the same core; the WebSocket carries the live event
 stream **and** the permission-approval prompts. The web client is a pure renderer with
 no agent logic.

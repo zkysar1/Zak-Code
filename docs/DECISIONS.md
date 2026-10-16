@@ -19583,3 +19583,89 @@ red tests counted from the verdict: the paragraph's lead changed turned 2 red; a
 ADR-0303 no longer named, 1; ADR-0188 no longer named, 1; the turn no longer the unit, 1; a setting that does not
 exist, 1; and on the code side, the refused fields carried to the next provider, 2; the server keeping one agent per
 session, 1; and the tool-use latch set from the start, 1. `uv run poe check` is green: 5,938 passed, 22 skipped.
+
+## ADR-0319: the web page lists the workspace's saved chats, opens any of them or a new one, and the next turn runs on the chat it opened
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** An operator using `zakcode webapp` on Windows reported on 2026-10-15 that a new session still showed the
+old session's text, and asked for a list of old chats: a new session should open on the new chat, or the page should let
+them choose a new chat or an old one and know which context to bring back. A served workspace keeps every conversation
+it has had (ADR-0032), and one of them is current: the `.current-session` marker names it, the page joins it
+(`GET /sessions/current`), and the say consumer runs each turn on it, loading it whole at the turn's start. Nothing
+could change which one that was. `POST /sessions` writes the marker only when there is none, a restart keeps it, and the
+page draws the saved conversation when it opens (ADR-0286). So a page opened after any restart drew the last
+conversation, and neither a new chat nor an older one could be reached from it. The page also did not follow a
+`session_rotated` frame: it drew "session restarted" and kept watching the old conversation's bus, while the say
+consumer ran the next turn on the new one.
+
+**Decision.** The page has a chat list beside the column, and the server has two routes for it.
+
+- `GET /sessions/recent` lists the saved conversations newest first, by the time of their last save, at most `limit`
+  (50, at most 500). Each carries its first ask as its title: the pinned `task` (ADR-0233), which a compaction does not
+  move, else its first user message with text, redacted like the watch stream, on one line and cut at a word after 80
+  characters. A conversation with nothing asked in it is left out unless it is current, so the empty chat New chat
+  opens is listed while the page shows it. Each summary is kept against its file's mtime, so the list the page asks for
+  after every turn reads only the conversation that turn saved.
+- `PUT /sessions/current` makes a saved conversation, or a new one (`session_id: null`), the current one. The marker is
+  written beside itself and moved into place, so no turn reads it empty. Every page watching the conversation it
+  replaced gets a `session_rotated` frame. A new chat reuses the current conversation while nothing is in it, so New
+  chat pressed twice leaves one empty chat. The route refuses with 409 while a turn runs, here or in another process on
+  the workspace, and while a say or a suggestion is queued: a turn reads the marker as it starts, and a queued message
+  was written for the conversation on screen. It is async, so no turn can start between that check and the change.
+- `POST /say` takes an optional `session_id`, which the page sends. When it is not the current conversation, the say is
+  refused with 409 and nothing is queued. One lock covers that check with the queueing and the route's check with the
+  change, so a say lands wholly before a switch, which then refuses, or after it, and is refused. Without the field a
+  say goes to the current conversation, as before, so `zakcode say`, the vessel and every other client are unchanged.
+- The page lists the chats, New chat on top, the one on screen marked. Opening one clears everything the page drew or
+  counted for the last one in one place (the rows, the cursor, the bus, the plan it drew, the turn's clock, pending tool
+  and permission cards), ends the old watch, draws the chosen chat's saved conversation and then watches its own bus.
+  Anything still on its way for the chat it left is dropped by a count of the chats opened. A `session_rotated` frame
+  now makes the page open whichever chat is current. When a say is refused for naming another chat, the page opens the
+  current one, keeps the message in the composer, and says it was not sent. Below 48rem the list folds away behind a
+  Chats button in the header.
+- `zakcode webapp --new-session` opens the run on a new chat, as New chat does, unless a turn or a message is pending
+  for the current one. A start that keeps this boot's duration cap (ADR-0256) opens nothing, since it is that run's
+  restart.
+
+Stated choices. A plain `zakcode webapp` still reopens the last chat. A start is not always a new run: the service unit
+restarts the process after every run and every crash, a self-update restarts it, and the cap fence of ADR-0256 compares
+the ending's conversation with the marker, so a start that moved the marker would lose a capped run's ending. A
+provisioned vessel already moves the marker aside at each genuine run start. So the person who wants a new chat at
+launch says so with the flag, and the chat list reaches every other one. The switch is refused, not queued, while work
+is pending, because the next turn would otherwise run in the chat the user just left or the one they just opened. The
+existing session routes are unchanged: `GET /sessions` keeps its id order and its full records. A wake-up or a
+background command's report belongs to its conversation, so while another chat is current it waits for its own to be
+opened again. The terminal's `/resume` uses the user store and is left as it is.
+
+Not verified: a browser. The page's own script runs under node against a live server in the tests, the way the other
+page tests run it. The layout under 48rem was read from the CSS, not seen.
+
+**Consequences.** Opening the page shows the chat the workspace is on, with every other chat a click away and New chat
+on top. A chat opened from the list continues with its whole history, because each turn loads the conversation the
+marker names. Two pages on one workspace stay on one chat. A page that missed a switch cannot put a message into the
+wrong chat. A run started with `--new-session` opens on an empty chat and leaves the earlier ones in the list.
+
+The proof. `tests/test_webapp_sessions.py` (19 tests), `tests/test_webclient_sessions.py` (7) and four new cases in
+`tests/test_cli_webapp.py`: 30 tests. Against main, 28 fail. The 2 that pass are controls: a say that names no chat goes
+to the current one as before, and a start without `--new-session` continues the current chat. The page tests run the
+page's own script under node against a live loopback server. New chat opens an empty chat, lists the one it left and
+ends that chat's watch on the server; the list is drawn as the page opens; an old chat opened from the list is drawn
+alone, the next message continues it, and the list puts it on top after the turn; a chat opened while the last one's
+history is held on its way is drawn alone, and that chat, saved before the server started, is drawn from what was saved
+when it is opened again; a page follows another page's switch, and marks no restart when it opens a chat itself while it
+follows one; and a page that missed a switch keeps the message it could not send. 37 mutations were each run green, red,
+green (2026-10-15), each at one site, with the red tests counted from the verdict. The routes and the start, 21: a say
+for another chat queued, 2; a switch through the page's own turn, 1, a queued say, 3, or a queued suggestion, 1; the
+route switching when it should refuse, 3; an empty chat not reused, 2; no `session_rotated`, 2; the marker not moved, 2;
+the title not the pinned task, 1, not redacted, 1, or cut inside a word, 1; empty chats listed, 1; the empty current one
+left out, 2; the current one not marked, 1; the list in id order, 1; a summary never read again, 1, or never kept, 1;
+the limit ignored, 1; and `--new-session` opening nothing, 1, opening a chat while a message waits, 1, or opening one on
+a capped restart, 1. The CLI, 2: the flag not passed on, with and without `--workspace`, 2 each. The page, 14: a say
+that names no chat, 1; `session_rotated` ignored, 1; the old watch left open, 1, or opened without a way to end it, 1;
+the view not cleared, 2; the cursor kept, 1; a history that lands late drawn, 1; the list not asked for at open, 1, or
+after a turn, 1; no chat marked, 1; a 409 not handled, 1; a switch followed past a chat the page opened itself, 1; New
+chat not wired, 1; and a frame of the chat the page left kept. That one stayed green. The abort that ends the old watch
+errors its stream before another frame is read, so a test against a real fetch cannot deliver one. The check stays for a
+chunk already read when the abort lands, whose rows and cursor would otherwise land in the next chat. `uv run poe check`
+is green: 6,281 passed, 22 skipped.
