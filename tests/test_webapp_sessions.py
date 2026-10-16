@@ -73,8 +73,12 @@ class _Served:
             **kwargs,
         )
 
-    def saved(self, *turns: tuple[str, str], task: str = "", mtime: float | None = None) -> Session:
+    def saved(
+        self, *turns: tuple[str, str], task: str = "", mtime: float | None = None, sid: str = ""
+    ) -> Session:
         session = Session(cwd=str(self.root), model="scripted/test", task=task)
+        if sid:
+            session.id = sid
         for asked, answered in turns:
             session.add_message(Message.user(asked))
             session.add_message(Message.assistant_text(answered))
@@ -122,9 +126,10 @@ def test_the_chat_list_is_the_saved_chats_newest_first_each_titled_by_its_first_
     tmp_path: Path,
 ) -> None:
     served = _Served(tmp_path)
-    old = served.saved(("fix the login bug", "done"), mtime=_T0)
-    mid = served.saved(("write the release notes", "done"), mtime=_T0 + 60)
-    new = served.saved(("why is CI red", "a flaky test"), mtime=_T0 + 120)
+    # Ids in neither the order of the saves nor its reverse, so a list in id order fails.
+    old = served.saved(("fix the login bug", "done"), mtime=_T0, sid="c" * 32)
+    mid = served.saved(("write the release notes", "done"), mtime=_T0 + 60, sid="a" * 32)
+    new = served.saved(("why is CI red", "a flaky test"), mtime=_T0 + 120, sid="b" * 32)
     served.saved(mtime=_T0 + 180)  # nothing asked in it, and not current: not a chat to go back to
     served.mark(mid)
 

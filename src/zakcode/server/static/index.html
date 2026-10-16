@@ -1727,19 +1727,17 @@
   // (the marker has not moved yet), mark the restart in place, as the page always did.
   async function followCurrent(reason) {
     const gen = shown;
+    let info = null;
     try {
       const resp = await fetch("/sessions/current");
-      if (gen !== shown) return;  // the page has opened another chat meanwhile
-      if (resp.ok) {
-        const info = await resp.json();
-        if (gen !== shown) return;
-        if (info.id !== sessionId) {
-          await openSession(info);
-          refreshChats();
-          return;
-        }
-      }
+      if (resp.ok) info = await resp.json();
     } catch (e) { /* mark it below */ }
+    if (gen !== shown) return;  // the page has opened another chat meanwhile
+    if (info !== null && info.id !== sessionId) {
+      await openSession(info);
+      refreshChats();
+      return;
+    }
     add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (reason ? " — " + reason : ""))));
     endTurn();
   }
