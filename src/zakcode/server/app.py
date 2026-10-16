@@ -119,6 +119,7 @@ from zakcode.session.observation_inbox import (
     peek_observation,
 )
 from zakcode.session.say_inbox import (
+    BusyLease,
     busy_elsewhere,
     busy_path,
     interrupt_path,
@@ -126,6 +127,7 @@ from zakcode.session.say_inbox import (
     request_interrupt,
     say_path,
     say_pending,
+    served_path,
     take_interrupt,
     write_say,
 )
@@ -1438,8 +1440,14 @@ def create_app(
         turn running here or in another process on this workspace, or a say or a suggestion
         queued for the conversation on screen."""
         workspace = resolved_settings.workspace_root
-        if inflight or busy_elsewhere(busy_path(workspace)):
+        if inflight:
             return "a turn is running in this chat; stop it or let it finish, then switch"
+        if busy_elsewhere(busy_path(workspace)):
+            # Another process's turn (a terminal on the workspace, say): not this chat's, so the
+            # page's Stop is not the way to end it (ADR-0320).
+            return (
+                "a turn is running in another session on this workspace; let it finish, then switch"
+            )
         if say_pending(say_path(workspace)) or _nudge_pending():
             return "a message is queued for this chat; let it run, then switch"
         return None
@@ -3467,7 +3475,18 @@ def create_app(
                     refusal = str(exc)
             if refusal is not None:
                 logger.warning("new session: kept the current chat (%s)", refusal)
-        consumer_tasks.append(asyncio.create_task(_consume_say_loop()))
+        # ADR-0320: the workspace is marked served before the server takes its first request,
+        # and for exactly as long as the consumer runs, so a terminal REPL on the workspace
+        # leaves the say slot and the interrupt file to this server.
+        lease = BusyLease(served_path(resolved_settings.workspace_root), "served", take_over=True)
+        await lease.acquire()
+        consumer_tasks.append(asyncio.create_task(_serve_say_inbox(lease)))
+
+    async def _serve_say_inbox(lease: BusyLease) -> None:
+        try:
+            await _consume_say_loop()
+        finally:
+            await lease.release()
 
     def _graceful_stop_budget() -> float:
         """Seconds a graceful stop may take, or 0 when there is nothing to wind down.

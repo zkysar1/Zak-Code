@@ -525,6 +525,7 @@ def test_workspace_survey_lists_files_sorted_relative_and_ignore_aware(tmp_path:
     (tmp_path / "__pycache__").mkdir()
     (tmp_path / "__pycache__" / "a.pyc").write_bytes(b"\x00")
     (tmp_path / ".busy").write_text("lease", encoding="utf-8")  # zakcode's own marker, never listed
+    (tmp_path / ".served").write_text("server", encoding="utf-8")  # and the served one (ADR-0320)
 
     survey = workspace_survey(tmp_path)
     assert survey.splitlines() == [
