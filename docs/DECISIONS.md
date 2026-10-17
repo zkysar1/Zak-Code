@@ -19742,3 +19742,74 @@ or clearing a served stop, 2; the main loop's boundary poll reading a served slo
 server's marker, 1; the turn's watcher obeying a served stop, 1; the REPL clearing one at start, 1; the refusal's old
 wording, 1; and the survey listing `.served`, 1 (`tests/test_prompt.py`). The project's check (`ruff check`, `ruff
 format --check`, `mypy src/zakcode`, `pytest`) is green: 6,293 passed, 22 skipped.
+
+## ADR-0321: a Claude 5 request opts into `drop_block`, replays only signed thinking, reads one stream channel, and ships its own price-map entry
+
+**Status:** Accepted (2026-10-17)
+
+**Context.** Claude Sonnet 5.5 (`anthropic/claude-sonnet-5-5`) is the first Claude 5 model a deployment names. It
+thinks adaptively, takes its depth as `output_config.effort`, refuses a non-default `temperature`, `top_p` or `top_k`
+with a 400, and binds each thinking block it returns to the conversation that produced it: the system prompt, the tools
+and every earlier message. Four things were measured against the API on 2026-10-17 with this runtime's own provider and
+litellm 1.86.2, the version `uv.lock` pins.
+
+- **The binding is enforced on most of the credit pool.** A block replayed after the system prompt or an earlier user
+  turn changed is a 400, "The block is bound to a different conversation", on organizations created on or after
+  2026-08-31. Seven of the pool's nine accounts answered that way; the other two answered 200. This runtime edits its
+  history by design: compaction summarizes older turns and keeps the recent ones verbatim, and the system prompt has a
+  per-turn dynamic section. So replaying every block, as the first cut of this change did, would refuse calls on most
+  of the pool. Leaving a block out was accepted, on a plain turn and on a tool-use turn (measured on one account).
+- **litellm sends each thinking fragment twice on the stream**, on `reasoning_content` and again on `thinking_blocks`
+  (41 of 42 chunks carried the same text on both). The signature arrives alone on the block's last chunk.
+- **The default thinking display is a signature-only block with no text**, so the thinking deltas the loop shows
+  carried nothing.
+- **litellm 1.86.2's bundled price map has neither Claude 5.5 model.** A process that cannot fetch the remote map
+  (ADR-0281) priced every call at nothing and, finding no reasoning flag, dropped `reasoning_effort` before the request:
+  the model ran at its API default, `high`, not the depth configured. The request body was captured at litellm's HTTP
+  handler in both modes.
+
+**Decision.**
+
+- Every request to a Claude 5+ model on Anthropic's own API (not a self-hosted server behind `api_base`) carries
+  `thinking: {type: "adaptive", display: "summarized", block_binding: {prefix_mismatch_behavior: "drop_block"}}` and the
+  `thinking-binding-controls-2026-08-01` beta in `anthropic-beta`, joined to any beta the operator configured. With it
+  the API drops a stale block, and every block after it, instead of refusing the call. litellm keeps the explicit
+  `thinking` beside `reasoning_effort` and still maps the effort to `output_config`.
+- Only a signed thinking block is replayed. Anthropic signs every block it returns; an unsigned block is another
+  backend's reasoning text (a pod's `reasoning_content`), kept for the transcript and never sent back, as before.
+- The stream parser reads one channel per chunk: `thinking_blocks` when the chunk has it, `reasoning_content` otherwise.
+  The loop closes a block at each signature, so a response with several blocks is stored as several, each with its own
+  signature, and a signature-only fragment surfaces no empty thinking delta.
+- The Claude 5 predicate reads the generation number after the family name (`claude-<family>-<N>`, N at least 5). The
+  old pattern matched `claude-3-5-sonnet` and missed a bare `claude-sonnet-5`.
+- `litellm_model_entries.json` ships litellm's own entries for `claude-sonnet-5-5` and `claude-haiku-5-5`, and the
+  refresh script's default list names them. Haiku 5.5 joins the capability registry beside Sonnet 5.5 (1M window, 128K
+  output).
+
+Stated choices. Not replaying thinking at all, the behavior before this change, avoids the 400 too, and would be the
+simpler rule. It loses the model's reasoning across the tool calls of one turn, where the history does not change and a
+block is still valid, and Anthropic's guidance for these models is to pass blocks back unchanged. `drop_block` keeps the
+reasoning wherever it is still valid and degrades to the old behavior wherever it is not. A per-session strip of the
+blocks that precede each history edit would do the same work in this runtime, with more code to keep right. The binding
+beta is a dependency: an endpoint that refuses it by name would refuse these calls, and recovery there is to strip
+the blocks and resend. litellm prices Sonnet 5.5 cache reads at $0.10 per million, 0.05x input, which Anthropic's
+pricing page confirms (read 2026-10-17); the bundled `claude-api` skill's $0.20 is out of date.
+
+Not verified: the default depth. A deployment that names Sonnet 5.5 and sets no `ZAKCODE_REASONING_EFFORT` runs at the
+API default, `high`; the deployment recipe, not this runtime, sets `medium`. Also not verified: a response that
+interleaves thinking with tool calls. litellm collapses one response into text, tool calls and thinking blocks, so the
+replayed order is thinking first, and a block whose position changed is the API's to drop.
+
+**Consequences.** A zakcode session on Sonnet 5.5 keeps working through compaction and a changing system prompt on
+every account of the pool, keeps its reasoning where it can, and shows the reasoning text as it streams, once, not
+twice. A sealed process prices Sonnet 5.5 and Haiku 5.5 calls and sends the configured depth.
+
+The proof. `tests/test_sonnet55_support.py` (the predicate, the opt-in and its header merge, signed-only replay, one
+channel per chunk), `tests/test_loop_stream.py` (a block per signature; an unsigned stream is one unsigned block) and
+`tests/test_model_entries.py` (a sealed interpreter on litellm's bundled map prices both models and sends the effort).
+Run against the first cut of this change, the new tests went red: 8 failed, and the sealed-process class errored. On the
+live API, through this provider on an account that enforces the binding: turn one returned a signed block with 261
+characters of reasoning, and the same block replayed under an edited system prompt returned 200, where the request
+without `drop_block` returned 400; a streamed call gave 16 thinking fragments and no adjacent duplicates. The project's
+check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,321 passed, 24 skipped, and the one test that
+failed (two renders a minute apart, `tests/test_provider_labels.py`) passed alone on re-run.

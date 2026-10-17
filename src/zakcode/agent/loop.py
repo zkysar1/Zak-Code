@@ -9806,8 +9806,11 @@ class AgentLoop:
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
                 while True:
                     text_parts: list[str] = []
-                    thinking_parts: list[str] = []
-                    thinking_signatures: list[str | None] = []
+                    # Streamed thinking, split into blocks: a signature closes the block
+                    # it rides on, so the closed blocks keep their own signatures and the
+                    # open fragments are the block still being written.
+                    thinking_closed: list[dict[str, Any]] = []
+                    thinking_open: list[str] = []
                     accumulator = ToolCallAccumulator()
                     received_any = False
                     # Usage is accumulated per-attempt and committed ONLY after the attempt
@@ -9867,14 +9870,23 @@ class AgentLoop:
                                 # the long-reasoning models this event exists to
                                 # serve, whose thinking phase runs for minutes before
                                 # any text arrives.
-                                thinking_parts.append(ev.text)
+                                if ev.text:
+                                    thinking_open.append(ev.text)
                                 # A signature rides the LAST fragment of a thinking
-                                # block; flush the accumulated text into a block when
-                                # one arrives so multi-block responses are separated.
+                                # block (alone, on Anthropic's stream), so it closes the
+                                # block: a response with several blocks replays as
+                                # several, each with its own signature.
                                 if ev.signature:
-                                    thinking_signatures.append(ev.signature)
-                                _status_writer().on_thinking_delta(self.session.id, ev.text)
-                                yield AgentThinkingDelta(text=ev.text)
+                                    thinking_closed.append(
+                                        {
+                                            "thinking": "".join(thinking_open),
+                                            "signature": ev.signature,
+                                        }
+                                    )
+                                    thinking_open.clear()
+                                if ev.text:
+                                    _status_writer().on_thinking_delta(self.session.id, ev.text)
+                                    yield AgentThinkingDelta(text=ev.text)
                                 continue
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
@@ -10287,22 +10299,13 @@ class AgentLoop:
                 turn_saw_text = turn_saw_text or bool(assistant_text)
                 if assistant_text or tool_calls:
                     empty_retries = 0  # visible output: the silence, if any, is over
-                # Assemble thinking blocks from streamed fragments. A signature
-                # on a fragment marks the end of one block; unsignatured fragments
-                # are concatenated into a single block.
-                streamed_thinking: list[dict[str, Any]] = []
-                if thinking_parts:
-                    if thinking_signatures:
-                        # At least one signature: build a block per signature.
-                        # The text accumulated BEFORE the first signature is the
-                        # first block's content; litellm flushes on each signature.
-                        combined = "".join(thinking_parts)
-                        sig = thinking_signatures[-1] if thinking_signatures else None
-                        streamed_thinking.append({"thinking": combined, "signature": sig})
-                    else:
-                        # Thinking text without a signature (non-Anthropic reasoning
-                        # models, or a stream that did not carry one).
-                        streamed_thinking.append({"thinking": "".join(thinking_parts)})
+                # The streamed thinking as blocks: each signed block as it closed, then
+                # any text no signature closed (another backend's reasoning, or a stream
+                # cut before its signature) as one unsigned block. An unsigned block is
+                # kept for the transcript and never replayed (_translate_messages).
+                streamed_thinking: list[dict[str, Any]] = list(thinking_closed)
+                if thinking_open:
+                    streamed_thinking.append({"thinking": "".join(thinking_open)})
                 assistant_msg = self._stream_assistant_message(
                     assistant_text,
                     tool_calls,

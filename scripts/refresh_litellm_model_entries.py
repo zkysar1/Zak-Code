@@ -32,8 +32,16 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Default recipe models (bare keys as they appear in litellm.model_cost).
-_DEFAULT_MODELS = ["gpt-5-mini", "gpt-5-nano", "gpt-6-luna"]
+# Default recipe models (bare keys as they appear in litellm.model_cost). The Claude 5.5 pair
+# joined 2026-10-17: litellm 1.86.2's bundled map has neither, so a sealed process priced them
+# at nothing AND, reading them as not reasoning-capable, dropped reasoning_effort from the wire.
+_DEFAULT_MODELS = [
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-6-luna",
+]
 
 _SNAPSHOT_PATH = (
     Path(__file__).resolve().parent.parent

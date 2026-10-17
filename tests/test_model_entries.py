@@ -153,6 +153,16 @@ for model in ("openai/gpt-6-luna", "gpt-6-luna", "openai/gpt-5-mini", "openai/gp
         "supports_caching": caps.supports_caching,
         "answer_room": _answer_room(caps),
     }
+from zakcode.providers.litellm_provider import _litellm_supports_reasoning
+for model in ("anthropic/claude-sonnet-5-5", "claude-sonnet-5-5", "anthropic/claude-haiku-5-5"):
+    kwargs = LiteLLMProvider(model=model, reasoning_effort="medium")._build_kwargs(
+        [{"role": "user", "content": "hi"}], None
+    )
+    out[model] = {
+        "cost": LiteLLMProvider._litellm_token_cost(model, 100000, 10000, 90000, 0),
+        "reasoning": _litellm_supports_reasoning(model),
+        "effort_sent": kwargs.get("reasoning_effort"),
+    }
 print(json.dumps(out))
 """
 
@@ -179,6 +189,21 @@ class TestSealedProcess:
     def test_the_other_recipe_models_are_priced(self, sealed: Any, model: str) -> None:
         assert sealed[model]["cost"] is not None
         assert sealed[model]["context_window"]
+
+    @pytest.mark.parametrize(
+        "model", ["anthropic/claude-sonnet-5-5", "claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]
+    )
+    def test_a_claude_5_5_model_is_priced_and_keeps_its_effort(
+        self, sealed: Any, model: str
+    ) -> None:
+        # litellm 1.86.2's bundled map has neither Claude 5.5 model. Before the entries shipped,
+        # a sealed process priced every call at nothing AND, finding no reasoning flag, sent no
+        # reasoning_effort at all: the model ran at its API default (high), not the depth asked
+        # for (measured 2026-10-17, the request body captured at litellm's HTTP handler).
+        record = sealed[model]
+        assert record["cost"] is not None and record["cost"] > 0
+        assert record["reasoning"] is True
+        assert record["effort_sent"] == "medium"
 
     def test_registration_only_adds_shipped_ids(self, sealed: Any) -> None:
         assert sealed["removed"] == []

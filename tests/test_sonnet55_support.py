@@ -4,19 +4,26 @@ WHY THIS FILE EXISTS
 Claude Sonnet 5.5 is an adaptive-thinking model that:
 - uses output_config.effort (not budget_tokens) for reasoning depth
 - rejects non-default temperature, top_p and top_k with a 400
-- requires thinking blocks with opaque signature to be passed back unmodified
-  in multi-turn conversations (a missing or altered signature yields a 400)
+- binds each thinking block to the conversation that made it: replayed after the
+  system prompt, the tools or an earlier message changed, the block is a 400 on
+  organizations created on or after 2026-08-31 (7 of the credit pool's 9 accounts,
+  measured 2026-10-17). Leaving a block out is accepted. This runtime edits history
+  (compaction, the dynamic system section), so every request opts into drop_block
+  (beta thinking-binding-controls-2026-08-01) and the API drops a stale block instead.
 
-litellm 1.86.2 recognises it as an adaptive-thinking model and correctly maps
-reasoning_effort to thinking: {type: "adaptive"} + output_config: {effort: level}.
-What it does NOT strip is sampling parameters, so this runtime drops them at
-_build_kwargs -- the same chokepoint and shape as the gpt-5 temperature rule
-and the Gemini 3 sampling rule.
+litellm 1.86.2 maps reasoning_effort to output_config: {effort: level} for it, but only
+where its price map holds the model, and the map bundled in 1.86.2 does not: a process
+that could not fetch the remote map read the model as not reasoning-capable and sent no
+effort at all (measured). litellm_model_entries.json ships litellm's own entry for that
+case (tests/test_model_entries.py). What litellm does NOT strip is sampling parameters,
+so this runtime drops them at _build_kwargs -- the same chokepoint and shape as the
+gpt-5 temperature rule and the Gemini 3 sampling rule.
 
 Thinking blocks are preserved through the message round-trip: _translate_messages
-includes thinking_blocks on assistant dicts, _normalize captures them from the
+replays the SIGNED blocks on assistant dicts, _normalize captures them from the
 response, and _assistant_message stores them as ThinkingBlocks with signatures on
-the canonical Message.
+the canonical Message. On the stream, _parse_chunk reads one channel per chunk
+(litellm sends each fragment on two) and the loop splits blocks at each signature.
 """
 
 from __future__ import annotations
@@ -47,6 +54,9 @@ def test_predicate_matches_claude_5_family() -> None:
         "anthropic/claude-opus-5-5",
         "claude-sonnet-5.6",
         "claude-opus-5.7-preview",
+        "claude-sonnet-5",
+        "anthropic/claude-sonnet-5",
+        "claude-fable-5-1",
     ):
         assert _is_anthropic_adaptive_thinking_model(model), model
 
@@ -56,6 +66,10 @@ def test_predicate_excludes_older_claude_and_other_models() -> None:
         "claude-sonnet-4-6",
         "claude-opus-4-8",
         "anthropic/claude-haiku-4-5",
+        # The old name order puts the version first: "-5-sonnet" is NOT generation 5.
+        "claude-3-5-sonnet-20241022",
+        "anthropic/claude-3-5-haiku-20241022",
+        "claude-3-7-sonnet-latest",
         "openai/gpt-5.6-luna",
         "ollama_chat/llama3",
         "gemini/gemini-3.5-flash",
@@ -108,12 +122,75 @@ def test_reasoning_effort_is_passed_to_litellm_for_sonnet_55() -> None:
     assert kwargs.get("reasoning_effort") == "medium"
 
 
+# -- preserved thinking: every request opts into drop_block -------------------
+
+_DROP_BLOCK_THINKING = {
+    "type": "adaptive",
+    "display": "summarized",
+    "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+}
+_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+
+@pytest.mark.parametrize("model", ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"])
+def test_a_claude_5_request_opts_into_drop_block(model: str) -> None:
+    """The field and the beta header that permits it travel together; without the
+    header the field is a 400."""
+    kwargs = LiteLLMProvider(model=model, reasoning_effort="medium")._build_kwargs(MSGS, None)
+    assert kwargs["thinking"] == _DROP_BLOCK_THINKING
+    assert kwargs["extra_headers"]["anthropic-beta"] == _BINDING_BETA
+    assert kwargs["reasoning_effort"] == "medium"  # litellm maps it beside the explicit thinking
+
+
+def test_the_binding_beta_joins_a_configured_beta_once() -> None:
+    provider = LiteLLMProvider(
+        model="anthropic/claude-sonnet-5-5",
+        extra_headers={"anthropic-beta": "context-management-2025-06-27", "x-trace": "t"},
+    )
+    first = provider._build_kwargs(MSGS, None)["extra_headers"]
+    second = provider._build_kwargs(MSGS, None)["extra_headers"]
+    assert first["anthropic-beta"] == f"context-management-2025-06-27,{_BINDING_BETA}"
+    assert second == first  # no growth across calls
+    assert first["x-trace"] == "t"
+    # The configured headers themselves are not mutated.
+    assert provider.extra_headers["anthropic-beta"] == "context-management-2025-06-27"
+
+
+def test_a_configured_binding_beta_is_not_repeated() -> None:
+    provider = LiteLLMProvider(
+        model="anthropic/claude-sonnet-5-5", extra_headers={"anthropic-beta": _BINDING_BETA}
+    )
+    assert provider._build_kwargs(MSGS, None)["extra_headers"]["anthropic-beta"] == _BINDING_BETA
+
+
+def test_an_older_claude_gets_no_block_binding() -> None:
+    """Positive control: Claude 4 requests are untouched."""
+    kwargs = LiteLLMProvider(model="anthropic/claude-sonnet-4-6")._build_kwargs(MSGS, None)
+    assert "thinking" not in kwargs
+    assert "anthropic-beta" not in (kwargs.get("extra_headers") or {})
+
+
+def test_a_local_claude_5_named_model_gets_no_block_binding() -> None:
+    """A self-hosted server behind an api_base is not Anthropic's API."""
+    provider = LiteLLMProvider(
+        model="claude-sonnet-5-5", api_base="http://10.0.0.205:9090/v1", context_window=131072
+    )
+    kwargs = provider._build_kwargs(MSGS, None)
+    assert "thinking" not in kwargs
+    assert "anthropic-beta" not in (kwargs.get("extra_headers") or {})
+
+
 # -- capability registry ---------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "model",
-    ["claude-sonnet-5-5", "anthropic/claude-sonnet-5-5"],
+    [
+        "claude-sonnet-5-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "anthropic/claude-haiku-5-5",
+    ],
 )
 def test_anthropic_sonnet_55_registry(model: str) -> None:
     caps = get_capabilities(model)
@@ -153,20 +230,74 @@ def test_translate_messages_includes_thinking_blocks_with_signature() -> None:
     assert tb[0]["signature"] == "sig_abc123"
 
 
-def test_translate_messages_omits_thinking_blocks_without_content() -> None:
-    """ThinkingBlocks with no text and no signature are omitted."""
+def test_translate_messages_replays_only_signed_blocks() -> None:
+    """An unsigned block is another backend's reasoning text (a pod's reasoning_content):
+    it stays in the transcript and is never sent back, as before this change."""
     messages = [
         Message.user("hello"),
         Message(
             role="assistant",
             blocks=[
+                ThinkingBlock(text="pod reasoning", signature=None),
                 ThinkingBlock(text="", signature=None),
+                TextBlock(text="answer"),
+            ],
+        ),
+        Message.user("again"),
+        Message(
+            role="assistant",
+            blocks=[
+                ThinkingBlock(text="unsigned", signature=None),
+                ThinkingBlock(text="signed", signature="sig_1"),
                 TextBlock(text="answer"),
             ],
         ),
     ]
     wire = LiteLLMProvider._translate_messages(messages, system=None)
     assert "thinking_blocks" not in wire[1]
+    assert wire[3]["thinking_blocks"] == [
+        {"type": "thinking", "thinking": "signed", "signature": "sig_1"}
+    ]
+
+
+# -- the stream: one channel per chunk ---------------------------------------
+
+
+def _chunk(**delta: Any) -> dict[str, Any]:
+    return {"choices": [{"delta": delta, "finish_reason": None}]}
+
+
+def _thinking_events(chunk: dict[str, Any]) -> list[Any]:
+    events, _ = LiteLLMProvider._parse_chunk(chunk)
+    return [e for e in events if type(e).__name__ == "StreamThinkingDelta"]
+
+
+def test_a_fragment_on_both_channels_is_read_once() -> None:
+    """litellm 1.86.2 sends each Anthropic thinking fragment on reasoning_content AND on
+    thinking_blocks (measured: 41 of 42 chunks); reading both doubled the thinking."""
+    events = _thinking_events(
+        _chunk(
+            reasoning_content="weigh it",
+            thinking_blocks=[{"type": "thinking", "thinking": "weigh it"}],
+        )
+    )
+    assert [(e.text, e.signature) for e in events] == [("weigh it", None)]
+
+
+def test_the_signature_only_chunk_carries_the_signature() -> None:
+    events = _thinking_events(
+        _chunk(
+            reasoning_content="",
+            thinking_blocks=[{"type": "thinking", "thinking": "", "signature": "S"}],
+        )
+    )
+    assert [(e.text, e.signature) for e in events] == [("", "S")]
+
+
+def test_reasoning_content_alone_still_streams() -> None:
+    """Positive control: a pod's reasoning model has no thinking_blocks."""
+    events = _thinking_events(_chunk(reasoning_content="pod thinking"))
+    assert [(e.text, e.signature) for e in events] == [("pod thinking", None)]
 
 
 def test_translate_messages_without_thinking_blocks_has_no_key() -> None:

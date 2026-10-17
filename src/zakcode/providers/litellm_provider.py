@@ -394,7 +394,7 @@ def _is_gemini_sampling_deprecated_model(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
-_CLAUDE_5_GENERATION = re.compile(r"^claude-\w+-5[.-]")
+_CLAUDE_GENERATION = re.compile(r"^claude-[a-z]+-(\d+)(?:[.-]|$)")
 
 
 def _is_anthropic_adaptive_thinking_model(model: str) -> bool:
@@ -404,12 +404,20 @@ def _is_anthropic_adaptive_thinking_model(model: str) -> bool:
     for any non-default temperature, top_p or top_k.  litellm does not
     strip them, so this runtime drops them at the one request-building chokepoint --
     same shape as the gpt-5 temperature rule and the Gemini 3 sampling-deprecation
-    rule.  Matched on generation: claude-sonnet-5-5, claude-opus-5-5,
-    claude-haiku-5-5 and later.  A self-hosted server behind an api_base is
+    rule.  Matched on generation, the number after the family name:
+    claude-sonnet-5-5, claude-opus-5-5, claude-haiku-5-5, a bare claude-sonnet-5 and
+    later.  The old name order (``claude-3-5-sonnet``) puts a digit where the family
+    goes, so it never matches.  A self-hosted server behind an api_base is
     exempted at the call site, not here.
     """
     name = model.split("/")[-1].lower()
-    return bool(_CLAUDE_5_GENERATION.match(name))
+    match = _CLAUDE_GENERATION.match(name)
+    return match is not None and int(match.group(1)) >= 5
+
+
+#: The beta that lets a request set ``thinking.block_binding`` (preserved thinking): without
+#: it the field is a 400, "block_binding: Extra inputs are not permitted".
+_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
@@ -1127,17 +1135,23 @@ class LiteLLMProvider(Provider):
                 if isinstance(block, TextBlock):
                     text_parts.append(block.text)
                 elif isinstance(block, ThinkingBlock):
-                    # Anthropic adaptive-thinking models require thinking blocks to
-                    # be passed back unmodified in multi-turn conversations.  litellm
-                    # reads thinking_blocks off the assistant dict and converts
-                    # them to Anthropic's wire format.  Non-Anthropic backends never
-                    # read this key, so it is safe to include unconditionally.  An
-                    # empty block with no signature is skipped.
-                    if block.text or block.signature:
-                        entry: dict[str, Any] = {"type": "thinking", "thinking": block.text}
-                        if block.signature:
-                            entry["signature"] = block.signature
-                        thinking_blocks.append(entry)
+                    # Anthropic adaptive-thinking models take their thinking blocks
+                    # back, unmodified, so the next turn keeps the model's reasoning.
+                    # litellm reads thinking_blocks off the assistant dict and converts
+                    # them to Anthropic's wire format.  Only a SIGNED block is replayed:
+                    # Anthropic signs every block it returns, and an unsigned one is
+                    # another backend's reasoning text (a pod's reasoning_content),
+                    # which was never sent back before and stays that way.  Whether a
+                    # replayed block is still valid is the API's call (``drop_block``,
+                    # see _build_kwargs).
+                    if block.signature:
+                        thinking_blocks.append(
+                            {
+                                "type": "thinking",
+                                "thinking": block.text,
+                                "signature": block.signature,
+                            }
+                        )
                 elif isinstance(block, ToolUseBlock):
                     tool_calls.append(
                         {
@@ -2115,6 +2129,33 @@ class LiteLLMProvider(Provider):
             dropped = [name for name in ("temperature", "top_p", "top_k") if name in call_kwargs]
             for name in dropped:
                 call_kwargs.pop(name, None)
+            # Preserved thinking. A thinking block is bound to the conversation that made it:
+            # replayed after ANY change to the system prompt, the tools or an earlier message,
+            # it is a 400 ("The block is bound to a different conversation") on organizations
+            # created on or after 2026-08-31, which enforce the check by default. Measured
+            # 2026-10-17 on claude-sonnet-5-5: 7 of the credit pool's 9 accounts enforce it,
+            # and the same replay under an edited system prompt returned 200 on the other two.
+            # This runtime edits history by design (compaction keeps the recent turns and
+            # summarizes the rest; the system prompt has a per-turn dynamic section), so every
+            # request opts into ``drop_block``: the API drops a stale block, and every block
+            # after it, instead of refusing the call (measured: 200, the drop reported in
+            # ``input_transformations``; nothing dropped when the history was intact). The field
+            # needs the beta header, so the header rides along. ``display: summarized`` returns
+            # the reasoning text; the default is a signature-only block with no text, so the
+            # thinking deltas would carry nothing to show. litellm keeps an explicit
+            # ``thinking`` beside ``reasoning_effort`` and still maps the effort to
+            # ``output_config`` (measured, same day; ADR-0321).
+            call_kwargs["thinking"] = {
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            }
+            headers = dict(call_kwargs.get("extra_headers") or {})
+            betas = [b.strip() for b in headers.get("anthropic-beta", "").split(",") if b.strip()]
+            if _THINKING_BINDING_BETA not in betas:
+                betas.append(_THINKING_BINDING_BETA)
+            headers["anthropic-beta"] = ",".join(betas)
+            call_kwargs["extra_headers"] = headers
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
         # chat route; what the request needs is an EXPLICIT reasoning_effort, and the
         # value is free (ADR-0200). Any explicit level takes the call off that route:
@@ -2461,21 +2502,30 @@ class LiteLLMProvider(Provider):
             # Emitted after ``content`` only because a single delta carries one or the
             # other in practice, never both; the buffered path still captures the same
             # text on ``LLMResult.thinking``.
-            reasoning = _get(delta, "reasoning_content")
-            if isinstance(reasoning, str) and reasoning:
-                events.append(StreamThinkingDelta(text=reasoning))
-            # Anthropic adaptive-thinking models stream thinking blocks that carry
-            # an opaque ``signature``.  litellm surfaces them on the delta as
-            # ``thinking_blocks``; the signature typically rides the FINAL fragment
-            # of each block.  Emit them as thinking deltas so the loop can capture
-            # the signature alongside the text.
+            #
+            # ONE channel per chunk. Anthropic adaptive-thinking models stream thinking
+            # blocks that carry an opaque ``signature``, and litellm 1.86.2 sends every
+            # such fragment TWICE: on ``reasoning_content`` and again on
+            # ``thinking_blocks`` (measured 2026-10-17 on claude-sonnet-5-5: 41 of 42
+            # chunks carried the same text on both; the signature came alone on the last
+            # chunk). Reading both doubled every thinking delta. ``thinking_blocks`` is
+            # the richer channel, the only one with the signature, so a chunk that has it
+            # is read from it alone; ``reasoning_content`` serves every other model (ADR-0321).
             tb = _get(delta, "thinking_blocks")
-            if isinstance(tb, list):
+            if isinstance(tb, list) and tb:
                 for block in tb:
-                    text_frag = block.get("thinking", "") if isinstance(block, dict) else ""
-                    sig = block.get("signature") if isinstance(block, dict) else None
+                    if not isinstance(block, dict) and hasattr(block, "__getitem__"):
+                        block = dict(block)
+                    if not isinstance(block, dict):
+                        continue
+                    text_frag = block.get("thinking") or ""
+                    sig = block.get("signature") or None
                     if text_frag or sig:
-                        events.append(StreamThinkingDelta(text=text_frag or "", signature=sig))
+                        events.append(StreamThinkingDelta(text=text_frag, signature=sig))
+            else:
+                reasoning = _get(delta, "reasoning_content")
+                if isinstance(reasoning, str) and reasoning:
+                    events.append(StreamThinkingDelta(text=reasoning))
 
             raw_tool_calls = _get(delta, "tool_calls")
             if raw_tool_calls:

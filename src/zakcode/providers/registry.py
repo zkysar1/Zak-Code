@@ -91,6 +91,15 @@ _CAPABILITIES: dict[str, Capabilities] = {
         context_window=1_000_000,
         max_output=128_000,
     ),
+    # Haiku 5.5: the same window and output cap as Sonnet 5.5 (claude-api model table and
+    # litellm's own entry, both 1M / 128K, read 2026-10-17).
+    "claude-haiku-5-5": Capabilities(
+        supports_tools=True,
+        supports_vision=True,
+        supports_caching=True,
+        context_window=1_000_000,
+        max_output=128_000,
+    ),
     # --- Ollama (local) ---
     "ollama_chat/llama3.1": Capabilities(
         supports_tools=True,

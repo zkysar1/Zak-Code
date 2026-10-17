@@ -24,7 +24,7 @@ from zakcode.events import (
     AgentToolResult,
     AgentUsage,
 )
-from zakcode.messages import Message
+from zakcode.messages import Message, ThinkingBlock
 from zakcode.providers.base import (
     Capabilities,
     LLMResult,
@@ -302,6 +302,62 @@ async def test_thinking_delta_is_forwarded_and_never_becomes_assistant_text(
     done = events[-1]
     assert isinstance(done, AgentDone)
     assert done.stop_reason == "completed"
+
+
+@pytest.mark.anyio
+async def test_streamed_thinking_splits_into_one_block_per_signature(tmp_path: Any) -> None:
+    """A signature closes the block it rides on (Anthropic's stream sends it alone, on the
+    block's last chunk), so two signed blocks are stored as two, each with its own
+    signature, and a signature-only fragment surfaces no empty thinking delta."""
+    provider = ScriptedStreamProvider(
+        [
+            [
+                StreamThinkingDelta(text="first "),
+                StreamThinkingDelta(text="block"),
+                StreamThinkingDelta(text="", signature="sig-1"),
+                StreamThinkingDelta(text="second"),
+                StreamThinkingDelta(text="", signature="sig-2"),
+                StreamTextDelta(text="done."),
+                StreamUsage(usage=Usage(total_tokens=5)),
+                StreamDone(finish_reason="stop"),
+            ]
+        ]
+    )
+    loop = _build_loop(tmp_path, provider)
+    events = await _collect(loop, "think twice")
+
+    assert [e.text for e in events if isinstance(e, AgentThinkingDelta)] == [
+        "first ",
+        "block",
+        "second",
+    ]
+    assistant = [m for m in loop.session.messages if m.role == "assistant"]
+    assert len(assistant) == 1
+    blocks = [(b.text, b.signature) for b in assistant[0].blocks if isinstance(b, ThinkingBlock)]
+    assert blocks == [("first block", "sig-1"), ("second", "sig-2")]
+
+
+@pytest.mark.anyio
+async def test_unsigned_streamed_thinking_is_one_unsigned_block(tmp_path: Any) -> None:
+    """Positive control: a pod's reasoning_content signs nothing, so its text is one
+    unsigned block (kept for the transcript, never replayed)."""
+    provider = ScriptedStreamProvider(
+        [
+            [
+                StreamThinkingDelta(text="let me "),
+                StreamThinkingDelta(text="see"),
+                StreamTextDelta(text="ok."),
+                StreamUsage(usage=Usage(total_tokens=3)),
+                StreamDone(finish_reason="stop"),
+            ]
+        ]
+    )
+    loop = _build_loop(tmp_path, provider)
+    await _collect(loop, "hm")
+
+    assistant = [m for m in loop.session.messages if m.role == "assistant"]
+    blocks = [(b.text, b.signature) for b in assistant[0].blocks if isinstance(b, ThinkingBlock)]
+    assert blocks == [("let me see", None)]
 
 
 @pytest.mark.anyio
