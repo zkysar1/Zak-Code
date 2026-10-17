@@ -153,7 +153,14 @@ from zakcode.hooks import (
     claude_code_tool_response,
 )
 from zakcode.hooks.transcript import render_claude_code_transcript, render_compaction_rows
-from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
+from zakcode.messages import (
+    ContentBlock,
+    Message,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
     Capabilities,
@@ -5613,8 +5620,19 @@ class AgentLoop:
         empty assistant message poisons the transcript — every later call in the session
         fails until a restart (measured 2026-08-22 on a local pod, twice). The turn still
         ends cleanly; the placeholder just keeps the stored history provider-valid.
+
+        When the completion carries thinking blocks WITH signatures (Anthropic adaptive
+        thinking), they are included so the next turn replays them faithfully.
         """
         blocks: list[ContentBlock] = []
+        # Thinking blocks go first (before text/tools) to match the provider's order.
+        for tb in result.thinking_blocks:
+            blocks.append(
+                ThinkingBlock(
+                    text=tb.get("thinking", ""),
+                    signature=tb.get("signature"),
+                )
+            )
         if result.text:
             blocks.append(TextBlock(text=result.text))
         for call in result.tool_calls:
@@ -9788,6 +9806,11 @@ class AgentLoop:
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
                 while True:
                     text_parts: list[str] = []
+                    # Streamed thinking, split into blocks: a signature closes the block
+                    # it rides on, so the closed blocks keep their own signatures and the
+                    # open fragments are the block still being written.
+                    thinking_closed: list[dict[str, Any]] = []
+                    thinking_open: list[str] = []
                     accumulator = ToolCallAccumulator()
                     received_any = False
                     # Usage is accumulated per-attempt and committed ONLY after the attempt
@@ -9847,8 +9870,23 @@ class AgentLoop:
                                 # the long-reasoning models this event exists to
                                 # serve, whose thinking phase runs for minutes before
                                 # any text arrives.
-                                _status_writer().on_thinking_delta(self.session.id, ev.text)
-                                yield AgentThinkingDelta(text=ev.text)
+                                if ev.text:
+                                    thinking_open.append(ev.text)
+                                # A signature rides the LAST fragment of a thinking
+                                # block (alone, on Anthropic's stream), so it closes the
+                                # block: a response with several blocks replays as
+                                # several, each with its own signature.
+                                if ev.signature:
+                                    thinking_closed.append(
+                                        {
+                                            "thinking": "".join(thinking_open),
+                                            "signature": ev.signature,
+                                        }
+                                    )
+                                    thinking_open.clear()
+                                if ev.text:
+                                    _status_writer().on_thinking_delta(self.session.id, ev.text)
+                                    yield AgentThinkingDelta(text=ev.text)
                                 continue
                             received_any = True
                             if isinstance(ev, StreamTextDelta):
@@ -10261,7 +10299,18 @@ class AgentLoop:
                 turn_saw_text = turn_saw_text or bool(assistant_text)
                 if assistant_text or tool_calls:
                     empty_retries = 0  # visible output: the silence, if any, is over
-                assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
+                # The streamed thinking as blocks: each signed block as it closed, then
+                # any text no signature closed (another backend's reasoning, or a stream
+                # cut before its signature) as one unsigned block. An unsigned block is
+                # kept for the transcript and never replayed (_translate_messages).
+                streamed_thinking: list[dict[str, Any]] = list(thinking_closed)
+                if thinking_open:
+                    streamed_thinking.append({"thinking": "".join(thinking_open)})
+                assistant_msg = self._stream_assistant_message(
+                    assistant_text,
+                    tool_calls,
+                    streamed_thinking or None,
+                )
                 self.session.add_message(assistant_msg)
                 turn_assistant.append(assistant_msg)
                 self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
@@ -11451,15 +11500,30 @@ class AgentLoop:
         )
 
     @staticmethod
-    def _stream_assistant_message(text: str, tool_calls: list[ToolCall]) -> Message:
+    def _stream_assistant_message(
+        text: str,
+        tool_calls: list[ToolCall],
+        thinking_blocks: list[dict[str, Any]] | None = None,
+    ) -> Message:
         """Build the assistant message from streamed text + accumulated tool calls.
 
         Mirrors :meth:`_assistant_message` (the buffered builder): a leading
         :class:`TextBlock` when any text streamed, then one :class:`ToolUseBlock`
         per finalized call — including its empty-completion placeholder, so a
         thinking-only streamed response cannot poison the stored history either.
+
+        When ``thinking_blocks`` are given (Anthropic adaptive thinking: text +
+        signature pairs accumulated during streaming), they are included so the
+        next turn replays them faithfully.
         """
         blocks: list[ContentBlock] = []
+        for tb in thinking_blocks or ():
+            blocks.append(
+                ThinkingBlock(
+                    text=tb.get("thinking", ""),
+                    signature=tb.get("signature"),
+                )
+            )
         if text:
             blocks.append(TextBlock(text=text))
         for call in tool_calls:

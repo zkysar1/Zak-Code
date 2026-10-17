@@ -50,6 +50,12 @@ class LLMResult(BaseModel):
     #: to ``message.reasoning_content``). Kept OUT of ``text`` so reasoning never leaks
     #: into the conversation as assistant prose; empty for models that don't reason.
     thinking: str = ""
+    #: Raw thinking blocks with provider signatures, for faithful round-trip replay.
+    #: Anthropic adaptive-thinking models return blocks carrying an opaque signature,
+    #: sent back unmodified so the next turn keeps the model's reasoning.  The text is the
+    #: same content as thinking (concatenated); this field preserves the per-block
+    #: boundaries and signatures that thinking (a plain string) cannot carry.
+    thinking_blocks: list[dict[str, Any]] = Field(default_factory=list)
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str | None = None
     #: The model id the BACKEND echoed on this response (ADR-0214), which is not always
@@ -182,6 +188,13 @@ class StreamThinkingDelta(BaseModel):
 
     event: Literal["thinking_delta"] = "thinking_delta"
     text: str
+    #: The opaque signature for this thinking block, when the provider surfaces one.
+    #: Anthropic adaptive-thinking models bind each block to the conversation that made
+    #: it; the block is replayed unmodified on the next turn.  Leaving a block out is
+    #: accepted (measured 2026-10-17); replaying one after the conversation changed is
+    #: not, which the provider handles with ``drop_block``.  The signature arrives on the
+    #: LAST streaming chunk of a thinking block, alone; earlier chunks carry None.
+    signature: str | None = None
 
 
 class StreamToolCallDelta(BaseModel):
