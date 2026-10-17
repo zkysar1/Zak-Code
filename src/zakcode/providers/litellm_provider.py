@@ -394,6 +394,24 @@ def _is_gemini_sampling_deprecated_model(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
+_CLAUDE_5_GENERATION = re.compile(r"^claude-\w+-5[.-]")
+
+
+def _is_anthropic_adaptive_thinking_model(model: str) -> bool:
+    """Whether model is a Claude 5+ adaptive-thinking model that rejects sampling params.
+
+    Claude Sonnet 5.5 (and the Claude 5 adaptive-thinking family) return HTTP 400
+    for any non-default temperature, top_p or top_k.  litellm does not
+    strip them, so this runtime drops them at the one request-building chokepoint --
+    same shape as the gpt-5 temperature rule and the Gemini 3 sampling-deprecation
+    rule.  Matched on generation: claude-sonnet-5-5, claude-opus-5-5,
+    claude-haiku-5-5 and later.  A self-hosted server behind an api_base is
+    exempted at the call site, not here.
+    """
+    name = model.split("/")[-1].lower()
+    return bool(_CLAUDE_5_GENERATION.match(name))
+
+
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
     """Whether ``model`` is an OpenAI gpt-5.6-tier model that takes function tools on
     ``/v1/chat/completions`` ONLY with ``reasoning_effort="none"``.
@@ -1104,12 +1122,22 @@ class LiteLLMProvider(Provider):
             # assistant
             text_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
+            thinking_blocks: list[dict[str, Any]] = []
             for block in msg.blocks:
                 if isinstance(block, TextBlock):
                     text_parts.append(block.text)
                 elif isinstance(block, ThinkingBlock):
-                    # Thinking is not replayed on the wire.
-                    continue
+                    # Anthropic adaptive-thinking models require thinking blocks to
+                    # be passed back unmodified in multi-turn conversations.  litellm
+                    # reads thinking_blocks off the assistant dict and converts
+                    # them to Anthropic's wire format.  Non-Anthropic backends never
+                    # read this key, so it is safe to include unconditionally.  An
+                    # empty block with no signature is skipped.
+                    if block.text or block.signature:
+                        entry: dict[str, Any] = {"type": "thinking", "thinking": block.text}
+                        if block.signature:
+                            entry["signature"] = block.signature
+                        thinking_blocks.append(entry)
                 elif isinstance(block, ToolUseBlock):
                     tool_calls.append(
                         {
@@ -1127,6 +1155,8 @@ class LiteLLMProvider(Provider):
             assistant_msg["content"] = content if content else None
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
+            if thinking_blocks:
+                assistant_msg["thinking_blocks"] = thinking_blocks
             wire.append(assistant_msg)
 
         return wire
@@ -1394,6 +1424,7 @@ class LiteLLMProvider(Provider):
 
         text = ""
         thinking = ""
+        raw_thinking_blocks: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         if message is not None:
             content = _get(message, "content")
@@ -1405,6 +1436,16 @@ class LiteLLMProvider(Provider):
             reasoning = _get(message, "reasoning_content")
             if isinstance(reasoning, str):
                 thinking = reasoning
+            # Preserve raw thinking blocks with signatures for round-trip replay.
+            # Anthropic adaptive-thinking models return blocks carrying an opaque
+            # ``signature`` that must go back unmodified on the next turn.
+            tb = _get(message, "thinking_blocks")
+            if isinstance(tb, list):
+                for block in tb:
+                    if isinstance(block, dict):
+                        raw_thinking_blocks.append(block)
+                    elif hasattr(block, "__getitem__"):
+                        raw_thinking_blocks.append(dict(block))
             tool_calls = cls._parse_tool_calls(_get(message, "tool_calls"))
 
         served = _get(response, "model")
@@ -1422,6 +1463,7 @@ class LiteLLMProvider(Provider):
         return LLMResult(
             text=text,
             thinking=thinking,
+            thinking_blocks=raw_thinking_blocks,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             # What answered, as the backend named it (ADR-0214) -- read off the RESPONSE and
@@ -2063,6 +2105,16 @@ class LiteLLMProvider(Provider):
                     ModelRef(self.model),
                     ", ".join(dropped),
                 )
+        # Claude 5+ adaptive-thinking models: send no sampling parameters. These
+        # models reject non-default temperature, top_p and top_k with a 400 (same
+        # constraint as the Gemini 3 rule above, same shape as the gpt-5 rule).
+        # Skipped when the call reaches a LOCAL OpenAI-compatible server.
+        if _is_anthropic_adaptive_thinking_model(self.model) and not (
+            self.api_base is not None and _model_uses_generic_endpoint(self.model)
+        ):
+            dropped = [name for name in ("temperature", "top_p", "top_k") if name in call_kwargs]
+            for name in dropped:
+                call_kwargs.pop(name, None)
         # Function tools with the model's DEFAULT depth is a 400 on the gpt-5.6 tier's
         # chat route; what the request needs is an EXPLICIT reasoning_effort, and the
         # value is free (ADR-0200). Any explicit level takes the call off that route:
@@ -2412,6 +2464,18 @@ class LiteLLMProvider(Provider):
             reasoning = _get(delta, "reasoning_content")
             if isinstance(reasoning, str) and reasoning:
                 events.append(StreamThinkingDelta(text=reasoning))
+            # Anthropic adaptive-thinking models stream thinking blocks that carry
+            # an opaque ``signature``.  litellm surfaces them on the delta as
+            # ``thinking_blocks``; the signature typically rides the FINAL fragment
+            # of each block.  Emit them as thinking deltas so the loop can capture
+            # the signature alongside the text.
+            tb = _get(delta, "thinking_blocks")
+            if isinstance(tb, list):
+                for block in tb:
+                    text_frag = block.get("thinking", "") if isinstance(block, dict) else ""
+                    sig = block.get("signature") if isinstance(block, dict) else None
+                    if text_frag or sig:
+                        events.append(StreamThinkingDelta(text=text_frag or "", signature=sig))
 
             raw_tool_calls = _get(delta, "tool_calls")
             if raw_tool_calls:
