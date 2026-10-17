@@ -153,7 +153,14 @@ from zakcode.hooks import (
     claude_code_tool_response,
 )
 from zakcode.hooks.transcript import render_claude_code_transcript, render_compaction_rows
-from zakcode.messages import ContentBlock, Message, TextBlock, ToolResultBlock, ToolUseBlock
+from zakcode.messages import (
+    ContentBlock,
+    Message,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import (
     Capabilities,
@@ -5613,8 +5620,19 @@ class AgentLoop:
         empty assistant message poisons the transcript — every later call in the session
         fails until a restart (measured 2026-08-22 on a local pod, twice). The turn still
         ends cleanly; the placeholder just keeps the stored history provider-valid.
+
+        When the completion carries thinking blocks WITH signatures (Anthropic adaptive
+        thinking), they are included so the next turn replays them faithfully.
         """
         blocks: list[ContentBlock] = []
+        # Thinking blocks go first (before text/tools) to match the provider's order.
+        for tb in result.thinking_blocks:
+            blocks.append(
+                ThinkingBlock(
+                    text=tb.get("thinking", ""),
+                    signature=tb.get("signature"),
+                )
+            )
         if result.text:
             blocks.append(TextBlock(text=result.text))
         for call in result.tool_calls:
@@ -9788,6 +9806,8 @@ class AgentLoop:
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
                 while True:
                     text_parts: list[str] = []
+                    thinking_parts: list[str] = []
+                    thinking_signatures: list[str | None] = []
                     accumulator = ToolCallAccumulator()
                     received_any = False
                     # Usage is accumulated per-attempt and committed ONLY after the attempt
@@ -9847,6 +9867,12 @@ class AgentLoop:
                                 # the long-reasoning models this event exists to
                                 # serve, whose thinking phase runs for minutes before
                                 # any text arrives.
+                                thinking_parts.append(ev.text)
+                                # A signature rides the LAST fragment of a thinking
+                                # block; flush the accumulated text into a block when
+                                # one arrives so multi-block responses are separated.
+                                if ev.signature:
+                                    thinking_signatures.append(ev.signature)
                                 _status_writer().on_thinking_delta(self.session.id, ev.text)
                                 yield AgentThinkingDelta(text=ev.text)
                                 continue
@@ -10261,7 +10287,27 @@ class AgentLoop:
                 turn_saw_text = turn_saw_text or bool(assistant_text)
                 if assistant_text or tool_calls:
                     empty_retries = 0  # visible output: the silence, if any, is over
-                assistant_msg = self._stream_assistant_message(assistant_text, tool_calls)
+                # Assemble thinking blocks from streamed fragments. A signature
+                # on a fragment marks the end of one block; unsignatured fragments
+                # are concatenated into a single block.
+                streamed_thinking: list[dict[str, Any]] = []
+                if thinking_parts:
+                    if thinking_signatures:
+                        # At least one signature: build a block per signature.
+                        # The text accumulated BEFORE the first signature is the
+                        # first block's content; litellm flushes on each signature.
+                        combined = "".join(thinking_parts)
+                        sig = thinking_signatures[-1] if thinking_signatures else None
+                        streamed_thinking.append({"thinking": combined, "signature": sig})
+                    else:
+                        # Thinking text without a signature (non-Anthropic reasoning
+                        # models, or a stream that did not carry one).
+                        streamed_thinking.append({"thinking": "".join(thinking_parts)})
+                assistant_msg = self._stream_assistant_message(
+                    assistant_text,
+                    tool_calls,
+                    streamed_thinking or None,
+                )
                 self.session.add_message(assistant_msg)
                 turn_assistant.append(assistant_msg)
                 self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
@@ -11451,15 +11497,30 @@ class AgentLoop:
         )
 
     @staticmethod
-    def _stream_assistant_message(text: str, tool_calls: list[ToolCall]) -> Message:
+    def _stream_assistant_message(
+        text: str,
+        tool_calls: list[ToolCall],
+        thinking_blocks: list[dict[str, Any]] | None = None,
+    ) -> Message:
         """Build the assistant message from streamed text + accumulated tool calls.
 
         Mirrors :meth:`_assistant_message` (the buffered builder): a leading
         :class:`TextBlock` when any text streamed, then one :class:`ToolUseBlock`
         per finalized call — including its empty-completion placeholder, so a
         thinking-only streamed response cannot poison the stored history either.
+
+        When ``thinking_blocks`` are given (Anthropic adaptive thinking: text +
+        signature pairs accumulated during streaming), they are included so the
+        next turn replays them faithfully.
         """
         blocks: list[ContentBlock] = []
+        for tb in thinking_blocks or ():
+            blocks.append(
+                ThinkingBlock(
+                    text=tb.get("thinking", ""),
+                    signature=tb.get("signature"),
+                )
+            )
         if text:
             blocks.append(TextBlock(text=text))
         for call in tool_calls:
