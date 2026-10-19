@@ -19957,3 +19957,111 @@ exited at 0.6 s with one post-stop line (the digest) and logged all four. The pr
 format --check`, `mypy`, `pytest`) is green: 6,330 passed, 22 skipped. A first full run of this change failed
 `tests/test_host_neutral_names.py` on the ADR's own text (record ids and a host's repository name), which is why the text
 names the unit's repository generically.
+
+## ADR-0323: a run with `ZAKCODE_ANTHROPIC_POOL` on keeps each session on one account of a shared credit pool, moves it to the next when the account answers a credit refusal, and writes a ledger row per call
+
+**Status:** Accepted (2026-10-19)
+
+**Context.** A run with nothing in front of it that holds credentials (a fleet box, a local run, CI) pays Anthropic from
+credit spread over a numbered set of accounts, each an organization with a workspace and a key. Which account serves a
+call, when a call moves to another, and what each kind of answer does to an account is one policy with two
+implementations that must agree: the environment server's (Java) and this one. Two files carry the contract between
+them, a registry (the accounts with their ranks, billing and uses, the models, the retry and steer-off numbers) and 22
+test vectors, each a start state plus a list of assignments and responses with the decision and the account state the
+policy requires after every step. The policy, in the order a call meets it: an account is eligible with an active
+status, a key, the run's use, no refused key, no spent credit, no cooldown, a monthly cap when billed by card, and, for
+a NEW session on promo credit, spend under 95% of the credit; a session is seated on the lowest-ranked eligible account
+and moves only on a credit refusal (a 402 `billing_error`, or a 400 whose text says the balance is too low) or a refused
+key (401, 403); a 429 stays and keeps its `retry-after`, three in a minute cool the account for new sessions only; a
+5xx stays and backs off; one ledger row is written per call; no key appears in any message.
+
+Three things were measured while building it, on litellm 1.86.2 against a loopback server that answers by the key it is
+sent, with the status and body shapes Anthropic documents.
+
+- **litellm's exception mapper has no case for 402 or 403.** Its Anthropic branch maps 400, 401, 404, 408, 413, 429,
+  500, 502, 503, 504 and 529; anything else falls through to its generic `APIConnectionError`, whose status is 500 and
+  whose text carries the body. A 402 `billing_error` therefore reached the provider as a 5xx. Read off the exception's
+  status, as the first cut did, the pool took the refusal for an overload, stayed on the refused account, and the call
+  failed with `ProviderUnavailable`. The error type in the body pairs one-to-one with the status in Anthropic's error
+  table, so it carries what the mapper dropped.
+- **One provider instance serves several concurrent calls.** Sub-agents share it, so two requests addressed to one
+  account can be refused at once. Each refusal must not move the session again.
+- **The streamed path and the buffered path fail the same way and at the same point**: a credit refusal or a refused key
+  is the response to the request, before any chunk, so nothing has been yielded and the call can be re-issued.
+
+**Decision.**
+
+- `zakcode.providers.anthropic_pool` holds the engine (`Pool`: the rules over a registry, no I/O, `now` passed to every
+  call), the month-stamped ledger, the reading of a refusal off an exception, and the wiring. The registry ships beside
+  it as a verbatim copy of the shared file.
+- Four settings, `anthropic_pool` (off), `anthropic_pool_use` (`dev`), `anthropic_pool_registry` and
+  `anthropic_pool_ledger_dir`, documented in `docs/CONFIG.md`. The pool is on only when asked for and is never inferred
+  from the model name or from a key being present. It is off under `hipaa_mode`, behind a gateway, and for a model the
+  registry does not name.
+- Each provider instance is a session. It is seated on its first request and keeps its account until a refusal moves
+  it. The credentials go on at one point, the end of `_build_kwargs`: the account's key, the registry's `base_url`, the
+  registry's headers and, when the account has one, `anthropic-workspace-id`. They are applied last, so a re-issue after
+  a move rebuilds the request with the new account.
+- A refusal that moves the session re-issues the same call on the account the session moved to, in `acomplete` and in
+  `astream` (before the first chunk; after one, the failure is reported as it is). When no account is left the call raises
+  `QuotaExhausted` naming each account and why it cannot serve, never a key. Each move marks an account spent or
+  invalid, so a chain ends by itself; the hop limit, the number of accounts plus one, only bounds a chain nothing else
+  would end.
+- A refusal addressed to an account the session has already left (a concurrent call moved it) is attributed to that
+  account, which is already dealt with: the call is re-issued on the session's current account and the engine is not
+  asked a second time. Two refusals from one account move the session once.
+- A 429 and a 5xx are answered by the provider's existing error path (`RateLimited` carrying the header's
+  `retry-after`, `ProviderUnavailable`), which already owns how often and how long a call retries. The engine is still
+  told, so its 429 window, its cooldown and its run counters are the ones the vectors pin, but its `retry` flag is not
+  used for those two statuses, and the policy's cap of three retries is not enforced a second time beside the loop's.
+- The status is read off the exception, and when it is a 5xx beside a `billing_error` or `permission_error` type (no
+  real 5xx carries either) the status is the one the type implies, 402 or 403.
+- Exhaustion and refused keys are learned per process by one runtime that every session shares, so what one session
+  learns the next one sees. Another process learns it from its own refused call, which costs nothing. Spend is
+  cross-process: every successful call appends one row to `anthropic-pool-ledger-YYYY-MM.jsonl` (UTC month, one
+  `O_APPEND` write), and a new session is seated by the larger of this process's count and the month's total read back
+  from the file. A ledger that cannot be written is logged once and the call goes on.
+- `est_usd` is litellm's priced cost of the call, 0 with `unpriced: true` when litellm cannot price it, and
+  `input_uncached` is the prompt minus the cache reads and writes.
+
+Stated choices. Taking the account from whichever key is in the environment was the simpler shape and was not taken:
+moving a session between accounts loses its prompt cache, a box may hold keys it was not meant to spend, and a pool that
+switches itself on cannot be reasoned about from the settings. Running the policy in a service the runtime calls was not
+available, because the runs this serves have none; the cost of two implementations is what the vectors and the
+differential below are for. A 429 and a 5xx do not move the session because another organization does not cure a
+provider-wide fault and a rate limit is the account's own. The cost is litellm's price, not the policy document's
+formula, because the runtime prices every call from one map (ADR-0281, ADR-0321): the document gives Sonnet 5.5 cache
+reads at $0.20 per million, which ADR-0321 found out of date (litellm: $0.10), and gives no Haiku 5.5 cache rate, which
+litellm has. The two differ on cached tokens only, and the document's figure should be corrected where it lives.
+Reading the status back from the error type is narrower than treating every `APIConnectionError` as a possible refusal,
+which would turn a dropped connection into an account move.
+
+Not verified. A real credit refusal and the move it causes on the live API: the refusal bodies come from a loopback
+server that serves the shapes the policy names and Anthropic documents, and no account on the machine this was built on
+is out of credit. The workspace header of accounts 02 to 08: the only key on that machine is account 01's, which
+answers without it, so the header's presence on the wire is pinned by the loopback tests and the API's answer to it is
+not. The cost of a move to a session's prompt cache. Ledger appends from many processes beyond what one `O_APPEND` write
+gives. A move on Windows.
+
+**Consequences.** A run with the pool on survives a drained or revoked account inside the call, at the cost of one
+refused request and the new account's cold cache, and ends with a message that names every account's state and no key
+when none is left. A rate limit or an outage is not spread onto other organizations. Every call is in the month's
+ledger. A run with the pool off is unchanged. The registry copy and the vectors are pinned by blob id, so a hand edit
+fails a test, and a checkout of the source repository named in `ZAKCODE_POOL_SOURCE_CHECKOUT` shows when they have
+fallen behind; the policy has no other synchronization.
+
+The proof. `tests/test_anthropic_pool_vectors.py` runs all 22 vectors against `Pool`, reading them the way the other
+runtime's runner does, with a control that flips one expected field and requires the mismatch to be reported.
+`tests/test_anthropic_pool_ring.py`, 25 tests, runs the real provider and litellm's real HTTP stack against a loopback
+Anthropic and asserts what went on the wire (the key, the workspace header and the version header of each request, in
+order): the seat, a move on a 400 and on a 402 in both paths with the session staying, every account spent, 429, 529,
+401 and 403, two concurrent refusals, the ledger rows against the wire's usage, steer-off from a ledger, and the guards.
+The buffered 402 test was red against the first cut: the session stayed on the refused account and the call raised
+`ProviderUnavailable`. The 403 cases were written with the fix and never run red. A differential run once, not kept:
+4,000 randomized sequences (89,122 operations) fed to `Pool` and to the policy's Python reference (blob b684797c0c6d at
+the source), compared after every operation on the decision, every account's state and every session's seat, with
+boundaries built in (month and grace edges, the steer-off and cap lines, retry runs across a move, unknown sessions and
+uses): 0 mismatches, and three deliberate breakages of `Pool` reported 85, 116 and 947. On the live API, through this
+provider with a key for account 01 alone: a buffered and a streamed Haiku 5.5 call each answered `ok` (18 prompt tokens,
+4 completion tokens, $0.0000038 priced), the session was seated on `acct-01` and the ledger took one row per call. The
+project's check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,387 passed, 23 skipped.

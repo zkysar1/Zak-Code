@@ -107,6 +107,7 @@ artifacts = [
     "src/zakcode/server/static/**",
     "src/zakcode/skills/bundled/**",
     "src/zakcode/providers/litellm_model_entries.json",
+    "src/zakcode/providers/anthropic_credit_registry.json",
 ]
 
 [tool.ruff]

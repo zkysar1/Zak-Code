@@ -355,6 +355,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # The Anthropic credit pool (ADR-0323): several accounts, drained in rank order, one per
+    # session, for a run with nothing in front of it that holds the keys (a fleet box, a local
+    # run, CI). Off unless set, and never inferred from the model name or from a key being
+    # present: moving a session between accounts costs its prompt cache, so the operator opts in.
+    anthropic_pool: bool = Field(
+        default=False,
+        description=(
+            "Route claude-sonnet-5-5 and claude-haiku-5-5 through the Anthropic credit pool "
+            "(ZAKCODE_ANTHROPIC_POOL=true): each session takes the lowest-ranked account that "
+            "has a key in ANTHROPIC_ACCT_<slot>_API_KEY and keeps it, and a credit refusal moves "
+            "it to the next account once. Off by default."
+        ),
+    )
+    anthropic_pool_use: str = Field(
+        default="dev",
+        description=(
+            "What this run is, for choosing accounts (ZAKCODE_ANTHROPIC_POOL_USE): dev, test, "
+            "demo or prod. A card-billed account serves a run only under a monthly cap, so a "
+            "prod run finds no account until the registry carries one."
+        ),
+    )
+    anthropic_pool_registry: Path | None = Field(
+        default=None,
+        description=(
+            "The pool's registry file (ZAKCODE_ANTHROPIC_POOL_REGISTRY). Unset uses the registry "
+            "shipped beside the pool module, a copy of the shared one."
+        ),
+    )
+    anthropic_pool_ledger_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Where the pool writes one row per call (ZAKCODE_ANTHROPIC_POOL_LEDGER_DIR). Unset "
+            "uses anthropic-pool/ under the zakcode home."
+        ),
+    )
+
     # ── Cost guarantee: never touch a metered API ────────────────────────────
     # For running MANY agents against self-hosted hardware, where a silent failover to a paid
     # provider is the thing you cannot allow. When true, every call is checked and a metered

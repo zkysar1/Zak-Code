@@ -39,6 +39,7 @@ from zakcode.messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from zakcode.providers.anthropic_pool import NO_MEMBER, AnthropicPoolRing, PoolEmpty, ring_for
 from zakcode.providers.base import (
     AuthError,
     Capabilities,
@@ -988,6 +989,19 @@ class LiteLLMProvider(Provider):
         self.hipaa_allowed_models: list[str] = list(
             getattr(settings, "hipaa_allowed_models", []) or []
         )
+        #: This provider's seat in the Anthropic credit pool (ADR-0323), or None. Off unless
+        #: Settings.anthropic_pool is set, and only for a model the pool's registry names reached
+        #: directly (a gateway holds its own credentials). With a seat, every request carries the
+        #: key and workspace of the account the session is on, and a refusal that says the account
+        #: is spent moves the session to the next one instead of ending the turn.
+        self._ring: AnthropicPoolRing | None = ring_for(
+            settings,
+            model=self.model,
+            via_gateway=self.api_base is not None and _model_uses_generic_endpoint(self.model),
+        )
+        #: The account the request ``_build_kwargs`` last built was addressed to. Read right after
+        #: each build, with no await between, like ``_clamped_output_cap``.
+        self._built_member: str | None = None
         #: Settings.send_prompt_cache_key: whether the session-affinity key may ride a
         #: request (see _build_kwargs). Read from settings only, like hipaa_mode, so a
         #: provider built without settings behaves exactly as before.
@@ -1842,6 +1856,25 @@ class LiteLLMProvider(Provider):
             return ProviderUnavailable(message, retry_after=retry_after)
         return RequestFailed(message)
 
+    def _pool_failover(self, exc: Exception, used: str | None, moves: int) -> bool:
+        """Tell the credit pool what a failed call was; True when the call should go out again.
+
+        True only when the pool moved the session to another account (a credit refusal, or a
+        refused key): the rebuilt request names that account. Every other failure is the pool's
+        to count, a 429 toward its cooldown for example, and the taxonomy below still reports it,
+        so a 429's ``retry-after`` and a 5xx's backoff reach the loop as they always did. When the
+        pool has no account left to move to the turn ends on :class:`QuotaExhausted`, whose text
+        names each account and why it cannot serve (never a key).
+        """
+        if self._ring is None or used is None:
+            return False
+        decision = self._ring.on_error(exc, used=used, retry_after=self._extract_retry_after(exc))
+        if decision is None or not decision.moved:
+            return False
+        if decision.member == NO_MEMBER or moves >= self._ring.hop_limit:
+            raise QuotaExhausted(self._ring.unavailable()) from exc
+        return True
+
     # ------------------------------------------------------------------
     # Provider interface
     # ------------------------------------------------------------------
@@ -2260,6 +2293,14 @@ class LiteLLMProvider(Provider):
                     f"that serves your tools on Chat Completions, or unset "
                     f"ZAKCODE_HIPAA_MODE for a home that handles no patient data."
                 )
+        # The pool's account goes on last, so nothing above can put another key or workspace on
+        # a request the pool addressed. Rebuilt after every refusal that moved the session, so the
+        # re-issued request already names the account it moved to.
+        if self._ring is not None:
+            try:
+                self._built_member = self._ring.apply(call_kwargs)
+            except PoolEmpty as empty:
+                raise QuotaExhausted(str(empty)) from empty
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
@@ -2366,6 +2407,8 @@ class LiteLLMProvider(Provider):
             **kw,
         )
         clamped = self._clamped_output_cap
+        used = self._built_member  # the pool account this request is addressed to, if any
+        moves = 0  # times the pool has moved this call to another account
 
         await self._pace()
         start = time.perf_counter()
@@ -2375,6 +2418,20 @@ class LiteLLMProvider(Provider):
                 response = await litellm.acompletion(**call_kwargs)
                 break
             except Exception as exc:  # noqa: BLE001 - mapped to taxonomy below
+                if self._pool_failover(exc, used, moves):
+                    # The session is on another account now: the SAME logical call, re-issued
+                    # with that account's key and workspace.
+                    moves += 1
+                    call_kwargs = self._build_kwargs(
+                        wire_messages,
+                        tools,
+                        response_format=response_format,
+                        prompt_cache_key=prompt_cache_key,
+                        **kw,
+                    )
+                    clamped = self._clamped_output_cap
+                    used = self._built_member
+                    continue
                 if self._refuses_tool_use(exc, call_kwargs):
                     raise ToolUseRefused(str(self._map_error(exc))) from exc
                 if repairs >= _MAX_REQUEST_REPAIRS or not (
@@ -2401,11 +2458,15 @@ class LiteLLMProvider(Provider):
                     **kw,
                 )
                 clamped = self._clamped_output_cap
+                used = self._built_member
 
         result = self._normalize(
             response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
         )
         result.clamped_output_cap = clamped  # ADR-0310: what the request that answered carried
+        if self._ring is not None and used is not None:
+            # Before the filter check below: a call the provider withheld the answer of was billed.
+            self._ring.on_success(result.usage, self.model, used=used)
         # Announce the answerer on the FIRST sighting of each distinct name (ADR-0214),
         # rather than on a mismatch with ``self.model``. A mismatch rule would have to
         # decide when two spellings are "the same model" -- ``openai/x`` against ``x`` is
@@ -2730,9 +2791,11 @@ class LiteLLMProvider(Provider):
         # (ADR-0248). The rough count is the same one the rate was learned against.
         prompt_estimate = max(self._rough_token_estimate(wire_messages), 1)
         clamped: int | None = None  # the clamp of the request last built (ADR-0310)
+        used: str | None = None  # the pool account the request last built is addressed to
+        moves = 0  # times the pool has moved this call to another account
 
         def build() -> dict[str, Any]:
-            nonlocal clamped
+            nonlocal clamped, used
             call_kwargs = self._build_kwargs(
                 wire_messages,
                 tools,
@@ -2741,6 +2804,7 @@ class LiteLLMProvider(Provider):
                 **kw,
             )
             clamped = self._clamped_output_cap
+            used = self._built_member
             call_kwargs["stream"] = True
             call_kwargs["stream_options"] = {"include_usage": True}
             return call_kwargs
@@ -2809,6 +2873,15 @@ class LiteLLMProvider(Provider):
                     # place (ADR-0181, the stop list, ADR-0296, and the temperature,
                     # ADR-0303), once per refusal learned. A refusal of the tools is the
                     # wrapper's to answer. Anything after the first chunk is a real failure.
+                    #
+                    # A credit refusal or a refused key arrives at request time too, before
+                    # inference, so nothing has been yielded: the pool moves the session and
+                    # the call is re-issued on the next account. After a first chunk there is
+                    # nothing to move, and the failure is reported as it is.
+                    if chunks == 0 and self._pool_failover(exc, used, moves):
+                        moves += 1
+                        call_kwargs = build()
+                        continue
                     if chunks == 0 and self._refuses_tool_use(exc, call_kwargs):
                         raise ToolUseRefused(str(self._map_error(exc))) from exc
                     if (
@@ -2832,6 +2905,9 @@ class LiteLLMProvider(Provider):
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
 
+        if self._ring is not None and used is not None and streamed_usage is not None:
+            # Before the filter check: a stream the provider withheld the answer of was billed.
+            self._ring.on_success(streamed_usage, self.model, used=used)
         self._raise_if_filtered(finish_reason, delivered=delivered, usage=streamed_usage)
         yield StreamDone(finish_reason=finish_reason, clamped_output_cap=clamped)
 

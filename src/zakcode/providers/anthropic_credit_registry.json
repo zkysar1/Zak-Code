@@ -1,0 +1,52 @@
+{
+  "schema": "llm-pool-registry/1",
+  "pool": "anthropic-credit",
+  "provider": "anthropic",
+  "api_style": "anthropic-messages",
+  "base_url": "https://api.anthropic.com",
+  "headers": {
+    "anthropic-version": "2023-06-01"
+  },
+  "auth_header": "x-api-key",
+  "workspace_header": "anthropic-workspace-id",
+  "secrets": {
+    "api_key": "ANTHROPIC_ACCT_{slot}_API_KEY",
+    "workspace_id": "ANTHROPIC_ACCT_{slot}_WORKSPACE_ID",
+    "org_id": "ANTHROPIC_ACCT_{slot}_ORG_ID"
+  },
+  "models": [
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5"
+  ],
+  "cycle": {
+    "kind": "calendar-month-utc"
+  },
+  "steer_off_fraction": 0.95,
+  "rate_limit": {
+    "max_retries": 3,
+    "cooldown_after": 3,
+    "window_s": 60,
+    "cooldown_s": 60
+  },
+  "overload": {
+    "max_retries": 3,
+    "base_backoff_ms": 1000
+  },
+  "reset_grace": {
+    "grace_h": 48,
+    "recheck_h": 6
+  },
+  "members": [
+    {"id": "acct-02", "slot": "02", "rank": 1,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-03", "slot": "03", "rank": 2,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-04", "slot": "04", "rank": 3,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-05", "slot": "05", "rank": 4,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-06", "slot": "06", "rank": 5,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-07", "slot": "07", "rank": 6,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-08", "slot": "08", "rank": 7,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-01", "slot": "01", "rank": 10,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-09", "slot": "09", "rank": 8,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "empty"},
+    {"id": "acct-10", "slot": "10", "rank": 9, "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "empty"},
+    {"id": "acct-00", "slot": "00", "rank": 99, "billing": "card-refill", "monthly_cap_usd": null, "use": ["prod", "dev", "test", "demo"], "status": "active"}
+  ]
+}
