@@ -1,0 +1,454 @@
+[
+  {
+    "name": "fresh_assign_lowest_rank",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "missing_key_skips_to_next",
+    "rule": [1],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","03","04","05","06","07","08"],
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-03", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "rank_order_skips_to_acct08",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-08", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "rank_order_acct01_after_higher_promo",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-01", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "empty_slots_never_chosen",
+    "rule": [1],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["09","10"],
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_null_cap_gives_none",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_with_cap_gives_acct00",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 50}}
+    },
+    "state": {
+      "members": {
+        "acct-00": {"spend_mtd": 10.0}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "cap_reached_gives_none",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 50}}
+    },
+    "state": {
+      "members": {
+        "acct-00": {"spend_mtd": 50.0}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "dev_falls_to_acct00_after_all_promo_exhausted_with_cap",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-01": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "dev_no_fallback_without_cap",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-01": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "steer_off_new_session_while_live_stays",
+    "rule": [1, 2, 3],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "members": {
+        "acct-02": {"spend_mtd": 190.0}
+      },
+      "sessions": {
+        "existing": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "new1", "use": "dev",
+        "expect": {"member": "acct-03", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "response", "session": "existing", "status": 200,
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "credit_402_exhausts_moves_retries",
+    "rule": [4],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 402, "error_type": "billing_error",
+        "expect": {
+          "member": "acct-03", "retry": true, "moved": true, "alert": false,
+          "state_after": {
+            "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"}
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "credit_400_low_balance_same_as_402",
+    "rule": [4],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 400,
+        "message": "Your credit balance is too low to access the Anthropic API.",
+        "expect": {
+          "member": "acct-03", "retry": true, "moved": true, "alert": false,
+          "state_after": {
+            "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"}
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "credit_refusal_within_grace_sets_recheck",
+    "rule": [4],
+    "now": "2026-10-01T06:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 402, "error_type": "billing_error",
+        "expect": {
+          "member": "acct-03", "retry": true, "moved": true, "alert": false,
+          "state_after": {
+            "acct-02": {"exhausted_until": "2026-10-01T12:00:00Z"}
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "month_rollover_reenables_member",
+    "rule": [1, 4, 9],
+    "now": "2026-10-31T23:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z", "spend_mtd": 195.0}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "now": "2026-10-31T23:00:00Z",
+        "expect": {"member": "acct-03", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "assign", "session": "s2", "use": "dev",
+        "now": "2026-11-01T00:01:00Z",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "429_retries_same_member_with_retry_after",
+    "rule": [5],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 429, "retry_after": 30,
+        "expect": {"member": "acct-02", "retry": true, "moved": false, "alert": false, "retry_after": 30}
+      }
+    ]
+  },
+  {
+    "name": "429_cooldown_new_session_elsewhere_live_stays",
+    "rule": [5],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 429, "retry_after": 5,
+        "now": "2026-10-15T12:00:00Z",
+        "expect": {"member": "acct-02", "retry": true, "moved": false, "alert": false}
+      },
+      {
+        "op": "response", "session": "s1", "status": 429, "retry_after": 5,
+        "now": "2026-10-15T12:00:10Z",
+        "expect": {"member": "acct-02", "retry": true, "moved": false, "alert": false}
+      },
+      {
+        "op": "response", "session": "s1", "status": 429, "retry_after": 5,
+        "now": "2026-10-15T12:00:20Z",
+        "expect": {
+          "member": "acct-02", "retry": true, "moved": false, "alert": false,
+          "state_after": {"acct-02": {"cool_until": "2026-10-15T12:01:20Z"}}
+        }
+      },
+      {
+        "op": "assign", "session": "s2", "use": "dev",
+        "now": "2026-10-15T12:00:25Z",
+        "expect": {"member": "acct-03", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "response", "session": "s1", "status": 200,
+        "now": "2026-10-15T12:00:30Z",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "401_invalid_alert_move",
+    "rule": [6],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 401,
+        "expect": {
+          "member": "acct-03", "retry": true, "moved": true, "alert": true,
+          "state_after": {"acct-02": {"invalid": true}}
+        }
+      }
+    ]
+  },
+  {
+    "name": "403_invalid_alert_move",
+    "rule": [6],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 403,
+        "expect": {
+          "member": "acct-03", "retry": true, "moved": true, "alert": true,
+          "state_after": {"acct-02": {"invalid": true}}
+        }
+      }
+    ]
+  },
+  {
+    "name": "529_backoff_same_member_no_move",
+    "rule": [7],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 529,
+        "expect": {"member": "acct-02", "retry": true, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "200_refusal_no_action",
+    "rule": [8],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 200, "stop_reason": "refusal",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "other_400_no_action",
+    "rule": [8],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "state": {
+      "sessions": {
+        "s1": {"member": "acct-02", "use": "dev"}
+      }
+    },
+    "ops": [
+      {
+        "op": "response", "session": "s1", "status": 400,
+        "message": "max_tokens: 300001 is greater than the model's max output token limit: 128000",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  }
+]

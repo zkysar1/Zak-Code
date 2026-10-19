@@ -1,0 +1,17 @@
+{
+  "what": "Verbatim copies of the shared Anthropic credit pool policy files. The sibling runtime's repository owns them; this repository copies them so the pool module and its tests can run on their own. Never edit a copy here: change the original, pass its vectors there, then refresh both copies and these ids together.",
+  "source_repository_path": "src/main/resources/llm-pool/",
+  "source_commit": "a13a0e3d46dc3cd17de2fec1aca9a17c028c05d2",
+  "files": {
+    "src/zakcode/providers/anthropic_credit_registry.json": {
+      "source_file": "anthropic-credit.registry.json",
+      "git_blob": "74aab679f8c02d1e9fc9b80eaf05dac0bd7cb12c"
+    },
+    "tests/fixtures/anthropic_pool/policy-vectors.json": {
+      "source_file": "policy-vectors.json",
+      "git_blob": "7c003de21b92174e4904a0c53004e3331b176873"
+    }
+  },
+  "vector_count": 22,
+  "check_against_the_source": "Set ZAKCODE_POOL_SOURCE_CHECKOUT to a checkout of the source repository and run tests/test_anthropic_pool_vectors.py: the drift test compares the source files' blob ids with the ones above."
+}
