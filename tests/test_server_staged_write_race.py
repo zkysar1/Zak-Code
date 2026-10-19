@@ -56,18 +56,24 @@ def _make_app(workspace: Path) -> FastAPI:
 
 
 def _hold_replaces_at_barrier(monkeypatch: pytest.MonkeyPatch, staged_name: str) -> list[str]:
-    """Make every ``os.replace`` onto ``staged_name`` wait until all WRITERS have arrived.
+    """Make each writer's first ``os.replace`` onto ``staged_name`` wait until all WRITERS arrive.
 
     Arriving means the writer has already written its temp file, so once the barrier opens
     every writer sits between "temp written" and "temp renamed" at the same moment. Returns
     the name of the temp each writer arrived with, in arrival order.
+
+    Only a writer's FIRST rename waits. Windows refuses most of eight renames that hit one
+    target together, and the helper then retries from the same thread; a retry must not wait
+    for a barrier that has already opened.
     """
     real_replace = os.replace
     barrier = threading.Barrier(WRITERS, timeout=BARRIER_TIMEOUT_S)
     arrivals: list[str] = []
+    arrived_threads: set[int] = set()
 
     def gated(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: Any) -> None:
-        if Path(dst).name == staged_name:
+        if Path(dst).name == staged_name and threading.get_ident() not in arrived_threads:
+            arrived_threads.add(threading.get_ident())
             arrivals.append(Path(src).name)
             barrier.wait()
         real_replace(src, dst, **kwargs)
