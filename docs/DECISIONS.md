@@ -19813,3 +19813,78 @@ characters of reasoning, and the same block replayed under an edited system prom
 without `drop_block` returned 400; a streamed call gave 16 thinking fragments and no adjacent duplicates. The project's
 check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,321 passed, 24 skipped, and the one test that
 failed (two renders a minute apart, `tests/test_provider_labels.py`) passed alone on re-run.
+
+## ADR-0322: a lifespan shutdown with a turn in flight and no ending window open interrupts the turn, and waits at most 45 s for the loop to wind down
+
+**Status:** Accepted (2026-10-18)
+
+**Context.** A member's hard Stop, and any systemd stop of `mind-serve@`, reaches the served app as a SIGTERM and
+nothing else. uvicorn runs the lifespan shutdown, which calls `_stop_consumer`: it sets `run_stopping`, waits for the
+say consumer up to `_graceful_stop_budget()` (0.5 s plus `ZAKCODE_RUN_CONSOLIDATION_RESERVE`, which the vessel recipe
+sets to 350 on a bounded run), then cancels it. `run_stopping` only stops NEW beats: with no ending window open
+`_keep_beating` returns `not run_stopping.is_set()`, and the turn already running is ended by the mind's own stop. That
+stop is raised by `POST /run/stop` (ADR-0047), the cap (ADR-0039) and the idle bound, through `_begin_graceful_ending`,
+and by nothing in a SIGTERM. A mind's turn is its perpetual loop and ends only on that stop, so the wait ran to the
+budget, which is longer than the unit's `TimeoutStopSec=120`, and systemd's SIGKILL ended it. Measured on three DEV
+throwaway runs hard-stopped with the mind mid-turn (2026-09-30 to 2026-10-02; the stop answered DELETE=200): 23, 25 and 21 model calls
+after the stop, none metered because the env-server is terminated at the stop, the last serve.log line at stop +119,
++121 and +120 s, and no `Application shutdown complete` line. uvicorn's `Shutting down` and `Waiting for application
+shutdown.` lines sat within seconds of the stop, so the signal arrived at once and the lifespan blocked. A run that ended
+through the mind's own stop chain before the stop stamp shows the whole four-line sequence and no post-stop calls. The
+unit (`ops/mind-sidecar/systemd/mind-serve@.service` in the environment server's repository, read 2026-10-18) bounds the
+`knowledge-export` ExecStop with `timeout 120` and sets `TimeoutStopSec=120`; `provision-env.sh` sets the reserve from
+`BOUNDED_RESERVE_S=350`.
+
+**Decision.** `_stop_consumer` interrupts the turn in flight when nothing else will end it.
+
+- The condition is a graceful-stop budget above zero, a turn in flight, the run not yet ended, and no ending window open
+  (neither the `run_stop_message` window nor the framework-stop window). It then writes the interrupt file, the same
+  `request_interrupt` the cap writes when it cannot open a window. The turn's watcher cancels the turn within its 0.3 s
+  poll, the loop leaves through `_keep_beating`, and `_end_run` runs as it does for any explicit stop: digest, end
+  command, stop-reason marker, `on_run_end`.
+- The wait is then capped at `_HARD_STOP_WAIT_SECONDS`, 45 s, so `Application shutdown complete` is reached before the
+  supervisor's SIGKILL and inside the 60 s a run grade allows. The cap is a ceiling: the interrupted turn ends within a
+  beat, and only the digest and the end command behind it spend the rest. A digest that outruns it is cancelled with the
+  steps behind it (the end command, which is bounded at 60 s by itself, then the marker and `on_run_end`). On this path
+  none of them ran before, because SIGKILL came first.
+- Everything else reads as before: a window already open (the mind is ending itself), a run already ended (a digest or
+  receipt in progress), no turn in flight, and a server with no ending configured (budget 0, which cancels at once).
+
+Stated choices. The other shape, raising the framework stop at shutdown (`_begin_graceful_ending`) so the mind
+consolidates inside a window, was not taken. A raised stop is read at the mind's next tool-call boundary (+39 s on the
+first capped run with the stop relay, 2026-09-23) and its window is the 350 s reserve, which the unit cannot
+hold, so the mind would go on calling the model for tens of seconds after the member said Stop, unmetered, which is the
+symptom. It also leaves a signed stop pair on disk when SIGKILL ends the window, retired at the next start only once its
+grace has run out. The interrupt writes a file the next turn clears. The cost of the choice is that a mind stopped this
+way does not run its own consolidation; the runtime's digest still runs. Skipping the digest at a hard stop would be
+cheaper still and would also drop the receipt of a graceful SIGTERM, which the owner has not asked for. The ceiling is a
+constant, not a setting, as `_STOP_QUIET_SECONDS` is: it encodes one external fact, the unit's stop timeout, and a
+setting would add a knob to a repo that has refused one before (ADR-0039).
+
+Not verified: a live DEV run of this change (post-stop model calls and the shutdown line on
+a hard-stopped fleet run). The probe below uses a scripted agent, so its post-stop lines are ticks, not model calls, and
+the digest in it takes no time; the digest of a real mind at a hard stop was not timed. A browser holding the watch
+stream open through the stop was not run either; uvicorn waits for open connections before the lifespan runs, and the
+three DEV specimens show both of its lines, so none held them.
+
+**Consequences.** A hard stop with a mind mid-turn ends the turn within a beat or two instead of running to the
+supervisor's SIGKILL, so the calls after the stop fall from tens to the digest's, and the process leaves through
+`Application shutdown complete` inside the 45 s ceiling plus the connection drain. A run grade that reads
+`post_stop model_calls` sees the digest's calls and not the loop's. A SIGTERM with the consumer idle, or with an ending
+already in progress, is unchanged.
+
+The proof. `tests/test_lifespan_shutdown_interrupt.py`, 6 tests. Run against the parent commit's source (39479cf,
+exported with `git archive` and selected with pytest's `-o pythonpath`, because the ini `pythonpath = ["src"]` otherwise
+wins over `PYTHONPATH`), 2 are red: the real lifespan waited 10.5 s on a turn nothing was ending, against a 5 s
+threshold, and the ceiling test errors on the missing constant. The other four are controls (an open window, a run
+already ending, an idle consumer, a default server) and pass on both. Six mutations, one site at a time, each turned
+exactly the tests written for it red: the interrupt call removed, 2; the open window ignored, 1; the zero budget
+ignored, 1; the run-ended guard removed, 1; the ceiling removed, 1; the in-flight guard removed, 1. The unmutated copy
+through the same harness passed 6 of 6. A real uvicorn process, signalled with SIGTERM while a scripted perpetual turn
+ran, with the reserve at 60 s and a 25 s stand-in for the supervisor's SIGKILL: on the parent's source it was killed at
+25.0 s after 50 post-stop lines and logged `Shutting down` and `Waiting for application shutdown` and neither
+`Application shutdown complete` nor `Finished server process`, the signature of the three DEV runs; on this change it
+exited at 0.6 s with one post-stop line (the digest) and logged all four. The project's check (`ruff check`, `ruff
+format --check`, `mypy`, `pytest`) is green: 6,330 passed, 22 skipped. A first full run of this change failed
+`tests/test_host_neutral_names.py` on the ADR's own text (record ids and a host's repository name), which is why the text
+names the unit's repository generically.

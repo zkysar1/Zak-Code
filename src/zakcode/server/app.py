@@ -165,6 +165,16 @@ _DEADLINE_WATCH_SECONDS = 1.0
 #: stop. It is not a second grace, and it never ends a mind that has a loop to re-enter.
 _STOP_QUIET_SECONDS = 60.0
 
+#: How long the lifespan shutdown waits for the loop to wind down once it had to INTERRUPT a turn
+#: that nothing else would end (`_stop_consumer`, ADR-0322). The supervisor kills a stop that
+#: outlives its timeout (mind-serve@.service TimeoutStopSec=120, then SIGKILL), and what is left
+#: of that after the ExecStop export and uvicorn's connection drain is the budget for
+#: "Application shutdown complete". 45 s keeps a hard stop inside the 60 s a run grade allows.
+#: It is a ceiling, never a target: the interrupted turn ends within a beat, so only the digest
+#: and the end command behind it can spend it, and a digest that outruns it is cut with the
+#: steps that follow it.
+_HARD_STOP_WAIT_SECONDS = 45.0
+
 #: How long a permission prompt waits for an operator's answer before failing
 #: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
 APPROVAL_TIMEOUT_SECONDS = 120.0
@@ -3524,9 +3534,31 @@ def create_app(
         hangs must not hold the vessel open, which is the host-bill failure the whole
         feature exists to prevent. Cancellation stays the backstop, so shutdown is
         never at the mercy of a turn that will not end.
+
+        A TURN IN FLIGHT WITH NO ENDING WINDOW OPEN IS INTERRUPTED. `run_stopping` only
+        stops NEW beats (`_keep_beating`); the turn already running is ended by the mind's
+        own stop, and only `/run/stop`, the cap and the idle bound ever raise that
+        (`_begin_graceful_ending`). A SIGTERM (a member's hard Stop, a box shutdown) raises
+        nothing, so a mind's perpetual turn kept calling the model, unmetered, for the whole
+        wait until the supervisor's SIGKILL (measured 21 to 25 calls over about 120 s).
+        This is the ending the cap already gets when no window can be opened: the same
+        interrupt file, the same cancellation path. The wait is then capped at
+        `_HARD_STOP_WAIT_SECONDS` so the process leaves before SIGKILL. A window already
+        open, a run already ended and a server with no ending configured (budget 0, which
+        cancels at once) are left exactly as they were.
         """
         run_stopping.set()
         budget = _graceful_stop_budget()
+        if budget > 0 and inflight and not run_ended.is_set() and not _any_ending_window_open():
+            logger.warning(
+                "stop with a turn in flight and no ending window open: interrupting it "
+                "(waiting at most %.0fs for the loop to wind down)",
+                min(budget, _HARD_STOP_WAIT_SECONDS),
+            )
+            # Fail-open: shutdown must reach the cancel below even if the file cannot be written.
+            with contextlib.suppress(OSError):
+                request_interrupt(interrupt_path(resolved_settings.workspace_root))
+            budget = min(budget, _HARD_STOP_WAIT_SECONDS)
         for task in consumer_tasks:
             if budget > 0 and not task.done():
                 with contextlib.suppress(Exception):
