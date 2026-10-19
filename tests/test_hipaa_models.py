@@ -252,7 +252,12 @@ def test_startup_gate_passes_zakpick_when_every_default_is_listed() -> None:
     _assert(
         _hipaa(
             zakpick_models={"deep_code": ZakpickModel(model="gpt-4o")},
-            hipaa_allowed_models=["gpt-4o", "gpt-4o-mini"],
+            # Only OpenAI's own prefix is dropped, so the Anthropic defaults are listed with theirs.
+            hipaa_allowed_models=[
+                "gpt-4o",
+                "anthropic/claude-sonnet-5-5",
+                "anthropic/claude-haiku-5-5",
+            ],
         ),
         zakpick=True,
     )

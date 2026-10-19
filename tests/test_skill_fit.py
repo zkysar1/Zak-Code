@@ -99,8 +99,11 @@ def test_info_rows_name_the_window_its_source_and_a_refusal(
     assert rows["Context window (zakpick 'classify')"].startswith(
         "openai/zds-qwen3.8-27b: unknown — REFUSES TO RUN"
     )
-    # A category left at its built-in default resolves through the registry.
-    assert rows["Context window (zakpick 'summarize')"].endswith("128,000 (registry)")
+    # A category left at its built-in default shows the default's declared conversation window.
+    # The pod's api_base is never consulted for it: a named provider keeps its own base.
+    assert rows["Context window (zakpick 'summarize')"] == (
+        "anthropic/claude-sonnet-5-5: 163,840 (config)"
+    )
 
 
 def test_banner_lines_carry_warnings_then_the_flagged_skills() -> None:
