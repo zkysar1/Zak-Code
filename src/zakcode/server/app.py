@@ -99,6 +99,7 @@ from zakcode.server.wire import (
     event_to_dict,
     events_schema,
 )
+from zakcode.session.atomic_write import write_text_atomic
 from zakcode.session.framework_signal import (
     AUTONOMOUS_MODE,
     framework_agent_mode,
@@ -1874,9 +1875,7 @@ def create_app(
         if target.exists():
             raise HTTPException(status_code=429, detail="a suggestion is already pending")
         root.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".nudge.{os.getpid()}.tmp")
-        tmp.write_text(text + "\n", encoding="utf-8")
-        os.replace(tmp, target)
+        write_text_atomic(target, text + "\n")
         return {"queued": True}
 
     # ── user say (watch/talk unification) ──────────────────────────────────────────
@@ -2051,9 +2050,7 @@ def create_app(
             # present untrusted world text to the model unframed (P1).
             "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
         }
-        tmp = target.with_name(f".observation.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(staged, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp, target)
+        write_text_atomic(target, json.dumps(staged, ensure_ascii=False) + "\n")
         # THE FRAME IS ON DISK BEFORE THE AGENT IS TOLD TO LOOK. A wake that overtakes its
         # own payload wakes a loop to an empty inbox, which is worse than not waking it.
         #
