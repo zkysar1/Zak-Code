@@ -65,17 +65,43 @@ def test_default_category_models_cover_every_category() -> None:
         assert category in r.DEFAULT_CATEGORY_MODELS
 
 
-def test_defaults_are_all_first_party_openai() -> None:
-    """Every category defaults to gpt-4o-mini since Groq was retired.
+def test_defaults_run_one_claude_model_across_the_conversation() -> None:
+    """The conversation categories share ONE model at ONE effort; classify is the small model.
 
-    The cost/capability tier split COLLAPSED with that provider: the cheap tier was
-    Groq's open models, and gpt-4o-mini is this repo's own twice-measured choice
-    (routing.py, 2026-06-18 + re-tested 2026-07-29). Re-tiering is an open question,
-    so this test pins the uniform state deliberately rather than by omission.
+    A prompt cache is scoped to its model and a top-level effort change invalidates it, so a
+    second model or level among the categories that share a conversation would re-write the
+    cached prefix at every switch. This pins that invariant, not just today's ids. (The
+    previous defaults, gpt-4o-mini everywhere, were replaced on purpose on 2026-10-19.)
     """
     s = Settings(default_model="zakpick", workspace_root=".")
-    for category in ("classify", "summarize", "quick_code", "plan", "deep_code", "delegate"):
-        assert r.model_for_category(category, s) == "openai/gpt-4o-mini", category
+    conversation = ("summarize", "quick_code", "plan", "deep_code", "delegate")
+    specs = {c: r.model_spec_for_category(c, s) for c in conversation}
+    assert {spec.litellm_string for spec in specs.values()} == {"anthropic/claude-sonnet-5-5"}
+    assert {spec.reasoning_effort for spec in specs.values()} == {"medium"}
+    classify = r.model_spec_for_category("classify", s)
+    assert classify.litellm_string == "anthropic/claude-haiku-5-5"
+    assert classify.reasoning_effort == "low"
+
+
+def test_conversation_window_is_a_compaction_trigger_not_the_model_maximum() -> None:
+    """The pinned window caps the prompt at the compactor's threshold, far below 1M.
+
+    Computed through the real compactor and answer room, so a change to either surfaces here
+    instead of silently moving the per-turn ceiling the pin was chosen for.
+    """
+    from zakcode.agent.compact import Compactor
+    from zakcode.agent.loop import _answer_room
+    from zakcode.providers.registry import get_capabilities
+
+    s = Settings(default_model="zakpick", workspace_root=".")
+    spec = r.model_spec_for_category("deep_code", s)
+    caps = get_capabilities(spec.litellm_string)
+    assert spec.context_window == 163_840 < caps.context_window == 1_000_000
+    room = _answer_room(caps)
+    assert Compactor().threshold(spec.context_window, answer_room=room) == 139_264
+    # Unpinned, the registry window would let a prompt grow to 900,000 before compacting.
+    assert Compactor().threshold(caps.context_window, answer_room=room) == 900_000
+    assert r.model_spec_for_category("classify", s).context_window is None  # one-shot
 
 
 def test_default_avoids_tools_unreliable_model() -> None:
@@ -103,7 +129,7 @@ def test_deep_tier_uses_reliable_first_party_native_tool_calling() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     for category in ("deep_code", "delegate"):
         spec = r.model_spec_for_category(category, s)
-        assert spec.source == "openai", f"{category} must be first-party OpenAI"
+        assert spec.source == "anthropic", f"{category} must be first-party Anthropic"
         assert "gpt-oss" not in spec.model and "llama-3.3" not in spec.model
 
 
@@ -114,7 +140,7 @@ def test_user_override_wins_and_flips_source() -> None:
         zakpick_models={"deep_code": {"model": "qwen3:32b", "source": "local"}},
     )
     assert r.model_for_category("deep_code", s) == "ollama_chat/qwen3:32b"  # overridden → local
-    assert r.model_for_category("quick_code", s) == "openai/gpt-4o-mini"  # still default
+    assert r.model_for_category("quick_code", s) == "anthropic/claude-sonnet-5-5"  # still default
 
 
 # ── classifier (the one automatic decision) ──────────────────────────────────────
@@ -230,7 +256,7 @@ def test_describe_zakpick_shows_model_and_source_not_classify() -> None:
     s = Settings(default_model="zakpick", workspace_root=".")
     out = r.describe_zakpick(s)
     assert out.startswith("zakpick —")
-    assert "gpt-4o-mini (openai)" in out  # model (source), not a raw litellm slug
+    assert "claude-sonnet-5-5 (anthropic)" in out  # model (source), not a raw litellm slug
     assert "classification" not in out  # seam-only category is never advertised
 
 
@@ -249,9 +275,10 @@ def test_config_rejects_unknown_category() -> None:
 def test_agent_zakpick_startup_uses_deep_code_model(tmp_path: Path) -> None:
     agent = zakcode.Agent(default_model="zakpick", workspace_root=tmp_path)
     assert agent._zakpick is True
-    # startup model = the deep_code category's model (the safe/capable one).
-    assert agent.settings.default_model == "openai/gpt-4o-mini"
-    assert agent.session.model == "openai/gpt-4o-mini"
+    # startup model = the deep_code category's model (the safe/capable one), under its own
+    # provider prefix — not the ZakpickModel.source fallback ("openai/claude-…" would be wrong).
+    assert agent.settings.default_model == "anthropic/claude-sonnet-5-5"
+    assert agent.session.model == "anthropic/claude-sonnet-5-5"
 
 
 def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
@@ -266,7 +293,7 @@ def test_agent_resolves_distinct_providers_per_category(tmp_path: Path) -> None:
     summ_provider, summ_model = agent._resolve_task_provider("summarize")
     deep_provider, deep_model = agent._resolve_task_provider("deep_code")
     assert summ_model == "openai/gpt-4o"
-    assert deep_model == "openai/gpt-4o-mini"
+    assert deep_model == "anthropic/claude-sonnet-5-5"
     assert summ_provider is not deep_provider  # different models → distinct cached providers
 
 
@@ -281,7 +308,7 @@ def test_agent_main_provider_updates_active_model(tmp_path: Path) -> None:
     agent._main_provider_for("quick_code")
     assert agent._active_model == "openai/gpt-4o"  # easy turn → the configured quick coder
     agent._main_provider_for("deep_code")
-    assert agent._active_model == "openai/gpt-4o-mini"  # hard turn → reliable deep coder
+    assert agent._active_model == "anthropic/claude-sonnet-5-5"  # hard turn → reliable deep coder
 
 
 def test_agent_override_changes_startup_and_routing(tmp_path: Path) -> None:
@@ -349,7 +376,10 @@ def test_zakpick_entry_declares_the_window(tmp_path: Path) -> None:
     assert agent.provider.capabilities().context_window == 131072
     # … and the startup sweep recorded where every category's number came from.
     assert agent.context_windows["zakpick 'deep_code'"].source == "config"
-    assert agent.context_windows["zakpick 'summarize'"].source == "registry"
+    # A built-in default declares its window too (the conversation pin), so it reads "config";
+    # classify carries no pin and is the default that resolves through the registry.
+    assert agent.context_windows["zakpick 'summarize'"].source == "config"
+    assert agent.context_windows["zakpick 'classify'"].source == "registry"
     assert "default_model" in agent.context_windows
 
 

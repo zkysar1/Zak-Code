@@ -120,7 +120,8 @@ With `hipaa_mode`, a model outside `hipaa_allowed_models` raises `HipaaModelViol
 call — including one reached by `fallback_model`, a `model_roles` entry, runtime failover or a
 `zakpick` category. The list ships empty and an empty list permits **nothing**. Under `zakpick`,
 assign every category a listed model: an unassigned category falls through to its built-in default
-(today `openai/gpt-4o-mini`), and the start is refused when that default is not listed.
+(today `anthropic/claude-sonnet-5-5`, or `anthropic/claude-haiku-5-5` for `classify`), and the start
+is refused when that default is not listed.
 
 The call must also stay on Chat Completions: one that would be stored, run in the background,
 search the web, use a vendor-hosted tool or move onto the Responses API raises
@@ -181,13 +182,13 @@ overflow recovery, and the skill-fit check (`zakcode info` lists skills that can
 the model, and a skill that cannot fit ends the turn as `skill_too_large`).
 
 Set **every** category when combining `zakpick` with `local_only`: an unset category falls
-through to a built-in OpenAI default rather than to your pod. The startup check names
+through to a built-in Anthropic default rather than to your pod. The startup check names
 each one it finds, so a partial config fails immediately instead of billing later.
 
 Billing is not the only cost of a missed category, and the other one slips past `local_only`
-entirely. The `delegate` default is `openai/gpt-4o-mini` — a *generic-OpenAI* model, so with
-`api_base` set it is routed to your pod, `local_only` classifies it as local (correctly: no
-money is spent), and the check passes. Your pod then does not host `gpt-4o-mini`, and a
+entirely. A *generic-OpenAI* model — the `delegate` default was `openai/gpt-4o-mini` until
+2026-10-19 — is routed to your pod when `api_base` is set, `local_only` classifies it as local
+(correctly: no money is spent), and the check passes. Your pod then does not host that model, and a
 lenient proxy answers with whatever it does host. Observed on the inference server 2026-08-17:
 `SUBSTITUTED requested model='openai/gpt-4o-mini' -> serving 'zds-qwen3.8-27b'`. The two
 guards are orthogonal and you want both — `local_only` promises nothing gets billed,

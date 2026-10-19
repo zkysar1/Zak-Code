@@ -16,10 +16,9 @@ quick-vs-deep coder split (:func:`classify_main_turn`), which only ever chooses 
 *coder models the user already configured*.
 
 Out of the box (no config) every category has a sensible default. Defaults all use
-``source="openai"``; override any category — model and/or source — via
-``Settings.zakpick_models``. Groq was retired as a provider on 2026-09-11, which
-removed the cheap open-model tier these defaults used to draw on — see
-:data:`DEFAULT_CATEGORY_MODELS` for what replaced it and why.
+``source="anthropic"``: one model for the conversation and a small one for the classifier.
+Override any category — model and/or source — via ``Settings.zakpick_models``. See
+:data:`DEFAULT_CATEGORY_MODELS` for the choice and its history.
 
 This module imports **no** vendor SDK / litellm, so the clean-room contract test stays green.
 Model strings here are data (like the candidate lists in ``resolve._EXTERNAL_SOURCES``), not a
@@ -211,16 +210,45 @@ class ZakpickModel(BaseModel):
         return thinking_extra_body(self.thinking)
 
 
-def _o(model: str) -> ZakpickModel:
-    """A first-party OpenAI default (litellm reads ``OPENAI_API_KEY`` directly)."""
-    return ZakpickModel(model=model, source="openai")
+def _a(model: str, effort: str, context_window: int | None = None) -> ZakpickModel:
+    """A first-party Anthropic default (litellm reads ``ANTHROPIC_API_KEY`` directly)."""
+    return ZakpickModel(
+        model=model, source="anthropic", reasoning_effort=effort, context_window=context_window
+    )
 
 
-#: Out-of-the-box defaults. EVERY category now runs on first-party OpenAI, priced by
-#: litellm directly.
+#: The conversation categories' window: a compaction TRIGGER, not the model's maximum
+#: (1,000,000 on Sonnet 5.5). The compactor fires at :meth:`Compactor.threshold`, which for
+#: this window and Sonnet 5.5's 16,384-token answer room (ADR-0240, ADR-0192) is 139,264
+#: tokens. That caps every request's prompt, and with it the price of a turn: the whole
+#: prompt is re-read on every call, at the cache-read rate when the cache is warm and at the
+#: full input rate when it is not. Unpinned, the registry's 1M window puts the trigger at
+#: 900,000, so a long session re-reads about 6.5 times as much on every turn before anything
+#: compacts. Skill bodies still fit: the fit check needs only body + system + 16,384 <= the
+#: window (ADR-0066). Raise it for a measured reason, knowing the per-turn price rises with it.
+_SONNET_CONVERSATION_WINDOW = 163_840
+
+#: Out-of-the-box defaults, since 2026-10-19: Claude for every category.
 #:
-#: THE COST/CAPABILITY TIER SPLIT COLLAPSED ON PURPOSE, and that is the one consequence of
-#: this table worth understanding. The cheap/read-only/easy-turn tier used to run on Groq's
+#: ONE MODEL FOR EVERY CATEGORY THAT SHARES THE CONVERSATION. A prompt cache is scoped to
+#: its model, and a Sonnet 5.5 thinking block can be read back only by that model, so a
+#: model switch mid-conversation re-writes the whole cached prefix at full price and drops
+#: the reasoning. ONE EFFORT for the same reason: changing the top-level effort between
+#: requests also invalidates the cache. medium is Anthropic's starting point for agentic
+#: coding. Varying depth per category needs a per-MESSAGE effort (the
+#: ``mid-conversation-output-config-2026-07-01`` beta), which keeps the cache; this engine
+#: does not send one yet, so every conversation category runs at one level.
+#:
+#: ``classify`` is the exception on both counts. It is a one-shot side-call with its own
+#: short prompt, so it shares no cache: the small model at the lowest level, and no window
+#: pin, since it never accumulates context to compact.
+#:
+#: Both ids were live-verified 2026-10-19 with a billed completion each.
+#:
+#: HISTORY. Before 2026-10-19 every category ran on ``openai/gpt-4o-mini``.
+#:
+#: THE COST/CAPABILITY TIER SPLIT COLLAPSED ON PURPOSE back then. The
+#: cheap/read-only/easy-turn tier used to run on Groq's
 #: fast open models; Groq was retired as a provider on 2026-09-11 under the
 #: owner's 100%-OpenAI directive, so that tier had no backing provider left.
 #: The four categories it served (classify, summarize, quick_code, plan) were re-pointed to
@@ -266,14 +294,12 @@ def _o(model: str) -> ZakpickModel:
 #: n=3 is small (gpt-4o-mini's own 1/3 did not reproduce the "completed the full benchmark"
 #: claim above, so treat both numbers as directional).
 DEFAULT_CATEGORY_MODELS: dict[str, ZakpickModel] = {
-    # Re-pointed off Groq 2026-09-11 when that provider was retired. These four
-    # previously ran llama-3.1-8b-instant / openai-gpt-oss-20b / qwen3.6-27b on Groq.
-    "classify": _o("gpt-4o-mini"),  # cheap bounded JSON gates
-    "summarize": _o("gpt-4o-mini"),  # cheap, fast prose; NO tools, so the flag is moot
-    "quick_code": _o("gpt-4o-mini"),  # tools-RELIABLE native — easy turns
-    "plan": _o("gpt-4o-mini"),  # strong-enough reasoning for decomposition (read-only)
-    "deep_code": _o("gpt-4o-mini"),  # tools-RELIABLE native + cached — hard turns
-    "delegate": _o("gpt-4o-mini"),  # tools-reliable native — general execution
+    "classify": _a("claude-haiku-5-5", "low"),  # one-shot JSON gate; shares no cache
+    "summarize": _a("claude-sonnet-5-5", "medium", _SONNET_CONVERSATION_WINDOW),
+    "quick_code": _a("claude-sonnet-5-5", "medium", _SONNET_CONVERSATION_WINDOW),
+    "plan": _a("claude-sonnet-5-5", "medium", _SONNET_CONVERSATION_WINDOW),
+    "deep_code": _a("claude-sonnet-5-5", "medium", _SONNET_CONVERSATION_WINDOW),
+    "delegate": _a("claude-sonnet-5-5", "medium", _SONNET_CONVERSATION_WINDOW),
 }
 
 #: Categories with a LIVE routable call site in v1, so the info panel only advertises routes the
