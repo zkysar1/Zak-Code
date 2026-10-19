@@ -26,7 +26,9 @@ Semantics (shared by all of the above):
 
 Two consumers may share a workspace (a runner whose whole night is one turn, and a
 cockpit chat pane between its turns): **the turn in flight owns the inbox** — see the
-busy marker below (ADR-0060). Between turns, whoever polls first wins.
+busy marker below (ADR-0060). Between turns, whoever polls first wins — except on a
+workspace ``zakcode webapp`` serves, whose slot is the served app's at every moment:
+see the served marker below (ADR-0320).
 """
 
 from __future__ import annotations
@@ -177,14 +179,15 @@ def busy_elsewhere(path: Path) -> bool:
     return marker is not None and marker.get("pid") != os.getpid()
 
 
-def claim_busy(path: Path, session_id: str) -> bool:
+def claim_busy(path: Path, session_id: str, *, take_over: bool = False) -> bool:
     """Mark this process mid-turn on the workspace.
 
     False (unclaimed) while another process's fresh marker stands — that turn owns the
     inbox and this one runs without a claim. Never raises: the marker is a routing hint,
-    not a gate on the turn.
+    not a gate on the turn. ``take_over`` claims over a fresh foreign marker too: the
+    served marker's rule, since a server that starts IS the workspace's server (ADR-0320).
     """
-    if busy_elsewhere(path):
+    if not take_over and busy_elsewhere(path):
         return False
     payload = json.dumps({"pid": os.getpid(), "session": session_id, "since": time.time()})
     try:
@@ -219,14 +222,15 @@ class BusyLease:
     Both are idempotent and never raise.
     """
 
-    def __init__(self, path: Path, session_id: str) -> None:
+    def __init__(self, path: Path, session_id: str, *, take_over: bool = False) -> None:
         self.path = path
         self.session_id = session_id
+        self.take_over = take_over
         self.held = False
         self._task: asyncio.Task[None] | None = None
 
     async def acquire(self) -> None:
-        self.held = claim_busy(self.path, self.session_id)
+        self.held = claim_busy(self.path, self.session_id, take_over=self.take_over)
         if self.held:
             self._task = asyncio.create_task(self._keep_fresh())
 
@@ -244,3 +248,29 @@ class BusyLease:
         if self.held:
             release_busy(self.path)
             self.held = False
+
+
+# ── the served marker: a served workspace's say slot and interrupt file are the server's ──
+# ``zakcode webapp`` runs every turn on the conversation its page has open (ADR-0319), and
+# the page names that conversation on every say it sends. The slot cannot carry the name:
+# a terminal REPL on the same workspace polls it every 0.3 s between its own turns, against
+# the server's 0.5 s beat, and took the page's say ten times in ten (measured 2026-10-16),
+# running it in the REPL's own conversation while the page waited on a chat that never
+# heard it. The same idle poll clears the interrupt file as a stale signal, and once in
+# eight trials it cleared the page's Stop before the served turn read it. So the server
+# marks the workspace while its say consumer runs (ADR-0320): ``<workspace>/.served``,
+# claimed when the consumer starts, kept fresh by the busy marker's lease and removed when
+# the consumer stops. While a fresh one names another process, a REPL reads no say and
+# clears, reports or obeys no stop, idle, prompting or mid-turn. Same staleness rule as
+# ``.busy``: a server that died stops naming anyone two minutes later. A server that
+# starts takes the marker over (``take_over``), so a predecessor that crashed cannot leave
+# it unmarked.
+
+#: The served-marker filename under the workspace root.
+SERVED_FILENAME = ".served"
+
+
+def served_path(workspace_root: str | os.PathLike[str]) -> Path:
+    """The served-marker file for a workspace. :func:`busy_elsewhere` reads it as it reads
+    the busy marker: True while a fresh one names a process other than this one."""
+    return Path(workspace_root) / SERVED_FILENAME

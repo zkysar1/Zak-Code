@@ -2464,6 +2464,9 @@ main loop holds it for the turn in both twins while a bare loop never claims; th
 still takes a say written mid-turn; the idle REPL mux and the serve consumer beat stand
 back and resume once the marker is stale or gone).
 
+**Amended by ADR-0320 (2026-10-16):** on a workspace `zakcode webapp` serves, the slot is the server's
+between turns too: while its `.served` marker is fresh, a REPL there reads no say and clears or obeys no interrupt.
+
 ## ADR-0061: The hook-transcript projection follows the store — it is the conversation, so it lives where the conversation lives
 
 **Status.** Accepted (shipped, 2026-08-28).
@@ -19652,3 +19655,305 @@ barrier is never reached, and the unit tests that patch it. On
 the retry, dropping it turned the retried-to-success test and the 50-attempt case red; ignoring the platform turned the
 raised-at-once case red; and a bound that falls through, which would return without publishing, turned the give-up case red.
 `ruff check`, `ruff format --check`, `mypy` and the full suite are green: 5,785 passed, 22 skipped.
+
+## ADR-0319: the web page lists the workspace's saved chats, opens any of them or a new one, and the next turn runs on the chat it opened
+
+**Status:** Accepted (2026-10-15)
+
+**Context.** An operator using `zakcode webapp` on Windows reported on 2026-10-15 that a new session still showed the
+old session's text, and asked for a list of old chats: a new session should open on the new chat, or the page should let
+them choose a new chat or an old one and know which context to bring back. A served workspace keeps every conversation
+it has had (ADR-0032), and one of them is current: the `.current-session` marker names it, the page joins it
+(`GET /sessions/current`), and the say consumer runs each turn on it, loading it whole at the turn's start. Nothing
+could change which one that was. `POST /sessions` writes the marker only when there is none, a restart keeps it, and the
+page draws the saved conversation when it opens (ADR-0286). So a page opened after any restart drew the last
+conversation, and neither a new chat nor an older one could be reached from it. The page also did not follow a
+`session_rotated` frame: it drew "session restarted" and kept watching the old conversation's bus, while the say
+consumer ran the next turn on the new one.
+
+**Decision.** The page has a chat list beside the column, and the server has two routes for it.
+
+- `GET /sessions/recent` lists the saved conversations newest first, by the time of their last save, at most `limit`
+  (50, at most 500). Each carries its first ask as its title: the pinned `task` (ADR-0233), which a compaction does not
+  move, else its first user message with text, redacted like the watch stream, on one line and cut at a word after 80
+  characters. A conversation with nothing asked in it is left out unless it is current, so the empty chat New chat
+  opens is listed while the page shows it. Each summary is kept against its file's mtime, so the list the page asks for
+  after every turn reads only the conversation that turn saved.
+- `PUT /sessions/current` makes a saved conversation, or a new one (`session_id: null`), the current one. The marker is
+  written beside itself and moved into place, so no turn reads it empty. Every page watching the conversation it
+  replaced gets a `session_rotated` frame. A new chat reuses the current conversation while nothing is in it, so New
+  chat pressed twice leaves one empty chat. The route refuses with 409 while a turn runs, here or in another process on
+  the workspace, and while a say or a suggestion is queued: a turn reads the marker as it starts, and a queued message
+  was written for the conversation on screen. It is async, so no turn can start between that check and the change.
+- `POST /say` takes an optional `session_id`, which the page sends. When it is not the current conversation, the say is
+  refused with 409 and nothing is queued. One lock covers that check with the queueing and the route's check with the
+  change, so a say lands wholly before a switch, which then refuses, or after it, and is refused. Without the field a
+  say goes to the current conversation, as before, so `zakcode say`, the vessel and every other client are unchanged.
+- The page lists the chats, New chat on top, the one on screen marked. Opening one clears everything the page drew or
+  counted for the last one in one place (the rows, the cursor, the bus, the plan it drew, the turn's clock, pending tool
+  and permission cards), ends the old watch, draws the chosen chat's saved conversation and then watches its own bus.
+  Anything still on its way for the chat it left is dropped by a count of the chats opened. A `session_rotated` frame
+  now makes the page open whichever chat is current. When a say is refused for naming another chat, the page opens the
+  current one, keeps the message in the composer, and says it was not sent. Below 48rem the list folds away behind a
+  Chats button in the header.
+- `zakcode webapp --new-session` opens the run on a new chat, as New chat does, unless a turn or a message is pending
+  for the current one. A start that keeps this boot's duration cap (ADR-0256) opens nothing, since it is that run's
+  restart.
+
+Stated choices. A plain `zakcode webapp` still reopens the last chat. A start is not always a new run: the service unit
+restarts the process after every run and every crash, a self-update restarts it, and the cap fence of ADR-0256 compares
+the ending's conversation with the marker, so a start that moved the marker would lose a capped run's ending. A
+provisioned vessel already moves the marker aside at each genuine run start. So the person who wants a new chat at
+launch says so with the flag, and the chat list reaches every other one. The switch is refused, not queued, while work
+is pending, because the next turn would otherwise run in the chat the user just left or the one they just opened. The
+existing session routes are unchanged: `GET /sessions` keeps its id order and its full records. A wake-up or a
+background command's report belongs to its conversation, so while another chat is current it waits for its own to be
+opened again. The terminal's `/resume` uses the user store and is left as it is.
+
+Not verified: a browser. The page's own script runs under node against a live server in the tests, the way the other
+page tests run it. The layout under 48rem was read from the CSS, not seen.
+
+**Consequences.** Opening the page shows the chat the workspace is on, with every other chat a click away and New chat
+on top. A chat opened from the list continues with its whole history, because each turn loads the conversation the
+marker names. Two pages on one workspace stay on one chat. A page that missed a switch cannot put a message into the
+wrong chat. A run started with `--new-session` opens on an empty chat and leaves the earlier ones in the list.
+
+The proof. `tests/test_webapp_sessions.py` (19 tests), `tests/test_webclient_sessions.py` (7) and four new cases in
+`tests/test_cli_webapp.py`: 30 tests. Against main, 28 fail. The 2 that pass are controls: a say that names no chat goes
+to the current one as before, and a start without `--new-session` continues the current chat. The page tests run the
+page's own script under node against a live loopback server. New chat opens an empty chat, lists the one it left and
+ends that chat's watch on the server; the list is drawn as the page opens; an old chat opened from the list is drawn
+alone, the next message continues it, and the list puts it on top after the turn; a chat opened while the last one's
+history is held on its way is drawn alone, and that chat, saved before the server started, is drawn from what was saved
+when it is opened again; a page follows another page's switch, and marks no restart when it opens a chat itself while it
+follows one; and a page that missed a switch keeps the message it could not send. 37 mutations were each run green, red,
+green (2026-10-15), each at one site, with the red tests counted from the verdict. The routes and the start, 21: a say
+for another chat queued, 2; a switch through the page's own turn, 1, a queued say, 3, or a queued suggestion, 1; the
+route switching when it should refuse, 3; an empty chat not reused, 2; no `session_rotated`, 2; the marker not moved, 2;
+the title not the pinned task, 1, not redacted, 1, or cut inside a word, 1; empty chats listed, 1; the empty current one
+left out, 2; the current one not marked, 1; the list in id order, 1; a summary never read again, 1, or never kept, 1;
+the limit ignored, 1; and `--new-session` opening nothing, 1, opening a chat while a message waits, 1, or opening one on
+a capped restart, 1. The CLI, 2: the flag not passed on, with and without `--workspace`, 2 each. The page, 14: a say
+that names no chat, 1; `session_rotated` ignored, 1; the old watch left open, 1, or opened without a way to end it, 1;
+the view not cleared, 2; the cursor kept, 1; a history that lands late drawn, 1; the list not asked for at open, 1, or
+after a turn, 1; no chat marked, 1; a 409 not handled, 1; a switch followed past a chat the page opened itself, 1; New
+chat not wired, 1; and a frame of the chat the page left kept. That one stayed green. The abort that ends the old watch
+errors its stream before another frame is read, so a test against a real fetch cannot deliver one. The check stays for a
+chunk already read when the abort lands, whose rows and cursor would otherwise land in the next chat. `uv run poe check`
+is green: 6,281 passed, 22 skipped.
+
+## ADR-0320: a served workspace's say slot and interrupt file are the server's, so a terminal on the same workspace leaves the page's message and its Stop alone
+
+**Status:** Accepted (2026-10-16)
+
+**Context.** ADR-0319 lets the page open any saved chat, and every say the page sends names the chat it shows. The
+owner asked on 2026-10-16 what happens when someone opens an older chat in the middle of a conversation: does the
+running agent clear the old one and resume the other, or merge the two. The server's half answers it. A switch is
+refused while a turn runs or a message waits, and each turn loads the chat the marker names whole, so nothing is merged
+and the chat left behind is saved as it was. The gap was the other reader of the same files. The say slot is one file
+per workspace (ADR-0060), and a terminal REPL left open on the same workspace reads it too: its input mux polls every
+0.3 s between its own turns, against the server's 0.5 s beat, and stands back only while another process's turn holds
+the busy marker. Nothing told it the workspace was served. Measured 2026-10-16 with the page's own routes and the REPL's
+own mux in one process, the REPL took the page's say for the chat on screen ten times in ten and ran it in its own
+conversation, while the page waited on a chat that never heard it. With the REPL in a separate process it took it in
+four runs of six. The interrupt file has the same shape. An idle REPL clears it at every poll as a stale signal, and in
+one trial of eight it cleared the page's Stop before the served turn's watcher read it, so that turn ran on. A REPL in
+the middle of a turn would read both as its own: its permission prompt would take a "y" the page sent as an answer, its
+boundary poll (ADR-0051) would fold the page's message into its own conversation, and its file watcher would stop its
+own turn on the page's Stop.
+
+**Decision.** While `zakcode webapp` serves a workspace, the say slot and the interrupt file are the server's.
+
+- The server marks the workspace `<workspace>/.served` while its say consumer runs (`say_inbox.py`). It claims the
+  marker in lifespan startup, before the first request, keeps it fresh with the busy marker's own lease (`BusyLease`,
+  touched every 30 s), and removes it when the consumer stops. A server that starts takes the marker over (`take_over`):
+  a predecessor killed in the middle of a run leaves its marker fresh for two minutes, and the service unit restarts the
+  server after every crash (ADR-0319). A server that starts ended (ADR-0256) runs no consumer and marks nothing.
+- While a fresh marker names another process, a REPL reads no say and clears, reports or obeys no stop. That covers
+  the idle wait and its non-blocking peek, the permission prompt, the turn's interrupt-file watcher, the main loop's
+  boundary poll (`agent/loop.py`) and the clear at REPL start. The REPL's own keyboard, Ctrl-C, wake-ups and
+  background-command reports are unchanged.
+- Staleness decides, as for the busy marker: a marker older than 120 s names nobody, so a server that dies stops
+  holding a REPL back two minutes later.
+- The server's own readers are unchanged, and so is every workspace no server serves.
+- The workspace survey hides `.served`, as it hides `.busy` (ADR-0164).
+- The page's switch refusal says whose turn is running. A turn in another process on the workspace reads "a turn is
+  running in another session on this workspace; let it finish, then switch", not "in this chat", because the page's
+  Stop is not the way to end it.
+
+Stated choices. The page's say could carry its chat's id into the slot, and a REPL could take only the says addressed to
+its own session. That changes a contract every producer and reader speaks (`zakcode say`, the cockpit's say box, the
+vessel, both permission prompters, the re-queue of held says), and it would leave the interrupt file to the race. One
+rule covers both files, and it is what ADR-0319 already says of a say that names no chat: a say written on a served
+workspace, by the page, `zakcode say` or the vessel, is for the chat the server has open. The marker is per process,
+like the busy marker, so two processes are the case it settles; one process that runs both a server and a REPL is not a
+deployment. It does not make a REPL beside a server a second correspondent: a terminal on a served workspace is a side
+conversation with its own keyboard (ADR-0060). A cockpit pane, whose only door is its say box, receives nothing while
+the workspace is served, and its say box reaches the server's chat instead. Like `.current-session`, the marker sits at
+the workspace root for as long as the server runs, so a host framework that commits with `git add -A` should ignore it
+beside `.busy`.
+
+Not verified: a browser, or a Windows console. The tests drive the page's routes, the REPL's own mux and turn runner,
+the main loop, and the REPL as a child process.
+
+**Consequences.** A message sent from the page runs on the chat the page shows, whatever terminal is open on the
+workspace, and the page's Stop stops the page's turn. A terminal opened on a served workspace keeps its keyboard and
+its own turns. A server that crashes and restarts marks the workspace again at once.
+
+The proof. `tests/test_served_marker.py`, 12 tests. The field shape runs the page's routes against a REPL idle in a
+child process: the server runs the say on the chat the page opened, and the REPL stands back for its whole wait. Run
+against main's code, server and REPL both, it went red in 4 runs of 6. It is a race there, so the unit tests carry the
+deterministic proof. 15 mutations were each run against a copy of the repository they break, one site at a time
+(2026-10-16), and each turned the suite red, counted from the verdict: the take-over ignored, 1 red; the marker never
+claimed, 2, never released, 1, or claimed by a server that starts ended, 1; the idle wait and the prompt reading a
+served slot, 2; the idle wait clearing a served stop, 1; the prompt reporting one, 1; the peek reading a served slot, 1,
+or clearing a served stop, 2; the main loop's boundary poll reading a served slot, 1, or standing back behind its own
+server's marker, 1; the turn's watcher obeying a served stop, 1; the REPL clearing one at start, 1; the refusal's old
+wording, 1; and the survey listing `.served`, 1 (`tests/test_prompt.py`). The project's check (`ruff check`, `ruff
+format --check`, `mypy src/zakcode`, `pytest`) is green: 6,293 passed, 22 skipped.
+
+## ADR-0321: a Claude 5 request opts into `drop_block`, replays only signed thinking, reads one stream channel, and ships its own price-map entry
+
+**Status:** Accepted (2026-10-17)
+
+**Context.** Claude Sonnet 5.5 (`anthropic/claude-sonnet-5-5`) is the first Claude 5 model a deployment names. It
+thinks adaptively, takes its depth as `output_config.effort`, refuses a non-default `temperature`, `top_p` or `top_k`
+with a 400, and binds each thinking block it returns to the conversation that produced it: the system prompt, the tools
+and every earlier message. Four things were measured against the API on 2026-10-17 with this runtime's own provider and
+litellm 1.86.2, the version `uv.lock` pins.
+
+- **The binding is enforced on most of the credit pool.** A block replayed after the system prompt or an earlier user
+  turn changed is a 400, "The block is bound to a different conversation", on organizations created on or after
+  2026-08-31. Seven of the pool's nine accounts answered that way; the other two answered 200. This runtime edits its
+  history by design: compaction summarizes older turns and keeps the recent ones verbatim, and the system prompt has a
+  per-turn dynamic section. So replaying every block, as the first cut of this change did, would refuse calls on most
+  of the pool. Leaving a block out was accepted, on a plain turn and on a tool-use turn (measured on one account).
+- **litellm sends each thinking fragment twice on the stream**, on `reasoning_content` and again on `thinking_blocks`
+  (41 of 42 chunks carried the same text on both). The signature arrives alone on the block's last chunk.
+- **The default thinking display is a signature-only block with no text**, so the thinking deltas the loop shows
+  carried nothing.
+- **litellm 1.86.2's bundled price map has neither Claude 5.5 model.** A process that cannot fetch the remote map
+  (ADR-0281) priced every call at nothing and, finding no reasoning flag, dropped `reasoning_effort` before the request:
+  the model ran at its API default, `high`, not the depth configured. The request body was captured at litellm's HTTP
+  handler in both modes.
+
+**Decision.**
+
+- Every request to a Claude 5+ model on Anthropic's own API (not a self-hosted server behind `api_base`) carries
+  `thinking: {type: "adaptive", display: "summarized", block_binding: {prefix_mismatch_behavior: "drop_block"}}` and the
+  `thinking-binding-controls-2026-08-01` beta in `anthropic-beta`, joined to any beta the operator configured. With it
+  the API drops a stale block, and every block after it, instead of refusing the call. litellm keeps the explicit
+  `thinking` beside `reasoning_effort` and still maps the effort to `output_config`.
+- Only a signed thinking block is replayed. Anthropic signs every block it returns; an unsigned block is another
+  backend's reasoning text (a pod's `reasoning_content`), kept for the transcript and never sent back, as before.
+- The stream parser reads one channel per chunk: `thinking_blocks` when the chunk has it, `reasoning_content` otherwise.
+  The loop closes a block at each signature, so a response with several blocks is stored as several, each with its own
+  signature, and a signature-only fragment surfaces no empty thinking delta.
+- The Claude 5 predicate reads the generation number after the family name (`claude-<family>-<N>`, N at least 5). The
+  old pattern matched `claude-3-5-sonnet` and missed a bare `claude-sonnet-5`.
+- `litellm_model_entries.json` ships litellm's own entries for `claude-sonnet-5-5` and `claude-haiku-5-5`, and the
+  refresh script's default list names them. Haiku 5.5 joins the capability registry beside Sonnet 5.5 (1M window, 128K
+  output).
+
+Stated choices. Not replaying thinking at all, the behavior before this change, avoids the 400 too, and would be the
+simpler rule. It loses the model's reasoning across the tool calls of one turn, where the history does not change and a
+block is still valid, and Anthropic's guidance for these models is to pass blocks back unchanged. `drop_block` keeps the
+reasoning wherever it is still valid and degrades to the old behavior wherever it is not. A per-session strip of the
+blocks that precede each history edit would do the same work in this runtime, with more code to keep right. The binding
+beta is a dependency: an endpoint that refuses it by name would refuse these calls, and recovery there is to strip
+the blocks and resend. litellm prices Sonnet 5.5 cache reads at $0.10 per million, 0.05x input, which Anthropic's
+pricing page confirms (read 2026-10-17); the bundled `claude-api` skill's $0.20 is out of date.
+
+Not verified: the default depth. A deployment that names Sonnet 5.5 and sets no `ZAKCODE_REASONING_EFFORT` runs at the
+API default, `high`; the deployment recipe, not this runtime, sets `medium`. Also not verified: a response that
+interleaves thinking with tool calls. litellm collapses one response into text, tool calls and thinking blocks, so the
+replayed order is thinking first, and a block whose position changed is the API's to drop.
+
+**Consequences.** A zakcode session on Sonnet 5.5 keeps working through compaction and a changing system prompt on
+every account of the pool, keeps its reasoning where it can, and shows the reasoning text as it streams, once, not
+twice. A sealed process prices Sonnet 5.5 and Haiku 5.5 calls and sends the configured depth.
+
+The proof. `tests/test_sonnet55_support.py` (the predicate, the opt-in and its header merge, signed-only replay, one
+channel per chunk), `tests/test_loop_stream.py` (a block per signature; an unsigned stream is one unsigned block) and
+`tests/test_model_entries.py` (a sealed interpreter on litellm's bundled map prices both models and sends the effort).
+Run against the first cut of this change, the new tests went red: 8 failed, and the sealed-process class errored. On the
+live API, through this provider on an account that enforces the binding: turn one returned a signed block with 261
+characters of reasoning, and the same block replayed under an edited system prompt returned 200, where the request
+without `drop_block` returned 400; a streamed call gave 16 thinking fragments and no adjacent duplicates. The project's
+check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,321 passed, 24 skipped, and the one test that
+failed (two renders a minute apart, `tests/test_provider_labels.py`) passed alone on re-run.
+
+## ADR-0322: a lifespan shutdown with a turn in flight and no ending window open interrupts the turn, and waits at most 45 s for the loop to wind down
+
+**Status:** Accepted (2026-10-18)
+
+**Context.** A member's hard Stop, and any systemd stop of `mind-serve@`, reaches the served app as a SIGTERM and
+nothing else. uvicorn runs the lifespan shutdown, which calls `_stop_consumer`: it sets `run_stopping`, waits for the
+say consumer up to `_graceful_stop_budget()` (0.5 s plus `ZAKCODE_RUN_CONSOLIDATION_RESERVE`, which the vessel recipe
+sets to 350 on a bounded run), then cancels it. `run_stopping` only stops NEW beats: with no ending window open
+`_keep_beating` returns `not run_stopping.is_set()`, and the turn already running is ended by the mind's own stop. That
+stop is raised by `POST /run/stop` (ADR-0047), the cap (ADR-0039) and the idle bound, through `_begin_graceful_ending`,
+and by nothing in a SIGTERM. A mind's turn is its perpetual loop and ends only on that stop, so the wait ran to the
+budget, which is longer than the unit's `TimeoutStopSec=120`, and systemd's SIGKILL ended it. Measured on three DEV
+throwaway runs hard-stopped with the mind mid-turn (2026-09-30 to 2026-10-02; the stop answered DELETE=200): 23, 25 and 21 model calls
+after the stop, none metered because the env-server is terminated at the stop, the last serve.log line at stop +119,
++121 and +120 s, and no `Application shutdown complete` line. uvicorn's `Shutting down` and `Waiting for application
+shutdown.` lines sat within seconds of the stop, so the signal arrived at once and the lifespan blocked. A run that ended
+through the mind's own stop chain before the stop stamp shows the whole four-line sequence and no post-stop calls. The
+unit (`ops/mind-sidecar/systemd/mind-serve@.service` in the environment server's repository, read 2026-10-18) bounds the
+`knowledge-export` ExecStop with `timeout 120` and sets `TimeoutStopSec=120`; `provision-env.sh` sets the reserve from
+`BOUNDED_RESERVE_S=350`.
+
+**Decision.** `_stop_consumer` interrupts the turn in flight when nothing else will end it.
+
+- The condition is a graceful-stop budget above zero, a turn in flight, the run not yet ended, and no ending window open
+  (neither the `run_stop_message` window nor the framework-stop window). It then writes the interrupt file, the same
+  `request_interrupt` the cap writes when it cannot open a window. The turn's watcher cancels the turn within its 0.3 s
+  poll, the loop leaves through `_keep_beating`, and `_end_run` runs as it does for any explicit stop: digest, end
+  command, stop-reason marker, `on_run_end`.
+- The wait is then capped at `_HARD_STOP_WAIT_SECONDS`, 45 s, so `Application shutdown complete` is reached before the
+  supervisor's SIGKILL and inside the 60 s a run grade allows. The cap is a ceiling: the interrupted turn ends within a
+  beat, and only the digest and the end command behind it spend the rest. A digest that outruns it is cancelled with the
+  steps behind it (the end command, which is bounded at 60 s by itself, then the marker and `on_run_end`). On this path
+  none of them ran before, because SIGKILL came first.
+- Everything else reads as before: a window already open (the mind is ending itself), a run already ended (a digest or
+  receipt in progress), no turn in flight, and a server with no ending configured (budget 0, which cancels at once).
+
+Stated choices. The other shape, raising the framework stop at shutdown (`_begin_graceful_ending`) so the mind
+consolidates inside a window, was not taken. A raised stop is read at the mind's next tool-call boundary (+39 s on the
+first capped run with the stop relay, 2026-09-23) and its window is the 350 s reserve, which the unit cannot
+hold, so the mind would go on calling the model for tens of seconds after the member said Stop, unmetered, which is the
+symptom. It also leaves a signed stop pair on disk when SIGKILL ends the window, retired at the next start only once its
+grace has run out. The interrupt writes a file the next turn clears. The cost of the choice is that a mind stopped this
+way does not run its own consolidation; the runtime's digest still runs. Skipping the digest at a hard stop would be
+cheaper still and would also drop the receipt of a graceful SIGTERM, which the owner has not asked for. The ceiling is a
+constant, not a setting, as `_STOP_QUIET_SECONDS` is: it encodes one external fact, the unit's stop timeout, and a
+setting would add a knob to a repo that has refused one before (ADR-0039).
+
+Not verified: a live DEV run of this change (post-stop model calls and the shutdown line on
+a hard-stopped fleet run). The probe below uses a scripted agent, so its post-stop lines are ticks, not model calls, and
+the digest in it takes no time; the digest of a real mind at a hard stop was not timed. A browser holding the watch
+stream open through the stop was not run either; uvicorn waits for open connections before the lifespan runs, and the
+three DEV specimens show both of its lines, so none held them.
+
+**Consequences.** A hard stop with a mind mid-turn ends the turn within a beat or two instead of running to the
+supervisor's SIGKILL, so the calls after the stop fall from tens to the digest's, and the process leaves through
+`Application shutdown complete` inside the 45 s ceiling plus the connection drain. A run grade that reads
+`post_stop model_calls` sees the digest's calls and not the loop's. A SIGTERM with the consumer idle, or with an ending
+already in progress, is unchanged.
+
+The proof. `tests/test_lifespan_shutdown_interrupt.py`, 6 tests. Run against the parent commit's source (39479cf,
+exported with `git archive` and selected with pytest's `-o pythonpath`, because the ini `pythonpath = ["src"]` otherwise
+wins over `PYTHONPATH`), 2 are red: the real lifespan waited 10.5 s on a turn nothing was ending, against a 5 s
+threshold, and the ceiling test errors on the missing constant. The other four are controls (an open window, a run
+already ending, an idle consumer, a default server) and pass on both. Six mutations, one site at a time, each turned
+exactly the tests written for it red: the interrupt call removed, 2; the open window ignored, 1; the zero budget
+ignored, 1; the run-ended guard removed, 1; the ceiling removed, 1; the in-flight guard removed, 1. The unmutated copy
+through the same harness passed 6 of 6. A real uvicorn process, signalled with SIGTERM while a scripted perpetual turn
+ran, with the reserve at 60 s and a 25 s stand-in for the supervisor's SIGKILL: on the parent's source it was killed at
+25.0 s after 50 post-stop lines and logged `Shutting down` and `Waiting for application shutdown` and neither
+`Application shutdown complete` nor `Finished server process`, the signature of the three DEV runs; on this change it
+exited at 0.6 s with one post-stop line (the digest) and logged all four. The project's check (`ruff check`, `ruff
+format --check`, `mypy`, `pytest`) is green: 6,330 passed, 22 skipped. A first full run of this change failed
+`tests/test_host_neutral_names.py` on the ADR's own text (record ids and a host's repository name), which is why the text
+names the unit's repository generically.

@@ -1815,6 +1815,7 @@ class _InputMux:
             busy_elsewhere,
             busy_path,
             read_say,
+            served_path,
             take_interrupt,
             write_say,
         )
@@ -1838,6 +1839,11 @@ class _InputMux:
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
         #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
         self._busy_marker = busy_path(inbox.parent)
+        #: The workspace's served marker (ADR-0320): while ANOTHER process serves the
+        #: workspace, its say slot and interrupt file are that server's — a say there was
+        #: written for the chat its page has open, a stop for that chat's turn — so this
+        #: REPL reads, clears and reports neither, idle or prompting.
+        self._served_marker = served_path(inbox.parent)
         #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
@@ -1937,15 +1943,19 @@ class _InputMux:
         while True:
             if stop is not None and stop.is_set():
                 return ("cancelled", None)
+            # While another process serves the workspace its say slot and its interrupt file
+            # are that server's (ADR-0320): this REPL neither reads nor clears them.
+            served = self._busy_elsewhere(self._served_marker)
             if idle:
-                self._take_interrupt(self.interrupt_fp)
+                if not served:
+                    self._take_interrupt(self.interrupt_fp)
                 if self._held_says:
                     return ("say", self._held_says.pop(0))
-            elif self.interrupt_fp.exists():
+            elif not served and self.interrupt_fp.exists():
                 return ("stop", None)
             # An idle REPL stands back while another process's turn owns the inbox
             # (ADR-0060); a mid-turn consumer (the permission prompt) is that turn's own.
-            standing_back = idle and self._busy_elsewhere(self._busy_marker)
+            standing_back = served or (idle and self._busy_elsewhere(self._busy_marker))
             say_text = None if standing_back else self._read_say(self.inbox)
             if say_text is not None:
                 return ("say", say_text)
@@ -1985,10 +1995,13 @@ class _InputMux:
         instantly closed renders as a glitched empty box. Idle semantics: a stale
         stop signal is cleared, same as ``next_input(idle=True)``.
         """
-        self._take_interrupt(self.interrupt_fp)
+        served = self._busy_elsewhere(self._served_marker)  # the server's files (ADR-0320)
+        if not served:
+            self._take_interrupt(self.interrupt_fp)
         if self._held_says:
             return ("say", self._held_says.pop(0))
-        standing_back = self._busy_elsewhere(self._busy_marker)  # idle semantics (ADR-0060)
+        # Idle semantics (ADR-0060), and a served workspace's slot is its server's (ADR-0320).
+        standing_back = served or self._busy_elsewhere(self._busy_marker)
         say_text = None if standing_back else self._read_say(self.inbox)
         if say_text is not None:
             return ("say", say_text)
@@ -2927,12 +2940,16 @@ def _run_streamed_turn(
     stopped_by_file: list[bool] = []
     watcher = None
     if interrupt_file is not None:
-        from zakcode.session.say_inbox import take_interrupt
+        from zakcode.session.say_inbox import busy_elsewhere, served_path, take_interrupt
+
+        served = served_path(interrupt_file.parent)
 
         async def _watch_interrupt_file() -> None:
             while True:
                 await asyncio.sleep(0.25)
-                if take_interrupt(interrupt_file):
+                # While another process serves the workspace, the file stops THAT server's
+                # turn (the page's Stop): this turn leaves it there (ADR-0320).
+                if not busy_elsewhere(served) and take_interrupt(interrupt_file):
                     stopped_by_file.append(True)
                     task.cancel()
                     return
@@ -3431,11 +3448,20 @@ def chat(
     # still booting (or queued across a chat relaunch) is delivered, never
     # eaten (2026-08-25 field report: the boot-time first message was
     # discarded as "stale" and Enter looked dead).
-    from zakcode.session.say_inbox import interrupt_path, say_path, take_interrupt
+    from zakcode.session.say_inbox import (
+        busy_elsewhere,
+        interrupt_path,
+        say_path,
+        served_path,
+        take_interrupt,
+    )
 
     inbox_path = say_path(agent.settings.workspace_root)
     interrupt_fp = interrupt_path(agent.settings.workspace_root)
-    take_interrupt(interrupt_fp)  # a stop signal predating the session has nothing to stop
+    # A stop signal predating the session has nothing to stop — unless another process serves
+    # the workspace, whose running turn it may be meant for (ADR-0320).
+    if not busy_elsewhere(served_path(agent.settings.workspace_root)):
+        take_interrupt(interrupt_fp)
 
     # Inside a cockpit pane the say box is the ONE door: the pane's own keyboard
     # is not read at all, so the box (and the file contract behind it — remote
@@ -3995,6 +4021,12 @@ def serve(
         "the catastrophic-command blocklist and explicit tool denies still refuse. "
         "Equivalent to ZAKCODE_PERMISSION_MODE=bypassPermissions.",
     ),
+    new_session: bool = typer.Option(
+        False,
+        "--new-session",
+        help="Open on a new chat instead of the last one. Earlier chats stay in the page's "
+        "chat list.",
+    ),
 ) -> None:
     """Serve the web app: the browser chat page + HTTP API, over the same core.
 
@@ -4009,6 +4041,9 @@ def serve(
     say``) writes the workspace say inbox, and the webapp runs a turn per say —
     including y/a/n permission answers mid-prompt. The webapp is always the
     workspace's turn-runner; there is no second consumer to configure around.
+
+    The run continues the workspace's current chat, as a restart must. ``--new-session``
+    opens it on a new one instead; the page's chat list opens any earlier one (ADR-0319).
 
     Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on
     every request. Without a token the server is unauthenticated, so binding a
@@ -4065,9 +4100,9 @@ def serve(
             server.should_exit = True
 
     fastapi_app = (
-        create_app(settings=resolved_settings, on_run_end=_on_run_end)
+        create_app(settings=resolved_settings, on_run_end=_on_run_end, new_session=new_session)
         if workspace is not None
-        else create_app(on_run_end=_on_run_end)
+        else create_app(on_run_end=_on_run_end, new_session=new_session)
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""
