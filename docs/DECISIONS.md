@@ -20032,9 +20032,12 @@ differential below are for. A 429 and a 5xx do not move the session because anot
 provider-wide fault and a rate limit is the account's own. The cost is litellm's price, not the policy document's
 formula, because the runtime prices every call from one map (ADR-0281, ADR-0321): the document gives Sonnet 5.5 cache
 reads at $0.20 per million, which ADR-0321 found out of date (litellm: $0.10), and gives no Haiku 5.5 cache rate, which
-litellm has. The two differ on cached tokens only, and the document's figure should be corrected where it lives.
-Reading the status back from the error type is narrower than treating every `APIConnectionError` as a possible refusal,
-which would turn a dropped connection into an account move.
+litellm has. The two differ on cached tokens only, and the document's figure should be corrected where it lives. The
+document also tells an implementation to leave Haiku 5.5's cache fields at zero until its rates are confirmed. The
+ledger here records the measured tokens and prices them with litellm's rate, because zeroing a measured count would
+hide the cache use the rates exist to price; a ledger kept to the document's letter would differ from this one on
+cached Haiku calls. Reading the status back from the error type is narrower than treating every `APIConnectionError`
+as a possible refusal, which would turn a dropped connection into an account move.
 
 Not verified. A real credit refusal and the move it causes on the live API: the refusal bodies come from a loopback
 server that serves the shapes the policy names and Anthropic documents, and no account on the machine this was built on
