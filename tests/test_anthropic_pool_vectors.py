@@ -1,8 +1,8 @@
 """ADR-0323: the Python pool passes the policy's shared test vectors.
 
-The Anthropic credit pool is one policy with two implementations, and the vectors are what keep
-them one: each is a start state plus a list of assignments and responses, with the decision and
-the account state the policy requires after each step. This file runs all of them against
+The credit pool is one policy with two implementations, and the vectors are what keep them one:
+each is a start state plus a list of assignments and responses, with the decision and the account
+state the policy requires after each step. This file runs all of them against
 :class:`zakcode.providers.anthropic_pool.Pool`, reading the vectors and the registry the way the
 other runtime's runner does.
 
