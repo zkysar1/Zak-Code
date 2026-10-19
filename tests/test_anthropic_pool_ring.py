@@ -1,21 +1,21 @@
 """ADR-0323: a provider on the Anthropic credit pool sends each request on its session's account.
 
 These tests run the real :class:`LiteLLMProvider` and litellm's real HTTP stack against a loopback
-stand-in for the Anthropic API that answers by the key it is sent, so what is asserted is what
-went on the wire, not what a mock was called with: the key, the ``anthropic-workspace-id`` header,
-the version header, and the order of the requests.
+stand-in for the provider's API that answers by the key it is sent, so what is asserted is what
+went on the wire, not what a mock was called with: the key, the workspace header, the version
+header, and the order of the requests.
 
 What is pinned:
 
 * a session is seated on the lowest-ranked account with a key, and every request carries that
   account's key and workspace;
 * a credit refusal (a 400 that says the balance is too low, and a 402 ``billing_error``) moves the
-  session to the next account ONCE, the call is re-issued there and succeeds, and the session
-  STAYS there on later calls, buffered and streamed;
+  session to the next account, the call is re-issued there and succeeds, and the session STAYS
+  there on later calls, buffered and streamed;
 * when every account is spent the turn ends on ``QuotaExhausted`` naming the accounts and why, and
   no key appears in the text;
-* a 429 stays on its account and keeps its ``retry-after``; a 5xx stays; a refused key (401)
-  marks the account invalid for the process and moves the session;
+* a 429 stays on its account and keeps its ``retry-after``; a 5xx stays; a refused key (401 or
+  403) marks the account invalid for the process and moves the session;
 * two concurrent calls refused by the same account move the session once and both succeed;
 * each successful call writes one ledger row whose token split matches the wire's usage, and a
   new session is seated off an account whose month total is at the steer-off line;
@@ -72,7 +72,7 @@ _MODEL = "claude-haiku-5-5"
 
 @dataclass
 class _Anthropic:
-    """A loopback Anthropic API. ``answers`` maps a key to what that key is told."""
+    """A loopback stand-in for the provider's API. ``answers`` maps a key to what it is told."""
 
     answers: dict[str, str]
     #: What each request carried, in arrival order.
