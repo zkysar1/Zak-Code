@@ -367,4 +367,4 @@ Anthropic or any other vendor.
 
 ## License
 
-[MIT](LICENSE) © 2026 Zachary Kysar (Zak Data Solutions)
+[MIT](LICENSE) © 2026 Zachary Kysar

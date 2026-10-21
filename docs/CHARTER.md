@@ -52,7 +52,7 @@ deeply along the way.
 
 ## Stakeholders
 
-- **Owner / product direction:** Zachary Kysar (Zak Data Solutions).
+- **Owner / product direction:** Zachary Kysar.
 - **Lead builder / orchestrator:** the agent team, coordinated via
   [`WORKFLOW.md`](WORKFLOW.md).
 
