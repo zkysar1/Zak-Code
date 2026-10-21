@@ -83,10 +83,17 @@ def test_webapp_without_workspace_uses_configured_default(monkeypatch: pytest.Mo
     [
         (["--new-session"], True),
         (["--new-session", "--workspace", "{tmp}"], True),
-        ([], False),
-        (["--workspace", "{tmp}"], False),
+        ([], True),
+        (["--workspace", "{tmp}"], True),
+        (["--no-new-session"], False),
     ],
-    ids=["new-session", "new-session-with-workspace", "default", "workspace-only"],
+    ids=[
+        "new-session",
+        "new-session-with-workspace",
+        "default",
+        "workspace-only",
+        "no-new-session",
+    ],
 )
 def test_webapp_new_session_reaches_the_app(
     tmp_path: Path,
@@ -94,8 +101,8 @@ def test_webapp_new_session_reaches_the_app(
     flags: list[str],
     opens_a_new_chat: bool,
 ) -> None:
-    """``--new-session`` opens the run on a new chat (ADR-0319); without it the run
-    continues the workspace's current chat, as a restart must."""
+    """Launch starts a fresh chat by default (ADR-0319); ``--no-new-session`` resumes
+    the workspace's current chat, as a restart must."""
     captured: dict[str, Any] = {}
     _patch(monkeypatch, captured)
 
