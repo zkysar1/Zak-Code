@@ -4022,10 +4022,10 @@ def serve(
         "Equivalent to ZAKCODE_PERMISSION_MODE=bypassPermissions.",
     ),
     new_session: bool = typer.Option(
-        False,
-        "--new-session",
-        help="Open on a new chat instead of the last one. Earlier chats stay in the page's "
-        "chat list.",
+        True,
+        "--new-session/--no-new-session",
+        help="Launch on a fresh chat (the default); earlier chats stay in the page's chat "
+        "list. --no-new-session resumes the workspace's current chat instead.",
     ),
 ) -> None:
     """Serve the web app: the browser chat page + HTTP API, over the same core.
@@ -4042,8 +4042,10 @@ def serve(
     including y/a/n permission answers mid-prompt. The webapp is always the
     workspace's turn-runner; there is no second consumer to configure around.
 
-    The run continues the workspace's current chat, as a restart must. ``--new-session``
-    opens it on a new one instead; the page's chat list opens any earlier one (ADR-0319).
+    Launch starts a fresh chat by default; ``--no-new-session`` resumes the workspace's
+    current chat instead, as a restart must. (A message still queued for the current chat,
+    or a same-boot duration-cap restart, keeps it either way.) The page's chat list opens
+    any earlier one (ADR-0319).
 
     Auth: set ``ZAKCODE_AUTH_TOKEN`` to require ``Authorization: Bearer <token>`` on
     every request. Without a token the server is unauthenticated, so binding a
