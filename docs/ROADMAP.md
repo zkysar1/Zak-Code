@@ -1,7 +1,7 @@
 # Zak Code — Engineering Roadmap
 
 > **Status:** Living document. Every milestone updates this file (see _Definition of done_). Last revised: 2026-06-01.
-> **Owner:** zkysar@gmail.com
+> **Owner:** Zachary Kysar
 
 ---
 
