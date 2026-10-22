@@ -479,6 +479,16 @@ class StuckTracker:
                 "times without changing anything in between. Re-measuring a known "
                 "result is not progress."
             )
+        failing = self.failing_tools()
+        if failing:
+            name, count = failing[0]
+            return (
+                f"You appear to be stuck: {name} has failed {count} times this turn. "
+                f"Calling {name} again with the same inputs is unlikely to succeed. Read the "
+                f"error {name} returned — it may name a better tool — and switch to a tool "
+                "whose description matches what you are working with, rather than repeating "
+                "the same call."
+            )
         return (
             "You appear to be stuck: the last few steps made no progress (a repeated or "
             "all-failing tool call)."

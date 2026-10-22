@@ -24,6 +24,7 @@ Design rules (see ``docs/ARCHITECTURE.md`` / ``docs/GUARDRAILS.md``):
 
 from __future__ import annotations
 
+import difflib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -647,6 +648,12 @@ class ToolRegistry:
                 # resolver must never turn a clean unknown-tool error into a crash
                 # (execute() must always return a value, never raise).
                 logger.debug("skill-name hint lookup failed for %r", name, exc_info=True)
+            close = difflib.get_close_matches(name, self.active_names(), n=1, cutoff=0.6)
+            if close:
+                return ToolResult.error(
+                    f"unknown tool: {name!r}",
+                    fix=f"Did you mean {close[0]!r}? Only the listed tools are callable.",
+                )
             return ToolResult.error(f"unknown tool: {name!r}")
         try:
             return await tool.execute(args, ctx)

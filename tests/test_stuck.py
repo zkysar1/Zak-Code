@@ -509,3 +509,22 @@ def test_streaming_injected_guidance_carries_rail_marker(tmp_path: Path) -> None
     _drain(loop, "do the thing")
     injected = [m.text for m in loop.session.messages if m.text and "stuck" in m.text]
     assert injected and all(t.startswith("[harness] Hint:") for t in injected)
+
+
+def test_nudge_names_a_repeatedly_failing_tool() -> None:
+    # Tier 2b: the repeated-failure branch of the nudge names the offending tool (and leans on
+    # its own error, which now points at the right tool) instead of a generic "you appear stuck".
+    t = StuckTracker(repeated_failure_at=2)
+    t.observe(
+        [_c("c1", "read_docx", path="a.py")],
+        [_r("c1", is_error=True, output="cannot read a.py")],
+        assistant_text="",
+    )
+    t.observe(
+        [_c("c2", "read_docx", path="b.py")],
+        [_r("c2", is_error=True, output="cannot read b.py")],
+        assistant_text="",
+    )
+    assert t.failing_tools()[0][0] == "read_docx"
+    message = t.nudge_message()
+    assert "read_docx" in message and "failed" in message
