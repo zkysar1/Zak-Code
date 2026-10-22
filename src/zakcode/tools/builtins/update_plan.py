@@ -266,16 +266,17 @@ class UpdatePlanTool(Tool):
     spec = ToolSpec(
         name="update_plan",
         description=(
-            "Maintain a hierarchical plan for a multi-step task. Call it FIRST on any task that "
-            "needs three or more distinct actions, or that asks for several separate things: "
-            "decompose the goal into ordered, primitive steps — each with a clear done-condition "
-            "and no hidden 'figure out how' (break a step into 'subtasks' when it is itself "
-            "several actions, and use 'blocked_by' when a step depends on earlier ones). Then, as "
+            "Maintain a hierarchical plan for a multi-step task. Call it FIRST on any task beyond "
+            "a single obvious action, or that asks for several separate things: decompose the "
+            "goal into ordered, primitive steps — each with a clear done-condition and no hidden "
+            "'figure out how' (a step whose approach you have not worked out is not primitive: "
+            "break it into 'subtasks' or make working out the how its own step, and use "
+            "'blocked_by' when a step depends on earlier ones). Then, as "
             f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}. Always "
             "send the WHOLE plan each time: every step's title and status. A step keeps the note "
             "and outcome you already gave it, so send those only when they are new or changed. "
             "When you mark a step done, record what it produced in its 'outcome'. Skip it only "
-            "for a request that asks one thing needing one or two actions."
+            "for a request for one straightforward thing you can do in a single action."
         ),
         parameters={
             "type": "object",
