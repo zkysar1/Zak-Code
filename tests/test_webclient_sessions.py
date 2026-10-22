@@ -256,7 +256,9 @@ def test_an_old_chat_opened_from_the_list_is_drawn_and_the_next_message_continue
             # Opening from the list VIEWS the chat read-only (ADR-0319); making it active is the
             # separate, idle-gated step that lets the next message run on it.
             _act(page, "CLICK make-active")
-            page._wait_for(lambda s: any(c["current"] and c["title"] == "one" for c in s["chats"]), 15)
+            page._wait_for(
+                lambda s: any(c["current"] and c["title"] == "one" for c in s["chats"]), 15
+            )
             _act(page, "TYPE and four")
             _act(page, "SEND")
             snap = page.settle(6)
