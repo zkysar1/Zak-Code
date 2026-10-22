@@ -130,7 +130,8 @@
       transition: background-color 120ms ease, color 120ms ease;
     }
     .chat:hover { background: var(--surface); color: var(--fg); }
-    .chat.current { background: var(--inset); color: var(--fg); }
+    .chat.viewing { background: var(--inset); color: var(--fg); }
+    .chat .cb { flex: none; font: 10px/1 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: .12rem .34rem; }
     .chat .ct { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .chat .cm { flex: none; font: 11px/1.45 var(--font-mono); color: var(--faint); }
     @media (max-width: 48rem) {
@@ -339,6 +340,11 @@
 
     /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
     .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
+    #view-banner { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 44rem; margin: 0 auto .5rem; padding: .45rem .7rem; background: var(--surface); border: 1px solid var(--inset); border-radius: var(--radius-sm); font: 12px/1.45 var(--font-prose); color: var(--muted); }
+    #view-banner[hidden] { display: none; }
+    #view-banner .vb-text { flex: 1 1 auto; min-width: 0; }
+    #view-banner #make-active { flex: none; padding: .25rem .65rem; background: transparent; border: 1px solid var(--brand); border-radius: var(--radius-sm); color: var(--fg); font: 12px var(--font-prose); cursor: pointer; }
+    #view-banner #make-active:hover { background: var(--inset); }
     #stream-status {
       position: absolute; bottom: calc(100% + .4rem); left: 0; right: 0; text-align: center;
       pointer-events: none; font: 12px/1.5 var(--font-mono); color: var(--muted);
@@ -492,6 +498,10 @@
         <button type="button" id="deny">Deny <kbd>n</kbd></button>
       </div>
     </div>
+    <div id="view-banner" hidden>
+      <span class="vb-text">You're viewing this chat. Messages go to the active chat.</span>
+      <button type="button" id="make-active">Make this chat active</button>
+    </div>
     <div id="composer">
       <span class="pglyph" aria-hidden="true">›</span>
       <button type="button" id="attach" aria-label="Attach file">+</button>
@@ -554,8 +564,11 @@
   const sidebar = document.getElementById("sidebar");
   const chatList = document.getElementById("chats");
   const chatsToggle = document.getElementById("chats-toggle");
+  const viewBanner = document.getElementById("view-banner");
+  const makeActiveBtn = document.getElementById("make-active");
 
-  let sessionId = null;
+  let sessionId = null;       // the chat ON SCREEN (viewed); read-only unless it is also the active one
+  let currentId = null;       // the workspace's ACTIVE chat (where sends go); may differ from sessionId (ADR-0319)
   let lastCursor = null;
   let busEpoch = null;       // the watch bus the history and lastCursor belong to (ADR-0289); null until named
   let shown = 0;             // counts the chats opened; work begun for an earlier one draws nothing (ADR-0319)
@@ -1476,6 +1489,13 @@
   async function sendMessage() {
     const text = input.value.trim();
     if (!text) return;
+    if (currentId !== null && sessionId !== currentId) {
+      // Viewing a chat that is not the active one: a send would 409 at /say. Offer to make it
+      // active instead (ADR-0319) and keep the draft.
+      setStatus("you're viewing this chat — make it active to send here");
+      viewBanner.hidden = false;
+      return;
+    }
     try {
       const resp = await fetch("/say", {
         method: "POST",
@@ -1509,6 +1529,7 @@
     }
     sendMessage();
   };
+  makeActiveBtn.onclick = () => switchTo(sessionId);
   attachBtn.onclick = () => {
     if (!turnActive) fileInput.click();
   };
@@ -1613,7 +1634,9 @@
       let resp = await fetch("/sessions/current");
       if (resp.status === 404) resp = await fetch("/sessions", { method: "POST" });
       if (!resp.ok) throw new Error("session " + resp.status);
-      await openSession(await resp.json());
+      const info = await resp.json();
+      currentId = info.id;
+      await openSession(info);
     } catch (e) {
       setConn("closed", "disconnected");
       add(errCard("could not join a session: " + e.message));
@@ -1668,19 +1691,25 @@
     } catch (e) {
       return;
     }
+    // recent_sessions flags the workspace's current chat — the authoritative, always-fresh
+    // source for currentId even when this page never opened it (ADR-0319).
+    const cur = chats.find((c) => c.current);
+    if (cur) currentId = cur.id;
     const now = Date.now() / 1000;
     chatList.replaceChildren(...chats.map((c) => chatItem(c, now)));
+    updateComposerState();
   }
 
   function chatItem(c, now) {
     const item = el("button", "chat");
     item.appendChild(el("span", "ct", c.title || "New chat"));
+    if (c.current) { item.classList.add("active"); item.appendChild(el("span", "cb", "active")); }  // the workspace's active chat (ADR-0319)
     item.appendChild(el("span", "cm", ago(now - Date.parse(c.updated_at) / 1000)));
     if (c.id === sessionId) {
-      item.classList.add("current");
+      item.classList.add("viewing");   // the chat on screen — distinct from the active one above
       item.setAttribute("aria-current", "page");
     }
-    item.onclick = () => switchTo(c.id);
+    item.onclick = () => viewChat(c.id);
     return item;
   }
 
@@ -1693,12 +1722,41 @@
     return Math.floor(s / 86400) + "d ago";
   }
 
-  // Open a saved chat, or a new one (null). The server makes it the workspace's current chat,
-  // so the next message runs on it with its whole history, and tells every page watching the
-  // chat it replaces to follow. It refuses while a turn runs or a message waits (409).
+  // View a saved chat read-only (ADR-0319): draw its transcript and tail its live bus WITHOUT
+  // moving the workspace's current conversation. Never busy-gated, so a tab always opens — even
+  // while an agent's turn holds the workspace. Making a chat active (the idle-gated PUT below) is
+  // the only thing that changes where messages go. New chat (null) creates one AND makes it active.
+  async function viewChat(target) {
+    closeChats();
+    if (target === null) { switchTo(null); return; }
+    if (target === sessionId) return;
+    let info;
+    try {
+      const resp = await fetch("/sessions/" + target);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      info = await resp.json();
+    } catch (e) {
+      add(errCard("could not open the chat: " + e.message));
+      return;
+    }
+    await openSession(info);
+    refreshChats();   // refreshes currentId + the composer state
+  }
+
+  // The composer sends to the ACTIVE chat. When the chat on screen is not the active one, say so
+  // and offer to make it active, rather than letting a send 409 at /say (ADR-0319).
+  function updateComposerState() {
+    const viewingOther = currentId !== null && sessionId !== null && sessionId !== currentId;
+    viewBanner.hidden = !viewingOther;
+    input.placeholder = viewingOther ? "Make this chat active to send here" : "Message Zak Code…";
+  }
+
+  // Make the chat on screen the workspace's ACTIVE conversation (ADR-0319): the next message runs
+  // on it, and every surface follows. The idle-gated action — refused (409) while a turn runs or a
+  // message waits. A plain tab click VIEWS (viewChat) and never comes here; only this moves the marker.
   async function switchTo(target) {
     closeChats();
-    if (target !== null && target === sessionId) return;
+    if (target !== null && target === currentId) return;   // already the active chat
     if (turnActive) { setStatus("a turn is running — stop it or let it finish, then switch"); return; }
     let resp;
     try {
@@ -1708,7 +1766,7 @@
         body: JSON.stringify({ session_id: target }),
       });
     } catch (e) {
-      add(errCard("could not open the chat: " + e.message));
+      add(errCard("could not make the chat active: " + e.message));
       return;
     }
     if (resp.status === 409) {
@@ -1716,8 +1774,10 @@
       setStatus(refused.detail || "this chat is busy — try again when it is idle");
       return;
     }
-    if (!resp.ok) { add(errCard("could not open the chat: HTTP " + resp.status)); return; }
-    await openSession(await resp.json());
+    if (!resp.ok) { add(errCard("could not make the chat active: HTTP " + resp.status)); return; }
+    const info = await resp.json();
+    currentId = info.id;
+    await openSession(info);
     refreshChats();
     input.focus();
   }
@@ -1727,19 +1787,30 @@
   // (the marker has not moved yet), mark the restart in place, as the page always did.
   async function followCurrent(reason) {
     const gen = shown;
+    // Follow ONLY when the chat on screen is itself the active one and it rotated away. A
+    // read-only viewer parked on another chat must not be yanked to the active chat — and a
+    // `session_rotated` CAN reach such a viewer anyway, replayed from the viewed chat's own
+    // retained buffer (it was the active chat once). This guard is load-bearing (ADR-0319).
+    const wasOnActive = currentId === null || sessionId === currentId;
     let info = null;
     try {
       const resp = await fetch("/sessions/current");
       if (resp.ok) info = await resp.json();
     } catch (e) { /* mark it below */ }
     if (gen !== shown) return;  // the page has opened another chat meanwhile
-    if (info !== null && info.id !== sessionId) {
-      await openSession(info);
+    if (info !== null) currentId = info.id;
+    if (wasOnActive && info !== null && info.id !== sessionId) {
+      await openSession(info);   // the viewer was in the active conversation; follow its rotation
       refreshChats();
       return;
     }
-    add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (reason ? " — " + reason : ""))));
-    endTurn();
+    refreshChats();              // parked on another chat (or no move): refresh the active badge only
+    updateComposerState();
+    if (wasOnActive && (info === null || info.id === sessionId)) {
+      // the active chat restarted in place (its bus was remade) — mark it, as the page always did
+      add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (reason ? " — " + reason : ""))));
+      endTurn();
+    }
   }
 
   function closeChats() {
