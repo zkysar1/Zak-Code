@@ -13917,7 +13917,7 @@ counting every active tool again (three tests) and removing eviction (the evicti
 
 ## ADR-0228: the tools that create documents and images load on request
 
-Status: accepted. 2026-09-23.
+Status: accepted. 2026-09-23. Superseded in part by ADR-0324: the document readers are now hidden by default and re-exposed when their file type is present in the workspace, rather than unconditionally exposed.
 
 Context. Every model call carries the schema of every exposed tool. On 2026-09-23 the 27
 built-ins came to 26,970 JSON characters on every call. Nine of them work on documents, PDFs and
@@ -20068,3 +20068,55 @@ uses): 0 mismatches, and three deliberate breakages of `Pool` reported 85, 116 a
 provider with a key for account 01 alone: a buffered and a streamed Haiku 5.5 call each answered `ok` (18 prompt tokens,
 4 completion tokens, $0.0000038 priced), the session was seated on `acct-01` and the ledger took one row per call. The
 project's check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,387 passed, 23 skipped.
+
+## ADR-0324: look-alike tools confuse small models, so the readers also load on request, confusable descriptions say when NOT to use them, and recovery names the tool to switch to
+
+Status: accepted. 2026-10-22. Supersedes in part ADR-0228 (the document readers no longer stay unconditionally exposed).
+
+Context. A small reasoning model driven through the text tool protocol picks a VALID but WRONG
+tool: offered both `read_docx` (a Word reader) and `Read` (the file reader), it reaches for `read_docx` on a
+`.py` file, the call errors, and it loops on the same wrong tool until it gives up (`stuck`). This
+is tool SELECTION, not a malformed name — a name grammar does not fix it. The literature converges
+that wrong-tool selection is mostly a tool-DEFINITION problem (say when NOT to use a tool and name
+the competitor), that selection degrades past ~20-30 exposed tools, and that recovery should name a
+concrete alternative and stop retrying. (Measured on flint, a 2.5B-active MoE at R1 sampling: the
+wobble was ~1 in 5 on an adversarial task even after the sampling temperature was corrected.)
+
+Decision. Three layers, none of which removes a tool.
+
+1. Definitions (tools/builtins/office.py). `read_docx` / `read_xlsx` descriptions now say what they
+   are ONLY for and name `Read` (its canonical ADR-0190 name, what the model sees) for anything
+   else; the shared wrong-type error (`_prepare_existing_file`) names the Read tool too, so the
+   FIRST wrong call self-corrects.
+
+2. Recovery (agent/stuck.py, tools/base.py). The stuck NUDGE's repeated-failure branch names the
+   tool that keeps failing and points at its own error (which, post-layer-1, names the right tool),
+   instead of a generic "you appear stuck". An unknown tool name from dispatch
+   (`ToolRegistry.execute`) now carries a `difflib` "did you mean <name>?" fix built from the
+   exposed names — the house pattern (cf. the CLI typo hint, ADR-0040).
+
+3. Exposure (tools/builtins/default_registry.py, zakcode/__init__.py). `read_docx`, `read_xlsx` and
+   `read_pdf` join `ON_REQUEST_TOOLS`, so the main agent hides them by default — a coding session
+   with no Office file never sees the look-alike that triggers the wobble. This supersedes
+   ADR-0228's "the readers stay [always] exposed". Capability is not removed: a hidden reader is
+   still dispatchable when named and loadable via `tool_search`, AND the Agent re-exposes a reader
+   at startup when its document type is actually present in the workspace (`workspace_doc_readers`,
+   a bounded, vendor-/dot-dir-pruned scan). So an uploaded file — which lands in the workspace, and
+   whose reader the web app's upload prompt names — keeps its reader in the list, exactly as
+   ADR-0228 required; a session with a real document keeps its reader; a session with none keeps the
+   smaller, less-confusable menu. `inspect_image` stays exposed (it is not confusable with
+   `read_file`).
+
+Consequences. With no document present, the main agent's exposed built-ins drop by three (a further
+schema cut on every call) and the read_docx-on-a-.py wobble is gone from that menu, while the reader
+stays one `tool_search` — or one named call, or one workspace document — away. More headroom under
+the 25-tool budget means MCP discovery may expose a few more MCP tools at startup (ADR-0227). Sub-
+agent registries are unchanged (no `tool_search`; the factory still registers every tool active).
+ADR-0228's upload-reader invariant now holds by workspace-presence re-exposure, not unconditional
+exposure.
+
+The proof. tests/test_office_tools.py (the wrong-type error names `read_file`),
+tests/test_registry_active.py (an unknown name → a did-you-mean fix; a nonsense name → none),
+tests/test_stuck.py (the nudge names the repeatedly-failing tool), and tests/test_on_request_tools.py
+(the readers start hidden on an empty workspace, are re-exposed when their document type is present,
+and the reader an upload names is exposed; vendored dirs are not scanned). `uv run poe check` green.

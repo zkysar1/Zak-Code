@@ -64,7 +64,11 @@ def _prepare_existing_file(
     if not resolved.is_file():
         return f"File not found: {path}"
     if resolved.suffix.lower() not in suffixes:
-        return f"path must end with {' or '.join(suffixes)}"
+        return (
+            f"path must end with {' or '.join(suffixes)}; {resolved.name!r} is a different "
+            "file type. For source code, plain text, or any non-Office file, use the Read "
+            "tool instead."
+        )
     size = resolved.stat().st_size
     if size > _MAX_OFFICE_READ_BYTES:
         return f"file is too large ({size} bytes; max {_MAX_OFFICE_READ_BYTES})"
@@ -187,7 +191,9 @@ class ReadDocxTool(Tool):
         name="read_docx",
         description=(
             "Read a Microsoft Word .docx file in the workspace. Extracts capped paragraph "
-            "text, table previews, and image counts for analysis without dumping binary data."
+            "text, table previews, and image counts for analysis without dumping binary data. "
+            "Use ONLY for Microsoft Word .docx files. Do NOT use for source code, plain text, "
+            "Markdown, JSON, CSV, or any non-Word file — for those use the Read tool instead."
         ),
         parameters={
             "type": "object",
@@ -303,7 +309,9 @@ class ReadXlsxTool(Tool):
         name="read_xlsx",
         description=(
             "Read a Microsoft Excel .xlsx or .xlsm workbook in the workspace. Returns sheet "
-            "dimensions, table/chart counts, merged-cell counts, and capped cell previews."
+            "dimensions, table/chart counts, merged-cell counts, and capped cell previews. "
+            "Use ONLY for Microsoft Excel .xlsx/.xlsm workbooks. Do NOT use for CSV, source "
+            "code, plain text, or any non-Excel file — for CSV or text use the Read tool instead."
         ),
         parameters={
             "type": "object",

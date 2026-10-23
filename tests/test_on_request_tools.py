@@ -84,3 +84,20 @@ def test_the_reader_an_upload_names_is_exposed(tmp_path: Path, filename: str) ->
     reader = _reader_tool_for_artifact(artifact_from_path(upload, workspace_root=tmp_path))
     assert reader
     assert reader in _exposed(_agent(tmp_path))
+
+
+def test_workspace_doc_readers_detects_present_types(tmp_path: Path) -> None:
+    # Tier 3: a reader is exposed only when the workspace actually holds that document type;
+    # pruned/vendored dirs are not scanned (so a buried doc does not re-expose a reader).
+    from zakcode.tools.builtins.default_registry import workspace_doc_readers
+
+    assert workspace_doc_readers(tmp_path) == set()
+    (tmp_path / "spec.docx").write_bytes(b"x")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x = 1\n")
+    assert workspace_doc_readers(tmp_path) == {"read_docx"}
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "buried.xlsx").write_bytes(b"x")
+    assert workspace_doc_readers(tmp_path) == {"read_docx"}
+    (tmp_path / "data.xlsx").write_bytes(b"x")
+    assert workspace_doc_readers(tmp_path) == {"read_docx", "read_xlsx"}

@@ -219,3 +219,15 @@ async def test_create_xlsx_escapes_formulas_by_default(tmp_path: Path) -> None:
     assert not result.is_error, result.output
     value = load_workbook(tmp_path / "formula-safe.xlsx").active["A2"].value
     assert value == '\'=HYPERLINK("http://x")'
+
+
+async def test_read_docx_on_non_word_file_points_to_the_read_tool(tmp_path: Path) -> None:
+    # Tier 1: the wrong-type error names the right tool by its canonical name (`Read`, ADR-0190 —
+    # what the model sees in its list) so the FIRST failure self-corrects instead of looping
+    # (the read_docx-on-a-.py wobble).
+    ctx = ToolContext(workspace_root=tmp_path)
+    (tmp_path / "module.py").write_text("print('hi')\n")
+    result = await ReadDocxTool().execute({"path": "module.py"}, ctx)
+    assert result.is_error
+    assert "Read tool" in result.output
+    assert "Read tool" in ReadDocxTool().spec.description

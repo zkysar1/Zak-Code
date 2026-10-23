@@ -85,3 +85,16 @@ def test_active_names_preserve_registration_order() -> None:
     for n in ["z", "a", "m"]:
         reg.register(_Tool(n))
     assert reg.active_names() == ["z", "a", "m"]
+
+
+async def test_unknown_tool_suggests_a_close_name(tmp_path: Path) -> None:
+    # Tier 2a: a near-miss name returns a did-you-mean fix built from the exposed names; a
+    # nonsense name errors with no suggestion.
+    reg = ToolRegistry()
+    reg.register(_Tool("read_docx"))
+    reg.register(_Tool("read_file"))
+    near = await reg.execute("read_dox", {}, ToolContext(workspace_root=tmp_path))
+    assert near.is_error
+    assert near.fix is not None and "read_docx" in near.fix
+    far = await reg.execute("zzzzzzzz", {}, ToolContext(workspace_root=tmp_path))
+    assert far.is_error and far.fix is None

@@ -46,7 +46,11 @@ from zakcode.session.status_file import get_writer as _status_writer
 from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SampleCutOff, SkillLoad, SkillResolver
-from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
+from zakcode.tools.builtins.default_registry import (
+    ON_REQUEST_TOOLS,
+    default_registry,
+    workspace_doc_readers,
+)
 from zakcode.virtual_paths import VIRTUAL_PREFIX_KEYS
 
 __version__: str = _pkg_version("zakcode")
@@ -1111,6 +1115,13 @@ class Agent:
 
         for name in ON_REQUEST_TOOLS:
             self.registry.deactivate(name)
+        # Re-expose a document reader the moment the workspace actually holds that type: a
+        # coding session with no Office file keeps the smaller, less-confusable menu (a small
+        # model otherwise reaches for read_docx on a .py file and loops), while a session with a
+        # real document keeps its reader in the list -- the server's upload prompt names it by
+        # tool (ADR-0228 context-aware exposure). tool_search still surfaces any hidden reader.
+        for reader in workspace_doc_readers(self.settings.workspace_root):
+            self.registry.activate(reader)
         self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
 
         # Plugins (M6), opt-in. Discover plugins (project + user dirs + entry points)
