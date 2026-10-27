@@ -14,17 +14,21 @@ workspace inbox, and it is deliberately NOT a third say:
 
 Semantics:
 
-- **Latest-wins, with one scoped exception.** Only the newest envelope is ever on disk. There
+- **Latest-wins, with two scoped exceptions.** Only the newest envelope is ever on disk. There
   is no queue and no :func:`requeue` counterpart to ``say_inbox.requeue_say`` — a failed turn
-  does not put a stale perception back, because by then the world has moved. The exception is
-  ``changesPerception``: a change is an EVENT, not a reading of current state, so
+  does not put a stale perception back, because by then the world has moved. The exceptions
+  are the two EVENTS, which are not readings of current state. ``changesPerception``:
   :func:`merge_changes` carries the unread envelope's list forward when a newer frame
   supersedes it (the route peeks via :func:`peek_observation` to do that). Two envelopes can
   land inside one ReAct iteration, and dropping the first list tells the mind only the second
   half of its own history. This bounds that loss rather than removing it — the EVENT_DRIVEN
-  FIFO (perception-module.md §5.1) is still the v2 answer.
+  FIFO (perception-module.md §5.1) is still the v2 answer. And a farewell's ``bodyReport``:
+  :func:`carry_farewell` keeps an unread report on disk through every later frame, because
+  the vessel keeps nothing a body learned and nothing follows a farewell to repeat it.
 - **Exactly-once delivery.** Reading consumes (read then delete), so a stale frame is never
-  perceived twice.
+  perceived twice. Staging and reading take one lock (:data:`OBSERVATION_STAGE_LOCK`), so a
+  frame staged while another is being read is neither deleted unread nor carried back out to
+  be delivered a second time.
 - **Fail-open, and self-clearing on corruption.** Any OS error yields "nothing perceived".
   A malformed or truncated envelope is CONSUMED rather than left in place: a corrupt file
   that were merely skipped would wedge the inbox permanently, and the next perception round
@@ -41,11 +45,21 @@ import contextlib
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 #: The inbox filename under the workspace root.
 OBSERVATION_FILENAME = ".observation"
+
+#: Held by whoever stages a frame (look at what is staged, decide what to carry forward,
+#: write) and by whoever consumes one (read, then delete). Each is a read-modify-write of the one
+#: file, and the route runs on worker threads beside the agent's own loop: without one lock a
+#: frame can land between the two halves of the other, so the later writer replaces the earlier
+#: without having seen it, a carried report is delivered twice, or a frame is deleted unread. It
+#: holds for the threads of one process, and a staged frame is the only copy of a farewell's
+#: report. Hooks and wakes run after it is released: they can take as long as a host likes.
+OBSERVATION_STAGE_LOCK = threading.Lock()
 
 #: The envelope version this reader speaks. An envelope stamped with anything else is from a
 #: vessel newer or older than this mind; it is consumed and ignored rather than guessed at,
@@ -53,17 +67,28 @@ OBSERVATION_FILENAME = ".observation"
 OBSERVATION_ENVELOPE_VERSION = 1
 
 #: The vessel's envelope discriminator, as the environment server's PerceptionBridgeVerticle
-#: stamps it. A HEARTBEAT is the periodic full picture; a CHANGE is narrowed to what moved.
-#: Only a change may wake a sleeping mind: a heartbeat arrives on a timer and says nothing
-#: new, so waking on one would convert every quiescent sleep into a busy-poll.
+#: stamps it. A HEARTBEAT is the periodic full picture; a CHANGE is narrowed to what moved; a
+#: FAREWELL is a body's last word, sent ONCE as the body ends, carrying a
+#: ``bodyReport`` slice. Only a change or a farewell may wake a sleeping mind: a heartbeat
+#: arrives on a timer and says nothing new, so waking on one would convert every quiescent
+#: sleep into a busy-poll. A farewell is the opposite of a heartbeat, because nothing follows
+#: it: a mind that is not woken for it learns what its body met only when something else
+#: happens to wake it, and by then the report may have been superseded.
 KIND_HEARTBEAT = "heartbeat"
 KIND_CHANGE = "change"
+KIND_FAREWELL = "farewell"
 
-#: The framework session signal a CHANGE envelope raises. The host's sleep script polls it
-#: as a BLOCKER-class wake — a change to the resident's OWN world is the opposite of partner
-#: activity, so it is never demoted during quiescence. The host side already accepts this
-#: name (its session signal registry and the sleep loop's poll); this module is the WRITER
-#: that was missing.
+#: The kinds that may wake a sleeping mind. The test is MEMBERSHIP, never "not a heartbeat": an
+#: unstamped envelope (``kind == ""``) and an unknown kind are deliberately absent, so a vessel
+#: older or newer than this mind cannot wake it by accident. A missed wake costs latency the
+#: next round repays; a spurious one costs the sleep itself.
+WAKING_KINDS = frozenset({KIND_CHANGE, KIND_FAREWELL})
+
+#: The framework session signal a waking envelope (a change or a farewell) raises. The host's
+#: sleep script polls it as a BLOCKER-class wake — a change to the resident's OWN world is the
+#: opposite of partner activity, so it is never demoted during quiescence. The host side
+#: already accepts this name (its session signal registry and the sleep loop's poll); this
+#: module is the WRITER that was missing.
 PERCEPTION_RECEIVED_SIGNAL = "perception-received"
 
 
@@ -139,13 +164,14 @@ def read_observation(path: Path) -> dict[str, Any] | None:
     see the module docstring on why a corrupt envelope must not be allowed to wedge the
     inbox.
     """
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:  # includes FileNotFoundError — nothing perceived
-        return None
-    # Consume unconditionally: whatever was on disk has now been taken, valid or not.
-    with contextlib.suppress(OSError):
-        path.unlink()
+    with OBSERVATION_STAGE_LOCK:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:  # includes FileNotFoundError — nothing perceived
+            return None
+        # Consume unconditionally: whatever was on disk has now been taken, valid or not.
+        with contextlib.suppress(OSError):
+            path.unlink()
     return _parse_envelope(raw)
 
 
@@ -174,8 +200,29 @@ CHANGES_SLICE = "changesPerception"
 PLACE_SLICES = ("spatialPerception", "bodyPerception")
 COMPANY_SLICES = ("unitPerception", "communicationPerception")
 
+#: The slice a farewell carries: a body's account of where it went and who it met (the vessel's
+#: ``BodyReport``, ``reportVersion`` 1). Like the change list it is an EVENT, not a reading of
+#: the world: the last word of a body that no longer exists, which no later frame repeats.
+FAREWELL_SLICE = "bodyReport"
 
-def _is_count(value: Any) -> bool:
+#: Where an UNREAD farewell's report goes when another farewell lands on it, oldest first. A
+#: mind can have several bodies, and stopping a character sends one farewell per body; plain
+#: latest-wins would keep the last body's words and discard every other body's.
+EARLIER_FAREWELL_SLICE = "earlierBodyReports"
+
+#: How many earlier reports the floor made :func:`carry_farewell` drop, kept as a count so a
+#: loss the receiver cannot undo is at least told.
+SHED_FAREWELL_SLICE = "earlierBodyReportsShed"
+
+#: The slice names the receiver mints. A producer cannot supply them: the route strips them from
+#: every incoming frame, so a roster of bodies found on disk was put there by a carry.
+RECEIVER_SLICES = (EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
+
+#: How much of the vessel's stated reason a narration line repeats.
+FAREWELL_REASON_MAX_CHARS = 120
+
+
+def _is_count(value: Any) -> TypeGuard[int]:
     """A real integer — ``bool`` is an ``int`` in Python and is never a byte count."""
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -186,10 +233,15 @@ def _slice_of(observation: dict[str, Any], name: str) -> dict[str, Any]:
     return found if isinstance(found, dict) else {}
 
 
-def _name_some(keys: list[str]) -> str:
-    """``a, b, c (and 4 more)`` — naming a few and counting the rest."""
+def _name_some(keys: list[str], total: int | None = None) -> str:
+    """``a, b, c (and 4 more)`` — naming a few and counting the rest.
+
+    ``total`` is the true size of the set when ``keys`` is only its named head, so a list the
+    producer capped does not understate how many were left unnamed.
+    """
     shown = keys[:NARRATION_MAX_NAMED]
-    more = len(keys) - len(shown)
+    count = total if total is not None and total >= len(keys) else len(keys)
+    more = count - len(shown)
     return ", ".join(shown) + (f" (and {more} more)" if more else "")
 
 
@@ -276,6 +328,238 @@ def merge_changes(previous: Any, incoming: Any) -> Any:
     return _narrate_changes({CHANGES_SLICE: previous}) + _narrate_changes({CHANGES_SLICE: incoming})
 
 
+def _compact_chars(observation: dict[str, Any]) -> int:
+    """The size the route's floor measures: compact JSON, so the budget is not spent on spaces."""
+    return len(json.dumps(observation, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def staged_kind(incoming: str, pending: Any) -> str:
+    """The ``kind`` the staged frame carries when ``incoming`` lands on an unread ``pending`` one.
+
+    STICKY, in the order of what a mind can least afford to lose: a farewell, then a change,
+    then whatever the newest frame says. The staged file is read on the host's own tick, so a
+    heartbeat that rewrote an unread ``change`` or ``farewell`` to ``heartbeat`` would hide what
+    it superseded, and a farewell landing on an unread change must stay a farewell rather than
+    be read back as the change it carries forward. With nothing pending the answer is
+    ``incoming``.
+    """
+    for kind in (KIND_FAREWELL, KIND_CHANGE):
+        if kind in (incoming, pending):
+            return kind
+    return incoming
+
+
+def carry_farewell(
+    pending_observation: Any, observation: dict[str, Any], max_chars: int
+) -> dict[str, Any]:
+    """``observation`` with an UNREAD farewell's report carried into it.
+
+    The second exception to latest-wins (the first is :func:`merge_changes`). A farewell is a
+    body's last word and nothing follows it, so a frame that lands on it must not be the end of
+    it: the vessel keeps nothing a body learned, which makes the unread report the last copy of
+    that knowledge anywhere. ``pending_observation`` is the unread frame's ``observation`` map,
+    as :func:`peek_observation` returns it; with no report in it ``observation`` comes back
+    unchanged.
+
+    - A frame that is not a farewell keeps the unread report as THE ``bodyReport``; every other
+      slice stays latest-wins, because the newest reading of the world IS the world.
+    - A second farewell keeps its own report as ``bodyReport`` and moves the unread ones to
+      ``earlierBodyReports``, oldest first. The same body reporting twice (same ``unitKey``) is
+      one body, and only the newest of its reports survives.
+
+    The receiver's floor governs what it WRITES, so the result is fitted to ``max_chars``, and
+    what is shed goes in the order a mind misses it least: the newest frame's other slices (the
+    next round reads the world again), then the OLDEST earlier reports, then the change list.
+    The newest report is never shed — a report that cleared the floor on its way in fits alone.
+    An earlier report the fit has to drop cannot be given back, so it is COUNTED, across
+    carries, in ``earlierBodyReportsShed``: the mind should at least know one is missing. The
+    count is written too, so it is inside the fit, and it gives way only after the change list,
+    when the newest report leaves no room for even that.
+    """
+    if not isinstance(pending_observation, dict):
+        return observation
+    unread = pending_observation.get(FAREWELL_SLICE)
+    if not isinstance(unread, dict):
+        return observation
+    earlier = pending_observation.get(EARLIER_FAREWELL_SLICE)
+    carried = [row for row in earlier if isinstance(row, dict)] if isinstance(earlier, list) else []
+    already_shed = pending_observation.get(SHED_FAREWELL_SLICE)
+    shed = already_shed if _is_count(already_shed) and already_shed > 0 else 0
+    result = dict(observation)
+    if isinstance(result.get(FAREWELL_SLICE), dict):
+        carried.append(unread)
+        unit = result[FAREWELL_SLICE].get("unitKey")
+        if unit is not None:
+            carried = [row for row in carried if row.get("unitKey") != unit]
+    else:
+        result[FAREWELL_SLICE] = unread
+    if carried:
+        result[EARLIER_FAREWELL_SLICE] = carried
+    else:
+        result.pop(EARLIER_FAREWELL_SLICE, None)
+    if shed:
+        result[SHED_FAREWELL_SLICE] = shed
+    else:
+        result.pop(SHED_FAREWELL_SLICE, None)
+    if _compact_chars(result) <= max_chars:
+        return result
+    kept = (FAREWELL_SLICE, EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE, CHANGES_SLICE)
+    result = {name: value for name, value in result.items() if name in kept}
+    while _compact_chars(result) > max_chars and result.get(EARLIER_FAREWELL_SLICE):
+        remaining = result[EARLIER_FAREWELL_SLICE][1:]
+        if remaining:
+            result[EARLIER_FAREWELL_SLICE] = remaining
+        else:
+            del result[EARLIER_FAREWELL_SLICE]
+        shed += 1
+        result[SHED_FAREWELL_SLICE] = shed
+    for last_resort in (CHANGES_SLICE, SHED_FAREWELL_SLICE):
+        if _compact_chars(result) > max_chars:
+            result.pop(last_resort, None)
+    return result
+
+
+def carry_forward(
+    pending_observation: Any, incoming: dict[str, Any], max_chars: int
+) -> tuple[dict[str, Any], bool, bool]:
+    """What ``incoming`` stages on an UNREAD frame, as ``(observation, merged, carried)``.
+
+    The two EVENTS latest-wins must not lose are carried here under the one floor: the unread
+    change list (:func:`merge_changes`) and an unread farewell's report (:func:`carry_farewell`).
+    ``merged`` says the unread change list was merged into the frame, ``carried`` says an unread
+    report rode forward in it, and every other slice is the incoming frame's.
+
+    The two ride together only when they fit together, and the report never gives way. When the
+    merged list does not survive the fit beside it, the newest frame's own list stands instead,
+    which is what an overflow has always meant for a change list. Fitting the report first and
+    merging after would let a merge that fits alone push a list that fits beside the report
+    off the disk with it.
+    """
+    if not isinstance(pending_observation, dict):
+        return incoming, False, False
+    has_report = isinstance(pending_observation.get(FAREWELL_SLICE), dict)
+    unread_changes = pending_observation.get(CHANGES_SLICE)
+    if unread_changes:
+        candidate = dict(incoming)
+        candidate[CHANGES_SLICE] = merge_changes(unread_changes, incoming.get(CHANGES_SLICE))
+        if has_report:
+            fitted = carry_farewell(pending_observation, candidate, max_chars)
+            if CHANGES_SLICE in fitted:
+                return fitted, True, True
+        elif _compact_chars(candidate) <= max_chars:
+            return candidate, True, False
+    if has_report:
+        return carry_farewell(pending_observation, incoming, max_chars), False, True
+    return incoming, False, False
+
+
+def _not_collected(what: str, section: dict[str, Any]) -> str | None:
+    """``<what> was not collected (<reason>)`` when the vessel says so, else ``None``.
+
+    The vessel marks a section it could not fill with ``collected: false`` and a reason. That is
+    a GAP in what the mind was told, never evidence that nothing happened, so it is passed on as
+    the gap it is. Only an explicit ``false`` counts: a section that says nothing is silence.
+    """
+    if section.get("collected") is not False:
+        return None
+    reason = section.get("reason")
+    gap = f"{what} was not collected"
+    if isinstance(reason, str) and reason.strip():
+        gap += f" ({reason.strip()[:FAREWELL_REASON_MAX_CHARS]})"
+    return gap
+
+
+def _narrate_farewell(observation: dict[str, Any]) -> list[str]:
+    """What a body reports as it ends — ``your body has ended; you covered 1,204 cells``.
+
+    Reads ``bodyReport`` (the vessel's ``BodyReport``, ``reportVersion`` 1): where the body went,
+    who it met, and whether the cells it used were collected. COUNTS AND KEYS ONLY, never the
+    free text a character wrote: the raw slice follows in full, and this only orders it.
+
+    An EXPLICIT zero is perception and an ABSENT figure is not — the rule
+    :func:`_narrate_company` states for a census. ``interacted: 0`` earns "you met nobody"; a
+    report that never says it earns silence. The same care covers ``where`` and ``cellsUsed``:
+    when the vessel says it did not collect them, that is passed on as the gap it is
+    (:func:`_not_collected`), never as "you went nowhere" or "you used no cells".
+    """
+    report = _slice_of(observation, FAREWELL_SLICE)
+    if not report:
+        return []
+    unit = report.get("unitKey")
+    head = (
+        f"your body {unit.strip()} has ended"
+        if isinstance(unit, str) and unit.strip()
+        else "your body has ended"
+    )
+    ended_by = report.get("endedBy")
+    if isinstance(ended_by, str) and ended_by.strip():
+        head += f" ({ended_by.strip()})"
+    ended_at = report.get("endedAt")
+    if isinstance(ended_at, str) and ended_at.strip():
+        head += f" at {ended_at.strip()}"
+    lines = [head]
+
+    where = _slice_of(report, "where")
+    if _is_count(where.get("cells")):
+        covered = f"you covered {where['cells']:,} cells"
+        detail = [
+            f"{where[key]:,} {key}"
+            for key in ("explored", "dangerous", "blocked")
+            if _is_count(where.get(key))
+        ]
+        if detail:
+            covered += f" ({', '.join(detail)})"
+        worked, failed = where.get("pathSuccesses"), where.get("pathFailures")
+        if _is_count(worked) and _is_count(failed):
+            covered += f"; {worked:,} paths worked, {failed:,} failed"
+        lines.append(covered)
+    else:
+        where_gap = _not_collected("where you went", where)
+        if where_gap:
+            lines.append(where_gap)
+
+    touched = _slice_of(report, "touched")
+    interacted = touched.get("interacted")
+    if _is_count(interacted):
+        tracked = touched.get("tracked")
+        scope = f"the {tracked:,} you tracked" if _is_count(tracked) else ""
+        if interacted == 0:
+            lines.append("you met nobody" + (f" among {scope}" if scope else ""))
+        else:
+            rows = touched.get("units")
+            names = [
+                label
+                for row in (rows if isinstance(rows, list) else [])
+                if isinstance(row, dict)
+                for label in (row.get("ayoKey") or row.get("unitKey"),)
+                if isinstance(label, str) and label.strip()
+            ]
+            met = f"you met {interacted:,}" + (f" of {scope}" if scope else "")
+            lines.append(met + (f": {_name_some(names, interacted)}" if names else ""))
+
+    cells_gap = _not_collected("which cells you used", _slice_of(report, "cellsUsed"))
+    if cells_gap:
+        lines.append(cells_gap)
+
+    others = observation.get(EARLIER_FAREWELL_SLICE)
+    kept = sum(1 for row in others if isinstance(row, dict)) if isinstance(others, list) else 0
+    dropped = observation.get(SHED_FAREWELL_SLICE)
+    shed = dropped if _is_count(dropped) and dropped > 0 else 0
+    if kept or shed:
+        noun = "body" if kept + shed == 1 else "bodies"
+        if not shed:
+            where_reports = f"their reports are in {EARLIER_FAREWELL_SLICE}"
+        elif kept:
+            where_reports = (
+                f"{EARLIER_FAREWELL_SLICE} holds {kept} of their reports "
+                f"and {shed} did not fit and could not be kept"
+            )
+        else:
+            where_reports = "their reports did not fit and could not be kept"
+        lines.append(f"{kept + shed} other {noun} ended before you read this; {where_reports}")
+    return lines
+
+
 def _narrate_place(observation: dict[str, Any]) -> list[str]:
     """Where the body is — ``you are at the library, walking``.
 
@@ -330,10 +614,12 @@ def _narrate_company(observation: dict[str, Any]) -> list[str]:
 def narrate_observation(envelope: dict[str, Any] | None) -> list[str]:
     """Second-person lines describing what just happened, in the order a mind needs them.
 
-    Pure and side-effect-free: no LLM, no I/O, no clock. Ordered CHANGES first (what moved
-    is the only part a mind cannot re-derive by looking again), then place, then company,
-    then what the vessel could not fit. Returns ``[]`` — never raises — for an envelope
-    carrying none of the narrated slices, which is every envelope today.
+    Pure and side-effect-free: no LLM, no I/O, no clock. Ordered a body's FAREWELL first (its
+    end outranks anything the world did, and the report is the one part nothing will say
+    again), then CHANGES (what moved is the only part a mind cannot re-derive by looking
+    again), then place, then company, then what the vessel could not fit. Returns ``[]`` —
+    never raises — for an envelope carrying none of the narrated slices, which is every
+    envelope today.
     """
     if not isinstance(envelope, dict):
         return []
@@ -341,7 +627,10 @@ def narrate_observation(envelope: dict[str, Any] | None) -> list[str]:
     if not isinstance(observation, dict):
         return []
     lines = (
-        _narrate_changes(observation) + _narrate_place(observation) + _narrate_company(observation)
+        _narrate_farewell(observation)
+        + _narrate_changes(observation)
+        + _narrate_place(observation)
+        + _narrate_company(observation)
     )
     lines = lines[:NARRATION_MAX_LINES]
     dropped = envelope.get("droppedSlices") or []

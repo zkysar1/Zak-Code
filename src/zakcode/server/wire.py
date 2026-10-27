@@ -135,9 +135,13 @@ class ObserveRequest(BaseModel):
 
     ``kind`` is the vessel's own discriminator: ``"heartbeat"`` for a periodic FULL picture,
     ``"change"`` for a frame narrowed to what actually moved (``changedSlices`` names those
-    slices). The distinction is not cosmetic — it decides whether this frame may WAKE a
-    sleeping mind, so the default is the empty string rather than either real value: a
-    vessel that does not stamp a kind must never be read as announcing a change.
+    slices), ``"farewell"`` for a body's last word, sent ONCE as the body ends and carrying a
+    ``bodyReport`` slice (where it went, who it met, which cells it used). The distinction is
+    not cosmetic — it decides whether this frame may WAKE a sleeping mind (a change or a
+    farewell may; a heartbeat may not), and whether a later frame may overwrite it (a
+    farewell's report rides forward, a change's list is merged, a heartbeat is replaced). So
+    the default is the empty string rather than any real value: a vessel that does not stamp a
+    kind must never be read as announcing a change.
 
     ``observation`` is an opaque map of perception slices — the vessel's allow-rule is every
     ``privateSelf`` key whose name ends in ``Perception``, so the shape here is deliberately

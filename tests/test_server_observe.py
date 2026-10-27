@@ -9,23 +9,29 @@ The behaviour worth pinning is where this route deliberately DIFFERS from its si
 one is the failure. A perception frame is continuous world state and is worthless once
 superseded, so here the newest frame WINS.
 
-With ONE scoped exception: ``changesPerception`` is carried forward across a
-supersession instead of being overwritten, because a change is an EVENT rather than a
-reading of current state, and an event dropped before the host reads it never happened as
-far as the host is concerned. Everything else stays latest-wins, and the tests below pin
-both halves — the exception and its scope.
+With TWO scoped exceptions: ``changesPerception`` and a farewell's ``bodyReport`` are carried
+forward across a supersession instead of being overwritten, because each is an EVENT rather
+than a reading of current state, and an event dropped before the host reads it never happened
+as far as the host is concerned. Everything else stays latest-wins, and the tests below pin
+both halves — the exceptions and their scope.
 """
 
 from __future__ import annotations
 
+import itertools
 import json
+import logging
+import threading
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import zakcode.server.app as app_module
 from zakcode.config import Settings
 from zakcode.server.app import OBSERVATION_MAX_CHARS, create_app
+from zakcode.session.observation_inbox import peek_observation, read_observation
 from zakcode.session.store import Session, SessionStore
 
 
@@ -273,3 +279,280 @@ def test_observe_never_writes_the_knowledge_tree(tmp_path: Path) -> None:
     before = sorted(p.name for p in tree.iterdir())
     assert _client(tmp_path).post("/observe", json=_envelope()).status_code == 200
     assert sorted(p.name for p in tree.iterdir()) == before
+
+
+# ── a farewell: a body's last word ────────────────────────────────────────────────────────
+
+
+def _farewell_report(unit: str = "unit-7") -> dict[str, object]:
+    """The vessel's ``bodyReport`` v1, cut down to what these tests read."""
+    return {
+        "reportVersion": 1,
+        "unitKey": unit,
+        "endedAt": "2026-10-27T16:40:00Z",
+        "endedBy": "deactivation",
+        "where": {"cells": 12, "pathSuccesses": 3, "pathFailures": 1},
+        "touched": {"tracked": 2, "interacted": 0, "units": []},
+        "cellsUsed": {"collected": False, "reason": "keyed by character"},
+    }
+
+
+def _farewell(unit: str = "unit-7") -> dict[str, object]:
+    return _envelope(
+        externalClientRef=unit,
+        kind="farewell",
+        observation={"bodyReport": _farewell_report(unit)},
+        changedSlices=["bodyReport"],
+    )
+
+
+def test_observe_stages_a_farewell_with_its_kind_and_report(tmp_path: Path) -> None:
+    resp = _client(tmp_path).post("/observe", json=_farewell())
+    assert resp.status_code == 200
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "farewell"
+    assert staged["changedSlices"] == ["bodyReport"]
+    assert staged["observation"] == {"bodyReport": _farewell_report()}
+
+
+def test_a_later_heartbeat_cannot_supersede_an_unread_farewell(tmp_path: Path) -> None:
+    """The report is the last copy of what the body learned; the next round must not end it."""
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell())
+    resp = client.post(
+        "/observe",
+        json=_envelope(kind="heartbeat", observation={"nearbyPerception": {"units": ["c"]}}),
+    )
+    assert resp.json()["superseded"] is True
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "farewell", "a heartbeat does not turn a farewell back into a picture"
+    assert staged["observation"]["bodyReport"] == _farewell_report()
+    assert staged["observation"]["nearbyPerception"] == {"units": ["c"]}, "state stays latest-wins"
+    assert staged["changedSlices"] == ["bodyReport"], "the carried report is named as present"
+
+
+def test_a_farewell_over_an_unread_change_stays_a_farewell_and_keeps_the_changes(
+    tmp_path: Path,
+) -> None:
+    """The sticky-change rule alone read the farewell back as the change it carried forward."""
+    client = _client(tmp_path)
+    client.post(
+        "/observe",
+        json=_envelope(kind="change", observation={"changesPerception": ["brief.md changed"]}),
+    )
+    client.post("/observe", json=_farewell())
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "farewell"
+    assert staged["observation"]["changesPerception"] == ["brief.md changed"]
+    assert staged["observation"]["bodyReport"] == _farewell_report()
+
+
+def test_a_second_farewell_carries_the_first_as_an_earlier_report(tmp_path: Path) -> None:
+    """Stopping a character sends one farewell per body; latest-wins would keep only the last."""
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell("unit-1"))
+    resp = client.post("/observe", json=_farewell("unit-2"))
+    assert resp.json()["superseded"] is True
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "farewell"
+    assert staged["observation"]["bodyReport"] == _farewell_report("unit-2")
+    assert staged["observation"]["earlierBodyReports"] == [_farewell_report("unit-1")]
+    assert staged["changedSlices"] == ["bodyReport", "earlierBodyReports"]
+
+
+def test_a_large_frame_cannot_push_an_unread_farewell_off_the_disk(tmp_path: Path) -> None:
+    """The floor governs what the route writes: the newest frame's state yields, not the report."""
+    big = {"bigPerception": {"text": "x" * (OBSERVATION_MAX_CHARS - 200)}}
+    control = tmp_path / "control"
+    _client(control).post("/observe", json=_envelope(kind="heartbeat", observation=big))
+    assert "bigPerception" in _staged(control)["observation"], "the same frame fits on its own"
+
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell())
+    assert (
+        client.post("/observe", json=_envelope(kind="heartbeat", observation=big)).status_code
+        == 200
+    )
+    staged = _staged(tmp_path)
+    assert staged["observation"] == {"bodyReport": _farewell_report()}
+    assert staged["kind"] == "farewell"
+
+
+def test_a_frame_after_the_farewell_was_read_stages_as_an_ordinary_frame(tmp_path: Path) -> None:
+    """Only an UNREAD farewell is carried: once the mind has taken it, the report is delivered."""
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell())
+    (tmp_path / ".observation").unlink()
+    resp = client.post("/observe", json=_envelope(kind="heartbeat"))
+    assert resp.json()["superseded"] is False
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "heartbeat"
+    assert "bodyReport" not in staged["observation"]
+
+
+def test_a_heartbeat_in_flight_cannot_overwrite_a_farewell_staged_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two frames can be in the route at once, and staging is a read-modify-write.
+
+    The heartbeat finds nothing staged, stalls before it writes, and the farewell lands in that
+    gap. Without one lock around deciding and writing, the heartbeat then writes over the only
+    copy of the report, and no carry can save what it never saw. With the lock the farewell
+    waits its turn and supersedes the heartbeat instead.
+    """
+    client = _client(tmp_path)
+    real_write = app_module.write_text_atomic
+    turns = itertools.count(1)
+    heartbeat_decided = threading.Event()
+    farewell_written = threading.Event()
+
+    def stalled_write(path: Path, text: str) -> None:
+        turn = next(turns)
+        if turn == 1:
+            heartbeat_decided.set()
+            farewell_written.wait(timeout=0.5)
+        real_write(path, text)
+        if turn == 2:
+            farewell_written.set()
+
+    monkeypatch.setattr(app_module, "write_text_atomic", stalled_write)
+    statuses: dict[str, int] = {}
+
+    def post(name: str, body: dict[str, object]) -> None:
+        statuses[name] = client.post("/observe", json=body).status_code
+
+    heartbeat = threading.Thread(target=post, args=("heartbeat", _envelope(kind="heartbeat")))
+    heartbeat.start()
+    assert heartbeat_decided.wait(timeout=5), "the heartbeat never reached its write"
+    farewell = threading.Thread(target=post, args=("farewell", _farewell()))
+    farewell.start()
+    heartbeat.join(timeout=10)
+    farewell.join(timeout=10)
+
+    assert statuses == {"heartbeat": 200, "farewell": 200}
+    staged = _staged(tmp_path)
+    assert staged["kind"] == "farewell", "the heartbeat wrote over the farewell"
+    assert staged["observation"] == {"bodyReport": _farewell_report()}
+
+
+# ── what the floor costs a carried report, and what only the receiver may write ────────────
+
+
+def _padded_farewell(unit: str, pad: int) -> dict[str, object]:
+    """A farewell whose report is about ``pad`` characters long, to make the floor bind."""
+    report = _farewell_report(unit)
+    report["note"] = "x" * pad
+    return _envelope(
+        externalClientRef=unit,
+        kind="farewell",
+        observation={"bodyReport": report},
+        changedSlices=["bodyReport"],
+    )
+
+
+def test_a_producer_cannot_supply_the_slices_only_the_receiver_may_write(tmp_path: Path) -> None:
+    """A roster of earlier bodies, or a count of dropped reports, on disk must be a carry's."""
+    forged = {
+        "nearbyPerception": {"units": ["a"]},
+        "earlierBodyReports": [_farewell_report("ghost")],
+        "earlierBodyReportsShed": 9,
+    }
+    resp = _client(tmp_path).post("/observe", json=_envelope(kind="heartbeat", observation=forged))
+    assert resp.json()["slices"] == 1
+    assert _staged(tmp_path)["observation"] == {"nearbyPerception": {"units": ["a"]}}
+
+
+def test_a_forged_roster_on_a_farewell_does_not_reach_the_mind(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell("unit-1"))
+    second = _farewell("unit-2")
+    second["observation"]["earlierBodyReports"] = [_farewell_report("ghost")]  # type: ignore[index]
+    second["observation"]["earlierBodyReportsShed"] = 9  # type: ignore[index]
+    client.post("/observe", json=second)
+    observation = _staged(tmp_path)["observation"]
+    assert observation["earlierBodyReports"] == [_farewell_report("unit-1")]
+    assert "earlierBodyReportsShed" not in observation
+
+
+def test_the_changed_slices_do_not_name_a_slice_the_floor_shed(tmp_path: Path) -> None:
+    """A frame's own account of what moved must stay true of the observation it describes."""
+    big = {"bigPerception": {"text": "x" * (OBSERVATION_MAX_CHARS - 200)}}
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell())
+    client.post(
+        "/observe",
+        json=_envelope(kind="change", observation=big, changedSlices=["bigPerception"]),
+    )
+    staged = _staged(tmp_path)
+    assert "bigPerception" not in staged["observation"]
+    assert staged["changedSlices"] == ["bodyReport"]
+
+
+def test_an_earlier_report_the_floor_drops_is_counted_in_the_frame_and_in_the_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dropping a report cannot be undone; telling the mind it is gone, and the operator, can."""
+    client = _client(tmp_path)
+    with caplog.at_level(logging.INFO, logger="zakcode.server"):
+        for unit in ("unit-1", "unit-2", "unit-3"):
+            assert client.post("/observe", json=_padded_farewell(unit, 9000)).status_code == 200
+    staged = _staged(tmp_path)
+    assert staged["observation"]["bodyReport"]["unitKey"] == "unit-3"
+    assert "earlierBodyReports" not in staged["observation"]
+    assert staged["observation"]["earlierBodyReportsShed"] == 2
+    assert staged["changedSlices"] == ["bodyReport", "earlierBodyReportsShed"]
+    lines = [r.getMessage() for r in caplog.records if "perception-intake" in r.getMessage()]
+    assert len(lines) == 3
+    for line, shed in zip(lines, (0, 1, 2), strict=True):
+        assert f"reports_shed={shed}" in line, line
+
+
+def test_the_log_line_counts_the_slices_the_floor_shed_beside_a_carried_report(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    big = {"bigPerception": {"text": "x" * (OBSERVATION_MAX_CHARS - 200)}}
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell())
+    with caplog.at_level(logging.INFO, logger="zakcode.server"):
+        client.post("/observe", json=_envelope(kind="heartbeat", observation=big))
+    (line,) = [r.getMessage() for r in caplog.records if "perception-intake" in r.getMessage()]
+    assert "farewell_carried=True farewell_shed=1 reports_shed=0" in line, line
+
+
+def test_a_read_between_the_peek_and_the_write_cannot_deliver_a_carried_report_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Staging and reading are one lock, so the mind takes a carried report exactly once.
+
+    The mind reads the instant the route has looked at the staged farewell and before it has
+    written the frame that carries it forward. Without one lock the read takes the old frame,
+    the route then writes the new one with the same report in it, and the next read delivers it
+    again. With it the read waits for the write and takes the new frame, the only one left.
+    """
+    client = _client(tmp_path)
+    client.post("/observe", json=_farewell("unit-1"))
+    real_peek = app_module.peek_observation
+    readers: list[threading.Thread] = []
+    taken: list[dict[str, object] | None] = []
+
+    def peek_then_let_the_mind_read(path: Path) -> dict[str, object] | None:
+        found = real_peek(path)
+        reader = threading.Thread(target=lambda: taken.append(read_observation(path)))
+        reader.start()
+        reader.join(timeout=0.3)  # a reader the lock does not hold back finishes inside this
+        readers.append(reader)
+        return found
+
+    monkeypatch.setattr(app_module, "peek_observation", peek_then_let_the_mind_read)
+    assert client.post("/observe", json=_envelope(kind="heartbeat")).status_code == 200
+    for reader in readers:
+        reader.join(timeout=5)
+    assert not any(reader.is_alive() for reader in readers)
+
+    left_on_disk = peek_observation(tmp_path / ".observation")
+    delivered = [
+        envelope["observation"]["bodyReport"]["unitKey"]  # type: ignore[index]
+        for envelope in (*taken, left_on_disk)
+        if envelope and "bodyReport" in envelope["observation"]  # type: ignore[operator]
+    ]
+    assert delivered == ["unit-1"]
