@@ -1033,12 +1033,14 @@ def create_app(
         session that held pages. Tool calls, tool results, thinking and system frames
         are omitted (they are not what was said); each text passes through the same
         secret redaction as the watch stream. ``limit`` keeps the LAST N spoken turns.
-        Each message carries its creation time (``at``) and the response says where the
-        watch bus starts (``bus_from``) and which bus that is (``bus_epoch``, the name a watch
-        response carries): the served page draws the saved messages older than
-        the bus and lets the watch replay draw the rest, so a reopened page shows the whole
-        conversation. The literal id ``current`` resolves to the workspace's current
-        conversation (404 when there is none), like ``/watch/current``.
+        Each message carries its creation time (``at``) and the response says where the cut
+        between these messages and the watch bus falls (``bus_from``, and ``bus_since`` for the
+        watch's ``since``: where the oldest turn the bus holds whole begins, ADR-0325), whether a
+        turn is running (``running``) and which bus that is (``bus_epoch``, the name a watch
+        response carries): the served page draws the saved messages older than the cut and lets
+        the watch replay draw the rest, so a reopened page shows the whole conversation. The
+        literal id ``current`` resolves to the workspace's current conversation (404 when there is
+        none), like ``/watch/current``.
         """
         if session_id == "current":
             resolved = _current_session_id()
@@ -1064,16 +1066,36 @@ def create_app(
             )
         if limit is not None and limit >= 0:
             spoken = spoken[-limit:] if limit else []
-        # Where the in-memory watch bus starts: a page draws what is older from `messages` and
-        # lets the bus replay draw the rest (see SessionTranscript.bus_from). The bus's name goes
-        # with it, read from the same bus object, so the page can tell if the watch is another.
+        # The cut between `messages` and the in-memory watch bus falls where the oldest turn the
+        # bus holds whole begins, so no turn is drawn half from each (see SessionTranscript,
+        # ADR-0325). The bus's name goes with it, read from the same bus object, so the page can
+        # tell if the watch is another. `latest` is read first: a turn starting meanwhile lands
+        # after it, in the replay.
         bus = event_bus_registry.get(session.id)
+        running = session.id in inflight
+        bus_from: float | None = None
+        bus_since: int | None = None
+        if bus is not None:
+            latest = bus.latest_cursor
+            start = bus.oldest_where(
+                lambda event: (
+                    isinstance(event, WatchMarkerRequest) and event.event == "user_message"
+                )
+            )
+            if start is not None:
+                bus_since, bus_from = start[0] - 1, start[1]
+            elif running:
+                bus_from = bus.oldest_at  # the call in progress is in the bus alone: replay it
+            elif latest:
+                bus_since = latest  # the tail of an ended, saved turn: drawn from here alone
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
             message_count=len(session.messages),
-            bus_from=bus.oldest_at if bus is not None else None,
+            bus_from=bus_from,
+            bus_since=bus_since,
             bus_epoch=bus.epoch if bus is not None else None,
+            running=running,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)
@@ -1217,6 +1239,14 @@ def create_app(
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             try:
+                # The user's line goes on the watch bus first, as the say consumer puts it there:
+                # a page watching this chat draws the turn's question, and the reopened page's
+                # cut between the saved conversation and the bus finds where the turn began
+                # (ADR-0325). Only the bus: the turn-driver's own stream is unchanged.
+                with contextlib.suppress(Exception):
+                    event_bus_registry.get_or_create(session.id).publish(
+                        WatchMarkerRequest(event="user_message", text=request.message)
+                    )
                 slash = await dispatch_slash(agent, request.message)
                 if slash.refusal:
                     # No turn: the refusal's terminal frames ARE the stream (and reach the
@@ -1387,9 +1417,15 @@ def create_app(
                 frame = {**safe.model_dump(), "at": round(at, 3)}
                 yield {"id": str(cursor), "data": json.dumps(frame)}
 
+        # Where this bus's replay starts: a client resuming after a cursor older than the one
+        # before it has missed what the ring evicted, and starts over instead (ADR-0325).
+        headers = {"X-Bus-Epoch": bus.epoch}
+        oldest = bus.oldest_cursor
+        if oldest is not None:
+            headers["X-Bus-Oldest"] = str(oldest)
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
-        return EventSourceResponse(event_source(), ping=15, headers={"X-Bus-Epoch": bus.epoch})
+        return EventSourceResponse(event_source(), ping=15, headers=headers)
 
     @app.post("/watch/{session_id}/marker", status_code=201)
     def publish_watch_marker(session_id: str, request: WatchMarkerRequest) -> dict[str, Any]:
@@ -1482,7 +1518,11 @@ def create_app(
 
         The marker is written beside itself and moved into place, so no reader finds it empty: a
         turn that read an empty marker would start a conversation of its own. Raises OSError
-        when it cannot be written, with the marker as it was."""
+        when it cannot be written, with the marker as it was.
+
+        A chat made current AGAIN still holds, in its own bus, the rotation its pages were told
+        when it was left. That news is over, and it goes: replayed to a page opening the chat, it
+        read as the chat restarting under the page, which ended the turn on screen (ADR-0325)."""
         previous = _current_session_id()
         if previous == session.id:
             return
@@ -1501,6 +1541,13 @@ def create_app(
                 bus.publish(
                     WatchMarkerRequest(event="session_rotated", reason="another chat was opened")
                 )
+        own = event_bus_registry.get(session.id)
+        if own is not None:
+            own.forget(
+                lambda event: (
+                    isinstance(event, WatchMarkerRequest) and event.event == "session_rotated"
+                )
+            )
 
     def _record_run_stop_reason(reason: str) -> None:
         """Record this run's ending beside the session it belongs to.

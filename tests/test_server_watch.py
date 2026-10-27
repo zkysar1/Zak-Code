@@ -41,7 +41,9 @@ from zakcode.events import (
     AgentUsage,
 )
 from zakcode.messages import Message
+from zakcode.server import app as server_app
 from zakcode.server.app import create_app
+from zakcode.server.event_bus import EventBusRegistry
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
 
@@ -180,13 +182,21 @@ def _unstamped(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) -> None:
     sid = await _run_turn(live_url)
-    # 5 raw events emitted; the AgentUsage one is dropped → 4 SafeEvent frames.
-    frames = _unstamped(await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4))
-    assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
-    assert frames[0] == {"event": "text", "text": CANNED}
+    # The user's line, then 5 raw events; the AgentUsage one is dropped → 5 SafeEvent frames.
+    frames = _unstamped(await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5))
+    assert [f["event"] for f in frames] == [
+        "user_message",
+        "text",
+        "tool_summary",
+        "tool_summary",
+        "done",
+    ]
+    # A /chat/stream turn puts the user's line on the bus first, as a say does (ADR-0325).
+    assert frames[0] == {"event": "user_message", "text": "hi"}
+    assert frames[1] == {"event": "text", "text": CANNED}
     # The terminal's call and receipt lines, from the name and a COUNT (ADR-0220): the
     # output ("wrote n.txt") and the argument ("n.txt") never cross, as the next test pins.
-    assert frames[1] == {
+    assert frames[2] == {
         "event": "tool_summary",
         "name": "write_file",
         "status": "running",
@@ -194,7 +204,7 @@ async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) 
         "display_name": "Write",
         "receipt": "",
     }
-    assert frames[2] == {
+    assert frames[3] == {
         "event": "tool_summary",
         "name": "write_file",
         "status": "completed",
@@ -202,7 +212,7 @@ async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) 
         "display_name": "Write",
         "receipt": "Written",
     }
-    assert frames[3] == {
+    assert frames[4] == {
         "event": "done",
         "stop_reason": "completed",
         "iterations": 2,
@@ -212,7 +222,7 @@ async def test_watch_replays_buffered_turn_events_as_safe_events(live_url: str) 
 
 async def test_watch_whitelist_never_leaks_tool_args_or_output(live_url: str) -> None:
     sid = await _run_turn(live_url)
-    blob = json.dumps(await _watch_frames(live_url, f"/watch/{sid}?since=0", count=4))
+    blob = json.dumps(await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5))
     # SafeToolSummary carries name+status only — the tool's arguments and output are stripped.
     assert SECRET_ARG_PATH not in blob
     assert TOOL_OUTPUT not in blob
@@ -220,7 +230,8 @@ async def test_watch_whitelist_never_leaks_tool_args_or_output(live_url: str) ->
 
 async def test_watch_since_cursor_resumes_after_it(live_url: str) -> None:
     sid = await _run_turn(live_url)
-    # Cursors 1..5 (usage=cursor 3). since=3 replays 4,5 → tool_result(completed) + done.
+    # Cursors 1..6 (the user's line=1, usage=4). since=3 replays 4..6 → usage (dropped),
+    # tool_result(completed) + done.
     frames = await _watch_frames(live_url, f"/watch/{sid}?since=3", count=2)
     assert [f["event"] for f in frames] == ["tool_summary", "done"]
     assert frames[0]["status"] == "completed"
@@ -251,8 +262,34 @@ async def test_watch_ignores_a_cursor_that_belongs_to_another_bus(live_url: str)
     never held a cursor from (a server restarted since): the whole buffer replays, not the
     two events past a number the new bus happens to reach."""
     sid = await _run_turn(live_url)
-    frames = await _watch_frames(live_url, f"/watch/{sid}?since=3&epoch=another-bus", count=4)
-    assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=3&epoch=another-bus", count=5)
+    assert [f["event"] for f in frames] == [
+        "user_message",
+        "text",
+        "tool_summary",
+        "tool_summary",
+        "done",
+    ]
+
+
+async def test_watch_names_the_oldest_cursor_its_bus_still_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page resuming after a cursor this bus has since evicted cannot pick up where it was:
+    what followed its cursor is gone. The response names the oldest cursor the bus still holds
+    (``X-Bus-Oldest``), so such a page knows to start over; a bus holding nothing names none
+    (ADR-0325)."""
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=3))
+    with _LiveServer(_make_app(tmp_path)) as base_url:
+        sid = await _run_turn(base_url)  # the user's line and 5 events: cursors 1..6, 4..6 kept
+        timeout = httpx.Timeout(10.0, read=5.0)
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac:
+            fresh = (await ac.post("/sessions")).json()["id"]
+            async with ac.stream("GET", f"/watch/{sid}") as resp:
+                assert resp.headers.get("x-bus-oldest") == "4"
+            async with ac.stream("GET", f"/watch/{fresh}") as resp:
+                assert resp.status_code == 200
+                assert resp.headers.get("x-bus-oldest") is None
 
 
 async def test_watch_resumes_at_a_cursor_that_belongs_to_this_bus(live_url: str) -> None:
@@ -305,9 +342,15 @@ async def test_watch_current_alias_resolves_active_session(live_url: str, tmp_pa
     sid = await _run_turn(live_url)
     (tmp_path / ".current-session").write_text(sid, encoding="utf-8")
     # Same buffered frames as watching the concrete id — the alias is transparent.
-    frames = _unstamped(await _watch_frames(live_url, "/watch/current?since=0", count=4))
-    assert [f["event"] for f in frames] == ["text", "tool_summary", "tool_summary", "done"]
-    assert frames[0] == {"event": "text", "text": CANNED}
+    frames = _unstamped(await _watch_frames(live_url, "/watch/current?since=0", count=5))
+    assert [f["event"] for f in frames] == [
+        "user_message",
+        "text",
+        "tool_summary",
+        "tool_summary",
+        "done",
+    ]
+    assert frames[1] == {"event": "text", "text": CANNED}
 
 
 async def test_watch_current_with_no_active_session_is_404(live_url: str) -> None:
@@ -327,7 +370,7 @@ async def test_watch_requires_bearer_when_auth_configured(tmp_path: Path) -> Non
             assert (await ac.get(f"/watch/{sid}")).status_code == 401
         # With the token → streams the buffered frames.
         frames = await _watch_frames(base_url, f"/watch/{sid}?since=0", count=4, token=token)
-        assert frames[0]["event"] == "text"
+        assert frames[0]["event"] == "user_message"
 
 
 # ── watch markers (POST /watch/{session_id}/marker → session_rotated meta-event) ──────
@@ -336,8 +379,8 @@ async def test_watch_requires_bearer_when_auth_configured(tmp_path: Path) -> Non
 async def test_watch_marker_publishes_session_rotated_to_observers(live_url: str) -> None:
     """POST /watch/{sid}/marker publishes a session_rotated meta-event onto the session's bus;
     a since=0 watcher then sees it as the allow-listed SafeSessionRotated frame. The turn buffers
-    5 raw events (the AgentUsage one is dropped at projection → 4 safe frames), so the marker is
-    the 5th safe frame."""
+    its user's line and 5 raw events (the AgentUsage one is dropped at projection → 5 safe
+    frames), so the marker is the 6th safe frame."""
     sid = await _run_turn(live_url)  # buffers the turn's events AND creates the bus
     async with httpx.AsyncClient(base_url=live_url, timeout=10.0) as ac:
         resp = await ac.post(
@@ -346,9 +389,9 @@ async def test_watch_marker_publishes_session_rotated_to_observers(live_url: str
         )
         assert resp.status_code == 201
         body = resp.json()
-        assert body["published"] is True and body["cursor"] == 6  # 5 turn events + the marker
+        assert body["published"] is True and body["cursor"] == 7  # 6 turn events + the marker
 
-    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5)
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=6)
     rotated = [f for f in frames if f.get("event") == "session_rotated"]
     assert len(rotated) == 1
     assert rotated[0]["reason"] == "daemon restarted; session re-minted"
@@ -391,7 +434,7 @@ async def test_watch_marker_publishes_user_message_to_observers(live_url: str) -
         assert resp.status_code == 201
         assert resp.json()["published"] is True
 
-    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=5)
+    frames = await _watch_frames(live_url, f"/watch/{sid}?since=0", count=6)
     questions = [f for f in frames if f.get("event") == "user_message"]
-    assert len(questions) == 1
-    assert questions[0]["text"] == "what did you learn about volcanoes?"
+    # The turn's own line comes first (ADR-0325); the driver's marker is the one published after.
+    assert [q["text"] for q in questions] == ["hi", "what did you learn about volcanoes?"]

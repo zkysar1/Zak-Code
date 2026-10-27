@@ -571,7 +571,9 @@
   let currentId = null;       // the workspace's ACTIVE chat (where sends go); may differ from sessionId (ADR-0319)
   let lastCursor = null;
   let busEpoch = null;       // the watch bus the history and lastCursor belong to (ADR-0289); null until named
+  let replayFloor = 0;       // frames at or below this cursor were drawn from the saved conversation (ADR-0325)
   let shown = 0;             // counts the chats opened; work begun for an earlier one draws nothing (ADR-0319)
+  let viewing = 0;           // counts the chats asked for; only the last one asked for opens (ADR-0325)
   let watchAbort = null;     // ends the open watch connection when another chat opens
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
@@ -1246,7 +1248,8 @@
     follow();
   }
 
-  // On done / error-frame / interrupt / socket close: nothing may pulse forever.
+  // On done / error-frame / interrupt / starting over: nothing may pulse forever. Not on a dropped
+  // watch connection: its resume brings the call's result (ADR-0325).
   function abandonPending() {
     for (const entry of toolCards.values()) {
       entry.dot.classList.remove("pending");
@@ -1269,18 +1272,19 @@
   // A turn's end: done, the interrupted status, an error frame, a session restart.
   function endTurn() {
     // The turn's clock and meter stop with it. The next user_message restarts them; a
-    // turn that opens without one (a /chat/stream turn) is not timed or metered from
-    // this turn's start, so its footer leaves the duration out instead of spanning two.
+    // turn that opens without one (joined after the bus evicted it) is not timed or metered
+    // from this turn's start, so its footer leaves the duration out instead of spanning two.
     turnAt = null;
     turnUsage = emptyUsage();
     resetTurnView();
   }
 
-  // The view's per-turn state, reset when a turn ends AND when the watch connection
-  // drops. A dropped connection is not a turn end: the resume replays the same turn from
-  // its cursor, and that turn's done frame still needs the clock and meter above, so
-  // only the view resets here. (Resetting the clock on reconnect printed the footer of
-  // every turn that survived a reconnect without its duration.)
+  // The view's per-turn state, reset when a turn ends. Not when the watch connection drops: that
+  // is not a turn end, and the resume goes on with the same turn from its cursor. Resetting the
+  // view there hid the approval card for good (its action_required lies behind the cursor, so no
+  // resume replays it), marked a call still running "interrupted" so its result drew a row of its
+  // own, and put Send where Stop belongs (ADR-0325); resetting the clock there too had printed the
+  // footer of every turn that survived a reconnect without its duration.
   function resetTurnView() {
     turnActive = false;
     hideStatus();
@@ -1549,17 +1553,22 @@
   // The saved conversation, drawn BEFORE the live stream joins. The watch bus is in memory: it
   // starts empty on every server start and keeps only its last 1000 events, so a page that
   // relied on it alone drew an empty conversation (or only its newest turns) for one that was
-  // still saved. The saved transcript is the source for everything OLDER than the bus's oldest
-  // retained event (bus_from); the replay watchLoop() opens draws the rest, so no message is
-  // drawn twice and none is missed. Returns the name of the bus that cut was made against (null
-  // when there was none, or the server names none): a bus replaced before the watch opens holds
-  // none of the turns the cut left to it, and the watch response then names another (ADR-0289).
+  // still saved. The cut falls on a TURN (ADR-0325): the saved transcript is the source for
+  // everything older than the oldest turn the bus holds whole (bus_from), and the replay
+  // watchLoop() opens resumes after bus_since, where that turn begins, so no turn is drawn half
+  // from each, no message twice and none missed. A replay that starts before the cut anyway (a
+  // bus replaced under the page sends its whole buffer, startOver()) skips what lies at or below
+  // it. Returns the name of the bus that cut was made against (null when there was none, or the
+  // server names none): a bus replaced before the watch opens holds none of the turns the cut
+  // left to it, and the watch response then names another (ADR-0289).
   async function renderHistory(gen) {
     try {
       const resp = await fetch("/sessions/" + sessionId + "/transcript");
       if (!resp.ok) throw new Error("transcript " + resp.status);
       const t = await resp.json();
       if (gen !== shown) return null;  // another chat opened while this one's history was on its way
+      lastCursor = t.bus_since ?? null;
+      replayFloor = t.bus_since ?? 0;
       assistantBody = null;
       for (const m of t.messages) {
         if (t.bus_from !== null && m.at !== null && m.at >= t.bus_from) continue;
@@ -1572,6 +1581,14 @@
           onTextDelta(m.text);
           assistantBody = null;  // the next saved message opens its own row
         }
+      }
+      if (t.running) {
+        // A turn is under way, and the replay may not show it starting (a long turn's user line
+        // is evicted from the bus first): show it running now, so Stop is there. Its user_message,
+        // if replayed, or its done frame takes it on from here (ADR-0325).
+        turnActive = true;
+        setSendMode(true);
+        setStatus("thinking…");
       }
       return t.bus_epoch || null;
     } catch (e) {
@@ -1586,7 +1603,9 @@
   // stayed open. Resuming at the old cursor would skip that many of the new bus's first events,
   // and whatever this page had not drawn yet died with the old bus. So the page starts over as a
   // freshly opened one does: the start screen, the saved conversation older than the new bus,
-  // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay.
+  // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay. It
+  // starts over on the same bus too when that bus no longer holds what came after the cursor
+  // (X-Bus-Oldest is past it): what the ring evicted is in the saved conversation (ADR-0325).
   async function startOver(gen) {
     resetView();
     await renderHistory(gen);  // the watch response that sent us here named the bus; watchLoop() keeps it
@@ -1599,6 +1618,7 @@
   function resetView() {
     log.replaceChildren(...(emptyState ? [emptyState] : []));
     lastCursor = null;
+    replayFloor = 0;
     lastPlanKey = "";
     assistantText = "";
     thinkingText = "";
@@ -1619,6 +1639,7 @@
     document.getElementById("chip-model").textContent = info.model;
     document.getElementById("chip-session").textContent = id8;
     document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
+    updateComposerState();  // the banner is about the chat on screen: it moves with it, list or no list (ADR-0325)
     resetView();
     const epoch = await renderHistory(gen);  // the bus the history was cut against: see startOver()
     if (gen !== shown) return;
@@ -1660,12 +1681,17 @@
         // A server that names no bus (an older one) never differs, so it never resets the page.
         const epoch = resp.headers.get("X-Bus-Epoch");
         if (epoch !== null) {
-          if (busEpoch !== null && epoch !== busEpoch) await startOver(gen);
+          // The same bus may have evicted what came after the cursor while the page was away:
+          // its oldest event is then past the next one, and the resume would go on without it.
+          const oldest = resp.headers.get("X-Bus-Oldest");
+          const evicted = lastCursor !== null && oldest !== null && Number(oldest) > Number(lastCursor) + 1;
+          if ((busEpoch !== null && epoch !== busEpoch) || evicted) await startOver(gen);
           if (gen !== shown) return;
           busEpoch = epoch;
         }
         await readSse(resp.body, (id, data) => {
           if (gen !== shown) return;  // a frame of the chat the page has left
+          if (id && Number(id) <= replayFloor) return;  // drawn from the saved conversation (ADR-0325)
           if (id) lastCursor = id;
           try { onFrame(JSON.parse(data)); }
           catch { add(errCard("[bad frame]")); }
@@ -1673,7 +1699,10 @@
       } catch (e) { /* fall through to reconnect */ }
       if (gen !== shown) return;  // another chat opened: its own watch is on its way
       setConn("connecting", "reconnecting");
-      resetTurnView();
+      // The turn on screen stays: a dropped connection is not a turn end. The resume goes on from
+      // the cursor, so a running tool card, the approval it waits on and Stop are still the turn's;
+      // a turn that ended meanwhile ends with the done frame the resume brings, and a bus that
+      // cannot go on from the cursor starts the page over (ADR-0325).
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
@@ -1726,8 +1755,11 @@
   // moving the workspace's current conversation. Never busy-gated, so a tab always opens — even
   // while an agent's turn holds the workspace. Making a chat active (the idle-gated PUT below) is
   // the only thing that changes where messages go. New chat (null) creates one AND makes it active.
+  // The last chat asked for is the one that opens: a long chat answers slower than a short one,
+  // so an answer that comes back after a later click (or a switch) opens nothing (ADR-0325).
   async function viewChat(target) {
     closeChats();
+    const ask = ++viewing;
     if (target === null) { switchTo(null); return; }
     if (target === sessionId) return;
     let info;
@@ -1736,9 +1768,10 @@
       if (!resp.ok) throw new Error("HTTP " + resp.status);
       info = await resp.json();
     } catch (e) {
-      add(errCard("could not open the chat: " + e.message));
+      if (ask === viewing) add(errCard("could not open the chat: " + e.message));
       return;
     }
+    if (ask !== viewing) return;  // another chat was asked for meanwhile
     await openSession(info);
     refreshChats();   // refreshes currentId + the composer state
   }
@@ -1756,6 +1789,7 @@
   // message waits. A plain tab click VIEWS (viewChat) and never comes here; only this moves the marker.
   async function switchTo(target) {
     closeChats();
+    ++viewing;   // a chat clicked before this opens nothing when it answers (see viewChat)
     if (target !== null && target === currentId) return;   // already the active chat
     if (turnActive) { setStatus("a turn is running — stop it or let it finish, then switch"); return; }
     let resp;
@@ -1777,6 +1811,7 @@
     if (!resp.ok) { add(errCard("could not make the chat active: HTTP " + resp.status)); return; }
     const info = await resp.json();
     currentId = info.id;
+    updateComposerState();  // openSession() does nothing when the chat made active is the one on screen
     await openSession(info);
     refreshChats();
     input.focus();

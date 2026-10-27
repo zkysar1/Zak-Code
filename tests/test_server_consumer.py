@@ -288,6 +288,40 @@ async def test_web_page_path_say_to_full_watch(tmp_path: Path) -> None:
     assert frames[-1]["event"] == "done"
 
 
+async def test_a_chat_stream_turn_puts_the_users_line_on_the_watch_bus_too(tmp_path: Path) -> None:
+    """The terminal's server mode runs its turns over POST /chat/stream, not the say inbox, and
+    a watcher of that chat sees the same frames a say's turn gives it: the user's line first,
+    exactly once, then the turn (ADR-0325). The page drew such a turn as a reply with no
+    question, and a reopened page could not find where the turn began."""
+    app, _ = _build(tmp_path)
+    with _LiveServer(app) as base_url:
+        timeout = httpx.Timeout(10.0, read=5.0)
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac:
+            sid = (await ac.post("/sessions")).json()["id"]
+            body = {"message": "hello there", "session_id": sid}
+            async with ac.stream("POST", "/chat/stream", json=body) as turn:
+                assert turn.status_code == 200
+                async for _ in turn.aiter_lines():
+                    pass  # the turn-driver's own stream; the watch below is the claim
+
+            frames: list[dict[str, Any]] = []
+            async with ac.stream("GET", f"/watch/{sid}?full=1") as watch:
+                assert watch.status_code == 200
+                async for line in watch.aiter_lines():
+                    if line.startswith("data:"):
+                        frames.append(json.loads(line[len("data:") :].strip()))
+                        if any(f.get("event") == "done" for f in frames):
+                            break
+
+    stamps = [f.pop("at") for f in frames]
+    assert stamps == sorted(stamps)
+    assert frames[0]["event"] == "user_message"
+    assert frames[0]["text"] == "hello there"
+    assert sum(1 for f in frames if f.get("event") == "user_message") == 1
+    assert {"event": "text", "text": "ok"} in frames
+    assert frames[-1]["event"] == "done"
+
+
 def test_current_session_heals_a_dangling_marker(tmp_path: Path) -> None:
     """A marker naming a deleted session must be removed on the 404 (fresh-eyes F-2):
     POST /sessions refuses to overwrite an existing marker, so without the heal the

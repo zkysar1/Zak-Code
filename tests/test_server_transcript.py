@@ -10,6 +10,7 @@ TEXT only, tool/thinking/system frames omitted, secrets redacted like the watch 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,15 @@ import httpx
 
 from zakcode import messages as messages_mod
 from zakcode.config import Settings
+from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.server import app as server_app
 from zakcode.server import event_bus
 from zakcode.server.app import create_app
+from zakcode.server.wire import WatchMarkerRequest
+from zakcode.session.say_inbox import say_path, write_say
 from zakcode.session.store import Session, SessionStore
+from zakcode.usage import Usage
 
 
 def _build(tmp_path: Path) -> tuple[Any, SessionStore]:
@@ -154,8 +159,9 @@ def test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number(
     message in the pair that drew a turn twice on Windows CI. The message is a real ``Message``,
     stamped by the messages module, saved, and read back by the real route, which turns its ISO
     string into epoch seconds. The event is a real publish on the bus the route reports
-    ``bus_from`` from. The stand-in clock honours ``tz``, so a stamp cut from another clock source,
-    or one that leaves the zone out, lands on a different number and the test fails on the value.
+    ``bus_from`` from: the user line that begins the turn, where the cut falls (ADR-0325). The
+    stand-in clock honours ``tz``, so a stamp cut from another clock source, or one that leaves the
+    zone out, lands on a different number and the test fails on the value.
     """
     instant = datetime(2026, 10, 14, 0, 44, 3, 985429, tzinfo=UTC)
     assert instant.timestamp() == 1791938643.985429
@@ -171,10 +177,110 @@ def test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number(
     session = Session(cwd=str(tmp_path), model="scripted/test")
     session.messages = [Message.user("the newest turn")]
     store.save(session)
-    registry.get_or_create(session.id).publish("the bus's first event")
+    registry.get_or_create(session.id).publish(
+        WatchMarkerRequest(event="user_message", text="the newest turn")
+    )
 
     body = _get(app, f"/sessions/{session.id}/transcript").json()
     at = body["messages"][0]["at"]
     assert body["bus_from"] == instant.timestamp()  # the bus read the frozen clock
     assert at == body["bus_from"]  # the same reading is the same number
     assert at >= body["bus_from"]  # so the page counts the message as the bus's
+
+
+def test_the_cut_falls_where_the_oldest_turn_the_bus_holds_whole_begins(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The bus keeps only its last N events, so its oldest one is often in the middle of a turn.
+    Cut there, a reply that began before it was hidden from the saved conversation and drawn from
+    the bus without its beginning. The cut falls where the oldest turn the bus holds WHOLE begins,
+    its user line: the page draws everything older from here and resumes the watch after
+    ``bus_since``, so the replay starts at that line (ADR-0325)."""
+    registry = event_bus.EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    app, store = _build(tmp_path)
+    session = Session(cwd=str(tmp_path), model="scripted/test")
+    session.messages = [Message.user("first"), Message.assistant_text("the first reply")]
+    store.save(session)
+    bus = registry.get_or_create(session.id)
+    bus.publish(AgentTextDelta(text="reply"))  # the tail of the first turn: its start is gone
+    bus.publish(AgentDone(stop_reason="completed", iterations=1, usage=Usage()))
+    start = bus.publish(WatchMarkerRequest(event="user_message", text="second"))
+    bus.publish(AgentTextDelta(text="the second reply"))
+    stamps = {cursor: at for cursor, _, at in list(bus._buffer)}
+
+    body = _get(app, f"/sessions/{session.id}/transcript").json()
+    assert body["bus_since"] == start - 1
+    assert body["bus_from"] == stamps[start]
+    assert body["bus_from"] > stamps[1]  # not the oldest event the bus holds
+    assert body["running"] is False
+
+
+class _LongTurn:
+    """A turn that streams more than a ring of four holds, then waits to be let go. It saves its
+    reply after the stream, as the agent loop does."""
+
+    def __init__(self, session: Session, gate: asyncio.Event) -> None:
+        self.session = session
+        self._gate = gate
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self.session.add_message(Message.user(user_text))
+        parts = [f"part{i} " for i in range(6)]
+        for part in parts:
+            yield AgentTextDelta(text=part)
+        await self._gate.wait()
+        self.session.add_message(Message.assistant_text("".join(parts)))
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def test_a_turn_longer_than_the_bus_is_replayed_while_it_runs_and_drawn_from_disk_once_it_ends(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A turn whose user line the bus has already evicted. While it runs, the call in progress
+    is in the bus alone, so the replay draws the bus's tail as before, and ``running`` says a
+    turn is under way that the replay may not show starting. Once it has ended the whole turn is
+    saved, so every saved message is drawn from here and the replay starts after the bus
+    (ADR-0325)."""
+    monkeypatch.setattr(
+        server_app, "EventBusRegistry", lambda: event_bus.EventBusRegistry(maxlen=4)
+    )
+
+    async def go() -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        gate = asyncio.Event()
+        settings = Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        )
+        app = create_app(
+            settings=settings,
+            store=SessionStore(base_dir=tmp_path / "sessions"),
+            agent_factory=lambda session, model, prompter: _LongTurn(session, gate),
+        )
+        assert write_say(say_path(tmp_path), "a long one")
+        turn = asyncio.create_task(app.state.consume_one_say())
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            running = None
+            for _ in range(500):
+                resp = await client.get("/sessions/current/transcript")
+                if resp.status_code == 200 and resp.json().get("running"):
+                    running = resp.json()
+                    break
+                await asyncio.sleep(0.01)
+            gate.set()
+            await turn
+            ended = (await client.get("/sessions/current/transcript")).json()
+        return running, ended
+
+    running, ended = asyncio.run(go())
+
+    assert running is not None, "the transcript never said a turn was running"
+    assert running["bus_since"] is None  # the whole tail replays: it holds the call in progress
+    assert running["bus_from"] is not None
+    assert ended["running"] is False
+    assert ended["bus_from"] is None  # every saved message is drawn from the transcript
+    assert ended["bus_since"] == 8  # user line + six parts + done: the replay starts after them
+    assert [m["text"] for m in ended["messages"]] == [
+        "a long one",
+        "part0 part1 part2 part3 part4 part5 ",
+    ]

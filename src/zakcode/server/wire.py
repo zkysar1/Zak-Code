@@ -168,7 +168,9 @@ class WatchMarkerRequest(BaseModel):
     short human-facing note and ``text`` the user-message body (both secret-redacted at
     projection). Published by the sidecar-driver via
     :meth:`~zakcode.server.client.ServerClient.publish_watch_marker` /
-    :meth:`~zakcode.server.client.ServerClient.publish_user_message`."""
+    :meth:`~zakcode.server.client.ServerClient.publish_user_message`. A turn the server runs (a
+    say, ``POST /chat/stream``) puts its own ``user_message`` on the bus (ADR-0325): one posted
+    here for such a turn shows its line twice."""
 
     event: Literal["session_rotated", "user_message"] = "session_rotated"
     reason: str = ""
@@ -381,22 +383,39 @@ class SessionTranscript(BaseModel):
     (every stored message), so a consumer can tell "short transcript" from "short
     session".
 
+    The cut between this route and the session's watch bus falls on a TURN, so no turn is drawn
+    half from each (ADR-0325). The bus keeps only its last events, and a reply that began before
+    the oldest of them would otherwise be hidden here and drawn from the bus without its start.
+
     ``bus_from`` is the publish stamp (epoch seconds, read the way a message's ``at`` is, so an
-    event and a message made in the same instant carry the same number) of the oldest event the
-    session's watch bus still holds, ``None`` when it holds none. A message with ``at`` at or
-    after it is in that bus's replay; one before it is only here. A page draws the second kind
-    from this route and lets the replay draw the first, so a reopened page shows the whole
-    conversation without drawing any message twice.
+    event and a message made in the same instant carry the same number) of the user line that
+    begins the oldest turn the bus holds whole. A message with ``at`` at or after it is in that
+    bus's replay; one before it is only here. A page draws the second kind from this route and
+    lets the replay draw the first, so a reopened page shows the whole conversation without
+    drawing any message twice. ``bus_since`` is the cursor the page's watch resumes after (its
+    ``since``), so the replay starts at that same line.
+
+    When the bus holds no turn's start, the turn its events belong to has ended or is still
+    running. Ended, it is saved: ``bus_from`` is ``None``, every message is drawn from here, and
+    ``bus_since`` is the bus's newest cursor, so the replay draws none of the tail again. Running,
+    the call in progress is in the bus alone: ``bus_from`` is the stamp of the bus's oldest event
+    and ``bus_since`` is ``None``, so the replay draws the bus's tail. With no bus, or an empty
+    one, both are ``None``.
+
+    ``running`` says a turn is under way on this session here, which the replay may not show
+    starting (its user line evicted), so the page shows it as running from the start.
 
     ``bus_epoch`` names that bus (the ``X-Bus-Epoch`` its watch response carries), ``None`` when
-    there is no bus. The cut at ``bus_from`` holds only against that bus, so a page that opens the
-    watch and is answered by another one (a restart in between) knows to cut again (ADR-0289)."""
+    there is no bus. The cut holds only against that bus, so a page that opens the watch and is
+    answered by another one (a restart in between) knows to cut again (ADR-0289)."""
 
     session_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
     message_count: int = 0
     bus_from: float | None = None
+    bus_since: int | None = None
     bus_epoch: str | None = None
+    running: bool = False
 
 
 class ToolInfo(BaseModel):

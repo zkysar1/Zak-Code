@@ -86,6 +86,8 @@ class ServerClient:
         reply streams, so the shared transcript shows the question as well as the answer
         (the watch/talk unification). Raises on a non-2xx like the other calls — the driver
         decides whether to swallow transport errors (a marker must never break the serve loop).
+        Not for a turn run through :meth:`astream_turn`: ``POST /chat/stream`` puts that turn's
+        line on the bus itself (ADR-0325), and this one would show it twice.
         """
         resp = await self._http().post(
             f"/watch/{session_id}/marker",

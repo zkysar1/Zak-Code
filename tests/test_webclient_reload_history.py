@@ -20,7 +20,7 @@ import json
 import re
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,26 @@ class _EchoAgent:
         yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
 
 
-def _app(workspace: Path) -> Any:
+class _PartsAgent:
+    """Streams its reply in six parts and saves it after the stream, as the agent loop does: a
+    reply is a saved message only once its last part is out."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self.session.add_message(Message.user(user_text))
+        for part in _parts(user_text):
+            yield AgentTextDelta(text=part)
+        self.session.add_message(Message.assistant_text("".join(_parts(user_text))))
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+
+def _parts(text: str) -> list[str]:
+    return [f"{text}-{i} " for i in range(6)]
+
+
+def _app(workspace: Path, agent: Callable[[Session], Any] = _EchoAgent) -> Any:
     settings = Settings(
         default_model="scripted/test", context_window=8192, workspace_root=workspace
     )
@@ -63,7 +82,7 @@ def _app(workspace: Path) -> Any:
     return create_app(
         settings=settings,
         store=store,
-        agent_factory=lambda session, model, prompter: _EchoAgent(session),
+        agent_factory=lambda session, model, prompter: agent(session),
     )
 
 
@@ -200,6 +219,37 @@ def test_a_page_reopened_when_the_bus_kept_only_the_newest_turn_draws_the_older_
             *_ONE_AND_TWO,
             ("user", "three"),
             ("assistant", "echo three"),
+        ]
+
+
+def test_a_page_reopened_on_a_turn_longer_than_the_bus_draws_its_reply_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The turn publishes eight events (its line, six parts, done), so a ring of four holds its last
+    # three parts and done: where the turn began is gone from the bus. The page hid the saved reply
+    # (newer than the bus's oldest event) and drew the bus's three parts as the reply (ADR-0325).
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=4))
+    with _LiveServer(_app(tmp_path, _PartsAgent)) as base:
+        _converse(base, ["one"])
+        assert _open_page(base, tmp_path, want=2) == [
+            ("user", "one"),
+            ("assistant", "".join(_parts("one"))),
+        ]
+
+
+def test_a_page_reopened_on_a_bus_that_starts_inside_a_turn_joins_the_bus_at_the_next_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two turns of eight events in a ring of ten: the bus starts on the first turn's last part. That
+    # turn is drawn from the saved session and the second from the bus, each once and whole.
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=10))
+    with _LiveServer(_app(tmp_path, _PartsAgent)) as base:
+        _converse(base, ["one", "two"])
+        assert _open_page(base, tmp_path, want=4) == [
+            ("user", "one"),
+            ("assistant", "".join(_parts("one"))),
+            ("user", "two"),
+            ("assistant", "".join(_parts("two"))),
         ]
 
 
