@@ -46,6 +46,7 @@ from zakcode.artifacts import ArtifactRef
 from zakcode.background import BackgroundTask
 from zakcode.config import zakcode_home
 from zakcode.messages import Message
+from zakcode.session.atomic_write import replace_retrying
 from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
 from zakcode.wakeup import Wakeup
@@ -422,6 +423,11 @@ class SessionStore:
         rendering or writing fails partway, the temp file is cleaned up and any
         previously stored session file is left intact -- no partial/garbage file
         survives a failed save.
+
+        On Windows the rename is refused while a reader holds the file open (a
+        page loading the conversation), so it is retried (``replace_retrying``,
+        ADR-0326). A served turn starts from the file, so a save that gave up
+        lost its turn.
         """
         if not _is_safe_session_id(session.id):
             raise ValueError(f"unsafe session id {session.id!r} (would escape the store dir)")
@@ -439,7 +445,7 @@ class SessionStore:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(tmp_path, path)
+            replace_retrying(tmp_path, path)
         except BaseException:
             # Best-effort cleanup of the partial temp file; never touch the real
             # file. Swallow cleanup errors so the original failure propagates.

@@ -7,6 +7,8 @@ All tests are hermetic: they operate purely under ``tmp_path`` and use
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,6 +20,7 @@ from zakcode.messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from zakcode.session import atomic_write
 from zakcode.session.store import (
     CURRENT_SCHEMA_VERSION,
     Session,
@@ -255,6 +258,74 @@ def test_save_failure_during_replace_cleans_temp(
     # No target file, and the temp artifact must be cleaned up.
     assert not (tmp_path / "r.json").exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_save_retries_a_rename_refused_while_a_reader_has_the_file_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows refuses a rename onto a file a reader holds open (a page loading the
+    # conversation) and lets it through once the reader is done. A save that gave up at
+    # the first refusal lost the turn (ADR-0326).
+    store = SessionStore(base_dir=tmp_path)
+    first = Session(cwd="/c", model="m", id="busy")
+    first.add_message(Message.user("v1"))
+    store.save(first)
+    real_replace = os.replace
+    calls = 0
+
+    def refuse_twice(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_write, "_RETRY_RENAME_REFUSAL", True)
+    monkeypatch.setattr(atomic_write, "_RENAME_PAUSE_S", 0)
+    monkeypatch.setattr(os, "replace", refuse_twice)
+    second = Session(cwd="/c", model="m", id="busy")
+    second.add_message(Message.user("v2"))
+    store.save(second)
+
+    assert calls == 3
+    assert store.load("busy").messages[0].text == "v2"
+    assert [p.name for p in tmp_path.iterdir()] == ["busy.json"]
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="only Windows refuses a rename onto an open file"
+)
+def test_save_on_windows_waits_for_a_reader_to_let_go_of_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The refusal here is Windows' own, not a stand-in: the file is really held open, and
+    # the reader lets go only once a rename onto it has been refused.
+    store = SessionStore(base_dir=tmp_path)
+    first = Session(cwd="/c", model="m", id="busy")
+    first.add_message(Message.user("v1"))
+    store.save(first)
+    held = (tmp_path / "busy.json").open("rb")
+    real_replace = os.replace
+    refused: list[PermissionError] = []
+
+    def let_go_once_refused(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        try:
+            real_replace(src, dst)
+        except PermissionError as exc:
+            refused.append(exc)
+            held.close()
+            raise
+
+    monkeypatch.setattr(os, "replace", let_go_once_refused)
+    second = Session(cwd="/c", model="m", id="busy")
+    second.add_message(Message.user("v2"))
+    try:
+        store.save(second)
+    finally:
+        held.close()
+
+    assert len(refused) == 1, "the rename went through while the file was open"
+    assert store.load("busy").messages[0].text == "v2"
 
 
 def test_repeated_saves_overwrite_cleanly(tmp_path: Path) -> None:
