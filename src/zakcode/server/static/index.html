@@ -1570,8 +1570,20 @@
       lastCursor = t.bus_since ?? null;
       replayFloor = t.bus_since ?? 0;
       assistantBody = null;
-      for (const m of t.messages) {
-        if (t.bus_from !== null && m.at !== null && m.at >= t.bus_from) continue;
+      // The saved messages this page draws; the replay draws the rest. At a turn start (bus_since)
+      // they end at that turn's own user line, the first one at or after its stamp: not at every
+      // message stamped at or after it, since a clock as coarse as Windows' (15.6 ms) can stamp the
+      // turn before's last reply in the same tick, and the replay, which starts at the turn, would
+      // not draw it either (ADR-0326). With no turn start (a running turn the bus holds part of), a
+      // message at or after the bus's oldest event is the bus's.
+      let saved = t.messages;
+      if (t.bus_from !== null && t.bus_since !== null) {
+        const turn = saved.findIndex((m) => m.role === "user" && m.at !== null && m.at >= t.bus_from);
+        if (turn >= 0) saved = saved.slice(0, turn);
+      } else if (t.bus_from !== null) {
+        saved = saved.filter((m) => m.at === null || m.at < t.bus_from);
+      }
+      for (const m of saved) {
         if (m.role === "user") {
           const body = userBody(m.text, m.at);
           // hhmm() stamps a frame that has no time as it arrives; a saved line must not claim "now".

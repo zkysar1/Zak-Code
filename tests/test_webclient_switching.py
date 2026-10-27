@@ -312,6 +312,38 @@ def test_a_resume_after_a_cursor_the_bus_has_evicted_starts_the_chat_over(tmp_pa
 # ── opening a chat (ADR-0325) ────────────────────────────────────────────────────────────────
 
 
+def test_a_reply_stamped_in_the_tick_the_next_turn_starts_in_is_drawn_once(tmp_path: Path) -> None:
+    """On a clock as coarse as Windows' (15.6 ms) the reply that ends one turn and the user line
+    that starts the next can carry one stamp. The cut falls on the second turn's user line, and
+    the page drew from the saved conversation only what was stamped before it: the reply was
+    hidden there, and the replay, which starts at the second turn, did not draw it either
+    (ADR-0326)."""
+    tick = _T0 + 60
+    saved = {
+        "messages": [
+            {"role": "user", "text": "one", "at": _T0},
+            {"role": "assistant", "text": "reply one", "at": tick},
+            {"role": "user", "text": "two", "at": tick},
+            {"role": "assistant", "text": "reply two", "at": tick + 5},
+        ],
+        "bus_from": tick,
+        "bus_since": 0,
+    }
+    turn = [
+        _frame(1, event="user_message", text="two", at=tick),
+        _frame(2, event="text", text="reply two", at=tick + 5),
+        _frame(3, event="done", stop_reason="completed", iterations=1, usage=_USAGE, at=tick + 6),
+    ]
+    chat = _chat(A, "chat A", watch={"0": {"frames": turn}}, transcripts=[saved])
+    [seen] = _page(tmp_path, [chat], [{"at": 300, "look": "opened"}])
+    assert _spoken(seen) == [
+        ("user", "one"),
+        ("assistant", "reply one"),
+        ("user", "two"),
+        ("assistant", "reply two"),
+    ]
+
+
 @pytest.mark.parametrize(("running", "button"), [(True, "■"), (False, "↑")])
 def test_a_chat_with_a_turn_running_shows_it_running_before_the_replay_shows_it_start(
     tmp_path: Path, running: bool, button: str

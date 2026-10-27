@@ -389,11 +389,13 @@ class SessionTranscript(BaseModel):
 
     ``bus_from`` is the publish stamp (epoch seconds, read the way a message's ``at`` is, so an
     event and a message made in the same instant carry the same number) of the user line that
-    begins the oldest turn the bus holds whole. A message with ``at`` at or after it is in that
-    bus's replay; one before it is only here. A page draws the second kind from this route and
-    lets the replay draw the first, so a reopened page shows the whole conversation without
-    drawing any message twice. ``bus_since`` is the cursor the page's watch resumes after (its
-    ``since``), so the replay starts at that same line.
+    begins the oldest turn the bus holds whole. That turn's own saved user line, the first one at
+    or after it, is where the conversation hands over: a page draws the messages before it from
+    this route and lets the replay draw the rest, so a reopened page shows the whole conversation
+    without drawing any message twice. Not every message at or after the stamp is the replay's:
+    on a clock as coarse as Windows' (15.6 ms), the turn before's last reply can carry the same
+    stamp, and the replay does not draw it (ADR-0326). ``bus_since`` is the cursor the page's
+    watch resumes after (its ``since``), so the replay starts at that same line.
 
     When the bus holds no turn's start, the turn its events belong to has ended or is still
     running. Ended, it is saved: ``bus_from`` is ``None``, every message is drawn from here, and
