@@ -20207,3 +20207,92 @@ earlier one that fails says nothing; a chat clicked before Make this chat active
 it; the banner without the list; a page
 opening a chat made current again does not see it restart). Each was seen to fail with its fix
 reverted. `uv run poe check` green.
+
+## ADR-0327: the saved conversation hands over at a turn's own user line, Stop ends the turn the chat on screen runs, a POST /chat turn reaches the page, a gone chat is not asked for again, and idle buses go
+
+Status: accepted. 2026-10-27. Amends ADR-0325 (layer 2's cut, and five of the faults it left open).
+
+Context. ADR-0325 left open, among others, five faults a person using the page sees. Each was
+reproduced before it was fixed:
+
+1. On a clock as coarse as Windows' (15.6 ms) the reply that ends one turn and the user line that
+   starts the next can carry one stamp. The saved conversation and the replay met at that stamp:
+   the page drew from disk only what was stamped before it, the replay starts at the turn, and the
+   reply was drawn by neither. Measured under a frozen clock, the same on the cut ADR-0325
+   replaced.
+2. Stop did not end a turn a terminal ran through `POST /chat/stream` or `POST /chat`. The page's
+   Stop wrote the workspace's interrupt file, which only a say turn watches. Since ADR-0325 the
+   page shows such a turn running, Stop and all, and pressing Stop did nothing.
+3. A `POST /chat` turn put nothing on the bus: a page watching the chat saw neither the question
+   nor the answer, and a running turn looked like an idle chat.
+4. A watch that answered 404 (the chat deleted, or its file gone) was asked for again every 1.5 s
+   for as long as the page stayed open, and a turn it showed running stayed running.
+5. Every chat's bus (up to 1000 events) was kept for the life of the server:
+   `EventBusRegistry.discard` had no caller, so a deleted chat's watchers were never let go either.
+
+Decision. One layer per fault.
+
+1. The saved conversation hands over at the turn's own user line (the page's transcript draw,
+   `SessionTranscript.bus_from`). At a turn start the page draws the saved messages before that
+   turn's own user line, the first one at or after the cut's stamp, and the replay draws the rest.
+   With no turn start on the bus (a running turn the bus holds part of), a message at or after the
+   bus's oldest event is still the bus's.
+2. Stop names the chat on screen (`POST /interrupt` with `{ session_id }`, `InterruptRequest`). The
+   server keeps a Stop for each turn it runs for `POST /chat` and `POST /chat/stream`, made when the
+   turn reserves its chat and dropped when it lets go. Each such turn runs whole in one task of its
+   own, as a say turn does, and Stop cancels it where it waits. The stream sends, and the bus gets,
+   `status: interrupted`, the frame a stopped say turn ends on and the page ends the turn on;
+   `POST /chat` answers `stop_reason: "interrupted"`; both save what the turn had done. A say
+   turn's chat is stopped through the file, as before. A chat with no turn running answers
+   `requested: false` and writes nothing. With no body the route writes the file as it always has
+   (`zakcode interrupt`, the cockpit's Esc).
+3. A `POST /chat` turn reaches the bus: the user's line before the turn, as `/chat/stream` and the
+   say consumer put it, and once the turn is done the frames a streamed turn would have sent, in
+   their order (each reply's text, its tool calls each with its result, `done`). A refused slash
+   command sends its `status` + `done` (the answer stays 403/500), and a turn that raises ends with
+   a `provider_error` `done`. `arun_turn` stays, since only the buffered turn carries seam B
+   (best-of-N), so the frames arrive when the turn is done rather than as it runs.
+4. A 404 ends the watch (`watchLoop`): the page says the chat no longer exists, ends the turn on
+   screen, refreshes the chat list and stops asking. Any other failure still reconnects after the
+   backoff.
+5. Buses are let go (`EventBusRegistry.in_use`, `_IDLE_BUSES`). `DELETE /sessions/{id}` discards
+   the chat's bus, which ends its watchers' streams (their reconnect answers 404, layer 4), but not
+   while a turn runs on it: the turn publishes on its bus, and a publish on a closed bus raises.
+   Making a bus lets go of the idle buses past the 16 most recently active. Idle is nobody
+   watching, not the current chat and no turn running, which the server tells the registry.
+   Activity is a process-wide count, not a clock: made, asked for, published on, its last watcher
+   gone. The marker route finds its bus and publishes on a worker thread, so a sweep can let the
+   bus go in between; nobody watched it, and the route answers `published: false`.
+
+Consequences. A `/chat/stream` turn no longer waits on its reader: it hands the stream its events
+through a queue, so a slow reader no longer slows the turn (a say turn never waited on a watcher
+either), and a client gone mid-turn still takes the turn with it. A stopped `POST /chat` turn shows
+only its line and `interrupted` on the page until the chat is reopened: its replies reach the bus
+once the turn is done, a stopped turn is never done, and the saved conversation has them. Stop on a
+chat with no turn running asks nothing, where the bare signal stopped a say turn running on another
+chat; Stop pressed before a say turn starts still does nothing, since the turn clears a signal that
+predates it. A page whose chat's bus was let go while its watch was down reconnects to a new bus,
+named by another `X-Bus-Epoch`, and starts over from the saved conversation, as after a server
+start (ADR-0289). Still open from ADR-0325: a watcher whose own queue (512) overflows loses events
+and is not told; `.current-session` is written in place; a rotation posted through the marker
+route is not forgotten; a running turn longer than the ring replays without its head. Found here
+and not fixed: the marker route and `_make_current` publish from worker threads onto a bus the
+event loop reads; a `/chat/stream` turn that raises sends no terminal frame on the stream or the
+bus; a turn still running when its chat is deleted saves the chat again when it ends; and with the
+egress proxy on, a `/chat/stream` client gone mid-turn leaves the chat reserved, every later turn
+on it a 409 until the server restarts, since the reservation is let go after the agent's release
+awaits the proxy's stop, and the cancellation the disconnect brings lands on that await. Measured
+with a release that waits, the same before this change.
+
+The proof. tests/test_webclient_switching.py (the page: a reply stamped in the tick the next turn
+starts in is drawn once; a chat whose watch answers 404 is asked for once more, then the page says
+it is gone and Send is back; Stop names the chat on screen), tests/test_server_watch.py (a
+`/chat/stream` turn and a `/chat` turn end on Stop, on the stream or in the answer and on the bus,
+what they did is saved, and a second Stop asks nothing; a `/chat` turn's frames reach the bus in
+order, and so do a refusal's and a failure's; a delete ends the watch and the reconnect answers
+404; the current chat's bus and a running turn's stay through a delete and a sweep; the marker
+race), tests/test_server_consumer.py (Stop naming a say turn's chat ends it, naming another chat
+leaves it running; with no body the route writes the file) and tests/test_event_bus.py (the least
+recently active idle buses go first; a watched bus and one in use stay; a registry not told what
+is in use lets nothing go). Each fix was sabotaged a piece at a time, 29 sabotages in all, and each
+sabotage turned a test red. `uv run poe check` green.
