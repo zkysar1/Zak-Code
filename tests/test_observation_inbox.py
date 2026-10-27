@@ -18,9 +18,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from zakcode.session.observation_inbox import (
+    EARLIER_FAREWELL_SLICE,
+    FAREWELL_SLICE,
+    KIND_CHANGE,
+    KIND_FAREWELL,
+    KIND_HEARTBEAT,
     NARRATION_MAX_LINES,
     OBSERVATION_ENVELOPE_VERSION,
+    RECEIVER_SLICES,
+    SHED_FAREWELL_SLICE,
+    WAKING_KINDS,
+    carry_farewell,
+    carry_forward,
     envelope_id,
     merge_changes,
     narrate_observation,
@@ -29,6 +41,7 @@ from zakcode.session.observation_inbox import (
     peek_observation,
     read_observation,
     render_observation,
+    staged_kind,
     take_observation,
 )
 from zakcode.session.say_inbox import say_path
@@ -406,3 +419,370 @@ def test_a_producer_supplied_envelope_id_wins() -> None:
 def test_no_envelope_has_no_id() -> None:
     assert envelope_id(None) is None
     assert envelope_id([]) is None  # type: ignore[arg-type]
+
+
+# ── the farewell: a body's last word ──────────────────────────────────────────────────────
+
+
+def _report(**over: object) -> dict[str, object]:
+    """A ``BodyReport`` the way the vessel's v1 builds it."""
+    report: dict[str, object] = {
+        "reportVersion": 1,
+        "unitKey": "unit-7",
+        "endedAt": "2026-10-27T16:40:00Z",
+        "endedBy": "deactivation",
+        "where": {
+            "cells": 1204,
+            "explored": 900,
+            "withItems": 12,
+            "dangerous": 3,
+            "blocked": 41,
+            "pathSuccesses": 310,
+            "pathFailures": 27,
+            "mostVisited": [],
+            "mostFailed": [],
+            "dangerCells": [],
+        },
+        "touched": {
+            "tracked": 25,
+            "interacted": 2,
+            "units": [
+                {"unitKey": "u-11", "ayoKey": "Mira", "interactionCount": 9, "trust": 0.6},
+                {"unitKey": "u-12", "interactionCount": 1},
+            ],
+        },
+        "cellsUsed": {"collected": False, "reason": "the cell archive is keyed by character"},
+    }
+    report.update(over)
+    return report
+
+
+def _farewell(report: dict[str, object] | None = None, **over: object) -> dict[str, object]:
+    return _envelope(kind=KIND_FAREWELL, observation={FAREWELL_SLICE: report or _report()}, **over)
+
+
+def _chars(observation: dict[str, object]) -> int:
+    """The size the route's floor measures."""
+    return len(json.dumps(observation, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def test_only_a_change_or_a_farewell_may_wake() -> None:
+    assert {KIND_CHANGE, KIND_FAREWELL} == WAKING_KINDS
+    assert KIND_HEARTBEAT not in WAKING_KINDS
+    assert "" not in WAKING_KINDS, "an unstamped envelope must never wake"
+    assert "snapshot" not in WAKING_KINDS, "nor an unknown kind"
+
+
+def test_a_farewell_narrates_the_end_of_the_body_before_anything_else() -> None:
+    lines = narrate_observation(_farewell())
+    assert lines == [
+        "your body unit-7 has ended (deactivation) at 2026-10-27T16:40:00Z",
+        "you covered 1,204 cells (900 explored, 3 dangerous, 41 blocked); "
+        "310 paths worked, 27 failed",
+        "you met 2 of the 25 you tracked: Mira, u-12",
+        "which cells you used was not collected (the cell archive is keyed by character)",
+    ]
+
+
+def test_the_narration_counts_the_units_the_producer_left_unnamed() -> None:
+    """The vessel names its top few; ``interacted`` is the true total, and the line says so."""
+    units = [{"unitKey": f"u-{i}", "interactionCount": 5 - i} for i in range(5)]
+    touched = {"tracked": 60, "interacted": 40, "units": units}
+    lines = narrate_observation(_farewell(_report(touched=touched)))
+    assert "you met 40 of the 60 you tracked: u-0, u-1, u-2 (and 37 more)" in lines
+
+
+def test_an_explicit_zero_met_says_nobody_but_an_absent_figure_says_nothing() -> None:
+    """The rule the census follows: an empty count is perception, a missing one is not."""
+    nobody = narrate_observation(
+        _farewell(_report(touched={"tracked": 4, "interacted": 0, "units": []}))
+    )
+    assert "you met nobody among the 4 you tracked" in nobody
+    for touched in ({"tracked": 4}, {}, "junk", None):
+        lines = narrate_observation(_farewell(_report(touched=touched)))
+        assert not any(line.startswith("you met") for line in lines), touched
+
+
+def test_cells_collected_by_the_vessel_are_not_called_a_gap() -> None:
+    lines = narrate_observation(_farewell(_report(cellsUsed={"collected": True})))
+    assert not any("not collected" in line for line in lines)
+
+
+def test_a_farewell_with_junk_fields_narrates_what_it_can_and_never_raises() -> None:
+    junk = _report(unitKey=7, endedBy=None, endedAt=3, where="x", touched=[], cellsUsed=None)
+    assert narrate_observation(_farewell(junk)) == ["your body has ended"]
+    assert narrate_observation(_envelope(observation={FAREWELL_SLICE: "x"})) == []
+    assert narrate_observation(_envelope(observation={FAREWELL_SLICE: {}})) == []
+
+
+def test_a_farewell_says_how_many_other_bodies_ended_before_it_was_read() -> None:
+    one = _farewell()
+    one["observation"][EARLIER_FAREWELL_SLICE] = [_report(unitKey="unit-3")]  # type: ignore[index]
+    assert narrate_observation(one)[-1] == (
+        "1 other body ended before you read this; their reports are in earlierBodyReports"
+    )
+    two = _farewell()
+    two["observation"][EARLIER_FAREWELL_SLICE] = [_report(), _report()]  # type: ignore[index]
+    assert narrate_observation(two)[-1].startswith("2 other bodies ended before you read this")
+
+
+def test_the_other_bodies_line_counts_reports_and_not_junk_rows() -> None:
+    env = _farewell()
+    env["observation"][EARLIER_FAREWELL_SLICE] = [_report(unitKey="unit-3"), "junk", 7, None]  # type: ignore[index]
+    assert narrate_observation(env)[-1] == (
+        "1 other body ended before you read this; their reports are in earlierBodyReports"
+    )
+
+
+def test_the_narration_says_how_many_other_reports_did_not_fit() -> None:
+    some = _farewell()
+    some["observation"][EARLIER_FAREWELL_SLICE] = [_report(unitKey="unit-3")]  # type: ignore[index]
+    some["observation"][SHED_FAREWELL_SLICE] = 2  # type: ignore[index]
+    assert narrate_observation(some)[-1] == (
+        "3 other bodies ended before you read this; "
+        "earlierBodyReports holds 1 of their reports and 2 did not fit and could not be kept"
+    )
+    none = _farewell()
+    none["observation"][SHED_FAREWELL_SLICE] = 1  # type: ignore[index]
+    assert narrate_observation(none)[-1] == (
+        "1 other body ended before you read this; their reports did not fit and could not be kept"
+    )
+
+
+@pytest.mark.parametrize("junk", [True, False, 0, -2, "3", None, 1.5])
+def test_a_dropped_count_that_is_not_a_count_says_nothing(junk: object) -> None:
+    env = _farewell()
+    env["observation"][SHED_FAREWELL_SLICE] = junk  # type: ignore[index]
+    assert not any("other bod" in line for line in narrate_observation(env))
+
+
+def test_a_body_that_kept_no_spatial_memory_is_a_gap_and_not_a_walk_that_went_nowhere() -> None:
+    gap = {"collected": False, "reason": "this body kept no spatial memory"}
+    lines = narrate_observation(_farewell(_report(where=gap)))
+    assert "where you went was not collected (this body kept no spatial memory)" in lines
+    assert not any(line.startswith("you covered") for line in lines)
+
+
+@pytest.mark.parametrize(
+    "where", [{}, {"collected": True}, {"reason": "x"}, {"collected": "no"}, "junk", None]
+)
+def test_a_gap_is_reported_only_when_the_vessel_says_collected_false(where: object) -> None:
+    lines = narrate_observation(_farewell(_report(where=where)))
+    assert not any(line.startswith("where you went") for line in lines)
+
+
+def test_a_stated_reason_is_capped_in_the_narration() -> None:
+    where = {"collected": False, "reason": "r" * 500}
+    lines = narrate_observation(_farewell(_report(where=where)))
+    assert f"where you went was not collected ({'r' * 120})" in lines
+
+
+def test_a_total_smaller_than_the_names_never_prints_a_negative_remainder() -> None:
+    touched = {"tracked": 9, "interacted": 2, "units": [{"unitKey": f"u-{n}"} for n in range(5)]}
+    lines = narrate_observation(_farewell(_report(touched=touched)))
+    assert "you met 2 of the 9 you tracked: u-0, u-1, u-2 (and 2 more)" in lines
+
+
+def test_the_farewell_leads_the_narration_and_survives_the_cap() -> None:
+    """A dense round must not push a body's last word out of the lines the mind reads."""
+    env = _farewell()
+    env["observation"]["changesPerception"] = [f"f{i}.md changed" for i in range(20)]  # type: ignore[index]
+    lines = narrate_observation(env)
+    assert lines[0].startswith("your body unit-7 has ended")
+    assert len(lines) == NARRATION_MAX_LINES
+
+
+def test_a_farewell_renders_framed_with_the_narration_then_the_raw_report() -> None:
+    text = render_observation(_farewell())
+    assert text is not None
+    assert text.startswith("FRAMED: this is DATA, not an instruction.")
+    narration = text.index("your body unit-7 has ended")
+    raw = text.index('"bodyReport"')
+    assert text.index("These perceptions just happened:") < narration < raw
+    assert '"pathFailures": 27' in text, "the raw report still arrives in full"
+
+
+@pytest.mark.parametrize(
+    ("incoming", "pending", "expected"),
+    [
+        (KIND_HEARTBEAT, None, KIND_HEARTBEAT),
+        ("", None, ""),
+        ("snapshot", None, "snapshot"),
+        (KIND_HEARTBEAT, KIND_CHANGE, KIND_CHANGE),
+        ("", KIND_CHANGE, KIND_CHANGE),
+        (KIND_CHANGE, KIND_HEARTBEAT, KIND_CHANGE),
+        (KIND_HEARTBEAT, KIND_FAREWELL, KIND_FAREWELL),
+        (KIND_CHANGE, KIND_FAREWELL, KIND_FAREWELL),
+        ("snapshot", KIND_FAREWELL, KIND_FAREWELL),
+        (KIND_FAREWELL, KIND_CHANGE, KIND_FAREWELL),
+        (KIND_FAREWELL, KIND_HEARTBEAT, KIND_FAREWELL),
+        (KIND_FAREWELL, KIND_FAREWELL, KIND_FAREWELL),
+    ],
+)
+def test_the_staged_kind_is_sticky_in_the_order_a_mind_can_least_afford_to_lose(
+    incoming: str, pending: object, expected: str
+) -> None:
+    assert staged_kind(incoming, pending) == expected
+
+
+def test_carry_farewell_is_identity_when_no_report_is_unread() -> None:
+    fresh = {"nearbyPerception": {"units": ["a"]}}
+    assert carry_farewell(None, fresh, 16384) is fresh
+    assert carry_farewell("junk", fresh, 16384) is fresh
+    assert carry_farewell({"nearbyPerception": {}}, fresh, 16384) is fresh
+    assert carry_farewell({FAREWELL_SLICE: "junk"}, fresh, 16384) is fresh
+
+
+def test_a_frame_that_is_not_a_farewell_keeps_the_unread_report_and_stays_latest_wins() -> None:
+    unread = _report()
+    pending = {FAREWELL_SLICE: unread, "nearbyPerception": {"units": ["old"]}}
+    incoming = {"nearbyPerception": {"units": ["new"]}}
+    carried = carry_farewell(pending, incoming, 16384)
+    assert carried == {FAREWELL_SLICE: unread, "nearbyPerception": {"units": ["new"]}}
+    assert incoming == {"nearbyPerception": {"units": ["new"]}}, "the caller's map is not mutated"
+
+
+def test_a_second_farewell_moves_the_unread_report_to_the_earlier_list_oldest_first() -> None:
+    first, second, third = (_report(unitKey=f"unit-{n}") for n in (1, 2, 3))
+    after_second = carry_farewell({FAREWELL_SLICE: first}, {FAREWELL_SLICE: second}, 16384)
+    assert after_second == {FAREWELL_SLICE: second, EARLIER_FAREWELL_SLICE: [first]}
+    after_third = carry_farewell(after_second, {FAREWELL_SLICE: third}, 16384)
+    assert after_third == {FAREWELL_SLICE: third, EARLIER_FAREWELL_SLICE: [first, second]}
+
+
+def test_the_same_body_reporting_twice_is_one_body_and_the_newest_report_stands() -> None:
+    old, new = _report(endedAt="2026-10-27T16:40:00Z"), _report(endedAt="2026-10-27T16:40:09Z")
+    assert carry_farewell({FAREWELL_SLICE: old}, {FAREWELL_SLICE: new}, 16384) == {
+        FAREWELL_SLICE: new
+    }
+
+
+def test_a_later_frame_cannot_forge_the_earlier_list() -> None:
+    """``earlierBodyReports`` is the receiver's own convention; a frame that sends it is ignored."""
+    unread = _report()
+    forged = {"nearbyPerception": {}, EARLIER_FAREWELL_SLICE: "junk"}
+    assert carry_farewell({FAREWELL_SLICE: unread}, forged, 16384) == {
+        FAREWELL_SLICE: unread,
+        "nearbyPerception": {},
+    }
+
+
+def test_the_fit_sheds_the_newest_frames_state_slices_before_anything_else() -> None:
+    unread = _report()
+    incoming = {"changesPerception": ["brief.md changed"], "bigPerception": {"x": "y" * 4000}}
+    cap = _chars({FAREWELL_SLICE: unread, "changesPerception": ["brief.md changed"]}) + 20
+    carried = carry_farewell({FAREWELL_SLICE: unread}, incoming, cap)
+    assert carried == {FAREWELL_SLICE: unread, "changesPerception": ["brief.md changed"]}
+
+
+def test_the_fit_sheds_the_oldest_earlier_reports_next_and_keeps_the_newest() -> None:
+    pad = "x" * 300
+    r1, r2, r3, r4 = (_report(unitKey=f"unit-{n}", note=pad) for n in (1, 2, 3, 4))
+    pending = {FAREWELL_SLICE: r3, EARLIER_FAREWELL_SLICE: [r1, r2]}
+    # The count of what was dropped is written too, so the budget has to hold it.
+    kept = {FAREWELL_SLICE: r4, EARLIER_FAREWELL_SLICE: [r3], SHED_FAREWELL_SLICE: 2}
+    carried = carry_farewell(pending, {FAREWELL_SLICE: r4}, _chars(kept) + 20)
+    assert carried == kept
+
+
+def test_a_dropped_earlier_report_is_counted_across_carries_never_silently() -> None:
+    """The mind cannot be given back a report the floor cost it, but it can be told one is gone."""
+    pad = "x" * 300
+    r1, r2, r3 = (_report(unitKey=f"unit-{n}", note=pad) for n in (1, 2, 3))
+    room_for_one = _chars({FAREWELL_SLICE: r3, SHED_FAREWELL_SLICE: 1}) + 20
+    first = carry_farewell({FAREWELL_SLICE: r1}, {FAREWELL_SLICE: r2}, room_for_one)
+    assert first == {FAREWELL_SLICE: r2, SHED_FAREWELL_SLICE: 1}
+    second = carry_farewell(first, {FAREWELL_SLICE: r3}, room_for_one)
+    assert second == {FAREWELL_SLICE: r3, SHED_FAREWELL_SLICE: 2}
+
+
+def test_a_report_superseded_by_the_same_body_is_not_counted_as_dropped() -> None:
+    """A, B, A: the second A replaces the first (one body, one report); B is the earlier body."""
+    a1, b, a2 = (
+        _report(unitKey="unit-a", endedAt="2026-10-27T16:40:00Z"),
+        _report(unitKey="unit-b"),
+        _report(unitKey="unit-a", endedAt="2026-10-27T16:40:09Z"),
+    )
+    after_b = carry_farewell({FAREWELL_SLICE: a1}, {FAREWELL_SLICE: b}, 16384)
+    after_a = carry_farewell(after_b, {FAREWELL_SLICE: a2}, 16384)
+    assert after_a == {FAREWELL_SLICE: a2, EARLIER_FAREWELL_SLICE: [b]}
+
+
+@pytest.mark.parametrize("junk", [True, False, -3, 0, "9", 2.5, None, [4]])
+def test_a_count_the_receiver_did_not_write_is_not_trusted(junk: object) -> None:
+    pending = {FAREWELL_SLICE: _report(), SHED_FAREWELL_SLICE: junk}
+    carried = carry_farewell(pending, {"nearbyPerception": {}}, 16384)
+    assert SHED_FAREWELL_SLICE not in carried
+
+
+def test_the_count_gives_way_last_when_the_newest_report_leaves_no_room_for_it() -> None:
+    """A report that fits alone is never pushed over the floor by the count of what was dropped."""
+    older, newest = _report(unitKey="unit-1"), _report(unitKey="unit-2")
+    cap = _chars({FAREWELL_SLICE: newest}) + 5
+    carried = carry_farewell({FAREWELL_SLICE: older}, {FAREWELL_SLICE: newest}, cap)
+    assert carried == {FAREWELL_SLICE: newest}
+    assert _chars(carried) <= cap
+
+
+def test_the_slices_the_receiver_mints_are_named_in_one_place() -> None:
+    assert set(RECEIVER_SLICES) == {EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE}
+
+
+# ── carry_forward: both EVENTS under the one floor ─────────────────────────────────────────
+
+
+def test_carry_forward_is_identity_when_nothing_unread_has_anything_to_carry() -> None:
+    incoming = {"nearbyPerception": {"units": ["a"]}}
+    for pending in (None, "junk", {}, {"nearbyPerception": {}}, {FAREWELL_SLICE: "junk"}):
+        assert carry_forward(pending, incoming, 16384) == (incoming, False, False), pending
+
+
+def test_carry_forward_merges_an_unread_change_list_oldest_first() -> None:
+    pending = {"changesPerception": ["a changed"], "nearbyPerception": {"units": ["old"]}}
+    incoming = {"changesPerception": ["b changed"], "nearbyPerception": {"units": ["new"]}}
+    assert carry_forward(pending, incoming, 16384) == (
+        {"changesPerception": ["a changed", "b changed"], "nearbyPerception": {"units": ["new"]}},
+        True,
+        False,
+    )
+
+
+def test_carry_forward_carries_both_events_when_they_fit_together() -> None:
+    unread = _report()
+    pending = {FAREWELL_SLICE: unread, "changesPerception": ["a changed"]}
+    incoming = {"changesPerception": ["b changed"]}
+    assert carry_forward(pending, incoming, 16384) == (
+        {FAREWELL_SLICE: unread, "changesPerception": ["a changed", "b changed"]},
+        True,
+        True,
+    )
+
+
+def test_carry_forward_keeps_the_report_and_the_newest_list_when_the_merge_will_not_fit() -> None:
+    """The merged list fits alone but not beside the report. Merging first and fitting after
+    would shed it whole; the newest frame's own list, which does fit beside the report, stands."""
+    unread = _report()
+    pending = {FAREWELL_SLICE: unread, "changesPerception": ["a" * 400]}
+    incoming = {"changesPerception": ["b changed"]}
+    cap = _chars({FAREWELL_SLICE: unread, "changesPerception": ["b changed"]}) + 100
+    merged_alone = {"changesPerception": ["a" * 400, "b changed"]}
+    assert _chars(merged_alone) <= cap < _chars({FAREWELL_SLICE: unread, **merged_alone})
+    assert carry_forward(pending, incoming, cap) == (
+        {FAREWELL_SLICE: unread, "changesPerception": ["b changed"]},
+        False,
+        True,
+    )
+
+
+def test_carry_forward_drops_an_unfittable_merge_when_there_is_no_report_to_protect() -> None:
+    pending = {"changesPerception": ["a" * 400]}
+    incoming = {"changesPerception": ["b changed"]}
+    assert carry_forward(pending, incoming, 100) == (incoming, False, False)
+
+
+def test_the_fit_sheds_the_change_list_last_and_never_the_newest_report() -> None:
+    unread = _report()
+    incoming = {"changesPerception": ["c" * 500]}
+    cap = _chars({FAREWELL_SLICE: unread}) + 20
+    assert carry_farewell({FAREWELL_SLICE: unread}, incoming, cap) == {FAREWELL_SLICE: unread}
+    assert carry_farewell({FAREWELL_SLICE: unread}, incoming, 10) == {FAREWELL_SLICE: unread}

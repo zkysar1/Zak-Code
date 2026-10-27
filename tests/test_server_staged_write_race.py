@@ -11,6 +11,10 @@ on the broken code most runs. These tests close the window on purpose. Every ``o
 onto the staged file waits at a barrier until ALL the writers have written their temp, which
 is the interleaving production reaches by chance, and then they rename together. On a temp
 name shared between threads that is a certain failure rather than a likely one.
+
+Since ADR-0328 ``/observe`` stages under a lock, so the writers can no longer be held in the
+rename together and only the nudge test can force that interleaving. The observe test pins the
+lock instead: its writers are answered, one at a time, and one frame stands whole.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -133,11 +138,41 @@ def _strays(workspace: Path, staged_name: str) -> list[str]:
     )
 
 
-def test_concurrent_observes_each_stage_without_colliding(
+def test_concurrent_observes_are_staged_one_at_a_time_and_one_stands_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Eight overlapping frames are all answered, never inside the rename together, one stands.
+
+    The barrier the nudge test uses cannot open here. ``/observe`` stages under one lock
+    (ADR-0328), because looking at the staged frame, deciding what the new one carries forward
+    and writing it are one read-modify-write, so no two writers are ever between "temp
+    written" and "temp renamed" at once, and the temp name is no longer what keeps them apart.
+    This pins the lock instead: each rename is slowed so that a second writer would be inside
+    it if it could be, and the most writers ever inside is counted. The nudge test, which takes
+    no lock, still forces the interleaving and still pins the temp name.
+    """
     app = _make_app(tmp_path)
-    arrivals = _hold_replaces_at_barrier(monkeypatch, ".observation")
+    real_replace = os.replace
+    counting = threading.Lock()
+    inside = 0
+    peak = 0
+
+    def slowed(src: str | os.PathLike[str], dst: str | os.PathLike[str], **kwargs: Any) -> None:
+        nonlocal inside, peak
+        if Path(dst).name != ".observation":
+            real_replace(src, dst, **kwargs)
+            return
+        with counting:
+            inside += 1
+            peak = max(peak, inside)
+        try:
+            time.sleep(0.02)
+            real_replace(src, dst, **kwargs)
+        finally:
+            with counting:
+                inside -= 1
+
+    monkeypatch.setattr(os, "replace", slowed)
 
     outcomes = _post_concurrently(
         app,
@@ -153,7 +188,7 @@ def test_concurrent_observes_each_stage_without_colliding(
 
     # /observe is latest-wins and never refuses a frame, so every writer is answered 200.
     assert outcomes == [200] * WRITERS, _labels(outcomes)
-    _assert_each_writer_had_its_own_temp(arrivals)
+    assert peak == 1, f"{peak} frames were being staged at once"
     # One writer's WHOLE frame stands: the file parses, and its parts agree with each other.
     staged = json.loads((tmp_path / ".observation").read_text(encoding="utf-8"))
     n = staged["observation"]["writer"]["n"]

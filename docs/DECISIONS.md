@@ -16022,6 +16022,9 @@ Both paths coexist in the same release. The legacy path is unchanged and works a
 **Amended by ADR-0270 (2026-09-30):** point 7 no longer holds for a workspace that declares an
 `ObservationReceived` hook. That hook hears each change whichever ending the run uses.
 
+**Amended by ADR-0328 (2026-10-27):** the sticky `kind` of point 7 keeps a `farewell` as well as a
+`change`, in the order farewell, change, then the newest frame's own.
+
 ## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
 
 Status: accepted. 2026-09-28.
@@ -16365,6 +16368,9 @@ turned their tests red: the kind gate, the hook-first branch, the session id, th
 exit-code read, the run-every-hook loop, the returned exit code, the timeout, the loader mapping,
 the staged path, the fail-open guard, reading the settings outside that guard, and the lock.
 
+**Amended by ADR-0328 (2026-10-27):** point 1's gate is a `change` or a `farewell`. The hook fires for
+both, and `data.kind` says which; a heartbeat, an unstamped envelope and an unknown kind still fire nothing.
+
 ## ADR-0271: mid-turn perception is bounded in wall time, and a turn's first is never held
 
 Status: accepted. 2026-09-30.
@@ -16416,6 +16422,9 @@ test red.
 **Amended by ADR-0273 (2026-10-01):** point 2 no longer holds for a turn opened by a slash
 command: such a turn takes no perception until it has made a tool call other than plan
 bookkeeping.
+
+**Amended by ADR-0328 (2026-10-27):** a frame held under point 1 carries an unread farewell's
+report forward, as it carries its change list.
 
 ## ADR-0272: an MCP config file that cannot be read is reported under /mcp, and the session starts without it
 
@@ -19659,6 +19668,10 @@ raised-at-once case red; and a bound that falls through, which would return with
 **Amended by ADR-0326 (2026-10-27):** `SessionStore.save` renames through the same retry, now
 `atomic_write.replace_retrying`. It had an `os.replace` of its own, and a save Windows refused lost a served turn.
 
+**Amended by ADR-0328 (2026-10-27):** `/observe` takes the lock held across the check and the write that the consequences
+above name, so two frames racing there no longer lose the way they describe. Its barrier test cannot hold eight writers in the
+rename together under that lock and now counts the writers inside it instead; `/nudge` is as it was.
+
 ## ADR-0319: the web page lists the workspace's saved chats, opens any of them or a new one, and the next turn runs on the chat it opened
 
 **Status:** Accepted (2026-10-15)
@@ -20251,3 +20264,119 @@ fails if Windows lets the rename through. Two sabotages were each run green, red
 `os.replace` put back turned the first test red with `PermissionError`; the helper's retry disabled turned it red together
 with `test_atomic_write.py`'s retried-to-success and 50-attempt cases, so both writers rename through the one helper. The
 Windows test runs only on CI's `windows-latest` cell and was not run against a sabotage. `uv run poe check` green.
+
+## ADR-0328: the perception intake takes a body's farewell as a second kind that wakes, and carries its report forward until the mind reads it
+
+**Status:** Accepted (2026-10-27)
+
+**Context.** A character's body ends when the vessel deactivates it, and the sidecar that serves its mind detaches shortly
+after. The intake knew two kinds of frame: `heartbeat`, a full picture on a timer, and `change`, a narrowed picture of
+what just happened. A body's own account of its life had no frame. What a body learned (the cells it walked, the ones that
+hurt it, whom it met and how those meetings went) lives in the body, and the vessel keeps none of it once the body is gone.
+The vessel now sends that account once per body as it ends: an envelope with `kind: "farewell"` and a `bodyReport` slice
+(`reportVersion` 1: `where`, `touched`, `cellsUsed`, `endedBy`, `endedAt`), delivered before the sidecar detaches, with no
+round frame for ten seconds after it. Taken as the intake stood, the report was lost three
+ways. The wake gate was `kind == "change"`, so a farewell was staged and woke nothing, and an `ObservationReceived` hook never
+heard it. The inbox is latest-wins, so a frame already in flight, or a second body's, replaced the report before the host's
+next tick, and nothing sends it again: the staged copy is the last one anywhere. And the sticky `kind` of ADR-0264 made a
+frame landing on an unread change a `change`, so a farewell landing on one was staged as the change it carries forward and
+read back as that.
+
+**Decision.**
+
+1. `farewell` is a second waking kind. `WAKING_KINDS` is `{change, farewell}` and the gate is membership, never "not a
+   heartbeat": an unstamped envelope and a kind this receiver does not know still wake nothing. The `ObservationReceived`
+   hook fires for both, with `data.kind` saying which, and the signal-file wake of a workspace that declares no hook follows
+   the same gate.
+2. The unread report rides forward. Latest-wins had one exception, the change list (`merge_changes`, ADR-0271). It has a
+   second. A frame landing on an unread farewell keeps the report as THE `bodyReport` and stays latest-wins in every other
+   slice, because the newest reading of the world is the world. A second farewell keeps its own report as `bodyReport` and
+   moves the unread ones to `earlierBodyReports`, oldest first. One body reporting twice (the same `unitKey`) is one body, and
+   only its newest report survives. Both events are carried by one function, `carry_forward`, under one floor: the unread
+   change list and the unread report ride together when they fit together, and when the merged list does not fit beside the
+   report, the newest frame's own list stands and the report does not give way. (Merging first and fitting after would shed a
+   merged list that fits alone and also fits beside the report, as the newest frame's list does.) `earlierBodyReports` and
+   `earlierBodyReportsShed` (point 4) are the receiver's names. The route drops both from every incoming frame, so whatever the
+   staged file holds under them was put there by a carry and not by a vessel.
+3. The staged `kind` is sticky in the order a mind can least afford to lose: `farewell`, then `change`, then the newest
+   frame's own. `changedSlices` names the carried report slices, so it stays true to the frame it describes.
+4. The receiver's floor governs what it writes, as it does for a carried change list. A carry that would pass
+   `OBSERVATION_MAX_CHARS` (16,384) is fitted, and what goes, goes in the order a mind misses it least: the newest frame's
+   other slices (the next round perceives the world again), then the oldest earlier reports, then the change list. The newest
+   report is never shed, because a report that cleared the floor on its way in fits alone. An earlier report the fit drops
+   cannot be given back, so it is counted: `earlierBodyReportsShed` holds the number, across carries, and the narration says
+   how many reports did not fit. The count is written too, so it sits inside the fit, and it gives way only after the change
+   list, when the newest report leaves no room for even that. `changedSlices` stops naming a slice the fit dropped. The
+   `perception-intake` log line gains `farewell_carried`, `farewell_shed` (the incoming frame's slices the fit dropped) and
+   `reports_shed` (the dropped-report count on the staged frame).
+5. Staging and reading take one lock, `OBSERVATION_STAGE_LOCK`. `POST /observe` runs on worker threads, and looking at what
+   is staged, deciding what this frame carries forward and writing it are one read-modify-write: two frames inside it
+   together let the later writer replace the earlier without having seen it. A carry only helps a frame that saw the
+   report, so the look, the carry and the write are taken together, and the hooks and the wake run after the lock is
+   released. The reader takes the same lock for its read and its delete: a read that landed between the route's look and
+   its write would take the old frame, the new frame would carry the same report in again, and the mind would be given it
+   twice. ADR-0318 named the staging window for `/observe` and left a lock across the check and the write to a separate
+   change; this is that change for `/observe`, and `/nudge` keeps its single-slot check-then-act. The lock holds for the
+   threads of one server and not for two server processes on one workspace, the objection ADR-0318 raised to a lock as the
+   answer to the temp name. The temp stays unique per writer, so two processes still cannot collide on it.
+6. The narration leads with the farewell: the head (`your body <unitKey> has ended (<endedBy>) at <endedAt>`), what the body
+   covered, whom it met out of how many it tracked (three names at most, then a count), that where it went or which cells it
+   used was not collected when the vessel says so (the reason cut at 120 characters), and how many other bodies ended before
+   the frame was read and how many of their reports did not fit. It states counts and keys, never the free text a character
+   wrote, and the raw slices follow in full. An explicit zero is perception and an absent figure is silence, the rule
+   `_narrate_company` already keeps: `interacted: 0` says "you met nobody", a report that never says it says nothing, and a
+   section marked `collected: false` (`where` for a body that kept no spatial memory, `cellsUsed`) is passed on as the gap it
+   is and never as "you went nowhere" or "you used no cells". Only an explicit `false` is a gap.
+7. No new `/sidecar/health` counter. The nine intake counters are pinned (`test_observation_intake_observability`), and a
+   farewell is an accepted frame and a wake like any other.
+
+Rejected: a route of its own, which is a second route, a second staging file and a second reader for what the envelope's
+`kind` already says, with the hook, the three-state wake and the health counters each needing a twin. Rejected: waking on
+every kind but heartbeat, because a kind this receiver has never heard of would wake a loop, a spurious wake costs the sleep
+itself and a missed one costs a round of latency, and membership is the safe direction. Rejected: plain latest-wins for the
+report, which hands the only copy to whatever frame lands next. Rejected: the report in a file of its own, because the staged
+file is already the one exactly-once inbox and a second would need its own take, supersession rule and cleanup. Rejected:
+keeping every report a body sends, because a body that reports twice is one body and the newest account of it is the account.
+
+Not verified: a real body's farewell against a running mind. The pilot stop on the dev vessel is that measurement. One report
+is about 6 KB at the vessel's caps (eight cells per list, ten units), so two fit under the floor and a third body's farewell
+sheds the oldest; the mind is told how many did not fit, and which reports they were is gone. A farewell is delivered by the
+path a change takes, so ADR-0271's bound (inside a turn a perception waits until 30 s have passed since the last one, and the
+first of a turn never waits) and ADR-0273's hold during a command turn apply to it; whether the mind reads the report before
+its sidecar detaches is for that stop to show, and this decision makes the report survive the wait without shortening it. The
+lock is a thread lock: a host hook that reads the staged file by the path it is handed, or a second server on the same
+workspace, still sees the window between a read and its delete. A frame whose text holds a lone surrogate (`\ud800`) is
+accepted by the request model and fails when the staged text is encoded: the route answers 500 and stages nothing, for a
+heartbeat as for a farewell, and it predates this decision.
+
+**Consequences.** A farewell wakes the resident loop once, and its report survives until the mind reads it, whatever lands
+after. A workspace's `ObservationReceived` hook now also runs for a `farewell`; one that assumed every call was a change reads
+`data.kind` if it cares. The staged file's `kind` can read `farewell`, so a host that switches on it should treat a value it
+does not know as a frame to read. A vessel gets the receiver at its next sidecar provision.
+
+The proof. Fifty-two new test functions, and one existing hook test renamed to say it covers any waking kind:
+`tests/test_observation_inbox.py` (the gate, the narration, `staged_kind`, the carry, the fit, the count),
+`tests/test_server_observe.py` (the route through the real app, reading the staged file back, the log line),
+`tests/test_observe_perception_wake.py` and `tests/test_observe_hook.py`. Two of them close a race by construction and not by
+luck. The lock test holds a heartbeat inside its write while a farewell arrives on another thread, and it failed before the
+lock existed: the heartbeat's frame was the one left on disk. The reader test lets the mind read in the gap between the
+route's look and its write, and with the lock out on either side the report is delivered twice.
+`tests/test_server_staged_write_race.py`'s `/observe` case, which held eight writers in the rename together, cannot open its
+barrier under the lock. It now slows each rename and counts the writers inside it, and with the lock out it failed five runs
+of five with eight inside at once; its `/nudge` case, which takes no lock, still forces the interleaving and still pins the
+temp name. Thirty-three sabotages were each applied to the committed code, turned at least one test red, and were reverted
+with git (2026-10-27); the seven observation test files were green, 191 tests, before them. The wake: the hook path back to
+`== "change"` (1 red), the signal path likewise (2), the waking set without the farewell (4), anything but a heartbeat waking
+(4). The staged kind: ignoring the pending frame (8), a change outranking a farewell (3). The carry: the filter that keeps
+one report per body off (2), a forged earlier list left in place (1), `changedSlices` left unextended (4) and still naming a
+slice the floor shed (1), a merge that cannot fit beside the report dropping the list (1), an unfittable merge kept when
+there is no report to protect (2). The fit: earlier reports not shed before the change list (4), the newest report open to
+shedding (9), the newest frame's other slices kept (4), the count of dropped reports restarting at every carry (2), a count
+the receiver did not write trusted (5), the count never giving way to the floor (1). The receiver's names: not stripped at
+intake (1), the count missing from the list (2). The locks: the route's out (3), the reader's out (1). The log line: shed
+slices miscounted (1), the dropped-report count omitted (1). The narration: the explicit-zero branch off (1), an absent met
+figure read as zero (2), a spatial gap not narrated (2), any falsy `collected` read as a gap (5), the reason uncapped (1),
+the remainder able to go negative (1), junk rows counted as bodies (1), the other-bodies line dropped (3), a dropped count
+alone saying nothing (1). The full suite on the committed tree (Linux) passed 6,496 tests and skipped 24 (Windows-only,
+live-provider and environment-gated cases, none in the observation files); `ruff check`, `ruff format --check` and `mypy` are
+clean. The Windows cell runs on CI.

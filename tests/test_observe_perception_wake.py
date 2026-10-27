@@ -44,6 +44,7 @@ from zakcode.session.framework_signal import (
 )
 from zakcode.session.observation_inbox import (
     KIND_CHANGE,
+    KIND_FAREWELL,
     KIND_HEARTBEAT,
     PERCEPTION_RECEIVED_SIGNAL,
 )
@@ -230,8 +231,39 @@ def test_unstamped_envelope_does_not_wake(tmp_path: Path) -> None:
     assert not _marker(tmp_path).exists()
 
 
+def test_farewell_envelope_raises_the_wake(tmp_path: Path) -> None:
+    """Nothing follows a farewell: a mind that is not woken for it learns it by accident."""
+    _plant_seed(tmp_path, setter_body=_frame_first_setter_body())
+    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_FAREWELL))
+    assert resp.status_code == 200
+    assert resp.json()["wake"] == "delivered"
+    assert _marker(tmp_path).exists(), "the frame was staged before the signal went"
+    assert _staged(tmp_path)["kind"] == KIND_FAREWELL
+
+
+def test_farewell_in_reader_mode_is_not_attempted(tmp_path: Path) -> None:
+    """The autonomous-only contract binds a farewell exactly as it binds a change."""
+    _plant_seed(tmp_path, mode="reader")
+    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_FAREWELL))
+    assert resp.json()["wake"] == "not-attempted"
+    assert not _marker(tmp_path).exists()
+    assert _staged(tmp_path)["kind"] == KIND_FAREWELL, "not waking is not dropping"
+
+
+def test_a_heartbeat_over_an_unread_farewell_does_not_wake_a_second_time(tmp_path: Path) -> None:
+    """The farewell already woke the loop; the timer frame behind it adds no wake of its own."""
+    _plant_seed(tmp_path)
+    client = _client(tmp_path)
+    client.post("/observe", json=_envelope(kind=KIND_FAREWELL))
+    _marker(tmp_path).unlink()  # the sleeping loop took the signal
+    resp = client.post("/observe", json=_envelope(kind=KIND_HEARTBEAT))
+    assert resp.json()["wake"] == "not-attempted"
+    assert not _marker(tmp_path).exists()
+    assert _staged(tmp_path)["kind"] == KIND_FAREWELL, "and the staged frame still says farewell"
+
+
 def test_an_unknown_kind_does_not_wake(tmp_path: Path) -> None:
-    """The gate is equality with "change", not "not a heartbeat" — fail-safe on new values."""
+    """The gate is membership in the waking kinds, not "not a heartbeat": fail-safe on new kinds."""
     _plant_seed(tmp_path)
     resp = _client(tmp_path).post("/observe", json=_envelope(kind="snapshot"))
     assert resp.status_code == 200
