@@ -1678,8 +1678,8 @@
   }
 
   // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
-  // need); reconnects for as long as its chat is the one shown, resuming after the
-  // last seen cursor of the same bus.
+  // need); reconnects for as long as its chat is the one shown and still exists,
+  // resuming after the last seen cursor of the same bus.
   async function watchLoop(gen) {
     while (gen === shown) {
       try {
@@ -1688,6 +1688,17 @@
         if (busEpoch !== null) qs += "&epoch=" + encodeURIComponent(busEpoch);
         watchAbort = new AbortController();
         const resp = await fetch("/watch/" + sessionId + "?full=1" + qs, { signal: watchAbort.signal });
+        if (resp.status === 404) {
+          // The chat is gone (deleted, or its saved file removed), and no reconnect brings it back:
+          // say so and stop asking, where the page asked again every 1.5 s for as long as it stayed
+          // open (ADR-0327). A turn shown running ends with it; the chat list shows what there is.
+          if (gen !== shown) return;
+          setConn("closed", "chat not found");
+          endTurn();
+          add(errCard("this chat no longer exists — open another from the list"));
+          refreshChats();
+          return;
+        }
         if (!resp.ok) throw new Error("watch " + resp.status);
         setConn("open", "connected");
         // A server that names no bus (an older one) never differs, so it never resets the page.
