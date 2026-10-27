@@ -188,6 +188,19 @@ def test_a_message_and_a_bus_event_made_in_one_instant_come_back_as_one_number(
     assert at >= body["bus_from"]  # so the page counts the message as the bus's
 
 
+class _SteppingClock:
+    """Stands in for ``datetime`` in the bus: each reading is one second past the last, so events
+    published one after another carry stamps that differ. The real clock need not: on Windows it
+    moves in 15.6 ms steps, and four events published in a row read one stamp between them."""
+
+    def __init__(self, start: datetime) -> None:
+        self._next = start
+
+    def now(self, tz: tzinfo | None = None) -> datetime:
+        reading, self._next = self._next, self._next + timedelta(seconds=1)
+        return reading.astimezone(tz) if tz is not None else reading
+
+
 def test_the_cut_falls_where_the_oldest_turn_the_bus_holds_whole_begins(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -196,6 +209,8 @@ def test_the_cut_falls_where_the_oldest_turn_the_bus_holds_whole_begins(
     the bus without its beginning. The cut falls where the oldest turn the bus holds WHOLE begins,
     its user line: the page draws everything older from here and resumes the watch after
     ``bus_since``, so the replay starts at that line (ADR-0325)."""
+    # Stamps one second apart on every platform, so the cut's stamp can be told from the oldest.
+    monkeypatch.setattr(event_bus, "datetime", _SteppingClock(datetime(2026, 10, 27, tzinfo=UTC)))
     registry = event_bus.EventBusRegistry()
     monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
     app, store = _build(tmp_path)

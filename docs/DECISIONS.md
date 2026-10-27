@@ -20187,8 +20187,12 @@ the say consumer reads, so it does not end one. Still open: `POST /chat` puts no
 watcher whose own queue (512) overflows mid-connection loses events and is not told; buses are
 never discarded (`EventBusRegistry.discard` has no caller); the reconnect retries every 1.5 s for
 good, a 404 included; `.current-session` is written in place, not atomically; a rotation posted
-through the marker route is not forgotten; and a running turn longer than the ring still replays
-without its head.
+through the marker route is not forgotten; a running turn longer than the ring still replays
+without its head; and the join is still by stamp, so on a clock as coarse as Windows' (15.6 ms) a
+saved message of the turn before, made in the tick of the user line the cut falls on, reads as the
+bus's and is drawn from neither side. Measured under a frozen clock, and the same on the cut this
+replaces: a join that does not read the clock (a saved user line carrying its marker's cursor and
+bus) would close it.
 
 The proof. tests/test_event_bus.py (`forget` drops only what it picks and reuses no cursor;
 `oldest_where`), tests/test_webapp_sessions.py (a chat made current again forgets the rotation),
