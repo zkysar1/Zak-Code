@@ -9,7 +9,8 @@ never starts here — each test drives exactly the beats it means to).
 Covers: a say becomes a turn on the workspace's current session (marker written,
 session saved, inbox consumed exactly once); an idle inbox is a no-op beat; a beat
 yields while a turn is in flight; ``POST /interrupt`` writes the contract's
-interrupt file; the ``GET /sessions/current`` join flow the web page boots through;
+interrupt file (naming a chat, only while a say turn runs on it); the
+``GET /sessions/current`` join flow the web page boots through;
 and — against a REAL loopback uvicorn server, where the lifespan actually starts
 the background loop — the full path the web page rides: POST /say → the consumer
 runs the turn → a late-joining ``?full=1`` watcher replays ``user_message`` +
@@ -191,6 +192,50 @@ def test_interrupt_route_writes_the_contract_file(tmp_path: Path) -> None:
     assert resp.status_code == 200
     assert resp.json() == {"requested": True}
     assert interrupt_path(tmp_path).exists()
+
+
+def test_stop_ends_a_say_turn_when_it_names_that_turns_chat(tmp_path: Path) -> None:
+    """The page's Stop names the chat on screen (ADR-0327). A say turn watches the workspace's
+    interrupt file, so Stop naming its chat writes the file and the turn ends where it waits.
+    Stop naming another chat, which runs no turn, writes nothing, and the say turn goes on."""
+    started = asyncio.Event()
+
+    class _Waits:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            started.set()
+            await asyncio.sleep(3600)
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Waits(session),
+    )
+    assert write_say(say_path(tmp_path), "deploy it")
+
+    async def go() -> tuple[Any, bool, bool, Any, bool]:
+        turn = asyncio.create_task(app.state.consume_one_say())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        sid = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            elsewhere = (await client.post("/interrupt", json={"session_id": "another"})).json()
+            await asyncio.sleep(0.7)  # two of the say turn's 0.3 s looks at the file
+            ran_on, signalled = not turn.done(), interrupt_path(tmp_path).exists()
+            stop = (await client.post("/interrupt", json={"session_id": sid})).json()
+        return elsewhere, ran_on, signalled, stop, await asyncio.wait_for(turn, timeout=5)
+
+    elsewhere, ran_on, signalled, stop, ran = asyncio.run(go())
+    assert elsewhere == {"requested": False}
+    assert ran_on and not signalled  # Stop on another chat left the say turn alone
+    assert stop == {"requested": True}
+    assert ran is True  # the say turn ended
+    assert not interrupt_path(tmp_path).exists()  # its watcher took the signal
 
 
 def test_sessions_current_join_flow(tmp_path: Path) -> None:

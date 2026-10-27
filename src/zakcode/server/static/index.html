@@ -1528,7 +1528,14 @@
 
   sendBtn.onclick = () => {
     if (turnActive) {
-      fetch("/interrupt", { method: "POST" }).catch(() => add(errCard("interrupt failed")));
+      // Stop names the chat on screen, so it ends that chat's turn whoever runs it: a say, or a
+      // turn a terminal drives through POST /chat or /chat/stream, which the bare signal never
+      // reached (ADR-0327).
+      fetch("/interrupt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => add(errCard("interrupt failed")));
       return;
     }
     sendMessage();

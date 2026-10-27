@@ -105,6 +105,14 @@ class RunStopRequest(BaseModel):
     reason: str | None = None
 
 
+class InterruptRequest(BaseModel):
+    """Body of ``POST /interrupt``, and optional. ``session_id`` names the chat whose turn is to
+    stop, as the page names the chat it shows; with no body the workspace's turn is asked to
+    stop, as it always was (ADR-0327)."""
+
+    session_id: str | None = None
+
+
 class SayRequest(BaseModel):
     """Body of ``POST /say`` — a user message the driver delivers as the next turn's
     MESSAGE (the watch/talk unification: talking is just the driven session's next
