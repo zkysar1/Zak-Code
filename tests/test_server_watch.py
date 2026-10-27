@@ -31,7 +31,9 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from zakcode import SkillInvocation
 from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import (
@@ -42,7 +44,7 @@ from zakcode.events import (
     AgentToolResult,
     AgentUsage,
 )
-from zakcode.messages import Message
+from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.server import app as server_app
 from zakcode.server import event_bus
 from zakcode.server.app import create_app
@@ -547,3 +549,121 @@ async def test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep(
         assert not bus.closed
         release.set()
         assert (await turn).status_code == 200
+
+
+# ── a POST /chat turn on the bus (ADR-0327) ──────────────────────────────────
+
+
+class _BufferedAgent:
+    """AgentLike that runs a turn the buffered way only, as ``POST /chat`` does: a reply that
+    reads a file, the file, and a closing reply. With ``fail`` the turn raises instead, and the
+    skill ``hidden`` is refused."""
+
+    def __init__(self, session: Session, *, fail: bool = False) -> None:
+        self.session = session
+        self.fail = fail
+
+    async def compose_skill_turn(self, name: str, args: str = "") -> SkillInvocation:  # noqa: ARG002
+        if name == "hidden":
+            return SkillInvocation(
+                invoked=True, name="hidden", denied_reason="hidden is user-invocable: false"
+            )
+        return SkillInvocation(invoked=False)
+
+    async def arun_turn(self, user_text: str) -> TurnResult:
+        if self.fail:
+            raise RuntimeError("the provider went away")
+        self.session.add_message(Message.user(user_text))
+        looks = Message(
+            role="assistant",
+            blocks=[
+                TextBlock(text="let me look"),
+                ToolUseBlock(id="c1", name="read", input={"path": "notes.md"}),
+            ],
+        )
+        answer = Message.assistant_text("they say hello")
+        self.session.add_message(looks)
+        self.session.add_message(answer)
+        return TurnResult(
+            assistant_messages=[looks, answer],
+            tool_results=[ToolResultBlock(tool_use_id="c1", output="the notes")],
+            iterations=2,
+            usage=Usage(total_tokens=7),
+        )
+
+
+def _chat_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False
+) -> tuple[TestClient, EventBusRegistry]:
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _BufferedAgent(s, fail=fail)
+    )
+    return TestClient(app, raise_server_exceptions=False), registry
+
+
+def _held(registry: EventBusRegistry, sid: str) -> list[Any]:
+    """What the chat's bus holds, oldest first: its replay, read to the end and no further."""
+    bus = registry.get(sid)
+    assert bus is not None
+
+    async def replay() -> list[Any]:
+        agen = bus.subscribe(since=None)
+        held = [(await agen.__anext__())[1] for _ in range(bus.latest_cursor)]
+        await agen.aclose()
+        return held
+
+    return asyncio.run(replay())
+
+
+def test_a_chat_turn_reaches_the_watch_bus_once_it_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``POST /chat`` put nothing on the bus, so a page watching the chat never saw its turns.
+    Once a turn is done, the bus now gets the frames a streamed turn sends, in their order."""
+    client, registry = _chat_app(tmp_path, monkeypatch)
+    sid = client.post("/sessions").json()["id"]
+    resp = client.post("/chat", json={"message": "what do the notes say?", "session_id": sid})
+    assert resp.status_code == 200
+    held = _held(registry, sid)
+    assert [event.event for event in held] == [
+        "user_message",
+        "text",
+        "tool_call",
+        "tool_result",
+        "text",
+        "done",
+    ]
+    question, looks, call, read, answer, done = held
+    assert question.text == "what do the notes say?"
+    assert (looks.text, answer.text) == ("let me look", "they say hello")
+    assert (call.id, call.name, call.arguments) == ("c1", "read", {"path": "notes.md"})
+    assert (read.tool_use_id, read.output, read.name) == ("c1", "the notes", "read")
+    assert (done.stop_reason, done.iterations, done.usage.total_tokens) == ("completed", 2, 7)
+
+
+def test_a_refused_chat_puts_its_refusal_on_the_bus_as_a_streamed_one_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, registry = _chat_app(tmp_path, monkeypatch)
+    sid = client.post("/sessions").json()["id"]
+    assert client.post("/chat", json={"message": "/hidden", "session_id": sid}).status_code == 403
+    held = _held(registry, sid)
+    assert [event.event for event in held] == ["user_message", "status", "done"]
+    assert held[2].stop_reason == "skill_refused"
+
+
+def test_a_chat_turn_that_fails_still_ends_on_the_bus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page had the turn's line, and with no ``done`` after it showed the turn thinking
+    until its next reconnect."""
+    client, registry = _chat_app(tmp_path, monkeypatch, fail=True)
+    sid = client.post("/sessions").json()["id"]
+    assert client.post("/chat", json={"message": "hi", "session_id": sid}).status_code == 500
+    held = _held(registry, sid)
+    assert [event.event for event in held] == ["user_message", "done"]
+    assert (held[1].stop_reason, held[1].degraded) == ("provider_error", True)

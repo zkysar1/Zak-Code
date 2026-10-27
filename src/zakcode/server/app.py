@@ -1206,21 +1206,82 @@ def create_app(
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
+        from zakcode.events import AgentDone, AgentTextDelta, AgentToolCall, AgentToolResult
+        from zakcode.usage import Usage
+
         _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
         _claim_session(session)
         agent: AgentLike | None = None
+
+        def tee(event: Any) -> None:
+            # Onto the watch bus only, so a page watching this chat draws the turn (ADR-0327).
+            # suppress: the read-only fan-out must never break the turn.
+            with contextlib.suppress(Exception):
+                event_bus_registry.get_or_create(session.id).publish(event)
+
         try:
             agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
                 # A refused control skill is an HTTP outcome, not a turn (the CLI exits 1):
                 # policy refusal → 403, an unreadable skill file → 500. The finally below
-                # still releases the reservation.
+                # still releases the reservation. A watching page gets the frames a streamed
+                # refusal sends, its `done` among them.
+                for refused in refusal_events(slash):
+                    tee(refused)
                 raise HTTPException(
                     status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
                 )
-            result = await agent.arun_turn(slash.turn_text or request.message)
+            try:
+                result = await agent.arun_turn(slash.turn_text or request.message)
+            except Exception:
+                # The page has the turn's line; without a `done` it would show it thinking
+                # until its next reconnect (the say consumer's rule, fresh-eyes F-3).
+                tee(
+                    AgentDone(
+                        stop_reason="provider_error",
+                        iterations=0,
+                        usage=Usage(),
+                        degraded=True,
+                        error="turn failed before completing — see server log",
+                    )
+                )
+                raise
+            # arun_turn and not astream_turn: only the buffered turn carries seam B (best-of-N).
+            # So the turn reaches the bus once it is done, in the order a streamed turn's frames
+            # would have: each reply's text, then its tool calls each with its result.
+            outputs = {block.tool_use_id: block for block in result.tool_results}
+            for message in result.assistant_messages:
+                if message.text:
+                    tee(AgentTextDelta(text=message.text))
+                for call in message.tool_uses:
+                    tee(AgentToolCall(id=call.id, name=call.name, arguments=call.input))
+                    if (output := outputs.get(call.id)) is not None:
+                        tee(
+                            AgentToolResult(
+                                tool_use_id=output.tool_use_id,
+                                output=output.output,
+                                is_error=output.is_error,
+                                data=output.data,
+                                artifacts=output.artifacts,
+                                name=call.name,
+                            )
+                        )
+            tee(
+                AgentDone(
+                    stop_reason=result.stop_reason,
+                    iterations=result.iterations,
+                    usage=result.usage,
+                    error=result.error,
+                    degraded=result.degraded,
+                    open_steps=result.open_steps,
+                    routed_category=result.routed_category,
+                    routed_escalated=result.routed_escalated,
+                    trace=result.trace,
+                )
+            )
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
