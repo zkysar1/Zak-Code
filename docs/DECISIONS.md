@@ -19656,6 +19656,9 @@ the retry, dropping it turned the retried-to-success test and the 50-attempt cas
 raised-at-once case red; and a bound that falls through, which would return without publishing, turned the give-up case red.
 `ruff check`, `ruff format --check`, `mypy` and the full suite are green: 5,785 passed, 22 skipped.
 
+**Amended by ADR-0326 (2026-10-27):** `SessionStore.save` renames through the same retry, now
+`atomic_write.replace_retrying`. It had an `os.replace` of its own, and a save Windows refused lost a served turn.
+
 ## ADR-0319: the web page lists the workspace's saved chats, opens any of them or a new one, and the next turn runs on the chat it opened
 
 **Status:** Accepted (2026-10-15)
@@ -20207,3 +20210,44 @@ earlier one that fails says nothing; a chat clicked before Make this chat active
 it; the banner without the list; a page
 opening a chat made current again does not see it restart). Each was seen to fail with its fix
 reverted. `uv run poe check` green.
+
+## ADR-0326: a session save retries the rename Windows refuses while a reader has the file open, because a served turn starts from the file
+
+**Status:** Accepted (2026-10-27)
+
+**Context.** `SessionStore.save` writes the session to a temp file of its own, syncs it to disk, and `os.replace`s it onto
+`<id>.json`. On Windows that rename is refused with `PermissionError` (access denied) while another handle holds the target
+open. ADR-0318 retries the refusal in `write_text_atomic`, and `status_file._atomic_write` and `cli.swap_install._move`
+retry it too; the session store did not. Observed on CI's `windows-latest` cell on the merge of #806: in
+`test_webclient_bus_epoch.py` the say consumer's save at the end of a turn was refused (`[WinError 5] Access is denied`)
+while the test was polling `GET /sessions/current/transcript`, which reads that file. The consumer logged `beat failed`,
+the turn was never saved, and the test's 15 s wait for it ran out. The same tree had passed on that cell as the PR's head.
+A served turn does not keep its session between turns: the say consumer and `POST /chat` load it from the store each time.
+So the next turn starts from the file without the refused one, and its own save writes over it: a turn the page showed is
+gone from the saved conversation. Anything that reads the file can hold it, among them the transcript a page loads when it
+opens a chat or starts over, and the chat list when a chat's file has changed since the list last read it.
+
+**Decision.**
+
+* `atomic_write.replace_retrying(tmp, path)` is the retried rename `write_text_atomic` already did, on its own: on Windows a
+  `PermissionError` is retried, up to 50 attempts 10 ms apart, and then raised; elsewhere it is raised at once.
+  `write_text_atomic` calls it, and behaves as it did.
+* `SessionStore.save` renames through it. Its temp name, its sync to disk and its cleanup on failure are as they were. Every
+  save takes it: the say consumer, `/chat`, `/chat/stream`, and the terminal client.
+
+Rejected: a retry in the say consumer, which leaves every other save exposed; a copy of the loop in the store, which would
+be a fourth retry with a bound of its own (`status_file` tries twice, 50 ms apart); and readers that open the file with
+delete sharing, which Python's `open` cannot ask for on Windows and which every reader of the file would have to do.
+
+Not verified: a deployed server on Windows. A reader that holds the file longer than the retry lasts, about half a second,
+still fails the save, as ADR-0318 records for its writers, and the say consumer still loses that turn.
+
+**Consequences.** On Windows a save waits out a reader instead of failing at its first refusal. POSIX is unchanged.
+
+The proof. `tests/test_session_edge.py`: a save whose rename is refused twice and then let through saves the new
+conversation and leaves no temp (every platform, with a stand-in for `os.replace`); and, on Windows only, a save onto a file
+really held open is refused by Windows, the holder lets go, and the save lands. That test asserts the refusal happened, so it
+fails if Windows lets the rename through. Two sabotages were each run green, red, green (2026-10-27): the store's bare
+`os.replace` put back turned the first test red with `PermissionError`; the helper's retry disabled turned it red together
+with `test_atomic_write.py`'s retried-to-success and 50-attempt cases, so both writers rename through the one helper. The
+Windows test runs only on CI's `windows-latest` cell and was not run against a sabotage. `uv run poe check` green.

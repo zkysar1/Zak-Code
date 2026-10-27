@@ -13,6 +13,9 @@ a reader has open. The likely cause is a handle held on the target for a moment 
 isolated), so on Windows the rename is retried and the writers take turns. POSIX renames are
 serialised by the kernel, and a ``PermissionError`` there is a real refusal, so it is raised
 at once.
+
+``replace_retrying`` is that rename on its own, for a writer that makes its temp file itself:
+``SessionStore.save`` syncs its temp to disk before the rename (ADR-0326).
 """
 
 from __future__ import annotations
@@ -43,17 +46,25 @@ def write_text_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}{_TMP_SUFFIX}")
     try:
         tmp.write_text(text, encoding="utf-8")
-        for attempt in range(_RENAME_ATTEMPTS):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if not _RETRY_RENAME_REFUSAL or attempt == _RENAME_ATTEMPTS - 1:
-                    raise
-                time.sleep(_RENAME_PAUSE_S)
+        replace_retrying(tmp, path)
     except BaseException:
         # Best-effort cleanup of the partial temp file; swallow cleanup errors so the
         # original failure is the one that propagates.
         with contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         raise
+
+
+def replace_retrying(tmp: Path, path: Path) -> None:
+    """``os.replace`` ``tmp`` onto ``path``. On Windows a refused rename is retried until it
+    clears or the bound is spent, then the refusal is raised; elsewhere it is raised at once.
+    ``tmp`` stays the caller's: if this raises, removing it is the caller's job.
+    """
+    for attempt in range(_RENAME_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if not _RETRY_RENAME_REFUSAL or attempt == _RENAME_ATTEMPTS - 1:
+                raise
+            time.sleep(_RENAME_PAUSE_S)
