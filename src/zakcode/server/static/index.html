@@ -1574,7 +1574,7 @@
       // they end at that turn's own user line, the first one at or after its stamp: not at every
       // message stamped at or after it, since a clock as coarse as Windows' (15.6 ms) can stamp the
       // turn before's last reply in the same tick, and the replay, which starts at the turn, would
-      // not draw it either (ADR-0326). With no turn start (a running turn the bus holds part of), a
+      // not draw it either (ADR-0327). With no turn start (a running turn the bus holds part of), a
       // message at or after the bus's oldest event is the bus's.
       let saved = t.messages;
       if (t.bus_from !== null && t.bus_since !== null) {

@@ -394,7 +394,7 @@ class SessionTranscript(BaseModel):
     this route and lets the replay draw the rest, so a reopened page shows the whole conversation
     without drawing any message twice. Not every message at or after the stamp is the replay's:
     on a clock as coarse as Windows' (15.6 ms), the turn before's last reply can carry the same
-    stamp, and the replay does not draw it (ADR-0326). ``bus_since`` is the cursor the page's
+    stamp, and the replay does not draw it (ADR-0327). ``bus_since`` is the cursor the page's
     watch resumes after (its ``since``), so the replay starts at that same line.
 
     When the bus holds no turn's start, the turn its events belong to has ended or is still

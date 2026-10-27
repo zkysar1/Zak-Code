@@ -317,7 +317,7 @@ def test_a_reply_stamped_in_the_tick_the_next_turn_starts_in_is_drawn_once(tmp_p
     that starts the next can carry one stamp. The cut falls on the second turn's user line, and
     the page drew from the saved conversation only what was stamped before it: the reply was
     hidden there, and the replay, which starts at the second turn, did not draw it either
-    (ADR-0326)."""
+    (ADR-0327)."""
     tick = _T0 + 60
     saved = {
         "messages": [
