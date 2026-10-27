@@ -322,6 +322,38 @@ def test_the_pages_watching_the_replaced_chat_are_told_to_follow(
     assert made[-1].get(other.id) is None  # nothing is made for a chat nobody watches yet
 
 
+def test_a_chat_made_current_again_forgets_the_rotation_it_was_told_when_it_was_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A, then another chat, then A again. The rotation A's watchers were told when it was left
+    is over once A is current again; kept in A's bus, it replayed to every page that opened A
+    afterwards, which read it as A restarting under it and ended the turn on screen
+    (ADR-0325). Only the rotation goes: the rest of A's bus is kept."""
+    made: list[EventBusRegistry] = []
+
+    class _Registry(EventBusRegistry):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(server_app, "EventBusRegistry", _Registry)
+    served = _Served(tmp_path)
+    current = served.saved(("an ask", "a reply"))
+    other = served.saved(("another ask", "another reply"))
+    served.mark(current)
+    watched = made[-1].get_or_create(current.id)  # a page is watching the current chat
+    watched.publish(WatchMarkerRequest(event="user_message", text="an ask"))
+
+    def kinds() -> list[str]:
+        return [event.event for _, event, _ in list(watched._buffer)]
+
+    assert served.put_current({"session_id": other.id}).status_code == 200
+    assert kinds() == ["user_message", "session_rotated"]  # its watchers were told to follow
+    assert served.put_current({"session_id": current.id}).status_code == 200
+    assert served.marker() == current.id
+    assert kinds() == ["user_message"]
+
+
 # ── POST /say: a message is for the chat it was written in ─────────────────────────────────
 
 

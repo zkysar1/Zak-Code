@@ -9,8 +9,10 @@ Guarantees:
 
 * **Bounded memory.** Each session retains at most ``maxlen`` events (default 1000) in a ring
   buffer; the oldest are evicted. A slow or abandoned watcher can never grow memory without
-  bound. Because cursors are monotonic, a watcher that fell behind the retained window sees a
-  cursor *gap* and knows it missed events.
+  bound. Because cursors are monotonic, a watcher that fell behind the retained window can
+  tell: the oldest cursor the bus still holds (``oldest_cursor``) is past the one after its
+  own. A gap between two cursors does not say so by itself, since ``forget`` leaves a hole
+  where each event it drops was (ADR-0325).
 * **Cursor-addressed replay.** Every published event gets a strictly increasing cursor (starting
   at 1). ``subscribe(since=c)`` replays every retained event with cursor > c, then tails live.
   ``since=None``/``0`` replays the whole retained buffer.
@@ -94,6 +96,14 @@ class SessionEventBus:
         return self._cursor
 
     @property
+    def oldest_cursor(self) -> int | None:
+        """Cursor of the oldest retained event; ``None`` while the bus holds none. A client that
+        resumes after a cursor older than the one before it missed what the ring evicted, so it
+        cannot pick up where it was (ADR-0325)."""
+        buffer = self._buffer  # one read: forget() may put another ring in its place
+        return buffer[0][0] if buffer else None
+
+    @property
     def subscriber_count(self) -> int:
         return len(self._subscribers)
 
@@ -133,6 +143,34 @@ class SessionEventBus:
         for queue in list(self._subscribers):
             _offer(queue, item)
         return self._cursor
+
+    def forget(self, drop: Callable[[Any], bool]) -> int:
+        """Drop every retained event ``drop`` picks, and say how many were dropped.
+
+        For news that is over, which a replay must not hand to a late joiner who would read it as
+        happening now (a chat's rotation notice once the chat is current again, ADR-0325). Live
+        subscribers are not touched: whatever is already queued for them still arrives. The
+        events kept keep their cursors and no cursor is handed out again, so a replay has a hole
+        where a forgotten event was.
+        """
+        kept = [item for item in self._buffer if not drop(item[1])]
+        dropped = len(self._buffer) - len(kept)
+        if dropped:
+            # One assignment, so a reader on another thread (a sync route) finds the old ring or
+            # the new one, never one half emptied.
+            self._buffer = deque(kept, maxlen=self._buffer.maxlen)
+        return dropped
+
+    def oldest_where(self, pick: Callable[[Any], bool]) -> tuple[int, float] | None:
+        """The cursor and publish stamp of the oldest RETAINED event ``pick`` picks, or ``None``.
+
+        The transcript route asks it where the oldest turn the bus still holds whole begins
+        (ADR-0325). Read from a snapshot of the ring, so a route running on another thread never
+        iterates the ring while the event loop appends to it."""
+        for cursor, event, at in list(self._buffer):
+            if pick(event):
+                return cursor, at
+        return None
 
     async def subscribe(
         self, since: int | None = None

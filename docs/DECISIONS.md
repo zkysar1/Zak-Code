@@ -20120,3 +20120,90 @@ tests/test_registry_active.py (an unknown name → a did-you-mean fix; a nonsens
 tests/test_stuck.py (the nudge names the repeatedly-failing tool), and tests/test_on_request_tools.py
 (the readers start hidden on an empty workspace, are re-exposed when their document type is present,
 and the reader an upload names is exposed; vendored dirs are not scanned). `uv run poe check` green.
+
+## ADR-0325: the page draws a chat it opens, comes back to or reconnects to once and as it is, and opens the last chat asked for
+
+Status: accepted. 2026-10-27. Amends ADR-0286 (where the saved conversation meets the replay),
+ADR-0289 (the page also starts over on its own bus) and ADR-0319 (the chat list and its banner).
+
+Context. A trace of what the page does when people switch between chats found six faults, each
+reproduced against the real server or the page's own script before it was fixed:
+
+1. A chat made current again replayed its old rotation. Leaving a chat puts `session_rotated` on
+   its bus for the pages watching it, and the bus kept it. A page that opened the chat once it was
+   current again replayed the notice, found the chat still current, marked it "session restarted"
+   and ended the turn on screen.
+2. The saved conversation and the replay met at a stamp, the oldest retained event's (`bus_from`).
+   The ring evicts one event at a time, so that event can sit anywhere in a turn: a reply whose
+   first deltas were gone was drawn from its middle, its head on neither side. A turn longer than
+   the ring left no start on the bus at all, so a page opening it midway drew the running turn with
+   Send where Stop belongs.
+3. A dropped watch connection reset the turn on screen. The approval card went down for good (its
+   `action_required` lies behind the cursor, so no resume replays it) and the server's fail-closed
+   deny ran out the clock with nobody asked; a call still running read "interrupted" and its
+   result drew a row of its own; Stop turned back into Send. A page away long enough for the ring
+   to evict past its cursor resumed there and went on without what it missed.
+4. Two quick clicks in the chat list could land on the first. Opening a chat waits for its
+   `GET /sessions/{id}`, and a long chat answers slower than a short one: the page opened
+   whichever answer came back last.
+5. A `POST /chat/stream` turn (the terminal's server mode) put its events on the bus but not the
+   user's line, so a page watching drew the replies with no question.
+6. The banner that says the chat on screen is not the active one was set only when the chat list
+   loaded: while the list could not load, it went on saying "Make this chat active" over the
+   active chat.
+
+Decision. One layer per fault.
+
+1. News that is over is forgotten (`SessionEventBus.forget`, `_make_current`). A chat made current
+   drops the `session_rotated` notices its own bus holds. Live subscribers keep what is already
+   queued for them, the events kept keep their cursors and no cursor is handed out again, so a
+   forgotten event leaves a hole in the replay. At the source, because a page cannot tell a
+   replayed notice from a live one.
+2. The saved conversation meets the replay at a turn's start (`SessionEventBus.oldest_where`, the
+   transcript's `bus_since` and `running`, the page's `replayFloor`). The transcript cuts where the
+   oldest turn the bus holds whole begins, its `user_message`: messages older than its stamp are
+   drawn from disk, and the page resumes after the cursor before it, skipping any replayed frame at
+   or below that one. With no turn start retained, an ended turn is drawn whole from disk and the
+   page resumes after the latest cursor; a running one replays what the bus holds, and `running`
+   has the page show it running, Stop and all, before any frame does.
+3. A dropped connection is not a turn end (`watchLoop`, `X-Bus-Oldest`,
+   `SessionEventBus.oldest_cursor`). The reconnect no longer resets the turn's view: the resume goes
+   on with it. The watch response names the oldest cursor its bus holds, and a page whose cursor is
+   older than the one before that starts over from the saved conversation, as it does on a
+   replaced bus (ADR-0289), reading the response it already has. A gap between two cursors is not
+   the signal, since layer 1 leaves holes.
+4. The last chat asked for is the one that opens: `viewChat` counts the asks, Make this chat active
+   and New chat count as one, and an answer for an earlier ask opens nothing and, when it is a
+   failure, says nothing in the chat on screen.
+5. `POST /chat/stream` puts the user's line on the bus before the turn, as the say consumer does.
+   The bus only: the stream to the client driving the turn is unchanged.
+6. The banner moves with the chat on screen: `openSession` and `switchTo` set it, list or no list.
+
+Consequences. A client that drives a turn through `POST /chat/stream` must not post that turn's
+`user_message` through `POST /watch/{id}/marker`: the line would show twice. Nothing does since
+`zakcode drive` was retired (#204), and the marker route stays for turns the server does not run.
+A `/chat/stream` turn now shows running on the page, but the page's Stop writes the interrupt only
+the say consumer reads, so it does not end one. Still open: `POST /chat` puts nothing on the bus; a
+watcher whose own queue (512) overflows mid-connection loses events and is not told; buses are
+never discarded (`EventBusRegistry.discard` has no caller); the reconnect retries every 1.5 s for
+good, a 404 included; `.current-session` is written in place, not atomically; a rotation posted
+through the marker route is not forgotten; a running turn longer than the ring still replays
+without its head; and the join is still by stamp, so on a clock as coarse as Windows' (15.6 ms) a
+saved message of the turn before, made in the tick of the user line the cut falls on, reads as the
+bus's and is drawn from neither side. Measured under a frozen clock, and the same on the cut this
+replaces: a join that does not read the clock (a saved user line carrying its marker's cursor and
+bus) would close it.
+
+The proof. tests/test_event_bus.py (`forget` drops only what it picks and reuses no cursor;
+`oldest_where`), tests/test_webapp_sessions.py (a chat made current again forgets the rotation),
+tests/test_server_transcript.py (the cut at the oldest whole turn; a turn longer than the bus is
+replayed while it runs and drawn from disk once it ends), tests/test_webclient_reload_history.py (a
+page reopened on such a turn draws its reply whole; a bus that starts inside a turn is joined at the
+next one), tests/test_server_consumer.py (a `/chat/stream` turn's line reaches the bus),
+tests/test_server_watch.py (`X-Bus-Oldest`), and tests/test_webclient_switching.py (the page: a
+dropped connection keeps the turn and its approval; a result after a resume resolves its card; a
+resume past the ring starts over; a running turn shows Stop; quick clicks land on the last, and an
+earlier one that fails says nothing; a chat clicked before Make this chat active does not open over
+it; the banner without the list; a page
+opening a chat made current again does not see it restart). Each was seen to fail with its fix
+reverted. `uv run poe check` green.

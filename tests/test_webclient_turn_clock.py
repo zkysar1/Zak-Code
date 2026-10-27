@@ -3,8 +3,8 @@
 The page times a turn from its user_message's publish stamp. A dropped watch connection is
 not a turn end: the page resumes from its cursor and the same turn's done frame arrives on
 the new connection, so that footer must still carry the duration. A turn that DOES end
-stops the clock, so a later turn that opens without a user_message (a /chat/stream turn)
-prints no duration rather than one spanning two turns.
+stops the clock, so a later turn that opens without a user_message (one joined after the bus
+evicted it) prints no duration rather than one spanning two turns.
 
 These run the page's OWN script, cut from the shipped page, under node, against a DOM just
 deep enough for it and a fetch that serves a scripted watch stream per connection. Not a
@@ -243,7 +243,7 @@ def test_a_turn_that_ends_stops_its_clock(tmp_path: Path) -> None:
         "null": [
             ("1", {"event": "user_message", "text": "hello", "at": _T0}),
             ("2", _done(_T0 + 75.3)),
-            # A second turn with no user_message of its own (a /chat/stream turn).
+            # A second turn with no user_message of its own (one joined after the bus evicted it).
             ("3", {"event": "text", "text": "a turn nobody timed", "at": _T0 + 200.0}),
             ("4", _done(_T0 + 230.0)),
         ],

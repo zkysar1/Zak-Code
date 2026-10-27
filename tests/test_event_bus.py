@@ -146,6 +146,35 @@ def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
     assert bus.oldest_at == 11.0
 
 
+def test_oldest_where_is_the_cursor_and_stamp_of_the_oldest_retained_event_picked() -> None:
+    """Where the oldest turn the bus still holds whole begins (ADR-0325): the cursor and stamp of
+    the oldest RETAINED event a test picks, and none when no retained event is picked, an
+    evicted one included."""
+    stamps = iter([10.0, 11.0, 12.0, 13.0, 14.0])
+    bus = SessionEventBus(maxlen=3, clock=lambda: next(stamps))
+    assert bus.oldest_where(lambda event: event.startswith("start")) is None
+    for x in ("start-1", "a", "start-2", "b", "c"):
+        bus.publish(x)  # "start-1" and "a" are evicted
+    assert bus.oldest_where(lambda event: event.startswith("start")) == (3, 12.0)
+    assert bus.oldest_where(lambda event: event == "a") is None
+
+
+async def test_forget_drops_only_the_events_it_picks_and_hands_out_no_cursor_again() -> None:
+    """News that is over must not reach a late joiner, who would read it as happening now: a
+    chat's rotation notice, once the chat is current again (ADR-0325). Forgetting drops just
+    those events. The rest keep their cursors and replay in order, and the next publish is not
+    given a dropped cursor."""
+    bus = SessionEventBus()
+    for x in ("a", "over", "b", "over", "c"):
+        bus.publish(x)
+    assert bus.forget(lambda event: event == "over") == 2
+    assert bus.forget(lambda event: event == "over") == 0
+    assert bus.publish("d") == 6
+    agen = bus.subscribe(since=None)
+    assert await _take(agen, 4) == [(1, "a"), (3, "b"), (5, "c"), (6, "d")]
+    await agen.aclose()
+
+
 # ── Multiple subscribers ─────────────────────────────────────────────────────
 
 
