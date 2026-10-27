@@ -190,7 +190,10 @@ Four distinct mechanisms, each for a different job:
   the oldest cursor its bus still holds (`X-Bus-Oldest`, absent while it holds none): a cursor older
   than the one before it has missed what the ring evicted, and the page starts over then too. A
   dropped connection is not a turn end, so the page keeps the turn on screen and resumes it
-  (ADR-0325).
+  (ADR-0325). A bus is not kept for good: `DELETE /sessions/{id}` lets its chat's bus go unless a
+  turn is running on it, which ends its watchers' streams; their reconnect answers 404, and the page
+  then says the chat is gone and stops asking. Of the idle buses (nobody watching, not the current
+  chat, no turn running), the server keeps the 16 most recently active (ADR-0327).
 - `POST /run/stop` — the **run contract** (ADR-0047): ask the whole run, not a turn, to end
   gracefully with a reason token; the consumer takes the same ending path a cap-hit takes
   (digest → `run_end_command` → `on_run_end`), so a bound outside the process can end a run

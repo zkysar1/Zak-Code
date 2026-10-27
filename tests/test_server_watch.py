@@ -18,6 +18,7 @@ tests without a decorator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 import threading
@@ -31,6 +32,7 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
+from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import (
     AgentDone,
@@ -42,6 +44,7 @@ from zakcode.events import (
 )
 from zakcode.messages import Message
 from zakcode.server import app as server_app
+from zakcode.server import event_bus
 from zakcode.server.app import create_app
 from zakcode.server.event_bus import EventBusRegistry
 from zakcode.session.store import Session, SessionStore
@@ -438,3 +441,109 @@ async def test_watch_marker_publishes_user_message_to_observers(live_url: str) -
     questions = [f for f in frames if f.get("event") == "user_message"]
     # The turn's own line comes first (ADR-0325); the driver's marker is the one published after.
     assert [q["text"] for q in questions] == ["hi", "what did you learn about volcanoes?"]
+
+
+# ── a bus let go (ADR-0327) ──────────────────────────────────────────────────
+
+
+async def test_deleting_a_session_ends_its_watch_and_its_reconnect_hears_it_is_gone(
+    live_url: str,
+) -> None:
+    """The bus went on holding a deleted chat's events, and a page watching the chat was never
+    let go: its stream stayed open on a chat that no longer existed."""
+    sid = await _run_turn(live_url)
+    timeout = httpx.Timeout(10.0, read=5.0)  # a stream left open fails here, not as a hang
+    async with httpx.AsyncClient(base_url=live_url, timeout=timeout) as ac:
+        async with ac.stream("GET", f"/watch/{sid}?full=1") as resp:
+            assert resp.status_code == 200
+            lines = resp.aiter_lines()
+            async for line in lines:
+                if line.startswith("data:"):
+                    break  # replaying, so the watch is on the bus
+            assert (await ac.delete(f"/sessions/{sid}")).status_code == 204
+            async for _ in lines:  # the rest of the replay, then the end of the stream
+                pass
+        assert (await ac.get(f"/watch/{sid}")).status_code == 404
+
+
+def test_the_current_chats_bus_is_never_let_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(event_bus, "_IDLE_BUSES", 0)
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    _make_app(tmp_path)
+    (tmp_path / ".current-session").write_text("current\n", encoding="utf-8")
+    current = registry.get_or_create("current")
+    left = registry.get_or_create("left")
+    registry.get_or_create("new")  # a sweep that keeps no idle bus
+    assert left.closed
+    assert not current.closed
+
+
+async def test_a_marker_for_a_bus_let_go_after_it_was_found_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker route finds the bus and then publishes on it, on a thread of its own; a sweep
+    on the event loop can let the bus go in between. Nobody watched it, so there is nobody to
+    tell: the route says it published nothing, where publishing on the closed bus raised."""
+
+    class _LetGoOnceFound(EventBusRegistry):
+        def get(self, session_id: str) -> event_bus.SessionEventBus | None:
+            bus = super().get(session_id)
+            if bus is not None:
+                bus.close()  # the sweep, between the route's get and its publish
+            return bus
+
+    registry = _LetGoOnceFound()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    app = _make_app(tmp_path)
+    registry.get_or_create("s1")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/watch/s1/marker", json={"event": "session_rotated", "reason": "another chat"}
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"published": False, "cursor": None}
+
+
+async def test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn holds its bus to publish on, and publishing on a bus that was let go raises, so
+    while the turn runs its chat's bus stays, deleted or idle."""
+    monkeypatch.setattr(event_bus, "_IDLE_BUSES", 0)
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class _BlockingAgent:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def arun_turn(self, user_text: str) -> TurnResult:
+            started.set()
+            await release.wait()
+            return TurnResult(stop_reason="completed", iterations=1)
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s)
+    )
+    # Another chat is current, so only the running turn keeps this one's bus (a first chat
+    # would otherwise become the current one, and stay for that reason alone).
+    (tmp_path / ".current-session").write_text("elsewhere\n", encoding="utf-8")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        sid = (await ac.post("/sessions")).json()["id"]
+        turn = asyncio.create_task(ac.post("/chat", json={"message": "a", "session_id": sid}))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        bus = registry.get(sid)  # the turn's own: its prompter publishes on it
+        assert bus is not None
+        registry.get_or_create("another")  # a sweep that keeps no idle bus
+        assert (await ac.delete(f"/sessions/{sid}")).status_code == 204
+        assert not bus.closed
+        release.set()
+        assert (await turn).status_code == 200

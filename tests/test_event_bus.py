@@ -298,3 +298,53 @@ def test_a_session_whose_bus_is_made_again_gets_a_new_epoch() -> None:
     assert reg.get_or_create("s1").epoch == first.epoch
     reg.discard("s1")
     assert reg.get_or_create("s1").epoch != first.epoch
+
+
+# ── Idle buses let go (ADR-0327) ─────────────────────────────────────────────
+
+
+@pytest.fixture
+def two_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registry keeps two idle buses, so a handful of sessions shows the sweep."""
+    from zakcode.server import event_bus as eb
+
+    monkeypatch.setattr(eb, "_IDLE_BUSES", 2)
+
+
+@pytest.mark.usefixtures("two_idle")
+def test_making_a_bus_lets_go_of_the_least_recently_active_idle_buses_past_the_cap() -> None:
+    reg = EventBusRegistry()
+    reg.in_use = lambda: ()
+    a, b, c = (reg.get_or_create(sid) for sid in ("a", "b", "c"))
+    a.publish("news")  # published on
+    reg.get_or_create("b")  # asked for
+    reg.get_or_create("d")  # idle: c, then a, then b; the two most recent are kept
+    assert c.closed
+    assert reg.get("c") is None
+    assert sorted(reg.session_ids) == ["a", "b", "d"]
+    assert not (a.closed or b.closed)
+
+
+@pytest.mark.usefixtures("two_idle")
+async def test_a_watched_bus_and_a_bus_in_use_are_never_let_go() -> None:
+    """Both are older than every other bus here, so they would be the first to go if idle."""
+    reg = EventBusRegistry()
+    reg.in_use = lambda: {"used"}
+    used = reg.get_or_create("used")
+    watched = reg.get_or_create("watched")
+    watched.publish("x")
+    agen = watched.subscribe(since=None)
+    await _take(agen, 1)  # a watcher, parked at its replay
+    for sid in ("e1", "e2", "e3", "e4"):
+        reg.get_or_create(sid)
+    assert not (used.closed or watched.closed)
+    assert sorted(reg.session_ids) == ["e2", "e3", "e4", "used", "watched"]
+    await agen.aclose()
+
+
+def test_a_registry_not_told_what_is_in_use_lets_no_bus_go() -> None:
+    """A turn holds its bus to publish on, and only the server knows which turns run, so until
+    it says, closing any bus could close one under a turn."""
+    reg = EventBusRegistry()
+    buses = [reg.get_or_create(f"s{i}") for i in range(40)]
+    assert not any(bus.closed for bus in buses)

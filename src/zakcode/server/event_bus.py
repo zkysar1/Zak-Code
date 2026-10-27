@@ -13,6 +13,11 @@ Guarantees:
   tell: the oldest cursor the bus still holds (``oldest_cursor``) is past the one after its
   own. A gap between two cursors does not say so by itself, since ``forget`` leaves a hole
   where each event it drops was (ADR-0325).
+* **Bounded in number.** A bus nobody watches, whose session the server is not using (the
+  current chat, or one with a turn running), is idle. The registry keeps the ``_IDLE_BUSES``
+  most recently active idle buses and lets go of the rest whenever it makes a bus, so a server
+  that has seen many chats does not hold every one's last events. A deleted session's bus goes
+  when it does (ADR-0327).
 * **Cursor-addressed replay.** Every published event gets a strictly increasing cursor (starting
   at 1). ``subscribe(since=c)`` replays every retained event with cursor > c, then tails live.
   ``since=None``/``0`` replays the whole retained buffer.
@@ -37,9 +42,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import secrets
 from collections import deque
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Collection
 from datetime import UTC, datetime
 from typing import Any, Final
 
@@ -52,6 +58,14 @@ _SUBSCRIBER_QUEUE_MAXLEN: Final = 512
 #: Sentinel pushed to every subscriber queue on close(), so a live-tailing subscribe() coroutine
 #: wakes and returns instead of hanging forever on an idle bus.
 _CLOSE: Final = object()
+
+#: How many idle buses a registry keeps (ADR-0327). Past this many, the least recently active
+#: are let go whenever the registry makes a bus.
+_IDLE_BUSES: Final = 16
+
+#: Orders buses by when they were last in use: one count for the process, so any two buses
+#: compare, and a count rather than a clock, so two used in one tick of a coarse clock still do.
+_ACTIVITY = itertools.count()
 
 
 def _wall_clock() -> float:
@@ -84,6 +98,7 @@ class SessionEventBus:
         self._clock = clock
         self._subscribers: set[asyncio.Queue[Any]] = set()
         self._closed = False
+        self._active = next(_ACTIVITY)
 
     @property
     def epoch(self) -> str:
@@ -110,6 +125,18 @@ class SessionEventBus:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def last_active(self) -> int:
+        """When this bus was last in use, as an order and not a time: larger is more recent. A bus
+        is in use when it is made or asked for (``touch``), when an event is published on it, and
+        when a watcher stops watching it."""
+        return self._active
+
+    def touch(self) -> None:
+        """Mark this bus in use now. The registry does on every ask, so a bus about to be watched
+        or published on is the last an idle sweep would let go."""
+        self._active = next(_ACTIVITY)
 
     @property
     def oldest_at(self) -> float | None:
@@ -140,6 +167,7 @@ class SessionEventBus:
         self._cursor += 1
         item = (self._cursor, event, self._clock())
         self._buffer.append(item)
+        self.touch()
         for queue in list(self._subscribers):
             _offer(queue, item)
         return self._cursor
@@ -209,6 +237,7 @@ class SessionEventBus:
                 last = cursor
         finally:
             self._subscribers.discard(queue)
+            self.touch()  # watched until now: as recent as a bus gets once nobody watches it
 
     def close(self) -> None:
         """Mark the bus closed and wake every live subscriber so it returns."""
@@ -231,22 +260,50 @@ def _offer(queue: asyncio.Queue[Any], item: Any) -> None:
 
 
 class EventBusRegistry:
-    """Maps ``session_id`` -> :class:`SessionEventBus`, creating buses on demand."""
+    """Maps ``session_id`` -> :class:`SessionEventBus`, creating buses on demand.
+
+    Making a bus lets go of the idle buses past the ``_IDLE_BUSES`` most recently active
+    (ADR-0327). A bus is idle when nobody watches it and ``in_use`` does not name its session.
+    """
 
     def __init__(self, maxlen: int = _DEFAULT_MAXLEN) -> None:
         self._buses: dict[str, SessionEventBus] = {}
         self._maxlen = maxlen
+        #: The sessions whose buses are in use however idle they look, set by the server: the
+        #: current chat, and every chat with a turn running (a turn holds its bus to publish on,
+        #: and a bus let go is closed). While unset, no bus is let go.
+        self.in_use: Callable[[], Collection[str]] | None = None
 
     def get_or_create(self, session_id: str) -> SessionEventBus:
         bus = self._buses.get(session_id)
         if bus is None or bus.closed:
             bus = SessionEventBus(maxlen=self._maxlen)
             self._buses[session_id] = bus
+            self._let_go_of_idle(but=session_id)
+        else:
+            bus.touch()
         return bus
+
+    def _let_go_of_idle(self, but: str) -> None:
+        """Discard the idle buses past the ``_IDLE_BUSES`` most recently active. ``but`` is the
+        bus just made, which its caller is about to use."""
+        if self.in_use is None:
+            return
+        in_use = {but, *self.in_use()}
+        idle = sorted(
+            (bus.last_active, sid)
+            for sid, bus in self._buses.items()
+            if sid not in in_use and bus.subscriber_count == 0 and not bus.closed
+        )
+        for _, sid in idle[: max(0, len(idle) - _IDLE_BUSES)]:
+            self.discard(sid)
 
     def get(self, session_id: str) -> SessionEventBus | None:
         bus = self._buses.get(session_id)
-        return bus if bus is not None and not bus.closed else None
+        if bus is None or bus.closed:
+            return None
+        bus.touch()
+        return bus
 
     def discard(self, session_id: str) -> None:
         """Close and forget a session's bus (call on session delete/end)."""

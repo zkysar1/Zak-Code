@@ -1174,9 +1174,14 @@ def create_app(
         return FileResponse(path, media_type=artifact.mime_type, filename=artifact.filename)
 
     @app.delete("/sessions/{session_id}", status_code=204)
-    def delete_session(session_id: str) -> None:
+    async def delete_session(session_id: str) -> None:
+        # async, so the bus below is closed on the event loop its watchers wait on.
         if not resolved_store.delete(session_id):
             raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+        # Its bus goes with it: a page watching it is let go, and its reconnect hears the chat
+        # is gone. Not while a turn runs on it, which holds the bus to publish on (ADR-0327).
+        if session_id not in inflight:
+            event_bus_registry.discard(session_id)
 
     # ── chat ───────────────────────────────────────────────────────────────────
 
@@ -1452,7 +1457,13 @@ def create_app(
         bus = event_bus_registry.get(session_id)
         if bus is None:
             return {"published": False, "cursor": None}
-        cursor = bus.publish(request)
+        try:
+            cursor = bus.publish(request)
+        except RuntimeError:
+            if not bus.closed:
+                raise
+            # Let go of since the get, as idle (ADR-0327): nobody watched it, so nobody to tell.
+            return {"published": False, "cursor": None}
         return {"published": True, "cursor": cursor}
 
     # ── sidecar read-only surface (P0-4 /workspace/summary, P0-5 /sidecar/health) ─
@@ -1481,6 +1492,14 @@ def create_app(
         except OSError:
             return None
         return value or None
+
+    def _buses_in_use() -> set[str]:
+        """The chats whose buses stay however idle they look (ADR-0327): the current one, and
+        every one with a turn running, which holds its bus to publish on."""
+        current = _current_session_id()
+        return {*inflight, current} if current is not None else set(inflight)
+
+    event_bus_registry.in_use = _buses_in_use
 
     def _switch_refusal() -> str | None:
         """Why the current conversation cannot change now, or None when it can (ADR-0319): a
