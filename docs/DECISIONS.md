@@ -20481,3 +20481,70 @@ the remainder able to go negative (1), junk rows counted as bodies (1), the othe
 alone saying nothing (1). The full suite on the committed tree (Linux) passed 6,496 tests and skipped 24 (Windows-only,
 live-provider and environment-gated cases, none in the observation files); `ruff check`, `ruff format --check` and `mypy` are
 clean. The Windows cell runs on CI.
+
+## ADR-0329: a completion with neither text nor a tool call stores the empty-completion placeholder even when it carries thinking
+
+**Status:** Accepted (2026-10-28)
+
+**Context.** Both assistant-message builders, `_assistant_message` (buffered) and `_stream_assistant_message` (streamed),
+store `_EMPTY_COMPLETION_PLACEHOLDER` for a completion with neither text nor tool calls. The reason: an OpenAI-compatible
+server refuses any history message with neither `content` nor `tool_calls`, and refuses it again on every later call in the
+session (measured 2026-08-22). Both builders detected that case with `if not blocks`, and both put the completion's thinking
+into `blocks` first. The streamed builder receives a pod's streamed reasoning as one unsigned `ThinkingBlock`, which
+`_translate_messages` never replays (ADR-0321). So a reasoning-only streamed completion, where the model reasons and then
+stops with nothing visible, was stored as that block alone. `blocks` was not empty, so no placeholder was added, and the
+message went out as `{"role": "assistant", "content": null}`.
+
+Measured 2026-10-28 on a self-hosted pod (Qwen3.8-27B behind a reasoning parser) serving ten long-running sessions, over
+fifteen hours. Six reasoning-only completions were stored that way; the transcript shows each as an assistant message with no
+content blocks. After each one, llama-server refused that session's next request with `400 Assistant message must contain
+either 'content' or 'tool_calls'!`. These 47 refusals were the only exceptions the engines logged that day.
+
+- A refusal ends the turn with a provider error.
+- A Stop hook that blocks that end only continues the turn into the next refusal.
+- A compaction succeeds, because it summarizes with a prompt of its own (ADR-0082), but it did not always clear the message.
+  One such message stalled its session three times.
+
+In all there were eleven stalls, about four hours of session time from the first refusal to the next accepted call.
+
+**Decision.** Both builders add the placeholder when the completion has neither text nor a tool call, whatever thinking it
+carries. The thinking blocks are kept as before, ahead of the placeholder: a signed block still replays, and an unsigned one
+is still kept for the transcript only. Both docstrings already stated this rule. The `if not blocks` test stopped implementing
+it once a block could be thinking that is never sent.
+
+Rejected:
+
+- Dropping the unsigned block when nothing else came. The transcript and the trace would lose the only record of what that
+  completion did.
+- Filling `content` in `_translate_messages` instead. That covers only the litellm provider: `claude_code.py` and
+  `text_tools.py` omit thinking blocks too. It would also leave the stored message wrong for every reader of the session file.
+
+Not verified:
+
+- A signed thinking-only completion against Anthropic's API. It now replays as its thinking followed by the placeholder text,
+  the shape of any answered completion.
+- That the compactions above kept the message in their verbatim tail. This is inferred: it was the only assistant message
+  added after the last accepted request.
+
+**Consequences.**
+
+- A reasoning-only completion is stored as its thinking plus the placeholder. The next request is valid, and the reasoning
+  overflow nudge (ADR-0056) gets an answer instead of a refusal.
+- The transcript shows the placeholder where it showed an assistant message with no content.
+- When a turn's last completion is reasoning-only, the turn reports the placeholder as `last_assistant_message`, as a completion
+  with no thinking already did.
+- A session saved before this change that already holds such a message is not repaired. Its requests are refused until a
+  compaction summarizes the message away.
+
+The proof.
+
+- `tests/test_loop_stream.py`: a reasoning-only stream followed by an answer stores the unsigned block and the placeholder.
+  The request after it, translated the way the litellm provider sends it, holds no assistant message without `content` or
+  `tool_calls`. The existing unsigned-stream test now also pins that an answered completion gets no placeholder.
+- `tests/test_loop_resilience_history.py`: the buffered twin. A lone thinking block, through a scripted provider, stores
+  `[ThinkingBlock, TextBlock]`, and the session translates to a valid wire.
+- Two sabotages were each run green, red, green (2026-10-28). Putting `if not blocks` back in either builder turned that
+  builder's new test red, and only that test. The old stored shape translates to `{'role': 'assistant', 'content': None}`,
+  which the wire check rejects.
+- The full suite on the committed tree (Linux) passed 6,521 tests and skipped 24 (Windows-only, live-provider and
+  environment-gated cases). `ruff check`, `ruff format --check` and `mypy` are clean.

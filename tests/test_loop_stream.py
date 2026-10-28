@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from zakcode.agent._stream import ToolCallAccumulator, parse_arguments
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import _EMPTY_COMPLETION_PLACEHOLDER, AgentLoop
 from zakcode.config import Settings
 from zakcode.events import (
     AgentDone,
@@ -36,6 +36,7 @@ from zakcode.providers.base import (
     StreamToolCallDelta,
     StreamUsage,
 )
+from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.session.store import Session
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -358,6 +359,64 @@ async def test_unsigned_streamed_thinking_is_one_unsigned_block(tmp_path: Any) -
     assistant = [m for m in loop.session.messages if m.role == "assistant"]
     blocks = [(b.text, b.signature) for b in assistant[0].blocks if isinstance(b, ThinkingBlock)]
     assert blocks == [("let me see", None)]
+    assert assistant[0].text == "ok."  # an answered completion gets no placeholder
+
+
+class WireRecordingStreamProvider(ScriptedStreamProvider):
+    """Also records each request as the OpenAI-compatible wire carries it."""
+
+    def __init__(self, scripts: list[list[ProviderStreamEvent]]) -> None:
+        super().__init__(scripts)
+        self.wires: list[list[dict[str, Any]]] = []
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        self.wires.append(LiteLLMProvider._translate_messages(list(messages), None))
+        async for event in super().astream(messages, system=system, tools=tools, **kwargs):
+            yield event
+
+
+@pytest.mark.anyio
+async def test_a_reasoning_only_stream_stores_the_placeholder_beside_its_block(
+    tmp_path: Any,
+) -> None:
+    """ADR-0329: a pod's reasoning with no text and no tool call keeps its unsigned block
+    AND gets the empty-completion placeholder. The block is never replayed, so without the
+    placeholder the next request carried an assistant message with neither content nor
+    tool_calls, which an OpenAI-compatible server refuses on every later call."""
+    provider = WireRecordingStreamProvider(
+        [
+            [
+                StreamThinkingDelta(text="let me "),
+                StreamThinkingDelta(text="see"),
+                StreamUsage(usage=Usage(total_tokens=3)),
+                StreamDone(finish_reason="stop"),
+            ],
+            [
+                StreamTextDelta(text="ok."),
+                StreamUsage(usage=Usage(total_tokens=3)),
+                StreamDone(finish_reason="stop"),
+            ],
+        ]
+    )
+    loop = _build_loop(tmp_path, provider)
+    await _collect(loop, "hm")
+
+    first = next(m for m in loop.session.messages if m.role == "assistant")
+    blocks = [(b.text, b.signature) for b in first.blocks if isinstance(b, ThinkingBlock)]
+    assert blocks == [("let me see", None)]
+    assert first.text == _EMPTY_COMPLETION_PLACEHOLDER
+    # The request after the reasoning-only completion is the one the server refused.
+    assert len(provider.wires) == 2
+    replayed = [m for m in provider.wires[1] if m["role"] == "assistant"]
+    assert replayed
+    assert all(m["content"] or m.get("tool_calls") for m in replayed), replayed
 
 
 @pytest.mark.anyio
