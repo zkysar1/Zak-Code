@@ -20,12 +20,19 @@ from unittest.mock import patch
 import pytest
 
 from zakcode.agent.budget import IterationBudget
-from zakcode.agent.compact import ELISION_MARKER, CompactionConfig, Compactor
+from zakcode.agent.compact import (
+    CONTINUATION_NOTE,
+    ELISION_MARKER,
+    SUMMARY_MARKER,
+    CompactionConfig,
+    Compactor,
+)
 from zakcode.agent.loop import (
     _FOLD_CLOSE,
     _FOLD_PROMPT,
     _MAX_FOLD_PASSES,
     _MAX_SUMMARY_SLICES,
+    _POSITION_NOTE_HEAD,
     _SUMMARY_CLOSE,
     _SUMMARY_OUTPUT_CHARS,
     AgentLoop,
@@ -33,6 +40,7 @@ from zakcode.agent.loop import (
     _pack_parts,
     _summary_of,
     _summary_output_room,
+    _summary_target_words,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
@@ -982,7 +990,8 @@ def test_the_transcript_ends_with_the_instruction(tmp_path: Path) -> None:
     (call,) = provider.seen
     text = call[0].text
     assert text.startswith("Conversation transcript to summarize")
-    assert text.endswith(_SUMMARY_CLOSE)
+    assert text.endswith(_SUMMARY_CLOSE.format(words=400))  # the 8k window's budget (ADR-0330)
+    assert "in at most 400 words" in text
     assert text.index("answer 2") < text.index("[end of transcript]")
 
 
@@ -995,8 +1004,8 @@ def test_slices_and_folds_end_with_their_instruction(tmp_path: Path) -> None:
     slices = [c[0].text for c in provider.seen if c[0].text.startswith("Part ")]
     folds = [c[0].text for c in provider.seen if c[0].text.startswith(_FOLD_PROMPT)]
     assert len(slices) >= 2 and folds
-    assert all(text.endswith(_SUMMARY_CLOSE) for text in slices)
-    assert all(text.endswith(_FOLD_CLOSE) for text in folds)
+    assert all(text.endswith(_SUMMARY_CLOSE.format(words=400)) for text in slices)
+    assert all(text.endswith(_FOLD_CLOSE.format(words=400)) for text in folds)
 
 
 def test_the_summary_is_read_from_its_tags(tmp_path: Path) -> None:
@@ -1102,8 +1111,11 @@ def test_two_non_summaries_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> 
 
 
 def test_a_summary_may_open_with_the_previous_summary_s_label() -> None:
-    # On a re-compaction the transcript opens with the previous summary under [system]; a
-    # model that echoes the label before its summary has still written one.
+    # On a re-compaction the transcript opens with the previous summary under [earlier summary]
+    # (ADR-0330; [system] before it); a model that echoes the label before its summary has
+    # still written one.
+    summary, why = _summary_of("[earlier summary]\nThe merged summary.", 900)
+    assert summary.endswith("The merged summary.") and why == ""
     summary, why = _summary_of("[system]\n[Conversation summary]\nThe merged summary.", 900)
     assert summary.endswith("The merged summary.") and why == ""
     assert _summary_of("[assistant]\nI will carry on.", 900) == (
@@ -1229,3 +1241,68 @@ def test_every_summarizer_ask_carries_its_room(tmp_path: Path) -> None:
     capped = _CutSummarizer([_WHOLE], ["stop"], window=131_072, max_output=4_096)
     asyncio.run(_loop(capped, tmp_path)._summarize_for_compaction(_history(3)))
     assert [kw.get("max_tokens") for kw in capped.kwargs] == [4_096]
+
+
+# ── ADR-0330: a summary held to a budget, and the one before it condensed ─────────────
+
+
+@pytest.mark.parametrize(
+    ("window", "max_output", "words"),
+    [
+        (131_072, None, 3_100),  # the pod: 1/32 of the window, 4,096 tokens
+        (8_192, None, 400),  # a small window gets the 512-token floor
+        (1_048_576, None, 4_600),  # a long one stops at the 6,144-token ceiling
+        (131_072, 4_096, 1_500),  # half the call's output room, the rest left to think
+    ],
+)
+def test_the_summary_budget_follows_the_window_and_the_room(
+    window: int, max_output: int | None, words: int
+) -> None:
+    assert _summary_target_words(window, _summary_output_room(window, max_output)) == words
+
+
+def test_a_re_compaction_condenses_the_earlier_summary_instead_of_copying_it(
+    tmp_path: Path,
+) -> None:
+    # Measured 2026-10-28 (a 27B model on the pod): handed the previous summary whole under
+    # [system], marker and notes included, the summarizer carried it forward. One session's
+    # summaries grew from 12,000 to 119,000 characters in seven hours, and one summary held
+    # nine position notes, eight of them stale.
+    from zakcode.tasks import skill_skeleton
+
+    provider = _SummarizerProvider(
+        ["<summary>The user asked for A; B is done.</summary>", "<summary>A is done.</summary>"],
+        tokens=100,
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n\n## Step 2: Beta\n\nbeta\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+    loop.session.messages.extend(_history(5))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    installed = loop.session.messages[0].text
+    assert "Harness position" in installed and "automated summary" in installed  # the premise
+    loop.session.messages.extend(_history(4))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    second = provider.seen[1][0].text
+    assert second.startswith(
+        "Conversation transcript to summarize (each turn is labeled by role):\n\n"
+        "[earlier summary]\nThe user asked for A; B is done.\n\n[user]\n"
+    )
+    assert "[system]" not in second and "[Conversation summary]" not in second
+    assert "Harness position" not in second and "automated summary" not in second
+    assert "An [earlier summary] in it is history to condense with the rest" in second
+
+
+def test_an_earlier_summary_loses_every_harness_line_it_carried() -> None:
+    # A summary installed before ADR-0330 can hold notes and continuation lines the model
+    # copied forward from the summaries before it; none of them is history.
+    note = f'{_POSITION_NOTE_HEAD}\n- plan: current step "Beta" (1 of 2 steps closed)\n- request: A'
+    said = f"Goal: ship A.\n\n{note}\n\nDecisions: B.{CONTINUATION_NOTE}\n\nUnfinished: C."
+    installed = Message.system(f"{SUMMARY_MARKER}\n{said}\n\n{note}{CONTINUATION_NOTE}")
+
+    rendered = AgentLoop._render_for_summary([installed, Message.user("next")])
+
+    assert rendered == (
+        "[earlier summary]\nGoal: ship A.\n\nDecisions: B.\n\nUnfinished: C.\n\n[user]\nnext"
+    )

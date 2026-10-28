@@ -20548,3 +20548,75 @@ The proof.
   which the wire check rejects.
 - The full suite on the committed tree (Linux) passed 6,521 tests and skipped 24 (Windows-only, live-provider and
   environment-gated cases). `ruff check`, `ruff format --check` and `mypy` are clean.
+
+## ADR-0330: a compaction summary is held to a word budget, and the summary before it is condensed into it instead of copied
+
+**Status:** Accepted (2026-10-28)
+
+**Context.** On a re-compaction the summarizer read the previous summary whole, as `[system]` text: the
+`[Conversation summary]` marker, the summary, the harness position note (ADR-0082) and the continuation note. Nothing told it
+how long its own summary could be. The output cap (ADR-0275) was the only limit.
+
+Measured 2026-10-28 on a self-hosted pod (Qwen3.8-27B, 131k window) serving ten long-running worker sessions. The figures come
+from transcript metadata (sizes and counts of fixed harness strings, no conversation text) and the inference router's ledger.
+
+- One session's installed summaries grew from about 12,000 to about 119,000 characters in seven hours, across six
+  consecutive summaries. The 25 summaries measured for ADR-0242 on 2026-09-23 ran 810 to 13,007.
+- The summarizer carried the previous summary forward. The harness writes one position note per summary, yet one installed
+  summary held nine, eight of them stale and each still headed "authoritative". Another held five continuation notes.
+- A summary that outgrew the output cap was cut at 32,768 tokens and rejected (ADR-0275), asked for again, cut again, and the
+  compaction fell back to elision. By 16:20 UTC that day, 50 summarizer calls had ended at the cap: 18.4 engine-hours, about
+  22 minutes each. The engines cap reasoning at 2,048 tokens, so those outputs were summary text, not thinking.
+- In one session, eight compactions between 09:06 and 15:28 UTC took about 129 minutes of summarizer time.
+
+**Decision.**
+
+- Every summarizer call states a word budget in the text that closes the transcript (ADR-0242), where the model starts
+  writing: "in at most N words". A slice and a fold state the same budget. N is 1/32 of the summarizer's window, held between
+  512 and 6,144 tokens and to at most half the call's output room, at 0.75 words per token, rounded to hundreds: 3,100 words on
+  a 131k window, 400 on an 8k one, never more than 4,600. The budget is given in words because a model can count them.
+- The previous summary reaches the summarizer under its own label, `[earlier summary]`, and the close says it is history to
+  condense with the rest, not text to copy.
+- The summarizer's copy of it leaves out the marker, the continuation note and every position note, copies a model carried in
+  included. A position note is its heading line through the end of its block. The harness writes all three fresh at every
+  compaction, and the note is generated, never summarized (ADR-0082).
+- The output cap (ADR-0275) is unchanged.
+
+Rejected:
+
+- A lower output cap. It bounds the thinking ADR-0275 made room for, on every model, and a summary cut at the cap is rejected,
+  so long summaries would become failed compactions rather than shorter ones.
+- Truncating a summary that runs over the budget. Its end is the unfinished work: ADR-0275's census found that section in 140
+  of 207 summaries that finished and 7 of 27 that were cut.
+- Rejecting a summary over the budget and asking again. Each ask costs minutes on a local pod, and a summary that overshoots
+  its budget is still a summary.
+- The budget in the system instruction alone. ADR-0242 measured that instruction going unread above a long transcript.
+
+Not verified:
+
+- That the pod's model keeps to the budget. The change runs on one worker session before the rest take it, measured by the
+  size of each installed summary, the position notes it carries, the summarizer calls that end at the cap and the
+  compactions per hour.
+- That 3,100 words carry what a resumed session needs. The kept tail and the position note, which say where the session is,
+  are unchanged.
+- Any hosted model. A declared output cap under 8,192 tokens lowers the budget to half of it.
+
+**Consequences.**
+
+- A summary is asked to stay within the budget, so a re-compaction no longer starts from a summary that grows each time.
+- A summary installed before this change is condensed at its session's next compaction, without the notes it copied.
+- On a re-compaction the transcript's first label is `[earlier summary]` instead of `[system]`. `_summary_of` accepts a
+  summary that opens with either label.
+- The position note's heading is one constant, shared by the note and the renderer that removes it.
+
+The proof.
+
+- `tests/test_compact_loop.py`: the budget for four windows and output caps. A second compaction's prompt opens with
+  `[earlier summary]` and the first summary's own text, holds no marker, position note or continuation note, and its close
+  names the earlier summary. A summary carrying copied notes and a copied continuation note renders as its own text alone. The
+  close of a whole transcript, of each slice and of each fold states the 8k window's 400 words.
+- Five sabotages were each run green, red, green (2026-10-28). With the renderer's earlier-summary branch removed, the position
+  notes kept, or the continuation note kept, the two rendering tests turned red. With the old close text, the instruction test
+  and the re-compaction test turned red. Without the half-room limit, the capped-output budget case turned red.
+- The full suite (Linux) passed 6,527 tests and skipped 24 (Windows-only, live-provider and environment-gated cases).
+  `ruff check`, `ruff format --check` and `mypy` are clean.
