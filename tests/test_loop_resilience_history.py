@@ -15,7 +15,9 @@ from pathlib import Path
 
 from zakcode.agent.loop import _EMPTY_COMPLETION_PLACEHOLDER, _MAX_EMPTY_RETRIES, AgentLoop
 from zakcode.config import load_settings
+from zakcode.messages import TextBlock, ThinkingBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider
+from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
 from zakcode.usage import Usage
@@ -96,6 +98,29 @@ def test_session_survives_empty_completion_and_continues() -> None:
     for msg in loop.session.messages:
         if msg.role == "assistant":
             assert msg.blocks
+
+
+def test_a_thinking_block_alone_still_gets_the_placeholder() -> None:
+    # ADR-0329: a thinking block never stands in for the placeholder. An unsigned one
+    # (another backend's reasoning) is not replayed, so without the placeholder the next
+    # call carried an assistant message with neither content nor tool_calls.
+    provider = ScriptedProvider(
+        [
+            LLMResult(
+                text="", thinking_blocks=[{"thinking": "hm"}], finish_reason="stop", usage=_usage()
+            ),
+            LLMResult(text="ok", finish_reason="stop", usage=_usage()),
+        ]
+    )
+    loop = _loop(provider)
+
+    asyncio.run(loop.arun_turn("hello"))
+
+    first = next(m for m in loop.session.messages if m.role == "assistant")
+    assert [type(b) for b in first.blocks] == [ThinkingBlock, TextBlock]
+    assert first.text == _EMPTY_COMPLETION_PLACEHOLDER
+    wire = LiteLLMProvider._translate_messages(loop.session.messages, None)
+    assert all(m["content"] or m.get("tool_calls") for m in wire if m["role"] == "assistant")
 
 
 def test_trace_label_separates_child_dumps(tmp_path: Path) -> None:

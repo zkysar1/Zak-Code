@@ -5622,7 +5622,9 @@ class AgentLoop:
         ends cleanly; the placeholder just keeps the stored history provider-valid.
 
         When the completion carries thinking blocks WITH signatures (Anthropic adaptive
-        thinking), they are included so the next turn replays them faithfully.
+        thinking), they are included so the next turn replays them faithfully. A thinking
+        block never stands in for the placeholder (ADR-0329): an unsigned one is not
+        replayed at all, so a message holding only that goes out with neither field.
         """
         blocks: list[ContentBlock] = []
         # Thinking blocks go first (before text/tools) to match the provider's order.
@@ -5637,7 +5639,7 @@ class AgentLoop:
             blocks.append(TextBlock(text=result.text))
         for call in result.tool_calls:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
-        if not blocks:
+        if not result.text and not result.tool_calls:
             blocks.append(TextBlock(text=_EMPTY_COMPLETION_PLACEHOLDER))
         return Message(role="assistant", blocks=blocks)
 
@@ -11514,7 +11516,9 @@ class AgentLoop:
 
         When ``thinking_blocks`` are given (Anthropic adaptive thinking: text +
         signature pairs accumulated during streaming), they are included so the
-        next turn replays them faithfully.
+        next turn replays them faithfully. They never stand in for the placeholder
+        (ADR-0329): a pod's reasoning arrives here as one unsigned block, which is
+        kept for the transcript and never replayed.
         """
         blocks: list[ContentBlock] = []
         for tb in thinking_blocks or ():
@@ -11528,6 +11532,6 @@ class AgentLoop:
             blocks.append(TextBlock(text=text))
         for call in tool_calls:
             blocks.append(ToolUseBlock(id=call.id, name=call.name, input=call.arguments))
-        if not blocks:
+        if not text and not tool_calls:
             blocks.append(TextBlock(text=_EMPTY_COMPLETION_PLACEHOLDER))
         return Message(role="assistant", blocks=blocks)
