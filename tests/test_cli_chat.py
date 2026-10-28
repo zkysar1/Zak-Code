@@ -509,6 +509,35 @@ def test_chat_clear_default_keeps_rules_on(monkeypatch) -> None:
     assert all(b.get("enable_rules") is True for b in builds)
 
 
+def test_chat_clear_points_the_status_file_at_the_fresh_session(monkeypatch) -> None:
+    # ADR-0266: the status writer is bound to one session id, so /clear must hand it the
+    # fresh session's id or the file stops following the REPL.
+    agents: list[FakeAgent] = []
+
+    class TrackingAgent(FakeAgent):
+        def __init__(self, **overrides: object) -> None:
+            super().__init__(**{k: v for k, v in overrides.items() if k != "prompter"})
+            agents.append(self)
+
+    calls: list[tuple[str, str]] = []
+
+    class RecordingWriter:
+        def start(self, *, session_id: str, **_: object) -> None:
+            calls.append(("start", session_id))
+
+        def rebind(self, session_id: str, *, wakeup_due_at: float | None = None) -> None:
+            calls.append(("rebind", session_id))
+
+    recorder = RecordingWriter()
+    monkeypatch.setattr(zakcode, "Agent", TrackingAgent)
+    monkeypatch.setattr("zakcode.session.status_file.get_writer", lambda: recorder)
+    result = runner.invoke(app, ["cli"], input="/clear\n/exit\n")
+    assert result.exit_code == 0
+    assert len(agents) == 2
+    assert agents[0].session.id != agents[1].session.id
+    assert calls == [("start", agents[0].session.id), ("rebind", agents[1].session.id)]
+
+
 # Keep an explicit reference so the unused-import linter is satisfied for the
 # scripted-policy helper used indirectly above.
 _ = PermissionMode

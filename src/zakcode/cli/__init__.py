@@ -1324,6 +1324,22 @@ _REPLAY_MESSAGE_LIMIT = 12
 _REPLAY_CHAR_LIMIT = 2000
 
 
+def _rebind_status(agent: Any) -> None:
+    """Point the live status file at the session ``/clear`` or ``/resume`` swapped in.
+
+    The status writer is bound to one session id (ADR-0266), so without this the file
+    stopped following the REPL at its first session swap. Fire-and-forget, like the
+    writer's start: a status file that cannot follow costs the file, never the session.
+    """
+    from zakcode.session.status_file import get_writer
+
+    with contextlib.suppress(Exception):
+        wakeup = getattr(agent.session, "pending_wakeup", None)
+        get_writer().rebind(
+            agent.session.id, wakeup_due_at=wakeup.due_at if wakeup is not None else None
+        )
+
+
 def _announce_resume(console: Console, agent: Any) -> None:
     """Resume safety (ADR-0033): compact a transcript that is unsafe to continue verbatim.
 
@@ -3662,6 +3678,7 @@ def chat(
                 # A fresh session resets the per-session zakpick advisory (count + once-shown
                 # latch), so it never leaks across the documented session boundary.
                 zakpick_advisory[:] = [0, 0]
+                _rebind_status(agent)
                 notice_info(console, "started a fresh session")
                 continue
             if command == "/resume":
@@ -3719,6 +3736,7 @@ def chat(
                     notice_error(console, f"could not resume session {sid!r}", str(exc))
                     continue
                 zakpick_advisory[:] = [0, 0]
+                _rebind_status(agent)
                 notice_info(
                     console,
                     f"resumed session {sid} ({len(agent.session.messages)} messages)",

@@ -16133,6 +16133,17 @@ it moves only when a turn ends normally, so after an interrupted or failed turn 
 one. `since` stays the process start, which is what the file describes, and the next turn's end
 replaces the carried value as usual.
 
+**Amended 2026-10-28 (the file follows a session swap).** `/clear` and `/resume` replace the REPL's
+session inside the same process, and the writer stayed bound to the session it started with. Every
+transition after the swap was a no-op while the refresher kept `updated_at` fresh, so the file read
+live and stuck in the state it held at the swap for the rest of the process: an observer saw an
+idle session while the REPL worked, or an open turn that was long gone. The REPL now calls
+`rebind(<new session id>)` at both swaps. The file moves to `<new session id>.json`, so the path rule
+above stays true, and starts `idle` with the new session's armed wake-up and, for a resume, the
+`last_turn` an earlier process left at that path (the same carry rule as a restart). The old file is
+removed under the write lock, so a refresher write already under way cannot recreate it. A nested
+run never rebinds, so the session binding still keeps it out of the parent's file.
+
 ## ADR-0267: hook matchers follow Claude Code's matcher contract
 
 Status: accepted. 2026-09-29.
