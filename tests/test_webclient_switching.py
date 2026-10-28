@@ -44,6 +44,8 @@ const __later = setTimeout;  // the real clock, for this script's own timing
 // The reconnect backoff is a wait, not behaviour under test: the page's timers fire at once.
 globalThis.setTimeout = (fn, _ms, ...args) => __later(fn, 0, ...args);
 const __asked = {};  // transcripts asked for, per chat
+const __watched = {};  // watch connections asked for, per chat
+const __posted = [];  // what the page posted that the script has no answer of its own for
 function __sse(frames) {
   return frames.map(([id, f]) => `id: ${id}\r\ndata: ${JSON.stringify(f)}\r\n\r\n`).join("");
 }
@@ -81,7 +83,9 @@ globalThis.fetch = async (url, opts) => {
   m = u.pathname.match(/^\/watch\/([^/]+)$/);
   if (m) {
     const chat = chats[m[1]];
+    __watched[m[1]] = (__watched[m[1]] || 0) + 1;
     const conn = chat.watch[String(u.searchParams.get("since"))];
+    if (conn && conn.status) return __answer({ detail: "scripted" }, conn.status, 0);  // every time
     if (!conn || conn.used) return new Promise(() => {});  // the script is spent: never answers
     conn.used = true;
     const bytes = new TextEncoder().encode(__sse(conn.frames));
@@ -98,6 +102,9 @@ globalThis.fetch = async (url, opts) => {
                     "x-bus-oldest": conn.oldest === undefined ? null : String(conn.oldest) };
     const headers = { get: (name) => named[name.toLowerCase()] ?? null };
     return { ok: true, status: 200, headers, body: { getReader: () => ({ read }) } };
+  }
+  if (opts.method === "POST") {
+    __posted.push({ path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
   }
   return __answer({ queued: true }, 200, 0);  // /say, /interrupt
 };
@@ -116,6 +123,8 @@ function __look(label) {
     banner_hidden: document.getElementById("view-banner").hidden,
     placeholder: document.getElementById("input").placeholder,
     asked: { ...__asked },
+    watched: { ...__watched },
+    posted: [...__posted],
   };
 }
 for (const step of __SCN.steps) {
@@ -155,8 +164,9 @@ def _chat(
     fails: bool = False,
 ) -> dict[str, Any]:
     """One chat the scripted server holds. ``watch`` maps the ``since`` a watch connection asks
-    with to its ``frames``, whether it ``drop``s after them, and the ``oldest`` cursor it names;
-    a chat that ``fails`` answers its GET /sessions/{id} with a 500."""
+    with to its ``frames``, whether it ``drop``s after them, and the ``oldest`` cursor it names,
+    or to a ``status`` it answers every time instead; a chat that ``fails`` answers its
+    GET /sessions/{id} with a 500."""
     return {
         "info": {"id": sid, "model": "fake-model"},
         "title": title,
@@ -169,10 +179,13 @@ def _chat(
 
 
 def _page(
-    tmp_path: Path, chats: list[dict[str, Any]], steps: list[dict[str, Any]]
+    tmp_path: Path,
+    chats: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    errors: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
-    ``look`` step."""
+    ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default)."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -188,7 +201,7 @@ def _page(
     shown = json.loads(proc.stdout.decode("utf-8"))
     # A page error draws an error card, and so does a DOM this fake lacks: either one means the
     # rows below are not the page's whole story.
-    assert shown["errors"] == [], shown["errors"]
+    assert shown["errors"] == (errors or []), shown["errors"]
     seen: list[dict[str, Any]] = shown["seen"]
     return seen
 
@@ -309,7 +322,81 @@ def test_a_resume_after_a_cursor_the_bus_has_evicted_starts_the_chat_over(tmp_pa
     ]
 
 
+# ── a chat that no longer exists (ADR-0327) ──────────────────────────────────────────────────
+
+
+def test_a_chat_that_no_longer_exists_is_not_asked_for_again_and_again(tmp_path: Path) -> None:
+    """A watch that answers 404 names a chat that is gone (deleted, or its file removed), and no
+    reconnect brings it back. The page asked again every 1.5 s for as long as it stayed open, with
+    the turn it showed running still running. It now says the chat is gone, ends that turn on
+    screen, and stops asking."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN, "drop": True}, "2": {"status": 404}})
+    [seen] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 400, "look": "gone"}],
+        errors=["this chat no longer exists — open another from the list"],
+    )
+    assert seen["watched"][A] == 2  # the first connection, and the one reconnect it answered
+    assert seen["connection"] == "chat not found"
+    assert seen["send"] == "↑"  # the turn shown running ended with it
+
+
+# ── Stop (ADR-0327) ──────────────────────────────────────────────────────────────────────────
+
+
+def test_stop_names_the_chat_on_screen(tmp_path: Path) -> None:
+    """Stop asked the workspace's say turn to stop, the one turn that signal reaches, so a turn a
+    terminal ran on this chat through POST /chat or /chat/stream ran on. It now names the chat,
+    and the server stops whichever turn that chat runs."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    running, stopped = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 300, "look": "running"},
+            {"at": 320, "press": "send"},
+            {"at": 400, "look": "stopped"},
+        ],
+    )
+    assert running["send"] == "■"  # the turn runs, so the button is Stop
+    assert running["posted"] == []
+    assert stopped["posted"] == [{"path": "/interrupt", "body": {"session_id": A}}]
+
+
 # ── opening a chat (ADR-0325) ────────────────────────────────────────────────────────────────
+
+
+def test_a_reply_stamped_in_the_tick_the_next_turn_starts_in_is_drawn_once(tmp_path: Path) -> None:
+    """On a clock as coarse as Windows' (15.6 ms) the reply that ends one turn and the user line
+    that starts the next can carry one stamp. The cut falls on the second turn's user line, and
+    the page drew from the saved conversation only what was stamped before it: the reply was
+    hidden there, and the replay, which starts at the second turn, did not draw it either
+    (ADR-0327)."""
+    tick = _T0 + 60
+    saved = {
+        "messages": [
+            {"role": "user", "text": "one", "at": _T0},
+            {"role": "assistant", "text": "reply one", "at": tick},
+            {"role": "user", "text": "two", "at": tick},
+            {"role": "assistant", "text": "reply two", "at": tick + 5},
+        ],
+        "bus_from": tick,
+        "bus_since": 0,
+    }
+    turn = [
+        _frame(1, event="user_message", text="two", at=tick),
+        _frame(2, event="text", text="reply two", at=tick + 5),
+        _frame(3, event="done", stop_reason="completed", iterations=1, usage=_USAGE, at=tick + 6),
+    ]
+    chat = _chat(A, "chat A", watch={"0": {"frames": turn}}, transcripts=[saved])
+    [seen] = _page(tmp_path, [chat], [{"at": 300, "look": "opened"}])
+    assert _spoken(seen) == [
+        ("user", "one"),
+        ("assistant", "reply one"),
+        ("user", "two"),
+        ("assistant", "reply two"),
+    ]
 
 
 @pytest.mark.parametrize(("running", "button"), [(True, "■"), (False, "↑")])

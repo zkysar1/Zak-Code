@@ -544,8 +544,8 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   `--user` — the human's chevron is orange on every door (ADR-0186) — chromeless
   auto-growing `<textarea>` (1–6 rows, Enter sends, Shift+Enter newline), 34px circular
   Send (`↑`, the family's primary button) that morphs in place into Stop while streaming
-  (sends `{ type: "interrupt" }`); the textarea stays enabled during turns, only
-  submission is gated.
+  (posts `/interrupt` naming the chat on screen, so it ends that chat's turn whoever runs
+  it, ADR-0327); the textarea stays enabled during turns, only submission is gated.
 - **Scroll** — stick-to-bottom only within 40px of the bottom; when detached during
   streaming, a "↓ latest" pill floats above the composer and re-attaches on click.
 

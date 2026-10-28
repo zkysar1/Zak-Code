@@ -18,6 +18,7 @@ tests without a decorator.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 import threading
@@ -30,7 +31,10 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from zakcode import SkillInvocation
+from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import (
     AgentDone,
@@ -40,10 +44,12 @@ from zakcode.events import (
     AgentToolResult,
     AgentUsage,
 )
-from zakcode.messages import Message
+from zakcode.messages import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from zakcode.server import app as server_app
+from zakcode.server import event_bus
 from zakcode.server.app import create_app
 from zakcode.server.event_bus import EventBusRegistry
+from zakcode.session.say_inbox import interrupt_path
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
 
@@ -438,3 +444,328 @@ async def test_watch_marker_publishes_user_message_to_observers(live_url: str) -
     questions = [f for f in frames if f.get("event") == "user_message"]
     # The turn's own line comes first (ADR-0325); the driver's marker is the one published after.
     assert [q["text"] for q in questions] == ["hi", "what did you learn about volcanoes?"]
+
+
+# ── a bus let go (ADR-0327) ──────────────────────────────────────────────────
+
+
+async def test_deleting_a_session_ends_its_watch_and_its_reconnect_hears_it_is_gone(
+    live_url: str,
+) -> None:
+    """The bus went on holding a deleted chat's events, and a page watching the chat was never
+    let go: its stream stayed open on a chat that no longer existed."""
+    sid = await _run_turn(live_url)
+    timeout = httpx.Timeout(10.0, read=5.0)  # a stream left open fails here, not as a hang
+    async with httpx.AsyncClient(base_url=live_url, timeout=timeout) as ac:
+        async with ac.stream("GET", f"/watch/{sid}?full=1") as resp:
+            assert resp.status_code == 200
+            lines = resp.aiter_lines()
+            async for line in lines:
+                if line.startswith("data:"):
+                    break  # replaying, so the watch is on the bus
+            assert (await ac.delete(f"/sessions/{sid}")).status_code == 204
+            async for _ in lines:  # the rest of the replay, then the end of the stream
+                pass
+        assert (await ac.get(f"/watch/{sid}")).status_code == 404
+
+
+def test_the_current_chats_bus_is_never_let_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(event_bus, "_IDLE_BUSES", 0)
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    _make_app(tmp_path)
+    (tmp_path / ".current-session").write_text("current\n", encoding="utf-8")
+    current = registry.get_or_create("current")
+    left = registry.get_or_create("left")
+    registry.get_or_create("new")  # a sweep that keeps no idle bus
+    assert left.closed
+    assert not current.closed
+
+
+async def test_a_marker_for_a_bus_let_go_after_it_was_found_publishes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker route finds the bus and then publishes on it, on a thread of its own; a sweep
+    on the event loop can let the bus go in between. Nobody watched it, so there is nobody to
+    tell: the route says it published nothing, where publishing on the closed bus raised."""
+
+    class _LetGoOnceFound(EventBusRegistry):
+        def get(self, session_id: str) -> event_bus.SessionEventBus | None:
+            bus = super().get(session_id)
+            if bus is not None:
+                bus.close()  # the sweep, between the route's get and its publish
+            return bus
+
+    registry = _LetGoOnceFound()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    app = _make_app(tmp_path)
+    registry.get_or_create("s1")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/watch/s1/marker", json={"event": "session_rotated", "reason": "another chat"}
+        )
+    assert resp.status_code == 201
+    assert resp.json() == {"published": False, "cursor": None}
+
+
+async def test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn holds its bus to publish on, and publishing on a bus that was let go raises, so
+    while the turn runs its chat's bus stays, deleted or idle."""
+    monkeypatch.setattr(event_bus, "_IDLE_BUSES", 0)
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class _BlockingAgent:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def arun_turn(self, user_text: str) -> TurnResult:
+            started.set()
+            await release.wait()
+            return TurnResult(stop_reason="completed", iterations=1)
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _BlockingAgent(s)
+    )
+    # Another chat is current, so only the running turn keeps this one's bus (a first chat
+    # would otherwise become the current one, and stay for that reason alone).
+    (tmp_path / ".current-session").write_text("elsewhere\n", encoding="utf-8")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        sid = (await ac.post("/sessions")).json()["id"]
+        turn = asyncio.create_task(ac.post("/chat", json={"message": "a", "session_id": sid}))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        bus = registry.get(sid)  # the turn's own: its prompter publishes on it
+        assert bus is not None
+        registry.get_or_create("another")  # a sweep that keeps no idle bus
+        assert (await ac.delete(f"/sessions/{sid}")).status_code == 204
+        assert not bus.closed
+        release.set()
+        assert (await turn).status_code == 200
+
+
+# ── a POST /chat turn on the bus (ADR-0327) ──────────────────────────────────
+
+
+class _BufferedAgent:
+    """AgentLike that runs a turn the buffered way only, as ``POST /chat`` does: a reply that
+    reads a file, the file, and a closing reply. With ``fail`` the turn raises instead, and the
+    skill ``hidden`` is refused."""
+
+    def __init__(self, session: Session, *, fail: bool = False) -> None:
+        self.session = session
+        self.fail = fail
+
+    async def compose_skill_turn(self, name: str, args: str = "") -> SkillInvocation:  # noqa: ARG002
+        if name == "hidden":
+            return SkillInvocation(
+                invoked=True, name="hidden", denied_reason="hidden is user-invocable: false"
+            )
+        return SkillInvocation(invoked=False)
+
+    async def arun_turn(self, user_text: str) -> TurnResult:
+        if self.fail:
+            raise RuntimeError("the provider went away")
+        self.session.add_message(Message.user(user_text))
+        looks = Message(
+            role="assistant",
+            blocks=[
+                TextBlock(text="let me look"),
+                ToolUseBlock(id="c1", name="read", input={"path": "notes.md"}),
+            ],
+        )
+        answer = Message.assistant_text("they say hello")
+        self.session.add_message(looks)
+        self.session.add_message(answer)
+        return TurnResult(
+            assistant_messages=[looks, answer],
+            tool_results=[ToolResultBlock(tool_use_id="c1", output="the notes")],
+            iterations=2,
+            usage=Usage(total_tokens=7),
+        )
+
+
+def _chat_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fail: bool = False
+) -> tuple[TestClient, EventBusRegistry]:
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _BufferedAgent(s, fail=fail)
+    )
+    return TestClient(app, raise_server_exceptions=False), registry
+
+
+def _held(registry: EventBusRegistry, sid: str) -> list[Any]:
+    """What the chat's bus holds, oldest first: its replay, read to the end and no further."""
+    bus = registry.get(sid)
+    assert bus is not None
+
+    async def replay() -> list[Any]:
+        agen = bus.subscribe(since=None)
+        held = [(await agen.__anext__())[1] for _ in range(bus.latest_cursor)]
+        await agen.aclose()
+        return held
+
+    return asyncio.run(replay())
+
+
+def test_a_chat_turn_reaches_the_watch_bus_once_it_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``POST /chat`` put nothing on the bus, so a page watching the chat never saw its turns.
+    Once a turn is done, the bus now gets the frames a streamed turn sends, in their order."""
+    client, registry = _chat_app(tmp_path, monkeypatch)
+    sid = client.post("/sessions").json()["id"]
+    resp = client.post("/chat", json={"message": "what do the notes say?", "session_id": sid})
+    assert resp.status_code == 200
+    held = _held(registry, sid)
+    assert [event.event for event in held] == [
+        "user_message",
+        "text",
+        "tool_call",
+        "tool_result",
+        "text",
+        "done",
+    ]
+    question, looks, call, read, answer, done = held
+    assert question.text == "what do the notes say?"
+    assert (looks.text, answer.text) == ("let me look", "they say hello")
+    assert (call.id, call.name, call.arguments) == ("c1", "read", {"path": "notes.md"})
+    assert (read.tool_use_id, read.output, read.name) == ("c1", "the notes", "read")
+    assert (done.stop_reason, done.iterations, done.usage.total_tokens) == ("completed", 2, 7)
+
+
+def test_a_refused_chat_puts_its_refusal_on_the_bus_as_a_streamed_one_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, registry = _chat_app(tmp_path, monkeypatch)
+    sid = client.post("/sessions").json()["id"]
+    assert client.post("/chat", json={"message": "/hidden", "session_id": sid}).status_code == 403
+    held = _held(registry, sid)
+    assert [event.event for event in held] == ["user_message", "status", "done"]
+    assert held[2].stop_reason == "skill_refused"
+
+
+def test_a_chat_turn_that_fails_still_ends_on_the_bus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page had the turn's line, and with no ``done`` after it showed the turn thinking
+    until its next reconnect."""
+    client, registry = _chat_app(tmp_path, monkeypatch, fail=True)
+    sid = client.post("/sessions").json()["id"]
+    assert client.post("/chat", json={"message": "hi", "session_id": sid}).status_code == 500
+    held = _held(registry, sid)
+    assert [event.event for event in held] == ["user_message", "done"]
+    assert (held[1].stop_reason, held[1].degraded) == ("provider_error", True)
+
+
+# ── Stop on a turn POST /chat or /chat/stream runs (ADR-0327) ─────────────────
+
+
+class _Working:
+    """AgentLike whose turn has begun and then waits, as a turn waits on a slow model or tool,
+    until it is cancelled. Streamed, it first says it is working; buffered, it sets ``started``."""
+
+    def __init__(self, session: Session, started: asyncio.Event | None = None) -> None:
+        self.session = session
+        self.started = started
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self.session.add_message(Message.user(user_text))
+        yield AgentTextDelta(text="working on it")
+        await asyncio.sleep(3600)
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    async def arun_turn(self, user_text: str) -> TurnResult:
+        self.session.add_message(Message.user(user_text))
+        if self.started is not None:
+            self.started.set()
+        await asyncio.sleep(3600)
+        return TurnResult()
+
+
+def _working_app(tmp_path: Path, started: asyncio.Event | None = None) -> FastAPI:
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    return create_app(
+        settings=settings, store=store, agent_factory=lambda s, m, p: _Working(s, started)
+    )
+
+
+async def test_stop_naming_a_chat_ends_the_turn_it_streams(tmp_path: Path) -> None:
+    """Stop wrote the workspace's interrupt file, which only a say turn watches: a turn a terminal
+    streamed through POST /chat/stream ran on, and the page showed it running until it ended. Stop
+    now names the chat, and the stream ends on the frame a stopped say turn ends on, as does the
+    bus the page watches."""
+    timeout = httpx.Timeout(10.0, read=5.0)  # a turn Stop missed fails here, not as a hang
+    with _LiveServer(_working_app(tmp_path)) as base_url:
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as ac:
+            sid = (await ac.post("/sessions")).json()["id"]
+            frames: list[dict[str, Any]] = []
+            body = {"session_id": sid, "message": "deploy it"}
+            async with ac.stream("POST", "/chat/stream", json=body) as resp:
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        frames.append(json.loads(line[len("data:") :].strip()))
+                        if len(frames) == 1:  # the turn is working: Stop it
+                            stop = await ac.post("/interrupt", json={"session_id": sid})
+                            assert stop.json() == {"requested": True}
+            again = await ac.post("/interrupt", json={"session_id": sid})
+        watched = await _watch_frames(base_url, f"/watch/{sid}?since=0", count=3)
+    assert frames == [
+        {"event": "text", "text": "working on it"},
+        {"event": "status", "message": "interrupted"},
+    ]
+    assert [(f["event"], f.get("text", f.get("message"))) for f in _unstamped(watched)] == [
+        ("user_message", "deploy it"),
+        ("text", "working on it"),
+        ("status", "interrupted"),
+    ]
+    assert again.json() == {"requested": False}  # the turn is over, and its Stop with it
+    assert not interrupt_path(tmp_path).exists()  # nothing was asked of a say turn
+
+
+def test_stop_naming_a_chat_ends_the_turn_it_runs_buffered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn POST /chat runs ends on Stop as a streamed one does: the request answers that the
+    turn was interrupted, the bus ends it for the page, and what the turn had done is saved."""
+    registry = EventBusRegistry()
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
+    started = asyncio.Event()
+    app = _working_app(tmp_path, started)
+
+    async def go() -> tuple[str, Any, httpx.Response, Any]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            sid = (await ac.post("/sessions")).json()["id"]
+            body = {"message": "deploy it", "session_id": sid}
+            turn = asyncio.create_task(ac.post("/chat", json=body))
+            await asyncio.wait_for(started.wait(), timeout=5)
+            stop = (await ac.post("/interrupt", json={"session_id": sid})).json()
+            resp = await asyncio.wait_for(turn, timeout=5)
+            again = (await ac.post("/interrupt", json={"session_id": sid})).json()
+        return sid, stop, resp, again
+
+    sid, stop, resp, again = asyncio.run(go())
+    assert stop == {"requested": True}
+    assert (resp.status_code, resp.json()["stop_reason"]) == (200, "interrupted")
+    held = _held(registry, sid)
+    assert [(event.event, getattr(event, "message", None)) for event in held] == [
+        ("user_message", None),
+        ("status", "interrupted"),
+    ]
+    saved = SessionStore(base_dir=tmp_path / "sessions").load(sid)
+    assert [message.role for message in saved.messages] == ["user"]
+    assert again == {"requested": False}

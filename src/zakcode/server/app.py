@@ -83,6 +83,7 @@ from zakcode.server.wire import (
     CompleteRequest,
     CompleteResponse,
     CurrentSessionRequest,
+    InterruptRequest,
     NudgeRequest,
     ObserveRequest,
     RunStopRequest,
@@ -813,6 +814,10 @@ def create_app(
     # honors the SAME per-session reservation (in addition to its per-connection guard),
     # so a WS turn cannot overlap another WS client's or a REST turn on one session.
     inflight: set[str] = set()
+    # The Stop of each turn POST /chat and POST /chat/stream run, by session: POST /interrupt
+    # naming the session sets it (ADR-0327). The say consumer's turns watch the workspace's
+    # `.interrupt` file instead, as they always have.
+    turn_stops: dict[str, asyncio.Event] = {}
 
     # Held while a say is checked against the current conversation and queued, and while the
     # current conversation changes (ADR-0319). A say then lands either before the change, which
@@ -1179,20 +1184,33 @@ def create_app(
         return FileResponse(path, media_type=artifact.mime_type, filename=artifact.filename)
 
     @app.delete("/sessions/{session_id}", status_code=204)
-    def delete_session(session_id: str) -> None:
+    async def delete_session(session_id: str) -> None:
+        # async, so the bus below is closed on the event loop its watchers wait on.
         if not resolved_store.delete(session_id):
             raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+        # Its bus goes with it: a page watching it is let go, and its reconnect hears the chat
+        # is gone. Not while a turn runs on it, which holds the bus to publish on (ADR-0327).
+        if session_id not in inflight:
+            event_bus_registry.discard(session_id)
 
     # ── chat ───────────────────────────────────────────────────────────────────
 
-    def _claim_session(session: Session) -> None:
-        """Reserve a session for a turn, or 409 if one is already in flight."""
+    def _claim_session(session: Session) -> asyncio.Event:
+        """Reserve a session for a turn, or 409 if one is already in flight. Hands back the
+        turn's Stop, which ``POST /interrupt`` naming the session sets (ADR-0327)."""
         if session.id in inflight:
             raise HTTPException(
                 status_code=409,
                 detail=f"a turn is already running for session {session.id!r}",
             )
         inflight.add(session.id)
+        stop = turn_stops[session.id] = asyncio.Event()
+        return stop
+
+    def _release_session(session_id: str) -> None:
+        """Undo :func:`_claim_session` once its turn is over."""
+        turn_stops.pop(session_id, None)
+        inflight.discard(session_id)
 
     def _inbox_prompter(session_id: str) -> SayInboxPrompter:
         # Every server-run turn can have its escalations answered through the ONE
@@ -1206,32 +1224,117 @@ def create_app(
 
     @app.post("/chat")
     async def chat(request: ChatRequest) -> ChatResponse:
+        from zakcode.events import (
+            AgentDone,
+            AgentStatus,
+            AgentTextDelta,
+            AgentToolCall,
+            AgentToolResult,
+        )
+        from zakcode.usage import Usage
+
         _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
-        _claim_session(session)
+        stop = _claim_session(session)
         agent: AgentLike | None = None
+
+        def tee(event: Any) -> None:
+            # Onto the watch bus only, so a page watching this chat draws the turn (ADR-0327).
+            # suppress: the read-only fan-out must never break the turn.
+            with contextlib.suppress(Exception):
+                event_bus_registry.get_or_create(session.id).publish(event)
+
         try:
             agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
                 # A refused control skill is an HTTP outcome, not a turn (the CLI exits 1):
                 # policy refusal → 403, an unreadable skill file → 500. The finally below
-                # still releases the reservation.
+                # still releases the reservation. A watching page gets the frames a streamed
+                # refusal sends, its `done` among them.
+                for refused in refusal_events(slash):
+                    tee(refused)
                 raise HTTPException(
                     status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
                 )
-            result = await agent.arun_turn(slash.turn_text or request.message)
+            # The turn runs in a task of its own so that Stop can cancel it where it waits, as
+            # the say consumer's Stop cancels a say turn (ADR-0327).
+            turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
+            stopped = asyncio.ensure_future(stop.wait())
+            try:
+                await asyncio.wait({turn, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stopped.cancel()
+                if not turn.done():  # stopped, or this request was cancelled
+                    turn.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await turn
+            if turn.cancelled():
+                tee(AgentStatus(message="interrupted"))  # the page ends the turn on this
+                resolved_store.save(agent.session)
+                return ChatResponse.from_turn(
+                    agent.session.id, TurnResult(stop_reason="interrupted")
+                )
+            try:
+                result = turn.result()
+            except Exception:
+                # The page has the turn's line; without a `done` it would show it thinking
+                # until its next reconnect (the say consumer's rule, fresh-eyes F-3).
+                tee(
+                    AgentDone(
+                        stop_reason="provider_error",
+                        iterations=0,
+                        usage=Usage(),
+                        degraded=True,
+                        error="turn failed before completing — see server log",
+                    )
+                )
+                raise
+            # arun_turn and not astream_turn: only the buffered turn carries seam B (best-of-N).
+            # So the turn reaches the bus once it is done, in the order a streamed turn's frames
+            # would have: each reply's text, then its tool calls each with its result.
+            outputs = {block.tool_use_id: block for block in result.tool_results}
+            for message in result.assistant_messages:
+                if message.text:
+                    tee(AgentTextDelta(text=message.text))
+                for call in message.tool_uses:
+                    tee(AgentToolCall(id=call.id, name=call.name, arguments=call.input))
+                    if (output := outputs.get(call.id)) is not None:
+                        tee(
+                            AgentToolResult(
+                                tool_use_id=output.tool_use_id,
+                                output=output.output,
+                                is_error=output.is_error,
+                                data=output.data,
+                                artifacts=output.artifacts,
+                                name=call.name,
+                            )
+                        )
+            tee(
+                AgentDone(
+                    stop_reason=result.stop_reason,
+                    iterations=result.iterations,
+                    usage=result.usage,
+                    error=result.error,
+                    degraded=result.degraded,
+                    open_steps=result.open_steps,
+                    routed_category=result.routed_category,
+                    routed_escalated=result.routed_escalated,
+                    trace=result.trace,
+                )
+            )
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
             await _release_agent(agent)
-            inflight.discard(session.id)
+            _release_session(session.id)
 
     @app.post("/chat/stream")
     async def chat_stream(request: ChatRequest) -> EventSourceResponse:
         _check_model(request.model)
         session = _get_or_create_session(request.session_id, request.model)
-        _claim_session(session)
+        stop = _claim_session(session)
         # Build the agent INSIDE a guard: the factory can raise (e.g. a bad request.model
         # → provider/deny-pattern construction fails) before the stream generator exists,
         # and its finally would then never run — permanently stranding the reservation and
@@ -1239,10 +1342,14 @@ def create_app(
         try:
             agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
         except BaseException:
-            inflight.discard(session.id)
+            _release_session(session.id)
             raise
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
+            from zakcode.events import AgentStatus
+
+            turn: asyncio.Task[None] | None = None
+            watcher: asyncio.Task[None] | None = None
             try:
                 # The user's line goes on the watch bus first, as the say consumer puts it there:
                 # a page watching this chat draws the turn's question, and the reopened page's
@@ -1261,23 +1368,64 @@ def create_app(
                             event_bus_registry.get_or_create(session.id).publish(refused)
                         yield {"data": json.dumps(event_to_dict(refused))}
                     return
-                async for event in agent.astream_turn(slash.turn_text or request.message):
-                    # Tee into the watch bus (P0-3) BEFORE yielding to the turn-driver. suppress:
-                    # the read-only fan-out must NEVER break the turn stream. get_or_create
-                    # returns an OPEN bus (a closed one is replaced), so publish cannot raise in
-                    # practice — the guard is belt-and-suspenders against a concurrent discard.
-                    with contextlib.suppress(Exception):
-                        event_bus_registry.get_or_create(session.id).publish(event)
+                # The turn runs in ONE task of its own, as the say consumer runs a say turn, so
+                # that Stop can cancel it where it waits (ADR-0327). It hands each event to this
+                # stream through `frames`, and None once it is over, however it ended; a second
+                # task hands over the Stop.
+                frames: asyncio.Queue[Any] = asyncio.Queue()
+                stopped = object()
+
+                async def run() -> None:
+                    try:
+                        async for event in agent.astream_turn(slash.turn_text or request.message):
+                            # Tee into the watch bus (P0-3) BEFORE the turn-driver gets it.
+                            # suppress: the read-only fan-out must NEVER break the turn stream.
+                            # get_or_create returns an OPEN bus (a closed one is replaced), so
+                            # publish cannot raise in practice — belt-and-suspenders against a
+                            # concurrent discard.
+                            with contextlib.suppress(Exception):
+                                event_bus_registry.get_or_create(session.id).publish(event)
+                            frames.put_nowait(event)
+                    finally:
+                        frames.put_nowait(None)
+
+                async def watch_stop() -> None:
+                    await stop.wait()
+                    frames.put_nowait(stopped)
+
+                turn = asyncio.create_task(run())
+                watcher = asyncio.create_task(watch_stop())
+                while (event := await frames.get()) is not None:
+                    if event is stopped:
+                        if turn.done():
+                            continue  # it ended as Stop came: what it sent still goes out
+                        turn.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await turn
+                        interrupted = AgentStatus(message="interrupted")  # the page ends on it
+                        with contextlib.suppress(Exception):
+                            event_bus_registry.get_or_create(session.id).publish(interrupted)
+                        yield {"data": json.dumps(event_to_dict(interrupted))}
+                        return
                     yield {"data": json.dumps(event_to_dict(event))}
+                await turn  # over: what the turn raised, it raises here
             finally:
+                # A client gone mid-turn takes the turn with it (EventSourceResponse cancels
+                # us), as it did when the turn ran in this generator. suppress BaseException:
+                # the cancellation can land on this await too, and the save below must run.
+                for task in (turn, watcher):
+                    if task is not None and not task.done():
+                        task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await task
                 # Persist whatever state the turn produced, even if the client disconnects
-                # mid-stream (EventSourceResponse cancels us). Release the reservation in its
-                # OWN finally so a store.save error cannot strand it. (audit2 #5)
+                # mid-stream. Release the reservation in its OWN finally so a store.save error
+                # cannot strand it. (audit2 #5)
                 try:
                     resolved_store.save(agent.session)
                 finally:
                     await _release_agent(agent)  # stop the egress proxy (no-op when off)
-                    inflight.discard(session.id)
+                    _release_session(session.id)
 
         return EventSourceResponse(event_source())
 
@@ -1341,14 +1489,28 @@ def create_app(
     # ── WebSocket: bidirectional input + interrupt + permission approval ────────
 
     @app.post("/interrupt")
-    def interrupt() -> dict[str, Any]:
-        """Ask the workspace's running agent to stop its current turn.
+    async def interrupt(request: InterruptRequest | None = None) -> dict[str, Any]:
+        """Ask a running turn to stop.
 
-        Writes the ``.interrupt`` file — the say contract's sibling control signal,
-        the SAME file ``zakcode interrupt`` and the cockpit's Esc write. The serve
+        Without a body: writes the ``.interrupt`` file — the say contract's sibling control
+        signal, the SAME file ``zakcode interrupt`` and the cockpit's Esc write. The serve
         turn-runner's interrupt watcher consumes it mid-turn and cancels; idle, the
         next turn start clears it (a stale signal never kills a future turn).
+
+        Naming a chat (``session_id``, as the page names the chat it shows) stops that chat's
+        turn, whoever runs it: a ``POST /chat`` or ``POST /chat/stream`` turn through its own
+        Stop, which nothing else reads, and a say turn through the file. A chat with no turn
+        running asks nothing and answers ``requested: false``. async, so a turn's Stop is set
+        on the event loop the turn waits on (ADR-0327).
         """
+        target = request.session_id if request is not None else None
+        if target is not None:
+            stop = turn_stops.get(target)
+            if stop is not None:
+                stop.set()
+                return {"requested": True}
+            if target not in inflight:
+                return {"requested": False}
         request_interrupt(interrupt_path(resolved_settings.workspace_root))
         return {"requested": True}
 
@@ -1457,7 +1619,13 @@ def create_app(
         bus = event_bus_registry.get(session_id)
         if bus is None:
             return {"published": False, "cursor": None}
-        cursor = bus.publish(request)
+        try:
+            cursor = bus.publish(request)
+        except RuntimeError:
+            if not bus.closed:
+                raise
+            # Let go of since the get, as idle (ADR-0327): nobody watched it, so nobody to tell.
+            return {"published": False, "cursor": None}
         return {"published": True, "cursor": cursor}
 
     # ── sidecar read-only surface (P0-4 /workspace/summary, P0-5 /sidecar/health) ─
@@ -1486,6 +1654,14 @@ def create_app(
         except OSError:
             return None
         return value or None
+
+    def _buses_in_use() -> set[str]:
+        """The chats whose buses stay however idle they look (ADR-0327): the current one, and
+        every one with a turn running, which holds its bus to publish on."""
+        current = _current_session_id()
+        return {*inflight, current} if current is not None else set(inflight)
+
+    event_bus_registry.in_use = _buses_in_use
 
     def _switch_refusal() -> str | None:
         """Why the current conversation cannot change now, or None when it can (ADR-0319): a
