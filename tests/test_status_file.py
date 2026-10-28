@@ -320,6 +320,90 @@ class TestSessionBinding:
             w._stop_event.set()
 
 
+class TestRebind:
+    """``/clear`` and ``/resume`` swap the REPL's session inside one process. Before
+    ``rebind`` every transition after the swap was a no-op while the refresher kept
+    ``updated_at`` fresh, so the file read live and stuck in its last state."""
+
+    def test_the_file_follows_the_new_session(self, tmp_path: Path) -> None:
+        w = _make_writer(tmp_path)
+        try:
+            old_path = w._path
+            w.set_turn_start(SID)
+            w.rebind("fresh-session")
+            assert old_path is not None and not old_path.exists()
+            assert w._path == old_path.with_name("fresh-session.json")
+            data = _read(w)
+            assert data["session"] == "fresh-session"
+            assert data["state"] == "idle"
+            assert data["turn"] is None and data["last_turn"] is None
+            w.set_turn_start("fresh-session")
+            assert _read(w)["state"] == "working"
+        finally:
+            w._stop_event.set()
+
+    def test_the_old_session_and_a_nested_run_stay_noops(self, tmp_path: Path) -> None:
+        w = _make_writer(tmp_path)
+        try:
+            w.rebind("fresh-session")
+            w.set_turn_start(SID)
+            w.set_turn_start("nested-session")
+            data = _read(w)
+            assert data["state"] == "idle"
+            assert data["turn"] is None
+        finally:
+            w._stop_event.set()
+
+    def test_a_resumed_session_carries_its_wakeup_and_last_turn(self, tmp_path: Path) -> None:
+        w = _make_writer(tmp_path)
+        try:
+            assert w._path is not None
+            left = w._path.with_name("resumed-session.json")
+            _atomic_write(
+                left,
+                {
+                    "session": "resumed-session",
+                    "turn": None,
+                    "last_turn": {"ended_at": "2026-10-27T21:00:00Z", "stop_reason": "end_turn"},
+                },
+            )
+            w.rebind("resumed-session", wakeup_due_at=1719849600.0)
+            data = _read(w)
+            assert data["last_turn"] == {
+                "ended_at": "2026-10-27T21:00:00Z",
+                "stop_reason": "end_turn",
+            }
+            assert data["wakeup"] == {"due_at": "2024-07-01T16:00:00Z"}
+        finally:
+            w._stop_event.set()
+
+    def test_the_refresher_writes_only_the_new_file(self, tmp_path: Path) -> None:
+        w = _make_writer(tmp_path)
+        try:
+            old_path = w._path
+            w.rebind("fresh-session")
+            w._write()  # what the refresher thread does every REFRESH_INTERVAL_SECONDS
+            assert old_path is not None and not old_path.exists()
+            assert _read(w)["session"] == "fresh-session"
+        finally:
+            w._stop_event.set()
+
+    def test_rebinding_the_bound_session_changes_nothing(self, tmp_path: Path) -> None:
+        w = _make_writer(tmp_path)
+        try:
+            w.set_turn_start(SID)
+            w.rebind(SID)
+            assert _read(w)["state"] == "working"
+        finally:
+            w._stop_event.set()
+
+    def test_an_unstarted_writer_writes_nothing(self, tmp_path: Path) -> None:
+        w = StatusFileWriter()
+        w.rebind("fresh-session")
+        assert w._path is None
+        assert not (status_dir() / "fresh-session.json").exists()
+
+
 # ── state transitions ────────────────────────────────────────────────────────
 
 

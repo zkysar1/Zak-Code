@@ -41,7 +41,7 @@ from zakcode.config import Settings
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload, settings_loader
 from zakcode.hooks.settings_loader import load_settings_hooks
 from zakcode.server.app import create_app
-from zakcode.session.observation_inbox import KIND_CHANGE, KIND_HEARTBEAT
+from zakcode.session.observation_inbox import KIND_CHANGE, KIND_FAREWELL, KIND_HEARTBEAT
 from zakcode.session.store import Session, SessionStore
 
 
@@ -171,14 +171,33 @@ def test_a_change_frame_runs_the_hook_once_after_it_is_staged(tmp_path: Path) ->
     assert os.path.samefile(str(data["observation_path"]), ws / ".observation")
 
 
+def test_a_farewell_frame_runs_the_hook_with_its_kind(tmp_path: Path) -> None:
+    """Nothing follows a farewell, so the host's hook must hear it the way it hears a change."""
+    ws = _workspace(tmp_path)
+    _declare(ws, _command(_hook(tmp_path, "seen")))
+
+    client = _client(ws)
+
+    resp = client.post("/observe", json=_envelope(kind=KIND_FAREWELL))
+
+    assert resp.status_code == 200
+    assert resp.json()["wake"] == "delivered"
+    [doc] = _records(tmp_path, "seen")
+    assert doc["_staged_before"] is True, "the hook ran before its own frame was on disk"
+    data = doc["data"]
+    assert isinstance(data, dict)
+    assert data["kind"] == KIND_FAREWELL
+    assert _intake(client)["wake_delivered"] == 1, "the farewell's wake is counted like a change's"
+
+
 @pytest.mark.parametrize(
     "over",
     [{"kind": KIND_HEARTBEAT}, {}, {"kind": "snapshot"}],
     ids=["heartbeat", "unstamped", "unknown-kind"],
 )
-def test_only_a_change_runs_the_hook(tmp_path: Path, over: dict[str, object]) -> None:
-    """The gate is equality with "change": a timer frame or a kind this receiver does not
-    know must not spawn a process on every round."""
+def test_only_a_waking_kind_runs_the_hook(tmp_path: Path, over: dict[str, object]) -> None:
+    """The gate is membership in the waking kinds (a change or a farewell): a timer frame or a
+    kind this receiver does not know must not spawn a process on every round."""
     ws = _workspace(tmp_path)
     _declare(ws, _command(_hook(tmp_path, "seen")))
 

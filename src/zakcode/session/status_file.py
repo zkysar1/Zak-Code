@@ -219,6 +219,8 @@ class StatusFileWriter:
     transition method takes a ``session_id`` argument and is a no-op when it
     differs from the owning session.  This prevents a nested sub-agent loop
     (which creates its own ``Session``) from clobbering the top-level status.
+    :meth:`rebind` moves the binding when the REPL swaps its own session
+    (``/clear``, ``/resume``).
 
     The daemon refresher thread (matching the BusyLease pattern in
     ``say_inbox.py``) keeps ``updated_at`` fresh so an observer can judge
@@ -655,6 +657,51 @@ class StatusFileWriter:
         self._write()
 
     @_never_raises
+    def rebind(self, session_id: str, *, wakeup_due_at: float | None = None) -> None:
+        """Follow the top-level session to ``session_id`` after ``/clear`` or ``/resume``.
+
+        Every transition is bound to the owning session, so without this each one after the
+        swap was a no-op while the refresher kept ``updated_at`` fresh: the file read live
+        and stuck in its last state for the rest of the process. The file moves to
+        ``<session_id>.json`` so its name still names the session it describes, and it starts
+        ``idle``, where the REPL is between turns, with the new session's armed wake-up and
+        any ``last_turn`` an earlier process left for it. Only the REPL's session swap calls
+        this; a nested run never does, so its updates stay no-ops. A no-op before
+        :meth:`start` and for the session already bound.
+        """
+        with self._lock:
+            if not self._started or self._path is None or session_id == self._session_id:
+                return
+            old_path = self._path
+            new_path = old_path.with_name(f"{session_id}.json")
+            now_iso = _now_iso()
+            self._session_id = session_id
+            self._running_tools = 0
+            self._side_calls = 0
+            self._plan_source = None
+            self._data.update(
+                {
+                    "session": session_id,
+                    "state": "idle",
+                    "since": now_iso,
+                    "updated_at": now_iso,
+                    "turn": None,
+                    "call": None,
+                    "tool": None,
+                    "plan": None,
+                    "wakeup": _wakeup_field(wakeup_due_at),
+                    "last_turn": _carried_last_turn(new_path),
+                }
+            )
+            # The swap and the old file's removal happen under the write lock, so a
+            # refresher write already under way lands before the unlink, never after it.
+            with self._write_lock:
+                self._path = new_path
+                _atomic_write(new_path, self._data)
+                with contextlib.suppress(OSError):
+                    old_path.unlink()
+
+    @_never_raises
     def set_restarting(self) -> None:
         """The process is about to ``os.execv`` into a new build."""
         with self._lock:
@@ -695,7 +742,8 @@ class StatusFileWriter:
 
 
 # ── module-level singleton ───────────────────────────────────────────────────
-# The writer is a process singleton: one process, one session, one status file.
+# The writer is a process singleton: one process, one status file, for the top-level
+# session the REPL is on (``rebind`` follows it across /clear and /resume).
 
 _writer = StatusFileWriter()
 
