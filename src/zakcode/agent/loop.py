@@ -431,6 +431,21 @@ _SUMMARY_TARGET_FRACTION = 1 / 32
 _SUMMARY_TARGET_MIN_TOKENS = 512
 _SUMMARY_TARGET_MAX_TOKENS = 6_144
 _WORDS_PER_TOKEN = 0.75
+#: How far past its budget a summary may run before it is condensed, once, on its own (ADR-0331).
+#: Measured 2026-10-29 on the pod's 27B model with the budget stated: the summarizer still
+#: copied the earlier summary forward line for line. One summary was 15,124 of its 16,559
+#: characters copied; the next held all of that and 32,000 new characters, 5,715 words against
+#: a budget of 3,100. A stated budget alone does not hold a summary that is the last one plus
+#: everything since.
+_SUMMARY_OVER_BUDGET = 1.25
+#: What opens and closes that one condensing ask (ADR-0331). ``{said}`` is the summary's length
+#: in words and ``{words}`` its budget.
+_CONDENSE_PROMPT = "This summary of one conversation runs {said:,} words, over its budget:\n\n"
+_CONDENSE_CLOSE = (
+    "\n\n[end of summary]\n\nRewrite it now in at most {words:,} words, in the third person, "
+    "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
+    "decisions, file paths and unfinished work."
+)
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -3113,6 +3128,7 @@ class AgentLoop:
         words = _summary_target_words(window, room)
         close = _SUMMARY_CLOSE.format(words=words)
         fold_close = _FOLD_CLOSE.format(words=words)
+        condense_close = _CONDENSE_CLOSE.format(words=words)  # ADR-0331
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
@@ -3177,8 +3193,28 @@ class AgentLoop:
                 cost["summarizer_calls"] += 1
                 cost["summarizer_s"] = round(cost["summarizer_s"] + time.monotonic() - started, 3)
 
+        async def held_to_budget(summary: str) -> str:
+            # ADR-0331: a summary over its budget is condensed once, on its own, a small ask. An
+            # answer that is no shorter, or no summary at all, leaves the summary in hand: it is
+            # still a summary, and the compaction does not fail over it.
+            said = len(summary.split())
+            if said <= words * _SUMMARY_OVER_BUDGET:
+                return summary
+            note = f"the summary ran {said:,} words against a budget of {words:,}; condensing it"
+            logger.info("compaction: %s", note)
+            sink = self._status_sink
+            if sink is not None:
+                sink(f"compaction: {note}")
+            try:
+                condensed = await ask(_CONDENSE_PROMPT.format(said=said) + summary + condense_close)
+            except Exception:  # noqa: BLE001 — the condensing ask is a model call; it can fail
+                logger.warning("compaction: condensing failed; the summary stands", exc_info=True)
+                return summary
+            return condensed if len(condensed.split()) < said else summary
+
         if len(rendered) <= chunk_chars:
-            return self._finish_summary(await ask(_SUMMARY_PROMPT + rendered + close), messages)
+            summary = await ask(_SUMMARY_PROMPT + rendered + close)
+            return self._finish_summary(await held_to_budget(summary), messages)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -3220,7 +3256,7 @@ class AgentLoop:
                 _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries") + fold_close
             )
             combined = text.strip()
-        return self._finish_summary(combined, messages)
+        return self._finish_summary(await held_to_budget(combined), messages)
 
     def _account_summarizer_usage(self, usage: Usage, provider: Provider) -> None:
         """Count one summarizer response like every other side call (ADR-0241), a rejected

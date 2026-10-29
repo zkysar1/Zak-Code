@@ -28,6 +28,8 @@ from zakcode.agent.compact import (
     Compactor,
 )
 from zakcode.agent.loop import (
+    _CONDENSE_CLOSE,
+    _CONDENSE_PROMPT,
     _FOLD_CLOSE,
     _FOLD_PROMPT,
     _MAX_FOLD_PASSES,
@@ -35,6 +37,7 @@ from zakcode.agent.loop import (
     _POSITION_NOTE_HEAD,
     _SUMMARY_CLOSE,
     _SUMMARY_OUTPUT_CHARS,
+    _SUMMARY_OVER_BUDGET,
     AgentLoop,
     _clamp_middle,
     _pack_parts,
@@ -1306,3 +1309,109 @@ def test_an_earlier_summary_loses_every_harness_line_it_carried() -> None:
     assert rendered == (
         "[earlier summary]\nGoal: ship A.\n\nDecisions: B.\n\nUnfinished: C.\n\n[user]\nnext"
     )
+
+
+# ── ADR-0331: a summary over its budget, condensed once on its own ───────────────────
+
+
+def _words(n: int) -> str:
+    return " ".join(f"w{i}" for i in range(n))
+
+
+def test_a_summary_over_its_budget_is_condensed_once_on_its_own(tmp_path: Path) -> None:
+    # Measured 2026-10-29 (a 27B model on the pod, ADR-0330's budget stated): the summarizer
+    # still copied the earlier summary forward line for line, and one summary ran 5,715 words
+    # against a budget of 3,100.
+    long, short = _words(600), _words(300)
+    provider = _SummarizerProvider(
+        [f"<summary>{long}</summary>", f"<summary>{short}</summary>"], tokens=100
+    )
+    loop = _loop(provider, tmp_path)
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert text == short
+    assert len(provider.seen) == 2
+    (sent,) = provider.seen[1]
+    assert sent.text == _CONDENSE_PROMPT.format(said=600) + long + _CONDENSE_CLOSE.format(words=400)
+
+
+def test_a_summary_within_its_slack_is_not_condensed(tmp_path: Path) -> None:
+    # The 8k window's budget is 400 words; a quarter more is still a summary worth keeping.
+    within = _words(round(400 * _SUMMARY_OVER_BUDGET))
+    provider = _SummarizerProvider([f"<summary>{within}</summary>"], tokens=100)
+    loop = _loop(provider, tmp_path)
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == within
+    assert len(provider.seen) == 1
+
+
+def test_a_condensed_answer_that_is_no_shorter_leaves_the_summary(tmp_path: Path) -> None:
+    long = _words(600)
+    provider = _SummarizerProvider(
+        [f"<summary>{long}</summary>", f"<summary>{_words(650)}</summary>"], tokens=100
+    )
+    loop = _loop(provider, tmp_path)
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+    assert len(provider.seen) == 2
+
+
+def test_a_condensing_ask_that_writes_no_summary_leaves_the_summary(tmp_path: Path) -> None:
+    long = _words(600)
+    provider = _SummarizerProvider([f"<summary>{long}</summary>", "[user]\nnext"], tokens=100)
+    loop = _loop(provider, tmp_path)
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+    assert len(provider.seen) == 3  # the condensing ask and its one resample (ADR-0242)
+
+
+class _DownAfterTheSummary(_SummarizerProvider):
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        if self.seen:
+            raise RuntimeError("summarizer down")
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+def test_a_condensing_ask_that_fails_leaves_the_summary(tmp_path: Path) -> None:
+    long = _words(600)
+    provider = _DownAfterTheSummary([f"<summary>{long}</summary>"], tokens=100)
+    loop = _loop(provider, tmp_path)
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+
+
+class _CondensesOnRequest(_SummarizerProvider):
+    """Answers a condensing ask with ``condensed`` and every other ask with ``text``."""
+
+    def __init__(self, text: str, condensed: str) -> None:
+        super().__init__([text], tokens=100_000)
+        self._condensed = condensed
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        if messages[0].text.startswith(_CONDENSE_PROMPT.split("{", 1)[0]):
+            return LLMResult(text=self._condensed)
+        return result
+
+
+def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path) -> None:
+    # A join that fits one slice is installed without a fold (ADR-0183), however many words
+    # its parts add up to.
+    provider = _CondensesOnRequest(
+        f"<summary>{_words(150)}</summary>", f"<summary>{_words(300)}</summary>"
+    )
+    loop = _loop(provider, tmp_path)
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(40)))
+
+    asks = [call[0].text for call in provider.seen]
+    slices = [ask for ask in asks if ask.startswith("Part ")]
+    assert len(slices) >= 2 and not any(ask.startswith(_FOLD_PROMPT) for ask in asks)
+    assert len(asks) == len(slices) + 1
+    assert asks[-1].startswith(_CONDENSE_PROMPT.format(said=150 * len(slices)))
+    assert text == _words(300)

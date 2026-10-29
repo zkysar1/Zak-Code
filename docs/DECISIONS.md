@@ -20620,3 +20620,73 @@ The proof.
   and the re-compaction test turned red. Without the half-room limit, the capped-output budget case turned red.
 - The full suite (Linux) passed 6,527 tests and skipped 24 (Windows-only, live-provider and environment-gated cases).
   `ruff check`, `ruff format --check` and `mypy` are clean.
+
+## ADR-0331: a summary that comes back over its budget is condensed once, on its own
+
+**Status:** Accepted (2026-10-29)
+
+**Context.** ADR-0330 states a word budget in the summarizer's close and hands it the previous summary as
+`[earlier summary]`, to condense rather than copy. It ran on one worker session on the self-hosted pod (Qwen3.8-27B, 131k
+window, a 3,100-word budget) before the rest took it. Measured 2026-10-29 from transcript metadata (sizes, word counts and
+counts of lines over 40 characters found verbatim in the summary before; no conversation text) and the inference router's
+ledger:
+
+- Both compactions after the switch were one summarizer call each, 792 and 622 seconds. Neither was sliced.
+- The first summary was 16,559 characters, 1,991 words; 15,124 of its characters were lines copied verbatim from the summary
+  before it.
+- The second was 48,624 characters, 5,715 words. It held the whole first summary, line for line, and about 32,000 new
+  characters.
+- Each carried one position note and one continuation note: ADR-0330's removal of the harness's lines held.
+
+So the model keeps the earlier summary and appends to it. The budget is kept while what is new is small and exceeded once it
+is not, and each summary starts from the whole of the last one, so size grows again compaction by compaction, as before
+ADR-0330.
+
+**Decision.**
+
+- A summary longer than its budget by more than a quarter (`_SUMMARY_OVER_BUDGET`) is condensed once: one more ask, whose
+  prompt is that summary alone, its length in words, and a close that asks for at most the budget, in the third person, the
+  oldest history shortened the most and the goals, decisions, file paths and unfinished work kept.
+- The condensed answer replaces the summary only when it is a summary and has fewer words. An answer that is not a summary,
+  an ask that fails, or a longer answer leaves the summary in hand, which is still a summary: the compaction does not fail
+  over the condensing ask.
+- It applies to whatever the summarizer produced: one call's summary, or the part-summaries of a sliced transcript once they
+  are folded or joined. A join that fits one slice is installed without a fold (ADR-0183), however many words its parts add
+  up to.
+- It runs at most once per compaction; the ask is counted like every other summarizer call (ADR-0241) and asks for the same
+  output room (ADR-0275).
+
+ADR-0330 rejected asking again for a summary over its budget: each ask costs minutes on a local pod, and a summary that
+overshoots is still a summary. Both stand for the ask it meant, the whole transcript again. This ask reads only the summary,
+a few thousand words where a transcript is tens of thousands of tokens, and a summary that overshoots is now measured to be
+the start of the next one.
+
+Rejected:
+
+- Truncating the summary to the budget, as in ADR-0330: its end is the unfinished work.
+- Summarizing only the turns since the last compaction and folding that with the earlier summary, on every re-compaction. Two
+  calls every time, and the fold is where the model was measured copying.
+- A stronger instruction alone. The instruction was already in the close, where the model starts writing.
+
+Not verified:
+
+- That the pod's model condenses when the summary is all it is given. The change runs on the same one worker session first,
+  measured by each installed summary's size and words, its lines copied from the summary before, and the summarizer calls per
+  compaction.
+- What the extra ask costs on the pod. Its prompt is the summary, so it is expected to take a few minutes, against the 10 to
+  22 minutes of a summarizer call that runs to the output cap.
+
+**Consequences.**
+
+- A compaction whose summary is over its budget makes one more summarizer call, and its trace row counts it.
+- The status line says when a summary is being condensed, with its length and its budget.
+- A summary within a quarter of its budget is installed as it came, with no extra call.
+
+The proof.
+
+- `tests/test_compact_loop.py`: a summary over its budget is condensed with the exact prompt; one within a quarter of the
+  budget is not; a condensed answer that is no shorter, one that is not a summary (with its one resample), and an ask that
+  raises each leave the summary in hand; part-summaries whose join fits one slice, and so is not folded, are condensed once.
+- Five sabotages were each run green, red, green (2026-10-29): with the single-call path or the sliced path not held to the
+  budget, without the quarter's slack, without the fewer-words check, and with the failure guard narrowed, the tests that
+  cover each turned red.
