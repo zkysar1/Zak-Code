@@ -95,6 +95,7 @@ globalThis.fetch = async (url, opts) => {
     if (conn && conn.status) return __answer({ detail: "scripted" }, conn.status, 0);  // every time
     if (!conn || conn.used) return new Promise(() => {});  // the script is spent: never answers
     conn.used = true;
+    if (conn.delay) await new Promise((r) => __later(r, conn.delay));  // a replay slow to come
     const bytes = new TextEncoder().encode(__sse(conn.frames));
     let sent = false;
     const read = () => {
@@ -182,9 +183,10 @@ def _chat(
     fresh: bool = False,
 ) -> dict[str, Any]:
     """One chat the scripted server holds. ``watch`` maps the ``since`` a watch connection asks
-    with to its ``frames``, whether it ``drop``s after them, and the ``oldest`` cursor it names,
-    or to a ``status`` it answers every time instead; a chat that ``fails`` answers its
-    GET /sessions/{id} with a 500; a ``fresh`` one is the chat New chat makes."""
+    with to its ``frames``, whether it ``drop``s after them, the ``oldest`` cursor it names and a
+    ``delay`` before it answers, or to a ``status`` it answers every time instead; a chat that
+    ``fails`` answers its GET /sessions/{id} with a 500; a ``fresh`` one is the chat New chat
+    makes."""
     return {
         "info": {"id": sid, "model": "fake-model"},
         "title": title,
@@ -560,17 +562,31 @@ def test_a_chat_opened_from_one_with_a_conversation_on_screen_shows_its_own(
     assert _spoken(back) == [("user", "hello"), ("assistant", "hi there")]
 
 
-def test_a_chat_with_a_conversation_opens_with_no_start_screen_on_the_way(tmp_path: Path) -> None:
-    """Opening a chat put the start screen back at once and drew the saved conversation when it
-    came, so every switch to a chat with anything in it flashed the start screen."""
-    chats = [
-        _chat(A, "chat A", transcripts=[_said("hello", "hi there")]),
-        _chat(Y, "chat Y", transcripts=[{**_said("second", "and again"), "delay": 300}]),
-    ]
+@pytest.mark.parametrize("drawn_from", ["saved", "replayed"])
+def test_a_chat_with_a_conversation_opens_with_no_start_screen_on_the_way(
+    tmp_path: Path, drawn_from: str
+) -> None:
+    """Opening a chat put the start screen back at once, and the first row drawn took it out, so
+    every switch to a chat with a conversation flashed it until the rows came: from the saved
+    conversation, or, for a chat used since the server started, from its bus's replay."""
+    if drawn_from == "saved":
+        other = _chat(Y, "chat Y", transcripts=[{**_said("second", "and again"), "delay": 300}])
+    else:
+        turn = [
+            _frame(1, event="user_message", text="second", at=_T0),
+            _frame(2, event="text", text="and again", at=_T0 + 1),
+            _frame(
+                3, event="done", stop_reason="completed", iterations=1, usage=_USAGE, at=_T0 + 2
+            ),
+        ]
+        on_the_bus = {**_said("second", "and again"), "bus_from": _T0, "bus_since": 0}
+        watch = {"0": {"frames": turn, "delay": 300}}
+        other = _chat(Y, "chat Y", watch=watch, transcripts=[on_the_bus])
+    chats = [_chat(A, "chat A", transcripts=[_said("hello", "hi there")]), other]
     steps = [
         {"at": 150, "click": "chat Y"},
         {"at": 300, "look": "on its way"},
-        {"at": 700, "look": "drawn"},
+        {"at": 800, "look": "drawn"},
     ]
     on_its_way, drawn = _page(tmp_path, chats, steps)
     assert all("fake-model · session" not in row["text"] for row in on_its_way["rows"])

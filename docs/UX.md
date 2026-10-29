@@ -476,11 +476,12 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   `aria-current`; another one shows `--surface` under the pointer. A chat with nothing asked
   in it yet reads "New chat". The workspace's one active chat, the one messages go to,
   carries an `ACTIVE` badge (10px mono, a `--brand` outlined pill). Choosing a chat opens it
-  to read: once its saved conversation is in hand the column gives way to it (never to the
-  start screen first, so a switch does not flash it), and watches its own bus; the active
-  chat stays where it was. While the chat on screen is not the active one, a
-  banner over the composer says "You're viewing this chat. Messages go to the active chat."
-  beside a **Make this chat active** button, the composer's placeholder says the same, and a
+  to read: the column clears at once, draws that chat's saved conversation and watches its
+  own bus, and the active chat stays where it was. The start screen comes back only for a
+  chat with nothing in it, so a switch to a chat with a conversation never flashes it. While
+  the chat on screen is not the active one, a banner over the composer says "You're viewing
+  this chat. Messages go to the active chat." beside a **Make this chat active** button, the
+  composer's placeholder says the same, and a
   send keeps the draft and says why on the status line. Make this chat active moves the
   workspace to it, and the next message runs on it with its whole history. New chat opens
   an empty chat and makes it active, or stays on the current one while nothing is in it.

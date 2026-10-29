@@ -20729,8 +20729,10 @@ reproduced in a real browser or against the page's own script before it was fixe
 10. A session's bus kept 1000 events, and a streamed answer is one event per chunk (a 400-word reply
     came to about 520). A page that left a chat while a long answer streamed came back to an answer
     whose start the ring had already evicted.
-11. Opening a chat put the start screen back at once and drew the saved conversation when it came,
-    so every switch to a chat with anything in it flashed the start screen.
+11. Opening a chat put the start screen back at once, and the first row drawn took it out, so every
+    switch to a chat with a conversation flashed it until the rows came: from the saved
+    conversation, or, for a chat used since the server started, from its bus's replay, a round
+    trip later. Counted in a real browser, six switches between two such chats showed it six times.
 
 Decision. One layer per fault.
 
@@ -20757,24 +20759,27 @@ Decision. One layer per fault.
 9. The chat list counts its requests (`listed`) and draws only the answer to the latest one.
 10. A bus keeps 5000 events (`_DEFAULT_MAXLEN`). A text delta measured 665 bytes, so a full ring is
     about 3.3 MB, and the 16 idle buses the registry keeps (ADR-0327) about 53 MB at most.
-11. The rows on screen stay until the next chat's saved conversation is in hand, and give way to it
-    in the same task that draws it (`clearLog`, out of `resetView`); a chat with nothing in it shows
-    the start screen, as before, and a history that fails shows its card alone.
+11. The start screen is for a chat with nothing in it. Opening a chat clears its rows at once and
+    keeps the start screen only if it is what shows (`resetView`); once the saved conversation is
+    in hand, a chat with no messages and no turn running gets the start screen, and any other chat
+    loses it before its replay comes (`renderHistory`). Counted again, six switches showed it none
+    of the times, the counter itself checked both ways first.
 
-Consequences. A click in the chat list, New chat and Make this chat active each leave the page on the
-chat they name, watching its bus, and so does a server restart. Since every page left open now
+Consequences. A click in the chat list, New chat and Make this chat active each leave the page on
+the chat they name, watching its bus, and so does a server restart. Since every page left open now
 follows a restart to the chat the server opens, the systemd unit (`deploy/systemd`) starts with
 `--no-new-session`: it restarts itself after a crash, and a crash should not move every page to an
-empty chat. A server started by hand still opens a new chat, as before. Still open: a running turn longer
-than 5000 events replays without its head (ADR-0325); the consent receipt ("allowed once") lives
-only in the page that drew it, so a reload or a switch loses it; after a server restart a chat's
-earlier turns are drawn from the saved conversation as text only, without the tool cards and
+empty chat. A server started by hand still opens a new chat, as before. Still open: a running turn
+longer than 5000 events replays without its head (ADR-0325); the consent receipt ("allowed once")
+lives only in the page that drew it, so a reload or a switch loses it; after a server restart a
+chat's earlier turns are drawn from the saved conversation as text only, without the tool cards and
 receipts that lived on the bus; and New chat is refused while a turn runs, as every switch is
 (ADR-0319).
 
 The proof. tests/test_webclient_switching.py (a chat opened by a click or by New chat from one with
 a conversation on screen shows its own; a chat with a conversation opens with no start screen on
-the way; Make this chat active takes down the status line; a page
+the way, drawn from the saved conversation or from the replay; Make this chat active takes down the
+status line; a page
 left open while the server restarts lands where a fresh page would, three ways; a history that
 fails after another chat opened says nothing in that one; a chat list that answers late does not
 undo a later one), tests/test_provider_stream.py (a Stop that lands as the next chunk arrives ends
@@ -20788,4 +20793,5 @@ against a live server and a real model: a first load lands on a new empty chat; 
 between two chats each show that chat's conversation exactly; five switches while an answer
 streams, and a reload after them, each match; a send while reading another chat is held with its
 draft; Stop after a switch ends the turn three times of three, each with one end; an approval card
-survives a switch away and back. `uv run poe check` green.
+survives a switch away and back; a page left open across a restart lands on the chat the restarted
+server opened, the one a page loaded then lands on. `uv run poe check` green.

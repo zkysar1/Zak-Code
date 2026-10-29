@@ -1578,7 +1578,10 @@
       if (!resp.ok) throw new Error("transcript " + resp.status);
       const t = await resp.json();
       if (gen !== shown) return null;  // another chat opened while this one's history was on its way
-      clearLog();  // only now, in the same task as the draw, so no start screen flashes in between
+      // The start screen is for a chat with nothing in it. A chat with a conversation never shows
+      // it, not even while the replay that draws its newest turns is still on its way.
+      if (t.messages.length === 0 && !t.running) log.replaceChildren(...(emptyState ? [emptyState] : []));
+      else document.getElementById("empty")?.remove();
       lastCursor = t.bus_since ?? null;
       replayFloor = t.bus_since ?? 0;
       assistantBody = null;
@@ -1617,10 +1620,7 @@
       return t.bus_epoch || null;
     } catch (e) {
       // Not when another chat opened meanwhile: the card would say the chat on screen failed.
-      if (gen === shown) {
-        clearLog();
-        add(errCard("could not load the saved conversation: " + e.message));
-      }
+      if (gen === shown) add(errCard("could not load the saved conversation: " + e.message));
       return null;
     }
   }
@@ -1630,7 +1630,7 @@
   // by another one, the server restarted (or the session's bus was made again) while this page
   // stayed open. Resuming at the old cursor would skip that many of the new bus's first events,
   // and whatever this page had not drawn yet died with the old bus. So the page starts over as a
-  // freshly opened one does: the start screen, the saved conversation older than the new bus,
+  // freshly opened one does: the rows cleared, the saved conversation older than the new bus,
   // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay. It
   // starts over on the same bus too when that bus no longer holds what came after the cursor
   // (X-Bus-Oldest is past it): what the ring evicted is in the saved conversation (ADR-0325).
@@ -1639,13 +1639,14 @@
     await renderHistory(gen);  // the watch response that sent us here named the bus; watchLoop() keeps it
   }
 
-  // Everything the page counted for the chat on screen: the cursor, the plan it last drew, the
-  // turn's clock and meter, the status line, pending tool and permission cards. Cleared together,
-  // when the bus changes and when another chat opens (ADR-0289, ADR-0319); kept, any of it would be
-  // read against the next chat's frames. The rows stay until the next chat's saved conversation is
-  // in hand (clearLog): cleared at once, the start screen showed while it was on its way, a flash of
-  // it on every switch to a chat with anything in it.
+  // Everything the page drew or counted for the chat on screen: the rows, the cursor, the plan
+  // it last drew, the turn's clock and meter, the status line, pending tool and permission cards.
+  // Cleared together, when the bus changes and when another chat opens (ADR-0289, ADR-0319);
+  // kept, any of it would be read against the next chat's frames. The start screen stays only
+  // while it is what shows: put back here, it flashed on every switch to a chat with a
+  // conversation, until that chat's rows came. renderHistory() puts it back for an empty chat.
   function resetView() {
+    log.replaceChildren(...(document.getElementById("empty") ? [emptyState] : []));
     lastCursor = null;
     replayFloor = 0;
     lastPlanKey = "";
@@ -1654,11 +1655,6 @@
     approvedTool = "";
     stick = true;
     endTurn();  // the turn clock and meter, the status line, pending tool cards, the prose group
-  }
-
-  // The rows: the start screen alone, until the first row drawn takes it out (add()).
-  function clearLog() {
-    log.replaceChildren(...(emptyState ? [emptyState] : []));
   }
 
   // Show a chat: its start screen, its saved conversation, then its own watch (ADR-0319). The
