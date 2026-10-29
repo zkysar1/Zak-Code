@@ -153,6 +153,7 @@ class SubAgentRunner:
         trace_session: str | None = None,
         compactor: Compactor | None = None,
         summarizer_provider: Provider | None = None,
+        summarizer_thinking_off: bool = True,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -201,6 +202,9 @@ class SubAgentRunner:
         # means each loop asks its own provider for the summary, as the parent loop does.
         self.compactor = compactor
         self.summarizer_provider = summarizer_provider
+        # Whether those asks go with thinking off where the route allows it (ADR-0332): False
+        # for a summarizer the user named, and a child asks it the way the parent does.
+        self.summarizer_thinking_off = summarizer_thinking_off
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -294,6 +298,7 @@ class SubAgentRunner:
             # be pointed back at text it no longer has.
             compactor=self.compactor,
             summarizer_provider=self.summarizer_provider,
+            summarizer_thinking_off=self.summarizer_thinking_off,
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )

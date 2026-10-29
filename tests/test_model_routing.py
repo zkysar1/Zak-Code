@@ -142,6 +142,49 @@ async def test_compaction_summarizer_defaults_to_main_provider(tmp_path: Path) -
     assert out == "gen-summary" and gen.calls == 1
 
 
+def test_a_summarizer_the_user_named_is_asked_as_they_configured_it(tmp_path: Path) -> None:
+    # ADR-0332: a model_roles summarizer is the user's own pick, so its asks keep their thinking,
+    # in the parent loop and in every child. Any other summarizer may have it switched off.
+    named = Agent(
+        workspace_root=tmp_path,
+        provider=_Scripted("x"),
+        enable_subagents=True,
+        model_roles={"summarizer": "cheap/y"},
+    )
+    assert named.loop._summarizer_thinking_off is False
+    assert named.loop.spawner._runner.summarizer_thinking_off is False  # type: ignore[union-attr]
+
+    chosen = Agent(workspace_root=tmp_path, provider=_Scripted("x"), enable_subagents=True)
+    assert chosen.loop._summarizer_thinking_off is True
+    assert chosen.loop.spawner._runner.summarizer_thinking_off is True  # type: ignore[union-attr]
+
+
+def test_a_summarize_category_that_sets_thinking_keeps_its_word(tmp_path: Path) -> None:
+    # ADR-0332: the category's ``thinking`` is the user's word for the summarizer's route; only a
+    # category that leaves it unset gets thinking switched off for its summaries.
+    def summarizer(**entry: object) -> Provider:
+        agent = Agent(
+            workspace_root=tmp_path,
+            default_model="zakpick",
+            api_base="http://localhost:8080/v1",
+            api_key="sk-test",
+            zakpick_models={
+                "summarize": {
+                    "model": "local-27b",
+                    "source": "openai",
+                    "context_window": 131_072,
+                    **entry,
+                }
+            },
+        )
+        assert agent.loop._summarizer_provider is not None
+        return agent.loop._summarizer_provider
+
+    assert summarizer().capabilities().thinking_switch is True
+    assert summarizer(thinking=True).capabilities().thinking_switch is False
+    assert summarizer(thinking=False).capabilities().thinking_switch is False
+
+
 # ── routed models must not be decommissioned ───────────────────────
 #
 # THE DEFECT THIS PINS. Groq removed ``qwen/qwen3-32b`` from its catalog around

@@ -96,6 +96,14 @@ def thinking_switch_enabled(body: dict[str, Any]) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def thinking_switch_verbatim(model: str, api_base: str | None) -> bool:
+    """Whether the internal switch reaches ``model`` as written: a self-hosted
+    OpenAI-compatible server through a configured ``api_base``, the measured, working case.
+    :func:`render_thinking_switch` keeps the body there, and the provider reports the route
+    from it (``Capabilities.thinking_switch``, ADR-0332)."""
+    return api_base is not None and model_uses_generic_endpoint(model)
+
+
 def render_thinking_switch(
     model: str, api_base: str | None, body: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -109,7 +117,7 @@ def render_thinking_switch(
     enabled = thinking_switch_enabled(body)
     if THINKING_SWITCH_KEY not in body:
         return body, {}
-    if api_base is not None and model_uses_generic_endpoint(model):
+    if thinking_switch_verbatim(model, api_base):
         # A self-hosted OpenAI-compatible server: the measured, working spelling.
         return body, {}
     rest = {k: v for k, v in body.items() if k != THINKING_SWITCH_KEY}

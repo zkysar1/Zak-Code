@@ -140,3 +140,47 @@ def test_a_field_the_provider_refused_stays_out_of_every_later_request() -> None
     kwargs = provider._build_kwargs(MSGS, None, extra_body=thinking_extra_body(False))
     assert "reasoning_effort" not in kwargs  # the rendered switch was refused too
     assert provider.extra_body == {"seed": 42, "top_k": 3}  # the operator's config is intact
+
+
+# ── the route that leaves the switch to the caller (ADR-0332) ────────────────────────
+
+
+def _self_hosted(**kw: object) -> LiteLLMProvider:
+    return LiteLLMProvider(model="openai/local-27b", api_base=POD, context_window=131072, **kw)
+
+
+def test_a_self_hosted_route_leaves_the_switch_to_the_caller() -> None:
+    assert _self_hosted().capabilities().thinking_switch is True
+    assert _self_hosted(extra_body={"seed": 42}).capabilities().thinking_switch is True
+
+
+@pytest.mark.parametrize(
+    "extra_body",
+    [ON, OFF, {THINKING_SWITCH_KEY: {"reasoning_effort": "low"}}],
+)
+def test_a_body_that_carries_the_switch_keeps_the_operators_word(
+    extra_body: dict[str, object],
+) -> None:
+    # A category's ``thinking`` reaches the provider as this body, and a per-call switch
+    # would replace the whole ``chat_template_kwargs`` the operator set.
+    assert _self_hosted(extra_body=extra_body).capabilities().thinking_switch is False
+
+
+def test_a_route_that_refused_the_switch_by_name_takes_none() -> None:
+    provider = _self_hosted()
+    provider.rejected_request_fields.append(THINKING_SWITCH_KEY)
+    assert provider.capabilities().thinking_switch is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-4o",  # hosted OpenAI: no api_base
+        "vertex_ai_beta/gemini-2.5-pro",  # rendered as a thinking budget, not measured here
+        "anthropic/claude-sonnet-4",
+        "ollama_chat/qwen3:32b",
+    ],
+)
+def test_no_other_destination_leaves_the_switch_to_the_caller(model: str) -> None:
+    provider = LiteLLMProvider(model=model, context_window=131072)
+    assert provider.capabilities().thinking_switch is False

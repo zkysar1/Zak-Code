@@ -20690,3 +20690,103 @@ The proof.
 - Five sabotages were each run green, red, green (2026-10-29): with the single-call path or the sliced path not held to the
   budget, without the quarter's slack, without the fewer-words check, and with the failure guard narrowed, the tests that
   cover each turned red.
+
+## ADR-0332: the compaction summarizer asks with thinking off where its route leaves the switch to it, under a cap its budget sets
+
+**Status:** Accepted (2026-10-29)
+
+**Context.** ADR-0330 and ADR-0331 bound the words a summary may have. Nothing bounds what a summarizer call spends before it
+writes them: every ask has 32,768 output tokens (ADR-0275), because a reasoning model's thinking is billed against the cap,
+and no ask carries a thinking switch of its own. Measured 2026-10-29 on the self-hosted pod (a 27B reasoning model, 131k
+window, a 3,100-word budget) from the inference router's ledger and transcript metadata, no conversation text:
+
+- One compaction took 47 minutes. Its first call stopped at the 32,768-token cap after 32,770 streamed chunks and 1,274
+  seconds and was rejected (ADR-0275). The resample wrote 8,558 words. The condensing ask (ADR-0331) ran 686 seconds and
+  came back no shorter, so the long summary was installed.
+- Another took 55 minutes in four summarizer calls of 810, 235, 1,142 and 1,109 seconds, and installed 12,450 words against
+  the 3,100-word budget.
+
+A summary within that budget is about 4,100 tokens. Zak Code has one thinking switch, `thinking_extra_body` (ADR-0056): a
+zakpick category's `thinking` and the reasoning-overflow retry (ADR-0307) send it. The summarizer never did.
+
+**Decision.**
+
+- A route leaves the switch to its caller when the switch reaches the model as written, through an OpenAI-compatible server
+  on a configured `api_base`, the one destination where it is measured to work (ADR-0181), and nothing set for the route
+  decides it: the route's request body has no `chat_template_kwargs` (a category's `thinking` arrives as that body, as does
+  a switch in `extra_body`), and the server has not refused that key by name. The provider reports this as
+  `Capabilities.thinking_switch`. It reads `thinking_switch_verbatim`, the predicate `render_thinking_switch` now uses for
+  the same decision, so there is still one.
+- On such a route every summarizer ask, whether the whole transcript, a slice, a fold or the condensing ask, is sent with
+  `thinking_extra_body(False)` and an output cap of the ask's word budget in tokens, with half again
+  (`_SUMMARY_SWITCHED_HEADROOM`): `min(room, max(round(words / 0.75 * 1.5), 8,192))`. It is never under the per-completion
+  floor and never over the room the ask had. At a 131k window that is 8,192 tokens where it was 32,768. A window of about
+  175k or more gets up to 9,200, at the 4,600-word ceiling.
+- The one resample (ADR-0242) keeps the switch and asks with the room the ask had before. That covers a summary that runs past
+  the cap, and a route that takes the switch and thinks anyway, as ADR-0307 records three gateway routes doing. Were the
+  resample capped too, two cut tries would fall back to elision (ADR-0083).
+- A gateway on an `api_base` is such a server too, and ADR-0307 measured one refusing the switch while naming nothing. A
+  refusal of that shape, of an ask that carried the switch, sends the ask again as before, and the switch is recorded as
+  refused for that provider (ADR-0315), so the session's later asks and its overflow retries to that provider leave it off.
+- Every other route is asked exactly as before: hosted APIs, Ollama, a route whose body already carries the switch, and
+  Gemini, where "off" renders as a minimal thinking budget, not measured on a summary.
+
+An explicit user setting wins, and the summarizer's call is left as the user configured it, with no per-call switch and the
+room it had:
+
+- A summarize category's `thinking`, true or false, or a switch in `extra_body`. The per-call body merges over the
+  configured one (ADR-0056), so a switch the summarizer sent would override the user's word and replace the whole
+  `chat_template_kwargs` they set, including a level set there for a model that takes one. The cap goes with the switch. It is
+  sized for a call that does not think, so it would starve a call the user set to think, and a user who set thinking off
+  already has the measured saving.
+- A summarizer named in `model_roles`. It is the user's own pick for the role, and `model_roles` names a model with no
+  thinking setting of its own, so a model picked by hand is asked as it was. The generator's own provider and a summarize
+  category that leaves `thinking` unset are Zak Code's choices, and they get the change. The session tells the loop which
+  case applies, and the spawner tells every child loop.
+
+Rejected:
+
+- The cap without the switch. It bounds the thinking ADR-0275 made room for, and a summary cut at the cap is rejected. ADR-0330
+  rejected it for the same reason.
+- The switch sent on every route, left to the request chokepoint to drop (ADR-0181). The cap goes with the switch, and where
+  the chokepoint drops it the call still thinks.
+- A per-request thinking budget. llama.cpp ignores one; it is a server startup flag.
+
+Not verified:
+
+- That the pod's model writes its summary within the cap with thinking off. The change runs on one worker session first,
+  measured by each summarizer call's seconds and completion tokens, the calls that end at the cap, and the installed summary's
+  words.
+- That the measured time went to thinking. The router's rows give seconds and chunks, not a split between thinking and text,
+  and ADR-0330 recorded the pod's engines capping reasoning at 2,048 tokens. If a long call was summary text, the cap bounds
+  its first try and the resample asks with the old room.
+- A route that takes the switch and ignores it. Its first try is capped and may be cut; its resample is the old call.
+
+**Consequences.**
+
+- On a self-hosted route with no thinking configured, every summarizer ask carries
+  `{"chat_template_kwargs": {"enable_thinking": false}}` and 8,192 output tokens at a 131k window, the condensing ask
+  included, and a resample asks with 32,768.
+- Every other route's summarizer requests are byte-identical to before. So are those of a deployment that names its
+  summarizer in `model_roles` or sets `thinking` for its summarize category.
+- A refused switch is noted on the trace as `summarizer_switch_refused` and said on the status line.
+
+The proof.
+
+- `tests/test_compact_loop.py`: the cap for four budgets and rooms. A route that leaves the switch to the caller is asked
+  with the switch and 8,192 tokens, and every slice, fold and condensing ask too. A route without it is asked with exactly the
+  old arguments, its resample included. A summarizer the user named is asked with the old arguments. An answer cut at the cap
+  is asked again with 32,768 and the switch. A refusal naming nothing is asked again without the switch, and the next
+  compaction does not send it.
+- `tests/test_thinking_switch_rendering.py`: a self-hosted route reports the switch as the caller's, unless its body carries
+  the switch either way or other `chat_template_kwargs`, or the server refused the key by name. Hosted OpenAI, Gemini,
+  Anthropic and Ollama never do.
+- `tests/test_model_routing.py`: a `model_roles` summarizer reaches the loop and the spawner as "as configured" and any
+  other summarizer does not. A summarize category with `thinking` set, either way, reports no switch; one without it reports
+  the switch.
+- Five sabotages were run green, red, green (2026-10-29). With the summarizer never switching, the four loop tests that send
+  the switch turned red. With the body check dropped, the three body cases and the category test turned red. With every
+  summarizer treated as unnamed, the `model_roles` test turned red. With the resample keeping the cap, the cut-answer test
+  turned red. With refusals left unhandled, the refusal test turned red.
+- The full suite (Linux) passed 6,554 tests and skipped 24 (Windows-only, live-provider and environment-gated cases).
+  `ruff check`, `ruff format --check` and `mypy` are clean.

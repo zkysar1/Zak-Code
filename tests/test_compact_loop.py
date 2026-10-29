@@ -38,11 +38,13 @@ from zakcode.agent.loop import (
     _SUMMARY_CLOSE,
     _SUMMARY_OUTPUT_CHARS,
     _SUMMARY_OVER_BUDGET,
+    _SWITCH_OVERRIDE,
     AgentLoop,
     _clamp_middle,
     _pack_parts,
     _summary_of,
     _summary_output_room,
+    _summary_switched_room,
     _summary_target_words,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -53,7 +55,9 @@ from zakcode.providers.base import (
     LLMResult,
     Provider,
     RateLimited,
+    RequestFailed,
 )
+from zakcode.providers.routing import thinking_extra_body
 from zakcode.session.status_file import StatusFileWriter
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
@@ -1415,3 +1419,131 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert len(asks) == len(slices) + 1
     assert asks[-1].startswith(_CONDENSE_PROMPT.format(said=150 * len(slices)))
     assert text == _words(300)
+
+
+# ── ADR-0332: thinking off for the summarizer, and a cap its budget sets ─────────────
+
+
+class _SwitchableSummarizer(_CutSummarizer):
+    """A route that leaves the thinking switch to the caller (a self-hosted server)."""
+
+    def capabilities(self) -> Capabilities:
+        return super().capabilities().model_copy(update={"thinking_switch": True})
+
+
+def _sent(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """What one ask asked for, less the session's affinity key."""
+    return {k: v for k, v in kwargs.items() if k != "prompt_cache_key"}
+
+
+OFF = thinking_extra_body(False)
+
+
+@pytest.mark.parametrize(
+    ("words", "room", "cap"),
+    [
+        (3_100, 32_768, 8_192),  # the pod's budget: the per-completion floor, not 32,768
+        (4_600, 32_768, 9_200),  # a long window's budget, and half again
+        (400, 8_192, 8_192),  # a small window keeps the floor
+        (1_500, 4_096, 4_096),  # never over the room the ask has with thinking on
+    ],
+)
+def test_the_switched_cap_follows_the_budget(words: int, room: int, cap: int) -> None:
+    assert _summary_switched_room(words, room) == cap
+
+
+def test_a_route_that_takes_the_switch_is_asked_with_thinking_off(tmp_path: Path) -> None:
+    # Measured 2026-10-29 (the pod's 27B model, thinking on): a summarizer call ran to its
+    # 32,768-token cap in 21 minutes, and two compactions took 47 and 55 minutes.
+    provider = _SwitchableSummarizer([_WHOLE], ["stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 8_192, "extra_body": OFF}]
+
+
+def test_a_route_without_the_switch_is_asked_as_before(tmp_path: Path) -> None:
+    provider = _CutSummarizer([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 32_768},
+        {"max_tokens": 32_768, "temperature": pytest.approx(0.5)},
+    ]
+
+
+def test_every_ask_goes_with_thinking_off_the_condensing_one_included(tmp_path: Path) -> None:
+    provider = _SwitchableSummarizer(["x" * 5000], ["stop"])
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(40)))
+    assert len(provider.kwargs) > 2  # the premise: slices and folds
+    assert all(_sent(kw) == {"max_tokens": 8_192, "extra_body": OFF} for kw in provider.kwargs)
+
+    long, short = _words(600), _words(300)
+    condensed = _SwitchableSummarizer(
+        [f"<summary>{long}</summary>", f"<summary>{short}</summary>"], ["stop"]
+    )
+    assert asyncio.run(_loop(condensed, tmp_path)._summarize_for_compaction(_history(3))) == short
+    assert condensed.seen[1][0].text.startswith(_CONDENSE_PROMPT.format(said=600))
+    assert _sent(condensed.kwargs[1]) == {"max_tokens": 8_192, "extra_body": OFF}
+
+
+def test_an_answer_the_switched_cap_cut_off_is_asked_again_with_today_s_room(
+    tmp_path: Path,
+) -> None:
+    # A summary that runs past the cap, or a route that took the switch and thought anyway,
+    # gets the resample it had before (ADR-0242), and the switch stays on.
+    provider = _SwitchableSummarizer([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 8_192, "extra_body": OFF},
+        {"max_tokens": 32_768, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+    ]
+
+
+def test_a_summarizer_the_user_named_is_asked_as_configured(tmp_path: Path) -> None:
+    provider = _SwitchableSummarizer([_WHOLE], ["stop"], window=131_072)
+    loop = AgentLoop(
+        _SummarizerProvider(["unused"], tokens=100),
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        summarizer_provider=provider,
+        summarizer_thinking_off=False,  # a model_roles summarizer
+    )
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 32_768}]
+
+
+class _RefusesTheSwitch(_SwitchableSummarizer):
+    """A route that refuses a request carrying the switch and names nothing (ADR-0307)."""
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        if "extra_body" in kw:
+            self.kwargs.append(kw)
+            raise RequestFailed("The model returned the following errors: Validation Error")
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Path) -> None:
+    provider = _RefusesTheSwitch([_WHOLE], ["stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 8_192, "extra_body": OFF},
+        {"max_tokens": 32_768},
+        {"max_tokens": 32_768},
+    ]
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
+    assert any("refused the thinking switch" in line for line in said)
