@@ -571,6 +571,45 @@ async def test_a_healthy_stream_is_unaffected_by_the_deadline(
     assert [e.text for e in events if isinstance(e, StreamTextDelta)] == ["fine"]
 
 
+# A turn is stopped (the page's Stop, the terminal's Esc) by cancelling the task that reads the
+# stream. Python 3.11's asyncio.wait_for hands back a result that is ready when its task is
+# cancelled and drops the cancellation, and in a fast stream the next chunk nearly always is:
+# the Stop was lost and the answer ran on to its end, then ended as if nothing had been asked.
+
+
+class _StopsAtChunk:
+    """``n`` chunks, each ready at once; serving chunk ``at`` cancels the task reading them, as a
+    Stop that lands while the next chunk is ready does."""
+
+    def __init__(self, n: int, at: int) -> None:
+        self.n, self.at, self.served = n, at, 0
+        self.reader: asyncio.Future[Any] | None = None
+
+    def __aiter__(self) -> Any:
+        return self
+
+    async def __anext__(self) -> Any:
+        await asyncio.sleep(0)
+        if self.served == self.n:
+            raise StopAsyncIteration
+        self.served += 1
+        if self.served == self.at and self.reader is not None:
+            self.reader.cancel()
+        return _chunk(content=str(self.served))
+
+
+async def test_a_stop_that_lands_as_the_next_chunk_arrives_ends_the_stream_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _StopsAtChunk(n=200, at=5)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    reader = asyncio.ensure_future(_collect(_make_provider().astream(_MSGS)))
+    stream.reader = reader
+    with pytest.raises(asyncio.CancelledError):
+        await reader
+    assert stream.served == 5  # where the Stop landed, not the end of the answer
+
+
 async def test_a_timed_out_stream_records_what_it_saw_for_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

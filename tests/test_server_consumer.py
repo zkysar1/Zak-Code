@@ -34,6 +34,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 import uvicorn
 
 from zakcode.config import Settings
@@ -365,6 +366,59 @@ async def test_a_chat_stream_turn_puts_the_users_line_on_the_watch_bus_too(tmp_p
     assert sum(1 for f in frames if f.get("event") == "user_message") == 1
     assert {"event": "text", "text": "ok"} in frames
     assert frames[-1]["event"] == "done"
+
+
+@pytest.mark.parametrize("lands", ["before its done", "after its done"])
+async def test_a_stop_ends_a_say_turn_once(tmp_path: Path, lands: str) -> None:
+    """The page's Stop ends a say turn with an "interrupted" status where the turn stood. One
+    that lands after the turn's own done frame, while the turn saves, stops nothing: the done
+    frame ended that turn, and an "interrupted" after it was drawn as a second end."""
+    reached = threading.Event()
+
+    class _Saves:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            yield AgentTextDelta(text="partial")
+            if lands == "after its done":
+                yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+            reached.set()
+            await asyncio.sleep(1.0)  # still writing, or saving once its done frame is out
+            if lands == "before its done":
+                yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Saves(session),
+    )
+    with _LiveServer(app) as base_url:
+        async with httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(10.0)) as ac:
+            assert (await ac.post("/say", json={"text": "deploy it"})).status_code in (200, 202)
+            assert await asyncio.to_thread(reached.wait, 10.0)
+            sid = (await ac.get("/sessions/current")).json()["id"]
+            stop = await ac.post("/interrupt", json={"session_id": sid})
+            assert stop.json() == {"requested": True}
+            deadline = time.monotonic() + 10.0
+            while (await ac.get(f"/sessions/{sid}/transcript")).json()["running"]:
+                assert time.monotonic() < deadline, "the turn never ended"
+                await asyncio.sleep(0.05)
+            frames: list[dict[str, Any]] = []
+            async with ac.stream("GET", f"/watch/{sid}?full=1") as watch:
+                lines = watch.aiter_lines()
+                with contextlib.suppress(TimeoutError):  # the replay is drawn; the watch waits on
+                    while True:
+                        async with asyncio.timeout(1.0):
+                            line = await anext(lines)
+                        if line.startswith("data:"):
+                            frames.append(json.loads(line[len("data:") :].strip()))
+
+    assert [f["event"] for f in frames[:2]] == ["user_message", "text"]
+    ends = [f["message"] if f["event"] == "status" else f["event"] for f in frames[2:]]
+    assert ends == (["interrupted"] if lands == "before its done" else ["done"])
 
 
 def test_current_session_heals_a_dangling_marker(tmp_path: Path) -> None:

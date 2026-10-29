@@ -2738,7 +2738,12 @@ class LiteLLMProvider(Provider):
             while True:
                 bound = first_bound if seen == 0 else self.stream_stall_timeout
                 try:
-                    chunk = await asyncio.wait_for(iterator.__anext__(), bound)
+                    # asyncio.timeout, not asyncio.wait_for: on Python 3.11 wait_for hands back a
+                    # chunk that is ready when its task is cancelled and DROPS the cancellation,
+                    # and in a fast stream the next chunk nearly always is. A Stop pressed in the
+                    # middle of an answer was lost that way, and the answer ran on to its end.
+                    async with asyncio.timeout(bound):
+                        chunk = await iterator.__anext__()
                 except StopAsyncIteration:
                     return
                 except TimeoutError as exc:
