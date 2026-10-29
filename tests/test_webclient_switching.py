@@ -535,8 +535,10 @@ def test_a_chat_opened_from_one_with_a_conversation_on_screen_shows_its_own(
     model and id on the start screen by looking that up: it found nothing, threw, and stopped
     half way, the chat it left still on screen and nothing watching the one it opened. Every
     switch away from a chat with anything in it did that, the next one too."""
-    other = _chat(Y, "chat Y", fresh=True) if opens == "New chat" else _chat(
-        Y, "chat Y", transcripts=[_said("second", "and again")]
+    other = (
+        _chat(Y, "chat Y", fresh=True)
+        if opens == "New chat"
+        else _chat(Y, "chat Y", transcripts=[_said("second", "and again")])
     )
     chats = [_chat(A, "chat A", transcripts=[_said("hello", "hi there")]), other]
     leave = {"press": "new-chat"} if opens == "New chat" else {"click": "chat Y"}
@@ -556,6 +558,23 @@ def test_a_chat_opened_from_one_with_a_conversation_on_screen_shows_its_own(
         assert _spoken(opened) == [("user", "second"), ("assistant", "and again")]
     assert back["chip"] == A[:8]
     assert _spoken(back) == [("user", "hello"), ("assistant", "hi there")]
+
+
+def test_a_chat_with_a_conversation_opens_with_no_start_screen_on_the_way(tmp_path: Path) -> None:
+    """Opening a chat put the start screen back at once and drew the saved conversation when it
+    came, so every switch to a chat with anything in it flashed the start screen."""
+    chats = [
+        _chat(A, "chat A", transcripts=[_said("hello", "hi there")]),
+        _chat(Y, "chat Y", transcripts=[{**_said("second", "and again"), "delay": 300}]),
+    ]
+    steps = [
+        {"at": 150, "click": "chat Y"},
+        {"at": 300, "look": "on its way"},
+        {"at": 700, "look": "drawn"},
+    ]
+    on_its_way, drawn = _page(tmp_path, chats, steps)
+    assert all("fake-model · session" not in row["text"] for row in on_its_way["rows"])
+    assert _spoken(drawn) == [("user", "second"), ("assistant", "and again")]
 
 
 def test_making_the_chat_on_screen_active_takes_down_what_the_status_line_said_of_it(

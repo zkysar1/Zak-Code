@@ -37,6 +37,7 @@ import httpx
 import pytest
 import uvicorn
 
+from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
@@ -237,6 +238,91 @@ def test_stop_ends_a_say_turn_when_it_names_that_turns_chat(tmp_path: Path) -> N
     assert stop == {"requested": True}
     assert ran is True  # the say turn ended
     assert not interrupt_path(tmp_path).exists()  # its watcher took the signal
+
+
+def test_a_switch_refused_while_a_say_turn_runs_names_the_active_chat(tmp_path: Path) -> None:
+    """The page asks to make a chat active from whichever chat it shows, most often not the one
+    running the turn, and the refusal said the turn was running "in this chat"."""
+    started = asyncio.Event()
+
+    class _Waits:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            started.set()
+            await asyncio.sleep(3600)
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Waits(session),
+    )
+    assert write_say(say_path(tmp_path), "deploy it")
+
+    async def go() -> httpx.Response:
+        turn = asyncio.create_task(app.state.consume_one_say())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            refused = await client.put("/sessions/current", json={"session_id": None})
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await turn
+        return refused
+
+    refused = asyncio.run(go())
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "a turn is running in the active chat; stop it or let it finish, then switch"
+    )
+
+
+def test_a_switch_refused_while_a_chat_turn_runs_in_another_chat_names_another_chat(
+    tmp_path: Path,
+) -> None:
+    """A turn driven through POST /chat can run in a chat that is not the active one, and the
+    refusal must not send the person to the active chat to stop it."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class _Blocks:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def arun_turn(self, user_text: str) -> TurnResult:  # noqa: ARG002
+            started.set()
+            await release.wait()
+            return TurnResult(stop_reason="completed", iterations=1)
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Blocks(session),
+    )
+
+    async def go() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/sessions")  # the first chat is the active one
+            other = (await client.post("/sessions")).json()["id"]
+            turn = asyncio.create_task(
+                client.post("/chat", json={"message": "a", "session_id": other})
+            )
+            await asyncio.wait_for(started.wait(), timeout=5)
+            refused = await client.put("/sessions/current", json={"session_id": other})
+            release.set()
+            assert (await turn).status_code == 200
+        return refused
+
+    refused = asyncio.run(go())
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "a turn is running in another chat; stop it or let it finish, then switch"
+    )
 
 
 def test_sessions_current_join_flow(tmp_path: Path) -> None:

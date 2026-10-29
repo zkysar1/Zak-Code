@@ -42,7 +42,9 @@ Environment=PATH=/home/zakcode/.local/bin:/usr/local/bin:/usr/bin:/bin
 # box-specific: --host 127.0.0.1 keeps it loopback-only. To reach it from elsewhere put a
 # reverse proxy in front, or set ZAKCODE_AUTH_TOKEN in the env file and bind 0.0.0.0 — the
 # server refuses a non-loopback bind without a token unless you pass --insecure.
-ExecStart=/usr/bin/env zakcode webapp --host 127.0.0.1 --port 8000 --workspace /srv/zakcode/workspace
+# --no-new-session: a restart (Restart=always) keeps the chat the pages are on, where a plain
+# launch opens a new one and every page left open follows it there.
+ExecStart=/usr/bin/env zakcode webapp --host 127.0.0.1 --port 8000 --workspace /srv/zakcode/workspace --no-new-session
 Restart=always
 RestartSec=3
 TimeoutStopSec=30

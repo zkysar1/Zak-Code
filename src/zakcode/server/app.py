@@ -1669,9 +1669,11 @@ def create_app(
         queued for the conversation on screen."""
         workspace = resolved_settings.workspace_root
         if inflight:
-            # "the active chat", not "this chat": the page asks from whichever chat it shows,
-            # and the one it shows is often not the one running the turn.
-            return "a turn is running in the active chat; stop it or let it finish, then switch"
+            # The chat the turn runs in, not "this chat": the page asks from whichever chat it
+            # shows, and the one it shows is often not the one running the turn. A say turn runs
+            # in the active chat; a turn driven through POST /chat can run in any other.
+            where = "the active chat" if _current_session_id() in inflight else "another chat"
+            return f"a turn is running in {where}; stop it or let it finish, then switch"
         if busy_elsewhere(busy_path(workspace)):
             # Another process's turn (a terminal on the workspace, say): not this chat's, so the
             # page's Stop is not the way to end it (ADR-0320).
@@ -1679,7 +1681,8 @@ def create_app(
                 "a turn is running in another session on this workspace; let it finish, then switch"
             )
         if say_pending(say_path(workspace)) or _nudge_pending():
-            return "a message is queued for this chat; let it run, then switch"
+            # A queued message runs in the active chat, whichever chat the asking page shows.
+            return "a message is queued for the active chat; let it run, then switch"
         return None
 
     def _new_chat() -> Session:

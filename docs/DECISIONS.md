@@ -20690,3 +20690,102 @@ The proof.
 - Five sabotages were each run green, red, green (2026-10-29): with the single-call path or the sliced path not held to the
   budget, without the quarter's slack, without the fewer-words check, and with the failure guard narrowed, the tests that
   cover each turned red.
+
+## ADR-0332: a chat opens from one with a conversation on screen, Stop lands mid-answer, a page left open across a restart lands where a fresh page would, and the page is asked for on every load
+
+Status: accepted. 2026-10-29. Amends ADR-0120 (the per-chunk bound), ADR-0286 (the ring's size),
+ADR-0289 (a page left open across a restart), ADR-0319 (the switch and its refusal) and ADR-0327
+(Stop on a say turn).
+
+Context. Walking the page through what a person does with it (open it, start chats, move between
+them while answers stream, stop answers, restart the server under it) found eleven faults. Each was
+reproduced in a real browser or against the page's own script before it was fixed:
+
+1. Opening a chat from one with anything in it did nothing a person could see. `openSession` looked
+   up the start screen's model line by its id after the first row drawn had taken the start screen
+   out of the page; the lookup found nothing and the assignment threw half way. The old
+   conversation stayed on screen, the new chat's bus was never watched, and New chat did the same.
+   Only a switch away from an empty chat worked. The page's tests run its script against a fake DOM
+   whose lookup by id found an element whether or not it was still in the page, so none could fail.
+2. Stop pressed while an answer streamed was often lost, and the answer ran to its end. The
+   per-chunk bound (ADR-0120) awaited each chunk under `asyncio.wait_for`, and on Python 3.11
+   `wait_for` drops a cancellation that lands while the chunk it waits on is ready. Python 3.12
+   builds `wait_for` on `asyncio.timeout`, which keeps it.
+3. A Stop that landed as a say turn saved, after the turn's `done` frame was out, published
+   `interrupted` too: the page drew the turn a second end, a footer of nothing.
+4. Make this chat active left up what the status line had said of the chat while it was only read
+   ("make it active to send here").
+5. The refusal to make a chat active while a turn runs said the turn ran "in this chat", whichever
+   chat the page showed, and the refusal while a message is queued did the same.
+6. A page left open while the server restarted started over on the chat it showed (ADR-0289), still
+   marked active, while the restarted server had opened a new chat (launch opens one by default):
+   the page and the workspace disagreed about which chat was active until the page was reloaded.
+7. The page was served with no cache header, so a browser could run a copy it kept from before an
+   upgrade.
+8. A chat's saved conversation that failed to load after another chat had opened drew its error
+   card in the chat then on screen.
+9. The chat list draws the answer to each request for it, and two requests can answer out of order:
+   a late answer to the earlier one marked active the chat that was active before.
+10. A session's bus kept 1000 events, and a streamed answer is one event per chunk (a 400-word reply
+    came to about 520). A page that left a chat while a long answer streamed came back to an answer
+    whose start the ring had already evicted.
+11. Opening a chat put the start screen back at once and drew the saved conversation when it came,
+    so every switch to a chat with anything in it flashed the start screen.
+
+Decision. One layer per fault.
+
+1. The page holds the start screen's model line from load (`emptyMeta`), so it can be written while
+   the start screen is out of the page. The page tests' fake DOM finds an element by id only while
+   it is in the document, as a browser does.
+2. The per-chunk bound uses `asyncio.timeout` (`LiteLLMProvider._bounded_chunks`), which keeps a
+   cancellation on every Python the project runs on. The bound and its `TimedOut` are unchanged.
+3. A say turn publishes `interrupted` only while its own `done` frame is not out
+   (`_run_turn_for_say`): a Stop after it stops nothing.
+4. Make this chat active takes down the status line once the chat is active (`switchTo`).
+5. The refusal names where the turn runs: "a turn is running in the active chat; stop it or let it
+   finish, then switch" for a turn in the active chat, "in another chat" for one driven through
+   `POST /chat` in a chat that is not the active one, and "a message is queued for the active chat;
+   let it run, then switch".
+6. A page whose bus was made again follows the active chat before it starts over (`watchLoop`,
+   `followCurrent(reason, mark = false)`). When the restarted server's active chat is another one, a
+   page that showed the active chat opens it, as a page opened then would; when it is still the chat
+   on screen, the page starts over on it as before, with no "session restarted" row. A page reading
+   a chat that was not the active one stays on it.
+7. `GET /` answers `Cache-Control: no-cache`, so the browser asks again on every load.
+8. The history's error card is drawn only while its chat is still the one on screen
+   (`renderHistory`).
+9. The chat list counts its requests (`listed`) and draws only the answer to the latest one.
+10. A bus keeps 5000 events (`_DEFAULT_MAXLEN`). A text delta measured 665 bytes, so a full ring is
+    about 3.3 MB, and the 16 idle buses the registry keeps (ADR-0327) about 53 MB at most.
+11. The rows on screen stay until the next chat's saved conversation is in hand, and give way to it
+    in the same task that draws it (`clearLog`, out of `resetView`); a chat with nothing in it shows
+    the start screen, as before, and a history that fails shows its card alone.
+
+Consequences. A click in the chat list, New chat and Make this chat active each leave the page on the
+chat they name, watching its bus, and so does a server restart. Since every page left open now
+follows a restart to the chat the server opens, the systemd unit (`deploy/systemd`) starts with
+`--no-new-session`: it restarts itself after a crash, and a crash should not move every page to an
+empty chat. A server started by hand still opens a new chat, as before. Still open: a running turn longer
+than 5000 events replays without its head (ADR-0325); the consent receipt ("allowed once") lives
+only in the page that drew it, so a reload or a switch loses it; after a server restart a chat's
+earlier turns are drawn from the saved conversation as text only, without the tool cards and
+receipts that lived on the bus; and New chat is refused while a turn runs, as every switch is
+(ADR-0319).
+
+The proof. tests/test_webclient_switching.py (a chat opened by a click or by New chat from one with
+a conversation on screen shows its own; a chat with a conversation opens with no start screen on
+the way; Make this chat active takes down the status line; a page
+left open while the server restarts lands where a fresh page would, three ways; a history that
+fails after another chat opened says nothing in that one; a chat list that answers late does not
+undo a later one), tests/test_provider_stream.py (a Stop that lands as the next chunk arrives ends
+the stream there), tests/test_server_consumer.py (a Stop ends a say turn once, before its done frame
+and after it; the refusal names the active chat for a say turn and another chat for a `POST /chat`
+turn in another chat), tests/test_webapp_sessions.py (the refusal while a say or a suggestion is
+queued names the active chat), tests/test_server_webclient.py (the page is asked for again on every
+load) and tests/test_event_bus.py (a bus holds a long answer whole). Every fix was sabotaged on its
+own, and the test that covers it turned red, then green once the fix was back. In a real browser
+against a live server and a real model: a first load lands on a new empty chat; six switches
+between two chats each show that chat's conversation exactly; five switches while an answer
+streams, and a reload after them, each match; a send while reading another chat is held with its
+draft; Stop after a switch ends the turn three times of three, each with one end; an approval card
+survives a switch away and back. `uv run poe check` green.
