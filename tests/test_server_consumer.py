@@ -34,8 +34,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 import uvicorn
 
+from zakcode.agent.loop import TurnResult
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
@@ -238,6 +240,91 @@ def test_stop_ends_a_say_turn_when_it_names_that_turns_chat(tmp_path: Path) -> N
     assert not interrupt_path(tmp_path).exists()  # its watcher took the signal
 
 
+def test_a_switch_refused_while_a_say_turn_runs_names_the_active_chat(tmp_path: Path) -> None:
+    """The page asks to make a chat active from whichever chat it shows, most often not the one
+    running the turn, and the refusal said the turn was running "in this chat"."""
+    started = asyncio.Event()
+
+    class _Waits:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            started.set()
+            await asyncio.sleep(3600)
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Waits(session),
+    )
+    assert write_say(say_path(tmp_path), "deploy it")
+
+    async def go() -> httpx.Response:
+        turn = asyncio.create_task(app.state.consume_one_say())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            refused = await client.put("/sessions/current", json={"session_id": None})
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await turn
+        return refused
+
+    refused = asyncio.run(go())
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "a turn is running in the active chat; stop it or let it finish, then switch"
+    )
+
+
+def test_a_switch_refused_while_a_chat_turn_runs_in_another_chat_names_another_chat(
+    tmp_path: Path,
+) -> None:
+    """A turn driven through POST /chat can run in a chat that is not the active one, and the
+    refusal must not send the person to the active chat to stop it."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class _Blocks:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def arun_turn(self, user_text: str) -> TurnResult:  # noqa: ARG002
+            started.set()
+            await release.wait()
+            return TurnResult(stop_reason="completed", iterations=1)
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Blocks(session),
+    )
+
+    async def go() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/sessions")  # the first chat is the active one
+            other = (await client.post("/sessions")).json()["id"]
+            turn = asyncio.create_task(
+                client.post("/chat", json={"message": "a", "session_id": other})
+            )
+            await asyncio.wait_for(started.wait(), timeout=5)
+            refused = await client.put("/sessions/current", json={"session_id": other})
+            release.set()
+            assert (await turn).status_code == 200
+        return refused
+
+    refused = asyncio.run(go())
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == (
+        "a turn is running in another chat; stop it or let it finish, then switch"
+    )
+
+
 def test_sessions_current_join_flow(tmp_path: Path) -> None:
     """The web page's boot: 404 with no marker → create (writes the marker) →
     ``/sessions/current`` returns the same session thereafter."""
@@ -365,6 +452,59 @@ async def test_a_chat_stream_turn_puts_the_users_line_on_the_watch_bus_too(tmp_p
     assert sum(1 for f in frames if f.get("event") == "user_message") == 1
     assert {"event": "text", "text": "ok"} in frames
     assert frames[-1]["event"] == "done"
+
+
+@pytest.mark.parametrize("lands", ["before its done", "after its done"])
+async def test_a_stop_ends_a_say_turn_once(tmp_path: Path, lands: str) -> None:
+    """The page's Stop ends a say turn with an "interrupted" status where the turn stood. One
+    that lands after the turn's own done frame, while the turn saves, stops nothing: the done
+    frame ended that turn, and an "interrupted" after it was drawn as a second end."""
+    reached = threading.Event()
+
+    class _Saves:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            yield AgentTextDelta(text="partial")
+            if lands == "after its done":
+                yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+            reached.set()
+            await asyncio.sleep(1.0)  # still writing, or saving once its done frame is out
+            if lands == "before its done":
+                yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Saves(session),
+    )
+    with _LiveServer(app) as base_url:
+        async with httpx.AsyncClient(base_url=base_url, timeout=httpx.Timeout(10.0)) as ac:
+            assert (await ac.post("/say", json={"text": "deploy it"})).status_code in (200, 202)
+            assert await asyncio.to_thread(reached.wait, 10.0)
+            sid = (await ac.get("/sessions/current")).json()["id"]
+            stop = await ac.post("/interrupt", json={"session_id": sid})
+            assert stop.json() == {"requested": True}
+            deadline = time.monotonic() + 10.0
+            while (await ac.get(f"/sessions/{sid}/transcript")).json()["running"]:
+                assert time.monotonic() < deadline, "the turn never ended"
+                await asyncio.sleep(0.05)
+            frames: list[dict[str, Any]] = []
+            async with ac.stream("GET", f"/watch/{sid}?full=1") as watch:
+                lines = watch.aiter_lines()
+                with contextlib.suppress(TimeoutError):  # the replay is drawn; the watch waits on
+                    while True:
+                        async with asyncio.timeout(1.0):
+                            line = await anext(lines)
+                        if line.startswith("data:"):
+                            frames.append(json.loads(line[len("data:") :].strip()))
+
+    assert [f["event"] for f in frames[:2]] == ["user_message", "text"]
+    ends = [f["message"] if f["event"] == "status" else f["event"] for f in frames[2:]]
+    assert ends == (["interrupted"] if lands == "before its done" else ["done"])
 
 
 def test_current_session_heals_a_dangling_marker(tmp_path: Path) -> None:

@@ -49,7 +49,11 @@ from collections.abc import AsyncGenerator, Callable, Collection
 from datetime import UTC, datetime
 from typing import Any, Final
 
-_DEFAULT_MAXLEN: Final = 1000
+#: Events a session's bus keeps. A streamed answer is one event per chunk (a 400-word reply came
+#: to ~520), and a page that leaves a chat while its turn runs comes back to what the bus still
+#: holds of it, so the ring must hold a long turn whole: at 1000 a long answer evicted its own
+#: start. A text delta measured 663 bytes here, so a full ring is ~3.3 MB.
+_DEFAULT_MAXLEN: Final = 5000
 #: Per-subscriber live-queue bound. A watcher that falls this far behind the live tail drops its
 #: own oldest queued events (recoverable via the ring buffer + cursor gap); it never blocks the
 #: publisher. Sized well above any human-watchable event rate, so only a truly stuck client trims.

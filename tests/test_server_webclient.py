@@ -74,6 +74,14 @@ def test_index_served_at_root(tmp_path: Path) -> None:
     assert "Zak Code" in resp.text
 
 
+def test_the_page_is_asked_for_again_on_every_load(tmp_path: Path) -> None:
+    """With no Cache-Control a browser may reuse the page it cached for a while without asking,
+    so a browser left over from before an upgrade went on running the old page. no-cache makes
+    it ask on every load."""
+    resp = _client(tmp_path).get("/")
+    assert resp.headers["cache-control"] == "no-cache"
+
+
 def test_static_mount_serves_index(tmp_path: Path) -> None:
     # The /app mount (html=True) serves index.html for the SPA.
     resp = _client(tmp_path).get("/app/")
