@@ -2902,6 +2902,10 @@ class AgentLoop:
         #: that message is in place.
         self._session_start_said: list[str] = []
         self._session_start_source = "startup"
+        #: ADR-0342: set once SessionStart has run to its end, or is never to run. The latch
+        #: above is set BEFORE the hooks run, so it cannot tell a finished run from one that a
+        #: Stop cut short.
+        self._session_start_done = not fire_session_start
         # 0 = unlimited (the only product behavior — minds run for days). A positive cap
         # is an SDK/test affordance passed by a CALLER (evals, tests, embedders), never
         # read from operator config: ZAKCODE_MAX_ITERATIONS was removed 2026-08-25.
@@ -7241,6 +7245,27 @@ class AgentLoop:
             HookEvent.SESSION_START, source=source
         )
         self._session_start_source = source
+        self._session_start_done = True
+
+    @property
+    def session_started(self) -> bool:
+        """Whether SessionStart has run on this loop to its end, with what it said added to the
+        session, or is never to run (ADR-0211, ADR-0342).
+
+        False while the hooks run, and after a turn stopped before they finished or before
+        their words were added: the chat has not heard them yet. A failed hook has run.
+        """
+        return self._session_start_done and not self._session_start_said
+
+    def skip_session_start(self) -> None:
+        """Do not fire SessionStart on this loop: its conversation has started already (ADR-0342).
+
+        The web app runs every turn on a loop of its own, and the first of them fired the
+        workspace's SessionStart hooks for the chat. A later message is not a new start, and
+        not a resume either, so the app says so here and the hooks stay quiet.
+        """
+        self._session_started = True
+        self._session_start_done = True
 
     def _say_session_start(self, said: list[str], source: str) -> None:
         """Hand the model what a SessionStart hook said: one persisted message, once (ADR-0211).

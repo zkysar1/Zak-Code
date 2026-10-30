@@ -21282,3 +21282,74 @@ and the beta), accepted; the same request before the change was refused with the
 the remote list reachable the list stays at 37 entries, as without the change, and the request is
 accepted (both measured 2026-10-30). `ruff check`, `ruff format --check`, `mypy` and `pytest`
 green: 6,625 passed, 24 skipped.
+
+## ADR-0342: a served chat runs the workspace's SessionStart hooks once per server start, not per message
+
+Status: accepted. 2026-10-30. Amends ADR-0211 (what a SessionStart hook says reaches the model).
+Corrects the context of ADR-0339.
+
+Context. A served deployment showed a line "[hook] This workspace's SessionStart hook ran (a saved
+session is being resumed)" under every message in the web app. The web app runs every turn on an
+agent of its own (the default factory builds one per request), and an agent's loop fires
+SessionStart before its first turn, as `resume` when the conversation has history. So on a served
+workspace every message was a resume: the workspace's start-up hooks ran again before each turn,
+and since ADR-0211 what they printed was added to the conversation again. They had run once per
+message all along; they printed nothing for `resume` until the deployment's framework began to
+report a missing package at every start, and from then each run showed. The line was not the only
+cost: each message waited for the framework's start-up work, and each told the model it had just
+been resumed. A turn a driver runs through `POST /chat` or `POST /chat/stream` did the same.
+
+Decision. The server keeps, for as long as it runs, the chats whose SessionStart hooks it has run.
+A turn's agent is built as before, and when its chat is among them the server tells the agent's
+loop to skip SessionStart (`AgentLoop.skip_session_start()`; a sub-agent's loop already had the
+same switch as a constructor argument). The server counts a chat as started once a turn's loop
+has run its SessionStart hooks to their end and what they said is in the chat
+(`AgentLoop.session_started`). A turn that ended before then leaves the next turn to run them: a
+refused slash command runs no turn, and a Stop can cut a turn while the hooks run (which kills
+them) or after they finished but before their words were added (both turn paths compact in
+between, and the words die with the turn's agent). The loop's once-latch is set before the hooks
+run, so it cannot tell those cases from a finished run: the server reads a flag set when the run
+ends, and the CLI keeps the latch as it was. The say inbox, `POST /chat` and `POST /chat/stream`
+all build and release their agents through the same two helpers. A chat's first turn after the
+server starts fires SessionStart, as `startup` for an empty chat and `resume` for one with
+history, and no later turn does. A restart, into a new build too (ADR-0333), is a new server and
+fires it again: that is the resume. Compaction fires SessionStart(`compact`) as before (ADR-0022).
+
+Consequences. One hook line per chat and server start instead of one per message, and a message no
+longer waits for the start-up hooks. A host framework sees SessionStart once per served chat and
+process, as it does once per session under Claude Code. Unchanged: an agent per turn, what a hook
+says when it does fire, and SessionStart(`compact`). A chat opened again in the same server does
+not fire it again: its conversation already carries what the hooks said there. A hook that failed
+has run, so it counts as the once, and the next server start runs it again. A start-up hook that
+also brings up a background service no longer runs with every message, so it no longer restarts
+that service mid-chat as a side effect: keeping a service up is the hook's or a supervisor's job.
+A turn that skips SessionStart writes nothing about it to the log. An agent factory whose agents
+have no loop, or a loop without the switch, gets one run per message as before, without a
+warning. Still open: the page draws the hook's words as a chat line, since the conversation
+stores them as a user message.
+
+Correction to ADR-0339's context. The report that led to ADR-0339 (one click on an old chat, then
+no click changed anything) had another cause on that deployment. Its reverse proxy answered `/`
+with a copy of the page saved before 82ac088. That page's chat-open step looked the start screen's
+caption up by id after the first drawn row had removed the start screen, threw `Cannot set
+properties of null (setting 'textContent')` and stopped half way, so the page switched once and
+never again; every update moved the server and never the page. With that one line put back into
+the current page, test_webclient_switching.py's test for opening a chat from one with a
+conversation turns red in both its cases with that exact error, and green again without it.
+ADR-0339's change stands on its own measurement (six pages on one server). DEPLOY.md now says to
+send every path through the proxy, and how to check that the page a browser gets is the server's.
+It also gives `--no-new-session` its row in the unit's table and puts it in the Compose example,
+which lacked it: a server started without it opens a new chat, and every open page follows it in.
+
+The proof. tests/test_served_session_start.py serves a real agent per turn, with a start-up hook
+script that writes down each run. Three messages in one chat run it once (`startup`) and the chat
+carries its words once; the same workspace served again runs it once more (`resume`); a chat driven
+through `POST /chat` or `POST /chat/stream` runs it once. A refused slash command before two
+messages leaves the run to the first message. A first message stopped while the hook runs, and
+one stopped after the hook finished but before its words were added, each leave it to the next
+message, which runs it and adds its words once. Six sabotages, each run against the file: never
+skipping (the first four tests red); the memory of started chats kept across servers (only the
+restart test red); the loop's switch doing nothing (the first four red); the server reading the
+loop's latch (both Stop tests red); the run-ended flag without the words check (only the second
+Stop test red); the server counting every turn (the slash test and both Stop tests red). Each
+turned green again once the fix was back. `uv run poe check` green.
