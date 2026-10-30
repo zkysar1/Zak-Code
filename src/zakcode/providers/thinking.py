@@ -100,7 +100,7 @@ def thinking_switch_verbatim(model: str, api_base: str | None) -> bool:
     """Whether the internal switch reaches ``model`` as written: a self-hosted
     OpenAI-compatible server through a configured ``api_base``, the measured, working case.
     :func:`render_thinking_switch` keeps the body there, and the provider reports the route
-    from it (``Capabilities.thinking_switch``, ADR-0332)."""
+    from it (``Capabilities.thinking_switch``, ADR-0333)."""
     return api_base is not None and model_uses_generic_endpoint(model)
 
 

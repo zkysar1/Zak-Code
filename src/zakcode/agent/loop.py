@@ -446,7 +446,7 @@ _CONDENSE_CLOSE = (
     "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
     "decisions, file paths and unfinished work."
 )
-#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0332): the ask's word
+#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0333): the ask's word
 #: budget in tokens, and half again. Measured 2026-10-29 on the pod's 27B model, no switch sent and
 #: the budget stated: one compaction took 47 minutes, its first call stopping at the 32,768-token
 #: cap after 21 of them, and another took 55 and installed 12,450 words against a budget of 3,100.
@@ -624,7 +624,7 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
 
 
 def _summary_switched_room(words: int, room: int) -> int:
-    """The output cap of a summarizer ask sent with thinking off (ADR-0332): its word budget
+    """The output cap of a summarizer ask sent with thinking off (ADR-0333): its word budget
     ``words`` in tokens at :data:`_WORDS_PER_TOKEN`, with :data:`_SUMMARY_SWITCHED_HEADROOM`,
     never under :data:`_SUMMARY_OUTPUT_FLOOR` and never over ``room``, the cap the ask has with
     thinking on (ADR-0275)."""
@@ -2631,7 +2631,7 @@ class AgentLoop:
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
         self._summarizer_provider = summarizer_provider
         # Whether the summarizer's asks go with thinking off where its route leaves the switch to
-        # the caller (ADR-0332). The session passes False for a summarizer the user named in
+        # the caller (ADR-0333). The session passes False for a summarizer the user named in
         # ``model_roles``, which is asked as they configured it.
         self._summarizer_thinking_off = summarizer_thinking_off
         self.registry = registry
@@ -2840,7 +2840,7 @@ class AgentLoop:
         self.last_compaction = ""
         #: The overflow-retry overrides each provider refused naming neither and then took the
         #: call without, for the session (ADR-0315), by the provider's id, and the thinking switch
-        #: a summarizer ask was refused the same way (ADR-0332). The provider rides along so that
+        #: a summarizer ask was refused the same way (ADR-0333). The provider rides along so that
         #: id cannot be reused, and a routed or failed-over one learns its own.
         self._refused_overrides: dict[int, tuple[Provider, set[str]]] = {}
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
@@ -3150,7 +3150,7 @@ class AgentLoop:
         close = _SUMMARY_CLOSE.format(words=words)
         fold_close = _FOLD_CLOSE.format(words=words)
         condense_close = _CONDENSE_CLOSE.format(words=words)  # ADR-0331
-        # ADR-0332: where the route leaves the thinking switch to the caller, and the user named
+        # ADR-0333: where the route leaves the thinking switch to the caller, and the user named
         # no summarizer of their own, every ask goes with thinking off and a cap its budget sets.
         thinking_off = caps.thinking_switch and self._summarizer_thinking_off
         switched_room = _summary_switched_room(words, room)
@@ -3165,7 +3165,7 @@ class AgentLoop:
 
         async def ask(prompt: str) -> str:
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
-            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0332)
+            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0333)
             entry = self._refused_overrides.get(id(summarizer))
             if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
                 switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
@@ -3199,7 +3199,7 @@ class AgentLoop:
                     # rejection-retry temperature, so a deterministic model does not re-emit it.
                     if resample:
                         raised = {"temperature": self._rejection_retry_temperature(resample)}
-                        # ADR-0332: with the room it had before, so an answer the switched cap
+                        # ADR-0333: with the room it had before, so an answer the switched cap
                         # cut off, or a route that took the switch and thought anyway, still
                         # gets the chance it had.
                         switched.pop("max_tokens", None)
@@ -3210,7 +3210,7 @@ class AgentLoop:
                             request, on_withheld=account_withheld
                         )
                     except RequestFailed as exc:
-                        # ADR-0332: a refusal that names nothing, of an ask that switched thinking
+                        # ADR-0333: a refusal that names nothing, of an ask that switched thinking
                         # off, is ADR-0307's shape, and the ask without the switch is the one every
                         # summary took before. It is sent again without it, and the switch is left
                         # off this provider's later asks and overflow retries (ADR-0315).

@@ -1669,7 +1669,11 @@ def create_app(
         queued for the conversation on screen."""
         workspace = resolved_settings.workspace_root
         if inflight:
-            return "a turn is running in this chat; stop it or let it finish, then switch"
+            # The chat the turn runs in, not "this chat": the page asks from whichever chat it
+            # shows, and the one it shows is often not the one running the turn. A say turn runs
+            # in the active chat; a turn driven through POST /chat can run in any other.
+            where = "the active chat" if _current_session_id() in inflight else "another chat"
+            return f"a turn is running in {where}; stop it or let it finish, then switch"
         if busy_elsewhere(busy_path(workspace)):
             # Another process's turn (a terminal on the workspace, say): not this chat's, so the
             # page's Stop is not the way to end it (ADR-0320).
@@ -1677,7 +1681,8 @@ def create_app(
                 "a turn is running in another session on this workspace; let it finish, then switch"
             )
         if say_pending(say_path(workspace)) or _nudge_pending():
-            return "a message is queued for this chat; let it run, then switch"
+            # A queued message runs in the active chat, whichever chat the asking page shows.
+            return "a message is queued for the active chat; let it run, then switch"
         return None
 
     def _new_chat() -> Session:
@@ -2586,7 +2591,9 @@ def create_app(
 
         @app.get("/")
         def index() -> FileResponse:
-            return FileResponse(static_dir / "index.html")
+            # no-cache: the browser asks again on every load, so a page it cached before an
+            # upgrade is never what an upgraded server shows.
+            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-cache"})
 
         app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
 
@@ -2693,8 +2700,10 @@ def create_app(
                 # turn. Prose turns fold the nudge exactly as before.
                 message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
 
+            finished = False  # the turn's own done frame is on the bus
+
             async def _run() -> None:
-                nonlocal last_turn_stop_reason
+                nonlocal last_turn_stop_reason, finished
                 from zakcode.events import AgentDone as _AgentDone
 
                 assert agent is not None
@@ -2704,6 +2713,7 @@ def create_app(
                     # Capture the turn's stop_reason for the DONE check.
                     if isinstance(event, _AgentDone):
                         last_turn_stop_reason = event.stop_reason
+                        finished = True
 
             async def _watch_interrupt() -> None:
                 while True:
@@ -2721,11 +2731,15 @@ def create_app(
                     turn.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await turn
-                    last_turn_stop_reason = "interrupted"
-                    from zakcode.events import AgentStatus
+                    # A Stop that lands after the turn's done frame (as the turn saves) stops
+                    # nothing: the done frame already ended it, and an "interrupted" after it was
+                    # drawn on the page as a second end, a footer of nothing.
+                    if not finished:
+                        last_turn_stop_reason = "interrupted"
+                        from zakcode.events import AgentStatus
 
-                    with contextlib.suppress(Exception):
-                        bus.publish(AgentStatus(message="interrupted"))
+                        with contextlib.suppress(Exception):
+                            bus.publish(AgentStatus(message="interrupted"))
                 elif turn in done:
                     turn.result()  # surface a turn exception to the except below
             finally:

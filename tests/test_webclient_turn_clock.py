@@ -106,11 +106,25 @@ class __Node {
   closest() { return null; }
   getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; }
 }
+// The page's own elements, each made when first asked for: in the document, or inside the one
+// the page's markup puts it in. Found by id only while in the document, as a browser finds
+// them: once add() takes the start screen out of the page, it and what is inside it are not.
+const __body = new __Node("body");
+const __INSIDE = { "empty-meta": "empty" };
 const __byId = new Map();
+function __element(id) {
+  if (!__byId.has(id)) {
+    const node = new __Node("div");
+    (id in __INSIDE ? __element(__INSIDE[id]) : __body).appendChild(node);
+    __byId.set(id, node);
+  }
+  return __byId.get(id);
+}
 const document = {
   getElementById(id) {
-    if (!__byId.has(id)) __byId.set(id, new __Node("div"));
-    return __byId.get(id);
+    const node = __element(id);
+    for (let n = node; n; n = n.parent) if (n === __body) return node;
+    return null;
   },
   createElement: (tag) => new __Node(tag),
   createTextNode: (text) => new __Node("#text", text),

@@ -143,7 +143,7 @@ async def test_compaction_summarizer_defaults_to_main_provider(tmp_path: Path) -
 
 
 def test_a_summarizer_the_user_named_is_asked_as_they_configured_it(tmp_path: Path) -> None:
-    # ADR-0332: a model_roles summarizer is the user's own pick, so its asks keep their thinking,
+    # ADR-0333: a model_roles summarizer is the user's own pick, so its asks keep their thinking,
     # in the parent loop and in every child. Any other summarizer may have it switched off.
     named = Agent(
         workspace_root=tmp_path,
@@ -160,7 +160,7 @@ def test_a_summarizer_the_user_named_is_asked_as_they_configured_it(tmp_path: Pa
 
 
 def test_a_summarize_category_that_sets_thinking_keeps_its_word(tmp_path: Path) -> None:
-    # ADR-0332: the category's ``thinking`` is the user's word for the summarizer's route; only a
+    # ADR-0333: the category's ``thinking`` is the user's word for the summarizer's route; only a
     # category that leaves it unset gets thinking switched off for its summaries.
     def summarizer(**entry: object) -> Provider:
         agent = Agent(

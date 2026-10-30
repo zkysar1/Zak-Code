@@ -130,6 +130,19 @@ async def test_bounded_buffer_evicts_oldest_and_replay_shows_cursor_gap() -> Non
     await agen.aclose()
 
 
+async def test_a_bus_holds_a_long_answer_whole() -> None:
+    """A streamed answer is one event per chunk, and a page that leaves a chat while its turn
+    runs comes back to what the bus still holds. At 1000 events a long answer (a 400-word reply
+    came to ~520) evicted its own start, and the page came back to a turn with no beginning."""
+    bus = SessionEventBus()
+    for x in range(1, 4001):  # an answer some 3000 words long
+        bus.publish(x)
+    agen = bus.subscribe(since=None)
+    got = await _take(agen, 4000)
+    assert got[0] == (1, 1)
+    await agen.aclose()
+
+
 def test_oldest_at_is_the_stamp_of_the_oldest_retained_event() -> None:
     """The line between what a late joiner can replay from the bus and what only the saved
     session still holds: none while the bus is empty (a server restart), then the first

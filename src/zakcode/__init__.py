@@ -1004,7 +1004,7 @@ class Agent:
             summarizer_provider = self._resolve_task_provider("summarize")[0]
         else:
             summarizer_provider = None
-        # ADR-0332: a summarizer the user named is asked as they configured it; the others go with
+        # ADR-0333: a summarizer the user named is asked as they configured it; the others go with
         # thinking off where their route leaves the switch to the caller.
         summarizer_thinking_off = "summarizer" not in self.settings.model_roles
 

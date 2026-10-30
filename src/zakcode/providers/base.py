@@ -154,7 +154,7 @@ class Capabilities(BaseModel):
     #: OpenAI Chat Completions API rejects more than 4). ``None`` means unbounded / unknown;
     #: the text tool-calling layer caps its sentinel list to this when set. (audit2 #8)
     max_stop_sequences: int | None = None
-    #: The route leaves the thinking switch to the caller (ADR-0332): the switch reaches the
+    #: The route leaves the thinking switch to the caller (ADR-0333): the switch reaches the
     #: model as written, through a self-hosted OpenAI-compatible server (ADR-0181), nothing
     #: configured for the route sets it (a zakpick category's ``thinking``, ``extra_body``), and
     #: the server has not refused it by name. The compaction summarizer turns thinking off only

@@ -2740,7 +2740,12 @@ class LiteLLMProvider(Provider):
             while True:
                 bound = first_bound if seen == 0 else self.stream_stall_timeout
                 try:
-                    chunk = await asyncio.wait_for(iterator.__anext__(), bound)
+                    # asyncio.timeout, not asyncio.wait_for: on Python 3.11 wait_for hands back a
+                    # chunk that is ready when its task is cancelled and DROPS the cancellation,
+                    # and in a fast stream the next chunk nearly always is. A Stop pressed in the
+                    # middle of an answer was lost that way, and the answer ran on to its end.
+                    async with asyncio.timeout(bound):
+                        chunk = await iterator.__anext__()
                 except StopAsyncIteration:
                     return
                 except TimeoutError as exc:
@@ -3025,7 +3030,7 @@ class LiteLLMProvider(Provider):
         # knows of its name: the switch is the only source for an alias it has never heard of.
         if self.prompt_caching and not caps.supports_caching:
             caps = caps.model_copy(update={"supports_caching": True})
-        # ADR-0332: a route that leaves the thinking switch to the caller says so. Only here does
+        # ADR-0333: a route that leaves the thinking switch to the caller says so. Only here does
         # the switch reach the model as written (ADR-0181); a body that already carries it (a
         # category's ``thinking``, the operator's ``extra_body``) is the operator's word, and a
         # server that refused it by name has said it takes none.

@@ -1421,7 +1421,7 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert text == _words(300)
 
 
-# ── ADR-0332: thinking off for the summarizer, and a cap its budget sets ─────────────
+# ── ADR-0333: thinking off for the summarizer, and a cap its budget sets ─────────────
 
 
 class _SwitchableSummarizer(_CutSummarizer):

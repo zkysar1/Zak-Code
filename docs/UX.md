@@ -474,14 +474,26 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   ellipsis, then the age of its last save in 11px mono `--faint`, as the terminal's
   `/resume` prints it (`3m ago`). The chat on screen sits on `--inset` with
   `aria-current`; another one shows `--surface` under the pointer. A chat with nothing asked
-  in it yet reads "New chat". Choosing a chat opens it: the column clears, draws that
-  chat's saved conversation and watches its own bus, and the next message runs on it with
-  its whole history. New chat opens an empty chat, or stays on the current one while
-  nothing is in it. While a turn runs or a message waits, the switch is refused and the
-  status line says why. Every other page on the workspace follows a switch. Below 48rem the
+  in it yet reads "New chat". The workspace's one active chat, the one messages go to,
+  carries an `ACTIVE` badge (10px mono, a `--brand` outlined pill). Choosing a chat opens it
+  to read: the column clears at once, draws that chat's saved conversation and watches its
+  own bus, and the active chat stays where it was. The start screen comes back only for a
+  chat with nothing in it, so a switch to a chat with a conversation never flashes it. While
+  the chat on screen is not the active one, a banner over the composer says "You're viewing
+  this chat. Messages go to the active chat." beside a **Make this chat active** button, the
+  composer's placeholder says the same, and a
+  send keeps the draft and says why on the status line. Make this chat active moves the
+  workspace to it, and the next message runs on it with its whole history. New chat opens
+  an empty chat and makes it active, or stays on the current one while nothing is in it.
+  While a turn runs or a message waits, making a chat active (New chat included) is refused
+  and the status line names the chat the turn runs in; opening a chat to read never is.
+  Every other page on the workspace that shows the active chat follows a switch, and a page
+  reading another chat stays on it. A page left open while the server restarts lands on the
+  chat the restarted server opened, as a page opened then would (ADR-0332). Below 48rem the
   list folds away and opens over the column from the header's **Chats** pill; choosing a
   chat closes it. The list is asked for again whenever it can change (a chat opened, a turn
-  ended); one that cannot be read keeps what it showed.
+  ended); one that cannot be read keeps what it showed, and an answer that comes back after
+  a later ask's is dropped.
 - **Empty state** — centered `✦` + name (`--font-display`, 30px) + `{model} · session
   {id8}` + hint, plus three sample-prompt pills that prefill the composer (never send);
   removed on first append.

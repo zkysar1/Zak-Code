@@ -142,7 +142,7 @@ def test_a_field_the_provider_refused_stays_out_of_every_later_request() -> None
     assert provider.extra_body == {"seed": 42, "top_k": 3}  # the operator's config is intact
 
 
-# ── the route that leaves the switch to the caller (ADR-0332) ────────────────────────
+# ── the route that leaves the switch to the caller (ADR-0333) ────────────────────────
 
 
 def _self_hosted(**kw: object) -> LiteLLMProvider:

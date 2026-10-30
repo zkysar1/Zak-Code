@@ -549,6 +549,9 @@
   const main = document.getElementById("main");
   const log = document.getElementById("log");
   const emptyState = document.getElementById("empty");  // the start screen; add() removes it
+  // Inside the start screen, so held from here: once add() takes the start screen out of the page,
+  // looking it up by id finds nothing, and the next chat opened would stop half way through.
+  const emptyMeta = document.getElementById("empty-meta");
   const input = document.getElementById("input");
   const attachBtn = document.getElementById("attach");
   const fileInput = document.getElementById("file-input");
@@ -574,6 +577,7 @@
   let replayFloor = 0;       // frames at or below this cursor were drawn from the saved conversation (ADR-0325)
   let shown = 0;             // counts the chats opened; work begun for an earlier one draws nothing (ADR-0319)
   let viewing = 0;           // counts the chats asked for; only the last one asked for opens (ADR-0325)
+  let listed = 0;            // counts the chat-list requests; only the last one's answer is drawn
   let watchAbort = null;     // ends the open watch connection when another chat opens
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
@@ -1558,7 +1562,7 @@
   }
 
   // The saved conversation, drawn BEFORE the live stream joins. The watch bus is in memory: it
-  // starts empty on every server start and keeps only its last 1000 events, so a page that
+  // starts empty on every server start and keeps only its last 5000 events, so a page that
   // relied on it alone drew an empty conversation (or only its newest turns) for one that was
   // still saved. The cut falls on a TURN (ADR-0325): the saved transcript is the source for
   // everything older than the oldest turn the bus holds whole (bus_from), and the replay
@@ -1574,6 +1578,10 @@
       if (!resp.ok) throw new Error("transcript " + resp.status);
       const t = await resp.json();
       if (gen !== shown) return null;  // another chat opened while this one's history was on its way
+      // The start screen is for a chat with nothing in it. A chat with a conversation never shows
+      // it, not even while the replay that draws its newest turns is still on its way.
+      if (t.messages.length === 0 && !t.running) log.replaceChildren(...(emptyState ? [emptyState] : []));
+      else document.getElementById("empty")?.remove();
       lastCursor = t.bus_since ?? null;
       replayFloor = t.bus_since ?? 0;
       assistantBody = null;
@@ -1611,7 +1619,8 @@
       }
       return t.bus_epoch || null;
     } catch (e) {
-      add(errCard("could not load the saved conversation: " + e.message));
+      // Not when another chat opened meanwhile: the card would say the chat on screen failed.
+      if (gen === shown) add(errCard("could not load the saved conversation: " + e.message));
       return null;
     }
   }
@@ -1621,7 +1630,7 @@
   // by another one, the server restarted (or the session's bus was made again) while this page
   // stayed open. Resuming at the old cursor would skip that many of the new bus's first events,
   // and whatever this page had not drawn yet died with the old bus. So the page starts over as a
-  // freshly opened one does: the start screen, the saved conversation older than the new bus,
+  // freshly opened one does: the rows cleared, the saved conversation older than the new bus,
   // then the new bus's whole replay (ADR-0289). The composer, and what is typed in it, stay. It
   // starts over on the same bus too when that bus no longer holds what came after the cursor
   // (X-Bus-Oldest is past it): what the ring evicted is in the saved conversation (ADR-0325).
@@ -1633,9 +1642,11 @@
   // Everything the page drew or counted for the chat on screen: the rows, the cursor, the plan
   // it last drew, the turn's clock and meter, the status line, pending tool and permission cards.
   // Cleared together, when the bus changes and when another chat opens (ADR-0289, ADR-0319);
-  // kept, any of it would be read against the next chat's frames.
+  // kept, any of it would be read against the next chat's frames. The start screen stays only
+  // while it is what shows: put back here, it flashed on every switch to a chat with a
+  // conversation, until that chat's rows came. renderHistory() puts it back for an empty chat.
   function resetView() {
-    log.replaceChildren(...(emptyState ? [emptyState] : []));
+    log.replaceChildren(...(document.getElementById("empty") ? [emptyState] : []));
     lastCursor = null;
     replayFloor = 0;
     lastPlanKey = "";
@@ -1657,7 +1668,7 @@
     const id8 = sessionId.slice(0, 8);
     document.getElementById("chip-model").textContent = info.model;
     document.getElementById("chip-session").textContent = id8;
-    document.getElementById("empty-meta").textContent = info.model + " · session " + id8;
+    emptyMeta.textContent = info.model + " · session " + id8;
     updateComposerState();  // the banner is about the chat on screen: it moves with it, list or no list (ADR-0325)
     resetView();
     const epoch = await renderHistory(gen);  // the bus the history was cut against: see startOver()
@@ -1715,7 +1726,14 @@
           // its oldest event is then past the next one, and the resume would go on without it.
           const oldest = resp.headers.get("X-Bus-Oldest");
           const evicted = lastCursor !== null && oldest !== null && Number(oldest) > Number(lastCursor) + 1;
-          if ((busEpoch !== null && epoch !== busEpoch) || evicted) await startOver(gen);
+          if (busEpoch !== null && epoch !== busEpoch) {
+            // A bus made again is most often a server that restarted while this page stayed open,
+            // and a server opens a fresh chat as it starts. A page that showed the active chat
+            // follows it there, as a page opened now lands there; one that stays starts over.
+            await followCurrent("", false);
+            if (gen !== shown) return;
+            await startOver(gen);
+          } else if (evicted) await startOver(gen);
           if (gen !== shown) return;
           busEpoch = epoch;
         }
@@ -1742,6 +1760,7 @@
   // whenever what it shows can change: a chat opened, a turn ended. A list that cannot be
   // read keeps what it showed; the chat in the column does not depend on it.
   async function refreshChats() {
+    const ask = ++listed;
     let chats;
     try {
       const resp = await fetch("/sessions/recent");
@@ -1750,6 +1769,9 @@
     } catch (e) {
       return;
     }
+    // A list asked for before another can answer after it: it is the older one, and drawing it
+    // marked active the chat that was active before (and the chat now active as only viewed).
+    if (ask !== listed) return;
     // recent_sessions flags the workspace's current chat — the authoritative, always-fresh
     // source for currentId even when this page never opened it (ADR-0319).
     const cur = chats.find((c) => c.current);
@@ -1842,6 +1864,7 @@
     const info = await resp.json();
     currentId = info.id;
     updateComposerState();  // openSession() does nothing when the chat made active is the one on screen
+    hideStatus();           // so it leaves up what the status line said of that chat before it was active
     await openSession(info);
     refreshChats();
     input.focus();
@@ -1849,8 +1872,9 @@
 
   // The current chat changed under this page: another page opened one, or a driver started a
   // new session (session_rotated). Open the chat that is current now. When it is still this one
-  // (the marker has not moved yet), mark the restart in place, as the page always did.
-  async function followCurrent(reason) {
+  // (the marker has not moved yet), mark the restart in place, as the page always did — unless
+  // `mark` is false: a page following a server that restarted starts the chat over instead.
+  async function followCurrent(reason, mark = true) {
     const gen = shown;
     // Follow ONLY when the chat on screen is itself the active one and it rotated away. A
     // read-only viewer parked on another chat must not be yanked to the active chat — and a
@@ -1871,7 +1895,7 @@
     }
     refreshChats();              // parked on another chat (or no move): refresh the active badge only
     updateComposerState();
-    if (wasOnActive && (info === null || info.id === sessionId)) {
+    if (mark && wasOnActive && (info === null || info.id === sessionId)) {
       // the active chat restarted in place (its bus was remade) — mark it, as the page always did
       add(row("status", el("span", "", "·"), el("div", "meta", "session restarted" + (reason ? " — " + reason : ""))));
       endTurn();

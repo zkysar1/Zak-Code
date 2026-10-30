@@ -289,7 +289,10 @@ def test_no_chat_opens_while_a_message_is_queued_for_the_current_one(
     resp = served.put_current({"session_id": other.id})
 
     assert resp.status_code == 409
-    assert "queued" in resp.json()["detail"]
+    # The queued message runs in the active chat, which is not the chat the page asks from.
+    assert resp.json()["detail"] == (
+        "a message is queued for the active chat; let it run, then switch"
+    )
     assert served.marker() == current.id
     if queued == "say":
         assert say_pending(say_path(tmp_path)) is True
