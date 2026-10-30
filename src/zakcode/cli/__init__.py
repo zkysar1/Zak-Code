@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -605,16 +605,32 @@ def _uv_receipt_requirement() -> dict[str, Any]:
     return {}
 
 
-def _uv_tool_spec(source: str) -> str:
-    """``zakcode[extras] @ source``, extras recovered from uv's install receipt.
+def _uv_tool_spec(source: str, added: Sequence[str] = ()) -> str:
+    """``zakcode[extras] @ source``, extras recovered from uv's install receipt, then ``added``.
 
     Dropping the extras on update would silently uninstall a provider (e.g.
-    ``[google]`` = the vertex deps).
+    ``[google]`` = the vertex deps). An extra ``added`` is in the receipt the reinstall writes,
+    so every update after it keeps it too (ADR-0340).
     """
     got = _uv_receipt_requirement().get("extras")
     extras = [e for e in got if isinstance(e, str)] if isinstance(got, list) else []
+    extras += [e for e in added if e not in extras]
     name = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
     return f"{name} @ {source}"
+
+
+def _declared_extras() -> frozenset[str] | None:
+    """The optional extras this zakcode declares, read from its install metadata.
+
+    None when the metadata cannot be read; ``update --extra`` then passes the name on unchecked
+    and the installer judges it.
+    """
+    try:
+        from importlib.metadata import metadata
+
+        return frozenset(metadata("zakcode").get_all("Provides-Extra") or ())
+    except Exception:  # noqa: BLE001 - a check that cannot run must not block the update
+        return None
 
 
 def _checkout_note(checkout: str, old_sha: str, new_sha: str) -> str:
@@ -710,7 +726,7 @@ _VERSION_PROBE = (
 
 
 def _reinstall_commands(
-    source: str, checkout: str | None = None, note: str = ""
+    source: str, checkout: str | None = None, note: str = "", extras: Sequence[str] = ()
 ) -> list[list[str]]:
     """The reinstall invocations for this environment: uv when uv owns it, else pip.
 
@@ -747,11 +763,13 @@ def _reinstall_commands(
             options.append("--editable")
         if checkout is not None:
             options += ["--constraints", _pin_to_lock(uv, checkout, note).name]
-        return [[uv, "tool", "install", "--force", "--reinstall", *options, _uv_tool_spec(source)]]
+        spec = _uv_tool_spec(source, extras)
+        return [[uv, "tool", "install", "--force", "--reinstall", *options, spec]]
     pip = [sys.executable, "-m", "pip", "install"]
+    with_extras = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
     return [
         [*pip, "--force-reinstall", "--no-deps", f"zakcode @ {source}"],
-        [*pip, f"zakcode @ {source}"],
+        [*pip, f"{with_extras} @ {source}"],  # the extras' dependencies come with this pass
     ]
 
 
@@ -926,6 +944,14 @@ def _finish_in_second_process(
 @app.command()
 def update(
     ref: str = typer.Argument("main", help="Git ref to install (VCS-URL installs only)."),
+    extra: list[str] = typer.Option(  # noqa: B008 — typer convention
+        [],
+        "--extra",
+        help=(
+            "Add one of zakcode's optional extras to the install, e.g. google for Vertex AI. "
+            "May be repeated. Updates after this one keep it."
+        ),
+    ),
 ) -> None:
     """Update Zak Code in place, whichever way it was installed.
 
@@ -954,7 +980,20 @@ def update(
     in flight, continuing its chat (ADR-0333) — no operator action needed. On
     Windows they run from the install being replaced, so the command refuses until
     they are closed.
+
+    ``--extra NAME`` adds one of zakcode's optional extras (``google`` for Vertex AI) to the
+    install, which is how an install that lacks one gets it without being reinstalled by hand. A
+    name zakcode does not declare is refused before anything is pulled (ADR-0340).
     """
+    known = _declared_extras()
+    unknown = [name for name in extra if known is not None and name not in known]
+    if unknown:
+        notice_error(
+            console,
+            f"zakcode has no extra named {', '.join(unknown)}",
+            f"Its extras are: {', '.join(sorted(known or ()))}. Nothing was changed.",
+        )
+        raise typer.Exit(code=2)
     old = version_line(__version__)
     url = build_url()
     directory = build_dir()
@@ -992,7 +1031,7 @@ def update(
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    commands = _reinstall_commands(source, directory, note)
+    commands = _reinstall_commands(source, directory, note, extra)
     if second_process:
         before = old.replace("(local path)", f"(git {shas[0]})") if shas is not None else old
         _finish_in_second_process(commands, before, shas[1] if shas is not None else "", note)

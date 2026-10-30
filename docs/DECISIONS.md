@@ -21093,3 +21093,103 @@ restarted into it and the page reconnected to the same chat. The next send reach
 (the provider was a closed port), its first notice read "provider unavailable; retrying in 1.4s …
 — litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.", and a
 real click on Stop ended the turn within 250 ms. `uv run poe check` green.
+
+## ADR-0339: a page in a background tab lets go of its watch until it is shown again
+
+Status: accepted. 2026-10-30. Amends ADR-0325 (the page reconnects to its chat from its cursor).
+
+Context. A served deployment reported that, after an update, the web app opened one old chat on a
+click and then changed nothing: no other click in the chat list and no New chat changed what was
+shown. In a headless browser with real clicks, one page switched chats every time. Six pages open
+on one server reproduce the report. A browser keeps at most six connections to one server over
+HTTP/1.1, and a page holds one for as long as its watch (`GET /watch/<id>`) is open, which is for as
+long as the page is. With five pages open, a sixth page's watch takes the last connection, and every
+request that page makes after it waits for one to come free: measured, its chat list request and
+its New chat request stayed pending, so its chat list stayed empty and New chat did nothing, and the
+server's log held five chat-list requests, no New chat request and six watches. A server restart
+makes the order worse, since every open page reconnects its watch at once. How many pages the
+reporting deployment had open is not known.
+
+Decision. A page lets go of its watch while it is hidden (`document.hidden`: a background tab, or a
+minimized window) and takes it up again when it is shown. `visibilitychange` aborts the open watch
+when the page hides. The watch loop waits at its head until the page is shown (`whenShown`), then
+reconnects from its cursor as after any dropped connection (ADR-0325), so what happened while it was
+hidden is drawn once it is shown; a page whose bus was replaced, or ran past its cursor, starts over
+from the saved conversation as before. A page opened in a background tab opens no watch until it is
+first shown. The server changes nothing: a chat's bus does not depend on anyone watching it.
+
+Consequences. Any number of pages can be open on one server, and only those on screen hold a
+connection. A hidden page's turn runs on, and its rows arrive when the page is shown. An aborted
+watch frees its connection at once (measured: 13 ms). Still open: a page loaded before this change
+keeps its watch while hidden, so pages left open from an older build hold their connections until
+they are reloaded; six windows of one server on screen at once still fill the browser's six.
+
+The proof. tests/test_webclient_switching.py (the page's own script under Node, its scripted server
+now reporting `document.hidden` and firing `visibilitychange`): a hidden page lets go of its watch
+and takes it up again when shown, drawing the tool result that came while it was hidden; a page
+opened in a background tab watches nothing until shown. Every part of the fix was sabotaged on its
+own (five sabotages: the abort on hide dropped; the wait at the loop's head dropped, and the resume
+on show dropped, each against both tests), and the test that covers it turned red, then green once
+the fix was back. In a headless browser (1366x768) against a live server with three chats, before
+the change a sixth page's chat list never loaded and its New chat request stayed pending; after it,
+with five pages hidden, the sixth page's requests were answered within 7 ms and a real click switched
+chats, and a hidden page shown again reconnected and switched chats on a real click, its requests
+answered within 17 ms. `uv run poe check` green.
+
+## ADR-0340: the Vertex hint reads past litellm's own ImportError, and `zakcode update --extra` adds an extra
+
+Status: accepted. 2026-10-30. Amends ADR-0338 (the google hint, and its account of the google
+chain, corrected here) and ADR-0291 (`zakcode update`).
+
+Context. A served deployment's CLI, on a Vertex AI model, ended its first turn in 0.2 s with
+ADR-0338's generic message, "an import failed in this process (Google Cloud SDK not found. …)",
+instead of the hint naming the google extra. ADR-0338 took the chain to be litellm's
+`APIConnectionError` raised over a `ModuleNotFoundError` for `google`. Measured on litellm 1.106.6
+without the google stack, it has three links: the `APIConnectionError`, raised over litellm's own
+`ImportError("Google Cloud SDK not found. Install it with: pip install 'litellm[google]' …")`, which
+names no module, raised inside the `except` that caught `ModuleNotFoundError: No module named
+'google'`. The locked litellm raises that ImportError the same way. The hint looked for `google` in
+the name of the first import it found, and that one has none. Its remedy did not work either: it
+said to install `zakcode[google]` with uv or pip, which asks a package index for zakcode, and zakcode
+is not on PyPI (it answers 404). The documented install, `zakcode[server] @ git+…`, has no google
+extra, and `zakcode update` kept the extras an install has with no way to add one.
+
+Decision.
+
+1. `_names_google(failed)` reads the failed import and the import it was raised over or raised from
+   (`__context__`, `__cause__`). A module name rooted at `google` in either gives the hint. Reading
+   one link further and no more keeps every other failed import on the generic message.
+2. The hint names a remedy that works from any install: "Vertex AI needs Google's auth/SDK
+   libraries, which come with zakcode's optional google extra, and this install lacks them. Add the
+   extra with: zakcode update --extra google (or install zakcode with the [google] extra the way it
+   was installed), then retry."
+3. `zakcode update --extra NAME`, repeatable, adds an extra on the way. A uv install asks for the
+   extras its receipt records plus the new ones, each once, and uv records them in the receipt it
+   writes, so the updates after it keep them. A pip install names them in its second pass, the one
+   that installs dependencies. A name zakcode does not declare (`Provides-Extra` in its install
+   metadata) is refused before anything is pulled or replaced, the message listing the extras it has,
+   exit 2. When the metadata cannot be read the name is passed on unchecked, for the installer to
+   judge.
+4. README and DEPLOY say a Vertex AI box installs `zakcode[server,google]`, and show
+   `zakcode update --extra google`.
+
+Consequences. A Vertex call without the google stack ends at once with a remedy that works however
+zakcode was installed, and an install that lacks the extra gets it in one command. Still open:
+packages added with `uv tool install --with` are in the receipt too, and `zakcode update` does not
+carry them forward.
+
+The proof. tests/test_provider.py: a missing google stack names `zakcode update --extra google` and
+no uv or pip install command; a connection error over it names it too, raised over the import
+itself, over litellm's own ImportError raised inside the `except` (the measured shape), or over one
+raised `from` it; the extra the hint names is one zakcode declares. tests/test_cli_chat.py:
+`update --extra server --extra google` on an install with the google extra asks for
+`zakcode[google,server]`; an extra zakcode does not declare is refused with nothing run and the
+checkout not pulled; an extra is passed on when the metadata cannot be read; a pip install names the
+extra in its dependency pass. Every fix was sabotaged on its own (eleven sabotages), and the test
+that covers it turned red, then green once the fix was back. The measured chain on litellm 1.106.6
+mapped to the generic import message before the change and to the hint after it, streamed and not.
+On a real uv tool install without the extra, made on Windows from a clone of this change,
+`zakcode update --extra gogle` was refused with the receipt untouched; `zakcode update --extra
+google` installed the google stack through the second process, and the receipt then recorded the
+extra; a plain `zakcode update` after it asked for `zakcode[google]` again, and `google.auth` still
+imported. `uv run poe check` green.

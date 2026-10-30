@@ -1738,11 +1738,26 @@
     refreshChats();
   }
 
+  // A hidden page lets go of its watch, and takes it up again from its cursor once shown, as after
+  // any dropped connection (ADR-0339). A browser keeps six connections to a server and a watch
+  // holds one for as long as it is open, so six open pages left none for anything else: a click in
+  // any of them waited for good, and nothing on screen changed.
+  const shownAgain = [];
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (watchAbort) watchAbort.abort(); return; }
+    for (const resume of shownAgain.splice(0)) resume();
+  });
+  function whenShown() {
+    return document.hidden ? new Promise((resume) => shownAgain.push(resume)) : Promise.resolve();
+  }
+
   // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
   // need); reconnects for as long as its chat is the one shown and still exists,
   // resuming after the last seen cursor of the same bus.
   async function watchLoop(gen) {
     while (gen === shown) {
+      await whenShown();
+      if (gen !== shown) return;
       try {
         let qs = lastCursor !== null ? "&since=" + encodeURIComponent(lastCursor) : "";
         // Say which bus the cursor came from; the server drops the cursor if that bus is gone.

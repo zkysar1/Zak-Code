@@ -117,6 +117,10 @@ cd any/project/dir
 zakcode cli                                     # workspace = the current directory
 ```
 
+Vertex AI (Gemini on Google Cloud) needs the optional `google` extra: install
+`zakcode[server,google]`, or add it to an install that lacks it with
+`zakcode update --extra google`.
+
 A workspace `.env` still overrides the user file per-project, and real environment
 variables override both — see [`docs/CONFIG.md`](docs/CONFIG.md) for the precedence
 table. Update with `uv tool upgrade zakcode`.

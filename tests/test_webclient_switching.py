@@ -47,6 +47,13 @@ const __asked = {};  // transcripts asked for, per chat
 const __watched = {};  // watch connections asked for, per chat
 const __posted = [];  // what the page posted that the script has no answer of its own for
 const __open = [];  // ends each watch connection held open, for a server that restarts
+// The page is told when its tab goes to the background or comes back, as a browser tells it. A
+// page that starts hidden was opened in a background tab.
+const __onVisibility = [];
+document.addEventListener = (type, fn) => {
+  if (type === "visibilitychange") __onVisibility.push(fn);
+};
+document.hidden = Boolean(__SCN.hidden);
 function __sse(frames) {
   return frames.map(([id, f]) => `id: ${id}\r\ndata: ${JSON.stringify(f)}\r\n\r\n`).join("");
 }
@@ -161,6 +168,9 @@ for (const step of __SCN.steps) {
       for (const end of __open.splice(0)) end();
     } else if (step.set) {
       Object.assign(__SCN, step.set);
+    } else if (step.hidden !== undefined) {
+      document.hidden = step.hidden;
+      for (const told of __onVisibility) told();
     } else {
       __seen.push(__look(step.look));
     }
@@ -211,11 +221,13 @@ def _page(
     errors: list[str] | None = None,
     list_delays: list[int] | None = None,
     interrupt: dict[str, Any] | None = None,
+    hidden: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
     ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default).
     ``list_delays`` holds back the answers to the page's chat-list requests, in the order asked.
-    ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``."""
+    ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``.
+    ``hidden`` opens the page in a background tab; a ``hidden`` step moves it there or back."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -225,6 +237,7 @@ def _page(
         "steps": steps,
         "listDelays": list_delays or [],
         "interrupt": interrupt or {},
+        "hidden": hidden,
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
@@ -372,6 +385,55 @@ def test_a_chat_that_no_longer_exists_is_not_asked_for_again_and_again(tmp_path:
     assert seen["watched"][A] == 2  # the first connection, and the one reconnect it answered
     assert seen["connection"] == "chat not found"
     assert seen["send"] == "↑"  # the turn shown running ended with it
+
+
+# ── a page in a background tab (ADR-0339) ────────────────────────────────────────────────────
+
+
+def test_a_hidden_page_lets_go_of_its_watch_and_takes_it_up_again_when_shown(
+    tmp_path: Path,
+) -> None:
+    """A browser keeps six connections to a server and a watch holds one while it is open, so six
+    open pages left none for anything else and a click in any of them waited for good. A page in
+    a background tab now lets go of its watch, asks for none while it stays there, and once shown
+    goes on from its cursor: what the turn did meanwhile is drawn."""
+    result = _frame(
+        3, event="tool_result", tool_use_id="t1", output="deployed", is_error=False, at=_T0 + 40
+    )
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}, "2": {"frames": [result]}})
+    away, back = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 200, "hidden": True},
+            {"at": 400, "look": "in a background tab"},
+            {"at": 500, "hidden": False},
+            {"at": 700, "look": "shown again"},
+        ],
+    )
+    assert away["watched"][A] == 1  # no reconnect while hidden
+    assert back["watched"][A] == 2  # taken up again once shown, from cursor 2
+    assert "Ran · 1 line" in _tool_card(back)  # the result that came while it was away
+    assert back["connection"] == "connected"
+
+
+def test_a_page_opened_in_a_background_tab_watches_nothing_until_shown(tmp_path: Path) -> None:
+    """A page opened in a background tab draws its chat but holds no watch until it is shown."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    hidden, shown = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 300, "look": "opened hidden"},
+            {"at": 400, "hidden": False},
+            {"at": 600, "look": "shown"},
+        ],
+        hidden=True,
+    )
+    assert hidden["asked"][A] == 1  # its saved conversation was asked for
+    assert A not in hidden["watched"]
+    assert shown["watched"][A] == 1
+    assert _tool_card(shown).endswith("…")  # the turn the watch replays, still running
 
 
 # ── Stop (ADR-0327) ──────────────────────────────────────────────────────────────────────────
