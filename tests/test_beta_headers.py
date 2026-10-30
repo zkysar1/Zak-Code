@@ -184,6 +184,23 @@ print(json.dumps({"named": __BETA__ in anthropic, "entries": len(anthropic)}))
 """
 
 
+#: Imports the provider on a litellm whose beta-list module is absent (a release older than the
+#: allowlist): the guarded import must leave the provider importable.
+_NO_MANAGER_PROBE = """
+import json
+import sys
+
+import litellm
+
+litellm.__dict__.pop("anthropic_beta_headers_manager", None)
+sys.modules["litellm.anthropic_beta_headers_manager"] = None  # an import of it now raises
+
+from zakcode.providers.litellm_provider import LiteLLMProvider
+
+print(json.dumps({"imported": LiteLLMProvider.__name__}))
+"""
+
+
 def _run_json(script: str) -> Any:
     """Run ``script`` in a fresh interpreter on litellm's bundled lists; return its JSON line.
 
@@ -243,3 +260,8 @@ class TestTheBetaReachesAnthropic:
 
         assert wire["anthropic_beta"] is None
         assert "block_binding" in wire["thinking"]
+
+
+class TestALitellmWithoutTheManager:
+    def test_the_provider_still_imports(self) -> None:
+        assert _run_json(_NO_MANAGER_PROBE) == {"imported": "LiteLLMProvider"}
