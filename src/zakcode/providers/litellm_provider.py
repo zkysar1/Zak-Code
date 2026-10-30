@@ -73,6 +73,7 @@ from zakcode.providers.base import (
     temperature_field_unsupported,
     tool_use_unsupported,
 )
+from zakcode.providers.beta_headers import allow_provider_betas
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
     LocalOnlyViolation,
@@ -445,6 +446,27 @@ def _is_anthropic_adaptive_thinking_model(model: str) -> bool:
 #: The beta that lets a request set ``thinking.block_binding`` (preserved thinking): without
 #: it the field is a 400, "block_binding: Extra inputs are not permitted".
 _THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+# litellm drops, without a word, an ``anthropic-beta`` value its allowlist does not name, and a
+# process that cannot fetch the remote allowlist reads the copy bundled in the installed release,
+# which predates this beta. The request would then carry ``thinking.block_binding`` and not the
+# beta that permits it, and Anthropic would answer 400 "thinking.adaptive.block_binding: Extra
+# inputs are not permitted" -- measured on a served deployment whose fetch of the list was
+# answered 403, where every session failed over to its fallback model on its first call
+# (ADR-0341). Name the beta in whatever list litellm loads, here and on a reload. A litellm
+# release with no such module has no list to name it in, and the import is skipped.
+try:
+    from litellm import anthropic_beta_headers_manager
+except ImportError:
+    pass
+else:
+    if not allow_provider_betas(
+        anthropic_beta_headers_manager, "anthropic", [_THINKING_BINDING_BETA]
+    ):
+        logger.warning(
+            "could not name %s in litellm's anthropic beta list: a process that cannot fetch "
+            "the list will drop it, and Claude 5 requests will be refused (ADR-0341)",
+            _THINKING_BINDING_BETA,
+        )
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
