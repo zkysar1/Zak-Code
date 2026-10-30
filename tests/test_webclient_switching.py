@@ -116,7 +116,12 @@ globalThis.fetch = async (url, opts) => {
   if (opts.method === "POST") {
     __posted.push({ path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
   }
-  return __answer({ queued: true }, 200, 0);  // /say, /interrupt
+  if (u.pathname === "/interrupt") {
+    // Stop's answer: by default that the chat's turn was asked to stop, as the server says.
+    const stop = __SCN.interrupt;
+    return __answer(stop.body || { requested: true }, stop.status || 200, stop.delay || 0);
+  }
+  return __answer({ queued: true }, 200, 0);  // /say
 };
 const __seen = [];
 function __look(label) {
@@ -205,10 +210,12 @@ def _page(
     steps: list[dict[str, Any]],
     errors: list[str] | None = None,
     list_delays: list[int] | None = None,
+    interrupt: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
     ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default).
-    ``list_delays`` holds back the answers to the page's chat-list requests, in the order asked."""
+    ``list_delays`` holds back the answers to the page's chat-list requests, in the order asked.
+    ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -217,6 +224,7 @@ def _page(
         "chats": {chat["info"]["id"]: chat for chat in chats},
         "steps": steps,
         "listDelays": list_delays or [],
+        "interrupt": interrupt or {},
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
@@ -386,6 +394,146 @@ def test_stop_names_the_chat_on_screen(tmp_path: Path) -> None:
     assert running["send"] == "■"  # the turn runs, so the button is Stop
     assert running["posted"] == []
     assert stopped["posted"] == [{"path": "/interrupt", "body": {"session_id": A}}]
+
+
+# ── a Stop is never silent (ADR-0336) ────────────────────────────────────────────────────────
+
+
+def _row_texts(seen: dict[str, Any]) -> list[str]:
+    return [row["text"] for row in seen["rows"]]
+
+
+def test_stop_says_at_once_that_it_was_asked_for(tmp_path: Path) -> None:
+    """Stop showed nothing until the turn's end came back, so on a page that end was slow to
+    reach, or never reached, Stop looked dead. The status line says at once that it was asked."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [asked] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 350, "look": "asked"}],
+        interrupt={"delay": 400},
+    )
+    assert asked["status"] == "stopping…"
+    assert asked["send"] == "■"  # nothing has ended yet
+
+
+def test_a_stop_for_a_chat_running_no_turn_ends_the_turn_shown(tmp_path: Path) -> None:
+    """The server answers that no turn runs in this chat: the turn the page shows running ended
+    where the page did not hear it. The page went on showing it, and its Stop did nothing."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [ended] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 400, "look": "ended"}],
+        interrupt={"body": {"requested": False}},
+    )
+    assert ended["send"] == "↑"
+    assert ended["status"] == ""
+    assert _row_texts(ended)[-1] == "·no turn is running in this chat"
+
+
+def test_a_stop_the_server_refuses_says_why_and_keeps_the_turn(tmp_path: Path) -> None:
+    """A Stop answered with an error (a route a proxy does not pass, a server error) was dropped
+    without a word: the page caught only a request that never left."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [refused] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 400, "look": "refused"}],
+        errors=["could not stop the turn: HTTP 404"],
+        interrupt={"status": 404, "body": {"detail": "Not Found"}},
+    )
+    assert refused["send"] == "■"  # the turn still runs
+    assert refused["status"] == "the turn is still running"
+
+
+@pytest.mark.parametrize(
+    ("running", "send", "status"),
+    [
+        (False, "↑", ""),
+        (True, "■", "still stopping — the server has not ended the turn yet"),
+    ],
+    ids=["ended-unheard", "still-running"],
+)
+def test_a_stopped_turn_whose_end_never_comes_is_asked_after(
+    tmp_path: Path, running: bool, send: str, status: str
+) -> None:
+    """A Stop the server took, for a turn whose end never reached this page (a connection that
+    held it back, a stream cut before it). The page asks the server a while later: a turn it no
+    longer runs ends on the page, and one it still runs is said to be. These timers fire at once."""
+    chat = _chat(
+        A, "chat A", watch={"null": {"frames": _TURN}}, transcripts=[{}, {"running": running}]
+    )
+    [after] = _page(tmp_path, [chat], [{"at": 300, "press": "send"}, {"at": 400, "look": "after"}])
+    assert after["asked"][A] == 2  # the history, then the one look after the Stop
+    assert after["send"] == send
+    assert after["status"] == status
+    noted = [text for text in _row_texts(after) if text == "·the turn has ended"]
+    assert noted == ([] if running else ["·the turn has ended"])
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"body": {"requested": False}, "delay": 250}, {"status": 500, "body": {}, "delay": 250}],
+    ids=["no-turn", "refused"],
+)
+def test_a_stop_answered_after_another_chat_opened_leaves_that_chat_alone(
+    tmp_path: Path, answer: dict[str, Any]
+) -> None:
+    """A Stop is for the turn it was pressed on. Its answer, coming back after another chat
+    opened, must not end or mark anything in the chat now on screen, nor draw its error there."""
+    chats = [
+        _chat(A, "chat A", watch={"null": {"frames": _TURN}}),
+        _chat(Y, "chat Y", watch={"null": {"frames": _TURN}}),
+    ]
+    [other] = _page(
+        tmp_path,
+        chats,
+        [{"at": 300, "press": "send"}, {"at": 350, "click": "chat Y"}, {"at": 800, "look": "Y"}],
+        interrupt=answer,
+    )
+    assert other["chip"] == Y[:8]
+    assert other["send"] == "■"  # Y's own turn, still shown running
+    assert not any("no turn is running" in text for text in _row_texts(other))
+
+
+def test_a_stopped_turn_whose_end_comes_while_it_is_asked_after_ends_once(tmp_path: Path) -> None:
+    """The turn's end reaches the page while the page is asking after its Stop. That end is the
+    turn's end, and the answer to the asking, when it comes, adds nothing to it."""
+    done = _frame(
+        3, event="done", stop_reason="interrupted", iterations=1, usage=_USAGE, at=_T0 + 5
+    )
+    chat = _chat(
+        A,
+        "chat A",
+        watch={"null": {"frames": _TURN, "drop": True}, "2": {"frames": [done], "delay": 400}},
+        transcripts=[{}, {"running": False, "delay": 300}],
+    )
+    [after] = _page(tmp_path, [chat], [{"at": 300, "press": "send"}, {"at": 900, "look": "after"}])
+    assert after["asked"][A] == 2  # it did ask after the Stop
+    assert after["send"] == "↑"
+    assert "·the turn has ended" not in _row_texts(after)
+
+
+def test_a_stop_answered_after_the_next_turn_started_leaves_that_turn_alone(tmp_path: Path) -> None:
+    """A Stop is for the turn it was pressed on. When the page never heard that turn end, the
+    chat's next turn can start before the answer comes back, and the answer that no turn was
+    running must not end the one that now is."""
+    started = _frame(3, event="user_message", text="and then", at=_T0 + 20)
+    chat = _chat(
+        A,
+        "chat A",
+        watch={"null": {"frames": _TURN, "drop": True}, "2": {"frames": [started], "delay": 400}},
+    )
+    [after] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 900, "look": "after"}],
+        interrupt={"body": {"requested": False}, "delay": 300},
+    )
+    assert _spoken(after)[-1] == ("user", "and then")  # the next turn started
+    assert after["send"] == "■"  # and is still shown running
+    assert not any("no turn is running" in text for text in _row_texts(after))
 
 
 # ── opening a chat (ADR-0325) ────────────────────────────────────────────────────────────────

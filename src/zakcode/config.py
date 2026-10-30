@@ -1111,4 +1111,23 @@ def load_settings(**overrides: object) -> Settings:
     return Settings(**overrides)  # type: ignore[arg-type]
 
 
-__all__ = ["PermissionTier", "Settings", "env_source", "load_settings", "zakcode_home"]
+def drop_dotenv_exports() -> None:
+    """Take back every value :func:`load_settings` exported from a ``.env`` file (ADR-0333).
+
+    A process this one execs inherits ``os.environ``, where an exported value would outrank the
+    file it came from, so the new process would run on what the file said when this one started.
+    Taken back, the new process reads the files afresh. The real environment is left as it is.
+    """
+    for name in _DOTENV_EXPORTED:
+        os.environ.pop(name, None)
+    _DOTENV_EXPORTED.clear()
+
+
+__all__ = [
+    "PermissionTier",
+    "Settings",
+    "drop_dotenv_exports",
+    "env_source",
+    "load_settings",
+    "zakcode_home",
+]

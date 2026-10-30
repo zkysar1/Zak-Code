@@ -20795,3 +20795,301 @@ streams, and a reload after them, each match; a send while reading another chat 
 draft; Stop after a switch ends the turn three times of three, each with one end; an approval card
 survives a switch away and back; a page left open across a restart lands on the chat the restarted
 server opened, the one a page loaded then lands on. `uv run poe check` green.
+
+## ADR-0333: a web app restarts itself into a newer build once it is idle, and hands on the turn the loop set aside for it
+
+Status: accepted. 2026-10-29. Extends ADR-0034 (a session restarts into a newer build at its idle
+prompt) to the web app. Amends ADR-0099 and ADR-0101 (the continuation a restart boundary sets
+aside reaches the restarted process) for the served path.
+
+Context. `zakcode update` replaces the install a running process loaded. The terminal REPL looks at
+its idle prompt and execs the new build, resuming its session (ADR-0034). The web app never looked:
+it served the build it started on until someone restarted it by hand, and the update's last line
+spoke only of chat sessions. An operator who ran the update found the CLI on the new build and the
+page on the old one. The restart boundaries are worse off than stale. They live in the core loop,
+which the server runs too: once a newer build is installed, a served turn whose batch is a lone
+skill call has that call answered "not executed ... the restarted process makes this call first" and
+ends with stop reason `restart` (ADR-0101), and a Stop hook's veto ends the turn with its
+continuation set aside (ADR-0099). On a server that never restarts, every such turn ended that way
+until someone restarted it, and the call it set aside was never made.
+
+Decision.
+
+1. `create_app(on_new_build=...)` runs a build follower beside the say consumer. Every
+   `_NEW_BUILD_POLL_SECONDS` (5 s, the REPL's idle look) it asks `install_changed()`, off the event
+   loop because a checkout install's look runs git. Once that reports a change, the say consumer is
+   held (`restart_pending`): it starts no turn and says so (`restart_held`). The follower waits for
+   that and for nothing in flight (a `POST /chat` turn runs beside the consumer), then awaits
+   `on_new_build(NewBuild(running, installed, continuation, boundary))`. A restart never cuts a turn
+   short, and a say that arrives meanwhile waits in its file for the new process.
+2. A run a host manages (any of `run_max_duration`, `run_idle_timeout`,
+   `run_consolidation_message`, `run_end_command`, `run_stop_agent`, `run_stop_message`) never
+   follows. Its build and its clocks are the host's, and a restart would re-arm the run's clock and
+   its ending.
+3. A say turn the loop ended for a restart (its `restart_continuation` set) keeps that line and its
+   boundary for the `NewBuild`, and holds the consumer at once, so no say runs on the build being
+   left before the follower's next look.
+4. `zakcode webapp` restarts on `on_new_build`. It makes uvicorn's cooperative stop (`should_exit`;
+   sse-starlette reads the same flag and ends the page's event streams). Once `server.run()`
+   returns, it calls `os.execv` into `python -m zakcode` with the same arguments, except that
+   `--new-session` / `--no-new-session` becomes `--no-new-session` because the restart continues the
+   chat it served. Before the exec it takes back every value it exported from a `.env` file
+   (`drop_dotenv_exports`): an exported value outranks the file it came from, so without that the
+   new build would run on what the file said when the old one started. It hands on the REPL's own
+   variables (`ZAKCODE_RESTARTED_INTO`,
+   `ZAKCODE_RESTART_CONTINUATION`, `ZAKCODE_RESTART_BOUNDARY`). The new process pops them and
+   passes the REPL's restart line (`_restart_kick`) as `create_app(resume_turn=...)`. The consumer
+   runs that line before any say, as the harness's own line: no slash dispatch, no nudge. The CLI
+   has no agent, so a Stop hook's skill re-entry is delivered in the hook's own words, the line the
+   REPL uses whenever it cannot compose the skill (ADR-0187).
+5. `zakcode update` says so: "running chat sessions and web apps restart into the new build once
+   they are idle".
+
+Consequences. An update reaches the page: within five seconds of the last turn ending the web app
+is on the new build, on the same chat, and a page left open reconnects. The exec keeps the pid, so
+a supervisor (the systemd unit) sees no restart, and the log line `restarted into build …` is how
+to tell. The new build reads the workspace `.env` and `~/.zakcode/.env` afresh, but it keeps the
+real environment, what a unit's `EnvironmentFile=` set included, so a change there or to the unit
+still needs the unit restarted. On Windows `zakcode update` refuses while the web app runs (ADR-0291), so there
+is nothing to follow there. A `POST /chat` turn that ends for a restart returns stop reason
+`restart` to its caller and is not resumed; the caller holds that request. If the exec fails, the
+web app exits 1, and a supervisor that restarts it brings it up on the new build. A server started
+before this change does not look; it needs one restart by hand to get onto a build that does.
+
+The proof. tests/test_webapp_follows_update.py: an idle web app restarts once, and only once a
+newer build is installed; a `POST /chat` turn in flight holds the restart until it ends; a say that
+arrives while the restart waits is not taken on the old build; a bounded run (a cap, an idle bound)
+never follows; a turn ended for the restart hands its line on and holds the consumer at once; a
+restarted web app runs the handed line first, as it is, before a say that was waiting.
+tests/test_cli_webapp.py: the restart arguments keep every option and continue the chat; a new
+build execs `python -m zakcode` with the hand-off set, with a continuation and without one, and
+nothing is exec'd without a new build; the exec'd build finds the values a `.env` file gave the
+old one gone from its environment, and a value from the real environment still there; a restarted
+web app turns the hand-off into the REPL's restart line for a skill boundary and for a Stop hook,
+and pops it. Every fix was sabotaged on its own (thirteen sabotages), and the test that covers it
+turned red, then green once the fix was back. Two of them first left their tests green, and those
+tests were tightened until they did not. In a headless browser against a live server, with the
+install replaced under it while a page was open, the log said "update installed (build …
+reinstalled) — restarting to apply" and then "restarted into build …", and the page reconnected
+to the same chat. On Windows the exec starts a new process, so there the pid changes.
+`uv run poe check` green.
+
+## ADR-0334: a turn that raises past the agent loop tells the page what was raised
+
+Status: accepted. 2026-10-29. Amends the failed-turn `done` frame of the say consumer and of
+`POST /chat` (fresh-eyes F-3).
+
+Context. A turn that raised past the agent loop's own failure handling ended with a `done` frame
+whose error was fixed words, "turn failed before completing — see server log", whatever was raised.
+Building the agent raises this way, for instance when a configured model has no known context
+window (ADR-0066). The page shows the error's first line under "provider error", so a person
+without the server log could not tell a fallback model with no known window from a revoked key.
+The message that named the remedy was in the log only.
+
+Decision. `_turn_failure_error(exc, redact)`: the error is "turn failed before completing:
+<Type>: <message> (full trace in the server log)". It is the exception's type and message joined
+onto one line, because the page shows an error's first line, and redacted by the server's
+projection redactor before it is joined. It is cut at `_TURN_FAILURE_DETAIL_CHARS` (1000). A
+refusal naming one model with no known context window, remedy and all, measured 579 to 582
+characters joined, so it is shown whole. The line names what was raised and nothing more: a cause
+read off the type would be a guess. A message that cannot be redacted gives the old words, because
+this frame is what ends the turn on every watcher. The stop reason stays `provider_error`, the value
+the page and every consumer already handle, though `UnknownContextWindow` is a configuration error;
+a stop reason of its own would be a separate change to a shared vocabulary.
+
+Consequences. The page says what failed and the log keeps the trace. The public projection
+(`SafeDone`) still drops the error, as before.
+
+The proof. tests/test_webapp_follows_update.py: the line names the type and the message on one
+line; a credential in the message is redacted; a long message is cut with "…"; a redactor that
+fails leaves the old words; a say turn whose agent cannot be built ends with a `done` frame naming
+the refusal, read from a live server's watch stream. Every fix was sabotaged on its own (five
+sabotages), and the test that covers it turned red, then green once the fix was back. `uv run poe check` green.
+
+## ADR-0335: a skill turn reads in the chat list and in a reopened chat as the command typed
+
+Status: accepted. 2026-10-29. Amends what the served page is shown of a composed skill turn
+(ADR-0045) and the chat title (ADR-0319).
+
+Context. A typed skill turn is stored as its command-expansion frame followed by the skill's body,
+and once the turn ends the body becomes an elision marker (ADR-0045). The page was shown that
+stored text as it is. The chat list titled every such chat `<command-message>start is
+running</command-message>…`, so every chat opened with the same skill had the same title, whatever
+its arguments, and a person picking one out of the list could not tell them apart. A reopened chat
+drew the frame as the user's message: the command's name and arguments in tags, then the marker
+and its advice to the model ("Do not act on this marker…"). A reader saw markup written for the
+model, not what was typed.
+
+Decision. `typed_command(user_text)` reads the command as typed (`/start demo --mode assistant`)
+off the leading frame, and gives `None` for any other text. The chat title (`_chat_title`) and the
+saved conversation (`GET /sessions/{id}/transcript`) show a user message through it. The stored
+message is unchanged: the frame keeps its leading position, and every reader keyed on it reads what
+it read before. A message whose frame is not at its head is shown as it is.
+
+Consequences. A chat opened with a skill is titled by the command and its arguments, and reopened
+it shows the command where the user typed it. The live watch stream already showed the typed line
+and is unchanged.
+
+The proof. tests/test_webapp_sessions.py: a skill turn composed by the real composer reads as
+`/start demo --mode assistant` in the chat list and in the saved conversation, while it runs and
+once it ended with its body elided; a message that carries a frame inside its text is left as
+written. Every fix was sabotaged on its own (three sabotages), and the test that covers it turned
+red, then green once the fix was back. In a headless browser against a live server, a chat opened
+with `/start demo --mode assistant` was listed by that command. `uv run poe check` green.
+
+## ADR-0336: Stop reaches a say turn directly, and the page's Stop is never silent
+
+Status: accepted. 2026-10-29. Amends ADR-0327 (Stop names the chat it ends).
+
+Context. Stop on the page posts `/interrupt` naming the chat on screen (ADR-0327). A `POST /chat`
+turn has its own Stop, which the route sets. A say turn, the page's own kind, was stopped through
+the workspace's `.interrupt` file, which its watcher looks for every 0.3 s and takes. Every process
+serving the workspace takes that file too, so another one could take a Stop meant for the say
+turn, and the say turn ran on. The page did not look at the answer either. It posted and moved on,
+and drew "interrupt failed" only when the request could not be sent at all. A refused Stop, or one
+that ended the turn on a server whose end never reached the page, left the button reading Stop and
+nothing on screen saying why. While a turn runs, a switch to another chat is refused (ADR-0319), so
+a Stop that did nothing left the page held on that chat. That was reported from a served
+deployment during a provider outage. Reproduced locally in a headless browser with real clicks,
+across a prose turn, a skill turn, a provider's retry waits, a switch away and back while they
+ran, and a server restart with the page left open, Stop ended the turn within about 3 s every
+time. So the report is not reproduced. The defect fixed here is what the page did when a Stop did
+not land.
+
+Decision.
+
+1. A say turn has its own Stop, as a `POST /chat` turn does: an event in `turn_stops` under its
+   chat, made when the turn starts and dropped before anything else when it ends. `POST /interrupt`
+   naming that chat sets it, and the turn's watcher wakes on it. The watcher still takes the
+   `.interrupt` file, the workspace's unaddressed signal that `zakcode interrupt` and a cockpit's
+   Esc write; an addressed Stop no longer writes it.
+2. The page's Stop says what became of it. It shows "stopping…" at once. A request that fails or
+   is refused draws "could not stop the turn: <why>", and the status says the turn is still
+   running. An answer that no turn runs in this chat (`requested: false`) ends the turn shown, with
+   a status row saying so. A Stop accepted but whose turn still shows running after
+   `STOP_CHECK_MS` (5000 ms) asks the saved conversation whether a turn runs (`running`). If none
+   does, the end never reached this page, so the page ends the turn shown and says "the turn has
+   ended"; if one does, the status says "still stopping — the server has not ended the turn yet",
+   and another Stop asks again. A turn the page ends this way refreshes the chat list.
+3. Each answer is for the turn it stopped. A counter that moves at every turn start and end
+   (`turnSeq`) is read before acting, so an answer that comes after that turn ended, after another
+   chat opened or after the next turn started does nothing.
+
+Consequences. A Stop reaches the say turn it names whatever else serves the workspace, and a Stop
+that cannot be done says why, so the page is not left showing a turn it cannot stop. 5 s is the
+check because a turn ends within one 0.3 s look of its Stop, its provider's retry wait included,
+and its end reaches the page within the same second; a turn still shown after 5 s is one whose end
+the page missed, or one the server has not ended. Still open: a Stop whose request gets no answer at
+all shows "stopping…" until one comes, and whatever stops a Stop from reaching the server is the
+operator's to find; the page now says it was asked for and what came back.
+
+The proof. tests/test_webclient_switching.py (the page's own script, run under Node against
+scripted answers): Stop says "stopping…" at once; a Stop answered `requested: false` ends the turn
+shown; a Stop the server refuses says why and keeps the turn; a stopped turn whose end never comes
+is asked after, and ends when the server runs no turn, or is said to be still stopping when it
+does; a stopped turn whose end arrives while it is asked after ends once; a Stop answered after
+another chat opened, whether that chat runs no turn or the Stop was refused, leaves that chat
+alone, and one answered after the next turn started leaves that turn alone.
+tests/test_server_consumer.py: a Stop naming a say turn's chat ends it once, before its done frame
+and after it, and reaches it with the workspace's interrupt file never written; a Stop after the
+turn ended is answered `requested: false`. Every fix was sabotaged on its own (twelve sabotages),
+and the test that covers it turned red, then green once the fix was back. In a headless browser
+against a live server whose provider was unreachable, a real click on Stop during a retry wait
+ended the turn within 250 ms, once on the first build and once after the web app had restarted
+into a new one, and a click to another chat and back opened each. `uv run poe check` green.
+
+## ADR-0337: a retry notice for a rate limit or an outage says what the provider answered
+
+Status: accepted. 2026-10-29. Amends ADR-0100 (a rate-limit wait is said while it happens) and
+ADR-0224 (an unreachable provider is named as one).
+
+Context. A rate limit or an outage is waited out under the 900 s horizon, and each wait is said:
+"provider unavailable; retrying in 6.6s (5s into the 900s backoff budget)". "provider unavailable"
+names a class. `_map_error` files a refused or dropped connection, any 5xx, and an exception
+litellm does not recognise under it (ADR-0076, ADR-0224). The error's message says which, and it
+was in neither the notice nor the log line. Measured on a served workspace: notice after notice,
+and nothing on the page or in the log said what the provider had answered, so an operator could
+not tell a backend restarting from a request the provider will never accept.
+
+Decision. `_retry_cause(exc)` is the error's first non-blank line, whitespace joined, cut at
+`_RETRY_CAUSE_CHARS` (200) with "…". For a rate limit or an outage, both retry sites, buffered and
+streamed, add " — <cause>" to the notice the first time and whenever the answer changes, and to
+every log line, because a log line is read on its own. A rejected call or a timeout gets none: its
+reason already is its answer. The notice's head is unchanged, so whatever matches "provider
+unavailable; retrying" still does. The message is the one the mapped error carries, redacted when
+it was mapped.
+
+Consequences. The first notice of a wait says what the provider answered, and the notices after it
+stay short until the answer changes. 200 characters holds a provider's one-line answer, its class
+and its reason, and keeps a quoted response body off the line.
+
+The proof. tests/test_loop_retry.py: a streamed outage's notices carry the answer on the first
+notice and when it changed, never twice in a row; the buffered twin's notices do the same and its
+log lines carry it every time; an answer is cut to one short line; a rejected call's notice carries
+no second cause, streamed or buffered. Every fix was sabotaged on its own (seven sabotages), and
+the test that covers it turned red, then green once the fix was back. In a headless browser
+against a live server whose provider was a closed port, the first notice read "provider
+unavailable; retrying in 1.4s (0s into the 900s backoff budget) — litellm.InternalServerError:
+InternalServerError: OpenAIException - Connection error." `uv run poe check` green.
+
+## ADR-0338: a model call that cannot import what it needs ends at once, and litellm comes with its mcp extra
+
+Status: accepted. 2026-10-30. Amends ADR-0076 and ADR-0224 (what `_map_error` files as an outage)
+and the install hint for the optional `google` extra.
+
+Context. A served deployment reported every turn spending its 900 s budget on "provider unavailable;
+retrying in …" from its first call. The cause there is not confirmed; one that produces exactly that
+was measured locally. A current litellm (1.106.6) loads its MCP handler
+(`litellm.responses.mcp.chat_completions_handler`) for every `completion()` that carries tools, and
+that handler imports the `mcp` SDK. zakcode's calls always carry tools, and `mcp` was only in
+zakcode's optional `mcp` extra, so on an install without it every call raised `ModuleNotFoundError:
+No module named 'mcp'` before a request left the process. litellm raises its own
+`APIConnectionError` over it, the import error its direct `__context__`, and `_map_error` files a
+connection error as `ProviderUnavailable`: fifteen minutes of retries, said as an outage, for a
+failure no retry can fix. With mcp 1.27.2 installed the same call raises `ImportError: cannot
+import name 'CacheableResult' from 'mcp.types'`, wrapped the same way; with 2.3.0 it reaches the
+network. litellm 1.106.6's own `mcp` extra asks for `mcp>=2.2.0,<3`. The locked litellm (1.86.2)
+does not import mcp on this path and has no `mcp` extra, so the suite never met this, but an install
+resolved without the lock gets the newest litellm, and `zakcode update` pins only a checkout install
+to the lock. A missing google stack reaches `_map_error` the same way, an `APIConnectionError`
+("Google Cloud SDK not found") over a `ModuleNotFoundError` for `google`, so the install hint, which
+looked for a bare `ModuleNotFoundError`, never fired.
+
+Decision.
+
+1. litellm is declared with its own `mcp` extra (`litellm[mcp]>=1.66`), so the litellm a resolver
+   picks brings the mcp versions that litellm names. A bare `mcp>=1.0` would not do: it admits
+   1.27.2. zakcode's own `mcp` extra stays, so an install that names it still resolves. The lock
+   changes only in that declaration: its litellm has no `mcp` extra, which uv reports as a warning,
+   and needs none.
+2. `_failed_import(exc)` returns the `ImportError` (a `ModuleNotFoundError` included) that is the
+   error itself, its `__cause__` or its `__context__`, and nothing further back. `_map_error` turns
+   one into `RequestFailed`, which is not retried: "the model call stopped before it reached the
+   provider: an import failed in this process (<the import's message>). The Python environment
+   zakcode runs in lacks that package, or has a version this litellm cannot use: install or upgrade
+   it there, then retry." A failed import of `google` found this way gives the existing install
+   hint. One link is what was measured, and reading no further keeps a real outage whose chain
+   holds an earlier failed import an outage; a server's message that merely names a module is not
+   an import that failed here.
+
+Consequences. An install made without the lock gets an mcp its litellm can import, and one that
+still lacks something its litellm imports ends the turn within seconds, naming the import and the
+remedy, instead of retrying for fifteen minutes as an outage. Still open: `zakcode update` resolves
+the newest litellm for an install that is not a checkout; pinning those installs to the lock is a
+separate change.
+
+The proof. tests/test_provider.py: an import litellm raised a connection error over is not an
+outage, missing (`No module named 'mcp'`) or too old (`CacheableResult`); a missing google stack
+behind a connection error names the extra; an outage with no import under it is still one; litellm
+is declared with its `mcp` extra. Every fix was sabotaged on its own (seven sabotages: the search
+cut to the error alone or to its cause, widened past one link, the google hint keyed back on a bare
+`ModuleNotFoundError`, the new branch switched off, the import dropped from the message, the extra
+dropped from the declaration), and the test that covers it turned red, then green once the fix was
+back. In a headless browser against a live server on litellm 1.106.6 without mcp, a send ended in
+3.8 s with "provider error — the model call stopped before it reached the provider: an import
+failed in this process (No module named 'mcp') …". With a page left open, this change was then
+installed into that environment, bringing in mcp 2.3.0 through litellm's extra; the web app
+restarted into it and the page reconnected to the same chat. The next send reached the network
+(the provider was a closed port), its first notice read "provider unavailable; retrying in 1.4s …
+— litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.", and a
+real click on Stop ended the turn within 250 ms. `uv run poe check` green.

@@ -52,14 +52,22 @@ Day two:
 
 ```bash
 journalctl -u zakcode-webapp -f                            # logs
-sudo -u zakcode zakcode update && systemctl restart zakcode-webapp   # a new build
+sudo -u zakcode zakcode update                             # a new build
+systemctl restart zakcode-webapp                           # after changing /etc/zakcode/.env
 systemctl status zakcode-webapp                            # is it up, when did it last restart
 ```
 
 `zakcode update` reinstalls in place from the install's own recorded source (a git URL or a
-local checkout) and prints old → new build identity; the restart hands the new build to the
-server. A `Restart=always` unit would also pick the new build up on the server's next exit,
-but do not wait for one.
+local checkout) and prints old → new build identity. The running server notices the new build
+within five seconds and, once no turn is in flight, restarts itself into it on the same chat:
+it finishes the turn it is running, takes no new one on the old build, and replaces its own
+process, so the pid and the unit stay as they were and the journal says
+`restarted into build …` (ADR-0333). A page left open reconnects. A server older than that
+change does not look for new builds: restart the unit once to bring it onto a build that does.
+The new build reads the workspace `.env` and `~/.zakcode/.env` afresh, but it keeps the unit's
+own environment, so a change to `/etc/zakcode/.env` (read by `EnvironmentFile=`) or to the unit
+still needs `systemctl restart zakcode-webapp`. A run a host manages (any `ZAKCODE_RUN_*`
+ending set) keeps its build until the host restarts it.
 
 A local-checkout install is reinstalled with every dependency at the version the checkout's
 `uv.lock` pins, and an editable install stays editable (ADR-0291). On Windows the reinstall

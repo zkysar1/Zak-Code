@@ -317,6 +317,24 @@ _RETRY_AFTER_CEILING = 120.0
 _RATE_LIMIT_RETRY_HORIZON = 900.0
 _MAX_INTERRUPT_RETRIES = 3
 
+#: How much of the provider's own answer a pure rate-limit or outage notice carries: its first
+#: line, cut here (ADR-0337). The notice is a line on the page, not the error's whole text.
+_RETRY_CAUSE_CHARS = 200
+
+
+def _retry_cause(exc: BaseException) -> str:
+    """What the provider answered, for a pure rate-limit or outage notice (ADR-0337): the
+    error's first non-blank line, whitespace joined, cut at :data:`_RETRY_CAUSE_CHARS`.
+
+    "provider unavailable" names a class, and litellm files a refused connection, a 5xx and
+    an exception it does not recognise under that one class. Measured 2026-10-29 on a served
+    workspace: notice after notice, and nothing on the page or in the log said which.
+    """
+    first = next((line for line in str(exc).splitlines() if line.strip()), "")
+    line = " ".join(first.split())
+    return line if len(line) <= _RETRY_CAUSE_CHARS else line[: _RETRY_CAUSE_CHARS - 1] + "…"
+
+
 #: A :class:`ContentFiltered` answer is sampled again ONCE, at the configured temperature
 #: (ADR-0290), not :data:`_MAX_INTERRUPT_RETRIES` times at a raised one. litellm files a
 #: model's own safety refusal under the same finish reason, and a refusal repeats: three more
@@ -1703,6 +1721,27 @@ def _composed_skill_name(user_text: str) -> str | None:
     """The skill a typed ``/<skill>`` turn is running (from its leading frame), else ``None``."""
     match = _COMMAND_FRAME_RE.match(user_text)
     return match.group(1) if match else None
+
+
+#: The leading frame's command and, when trailing text was given, its arguments (which may span
+#: lines, as in :data:`_COMMAND_FRAME_FULL_RE`).
+_COMMAND_TYPED_RE = re.compile(
+    r"\A<command-message>[^\n]*</command-message>\n<command-name>(/[^<\s]+)</command-name>"
+    r"(?:\n<command-args>(.*?)</command-args>)?",
+    re.DOTALL,
+)
+
+
+def typed_command(user_text: str) -> str | None:
+    """The slash command a composed skill turn was typed as (``/start demo --mode assistant``),
+    read off its leading frame, else ``None``. A reader is shown this in place of the frame and
+    the skill body behind it, or the marker that replaced the body once the turn ended (ADR-0335).
+    """
+    match = _COMMAND_TYPED_RE.match(user_text)
+    if match is None:
+        return None
+    args = (match.group(2) or "").strip()
+    return f"{match.group(1)} {args}" if args else match.group(1)
 
 
 #: The whole command-expansion frame of a composed skill turn, INCLUDING the blank line that
@@ -5616,6 +5655,7 @@ class AgentLoop:
         filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
         rate_limit_started: float | None = None  # wall clock of the first pure 429
         next_temperature: float | None = None
+        told_cause = ""  # the provider's answer the last notice carried (ADR-0337)
         while True:
             # A rejection retry resamples at a raised temperature so a deterministic
             # (temp-0) re-emit of the malformed tool call is broken; every other call
@@ -5683,13 +5723,27 @@ class AgentLoop:
                     if isinstance(exc, ModelOutputRejected) and not isinstance(exc, ContentFiltered)
                     else None
                 )
-                logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
+                # A pure rate limit or outage carries the provider's own answer: on the first
+                # notice and whenever it changes, and on every log line (ADR-0337). The other
+                # classes' reasons already are their answer.
+                cause = "" if interrupt_class else _retry_cause(exc)
+                logger.warning(
+                    "%s; retrying in %.1fs (%s)%s",
+                    reason,
+                    delay,
+                    budget,
+                    f" — {cause}" if cause else "",
+                )
+                notice = f"{reason}; retrying in {delay:.1f}s ({budget})"
+                if cause and cause != told_cause:
+                    notice += f" — {cause}"
+                    told_cause = cause
                 # Said, not only logged (ADR-0100): this logger has no handler, so a
                 # 900 s summarizer wait was a session that looked dead — no socket, no
                 # event, no line — until the horizon expired (coordinating session, 2026-08-29).
                 sink = self._status_sink
                 if sink is not None:
-                    sink(f"{reason}; retrying in {delay:.1f}s ({budget})")
+                    sink(notice)
                 await asyncio.sleep(delay)
 
     @staticmethod
@@ -9860,6 +9914,7 @@ class AgentLoop:
                 filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
                 rate_limit_started: float | None = None  # wall clock of the first pure 429
                 next_temperature: float | None = None
+                told_cause = ""  # the provider's answer the last notice carried (ADR-0337)
 
                 # Bounded RateLimited retry for THIS provider call (audit P0-4), also
                 # MID-STREAM (ADR-0070): a rate limit that lands after deltas reached the
@@ -10105,14 +10160,24 @@ class AgentLoop:
                                     f"{reason} mid-stream — the {discarded} characters "
                                     "streamed above are discarded and will be re-generated"
                                 )
-                            logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
-                            yield AgentStatus(
-                                message=(
-                                    f"{reason}; retrying"
-                                    + (f" in {delay:.1f}s" if delay else "")
-                                    + f" ({budget})"
-                                )
+                            # The provider's own answer, as the buffered twin says it (ADR-0337).
+                            cause = "" if interrupt_class else _retry_cause(exc)
+                            logger.warning(
+                                "%s; retrying in %.1fs (%s)%s",
+                                reason,
+                                delay,
+                                budget,
+                                f" — {cause}" if cause else "",
                             )
+                            notice = (
+                                f"{reason}; retrying"
+                                + (f" in {delay:.1f}s" if delay else "")
+                                + f" ({budget})"
+                            )
+                            if cause and cause != told_cause:
+                                notice += f" — {cause}"
+                                told_cause = cause
+                            yield AgentStatus(message=notice)
                             await asyncio.sleep(delay)
                             continue
                         provider_failure = str(exc)

@@ -534,6 +534,91 @@ def test_error_mapping_missing_google_stack_names_the_extra() -> None:
     assert "zakcode[google]" not in str(mapped_other)
 
 
+def _raised_over(inner: BaseException, outer: BaseException) -> BaseException:
+    """``outer`` as litellm raises it: inside the ``except`` that caught ``inner``."""
+    try:
+        try:
+            raise inner
+        except BaseException:
+            raise outer  # noqa: B904 — the implicit context is the shape under test
+    except BaseException as raised:
+        return raised
+
+
+def _connection_error(message: str) -> Exception:
+    return type("APIConnectionError", (Exception,), {})(message)
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
+        ModuleNotFoundError("No module named 'mcp'", name="mcp"),
+        ImportError("cannot import name 'CacheableResult' from 'mcp.types'", name="mcp.types"),
+    ],
+    ids=["missing", "too-old"],
+)
+def test_error_mapping_an_import_litellm_raised_a_connection_error_over_is_not_an_outage(
+    inner: ImportError,
+) -> None:
+    """A current litellm imports its MCP gateway on every call that carries tools, and raises its
+    own APIConnectionError over an import that fails. Mapped by that class, every call of an
+    install without mcp (or with one too old) was "provider unavailable", retried for fifteen
+    minutes (ADR-0338). The turn ends at once, naming what failed to import."""
+    wrapped = _raised_over(inner, _connection_error(f"OpenAIException - {inner}"))
+    mapped = LiteLLMProvider._map_error(wrapped)  # type: ignore[arg-type]
+    assert isinstance(mapped, RequestFailed)
+    assert not isinstance(mapped, RateLimited)
+    assert str(inner) in str(mapped)
+    assert "zakcode[google]" not in str(mapped)
+
+
+def test_error_mapping_a_missing_google_stack_behind_a_connection_error_names_the_extra() -> None:
+    """The same litellm reports a Vertex call without the google stack as its own
+    "Google Cloud SDK not found" connection error, raised over the import (ADR-0338)."""
+    wrapped = _raised_over(
+        ModuleNotFoundError("No module named 'google'", name="google"),
+        _connection_error("Google Cloud SDK not found. Install it with: pip install ..."),
+    )
+    mapped = LiteLLMProvider._map_error(wrapped)  # type: ignore[arg-type]
+    assert isinstance(mapped, RequestFailed)
+    assert "zakcode[google]" in str(mapped)
+
+
+def test_error_mapping_an_outage_with_no_import_under_it_is_still_an_outage() -> None:
+    """The neighbours stay outages: a refused connection; a server's own message that names a
+    module, with no import failed here; an import that failed two links back in a real outage's
+    chain."""
+    from zakcode.providers.base import ProviderUnavailable
+
+    refused = _raised_over(ConnectionRefusedError(), _connection_error("Connection error."))
+    named = _connection_error("OpenAIException - No module named 'flash_attn'")
+    missing = ModuleNotFoundError("No module named 'x'", name="x")
+    deep = _raised_over(
+        _raised_over(missing, ConnectionRefusedError()), _connection_error("Connection error.")
+    )
+    for exc in (refused, named, deep):
+        mapped = LiteLLMProvider._map_error(exc)  # type: ignore[arg-type]
+        assert isinstance(mapped, ProviderUnavailable), f"{exc!r} -> {type(mapped).__name__}"
+
+
+def test_litellm_is_declared_with_its_mcp_extra() -> None:
+    """zakcode's calls always carry tools, and a current litellm imports the mcp SDK for every
+    such call, so an install without it failed every call (ADR-0338). litellm's own mcp extra
+    names the mcp versions that litellm can import from; a bare mcp>=1.0 also admits 1.27.2,
+    which lacks a name a current litellm imports. The lock's litellm does not import mcp, so only
+    the declaration keeps an install made from the source whole."""
+    import tomllib
+    from pathlib import Path
+
+    from packaging.requirements import Requirement
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["dependencies"]
+    litellm = [r for r in map(Requirement, declared) if r.name == "litellm"]
+    assert len(litellm) == 1
+    assert "mcp" in litellm[0].extras
+
+
 def test_error_mapping_groq_tool_use_failed_is_retryable() -> None:
     # Groq rejects a malformed model-emitted tool call with code "tool_use_failed".
     # It reaches us in two shapes; BOTH must map to the retryable ModelOutputRejected
