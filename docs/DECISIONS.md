@@ -20690,3 +20690,75 @@ The proof.
 - Five sabotages were each run green, red, green (2026-10-29): with the single-call path or the sliced path not held to the
   budget, without the quarter's slack, without the fewer-words check, and with the failure guard narrowed, the tests that
   cover each turned red.
+
+## ADR-0339: a summary is stopped once its text runs past four times its budget, and the summary before it is held to the budget's slack
+
+**Status:** Accepted (2026-10-30)
+
+**Context.** ADR-0330 states a word budget and ADR-0331 condenses a summary that comes back over it. Both ran on ten worker
+sessions of the self-hosted pod (Qwen3.8-27B, 131k window, a 3,100-word budget) for 24 hours from 2026-10-29 13:45 UTC.
+Measured from transcript metadata (each compaction boundary's time, each installed summary's size and words; no
+conversation text) and the inference router's ledger (each call's end time, duration and streamed chunks), with each
+session's boundaries matched to its router session by the calls that ended just before them (every boundary matched):
+
+- 183 compactions installed a summary. The call that wrote each one streamed a median of 8,684 chunks (p95 15,451).
+- 60 summarizer calls ran to the 32,768-token output cap: 1,260 engine-minutes, about 21 minutes each, every one thrown
+  away (ADR-0275). The engines cap reasoning, so a call at the cap is summary text (ADR-0330). In 30 compactions such a
+  call came before the summary that was installed; 21 such calls were followed by no summary within the hour, the
+  compaction having fallen back to elision.
+- The installed summaries ran a median of 2,741 words. 28 of the 183 were still over the budget's slack (3,875 words)
+  after the condensing ask, and 3 were over twice the budget, at 8,340, 8,558 and 12,450 words.
+- A compaction whose earlier summary was over the slack ran a summarizer call to the cap in 8 of 28 cases, with 25 calls
+  at the cap; below the slack, in 23 of 152, with 31. The elision after a failed summary leaves the installed summary as it
+  was, so the next compaction reads it again: one session read a 5,879-word summary through eight calls at the cap, and
+  later a 5,102-word one through seven.
+
+**Decision.**
+
+- A summarizer call's stream is stopped once its text holds more than four times the budget's words
+  (`_SUMMARY_RUNAWAY`), counted as the text arrives, thinking left out. Closing the stream ends the generation. The
+  response is not a summary ("it ran past its word limit") and is asked for again, like one cut at the output limit
+  (ADR-0242); a second such response leaves the compaction to elide, as before.
+- An earlier summary reaches the next summarizer held to the budget's slack (`_SUMMARY_OVER_BUDGET` times the budget):
+  whole up to that many words, past it its first two thirds and its end, with a line saying how many words were left out.
+  Only the summarizer's copy is held; the session keeps the summary it has.
+
+Rejected:
+
+- A lower output cap. ADR-0330's reason stands: it bounds the thinking ADR-0275 made room for, on every model. The word
+  limit counts summary text only.
+- A limit of twice the budget. It would have stopped the three longest installed summaries, which the condensing ask had
+  already run on; four times the budget stopped one of 183 and still ends a runaway at about half the cap.
+- Truncating the earlier summary to the budget, ADR-0331's rejected form: its end is the unfinished work, so the hold
+  keeps the end.
+- Condensing the earlier summary with one more model call first. The condensing ask already runs on every summary over the
+  slack (ADR-0331) and left 28 of them over it, and another ask can run to the cap itself.
+
+Not verified:
+
+- That the pod's model installs a summary more often from a held earlier summary than from the whole one. The change runs
+  on one worker session first, measured by its calls at the cap, its compactions that install nothing and its summaries'
+  words.
+- What a stopped call costs on the pod. At the measured 29 chunks a second, four times a 3,100-word budget is about 16,500
+  tokens of text, against the cap's 32,768, so a runaway is expected to take about 11 minutes instead of 21.
+
+**Consequences.**
+
+- A runaway summarizer call ends at its word limit; the status line says the response ran past its word limit, and the
+  trace row counts it rejected (ADR-0242). A stopped call reports no usage, since the provider's usage event never comes.
+- A response within four times its budget, and an earlier summary within the slack, are handled as before.
+- The middle of an earlier summary over the slack is not in the next summarizer's input; the next summary is written from
+  its first two thirds and its end.
+
+The proof.
+
+- `tests/test_summarizer_streams.py`: a stream past its word limit is stopped and closed, with nothing read after the delta
+  that passed it; thinking is not counted, and a word split across deltas counts once; a stream at its limit is left alone.
+- `tests/test_compact_loop.py`: a summary past four times its budget is stopped and asked for again, and the second answer
+  is installed; one at the limit is condensed as ADR-0331 says, not stopped; an earlier summary over the slack renders as
+  its first two thirds, the line naming what was left out and its end, and one within it whole; a re-compaction's prompt
+  carries it held.
+- Seven sabotages were each run green, red, green (2026-10-30): without the stop at the word limit, with a word split
+  across deltas counted twice, with a stopped response accepted as a summary, with the summarizer asking without a limit,
+  without the hold, with the hold dropping the end, and with the compaction passing no hold, the tests that cover each
+  turned red.
