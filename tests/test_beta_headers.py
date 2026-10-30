@@ -91,6 +91,15 @@ class TestAllowProviderBetas:
 
         assert manager.get_beta_headers_config("u")["anthropic"][_BETA] == held
 
+    def test_a_bare_string_is_one_beta(self) -> None:
+        manager = _Manager([_bundled()])
+
+        assert allow_provider_betas(manager, "anthropic", _BETA) is True
+
+        names = manager.get_beta_headers_config("u")["anthropic"]
+        assert names[_BETA] == _BETA
+        assert "t" not in names  # not one name per character
+
     def test_a_second_call_wraps_nothing_more(self) -> None:
         manager = _Manager([_bundled()])
         assert allow_provider_betas(manager, "anthropic", [_BETA])
@@ -201,21 +210,108 @@ print(json.dumps({"imported": LiteLLMProvider.__name__}))
 """
 
 
-def _run_json(script: str) -> Any:
-    """Run ``script`` in a fresh interpreter on litellm's bundled lists; return its JSON line.
+#: Imports the provider while a log handler listens, on a litellm whose manager lacks the loader
+#: when ``__BREAK__`` is True and untouched when it is False: prints whether the warning that the
+#: beta could not be named was logged.
+_WARN_PROBE = """
+import json
+import logging
 
-    ``LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True`` is what a process that cannot fetch litellm's
-    allowlist falls back to, and ``LITELLM_LOCAL_MODEL_COST_MAP=True`` the same for the price map.
-    The script's stdout must be that one JSON line and nothing else.
+from litellm import anthropic_beta_headers_manager as manager
+
+if __BREAK__:
+    del manager.get_beta_headers_config
+
+messages = []
+
+
+class _Capture(logging.Handler):
+    def emit(self, record):
+        messages.append(record.getMessage())
+
+
+logging.getLogger("zakcode.providers").addHandler(_Capture())
+
+import zakcode.providers.litellm_provider
+
+print(json.dumps({"warned": any(__BETA__ in message for message in messages)}))
+"""
+
+
+#: A served process whose fetch of litellm's allowlist is refused. litellm reads the list from
+#: GitHub with a synchronous httpx call; the script answers that call 403, as the served runtime's
+#: was, so litellm falls back to its bundled list. The request goes out through ``acompletion`` as
+#: the served runtime sends it, and the one call to Anthropic is answered from a canned body.
+_VESSEL_PROBE = """
+import asyncio
+import json
+import httpx
+import litellm
+from litellm import anthropic_beta_headers_manager as manager
+
+litellm_loader = manager.get_beta_headers_config  # litellm's own, before zakcode wraps it
+
+from zakcode.providers.litellm_provider import LiteLLMProvider
+
+if __UNSHIM__:
+    # The process as it was before ADR-0341: litellm's own loader and no list loaded yet.
+    manager.get_beta_headers_config = litellm_loader
+    manager._BETA_HEADERS_CONFIG = None
+
+seen = {"sync_hosts": []}
+
+def fake_send(self, request, *args, **kwargs):
+    seen["sync_hosts"].append(request.url.host)
+    return httpx.Response(403, request=request)
+
+async def fake_async_send(self, request, *args, **kwargs):
+    assert request.url.host == "api.anthropic.com", str(request.url)
+    seen["anthropic_beta"] = request.headers.get("anthropic-beta")
+    seen["thinking"] = json.loads(request.content).get("thinking")
+    return httpx.Response(200, request=request, json={
+        "id": "msg_test", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+        "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+        "stop_sequence": None, "usage": {"input_tokens": 3, "output_tokens": 1},
+    })
+
+httpx.Client.send = fake_send
+httpx.AsyncClient.send = fake_async_send
+kwargs = LiteLLMProvider(model="anthropic/claude-sonnet-5-5")._build_kwargs(
+    [{"role": "user", "content": "hi"}], None
+)
+asyncio.run(litellm.acompletion(api_key="sk-ant-test", **kwargs))
+print(json.dumps(seen))
+"""
+
+
+#: Variables that would send the request, or litellm's fetch of its allowlist, somewhere the probes
+#: do not expect, or choose which list litellm reads: removed from the child's environment.
+_ISOLATED_ENV = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_API_BASE",
+    "LITELLM_ANTHROPIC_BETA_HEADERS_URL",
+    "LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS",
+)
+
+
+def _run_json(script: str, *, bundled_list_only: bool = True) -> Any:
+    """Run ``script`` in a fresh interpreter; return its JSON line.
+
+    By default litellm is held to its BUNDLED lists: ``LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True``
+    is what a process that cannot fetch litellm's allowlist falls back to, with which it fetches
+    nothing, and ``LITELLM_LOCAL_MODEL_COST_MAP=True`` is the same for the price map. With
+    ``bundled_list_only=False`` litellm tries to fetch the allowlist as a served process does, and
+    the script answers that fetch. The script's stdout must be that one JSON line and nothing else.
     """
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items() if key not in _ISOLATED_ENV}
     env.update(
         PYTHONPATH=str(_ROOT / "src"),
         PYTHONDONTWRITEBYTECODE="1",
         LITELLM_LOG="ERROR",
         LITELLM_LOCAL_MODEL_COST_MAP="True",
-        LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS="True",
     )
+    if bundled_list_only:
+        env["LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS"] = "True"
     result = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
@@ -232,6 +328,10 @@ def _run_json(script: str) -> Any:
 
 def _wire(*, unshim: bool) -> Any:
     return _run_json(_WIRE_PROBE.replace("__UNSHIM__", str(unshim)))
+
+
+def _vessel(*, unshim: bool) -> Any:
+    return _run_json(_VESSEL_PROBE.replace("__UNSHIM__", str(unshim)), bundled_list_only=False)
 
 
 class TestTheBetaReachesAnthropic:
@@ -261,7 +361,32 @@ class TestTheBetaReachesAnthropic:
         assert wire["anthropic_beta"] is None
         assert "block_binding" in wire["thinking"]
 
+    def test_when_the_fetch_of_the_list_is_refused_the_request_carries_the_beta(self) -> None:
+        """The served path: the fetch answered 403, litellm on its bundled list, ``acompletion``."""
+        wire = _vessel(unshim=False)
+
+        assert wire["sync_hosts"] == ["raw.githubusercontent.com"]  # the fetch ran once, refused
+        assert wire["anthropic_beta"] == _BETA
+        assert wire["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+
+    def test_the_refused_fetch_without_the_helper_loses_the_beta(self) -> None:
+        """The control for the test above: the same served path with litellm's own loader."""
+        wire = _vessel(unshim=True)
+
+        assert wire["sync_hosts"] == ["raw.githubusercontent.com"]
+        assert wire["anthropic_beta"] is None
+        assert "block_binding" in wire["thinking"]
+
 
 class TestALitellmWithoutTheManager:
     def test_the_provider_still_imports(self) -> None:
         assert _run_json(_NO_MANAGER_PROBE) == {"imported": "LiteLLMProvider"}
+
+
+class TestAFailedPatchIsLogged:
+    @pytest.mark.parametrize(("broken", "warned"), [(True, True), (False, False)])
+    def test_the_warning_follows_the_patch(self, broken: bool, warned: bool) -> None:
+        """A manager without the loader cannot be patched and says so; an intact one is silent."""
+        script = _WARN_PROBE.replace("__BREAK__", str(broken)).replace("__BETA__", repr(_BETA))
+
+        assert _run_json(script) == {"warned": warned}

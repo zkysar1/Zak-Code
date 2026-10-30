@@ -27,7 +27,7 @@ from typing import Any
 logger = logging.getLogger("zakcode.providers")
 
 #: Set on the wrapper this module puts on litellm's loader: the (provider, betas) it names, so a
-#: second call with the same arguments does not wrap the wrapper.
+#: call that repeats the one before it does not wrap the wrapper.
 _NAMED = "_zakcode_named_betas"
 
 
@@ -45,12 +45,14 @@ def allow_provider_betas(manager: Any, provider: str, betas: Sequence[str]) -> b
     ``manager`` is litellm's ``anthropic_beta_headers_manager``. A list it has already loaded gets
     the names at once. A list it loads later, at first use or on ``reload_beta_headers_config``,
     gets them through a wrapper on ``get_beta_headers_config``, which the fetched list and the
-    bundled one both pass through. True when the names are in place; a second call with the same
-    arguments wraps nothing more. Best effort: a litellm without this machinery, or one that has
-    changed its shape, is logged at debug and left alone, because what it leaves is the failure this
-    removes and not a new one.
+    bundled one both pass through. A bare string is one beta. True when the wrapper is installed (a
+    loaded list of another shape is left as it is); a call that repeats the one before it wraps
+    nothing more, and calls with other names stack one wrapper each. Best effort: a manager that
+    lacks the loader, or will not take the wrapper, is logged at debug and False comes back (a
+    list it had already loaded has been named by then, which is harmless), because what that
+    leaves is the failure this removes and not a new one.
     """
-    wanted = tuple(betas)
+    wanted = (betas,) if isinstance(betas, str) else tuple(betas)
     try:
         _name_betas(getattr(manager, "_BETA_HEADERS_CONFIG", None), provider, wanted)
         loader: Callable[..., Any] = manager.get_beta_headers_config

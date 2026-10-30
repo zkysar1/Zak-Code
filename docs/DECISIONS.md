@@ -21205,16 +21205,17 @@ Extra inputs are not permitted", and zakcode failed over to `openai/gpt-5-mini`.
 ADR-0321 builds carries the field `thinking.block_binding` and the header `anthropic-beta:
 thinking-binding-controls-2026-08-01`, which permits it, and ADR-0321's tests read `_build_kwargs`,
 where both are present. litellm 1.86.2 (the locked one) then passes the header through
-`anthropic_beta_headers_manager.filter_and_transform_beta_headers` (called from
+`anthropic_beta_headers_manager.update_request_with_filtered_beta` (called from
 `litellm/llms/anthropic/chat/handler.py`), which keeps the `anthropic-beta` values its per-provider
 list names and drops the others without a word. It reads that list from litellm's GitHub `main` the
 first time a request needs it and, when the fetch fails, from the copy bundled in the installed
 release, which predates this beta: 29 entries for anthropic, where the remote list has 37 and names
-it. The deployment's fetch was answered 403 (its serve log: "Failed to fetch remote beta headers
-config … 403 Forbidden. Falling back to local backup.", then the failover 0.3 s and 0.5 s later in
-its two launches), so the bundled list was in force. The field went out, the header did not, and
-Anthropic refused a field it had not been told to expect. ADR-0321's own live check was accepted,
-which a reachable remote list gives; that its box could fetch the list is inferred, not recorded.
+it (measured 2026-10-30). The deployment's fetch was answered 403 (its serve log: "Failed to fetch
+remote beta headers config … 403 Forbidden. Falling back to local backup.", then the failover 0.3 s
+and 0.5 s later in its two launches), so the bundled list was in force. The field went out, the
+header did not, and Anthropic refused a field it had not been told to expect. ADR-0321's own live
+check was accepted, which a reachable remote list gives; that its box could fetch the list is
+inferred, not recorded.
 Measured with one request of the real body (built by `_build_kwargs`, `max_tokens` 64) on
 `anthropic/claude-sonnet-5-5`: with the remote list reachable, accepted, the header on the wire;
 with litellm held to its bundled list (`LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True`), the field on
@@ -21230,9 +21231,14 @@ Decision.
    litellm's `get_beta_headers_config`, which the fetched list and the bundled one both pass
    through. It adds a name only where the list lacks that key, so a list that names the beta (the
    remote one), renames it, or marks it unsupported keeps its own word. It removes and remaps
-   nothing, fetches nothing at import, and wraps once for the same arguments. A litellm release
-   with no manager module (older than the allowlist) has no list to name the beta in, and the
-   import is skipped; a manager of another shape is logged at debug and left alone.
+   nothing, fetches nothing at import, and a call that repeats the one before it wraps nothing
+   more. A litellm release with no manager module (older than the allowlist) has no list to name
+   the beta in, and the import is skipped. A manager that lacks the loader, or will not take the
+   wrapper, comes back False with a debug line (a list it had already loaded has been named by
+   then), and `litellm_provider.py` logs a warning that Claude 5 requests will be refused where
+   the list cannot be fetched; a loaded list of another shape is left untouched. A litellm that
+   stops loading its lists through `get_beta_headers_config` leaves the wrapper installed and
+   unused, with no warning: the tests that send the request through litellm are what go red then.
 2. `litellm_provider.py` names `_THINKING_BINDING_BETA` for `anthropic` at import, beside the
    constant, so the beta's name is written once.
 3. The litellm manager is a parameter of the helper, not an import: `tests/test_contracts.py` lets
@@ -21253,19 +21259,26 @@ header is not verified.
 The proof. tests/test_beta_headers.py. The helper against a stand-in for litellm's manager: a list
 loaded later and one already loaded both come to name the beta, on every load; a list that holds the
 key (as itself, renamed, or null) keeps its own word; another provider's mapping is untouched; a
-second call wraps nothing more; calls with different names compose; a list of another shape and a
-litellm without the loader come back untouched and raise nothing, while the loader's own error is
-not swallowed; the provider still imports on a litellm with no manager module. In a fresh
-interpreter on litellm's bundled list: the list still lacks the beta (with a check that it was
-read); the request `_build_kwargs` builds, sent through litellm with only the HTTP client replaced,
-carries `anthropic-beta: thinking-binding-controls-2026-08-01` and `thinking.block_binding`; and the
-same request on litellm's own loader carries the field and no header, which is the 400's cause. Each
-part of the fix was sabotaged on its own (nine sabotages: the call dropped; the already-loaded list
-not named; the wrapper not installed; the second call wrapping again; the list's own word
-overwritten; the loaded list not checked to be a dict; the provider's entry not checked to be a
-mapping; a failure not contained; an absent manager module not contained) and the test that covers
-it turned red, then green once the fix was back. One request to the real API from this change, with
-litellm held to its bundled list: the header on the wire, the list at 30 entries (29 and the beta),
-accepted; the same request before the change was refused with the 400 above. With the remote list
-reachable the list stays at 37 entries, as without the change, and the request is accepted. `ruff
-check`, `ruff format --check`, `mypy` and `pytest` green: 6,619 passed, 24 skipped.
+bare string is one beta; a repeated call wraps nothing more; calls with different names compose; a
+list of another shape and a litellm without the loader come back untouched and raise nothing, while
+the loader's own error is not swallowed. In a fresh interpreter: the provider still imports on a
+litellm with no manager module, and logs a warning when the manager cannot be patched and none when
+it can. On litellm's bundled list: the list still lacks the beta (with a check that it was read);
+the request `_build_kwargs` builds, sent through litellm with only the HTTP client replaced, carries
+`anthropic-beta: thinking-binding-controls-2026-08-01` and `thinking.block_binding`; and the same
+request on litellm's own loader carries the field and no header, which is the 400's cause. On the
+path the deployment took, with litellm's fetch of its list answered 403 and the request sent through
+`acompletion`, the header is on the wire, and on litellm's own loader it is not. The child
+interpreters run without the variables that redirect the request or choose the list, and the file
+passes with those variables set hostile in the parent. Each part of the fix was sabotaged on its own
+(thirteen sabotages: the call dropped; the already-loaded list not named; the wrapper not
+installed; the second call wrapping again; the list's own word overwritten; the loaded list not
+checked to be a dict; the provider's entry not checked to be a mapping; a failure not contained; an
+absent manager module not contained; the warning dropped; the warning given although the patch
+took; a bare string taken as many betas; the child environment not isolated) and the test that
+covers it turned red, then green once the fix was back. One request to the real API from this
+change, with litellm held to its bundled list: the header on the wire, the list at 30 entries (29
+and the beta), accepted; the same request before the change was refused with the 400 above. With
+the remote list reachable the list stays at 37 entries, as without the change, and the request is
+accepted (both measured 2026-10-30). `ruff check`, `ruff format --check`, `mypy` and `pytest`
+green: 6,625 passed, 24 skipped.

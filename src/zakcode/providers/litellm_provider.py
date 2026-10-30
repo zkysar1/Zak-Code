@@ -459,7 +459,14 @@ try:
 except ImportError:
     pass
 else:
-    allow_provider_betas(anthropic_beta_headers_manager, "anthropic", [_THINKING_BINDING_BETA])
+    if not allow_provider_betas(
+        anthropic_beta_headers_manager, "anthropic", [_THINKING_BINDING_BETA]
+    ):
+        logger.warning(
+            "could not name %s in litellm's anthropic beta list: a process that cannot fetch "
+            "the list will drop it, and Claude 5 requests will be refused (ADR-0341)",
+            _THINKING_BINDING_BETA,
+        )
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
