@@ -21193,3 +21193,77 @@ On a real uv tool install without the extra, made on Windows from a clone of thi
 google` installed the google stack through the second process, and the receipt then recorded the
 extra; a plain `zakcode update` after it asked for `zakcode[google]` again, and `google.auth` still
 imported. `uv run poe check` green.
+
+## ADR-0341: the thinking-binding beta reaches Anthropic although litellm's bundled beta list does not name it
+
+Status: accepted. 2026-10-30. Amends ADR-0321 (its `anthropic-beta` header is the one this makes
+reach the wire) and sits beside ADR-0281 (a process that cannot fetch litellm's remote price map).
+
+Context. A served deployment configured for `anthropic/claude-sonnet-5-5` ended its sessions on its
+fallback model: the first model call was refused with HTTP 400, "thinking.adaptive.block_binding:
+Extra inputs are not permitted", and zakcode failed over to `openai/gpt-5-mini`. The request
+ADR-0321 builds carries the field `thinking.block_binding` and the header `anthropic-beta:
+thinking-binding-controls-2026-08-01`, which permits it, and ADR-0321's tests read `_build_kwargs`,
+where both are present. litellm 1.86.2 (the locked one) then passes the header through
+`anthropic_beta_headers_manager.filter_and_transform_beta_headers` (called from
+`litellm/llms/anthropic/chat/handler.py`), which keeps the `anthropic-beta` values its per-provider
+list names and drops the others without a word. It reads that list from litellm's GitHub `main` the
+first time a request needs it and, when the fetch fails, from the copy bundled in the installed
+release, which predates this beta: 29 entries for anthropic, where the remote list has 37 and names
+it. The deployment's fetch was answered 403 (its serve log: "Failed to fetch remote beta headers
+config … 403 Forbidden. Falling back to local backup.", 0.3 s before the failover), so the bundled
+list was in force. The field went out, the header did not, and Anthropic refused a field it had not
+been told to expect. ADR-0321's own live check was accepted, which a reachable remote list gives;
+that its box could fetch the list is inferred, not recorded. Measured with one request of the real
+body (built by `_build_kwargs`, `max_tokens` 64) on `anthropic/claude-sonnet-5-5`: with the remote
+list reachable, accepted, the header on the wire; with litellm held to its bundled list
+(`LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True`), the field on the wire and no header, and Anthropic
+answered with the deployment's 400 to the word. ADR-0181's repair did not catch it: it acts on a
+field zakcode sent in `extra_body` or under a rendered thinking wire name, and this field is
+neither.
+
+Decision.
+
+1. `allow_provider_betas(manager, provider, betas)`, in the new `zakcode/providers/beta_headers.py`,
+   makes whatever list litellm loads name `betas` for `provider`: a list already loaded at once,
+   and any list loaded later, at first use or on `reload_beta_headers_config`, through a wrapper on
+   litellm's `get_beta_headers_config`, which the fetched list and the bundled one both pass
+   through. It adds a name only where the list lacks that key, so a list that names the beta (the
+   remote one), renames it, or marks it unsupported keeps its own word. It removes and remaps
+   nothing, fetches nothing at import, and wraps once for the same arguments. A litellm release
+   with no manager module (older than the allowlist) has no list to name the beta in, and the
+   import is skipped; a manager of another shape is logged at debug and left alone.
+2. `litellm_provider.py` names `_THINKING_BINDING_BETA` for `anthropic` at import, beside the
+   constant, so the beta's name is written once.
+3. The litellm manager is a parameter of the helper, not an import: `tests/test_contracts.py` lets
+   only `litellm_provider.py` and `registry.py` import litellm (the idiom of ADR-0281's
+   `register_missing_entries(litellm)`).
+
+Consequences. A process that cannot fetch litellm's list sends the beta with the field, and the
+first call on a Claude 5 route is accepted instead of failing over. Where the list is reachable
+nothing changes: the remote list names the beta and the helper adds nothing. A litellm release
+whose bundled list names the beta makes the helper redundant, and the premise test turns red to say
+so. A deployment takes the change with the published build it next starts. Still open: a 400 that
+names `thinking.block_binding` is still a failover and not a repair (under ADR-0181's principle the
+repair is to drop the field and re-issue the call on the same model, which would keep a session on
+Sonnet when the header is lost for another reason); the beta is named for `anthropic` only, and
+whether a Claude 5 route through another provider (Vertex AI, Bedrock) sends the field and the
+header is not verified.
+
+The proof. tests/test_beta_headers.py. The helper against a stand-in for litellm's manager: a list
+loaded later and one already loaded both come to name the beta, on every load; a list that holds
+the key (as itself, renamed, or null) keeps its own word; another provider's mapping is untouched;
+a second call wraps nothing more; calls with different names compose; a list of another shape and
+a litellm without the loader come back untouched and raise nothing, while the loader's own error
+is not swallowed. In a fresh interpreter on litellm's bundled list: the list still lacks the beta
+(with a check that it was read); the request `_build_kwargs` builds, sent through litellm with only
+the HTTP client replaced, carries `anthropic-beta: thinking-binding-controls-2026-08-01` and
+`thinking.block_binding`; and the same request on litellm's own loader carries the field and no
+header, which is the 400's cause. Each part of the fix was sabotaged on its own (eight sabotages:
+the call dropped; the already-loaded list not named; the wrapper not installed; the second call
+wrapping again; the list's own word overwritten; the loaded list not checked to be a dict; the
+provider's entry not checked to be a mapping; a failure not contained) and the test that covers it
+turned red, then green once the fix was back. One request to the real API from this change, with
+litellm held to its bundled list: the header on the wire, the list at 30 entries (29 and the beta),
+accepted; the same request before the change was refused with the 400 above. `ruff check`,
+`ruff format --check`, `mypy` and `pytest` green: 6,619 passed, 24 skipped.
