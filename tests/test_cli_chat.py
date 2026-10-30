@@ -1533,6 +1533,68 @@ def test_a_git_url_install_has_no_lock_to_pin_to(tmp_path, monkeypatch) -> None:
     assert command[-1] == "zakcode[google] @ git+https://example.com/repo.git@main"
 
 
+def test_update_adds_an_extra_to_the_ones_the_install_has(tmp_path, monkeypatch) -> None:
+    """How an install without the google extra gets it: Vertex AI cannot run without it, and
+    zakcode is not on PyPI, so ``pip install 'zakcode[google]'`` finds nothing (ADR-0340)."""
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    result = runner.invoke(app, ["update", "--extra", "server", "--extra", "google"])
+    assert result.exit_code == 0, result.stdout
+    reinstall = h.calls[1][0]
+    assert reinstall[-1].startswith("zakcode[google,server] @ file://")  # google once, not twice
+
+
+def test_update_refuses_an_extra_zakcode_does_not_declare_before_it_pulls(
+    tmp_path, monkeypatch
+) -> None:
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    result = runner.invoke(app, ["update", "--extra", "gogle"])
+    assert result.exit_code == 2
+    flat = _flat(result.stdout)
+    assert "zakcodehasnoextranamedgogle" in flat and "Nothingwaschanged" in flat
+    assert "google" in flat  # the extras it does have are listed
+    assert h.calls == [] and h.started == []
+    assert (h.clone / "pyproject.toml").read_text() == "v1\n"  # not pulled either
+
+
+def test_update_passes_an_extra_on_when_it_cannot_read_its_own_extras(
+    tmp_path, monkeypatch
+) -> None:
+    import importlib.metadata
+
+    def unreadable(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "metadata", unreadable)
+    h = _update_harness(tmp_path, monkeypatch, _RECEIPT_EXTRAS)
+    result = runner.invoke(app, ["update", "--extra", "server"])
+    assert result.exit_code == 0, result.stdout
+    assert h.calls[1][0][-1].startswith("zakcode[google,server] @ file://")
+
+
+def test_update_by_pip_installs_an_added_extra_with_its_dependencies(tmp_path, monkeypatch) -> None:
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(tmp_path))  # no uv receipt: pip owns it
+    monkeypatch.setattr(cli_mod, "build_url", lambda: "https://example.com/repo.git")
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+        stdout = "0.0.1 (git abcdef123456)\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+    result = runner.invoke(app, ["update", "--extra", "google"])
+    assert result.exit_code == 0, result.stdout
+    assert calls[0][-1] == "zakcode @ git+https://example.com/repo.git@main"  # --no-deps
+    # The pass that installs dependencies is the one an extra has to be named in.
+    assert calls[1][-1] == "zakcode[google] @ git+https://example.com/repo.git@main"
+
+
 # ── zakcode update on Windows: the reinstall finishes in a second process (ADR-0291) ──
 
 

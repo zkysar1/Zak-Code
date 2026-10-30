@@ -523,15 +523,28 @@ def test_error_mapping_missing_google_stack_names_the_extra() -> None:
     exc = ModuleNotFoundError("No module named 'google'", name="google")
     mapped = LiteLLMProvider._map_error(exc)
     assert isinstance(mapped, RequestFailed)
-    assert "zakcode[google]" in str(mapped)
+    assert "zakcode update --extra google" in str(mapped)
+    # zakcode is not on PyPI, so an install command naming `zakcode[google]` alone finds nothing
+    # (ADR-0340): the hint must not offer one.
+    assert "pip install" not in str(mapped) and "uv tool install" not in str(mapped)
     # Submodules of the google namespace get the same hint...
     sub = ModuleNotFoundError("No module named 'google.auth'", name="google.auth")
-    assert "zakcode[google]" in str(LiteLLMProvider._map_error(sub))
+    assert "--extra google" in str(LiteLLMProvider._map_error(sub))
     # ...but an unrelated missing module must NOT get a misleading google hint.
     other = ModuleNotFoundError("No module named 'left_pad'", name="left_pad")
     mapped_other = LiteLLMProvider._map_error(other)
     assert isinstance(mapped_other, RequestFailed)
-    assert "zakcode[google]" not in str(mapped_other)
+    assert "--extra google" not in str(mapped_other)
+
+
+def test_the_extra_the_vertex_hint_names_is_one_zakcode_declares() -> None:
+    """``zakcode update --extra`` refuses a name zakcode does not declare, so renaming the extra
+    without the hint would turn its remedy into a refusal."""
+    from zakcode.cli import _declared_extras
+
+    exc = ModuleNotFoundError("No module named 'google'", name="google")
+    assert "--extra google" in str(LiteLLMProvider._map_error(exc))
+    assert "google" in (_declared_extras() or ())
 
 
 def _raised_over(inner: BaseException, outer: BaseException) -> BaseException:
@@ -569,19 +582,41 @@ def test_error_mapping_an_import_litellm_raised_a_connection_error_over_is_not_a
     assert isinstance(mapped, RequestFailed)
     assert not isinstance(mapped, RateLimited)
     assert str(inner) in str(mapped)
-    assert "zakcode[google]" not in str(mapped)
+    assert "--extra google" not in str(mapped)
 
 
-def test_error_mapping_a_missing_google_stack_behind_a_connection_error_names_the_extra() -> None:
-    """The same litellm reports a Vertex call without the google stack as its own
-    "Google Cloud SDK not found" connection error, raised over the import (ADR-0338)."""
-    wrapped = _raised_over(
+def _sdk_not_found(raised_from: bool) -> ImportError:
+    """litellm's own ImportError for a Vertex call without the google stack. It names no module,
+    and it is raised inside the ``except`` that caught the real one, or ``from`` it."""
+    missing = ModuleNotFoundError("No module named 'google'", name="google")
+    own = ImportError("Google Cloud SDK not found. Install it with: pip install 'litellm[google]'")
+    if raised_from:
+        own.__cause__ = missing
+        return own
+    return _raised_over(missing, own)  # type: ignore[return-value]
+
+
+@pytest.mark.parametrize(
+    "inner",
+    [
         ModuleNotFoundError("No module named 'google'", name="google"),
-        _connection_error("Google Cloud SDK not found. Install it with: pip install ..."),
-    )
+        _sdk_not_found(raised_from=False),
+        _sdk_not_found(raised_from=True),
+    ],
+    ids=["over-the-import", "over-litellms-own-import-error", "over-it-raised-from"],
+)
+def test_error_mapping_a_missing_google_stack_behind_a_connection_error_names_the_extra(
+    inner: ImportError,
+) -> None:
+    """A current litellm reports a Vertex call without the google stack as a connection error raised
+    over its own "Google Cloud SDK not found" ImportError, which is raised over the import that
+    failed (measured on litellm 1.106.6). ADR-0338 read only the first of those, found no module
+    name in it, and showed the generic import message; the hint reads one link further (ADR-0340).
+    """
+    wrapped = _raised_over(inner, _connection_error(f"litellm.APIConnectionError: {inner}"))
     mapped = LiteLLMProvider._map_error(wrapped)  # type: ignore[arg-type]
     assert isinstance(mapped, RequestFailed)
-    assert "zakcode[google]" in str(mapped)
+    assert "zakcode update --extra google" in str(mapped)
 
 
 def test_error_mapping_an_outage_with_no_import_under_it_is_still_an_outage() -> None:

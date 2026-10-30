@@ -17,7 +17,8 @@ Its header repeats these steps. As root:
 useradd --system --create-home --shell /usr/sbin/nologin zakcode
 install -d -o zakcode -g zakcode /srv/zakcode/workspace
 
-# 2. zakcode for that account — the command lands in ~zakcode/.local/bin.
+# 2. zakcode for that account — the command lands in ~zakcode/.local/bin. A box that runs a
+#    Vertex AI model installs "zakcode[server,google] @ …" instead.
 sudo -u zakcode uv tool install "zakcode[server] @ git+https://github.com/zkysar1/Zak-Code.git"
 
 # 3. Keys and settings, readable by the service account only.
@@ -53,12 +54,14 @@ Day two:
 ```bash
 journalctl -u zakcode-webapp -f                            # logs
 sudo -u zakcode zakcode update                             # a new build
+sudo -u zakcode zakcode update --extra google              # a new build, with Vertex AI's libraries
 systemctl restart zakcode-webapp                           # after changing /etc/zakcode/.env
 systemctl status zakcode-webapp                            # is it up, when did it last restart
 ```
 
 `zakcode update` reinstalls in place from the install's own recorded source (a git URL or a
-local checkout) and prints old → new build identity. The running server notices the new build
+local checkout) and prints old → new build identity. `--extra NAME` adds one of zakcode's
+optional extras on the way, and the updates after it keep it (ADR-0340). The running server notices the new build
 within five seconds and, once no turn is in flight, restarts itself into it on the same chat:
 it finishes the turn it is running, takes no new one on the old build, and replaces its own
 process, so the pid and the unit stay as they were and the journal says

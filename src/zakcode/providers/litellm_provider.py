@@ -336,6 +336,17 @@ def _failed_import(exc: BaseException) -> ImportError | None:
     return None
 
 
+def _names_google(failed: ImportError) -> bool:
+    """Whether a failed import is Google's auth/SDK stack (ADR-0340): the import itself, or the
+    one it was raised over. A Vertex call without the stack raises ``No module named 'google'``,
+    and litellm raises its own ``ImportError`` over it, "Google Cloud SDK not found", which names
+    no module."""
+    for err in (failed, failed.__cause__, failed.__context__):
+        if isinstance(err, ImportError) and (err.name or "").split(".")[0] == "google":
+            return True
+    return False
+
+
 def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
@@ -1766,17 +1777,20 @@ class LiteLLMProvider(Provider):
         message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         failed_import = _failed_import(exc)
-        if failed_import is not None and (failed_import.name or "").split(".")[0] == "google":
+        if failed_import is not None and _names_google(failed_import):
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
             # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
             # non-Vertex users never need), so the failure must name the remedy — a raw
             # "No module named 'google'" from deep inside litellm names nothing. Checked
             # before the taxonomy matches: litellm lets the ImportError propagate, or raises
-            # its own connection error over it (ADR-0338).
+            # its own connection error over it (ADR-0338). The remedy is the update's: zakcode
+            # is not on PyPI, so an install command naming `zakcode[google]` alone finds
+            # nothing, and the update reinstalls from wherever this install came (ADR-0340).
             return RequestFailed(
-                "Vertex AI needs Google's auth/SDK libraries, which are an optional "
-                "extra. Install with: uv tool install 'zakcode[google]' "
-                "(or: uv add 'zakcode[google]' / pip install 'zakcode[google]'), then retry."
+                "Vertex AI needs Google's auth/SDK libraries, which come with zakcode's optional "
+                "google extra, and this install lacks them. Add the extra with: zakcode update "
+                "--extra google (or install zakcode with the [google] extra the way it was "
+                "installed), then retry."
             )
         if failed_import is not None:
             # ADR-0338: an import failed in this process, so the call never reached the
