@@ -131,8 +131,9 @@ clone the host-framework repo, run `zakcode cli` inside it, answer the folder-tr
 
 ## ➡️ Deploying a host framework on Zak Code (the live checklist)
 
-1. `uv tool install 'zakcode[google]'` (or plain `zakcode` for non-Vertex providers) — the tool
-   is installed ONCE, globally; the host-framework clone is a **workspace**, never the tool's source tree.
+1. `uv tool install "zakcode[server,google] @ git+https://github.com/zkysar1/Zak-Code.git"`
+   (`zakcode[server] @ …` for non-Vertex providers; zakcode is not on a package index, so a
+   bare `zakcode[google]` finds nothing — ADR-0340) — the tool is installed ONCE, globally; the host-framework clone is a **workspace**, never the tool's source tree.
 2. Clone the host-framework repo into its own directory; `cd` there; `zakcode cli`.
 3. Answer the **workspace hooks** folder-trust prompt (`1` = always) — that single keystroke is
    what used to be the silent `ZAKCODE_SETTINGS_HOOKS` failure.

@@ -224,7 +224,8 @@ users never need). Without it the first call fails with an install hint (not a r
 `ModuleNotFoundError` — see `providers/litellm_provider._map_error`):
 
 ```bash
-uv tool install 'zakcode[google]'        # or: uv add 'zakcode[google]' in a project
+uv tool install "zakcode[server,google] @ git+https://github.com/zkysar1/Zak-Code.git"
+zakcode update --extra google            # or add it to an install that lacks it (ADR-0340)
 ```
 
 Three settings, no key file:

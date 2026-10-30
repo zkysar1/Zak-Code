@@ -884,6 +884,11 @@ def create_app(
     # naming the session sets it (ADR-0327). The say consumer's turns watch the workspace's
     # `.interrupt` file instead, as they always have.
     turn_stops: dict[str, asyncio.Event] = {}
+    # The chats whose SessionStart hooks this server has run (ADR-0342). Every turn runs on an
+    # agent of its own, and an agent's loop fires SessionStart before its first turn, so every
+    # message counted as "a saved session is being resumed": the workspace's start-up hooks ran
+    # again and what they said was added to the chat again. A chat's first turn here still fires.
+    started_chats: set[str] = set()
 
     # Held while a say is checked against the current conversation and queued, and while the
     # current conversation changes (ADR-0319). A say then lands either before the change, which
@@ -1280,6 +1285,27 @@ def create_app(
         turn_stops.pop(session_id, None)
         inflight.discard(session_id)
 
+    def _turn_agent(
+        session: Session, model: str | None, prompter: PermissionPrompter | None
+    ) -> AgentLike:
+        """The agent one turn runs on, told to skip SessionStart when its chat has already started
+        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks."""
+        agent = resolved_factory(session, model, prompter)
+        skip = getattr(getattr(agent, "loop", None), "skip_session_start", None)
+        if skip is not None and session.id in started_chats:
+            skip()
+        return agent
+
+    async def _release_turn_agent(agent: AgentLike | None, session_id: str) -> None:
+        """Release a turn's agent, and count its chat as started once its loop's SessionStart
+        hooks have run to their end and what they said is in the chat (ADR-0342). A turn that
+        ended before then (a refused slash command, a Stop while the hooks ran or before their
+        words were added) leaves the next one to run them. Counted before the release's await,
+        which a client's disconnect can cancel."""
+        if getattr(getattr(agent, "loop", None), "session_started", False) is True:
+            started_chats.add(session_id)
+        await _release_agent(agent)
+
     def _inbox_prompter(session_id: str) -> SayInboxPrompter:
         # Every server-run turn can have its escalations answered through the ONE
         # contract (the workspace say inbox) — previously these turns had no
@@ -1313,7 +1339,7 @@ def create_app(
                 event_bus_registry.get_or_create(session.id).publish(event)
 
         try:
-            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
             tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
@@ -1395,7 +1421,7 @@ def create_app(
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
-            await _release_agent(agent)
+            await _release_turn_agent(agent, session.id)
             _release_session(session.id)
 
     @app.post("/chat/stream")
@@ -1408,7 +1434,7 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
         except BaseException:
             _release_session(session.id)
             raise
@@ -1492,7 +1518,7 @@ def create_app(
                 try:
                     resolved_store.save(agent.session)
                 finally:
-                    await _release_agent(agent)  # stop the egress proxy (no-op when off)
+                    await _release_turn_agent(agent, session.id)  # the egress proxy stops too
                     _release_session(session.id)
 
         return EventSourceResponse(event_source())
@@ -2766,7 +2792,7 @@ def create_app(
         interrupt_fp = interrupt_path(resolved_settings.workspace_root)
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
-            agent = resolved_factory(session, None, _inbox_prompter(session.id))
+            agent = _turn_agent(session, None, _inbox_prompter(session.id))
             message: str
             if wakeup:
                 # A fired wake-up is the harness's own turn (ADR-0189): never a slash
@@ -2875,7 +2901,7 @@ def create_app(
                         boundary = getattr(turn_loop, "restart_boundary", None) or "stop-hook"
                         restart_carry = (str(carried), str(boundary))
                         restart_pending.set()
-                    await _release_agent(agent)
+                    await _release_turn_agent(agent, session.id)
                 inflight.discard(session.id)
                 # Host-neutral ending: check SEEN and DONE after every turn.
                 if run_ending_until is not None:
