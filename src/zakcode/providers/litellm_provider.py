@@ -321,6 +321,21 @@ def _page_text(message: str) -> str:
     return f"{message[: found.start()].rstrip()} {text}".strip()
 
 
+def _failed_import(exc: BaseException) -> ImportError | None:
+    """The failed import a provider error stands for (ADR-0338): the error itself, or the one it
+    was raised over, else ``None``.
+
+    litellm raises its own APIConnectionError while handling an import its call path needed. Only
+    the direct cause or context is read, so an import that failed further back in a real outage's
+    chain does not make the outage a broken install, and a message that merely names a module
+    (a server's own error) is not an import that failed here.
+    """
+    for candidate in (exc, exc.__cause__, exc.__context__):
+        if isinstance(candidate, ImportError):
+            return candidate
+    return None
+
+
 def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
@@ -1750,16 +1765,29 @@ class LiteLLMProvider(Provider):
         # (``&quot;api_key&quot;: ...``) is only an assignment after the unescape (ADR-0312).
         message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
-        if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
+        failed_import = _failed_import(exc)
+        if failed_import is not None and (failed_import.name or "").split(".")[0] == "google":
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
             # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
             # non-Vertex users never need), so the failure must name the remedy — a raw
             # "No module named 'google'" from deep inside litellm names nothing. Checked
-            # before the taxonomy matches: litellm lets the ImportError propagate unwrapped.
+            # before the taxonomy matches: litellm lets the ImportError propagate, or raises
+            # its own connection error over it (ADR-0338).
             return RequestFailed(
                 "Vertex AI needs Google's auth/SDK libraries, which are an optional "
                 "extra. Install with: uv tool install 'zakcode[google]' "
                 "(or: uv add 'zakcode[google]' / pip install 'zakcode[google]'), then retry."
+            )
+        if failed_import is not None:
+            # ADR-0338: an import failed in this process, so the call never reached the
+            # provider. litellm raises its own APIConnectionError over the failed import, and
+            # mapped by that class it was "provider unavailable", retried for fifteen minutes.
+            what = " ".join(redact_secrets(str(failed_import))[0].split())
+            return RequestFailed(
+                f"the model call stopped before it reached the provider: an import failed in "
+                f"this process ({what}). The Python environment zakcode runs in lacks that "
+                "package, or has a version this litellm cannot use: install or upgrade it there, "
+                "then retry."
             )
         if quota_exhaustion_marker(message) is not None:
             # A PERMANENT quota/credit refusal — checked BEFORE every type branch

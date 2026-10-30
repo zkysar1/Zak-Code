@@ -25,8 +25,9 @@ classifiers = [
 # Core engine dependencies (the importable library + CLI).
 dependencies = [
   "jsonschema>=4.18",       # structured-output schema validation (providers/structured.py)
-  "litellm>=1.66",          # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers); 1.66 = allowed_openai_params
-  "openpyxl>=3.1",          # create_xlsx: native Excel workbooks, tables, and charts
+  "litellm[mcp]>=1.66",     # vendor-agnostic LLM layer (Ollama, OpenAI, + ~100 providers); 1.66 = allowed_openai_params
+                            # [mcp]: a current litellm imports the mcp SDK on every call that carries tools (ADR-0338)
+  "openpyxl>=3.1",         # create_xlsx: native Excel workbooks, tables, and charts
   "Pillow>=10.4",           # create_chart_image: raster charts; future Excel image embedding
   "pydantic>=2.7",          # typed models for tools, messages, config
   "prompt-toolkit>=3.0",    # cockpit say box: Esc recall/stop key handling, native paste
@@ -47,7 +48,8 @@ server = [
   "sse-starlette>=2.1",
   "websockets>=12.0",
 ]
-# Model Context Protocol client (external tool/extension support).
+# Model Context Protocol SDK. The core dependencies carry it through litellm's own mcp extra since
+# ADR-0338; this extra stays so an install that names it (`zakcode[mcp]`) still resolves.
 mcp = ["mcp>=1.0"]
 # Web tools (web_search / web_fetch). `ddgs` powers the default DuckDuckGo backend; `httpx`
 # covers the Tavily + SearXNG backends (plain REST) and the web_fetch HTTP client. Both are

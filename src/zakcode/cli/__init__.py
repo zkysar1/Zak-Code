@@ -68,7 +68,14 @@ from zakcode.cli.logsink import (
 )
 from zakcode.cli.render import StreamRenderer, cost_text, display_call
 from zakcode.cli.saybox import fold_lines
-from zakcode.config import PermissionTier, Settings, env_source, load_settings, zakcode_home
+from zakcode.config import (
+    PermissionTier,
+    Settings,
+    drop_dotenv_exports,
+    env_source,
+    load_settings,
+    zakcode_home,
+)
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
 from zakcode.providers.base import ProviderError, UnknownContextWindow
@@ -943,8 +950,10 @@ def update(
     install, and puts the old install back if anything fails (ADR-0291). Prints
     old → new build identity. Elsewhere, running chat sessions notice the new
     install at their next idle prompt and restart themselves into it, resuming
-    their session (ADR-0034) — no operator action needed. On Windows they run from
-    the install being replaced, so the command refuses until they are closed.
+    their session (ADR-0034), and a running web app does the same once no turn is
+    in flight, continuing its chat (ADR-0333) — no operator action needed. On
+    Windows they run from the install being replaced, so the command refuses until
+    they are closed.
     """
     old = version_line(__version__)
     url = build_url()
@@ -1017,7 +1026,10 @@ def update(
     )
     if new == old != "(unreadable)":
         _dim(console, "same commit — you were already current")
-    _dim(console, "running chat sessions restart into the new build at their next idle prompt")
+    _dim(
+        console,
+        "running chat sessions and web apps restart into the new build once they are idle",
+    )
 
 
 @app.command()
@@ -4073,7 +4085,7 @@ def serve(
     try:
         import uvicorn
 
-        from zakcode.server.app import create_app
+        from zakcode.server.app import NewBuild, create_app
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         console.print(
             "[red]The server extra is not installed.[/red] "
@@ -4111,7 +4123,8 @@ def serve(
     server_holder: dict[str, Any] = {}
 
     async def _on_run_end(reason: str) -> None:
-        console.print(f"[bold]Zak Code[/bold] run ended ({reason}) — shutting down.")
+        if "restart" not in server_holder:
+            console.print(f"[bold]Zak Code[/bold] run ended ({reason}) — shutting down.")
         server = server_holder.get("server")
         if server is not None:
             # uvicorn's documented cooperative stop: it finishes in-flight requests and
@@ -4119,10 +4132,51 @@ def serve(
             # shutdown path that persists sessions.
             server.should_exit = True
 
+    async def _on_new_build(build: NewBuild) -> None:
+        # ADR-0333: the same cooperative stop, then an exec into the new build once uvicorn has
+        # returned (below). It closes the page's streams too: sse-starlette ends them when it
+        # sees this server's should_exit, and the page reconnects to the new process.
+        what = (
+            f"build {build.installed} reinstalled"
+            if build.installed and build.installed == build.running
+            else f"{build.running or 'previous build'} → {build.installed or 'new build'}"
+        )
+        console.print(
+            f"[bold]Zak Code[/bold] update installed ({what}) — restarting to apply; "
+            "the chat continues"
+        )
+        server_holder["restart"] = build
+        server = server_holder.get("server")
+        if server is not None:
+            server.should_exit = True
+
+    # ADR-0333: set by the process that exec'd into this one, popped so a later restart cannot
+    # inherit them: the hand-off the terminal REPL's restart uses (ADR-0034, ADR-0099).
+    restarted = os.environ.pop("ZAKCODE_RESTARTED_INTO", None)
+    carried = os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
+    boundary = os.environ.pop("ZAKCODE_RESTART_BOUNDARY", None)
+    # No agent here, so a Stop hook's skill re-entry is delivered in the hook's own words, as the
+    # REPL delivers it whenever it cannot compose the skill (ADR-0187).
+    resume_turn = (
+        _restart_kick(None, restarted=restarted, carried=carried, boundary=boundary)
+        if carried
+        else None
+    )
     fastapi_app = (
-        create_app(settings=resolved_settings, on_run_end=_on_run_end, new_session=new_session)
+        create_app(
+            settings=resolved_settings,
+            on_run_end=_on_run_end,
+            new_session=new_session,
+            on_new_build=_on_new_build,
+            resume_turn=resume_turn,
+        )
         if workspace is not None
-        else create_app(on_run_end=_on_run_end, new_session=new_session)
+        else create_app(
+            on_run_end=_on_run_end,
+            new_session=new_session,
+            on_new_build=_on_new_build,
+            resume_turn=resume_turn,
+        )
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""
@@ -4132,6 +4186,8 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on "
         f"http://{host}:{port}{where}{auth_note}{bound_note}"
     )
+    if restarted is not None:
+        console.print(f"[bold]Zak Code[/bold] restarted into build {restarted} (a zakcode update)")
     # The stdlib event loop, never uvicorn's "auto" (ADR-0197). "auto" picks uvloop wherever it is
     # installed, and `uvicorn[standard]` installs it on every non-Windows box. Under uvloop a
     # child's own ends of its stdin/stdout/stderr stay open at high descriptor numbers in every
@@ -4143,6 +4199,36 @@ def serve(
     server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port, loop="asyncio"))
     server_holder["server"] = server
     server.run()
+    build = server_holder.get("restart")
+    if build is None:
+        return
+    # ADR-0333: the server has shut down cleanly (sessions saved, nothing in flight). Replace
+    # this process with one on the new build: same pid, so a supervisor sees no restart, and the
+    # same arguments. The environment is kept but for what the .env files put in it, so the new
+    # process reads them afresh; a change to the supervisor's own environment needs its restart.
+    drop_dotenv_exports()
+    os.environ["ZAKCODE_RESTARTED_INTO"] = build.installed or "new build"
+    if build.continuation:
+        os.environ["ZAKCODE_RESTART_CONTINUATION"] = build.continuation
+        os.environ["ZAKCODE_RESTART_BOUNDARY"] = build.boundary or "stop-hook"
+    with contextlib.suppress(Exception):  # costs only the hand-on of background tasks' jobs
+        prepare_restart()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    args = _webapp_restart_args(sys.argv[1:])
+    try:
+        os.execv(sys.executable, _exec_argv([sys.executable, "-m", "zakcode", *args]))
+    except OSError as exc:
+        notice_error(console, "restart failed — the web app stopped on its old build", str(exc))
+        raise typer.Exit(code=1) from exc
+
+
+def _webapp_restart_args(argv: list[str]) -> list[str]:
+    """``argv`` (this process's arguments, program name excluded) for the web app restarting into
+    a new build (ADR-0333): every option kept, the launch's chat choice replaced by
+    ``--no-new-session``, because a restart continues the chat it was serving."""
+    kept = [arg for arg in argv if arg not in ("--new-session", "--no-new-session")]
+    return [*kept, "--no-new-session"]
 
 
 # Registered at the bottom so cockpit's lazy imports back into this module (banner

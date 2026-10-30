@@ -197,9 +197,9 @@ def test_interrupt_route_writes_the_contract_file(tmp_path: Path) -> None:
 
 
 def test_stop_ends_a_say_turn_when_it_names_that_turns_chat(tmp_path: Path) -> None:
-    """The page's Stop names the chat on screen (ADR-0327). A say turn watches the workspace's
-    interrupt file, so Stop naming its chat writes the file and the turn ends where it waits.
-    Stop naming another chat, which runs no turn, writes nothing, and the say turn goes on."""
+    """The page's Stop names the chat on screen (ADR-0327), and a say turn on that chat ends where
+    it waits, through its own Stop (ADR-0336). Stop naming another chat, which runs no turn,
+    writes nothing, and the say turn goes on."""
     started = asyncio.Event()
 
     class _Waits:
@@ -238,6 +238,54 @@ def test_stop_ends_a_say_turn_when_it_names_that_turns_chat(tmp_path: Path) -> N
     assert stop == {"requested": True}
     assert ran is True  # the say turn ended
     assert not interrupt_path(tmp_path).exists()  # its watcher took the signal
+
+
+def test_stop_reaches_a_say_turn_without_the_workspace_interrupt_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A say turn was stopped through the workspace's interrupt file, which every process serving
+    the workspace polls: one that took the file first lost the page's Stop, and the turn ran on
+    until its provider gave up, fifteen minutes on an outage (ADR-0336). Here the file never
+    lands, as one taken the instant it does, and Stop naming the chat still ends the turn. The
+    turn's Stop goes with it: a Stop after the turn ended finds no turn to reach."""
+    started = asyncio.Event()
+    written: list[Path] = []
+    monkeypatch.setattr("zakcode.server.app.request_interrupt", written.append)
+
+    class _Waits:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            started.set()
+            await asyncio.sleep(3600)
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    settings = Settings(default_model="scripted/test", context_window=8192, workspace_root=tmp_path)
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _Waits(session),
+    )
+    assert write_say(say_path(tmp_path), "deploy it")
+
+    async def go() -> tuple[Any, bool, Any]:
+        turn = asyncio.create_task(app.state.consume_one_say())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        sid = (tmp_path / ".current-session").read_text(encoding="utf-8").strip()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            stop = (await client.post("/interrupt", json={"session_id": sid})).json()
+            ran = await asyncio.wait_for(turn, timeout=5)
+            after = (await client.post("/interrupt", json={"session_id": sid})).json()
+        return stop, ran, after
+
+    stop, ran, after = asyncio.run(go())
+    assert stop == {"requested": True}
+    assert ran is True  # the say turn ended
+    assert written == []  # through its own Stop: the file was not asked for
+    assert after == {"requested": False}  # no turn left to reach
 
 
 def test_a_switch_refused_while_a_say_turn_runs_names_the_active_chat(tmp_path: Path) -> None:

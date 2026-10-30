@@ -794,6 +794,103 @@ def test_streaming_rate_limit_is_still_named_as_one(fast_sleep: list[float]) -> 
     assert [n.split(";")[0] for n in notices] == ["rate limited"]
 
 
+# ── an outage notice says what the provider answered (ADR-0337) ──────────────────────────────
+
+_REFUSED = "litellm.APIConnectionError: OpenAIException - Connection refused\n  more detail"
+_RESTARTING = "litellm.ServiceUnavailableError: 503 the backend is restarting"
+
+
+def _causes(notices: list[str]) -> list[str]:
+    return [notice.partition(" — ")[2] for notice in notices]
+
+
+def test_streaming_outage_notice_says_what_the_provider_answered(fast_sleep: list[float]) -> None:
+    """The words "provider unavailable" name a class, under which litellm files a refused
+    connection, a 5xx and an exception it does not recognise: notice after notice, and none said
+    which. The first notice of an outage carries the provider's answer, its first line, and so
+    does each later one whose answer changed; the same answer is not said again."""
+    from zakcode.providers.base import ProviderUnavailable
+
+    provider = FlakyStreamProvider(
+        [
+            ProviderUnavailable(_REFUSED),
+            ProviderUnavailable(_REFUSED),
+            ProviderUnavailable(_RESTARTING),
+        ]
+    )
+    events = asyncio.run(_collect(_make_loop(provider), "hi"))
+    notices = [
+        getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+    ]
+    assert events[-1].stop_reason == "completed"
+    assert all(n.startswith("provider unavailable; retrying") for n in notices), notices
+    assert _causes(notices) == [
+        "litellm.APIConnectionError: OpenAIException - Connection refused",
+        "",
+        _RESTARTING,
+    ]
+
+
+def test_buffered_outage_notice_and_log_say_what_the_provider_answered(
+    fast_sleep: list[float], caplog
+) -> None:
+    """The buffered twin says it the same way, and its log line carries the answer every time:
+    a log line is read on its own, without the line before it."""
+    import logging
+
+    from zakcode.providers.base import ProviderUnavailable
+
+    provider = FlakyProvider([ProviderUnavailable(_REFUSED)] * 2)
+    loop = _make_loop(provider)
+    said: list[str] = []
+    loop._status_sink = said.append
+    with caplog.at_level(logging.WARNING, logger="zakcode.agent.loop"):
+        result = asyncio.run(loop.arun_turn("hi"))
+    logged = [r.getMessage() for r in caplog.records if "retrying" in r.getMessage()]
+    assert result.stop_reason == "completed"
+    first = "litellm.APIConnectionError: OpenAIException - Connection refused"
+    assert _causes(said) == [first, ""]
+    assert _causes(logged) == [first, first]
+
+
+def test_an_outage_answer_is_cut_to_one_short_line(fast_sleep: list[float]) -> None:
+    """The notice is a line on the page, not the error's whole text."""
+    from zakcode.agent.loop import _RETRY_CAUSE_CHARS
+    from zakcode.providers.base import ProviderUnavailable
+
+    provider = FlakyStreamProvider([ProviderUnavailable("  \n" + "word " * 100)])
+    events = asyncio.run(_collect(_make_loop(provider), "hi"))
+    [notice] = [
+        getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+    ]
+    [cause] = _causes([notice])
+    assert len(cause) == _RETRY_CAUSE_CHARS
+    assert cause.endswith("…")
+    assert cause.startswith("word word")
+
+
+@pytest.mark.parametrize("streamed", [True, False], ids=["streamed", "buffered"])
+def test_a_rejected_call_notice_carries_no_second_cause(
+    fast_sleep: list[float], streamed: bool
+) -> None:
+    """A rejected tool call's notice already is the provider's answer: nothing is added to it."""
+    from zakcode.providers.base import ModelOutputRejected
+
+    rejected = ModelOutputRejected("malformed tool call (tool_use_failed)")
+    if streamed:
+        events = asyncio.run(_collect(_make_loop(FlakyStreamProvider([rejected])), "hi"))
+        notices = [
+            getattr(ev, "message", "") for ev in events if "retrying" in getattr(ev, "message", "")
+        ]
+    else:
+        loop = _make_loop(FlakyProvider([rejected]))
+        notices = []
+        loop._status_sink = notices.append
+        asyncio.run(loop.arun_turn("hi"))
+    assert len(notices) == 1
+    assert " — " not in notices[0]
+
+
 def test_buffered_timeout_notice_names_the_bound_that_fired(
     fast_sleep: list[float], caplog
 ) -> None:

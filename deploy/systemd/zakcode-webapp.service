@@ -12,7 +12,8 @@
 #      systemctl daemon-reload && systemctl enable --now zakcode-webapp
 #   5. curl -s http://127.0.0.1:8000/health
 #
-# Update:  sudo -u zakcode zakcode update && systemctl restart zakcode-webapp
+# Update:  sudo -u zakcode zakcode update   (the server restarts itself into it once idle)
+#          systemctl restart zakcode-webapp only after changing /etc/zakcode/.env or this unit
 # Logs:    journalctl -u zakcode-webapp -f
 # Lint:    systemd-analyze verify /etc/systemd/system/zakcode-webapp.service
 #

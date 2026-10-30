@@ -582,6 +582,8 @@
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
   let turnUsage = emptyUsage();                 // per-turn accumulator, reset on send and at turn end
+  let turnSeq = 0;           // counts turn starts and ends; what a Stop does later is for the turn it stopped
+  const STOP_CHECK_MS = 5000;  // how long a stopped turn may still show running before it is asked after (ADR-0336)
   let lastPlanKey = "";      // checklist rows of the last plan drawn (ADR-0112 dedup)
   let assistantBody = null;  // current prose group (re-anchors after tool cards/status)
   let assistantText = "";    // its accumulated raw text (re-rendered on each delta)
@@ -1275,6 +1277,7 @@
 
   // A turn's end: done, the interrupted status, an error frame, a session restart.
   function endTurn() {
+    turnSeq++;  // a Stop still on its way is for the turn that ended here (ADR-0336)
     // The turn's clock and meter stop with it. The next user_message restarts them; a
     // turn that opens without one (joined after the bus evicted it) is not timed or metered
     // from this turn's start, so its footer leaves the duration out instead of spanning two.
@@ -1359,6 +1362,7 @@
         thinkingBody = null;
         add(row("user", el("span", "", "›"), userBody(ev.text || "", ev.at)));
         turnActive = true;
+        turnSeq++;  // a Stop still on its way was for the turn before
         turnAt = ev.at;
         turnUsage = emptyUsage();
         setSendMode(true);
@@ -1530,18 +1534,57 @@
     setStatus("queued…");
   }
 
-  sendBtn.onclick = () => {
-    if (turnActive) {
-      // Stop names the chat on screen, so it ends that chat's turn whoever runs it: a say, or a
-      // turn a terminal drives through POST /chat or /chat/stream, which the bare signal never
-      // reached (ADR-0327).
-      fetch("/interrupt", {
+  // Stop names the chat on screen, so it ends that chat's turn whoever runs it: a say, or a turn a
+  // terminal drives through POST /chat or /chat/stream, which the bare signal never reached
+  // (ADR-0327). It is never silent (ADR-0336): the status line says it was asked for, an ask that
+  // fails says why, an answer that no turn runs in this chat ends the turn shown, and a turn still
+  // shown running a while after its Stop was accepted is asked after, since its end may never
+  // have reached this page.
+  async function stopTurn() {
+    const turn = turnSeq;
+    setStatus("stopping…");
+    let answer;
+    try {
+      const resp = await fetch("/interrupt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
-      }).catch(() => add(errCard("interrupt failed")));
+      });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      answer = await resp.json();
+    } catch (e) {
+      if (turn !== turnSeq) return;  // the turn ended meanwhile, or another chat opened
+      add(errCard("could not stop the turn: " + e.message));
+      setStatus("the turn is still running");
       return;
     }
+    if (turn !== turnSeq) return;
+    if (answer.requested === false) { endShownTurn("no turn is running in this chat"); return; }
+    setTimeout(() => checkStopped(turn), STOP_CHECK_MS);
+  }
+
+  // A turn still shown running a while after its Stop was accepted. One the server no longer runs
+  // ended where this page did not hear it, and ends here too; one it still runs is said to be.
+  async function checkStopped(turn) {
+    if (turn !== turnSeq) return;
+    let running = true;
+    try {
+      const resp = await fetch("/sessions/" + sessionId + "/transcript?limit=0");
+      if (resp.ok) running = (await resp.json()).running;
+    } catch (e) { /* the turn stays as shown; another Stop asks again */ }
+    if (turn !== turnSeq) return;
+    if (running) setStatus("still stopping — the server has not ended the turn yet");
+    else endShownTurn("the turn has ended");
+  }
+
+  function endShownTurn(note) {
+    add(row("status", el("span", "", "·"), el("div", "meta", note)));
+    endTurn();
+    refreshChats();
+  }
+
+  sendBtn.onclick = () => {
+    if (turnActive) { stopTurn(); return; }
     sendMessage();
   };
   makeActiveBtn.onclick = () => switchTo(sessionId);
