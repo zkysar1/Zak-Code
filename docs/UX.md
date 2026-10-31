@@ -506,6 +506,13 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   bright short line *is* the turn separator. As in the terminal, the first line ends with the
   grey wall-clock stamp `(HH:MM)` of the frame's `at`, and a message past six lines folds to a
   `… (+N more lines)` button that unfolds it in place (ADR-0119, ADR-0219).
+- **Hook note** — what the workspace's SessionStart hook said. The model reads it as a
+  user-role message (ADR-0211), but no person wrote it, so it is not a user line (ADR-0344):
+  gutter `·`, then 12px mono `--muted`, `SessionStart hook: {first line}`. A longer report is a
+  `<details>` whose summary ends `(+N more lines)` and opens the rest beneath it. It appears in
+  a chat drawn from its saved conversation (a reload, a server restart, a chat opened from the
+  list), where the transcript route marks the message with `hook`; nothing on the watch bus
+  carries the words, so a turn the bus still holds shows none.
 - **Assistant prose** — 8px `--brand` dot per prose group (re-anchors after tool
   cards, mirroring the terminal `_assistant_marked` reset); inline code = mono pill
   on `--inset`; links `--brand` underlined.

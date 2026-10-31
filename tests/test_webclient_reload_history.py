@@ -156,7 +156,8 @@ _CLOCK = re.compile(r"\s+\(\d\d:\d\d\)$")
 def _open_page(
     base: str, tmp_path: Path, want: int, say: str = "", before: int = 0
 ) -> list[tuple[str, str]]:
-    """Open the page against the server; return the user and assistant rows it drew, in order."""
+    """Open the page against the server; return the user and assistant rows it drew, and its
+    notes of what a SessionStart hook said (ADR-0344), in order."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     dom = _PRELUDE.split("const __STREAMS = ")[0]
@@ -176,8 +177,8 @@ def _open_page(
     for row in drawn["rows"]:
         if row["cls"] == "user":
             rows.append(("user", _CLOCK.sub("", row["text"]).removeprefix("›")))
-        elif row["cls"] == "assistant":
-            rows.append(("assistant", row["text"]))
+        elif row["cls"] in ("assistant", "hook"):
+            rows.append((row["cls"], row["text"]))
     return rows
 
 

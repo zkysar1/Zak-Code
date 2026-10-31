@@ -58,7 +58,12 @@ from sse_starlette.sse import EventSourceResponse
 
 from zakcode import __version__
 from zakcode._subprocess import create_group_subprocess_exec, terminate_process_tree
-from zakcode.agent.loop import TurnResult, harness_skill_turn_text, typed_command
+from zakcode.agent.loop import (
+    TurnResult,
+    harness_skill_turn_text,
+    said_by_session_start,
+    typed_command,
+)
 from zakcode.artifacts import (
     ArtifactChangedError,
     ArtifactError,
@@ -1156,7 +1161,9 @@ def create_app(
             text = message.text
             if not text.strip():
                 continue  # a tool-only or empty turn is not a spoken one
+            hook: str | None = None
             if message.role == "user":
+                hook = said_by_session_start(text)  # a note from the workspace (ADR-0344)
                 text = typed_command(text) or text  # as typed, not the skill frame (ADR-0335)
             at: float | None
             try:
@@ -1165,7 +1172,12 @@ def create_app(
             except ValueError:
                 at = None
             spoken.append(
-                TranscriptMessage(role=message.role, text=safe_projection.redact(text), at=at)
+                TranscriptMessage(
+                    role=message.role,
+                    text=safe_projection.redact(text),
+                    at=at,
+                    hook=None if hook is None else safe_projection.redact(hook),
+                )
             )
         if limit is not None and limit >= 0:
             spoken = spoken[-limit:] if limit else []
