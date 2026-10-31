@@ -134,6 +134,23 @@ const document = {
   activeElement: null,
 };
 const navigator = { clipboard: { writeText: async () => {} } };
+// The page's address, its history and its session storage, as much of each as the page uses. A
+// reload is kept in `location.replaced`, never made; a storage set `broken` throws, as a browser's
+// does where the site may keep nothing (ADR-0345).
+const location = {
+  href: "http://page.test/",
+  replaced: [],
+  replace(url) { this.replaced.push(String(url)); },
+};
+const history = { replaceState(state, title, url) { location.href = String(url); } };
+const sessionStorage = {
+  items: new Map(),
+  broken: false,
+  check() { if (this.broken) throw new Error("the site may keep nothing here"); },
+  getItem(key) { this.check(); return this.items.has(key) ? this.items.get(key) : null; },
+  setItem(key, value) { this.check(); this.items.set(key, String(value)); },
+  removeItem(key) { this.check(); this.items.delete(key); },
+};
 
 const __STREAMS = JSON.parse(process.argv[2]);
 // The watch bus that serves each connection, keyed like `__STREAMS` and sent as X-Bus-Epoch. A

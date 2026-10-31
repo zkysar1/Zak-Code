@@ -194,7 +194,11 @@ Four distinct mechanisms, each for a different job:
   (ADR-0325). A bus is not kept for good: `DELETE /sessions/{id}` lets its chat's bus go unless a
   turn is running on it, which ends its watchers' streams; their reconnect answers 404, and the page
   then says the chat is gone and stops asking. Of the idle buses (nobody watching, not the current
-  chat, no turn running), the server keeps the 16 most recently active (ADR-0327).
+  chat, no turn running), the server keeps the 16 most recently active (ADR-0327). Every watch
+  response also names the page the server serves (`X-Page-Digest`, the first 12 hex digits of the
+  page file's sha256, absent in a checkout without the page). The server reads the page once as it
+  starts and serves that copy at `/`, its name written in, so a page whose name is not the
+  server's reloads into the server's page, once, keeping what is typed in the composer (ADR-0345).
 - `POST /run/stop` — the **run contract** (ADR-0047): ask the whole run, not a turn, to end
   gracefully with a reason token; the consumer takes the same ending path a cap-hit takes
   (digest → `run_end_command` → `on_run_end`), so a bound outside the process can end a run

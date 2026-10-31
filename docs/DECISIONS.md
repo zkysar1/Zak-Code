@@ -21353,3 +21353,74 @@ restart test red); the loop's switch doing nothing (the first four red); the ser
 loop's latch (both Stop tests red); the run-ended flag without the words check (only the second
 Stop test red); the server counting every turn (the slash test and both Stop tests red). Each
 turned green again once the fix was back. `uv run poe check` green.
+
+## ADR-0345: an open web page reloads itself into the page the server serves
+
+Status: accepted. 2026-10-31. Builds on ADR-0333 (the web app restarts itself into a newer build)
+and ADR-0289 (an open page learns from the bus's name that its server restarted).
+
+Context. ADR-0333 made a served web app restart itself into a newer build once nothing is in
+flight, and an open page reconnects to the new process. But a page runs the script it was served
+with for as long as it stays open, so a fix to the page itself (ADR-0339's release of a hidden
+tab's watch, for one) reached an open page only when someone reloaded it by hand. Nothing told the
+page that the server's page had changed. `/health` reports the package version, which is the same
+for every build. The build label (`running_build()`) is empty for an install with no commit to
+read, changes with every commit even when the page is untouched, and stays the same over a
+checkout reinstalled with edits. And `/` read the page file from disk on every request, so a server
+that does not follow new builds (a host-managed run, ADR-0333) served the new build's page against
+its own old routes as soon as an update put that page on disk.
+
+Decision.
+1. The server reads its page once, as it starts, and serves that copy at `/`. A later install
+   puts another build's page on disk, and the server goes on serving its own, the page its routes
+   were written for, until it restarts into that build.
+2. The page's name is the first 12 hex digits of the sha256 of the page file. The server writes it
+   into the page it serves, in place of a slot the page holds (`__ZAKCODE_PAGE_DIGEST__`), and sends
+   it with every watch response as `X-Page-Digest`, beside the bus's name. It names the page, not
+   the build: it changes exactly when reloading would give the page another script, for every
+   install shape, and a build that leaves the page alone reloads nobody.
+3. When a watch response names another page, the page reloads into the server's page as soon as
+   the response comes in, before it does anything else with that response. The reload asks for
+   `?page=<the server's name>`. A page that comes back from that reload drops `?page=` from the
+   address. If it is still not that page, because something between the browser and the server
+   answers with a saved copy (the proxy case ADR-0342 records), it says so in a note above the
+   composer and does not reload again. What is typed in the composer goes across in
+   sessionStorage and comes back into the composer. Where the browser lets the page keep nothing,
+   a page with something typed says a newer page is there and stays, and a page with nothing
+   typed reloads.
+4. A page that did not come from the server's `/` (a copy of the file kept somewhere else, or the
+   `/app` mount, which serves the file as it is) still holds the slot. It has no name and never
+   reloads itself. A server that sends no name (an older one) never differs.
+
+What was considered and not done. Polling: the page learns the server's page on every watch
+connection, and the restart that matters ends every watch, so the page looks exactly when the
+answer can have changed. The build label in place of the page's name, for the reasons above.
+Asking `/health`: the page would need a second request, and the watch response already carries
+the answer. Reloading whenever the bus's name changes: a restart on the same build would then
+reload every open page for nothing. Writing the name into the `/app` mount's copy: nothing reads
+that mount but a test. Keeping more than the composer across the reload (where the chat was
+scrolled to, an open card): the reloaded page draws the chat from its saved conversation, as any
+newly opened page does.
+
+The proof. tests/test_webclient_page_reload.py runs the page's own script, as a server serves it
+with its name written in, under node against a real loopback server. A page left open on its server
+stays. When that server stops and a server started on another copy of the page takes its address,
+the page reloads once, asking for that page, with what was typed in sessionStorage. The page that
+reload opens is the new server's: it puts the text back in the composer, drops `?page=` and does not
+reload again. A page that comes back from the reload still old says so and stays. Where nothing can
+be kept, a page with something typed says a newer page is there and stays, and a page with nothing
+typed reloads. A page without a name, and a server that names no page, reload nothing. The server
+serves its page with its name written in, sends the same name with a watch response, and goes on
+serving the page it started with after another lands on disk. Ten sabotages, each run against the
+file: the page ignoring the name the watch sends (the restart test, the saved-copy test and both
+cannot-keep tests red); the page not checking that it came back from its own reload (the saved-copy
+test red: it reloads again); the server reading the page on every request (the started-with test
+red); the watch not sending the name (six tests red); what was typed not saved (the restart test
+red); what was saved not put back (the restart test red); reloading where nothing can be kept and
+something is typed (that cannot-keep test red); `?page=` left in the address (the restart and
+saved-copy tests red); the name never written into the page (the restart, name and started-with
+tests red); a page with no name taken as named (the no-name test red). Each turned green again once
+the code was back. Live, in headless Chrome against `zakcode webapp`: a page with text typed in its
+composer, left open while its server stopped and another started on the same port with the page
+changed on disk, asked once for `/?page=<the new name>`, came back on the new page with the text in
+its composer and `?page=` gone from its address, and stayed. `uv run poe check` green.
