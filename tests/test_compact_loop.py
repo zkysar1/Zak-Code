@@ -1418,7 +1418,7 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert text == _words(300)
 
 
-# ── ADR-0339: a runaway summary stopped at its word limit, an earlier one held ───────
+# ── ADR-0343: a runaway summary stopped at its word limit, an earlier one held ───────
 
 
 def test_a_summary_running_past_its_word_limit_is_stopped_and_asked_for_again(

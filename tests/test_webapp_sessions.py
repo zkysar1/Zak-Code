@@ -25,6 +25,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from zakcode import Agent
+from zakcode.agent.loop import _elide_skill_body
 from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
@@ -188,6 +190,47 @@ def test_a_chat_title_is_its_pinned_ask_on_one_redacted_line_cut_at_a_word(
     assert set(long[:-1].split()) == {"window"}  # cut between words, never inside one
 
 
+@pytest.mark.parametrize("ended", [False, True], ids=["while-it-runs", "once-it-ended"])
+def test_a_skill_turn_reads_as_the_command_typed_in_the_chat_list_and_the_transcript(
+    tmp_path: Path, ended: bool
+) -> None:
+    """A skill turn's user message is the frame it runs under, and the skill's body (or, once
+    the turn is over, the marker that replaced it). The chat list titled such a chat
+    "<command-message>start is running</command-message>…", every /start chat alike, and a chat
+    opened again drew the frame and the marker as what the user said (ADR-0335). The frame here
+    is the one the agent composes, so the two cannot drift apart."""
+    skill = tmp_path / ".claude" / "skills" / "start" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: start\ndescription: Start an agent.\n---\nBind the agent and report.\n",
+        encoding="utf-8",
+    )
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        enable_skills=True,
+    )
+    composed = asyncio.run(agent.compose_skill_turn("start", "demo --mode assistant")).turn_text
+    assert composed is not None
+    asked = (_elide_skill_body(composed) or "") if ended else composed
+    assert asked.startswith("<command-message>")
+    served = _Served(tmp_path)
+    chat = served.saved((asked, "started"), (" <command-name>/start</command-name>", "ok"))
+
+    [listed] = served.get("/sessions/recent").json()
+    spoken = served.get(f"/sessions/{chat.id}/transcript").json()["messages"]
+
+    assert listed["title"] == "/start demo --mode assistant"
+    assert [(m["role"], m["text"]) for m in spoken] == [
+        ("user", "/start demo --mode assistant"),
+        ("assistant", "started"),
+        # Only a frame that opens the message is a command: one inside a message is its text.
+        ("user", " <command-name>/start</command-name>"),
+        ("assistant", "ok"),
+    ]
+
+
 def test_the_chat_list_stops_at_its_limit(tmp_path: Path) -> None:
     served = _Served(tmp_path)
     made = [served.saved((f"ask {n}", "ok"), mtime=_T0 + n) for n in range(5)]
@@ -289,7 +332,10 @@ def test_no_chat_opens_while_a_message_is_queued_for_the_current_one(
     resp = served.put_current({"session_id": other.id})
 
     assert resp.status_code == 409
-    assert "queued" in resp.json()["detail"]
+    # The queued message runs in the active chat, which is not the chat the page asks from.
+    assert resp.json()["detail"] == (
+        "a message is queued for the active chat; let it run, then switch"
+    )
     assert served.marker() == current.id
     if queued == "say":
         assert say_pending(say_path(tmp_path)) is True

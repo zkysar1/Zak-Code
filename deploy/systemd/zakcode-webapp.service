@@ -12,7 +12,8 @@
 #      systemctl daemon-reload && systemctl enable --now zakcode-webapp
 #   5. curl -s http://127.0.0.1:8000/health
 #
-# Update:  sudo -u zakcode zakcode update && systemctl restart zakcode-webapp
+# Update:  sudo -u zakcode zakcode update   (the server restarts itself into it once idle)
+#          systemctl restart zakcode-webapp only after changing /etc/zakcode/.env or this unit
 # Logs:    journalctl -u zakcode-webapp -f
 # Lint:    systemd-analyze verify /etc/systemd/system/zakcode-webapp.service
 #
@@ -42,7 +43,9 @@ Environment=PATH=/home/zakcode/.local/bin:/usr/local/bin:/usr/bin:/bin
 # box-specific: --host 127.0.0.1 keeps it loopback-only. To reach it from elsewhere put a
 # reverse proxy in front, or set ZAKCODE_AUTH_TOKEN in the env file and bind 0.0.0.0 — the
 # server refuses a non-loopback bind without a token unless you pass --insecure.
-ExecStart=/usr/bin/env zakcode webapp --host 127.0.0.1 --port 8000 --workspace /srv/zakcode/workspace
+# --no-new-session: a restart (Restart=always) keeps the chat the pages are on, where a plain
+# launch opens a new one and every page left open follows it there.
+ExecStart=/usr/bin/env zakcode webapp --host 127.0.0.1 --port 8000 --workspace /srv/zakcode/workspace --no-new-session
 Restart=always
 RestartSec=3
 TimeoutStopSec=30

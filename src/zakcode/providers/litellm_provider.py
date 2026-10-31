@@ -73,6 +73,7 @@ from zakcode.providers.base import (
     temperature_field_unsupported,
     tool_use_unsupported,
 )
+from zakcode.providers.beta_headers import allow_provider_betas
 from zakcode.providers.endpoints import (
     GENERIC_OPENAI_PROVIDERS,
     LocalOnlyViolation,
@@ -321,6 +322,32 @@ def _page_text(message: str) -> str:
     return f"{message[: found.start()].rstrip()} {text}".strip()
 
 
+def _failed_import(exc: BaseException) -> ImportError | None:
+    """The failed import a provider error stands for (ADR-0338): the error itself, or the one it
+    was raised over, else ``None``.
+
+    litellm raises its own APIConnectionError while handling an import its call path needed. Only
+    the direct cause or context is read, so an import that failed further back in a real outage's
+    chain does not make the outage a broken install, and a message that merely names a module
+    (a server's own error) is not an import that failed here.
+    """
+    for candidate in (exc, exc.__cause__, exc.__context__):
+        if isinstance(candidate, ImportError):
+            return candidate
+    return None
+
+
+def _names_google(failed: ImportError) -> bool:
+    """Whether a failed import is Google's auth/SDK stack (ADR-0340): the import itself, or the
+    one it was raised over. A Vertex call without the stack raises ``No module named 'google'``,
+    and litellm raises its own ``ImportError`` over it, "Google Cloud SDK not found", which names
+    no module."""
+    for err in (failed, failed.__cause__, failed.__context__):
+        if isinstance(err, ImportError) and (err.name or "").split(".")[0] == "google":
+            return True
+    return False
+
+
 def _is_ollama_model(model: str) -> bool:
     return model.startswith("ollama/") or model.startswith("ollama_chat/")
 
@@ -419,6 +446,27 @@ def _is_anthropic_adaptive_thinking_model(model: str) -> bool:
 #: The beta that lets a request set ``thinking.block_binding`` (preserved thinking): without
 #: it the field is a 400, "block_binding: Extra inputs are not permitted".
 _THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+# litellm drops, without a word, an ``anthropic-beta`` value its allowlist does not name, and a
+# process that cannot fetch the remote allowlist reads the copy bundled in the installed release,
+# which predates this beta. The request would then carry ``thinking.block_binding`` and not the
+# beta that permits it, and Anthropic would answer 400 "thinking.adaptive.block_binding: Extra
+# inputs are not permitted" -- measured on a served deployment whose fetch of the list was
+# answered 403, where every session failed over to its fallback model on its first call
+# (ADR-0341). Name the beta in whatever list litellm loads, here and on a reload. A litellm
+# release with no such module has no list to name it in, and the import is skipped.
+try:
+    from litellm import anthropic_beta_headers_manager
+except ImportError:
+    pass
+else:
+    if not allow_provider_betas(
+        anthropic_beta_headers_manager, "anthropic", [_THINKING_BINDING_BETA]
+    ):
+        logger.warning(
+            "could not name %s in litellm's anthropic beta list: a process that cannot fetch "
+            "the list will drop it, and Claude 5 requests will be refused (ADR-0341)",
+            _THINKING_BINDING_BETA,
+        )
 
 
 def _is_openai_gpt56_tools_effort_none_model(model: str) -> bool:
@@ -1750,16 +1798,32 @@ class LiteLLMProvider(Provider):
         # (``&quot;api_key&quot;: ...``) is only an assignment after the unescape (ADR-0312).
         message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
-        if isinstance(exc, ModuleNotFoundError) and (exc.name or "").split(".")[0] == "google":
+        failed_import = _failed_import(exc)
+        if failed_import is not None and _names_google(failed_import):
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
             # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
             # non-Vertex users never need), so the failure must name the remedy — a raw
             # "No module named 'google'" from deep inside litellm names nothing. Checked
-            # before the taxonomy matches: litellm lets the ImportError propagate unwrapped.
+            # before the taxonomy matches: litellm lets the ImportError propagate, or raises
+            # its own connection error over it (ADR-0338). The remedy is the update's: zakcode
+            # is not on PyPI, so an install command naming `zakcode[google]` alone finds
+            # nothing, and the update reinstalls from wherever this install came (ADR-0340).
             return RequestFailed(
-                "Vertex AI needs Google's auth/SDK libraries, which are an optional "
-                "extra. Install with: uv tool install 'zakcode[google]' "
-                "(or: uv add 'zakcode[google]' / pip install 'zakcode[google]'), then retry."
+                "Vertex AI needs Google's auth/SDK libraries, which come with zakcode's optional "
+                "google extra, and this install lacks them. Add the extra with: zakcode update "
+                "--extra google (or install zakcode with the [google] extra the way it was "
+                "installed), then retry."
+            )
+        if failed_import is not None:
+            # ADR-0338: an import failed in this process, so the call never reached the
+            # provider. litellm raises its own APIConnectionError over the failed import, and
+            # mapped by that class it was "provider unavailable", retried for fifteen minutes.
+            what = " ".join(redact_secrets(str(failed_import))[0].split())
+            return RequestFailed(
+                f"the model call stopped before it reached the provider: an import failed in "
+                f"this process ({what}). The Python environment zakcode runs in lacks that "
+                "package, or has a version this litellm cannot use: install or upgrade it there, "
+                "then retry."
             )
         if quota_exhaustion_marker(message) is not None:
             # A PERMANENT quota/credit refusal — checked BEFORE every type branch
@@ -2738,7 +2802,12 @@ class LiteLLMProvider(Provider):
             while True:
                 bound = first_bound if seen == 0 else self.stream_stall_timeout
                 try:
-                    chunk = await asyncio.wait_for(iterator.__anext__(), bound)
+                    # asyncio.timeout, not asyncio.wait_for: on Python 3.11 wait_for hands back a
+                    # chunk that is ready when its task is cancelled and DROPS the cancellation,
+                    # and in a fast stream the next chunk nearly always is. A Stop pressed in the
+                    # middle of an answer was lost that way, and the answer ran on to its end.
+                    async with asyncio.timeout(bound):
+                        chunk = await iterator.__anext__()
                 except StopAsyncIteration:
                     return
                 except TimeoutError as exc:

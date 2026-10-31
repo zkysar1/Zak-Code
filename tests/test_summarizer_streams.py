@@ -188,7 +188,7 @@ class _CountedStream:
 
 
 def test_collect_stream_stops_a_text_past_its_word_limit_and_closes_it() -> None:
-    # ADR-0339: a runaway summary costs the words it was allowed, not the whole output cap.
+    # ADR-0343: a runaway summary costs the words it was allowed, not the whole output cap.
     # Thinking is not counted, and a word split across deltas counts once.
     stream = _CountedStream(
         StreamThinkingDelta(text="a great many words of thinking that are never counted"),

@@ -57,7 +57,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from zakcode import __version__
 from zakcode._subprocess import create_group_subprocess_exec, terminate_process_tree
-from zakcode.agent.loop import TurnResult, harness_skill_turn_text
+from zakcode.agent.loop import TurnResult, harness_skill_turn_text, typed_command
 from zakcode.artifacts import (
     ArtifactChangedError,
     ArtifactError,
@@ -66,6 +66,7 @@ from zakcode.artifacts import (
     resolve_artifact_path,
 )
 from zakcode.background import BackgroundTasks
+from zakcode.build_info import install_changed
 from zakcode.config import Settings, load_settings
 from zakcode.events import AgentEvent
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
@@ -181,6 +182,22 @@ _STOP_QUIET_SECONDS = 60.0
 #: and the end command behind it can spend it, and a digest that outruns it is cut with the
 #: steps that follow it.
 _HARD_STOP_WAIT_SECONDS = 45.0
+
+#: How often a served web app looks for a newer build under it (ADR-0333). `zakcode update`
+#: replaces the install a running server loaded, and the server restarts into it once nothing is
+#: in flight. A look reads the install's metadata (and runs `git rev-parse` for a checkout
+#: install), the terminal REPL's idle look, so an update is taken within this many seconds of the
+#: last turn ending.
+_NEW_BUILD_POLL_SECONDS = 5.0
+
+#: How often the say consumer and a waiting restart look at each other (ADR-0333).
+_RESTART_HOLD_SECONDS = 0.25
+
+#: How much of a failed turn's exception the page shows (ADR-0334). The server log keeps the whole
+#: trace. A refusal naming one model with no known context window runs 575 to 645 characters with
+#: its remedy, so this holds it whole and still keeps an exception that quotes a whole response
+#: from flooding the chat.
+_TURN_FAILURE_DETAIL_CHARS = 1000
 
 #: How long a permission prompt waits for an operator's answer before failing
 #: closed (deny-once). Bounds an unattended ask-mode deployment from hanging a turn.
@@ -714,17 +731,56 @@ def _chat_title(session: Session, redact: Callable[[str], str]) -> str:
     at a word (ADR-0319). Empty when nothing was asked in it.
 
     The first ask is the pinned ``task`` (ADR-0233), which a compaction does not move, else
-    its first user message with text. It is redacted before its lines are joined, so a
+    its first user message with text. A skill turn's ask is the command it was typed as, not
+    the frame it runs under (ADR-0335). It is redacted before its lines are joined, so a
     credential written over several lines is still one to the redactor.
     """
     text = session.task or next(
         (m.text for m in session.messages if m.role == "user" and m.text.strip()), ""
     )
+    text = typed_command(text) or text
     line = " ".join(redact(text).split())
     if len(line) <= _CHAT_TITLE_CHARS:
         return line
     head = line[: _CHAT_TITLE_CHARS + 1]
     return (head.rsplit(" ", 1)[0] if " " in head else head[:_CHAT_TITLE_CHARS]) + "…"
+
+
+def _turn_failure_error(exc: BaseException, redact: Callable[[str], str]) -> str:
+    """The done frame's ``error`` for a turn that raised past the agent loop's own failure
+    handling (ADR-0334): what was raised, on one line, redacted, cut at
+    :data:`_TURN_FAILURE_DETAIL_CHARS`.
+
+    The page shows an error's first line only, so the message is joined into one, and it is
+    redacted before it is joined, as a chat title is. It names what was raised and nothing more:
+    a cause read off the exception's type would be a guess. The frame it rides is what ends the
+    turn on every watcher, so a message that cannot be read or redacted falls back to the plain
+    words rather than costing the frame.
+    """
+    try:
+        line = " ".join(redact(f"{type(exc).__name__}: {exc}").split())
+    except Exception:  # noqa: BLE001 — the done frame must go out whatever the exception holds
+        return "turn failed before completing — see server log"
+    if len(line) > _TURN_FAILURE_DETAIL_CHARS:
+        line = line[: _TURN_FAILURE_DETAIL_CHARS - 1] + "…"
+    return f"turn failed before completing: {line} (full trace in the server log)"
+
+
+@dataclass(frozen=True)
+class NewBuild:
+    """A newer zakcode build installed under a running server: what ``on_new_build`` is handed
+    (ADR-0333).
+
+    ``running`` and ``installed`` are the two builds' labels (``""`` when unknown).
+    ``continuation`` is the line the last turn set aside for the restarted process when the loop
+    ended it at a restart boundary, and ``boundary`` says which one (``"skill"``, ADR-0101, or
+    ``"stop-hook"``, ADR-0099); both are ``None`` otherwise.
+    """
+
+    running: str
+    installed: str
+    continuation: str | None = None
+    boundary: str | None = None
 
 
 def create_app(
@@ -736,6 +792,8 @@ def create_app(
     tool_registry: ToolRegistry | None = None,
     on_run_end: Callable[[str], Awaitable[None]] | None = None,
     new_session: bool = False,
+    on_new_build: Callable[[NewBuild], Awaitable[None]] | None = None,
+    resume_turn: str | None = None,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
@@ -754,6 +812,14 @@ def create_app(
     ``new_session`` opens the run on a new conversation, as the web page's New chat does
     (``zakcode webapp --new-session``, ADR-0319). Without it the run continues the
     workspace's current conversation, which is what a restart must do.
+
+    ``on_new_build`` is awaited once, with a :class:`NewBuild`, when a newer zakcode build is
+    installed under the running server and nothing is in flight (ADR-0333): ``zakcode webapp``
+    uses it to restart into that build. It never fires on a run a host manages (any ``run_*``
+    ending configured), whose build and clocks are the host's. Omitted, the server keeps the
+    build it started with. ``resume_turn`` is the line the process this one replaced set aside
+    (the skill call its last turn did not make, or a Stop hook's continuation); it runs before
+    anything else.
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
@@ -818,6 +884,11 @@ def create_app(
     # naming the session sets it (ADR-0327). The say consumer's turns watch the workspace's
     # `.interrupt` file instead, as they always have.
     turn_stops: dict[str, asyncio.Event] = {}
+    # The chats whose SessionStart hooks this server has run (ADR-0342). Every turn runs on an
+    # agent of its own, and an agent's loop fires SessionStart before its first turn, so every
+    # message counted as "a saved session is being resumed": the workspace's start-up hooks ran
+    # again and what they said was added to the chat again. A chat's first turn here still fires.
+    started_chats: set[str] = set()
 
     # Held while a say is checked against the current conversation and queued, and while the
     # current conversation changes (ADR-0319). A say then lands either before the change, which
@@ -1065,6 +1136,8 @@ def create_app(
             text = message.text
             if not text.strip():
                 continue  # a tool-only or empty turn is not a spoken one
+            if message.role == "user":
+                text = typed_command(text) or text  # as typed, not the skill frame (ADR-0335)
             at: float | None
             try:
                 created = datetime.fromisoformat(message.created_at)
@@ -1212,6 +1285,27 @@ def create_app(
         turn_stops.pop(session_id, None)
         inflight.discard(session_id)
 
+    def _turn_agent(
+        session: Session, model: str | None, prompter: PermissionPrompter | None
+    ) -> AgentLike:
+        """The agent one turn runs on, told to skip SessionStart when its chat has already started
+        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks."""
+        agent = resolved_factory(session, model, prompter)
+        skip = getattr(getattr(agent, "loop", None), "skip_session_start", None)
+        if skip is not None and session.id in started_chats:
+            skip()
+        return agent
+
+    async def _release_turn_agent(agent: AgentLike | None, session_id: str) -> None:
+        """Release a turn's agent, and count its chat as started once its loop's SessionStart
+        hooks have run to their end and what they said is in the chat (ADR-0342). A turn that
+        ended before then (a refused slash command, a Stop while the hooks ran or before their
+        words were added) leaves the next one to run them. Counted before the release's await,
+        which a client's disconnect can cancel."""
+        if getattr(getattr(agent, "loop", None), "session_started", False) is True:
+            started_chats.add(session_id)
+        await _release_agent(agent)
+
     def _inbox_prompter(session_id: str) -> SayInboxPrompter:
         # Every server-run turn can have its escalations answered through the ONE
         # contract (the workspace say inbox) — previously these turns had no
@@ -1245,7 +1339,7 @@ def create_app(
                 event_bus_registry.get_or_create(session.id).publish(event)
 
         try:
-            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
             tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
@@ -1278,7 +1372,7 @@ def create_app(
                 )
             try:
                 result = turn.result()
-            except Exception:
+            except Exception as exc:
                 # The page has the turn's line; without a `done` it would show it thinking
                 # until its next reconnect (the say consumer's rule, fresh-eyes F-3).
                 tee(
@@ -1287,7 +1381,7 @@ def create_app(
                         iterations=0,
                         usage=Usage(),
                         degraded=True,
-                        error="turn failed before completing — see server log",
+                        error=_turn_failure_error(exc, safe_projection.redact),
                     )
                 )
                 raise
@@ -1327,7 +1421,7 @@ def create_app(
             resolved_store.save(agent.session)
             return ChatResponse.from_turn(agent.session.id, result)
         finally:
-            await _release_agent(agent)
+            await _release_turn_agent(agent, session.id)
             _release_session(session.id)
 
     @app.post("/chat/stream")
@@ -1340,7 +1434,7 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = resolved_factory(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
         except BaseException:
             _release_session(session.id)
             raise
@@ -1424,7 +1518,7 @@ def create_app(
                 try:
                     resolved_store.save(agent.session)
                 finally:
-                    await _release_agent(agent)  # stop the egress proxy (no-op when off)
+                    await _release_turn_agent(agent, session.id)  # the egress proxy stops too
                     _release_session(session.id)
 
         return EventSourceResponse(event_source())
@@ -1498,10 +1592,11 @@ def create_app(
         next turn start clears it (a stale signal never kills a future turn).
 
         Naming a chat (``session_id``, as the page names the chat it shows) stops that chat's
-        turn, whoever runs it: a ``POST /chat`` or ``POST /chat/stream`` turn through its own
-        Stop, which nothing else reads, and a say turn through the file. A chat with no turn
-        running asks nothing and answers ``requested: false``. async, so a turn's Stop is set
-        on the event loop the turn waits on (ADR-0327).
+        turn, whoever runs it — a ``POST /chat`` or ``POST /chat/stream`` turn and a say turn
+        alike — through the turn's own Stop, which nothing else reads (ADR-0327, ADR-0336): a
+        say turn was stopped through the file, which any process serving the workspace could
+        take first. A chat with no turn running asks nothing and answers ``requested: false``.
+        async, so a turn's Stop is set on the event loop the turn waits on.
         """
         target = request.session_id if request is not None else None
         if target is not None:
@@ -1669,7 +1764,11 @@ def create_app(
         queued for the conversation on screen."""
         workspace = resolved_settings.workspace_root
         if inflight:
-            return "a turn is running in this chat; stop it or let it finish, then switch"
+            # The chat the turn runs in, not "this chat": the page asks from whichever chat it
+            # shows, and the one it shows is often not the one running the turn. A say turn runs
+            # in the active chat; a turn driven through POST /chat can run in any other.
+            where = "the active chat" if _current_session_id() in inflight else "another chat"
+            return f"a turn is running in {where}; stop it or let it finish, then switch"
         if busy_elsewhere(busy_path(workspace)):
             # Another process's turn (a terminal on the workspace, say): not this chat's, so the
             # page's Stop is not the way to end it (ADR-0320).
@@ -1677,7 +1776,8 @@ def create_app(
                 "a turn is running in another session on this workspace; let it finish, then switch"
             )
         if say_pending(say_path(workspace)) or _nudge_pending():
-            return "a message is queued for this chat; let it run, then switch"
+            # A queued message runs in the active chat, whichever chat the asking page shows.
+            return "a message is queued for the active chat; let it run, then switch"
         return None
 
     def _new_chat() -> Session:
@@ -2586,7 +2686,9 @@ def create_app(
 
         @app.get("/")
         def index() -> FileResponse:
-            return FileResponse(static_dir / "index.html")
+            # no-cache: the browser asks again on every load, so a page it cached before an
+            # upgrade is never what an upgraded server shows.
+            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-cache"})
 
         app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
 
@@ -2637,8 +2739,28 @@ def create_app(
     # so mypy can resolve the nonlocal binding.
     last_turn_stop_reason: str | None = None
 
+    #: Whether this server restarts into a newer build installed under it (ADR-0333). Never on a
+    #: run a host manages (any ending configured): its build and its clocks are the host's.
+    follows_new_builds = on_new_build is not None and not (
+        resolved_settings.run_max_duration is not None
+        or resolved_settings.run_idle_timeout is not None
+        or resolved_settings.run_consolidation_message
+        or resolved_settings.run_end_command
+        or resolved_settings.run_stop_agent
+        or resolved_settings.run_stop_message
+    )
+    #: Set once this server is to restart into a newer build: the say consumer then starts no
+    #: turn on the build being left, and says so through `restart_held`.
+    restart_pending = asyncio.Event()
+    restart_held = asyncio.Event()
+    #: ``(continuation, boundary)`` the last turn set aside for the restarted process when the
+    #: loop ended it at a restart boundary (ADR-0099, ADR-0101); handed on in the NewBuild.
+    restart_carry: tuple[str, str] | None = None
+    #: The line the process this one replaced set aside; the consumer runs it before any say.
+    pending_resume = resume_turn
+
     async def _run_turn_for_say(text: str, *, wakeup: bool = False, verbatim: bool = False) -> None:
-        nonlocal last_turn_stop_reason
+        nonlocal last_turn_stop_reason, restart_carry
         sid = _current_session_id()
         session: Session | None = None
         if sid is not None:
@@ -2662,11 +2784,15 @@ def create_app(
                 WatchMarkerRequest(event="user_message", text=fired_line(text) if wakeup else text)
             )
         inflight.add(session.id)
+        # The turn's own Stop, which `POST /interrupt` naming this chat sets, as it sets a
+        # `POST /chat` turn's (ADR-0336). The `.interrupt` file stays the workspace's unaddressed
+        # signal, the one `zakcode interrupt` and a cockpit's Esc write.
+        stop = turn_stops[session.id] = asyncio.Event()
         agent: AgentLike | None = None
         interrupt_fp = interrupt_path(resolved_settings.workspace_root)
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
-            agent = resolved_factory(session, None, _inbox_prompter(session.id))
+            agent = _turn_agent(session, None, _inbox_prompter(session.id))
             message: str
             if wakeup:
                 # A fired wake-up is the harness's own turn (ADR-0189): never a slash
@@ -2693,8 +2819,10 @@ def create_app(
                 # turn. Prose turns fold the nudge exactly as before.
                 message = slash.turn_text if slash.turn_text is not None else _take_nudge() + text
 
+            finished = False  # the turn's own done frame is on the bus
+
             async def _run() -> None:
-                nonlocal last_turn_stop_reason
+                nonlocal last_turn_stop_reason, finished
                 from zakcode.events import AgentDone as _AgentDone
 
                 assert agent is not None
@@ -2704,12 +2832,12 @@ def create_app(
                     # Capture the turn's stop_reason for the DONE check.
                     if isinstance(event, _AgentDone):
                         last_turn_stop_reason = event.stop_reason
+                        finished = True
 
             async def _watch_interrupt() -> None:
-                while True:
-                    await asyncio.sleep(0.3)
-                    if take_interrupt(interrupt_fp):
-                        return
+                while not stop.is_set() and not take_interrupt(interrupt_fp):
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(stop.wait(), 0.3)
 
             turn = asyncio.create_task(_run())
             watcher = asyncio.create_task(_watch_interrupt())
@@ -2721,11 +2849,15 @@ def create_app(
                     turn.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await turn
-                    last_turn_stop_reason = "interrupted"
-                    from zakcode.events import AgentStatus
+                    # A Stop that lands after the turn's done frame (as the turn saves) stops
+                    # nothing: the done frame already ended it, and an "interrupted" after it was
+                    # drawn on the page as a second end, a footer of nothing.
+                    if not finished:
+                        last_turn_stop_reason = "interrupted"
+                        from zakcode.events import AgentStatus
 
-                    with contextlib.suppress(Exception):
-                        bus.publish(AgentStatus(message="interrupted"))
+                        with contextlib.suppress(Exception):
+                            bus.publish(AgentStatus(message="interrupted"))
                 elif turn in done:
                     turn.result()  # surface a turn exception to the except below
             finally:
@@ -2734,7 +2866,7 @@ def create_app(
                         t.cancel()
                         with contextlib.suppress(asyncio.CancelledError):
                             await t
-        except Exception:  # noqa: BLE001 — the consumer loop must survive a failed turn
+        except Exception as exc:  # noqa: BLE001 — the consumer loop must survive a failed turn
             logger.exception("say consumer: turn failed for session %s", session.id)
             # A user_message was already published; without a terminal frame every
             # watcher sticks on "thinking…" until its next reconnect (fresh-eyes F-3).
@@ -2748,16 +2880,28 @@ def create_app(
                         iterations=0,
                         usage=Usage(),
                         degraded=True,
-                        error="turn failed before completing — see server log",
+                        error=_turn_failure_error(exc, safe_projection.redact),
                     )
                 )
         finally:
+            # First, before anything awaited: the turn is over, and a Stop has nothing to reach.
+            if turn_stops.get(session.id) is stop:
+                del turn_stops[session.id]
             try:
                 if agent is not None:
                     resolved_store.save(agent.session)
             finally:
                 if agent is not None:
-                    await _release_agent(agent)
+                    # ADR-0333: the loop ended this turn for a restart into a newer build
+                    # (ADR-0099, ADR-0101) and set a line aside for the restarted process. It
+                    # is kept for the restart, and no other turn runs on the build being left.
+                    turn_loop = getattr(agent, "loop", None)
+                    carried = getattr(turn_loop, "restart_continuation", None)
+                    if carried and follows_new_builds:
+                        boundary = getattr(turn_loop, "restart_boundary", None) or "stop-hook"
+                        restart_carry = (str(carried), str(boundary))
+                        restart_pending.set()
+                    await _release_turn_agent(agent, session.id)
                 inflight.discard(session.id)
                 # Host-neutral ending: check SEEN and DONE after every turn.
                 if run_ending_until is not None:
@@ -2880,8 +3024,16 @@ def create_app(
         real say — so the nudge never becomes the turn's message, and never becomes the
         ``user_message`` watch marker viewers see.
         """
+        nonlocal pending_resume
         if inflight or busy_elsewhere(busy_path(resolved_settings.workspace_root)):
             return False
+        if pending_resume is not None:
+            # ADR-0333: what the process this one replaced set aside when the loop ended its
+            # last turn for the restart — the skill call it did not make, or a Stop hook's
+            # continuation. It runs first, as the terminal REPL runs it after its own restart.
+            line, pending_resume = pending_resume, None
+            await _run_turn_for_say(line, verbatim=True)
+            return True
         text = read_say(say_path(resolved_settings.workspace_root))
         if text is None:
             if _nudge_pending():
@@ -3575,6 +3727,12 @@ def create_app(
         app.state.deadline_watcher = deadline_watcher
         try:
             while _keep_beating():
+                if restart_pending.is_set():
+                    # ADR-0333: a restart into a newer build waits for this consumer; no turn
+                    # starts on the build being left.
+                    restart_held.set()
+                    await asyncio.sleep(_RESTART_HOLD_SECONDS)
+                    continue
                 # Read the CLOCK, never a remembered timestamp, and read it on this
                 # process's own monotonic base so a wall-clock adjustment mid-run can
                 # neither shorten nor extend a paid run.
@@ -3733,10 +3891,43 @@ def create_app(
         consumer_tasks.append(asyncio.create_task(_serve_say_inbox(lease)))
 
     async def _serve_say_inbox(lease: BusyLease) -> None:
+        # ADR-0333: the build follower lives exactly as long as the consumer it waits on.
+        follower = (
+            asyncio.create_task(_follow_new_build(on_new_build))
+            if follows_new_builds and on_new_build is not None
+            else None
+        )
         try:
             await _consume_say_loop()
         finally:
+            if follower is not None:
+                follower.cancel()
             await lease.release()
+
+    async def _follow_new_build(restart: Callable[[NewBuild], Awaitable[None]]) -> None:
+        """Hand the server to a newer build once one is installed and nothing is in flight
+        (ADR-0333).
+
+        A look runs off the event loop: for a checkout install it runs git. Once a newer build
+        is there the say consumer is held, so no turn starts on the build being left, and the
+        restart waits until the consumer has acknowledged and no turn is running, since a POST
+        /chat can start one at any moment. A restart never cuts a turn short.
+        """
+        changed: tuple[str, str] | None = None
+        while changed is None:
+            await asyncio.sleep(_NEW_BUILD_POLL_SECONDS)
+            changed = await asyncio.to_thread(install_changed)
+        restart_pending.set()
+        while not restart_held.is_set() or inflight:
+            await asyncio.sleep(_RESTART_HOLD_SECONDS)
+        running, installed = changed
+        continuation, boundary = restart_carry or (None, None)
+        logger.info(
+            "a newer build is installed (%s -> %s): restarting into it",
+            running or "unknown",
+            installed or "unknown",
+        )
+        await restart(NewBuild(running, installed, continuation, boundary))
 
     def _graceful_stop_budget() -> float:
         """Seconds a graceful stop may take, or 0 when there is nothing to wind down.

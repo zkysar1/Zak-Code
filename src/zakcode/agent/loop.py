@@ -317,6 +317,24 @@ _RETRY_AFTER_CEILING = 120.0
 _RATE_LIMIT_RETRY_HORIZON = 900.0
 _MAX_INTERRUPT_RETRIES = 3
 
+#: How much of the provider's own answer a pure rate-limit or outage notice carries: its first
+#: line, cut here (ADR-0337). The notice is a line on the page, not the error's whole text.
+_RETRY_CAUSE_CHARS = 200
+
+
+def _retry_cause(exc: BaseException) -> str:
+    """What the provider answered, for a pure rate-limit or outage notice (ADR-0337): the
+    error's first non-blank line, whitespace joined, cut at :data:`_RETRY_CAUSE_CHARS`.
+
+    "provider unavailable" names a class, and litellm files a refused connection, a 5xx and
+    an exception it does not recognise under that one class. Measured 2026-10-29 on a served
+    workspace: notice after notice, and nothing on the page or in the log said which.
+    """
+    first = next((line for line in str(exc).splitlines() if line.strip()), "")
+    line = " ".join(first.split())
+    return line if len(line) <= _RETRY_CAUSE_CHARS else line[: _RETRY_CAUSE_CHARS - 1] + "…"
+
+
 #: A :class:`ContentFiltered` answer is sampled again ONCE, at the configured temperature
 #: (ADR-0290), not :data:`_MAX_INTERRUPT_RETRIES` times at a raised one. litellm files a
 #: model's own safety refusal under the same finish reason, and a refusal repeats: three more
@@ -447,7 +465,7 @@ _CONDENSE_CLOSE = (
     "decisions, file paths and unfinished work."
 )
 #: How many times its word budget a summarizer response may write before its stream is stopped
-#: (ADR-0339). Measured 2026-10-29/30 on ten worker sessions of the pod's 27B model, 24 hours:
+#: (ADR-0343). Measured 2026-10-29/30 on ten worker sessions of the pod's 27B model, 24 hours:
 #: 60 summarizer calls ran to the 32,768-token output cap, about 21 minutes each, and each was
 #: thrown away (ADR-0275); of the 183 summaries installed, one ran past four times its budget
 #: of 3,100 words. The engines cap reasoning, so a call at the cap is summary text (ADR-0330).
@@ -499,7 +517,7 @@ def _earlier_summary_body(text: str) -> str:
 
 
 def _held_to_words(text: str, limit: int) -> str:
-    """An earlier summary held for the next summarizer (ADR-0339): whole up to ``limit`` words,
+    """An earlier summary held for the next summarizer (ADR-0343): whole up to ``limit`` words,
     past that its first two thirds and its end, with a line saying how many words were left
     out. Its end is the unfinished work, so it is kept. Measured 2026-10-29/30: a compaction
     that read an earlier summary over its budget's slack ran the next summary to the output cap
@@ -606,7 +624,7 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
     The summary is what the response puts inside its ``<summary>`` tags, else the whole
     response, with thinking and tool-call markup stripped. It is not a summary when the output
     limit cut it off (``finish_reason``, ADR-0275), when its stream was stopped at its word
-    limit (ADR-0339), when it is empty, when it opens as a turn of the transcript it was handed,
+    limit (ADR-0343), when it is empty, when it opens as a turn of the transcript it was handed,
     or when it is shorter than :data:`_SUMMARY_FLOOR_CHARS` for a request of
     :data:`_SUMMARY_FLOOR_SOURCE` characters or more. ``source_chars`` is the length of that
     request.
@@ -660,7 +678,7 @@ async def _collect_stream(
     cut short releases its socket before the retry opens another (ADR-0251).
 
     With ``max_words``, the stream is stopped once its text holds more words than that, and the
-    finish reason is :data:`_WORD_LIMIT_FINISH` (ADR-0339): closing it ends the generation, so
+    finish reason is :data:`_WORD_LIMIT_FINISH` (ADR-0343): closing it ends the generation, so
     a runaway costs the words it was allowed instead of the whole output cap. Thinking is not
     counted. A stopped stream sends no usage event, so its usage is whatever came before.
     """
@@ -1748,6 +1766,27 @@ def _composed_skill_name(user_text: str) -> str | None:
     """The skill a typed ``/<skill>`` turn is running (from its leading frame), else ``None``."""
     match = _COMMAND_FRAME_RE.match(user_text)
     return match.group(1) if match else None
+
+
+#: The leading frame's command and, when trailing text was given, its arguments (which may span
+#: lines, as in :data:`_COMMAND_FRAME_FULL_RE`).
+_COMMAND_TYPED_RE = re.compile(
+    r"\A<command-message>[^\n]*</command-message>\n<command-name>(/[^<\s]+)</command-name>"
+    r"(?:\n<command-args>(.*?)</command-args>)?",
+    re.DOTALL,
+)
+
+
+def typed_command(user_text: str) -> str | None:
+    """The slash command a composed skill turn was typed as (``/start demo --mode assistant``),
+    read off its leading frame, else ``None``. A reader is shown this in place of the frame and
+    the skill body behind it, or the marker that replaced the body once the turn ended (ADR-0335).
+    """
+    match = _COMMAND_TYPED_RE.match(user_text)
+    if match is None:
+        return None
+    args = (match.group(2) or "").strip()
+    return f"{match.group(1)} {args}" if args else match.group(1)
 
 
 #: The whole command-expansion frame of a composed skill turn, INCLUDING the blank line that
@@ -2908,6 +2947,10 @@ class AgentLoop:
         #: that message is in place.
         self._session_start_said: list[str] = []
         self._session_start_source = "startup"
+        #: ADR-0342: set once SessionStart has run to its end, or is never to run. The latch
+        #: above is set BEFORE the hooks run, so it cannot tell a finished run from one that a
+        #: Stop cut short.
+        self._session_start_done = not fire_session_start
         # 0 = unlimited (the only product behavior — minds run for days). A positive cap
         # is an SDK/test affordance passed by a CALLER (evals, tests, embedders), never
         # read from operator config: ZAKCODE_MAX_ITERATIONS was removed 2026-08-25.
@@ -3119,7 +3162,7 @@ class AgentLoop:
         compaction's summary arrives under ``[earlier summary]``, without the lines the harness
         writes fresh at every compaction (ADR-0330), as history the close says to condense;
         with ``earlier_words``, held to that many words, its first two thirds and its end
-        (ADR-0339).
+        (ADR-0343).
         """
         parts: list[str] = []
         for message in messages:
@@ -3183,7 +3226,7 @@ class AgentLoop:
         # model continues the conversation instead of summarizing it — measured
         # 2026-08-29 (a 27B coordinating session, 131k window): the "summary" was its
         # own last reply plus a text-format tool call, and the session re-ran a skill it
-        # had finished. ADR-0339: an earlier summary arrives held to the budget's slack.
+        # had finished. ADR-0343: an earlier summary arrives held to the budget's slack.
         rendered = self._render_for_summary(
             messages, earlier_words=round(words * _SUMMARY_OVER_BUDGET)
         )
@@ -3198,7 +3241,7 @@ class AgentLoop:
                 # whole request timeout before a retry; every lost answer measured on the
                 # pod ledger was a summarizer-sized buffered call, and no streamed call in
                 # the same windows was lost. Streamed, this rides the per-gap stall bound.
-                # ADR-0339: and stopped once its text runs past _SUMMARY_RUNAWAY budgets.
+                # ADR-0343: and stopped once its text runs past _SUMMARY_RUNAWAY budgets.
                 return _collect_stream(
                     summarizer.astream(
                         [Message.user(prompt)],
@@ -5669,6 +5712,7 @@ class AgentLoop:
         filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
         rate_limit_started: float | None = None  # wall clock of the first pure 429
         next_temperature: float | None = None
+        told_cause = ""  # the provider's answer the last notice carried (ADR-0337)
         while True:
             # A rejection retry resamples at a raised temperature so a deterministic
             # (temp-0) re-emit of the malformed tool call is broken; every other call
@@ -5736,13 +5780,27 @@ class AgentLoop:
                     if isinstance(exc, ModelOutputRejected) and not isinstance(exc, ContentFiltered)
                     else None
                 )
-                logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
+                # A pure rate limit or outage carries the provider's own answer: on the first
+                # notice and whenever it changes, and on every log line (ADR-0337). The other
+                # classes' reasons already are their answer.
+                cause = "" if interrupt_class else _retry_cause(exc)
+                logger.warning(
+                    "%s; retrying in %.1fs (%s)%s",
+                    reason,
+                    delay,
+                    budget,
+                    f" — {cause}" if cause else "",
+                )
+                notice = f"{reason}; retrying in {delay:.1f}s ({budget})"
+                if cause and cause != told_cause:
+                    notice += f" — {cause}"
+                    told_cause = cause
                 # Said, not only logged (ADR-0100): this logger has no handler, so a
                 # 900 s summarizer wait was a session that looked dead — no socket, no
                 # event, no line — until the horizon expired (coordinating session, 2026-08-29).
                 sink = self._status_sink
                 if sink is not None:
-                    sink(f"{reason}; retrying in {delay:.1f}s ({budget})")
+                    sink(notice)
                 await asyncio.sleep(delay)
 
     @staticmethod
@@ -7240,6 +7298,27 @@ class AgentLoop:
             HookEvent.SESSION_START, source=source
         )
         self._session_start_source = source
+        self._session_start_done = True
+
+    @property
+    def session_started(self) -> bool:
+        """Whether SessionStart has run on this loop to its end, with what it said added to the
+        session, or is never to run (ADR-0211, ADR-0342).
+
+        False while the hooks run, and after a turn stopped before they finished or before
+        their words were added: the chat has not heard them yet. A failed hook has run.
+        """
+        return self._session_start_done and not self._session_start_said
+
+    def skip_session_start(self) -> None:
+        """Do not fire SessionStart on this loop: its conversation has started already (ADR-0342).
+
+        The web app runs every turn on a loop of its own, and the first of them fired the
+        workspace's SessionStart hooks for the chat. A later message is not a new start, and
+        not a resume either, so the app says so here and the hooks stay quiet.
+        """
+        self._session_started = True
+        self._session_start_done = True
 
     def _say_session_start(self, said: list[str], source: str) -> None:
         """Hand the model what a SessionStart hook said: one persisted message, once (ADR-0211).
@@ -9913,6 +9992,7 @@ class AgentLoop:
                 filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
                 rate_limit_started: float | None = None  # wall clock of the first pure 429
                 next_temperature: float | None = None
+                told_cause = ""  # the provider's answer the last notice carried (ADR-0337)
 
                 # Bounded RateLimited retry for THIS provider call (audit P0-4), also
                 # MID-STREAM (ADR-0070): a rate limit that lands after deltas reached the
@@ -10158,14 +10238,24 @@ class AgentLoop:
                                     f"{reason} mid-stream — the {discarded} characters "
                                     "streamed above are discarded and will be re-generated"
                                 )
-                            logger.warning("%s; retrying in %.1fs (%s)", reason, delay, budget)
-                            yield AgentStatus(
-                                message=(
-                                    f"{reason}; retrying"
-                                    + (f" in {delay:.1f}s" if delay else "")
-                                    + f" ({budget})"
-                                )
+                            # The provider's own answer, as the buffered twin says it (ADR-0337).
+                            cause = "" if interrupt_class else _retry_cause(exc)
+                            logger.warning(
+                                "%s; retrying in %.1fs (%s)%s",
+                                reason,
+                                delay,
+                                budget,
+                                f" — {cause}" if cause else "",
                             )
+                            notice = (
+                                f"{reason}; retrying"
+                                + (f" in {delay:.1f}s" if delay else "")
+                                + f" ({budget})"
+                            )
+                            if cause and cause != told_cause:
+                                notice += f" — {cause}"
+                                told_cause = cause
+                            yield AgentStatus(message=notice)
                             await asyncio.sleep(delay)
                             continue
                         provider_failure = str(exc)

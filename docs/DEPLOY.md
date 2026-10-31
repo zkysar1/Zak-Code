@@ -17,7 +17,8 @@ Its header repeats these steps. As root:
 useradd --system --create-home --shell /usr/sbin/nologin zakcode
 install -d -o zakcode -g zakcode /srv/zakcode/workspace
 
-# 2. zakcode for that account — the command lands in ~zakcode/.local/bin.
+# 2. zakcode for that account — the command lands in ~zakcode/.local/bin. A box that runs a
+#    Vertex AI model installs "zakcode[server,google] @ …" instead.
 sudo -u zakcode uv tool install "zakcode[server] @ git+https://github.com/zkysar1/Zak-Code.git"
 
 # 3. Keys and settings, readable by the service account only.
@@ -42,6 +43,7 @@ What the unit fixes, and why:
 | `EnvironmentFile=-/etc/zakcode/.env` | The box-level config home. The `-` makes a missing file a no-op rather than a start failure; the per-user `~/.zakcode/.env` layering ([CONFIG.md](CONFIG.md)) still applies underneath. |
 | `--host 127.0.0.1` | Loopback-only. To reach it from elsewhere put a reverse proxy in front, or set `ZAKCODE_AUTH_TOKEN` in the env file and bind `0.0.0.0` — the server refuses a non-loopback bind without a token unless you pass `--insecure`. |
 | `--workspace /srv/zakcode/workspace` | The mind the server serves: one workspace per served mind, its sessions under `<workspace>/.zakcode/sessions/` (ADR-0032). |
+| `--no-new-session` | A restart goes on with the chat the pages are on. Without it every start opens a new chat, and every open page follows the restarted server into it, in the middle of a reply. Keep it in any unit, script or container command you write yourself. |
 | `NoNewPrivileges`, `PrivateTmp` | Hardening that stays out of the mind's way — it only needs its workspace and its config. |
 
 Only the three lines marked `box-specific` in the unit change between boxes: the
@@ -52,14 +54,24 @@ Day two:
 
 ```bash
 journalctl -u zakcode-webapp -f                            # logs
-sudo -u zakcode zakcode update && systemctl restart zakcode-webapp   # a new build
+sudo -u zakcode zakcode update                             # a new build
+sudo -u zakcode zakcode update --extra google              # a new build, with Vertex AI's libraries
+systemctl restart zakcode-webapp                           # after changing /etc/zakcode/.env
 systemctl status zakcode-webapp                            # is it up, when did it last restart
 ```
 
 `zakcode update` reinstalls in place from the install's own recorded source (a git URL or a
-local checkout) and prints old → new build identity; the restart hands the new build to the
-server. A `Restart=always` unit would also pick the new build up on the server's next exit,
-but do not wait for one.
+local checkout) and prints old → new build identity. `--extra NAME` adds one of zakcode's
+optional extras on the way, and the updates after it keep it (ADR-0340). The running server notices the new build
+within five seconds and, once no turn is in flight, restarts itself into it on the same chat:
+it finishes the turn it is running, takes no new one on the old build, and replaces its own
+process, so the pid and the unit stay as they were and the journal says
+`restarted into build …` (ADR-0333). A page left open reconnects. A server older than that
+change does not look for new builds: restart the unit once to bring it onto a build that does.
+The new build reads the workspace `.env` and `~/.zakcode/.env` afresh, but it keeps the unit's
+own environment, so a change to `/etc/zakcode/.env` (read by `EnvironmentFile=`) or to the unit
+still needs `systemctl restart zakcode-webapp`. A run a host manages (any `ZAKCODE_RUN_*`
+ending set) keeps its build until the host restarts it.
 
 A local-checkout install is reinstalled with every dependency at the version the checkout's
 `uv.lock` pins, and an editable install stays editable (ADR-0291). On Windows the reinstall
@@ -103,7 +115,7 @@ container so they outlive it:
 services:
   zakcode:
     image: your-registry/zakcode:latest
-    command: ["zakcode", "webapp", "--host", "0.0.0.0", "--port", "8000", "--workspace", "/workspace"]
+    command: ["zakcode", "webapp", "--host", "0.0.0.0", "--port", "8000", "--workspace", "/workspace", "--no-new-session"]
     env_file:
       - /etc/zakcode/.env            # must set ZAKCODE_AUTH_TOKEN: 0.0.0.0 inside the container is non-loopback
     volumes:
@@ -120,6 +132,27 @@ services:
 
 `restart: always` is the container form of the unit's policy; the health check gives the
 orchestrator the same `/health` the unit's install step curls.
+
+## Behind a reverse proxy
+
+Send every path to the server, the page at `/` included. A proxy that answers `/` with a copy
+of the page saved on its own disk keeps the page on the build the copy was saved from, while
+each `zakcode update` moves the server on: the browser then runs an old page against a newer
+server, and no update reaches it. That is how chat switching stayed broken on one box after its
+fix had shipped (ADR-0342). The server sends the page with `Cache-Control: no-cache`, so a
+browser asks for it again each time it opens it.
+
+A server with a token (`ZAKCODE_AUTH_TOKEN`) asks for it on every path but `/health`, the page
+included, and a browser has no way to send it: the proxy adds `Authorization: Bearer <token>` to
+each request it passes on, and does its own sign-in in front.
+
+To check that a browser gets the server's own page, compare the two. Give the first `curl` the
+proxy's sign-in if it has one, and the second the token if the server has one
+(`-H "Authorization: Bearer $ZAKCODE_AUTH_TOKEN"`):
+
+```bash
+diff <(curl -s https://your.host/) <(curl -s http://127.0.0.1:8000/) >/dev/null && echo "same page" || echo "DIFFERENT"
+```
 
 ## Checking a box
 

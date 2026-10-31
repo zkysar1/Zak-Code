@@ -46,6 +46,14 @@ globalThis.setTimeout = (fn, _ms, ...args) => __later(fn, 0, ...args);
 const __asked = {};  // transcripts asked for, per chat
 const __watched = {};  // watch connections asked for, per chat
 const __posted = [];  // what the page posted that the script has no answer of its own for
+const __open = [];  // ends each watch connection held open, for a server that restarts
+// The page is told when its tab goes to the background or comes back, as a browser tells it. A
+// page that starts hidden was opened in a background tab.
+const __onVisibility = [];
+document.addEventListener = (type, fn) => {
+  if (type === "visibilitychange") __onVisibility.push(fn);
+};
+document.hidden = Boolean(__SCN.hidden);
 function __sse(frames) {
   return frames.map(([id, f]) => `id: ${id}\r\ndata: ${JSON.stringify(f)}\r\n\r\n`).join("");
 }
@@ -59,7 +67,11 @@ globalThis.fetch = async (url, opts) => {
   const u = new URL(url, "http://page.test");
   const chats = __SCN.chats;
   if (u.pathname === "/sessions/current") {
-    if ((opts.method || "GET") === "PUT") __SCN.current = JSON.parse(opts.body).session_id;
+    if ((opts.method || "GET") === "PUT") {
+      // New chat asks for none by name: the server makes the chat the scenario keeps for it.
+      const asked = JSON.parse(opts.body).session_id;
+      __SCN.current = asked === null ? Object.keys(chats).find((id) => chats[id].fresh) : asked;
+    }
     return __answer(chats[__SCN.current].info, 200, 0);
   }
   if (u.pathname === "/sessions/recent") {
@@ -68,15 +80,17 @@ globalThis.fetch = async (url, opts) => {
       id: c.info.id, title: c.title, message_count: 2,
       updated_at: "2026-10-27T10:00:00+00:00", current: c.info.id === __SCN.current,
     }));
-    return __answer(list, 200, 0);
+    return __answer(list, 200, __SCN.listDelays.shift() || 0);  // the list as it was when asked
   }
   let m = u.pathname.match(/^\/sessions\/([^/]+)\/transcript$/);
   if (m) {
+    // A transcript may answer with a `status` other than 200, and after a `delay`.
     const chat = chats[m[1]];
     const n = (__asked[m[1]] = (__asked[m[1]] || 0) + 1);
     const t = chat.transcripts[Math.min(n, chat.transcripts.length) - 1];
     return __answer({ session_id: m[1], messages: [], message_count: 0, bus_from: null,
-                      bus_since: null, bus_epoch: chat.epoch, running: false, ...t }, 200, 0);
+                      bus_since: null, bus_epoch: chat.epoch, running: false, ...t },
+                    t.status || 200, t.delay || 0);
   }
   m = u.pathname.match(/^\/sessions\/([^/]+)$/);
   if (m) return __answer(chats[m[1]].info, chats[m[1]].fails ? 500 : 200, chats[m[1]].delay);
@@ -88,13 +102,16 @@ globalThis.fetch = async (url, opts) => {
     if (conn && conn.status) return __answer({ detail: "scripted" }, conn.status, 0);  // every time
     if (!conn || conn.used) return new Promise(() => {});  // the script is spent: never answers
     conn.used = true;
+    if (conn.delay) await new Promise((r) => __later(r, conn.delay));  // a replay slow to come
     const bytes = new TextEncoder().encode(__sse(conn.frames));
     let sent = false;
     const read = () => {
       if (!sent) { sent = true; return Promise.resolve({ done: false, value: bytes }); }
       if (conn.drop) return Promise.resolve({ done: true });  // the connection drops
-      // Held open, as a live watch is; an abort rejects the read, as a browser's does.
-      return new Promise((_, reject) => {
+      // Held open, as a live watch is; an abort rejects the read, as a browser's does, and a
+      // server that restarts ends it.
+      return new Promise((resolve, reject) => {
+        __open.push(() => resolve({ done: true }));
         if (opts.signal) opts.signal.addEventListener("abort", () => reject(new Error("aborted")));
       });
     };
@@ -106,7 +123,12 @@ globalThis.fetch = async (url, opts) => {
   if (opts.method === "POST") {
     __posted.push({ path: u.pathname, body: opts.body ? JSON.parse(opts.body) : null });
   }
-  return __answer({ queued: true }, 200, 0);  // /say, /interrupt
+  if (u.pathname === "/interrupt") {
+    // Stop's answer: by default that the chat's turn was asked to stop, as the server says.
+    const stop = __SCN.interrupt;
+    return __answer(stop.body || { requested: true }, stop.status || 200, stop.delay || 0);
+  }
+  return __answer({ queued: true }, 200, 0);  // /say
 };
 const __seen = [];
 function __look(label) {
@@ -136,8 +158,19 @@ for (const step of __SCN.steps) {
       item.onclick();
     } else if (step.press) {
       document.getElementById(step.press).onclick();
+    } else if (step.type !== undefined) {
+      document.getElementById("input").value = step.type;
+    } else if (step.restart !== undefined) {
+      // The server restarts: every bus is made again, the chat it opens (if any) is current, and
+      // every open watch connection ends.
+      for (const chat of Object.values(__SCN.chats)) chat.epoch += "-again";
+      if (step.restart !== null) __SCN.current = step.restart;
+      for (const end of __open.splice(0)) end();
     } else if (step.set) {
       Object.assign(__SCN, step.set);
+    } else if (step.hidden !== undefined) {
+      document.hidden = step.hidden;
+      for (const told of __onVisibility) told();
     } else {
       __seen.push(__look(step.look));
     }
@@ -162,17 +195,20 @@ def _chat(
     transcripts: list[dict[str, Any]] | None = None,
     delay: int = 0,
     fails: bool = False,
+    fresh: bool = False,
 ) -> dict[str, Any]:
     """One chat the scripted server holds. ``watch`` maps the ``since`` a watch connection asks
-    with to its ``frames``, whether it ``drop``s after them, and the ``oldest`` cursor it names,
-    or to a ``status`` it answers every time instead; a chat that ``fails`` answers its
-    GET /sessions/{id} with a 500."""
+    with to its ``frames``, whether it ``drop``s after them, the ``oldest`` cursor it names and a
+    ``delay`` before it answers, or to a ``status`` it answers every time instead; a chat that
+    ``fails`` answers its GET /sessions/{id} with a 500; a ``fresh`` one is the chat New chat
+    makes."""
     return {
         "info": {"id": sid, "model": "fake-model"},
         "title": title,
         "epoch": "bus-" + sid[:4],
         "delay": delay,
         "fails": fails,
+        "fresh": fresh,
         "watch": watch or {"null": {"frames": []}},
         "transcripts": transcripts or [{}],
     }
@@ -183,9 +219,15 @@ def _page(
     chats: list[dict[str, Any]],
     steps: list[dict[str, Any]],
     errors: list[str] | None = None,
+    list_delays: list[int] | None = None,
+    interrupt: dict[str, Any] | None = None,
+    hidden: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
-    ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default)."""
+    ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default).
+    ``list_delays`` holds back the answers to the page's chat-list requests, in the order asked.
+    ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``.
+    ``hidden`` opens the page in a background tab; a ``hidden`` step moves it there or back."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -193,6 +235,9 @@ def _page(
         "current": chats[0]["info"]["id"],
         "chats": {chat["info"]["id"]: chat for chat in chats},
         "steps": steps,
+        "listDelays": list_delays or [],
+        "interrupt": interrupt or {},
+        "hidden": hidden,
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
@@ -342,6 +387,55 @@ def test_a_chat_that_no_longer_exists_is_not_asked_for_again_and_again(tmp_path:
     assert seen["send"] == "↑"  # the turn shown running ended with it
 
 
+# ── a page in a background tab (ADR-0339) ────────────────────────────────────────────────────
+
+
+def test_a_hidden_page_lets_go_of_its_watch_and_takes_it_up_again_when_shown(
+    tmp_path: Path,
+) -> None:
+    """A browser keeps six connections to a server and a watch holds one while it is open, so six
+    open pages left none for anything else and a click in any of them waited for good. A page in
+    a background tab now lets go of its watch, asks for none while it stays there, and once shown
+    goes on from its cursor: what the turn did meanwhile is drawn."""
+    result = _frame(
+        3, event="tool_result", tool_use_id="t1", output="deployed", is_error=False, at=_T0 + 40
+    )
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}, "2": {"frames": [result]}})
+    away, back = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 200, "hidden": True},
+            {"at": 400, "look": "in a background tab"},
+            {"at": 500, "hidden": False},
+            {"at": 700, "look": "shown again"},
+        ],
+    )
+    assert away["watched"][A] == 1  # no reconnect while hidden
+    assert back["watched"][A] == 2  # taken up again once shown, from cursor 2
+    assert "Ran · 1 line" in _tool_card(back)  # the result that came while it was away
+    assert back["connection"] == "connected"
+
+
+def test_a_page_opened_in_a_background_tab_watches_nothing_until_shown(tmp_path: Path) -> None:
+    """A page opened in a background tab draws its chat but holds no watch until it is shown."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    hidden, shown = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 300, "look": "opened hidden"},
+            {"at": 400, "hidden": False},
+            {"at": 600, "look": "shown"},
+        ],
+        hidden=True,
+    )
+    assert hidden["asked"][A] == 1  # its saved conversation was asked for
+    assert A not in hidden["watched"]
+    assert shown["watched"][A] == 1
+    assert _tool_card(shown).endswith("…")  # the turn the watch replays, still running
+
+
 # ── Stop (ADR-0327) ──────────────────────────────────────────────────────────────────────────
 
 
@@ -362,6 +456,146 @@ def test_stop_names_the_chat_on_screen(tmp_path: Path) -> None:
     assert running["send"] == "■"  # the turn runs, so the button is Stop
     assert running["posted"] == []
     assert stopped["posted"] == [{"path": "/interrupt", "body": {"session_id": A}}]
+
+
+# ── a Stop is never silent (ADR-0336) ────────────────────────────────────────────────────────
+
+
+def _row_texts(seen: dict[str, Any]) -> list[str]:
+    return [row["text"] for row in seen["rows"]]
+
+
+def test_stop_says_at_once_that_it_was_asked_for(tmp_path: Path) -> None:
+    """Stop showed nothing until the turn's end came back, so on a page that end was slow to
+    reach, or never reached, Stop looked dead. The status line says at once that it was asked."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [asked] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 350, "look": "asked"}],
+        interrupt={"delay": 400},
+    )
+    assert asked["status"] == "stopping…"
+    assert asked["send"] == "■"  # nothing has ended yet
+
+
+def test_a_stop_for_a_chat_running_no_turn_ends_the_turn_shown(tmp_path: Path) -> None:
+    """The server answers that no turn runs in this chat: the turn the page shows running ended
+    where the page did not hear it. The page went on showing it, and its Stop did nothing."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [ended] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 400, "look": "ended"}],
+        interrupt={"body": {"requested": False}},
+    )
+    assert ended["send"] == "↑"
+    assert ended["status"] == ""
+    assert _row_texts(ended)[-1] == "·no turn is running in this chat"
+
+
+def test_a_stop_the_server_refuses_says_why_and_keeps_the_turn(tmp_path: Path) -> None:
+    """A Stop answered with an error (a route a proxy does not pass, a server error) was dropped
+    without a word: the page caught only a request that never left."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [refused] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 400, "look": "refused"}],
+        errors=["could not stop the turn: HTTP 404"],
+        interrupt={"status": 404, "body": {"detail": "Not Found"}},
+    )
+    assert refused["send"] == "■"  # the turn still runs
+    assert refused["status"] == "the turn is still running"
+
+
+@pytest.mark.parametrize(
+    ("running", "send", "status"),
+    [
+        (False, "↑", ""),
+        (True, "■", "still stopping — the server has not ended the turn yet"),
+    ],
+    ids=["ended-unheard", "still-running"],
+)
+def test_a_stopped_turn_whose_end_never_comes_is_asked_after(
+    tmp_path: Path, running: bool, send: str, status: str
+) -> None:
+    """A Stop the server took, for a turn whose end never reached this page (a connection that
+    held it back, a stream cut before it). The page asks the server a while later: a turn it no
+    longer runs ends on the page, and one it still runs is said to be. These timers fire at once."""
+    chat = _chat(
+        A, "chat A", watch={"null": {"frames": _TURN}}, transcripts=[{}, {"running": running}]
+    )
+    [after] = _page(tmp_path, [chat], [{"at": 300, "press": "send"}, {"at": 400, "look": "after"}])
+    assert after["asked"][A] == 2  # the history, then the one look after the Stop
+    assert after["send"] == send
+    assert after["status"] == status
+    noted = [text for text in _row_texts(after) if text == "·the turn has ended"]
+    assert noted == ([] if running else ["·the turn has ended"])
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"body": {"requested": False}, "delay": 250}, {"status": 500, "body": {}, "delay": 250}],
+    ids=["no-turn", "refused"],
+)
+def test_a_stop_answered_after_another_chat_opened_leaves_that_chat_alone(
+    tmp_path: Path, answer: dict[str, Any]
+) -> None:
+    """A Stop is for the turn it was pressed on. Its answer, coming back after another chat
+    opened, must not end or mark anything in the chat now on screen, nor draw its error there."""
+    chats = [
+        _chat(A, "chat A", watch={"null": {"frames": _TURN}}),
+        _chat(Y, "chat Y", watch={"null": {"frames": _TURN}}),
+    ]
+    [other] = _page(
+        tmp_path,
+        chats,
+        [{"at": 300, "press": "send"}, {"at": 350, "click": "chat Y"}, {"at": 800, "look": "Y"}],
+        interrupt=answer,
+    )
+    assert other["chip"] == Y[:8]
+    assert other["send"] == "■"  # Y's own turn, still shown running
+    assert not any("no turn is running" in text for text in _row_texts(other))
+
+
+def test_a_stopped_turn_whose_end_comes_while_it_is_asked_after_ends_once(tmp_path: Path) -> None:
+    """The turn's end reaches the page while the page is asking after its Stop. That end is the
+    turn's end, and the answer to the asking, when it comes, adds nothing to it."""
+    done = _frame(
+        3, event="done", stop_reason="interrupted", iterations=1, usage=_USAGE, at=_T0 + 5
+    )
+    chat = _chat(
+        A,
+        "chat A",
+        watch={"null": {"frames": _TURN, "drop": True}, "2": {"frames": [done], "delay": 400}},
+        transcripts=[{}, {"running": False, "delay": 300}],
+    )
+    [after] = _page(tmp_path, [chat], [{"at": 300, "press": "send"}, {"at": 900, "look": "after"}])
+    assert after["asked"][A] == 2  # it did ask after the Stop
+    assert after["send"] == "↑"
+    assert "·the turn has ended" not in _row_texts(after)
+
+
+def test_a_stop_answered_after_the_next_turn_started_leaves_that_turn_alone(tmp_path: Path) -> None:
+    """A Stop is for the turn it was pressed on. When the page never heard that turn end, the
+    chat's next turn can start before the answer comes back, and the answer that no turn was
+    running must not end the one that now is."""
+    started = _frame(3, event="user_message", text="and then", at=_T0 + 20)
+    chat = _chat(
+        A,
+        "chat A",
+        watch={"null": {"frames": _TURN, "drop": True}, "2": {"frames": [started], "delay": 400}},
+    )
+    [after] = _page(
+        tmp_path,
+        [chat],
+        [{"at": 300, "press": "send"}, {"at": 900, "look": "after"}],
+        interrupt={"body": {"requested": False}, "delay": 300},
+    )
+    assert _spoken(after)[-1] == ("user", "and then")  # the next turn started
+    assert after["send"] == "■"  # and is still shown running
+    assert not any("no turn is running" in text for text in _row_texts(after))
 
 
 # ── opening a chat (ADR-0325) ────────────────────────────────────────────────────────────────
@@ -464,6 +698,162 @@ def test_a_chat_clicked_before_another_is_made_active_does_not_open_over_it(
     [seen] = _page(tmp_path, chats, steps)
     assert seen["chip"] == Y[:8]
     assert seen["banner_hidden"] is True  # Y is the active chat now
+
+
+def test_a_chat_whose_history_fails_after_another_opened_says_nothing_in_that_one(
+    tmp_path: Path,
+) -> None:
+    """Opening a chat draws its saved conversation first. When that failed after another chat
+    had opened, the "could not load" card went into the chat then on screen, as if it had."""
+    failing = _chat(X, "chat X", transcripts=[{"status": 500, "delay": 250}])
+    chats = [_chat(A, "chat A"), failing, _chat(Y, "chat Y")]
+    steps = [
+        {"at": 150, "click": "chat X"},
+        {"at": 200, "click": "chat Y"},
+        {"at": 700, "look": "settled"},
+    ]
+    [seen] = _page(tmp_path, chats, steps)  # _page refuses a page with an error card on it
+    assert seen["chip"] == Y[:8]
+
+
+def test_a_chat_list_that_answers_late_does_not_undo_a_later_one(tmp_path: Path) -> None:
+    """The chat list is asked for whenever what it shows can change, and an answer can come back
+    after a later one's. The page drew each as it came, so a list asked for before a chat was
+    made active, and answered after, marked the old chat active again and the chat now active
+    as one only viewed."""
+    chats = [_chat(A, "chat A"), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 150, "click": "chat Y"},  # the list it asks for (A active) answers 300 ms later
+        {"at": 250, "press": "make-active"},  # the list it asks for (Y active) answers at once
+        {"at": 800, "look": "settled"},
+    ]
+    [seen] = _page(tmp_path, chats, steps, list_delays=[0, 300])
+    assert seen["chip"] == Y[:8]
+    assert seen["banner_hidden"] is True
+    assert seen["placeholder"] == "Message Zak Code…"
+
+
+def _said(*lines: str) -> dict[str, Any]:
+    """A saved conversation: ``lines`` spoken in turn, the user's first."""
+    roles = ("user", "assistant")
+    return {"messages": [{"role": roles[i % 2], "text": t, "at": _T0} for i, t in enumerate(lines)]}
+
+
+@pytest.mark.parametrize("opens", ["a click in the list", "New chat"])
+def test_a_chat_opened_from_one_with_a_conversation_on_screen_shows_its_own(
+    tmp_path: Path, opens: str
+) -> None:
+    """The first line drawn takes the start screen out of the page, and opening a chat put its
+    model and id on the start screen by looking that up: it found nothing, threw, and stopped
+    half way, the chat it left still on screen and nothing watching the one it opened. Every
+    switch away from a chat with anything in it did that, the next one too."""
+    other = (
+        _chat(Y, "chat Y", fresh=True)
+        if opens == "New chat"
+        else _chat(Y, "chat Y", transcripts=[_said("second", "and again")])
+    )
+    chats = [_chat(A, "chat A", transcripts=[_said("hello", "hi there")]), other]
+    leave = {"press": "new-chat"} if opens == "New chat" else {"click": "chat Y"}
+    steps = [
+        {"at": 150, **leave},
+        {"at": 450, "look": "opened"},
+        {"at": 500, "click": "chat A"},
+        {"at": 800, "look": "back"},
+    ]
+    opened, back = _page(tmp_path, chats, steps)
+    assert opened["chip"] == Y[:8]
+    assert opened["watched"].get(Y) == 1
+    if opens == "New chat":
+        assert _spoken(opened) == []
+        assert "fake-model · session " + Y[:8] in [row["text"] for row in opened["rows"]]
+    else:
+        assert _spoken(opened) == [("user", "second"), ("assistant", "and again")]
+    assert back["chip"] == A[:8]
+    assert _spoken(back) == [("user", "hello"), ("assistant", "hi there")]
+
+
+@pytest.mark.parametrize("drawn_from", ["saved", "replayed"])
+def test_a_chat_with_a_conversation_opens_with_no_start_screen_on_the_way(
+    tmp_path: Path, drawn_from: str
+) -> None:
+    """Opening a chat put the start screen back at once, and the first row drawn took it out, so
+    every switch to a chat with a conversation flashed it until the rows came: from the saved
+    conversation, or, for a chat used since the server started, from its bus's replay."""
+    if drawn_from == "saved":
+        other = _chat(Y, "chat Y", transcripts=[{**_said("second", "and again"), "delay": 300}])
+    else:
+        turn = [
+            _frame(1, event="user_message", text="second", at=_T0),
+            _frame(2, event="text", text="and again", at=_T0 + 1),
+            _frame(
+                3, event="done", stop_reason="completed", iterations=1, usage=_USAGE, at=_T0 + 2
+            ),
+        ]
+        on_the_bus = {**_said("second", "and again"), "bus_from": _T0, "bus_since": 0}
+        watch = {"0": {"frames": turn, "delay": 300}}
+        other = _chat(Y, "chat Y", watch=watch, transcripts=[on_the_bus])
+    chats = [_chat(A, "chat A", transcripts=[_said("hello", "hi there")]), other]
+    steps = [
+        {"at": 150, "click": "chat Y"},
+        {"at": 300, "look": "on its way"},
+        {"at": 800, "look": "drawn"},
+    ]
+    on_its_way, drawn = _page(tmp_path, chats, steps)
+    assert all("fake-model · session" not in row["text"] for row in on_its_way["rows"])
+    assert _spoken(drawn) == [("user", "second"), ("assistant", "and again")]
+
+
+def test_making_the_chat_on_screen_active_takes_down_what_the_status_line_said_of_it(
+    tmp_path: Path,
+) -> None:
+    """A send from a chat that is only viewed is held, with a line saying to make the chat
+    active first. Making it active opens nothing (it is on screen already), so nothing took
+    that line down, and it went on asking for what had just been done."""
+    chats = [_chat(A, "chat A"), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 150, "click": "chat Y"},
+        {"at": 300, "type": "hello"},
+        {"at": 320, "press": "send"},
+        {"at": 400, "look": "held"},
+        {"at": 450, "press": "make-active"},
+        {"at": 700, "look": "active"},
+    ]
+    held, active = _page(tmp_path, chats, steps)
+    assert held["status"] == "you're viewing this chat — make it active to send here"
+    assert held["posted"] == []  # nothing went to /say
+    assert active["banner_hidden"] is True
+    assert active["status"] == ""
+
+
+@pytest.mark.parametrize(
+    ("viewing", "opened", "lands_on"),
+    [("chat A", Y, Y), ("chat A", None, A), ("chat X", Y, X)],
+    ids=["active-chat-follows-the-fresh-one", "kept-chat-starts-over", "parked-page-stays"],
+)
+def test_a_page_left_open_while_the_server_restarts_lands_where_a_fresh_page_would(
+    tmp_path: Path, viewing: str, opened: str | None, lands_on: str
+) -> None:
+    """A server opens a fresh chat as it starts, so a page opened then lands on it. A page left
+    open across the restart came back on the chat it showed, still marked active, and its next
+    message was refused there. It follows the active chat now, as a fresh page would, unless it
+    was parked on another chat, which it keeps; nothing marks the restart in the conversation."""
+    resumed = {
+        "null": {"frames": [_frame(1, event="text", text="still here", at=_T0 + 5)]},
+        "1": {"frames": []},
+    }
+    chats = [
+        _chat(A, "chat A", watch=resumed, transcripts=[_said("hello", "hi there")]),
+        _chat(X, "chat X", watch=resumed, transcripts=[_said("parked", "ok")]),
+        _chat(Y, "chat Y"),
+    ]
+    steps: list[dict[str, Any]] = [{"at": 150, "click": "chat X"}] if viewing == "chat X" else []
+    steps += [{"at": 400, "restart": opened}, {"at": 800, "look": "after"}]
+    [after] = _page(tmp_path, chats, steps)
+    assert after["chip"] == lands_on[:8]
+    assert all("session restarted" not in row["text"] for row in after["rows"])
+    spoken = {Y: [], A: [("user", "hello"), ("assistant", "hi there")]}
+    assert _spoken(after) == spoken.get(lands_on, [("user", "parked"), ("assistant", "ok")])
+    assert after["banner_hidden"] is (lands_on != X)  # a parked page still says it is not live
 
 
 @pytest.mark.parametrize(

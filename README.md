@@ -117,6 +117,10 @@ cd any/project/dir
 zakcode cli                                     # workspace = the current directory
 ```
 
+Vertex AI (Gemini on Google Cloud) needs the optional `google` extra: install
+`zakcode[server,google]`, or add it to an install that lacks it with
+`zakcode update --extra google`.
+
 A workspace `.env` still overrides the user file per-project, and real environment
 variables override both — see [`docs/CONFIG.md`](docs/CONFIG.md) for the precedence
 table. Update with `uv tool upgrade zakcode`.
@@ -145,10 +149,11 @@ uv run zakcode webapp            # FastAPI on http://127.0.0.1:8000 (loopback-on
 # then open http://127.0.0.1:8000/ for the bundled web client
 ```
 
-The page lists your saved chats beside the conversation. **New chat** starts a fresh one, and
-choosing an older chat opens it with its whole history, so your next message continues it.
-`zakcode webapp` reopens the last chat, so a restart keeps the conversation;
-`zakcode webapp --new-session` starts on a new chat instead.
+The page lists your saved chats beside the conversation, the active one (where your messages
+go) marked. **New chat** starts a fresh one. Choosing an older chat opens it with its whole
+history to read; **Make this chat active** makes your next message continue it.
+`zakcode webapp` starts on a new chat, and the earlier ones stay in the list;
+`zakcode webapp --no-new-session` reopens the last chat instead.
 
 REST + SSE + WebSocket all wrap the same core; the WebSocket carries the live event
 stream **and** the permission-approval prompts. The web client is a pure renderer with

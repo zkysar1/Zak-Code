@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -68,7 +68,14 @@ from zakcode.cli.logsink import (
 )
 from zakcode.cli.render import StreamRenderer, cost_text, display_call
 from zakcode.cli.saybox import fold_lines
-from zakcode.config import PermissionTier, Settings, env_source, load_settings, zakcode_home
+from zakcode.config import (
+    PermissionTier,
+    Settings,
+    drop_dotenv_exports,
+    env_source,
+    load_settings,
+    zakcode_home,
+)
 from zakcode.events import AgentDone, AgentToolCall, AgentToolResult
 from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_permission_answer
 from zakcode.providers.base import ProviderError, UnknownContextWindow
@@ -598,16 +605,32 @@ def _uv_receipt_requirement() -> dict[str, Any]:
     return {}
 
 
-def _uv_tool_spec(source: str) -> str:
-    """``zakcode[extras] @ source``, extras recovered from uv's install receipt.
+def _uv_tool_spec(source: str, added: Sequence[str] = ()) -> str:
+    """``zakcode[extras] @ source``, extras recovered from uv's install receipt, then ``added``.
 
     Dropping the extras on update would silently uninstall a provider (e.g.
-    ``[google]`` = the vertex deps).
+    ``[google]`` = the vertex deps). An extra ``added`` is in the receipt the reinstall writes,
+    so every update after it keeps it too (ADR-0340).
     """
     got = _uv_receipt_requirement().get("extras")
     extras = [e for e in got if isinstance(e, str)] if isinstance(got, list) else []
+    extras += [e for e in added if e not in extras]
     name = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
     return f"{name} @ {source}"
+
+
+def _declared_extras() -> frozenset[str] | None:
+    """The optional extras this zakcode declares, read from its install metadata.
+
+    None when the metadata cannot be read; ``update --extra`` then passes the name on unchecked
+    and the installer judges it.
+    """
+    try:
+        from importlib.metadata import metadata
+
+        return frozenset(metadata("zakcode").get_all("Provides-Extra") or ())
+    except Exception:  # noqa: BLE001 - a check that cannot run must not block the update
+        return None
 
 
 def _checkout_note(checkout: str, old_sha: str, new_sha: str) -> str:
@@ -703,7 +726,7 @@ _VERSION_PROBE = (
 
 
 def _reinstall_commands(
-    source: str, checkout: str | None = None, note: str = ""
+    source: str, checkout: str | None = None, note: str = "", extras: Sequence[str] = ()
 ) -> list[list[str]]:
     """The reinstall invocations for this environment: uv when uv owns it, else pip.
 
@@ -740,11 +763,13 @@ def _reinstall_commands(
             options.append("--editable")
         if checkout is not None:
             options += ["--constraints", _pin_to_lock(uv, checkout, note).name]
-        return [[uv, "tool", "install", "--force", "--reinstall", *options, _uv_tool_spec(source)]]
+        spec = _uv_tool_spec(source, extras)
+        return [[uv, "tool", "install", "--force", "--reinstall", *options, spec]]
     pip = [sys.executable, "-m", "pip", "install"]
+    with_extras = "zakcode" + (f"[{','.join(extras)}]" if extras else "")
     return [
         [*pip, "--force-reinstall", "--no-deps", f"zakcode @ {source}"],
-        [*pip, f"zakcode @ {source}"],
+        [*pip, f"{with_extras} @ {source}"],  # the extras' dependencies come with this pass
     ]
 
 
@@ -919,6 +944,14 @@ def _finish_in_second_process(
 @app.command()
 def update(
     ref: str = typer.Argument("main", help="Git ref to install (VCS-URL installs only)."),
+    extra: list[str] = typer.Option(  # noqa: B008 — typer convention
+        [],
+        "--extra",
+        help=(
+            "Add one of zakcode's optional extras to the install, e.g. google for Vertex AI. "
+            "May be repeated. Updates after this one keep it."
+        ),
+    ),
 ) -> None:
     """Update Zak Code in place, whichever way it was installed.
 
@@ -943,9 +976,24 @@ def update(
     install, and puts the old install back if anything fails (ADR-0291). Prints
     old → new build identity. Elsewhere, running chat sessions notice the new
     install at their next idle prompt and restart themselves into it, resuming
-    their session (ADR-0034) — no operator action needed. On Windows they run from
-    the install being replaced, so the command refuses until they are closed.
+    their session (ADR-0034), and a running web app does the same once no turn is
+    in flight, continuing its chat (ADR-0333) — no operator action needed. On
+    Windows they run from the install being replaced, so the command refuses until
+    they are closed.
+
+    ``--extra NAME`` adds one of zakcode's optional extras (``google`` for Vertex AI) to the
+    install, which is how an install that lacks one gets it without being reinstalled by hand. A
+    name zakcode does not declare is refused before anything is pulled (ADR-0340).
     """
+    known = _declared_extras()
+    unknown = [name for name in extra if known is not None and name not in known]
+    if unknown:
+        notice_error(
+            console,
+            f"zakcode has no extra named {', '.join(unknown)}",
+            f"Its extras are: {', '.join(sorted(known or ()))}. Nothing was changed.",
+        )
+        raise typer.Exit(code=2)
     old = version_line(__version__)
     url = build_url()
     directory = build_dir()
@@ -983,7 +1031,7 @@ def update(
             '  pip install --force-reinstall --no-deps "zakcode @ git+https://github.com/<owner>/Zak-Code.git"',
         )
         raise typer.Exit(code=1)
-    commands = _reinstall_commands(source, directory, note)
+    commands = _reinstall_commands(source, directory, note, extra)
     if second_process:
         before = old.replace("(local path)", f"(git {shas[0]})") if shas is not None else old
         _finish_in_second_process(commands, before, shas[1] if shas is not None else "", note)
@@ -1017,7 +1065,10 @@ def update(
     )
     if new == old != "(unreadable)":
         _dim(console, "same commit — you were already current")
-    _dim(console, "running chat sessions restart into the new build at their next idle prompt")
+    _dim(
+        console,
+        "running chat sessions and web apps restart into the new build once they are idle",
+    )
 
 
 @app.command()
@@ -4073,7 +4124,7 @@ def serve(
     try:
         import uvicorn
 
-        from zakcode.server.app import create_app
+        from zakcode.server.app import NewBuild, create_app
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         console.print(
             "[red]The server extra is not installed.[/red] "
@@ -4111,7 +4162,8 @@ def serve(
     server_holder: dict[str, Any] = {}
 
     async def _on_run_end(reason: str) -> None:
-        console.print(f"[bold]Zak Code[/bold] run ended ({reason}) — shutting down.")
+        if "restart" not in server_holder:
+            console.print(f"[bold]Zak Code[/bold] run ended ({reason}) — shutting down.")
         server = server_holder.get("server")
         if server is not None:
             # uvicorn's documented cooperative stop: it finishes in-flight requests and
@@ -4119,10 +4171,51 @@ def serve(
             # shutdown path that persists sessions.
             server.should_exit = True
 
+    async def _on_new_build(build: NewBuild) -> None:
+        # ADR-0333: the same cooperative stop, then an exec into the new build once uvicorn has
+        # returned (below). It closes the page's streams too: sse-starlette ends them when it
+        # sees this server's should_exit, and the page reconnects to the new process.
+        what = (
+            f"build {build.installed} reinstalled"
+            if build.installed and build.installed == build.running
+            else f"{build.running or 'previous build'} → {build.installed or 'new build'}"
+        )
+        console.print(
+            f"[bold]Zak Code[/bold] update installed ({what}) — restarting to apply; "
+            "the chat continues"
+        )
+        server_holder["restart"] = build
+        server = server_holder.get("server")
+        if server is not None:
+            server.should_exit = True
+
+    # ADR-0333: set by the process that exec'd into this one, popped so a later restart cannot
+    # inherit them: the hand-off the terminal REPL's restart uses (ADR-0034, ADR-0099).
+    restarted = os.environ.pop("ZAKCODE_RESTARTED_INTO", None)
+    carried = os.environ.pop("ZAKCODE_RESTART_CONTINUATION", None)
+    boundary = os.environ.pop("ZAKCODE_RESTART_BOUNDARY", None)
+    # No agent here, so a Stop hook's skill re-entry is delivered in the hook's own words, as the
+    # REPL delivers it whenever it cannot compose the skill (ADR-0187).
+    resume_turn = (
+        _restart_kick(None, restarted=restarted, carried=carried, boundary=boundary)
+        if carried
+        else None
+    )
     fastapi_app = (
-        create_app(settings=resolved_settings, on_run_end=_on_run_end, new_session=new_session)
+        create_app(
+            settings=resolved_settings,
+            on_run_end=_on_run_end,
+            new_session=new_session,
+            on_new_build=_on_new_build,
+            resume_turn=resume_turn,
+        )
         if workspace is not None
-        else create_app(on_run_end=_on_run_end, new_session=new_session)
+        else create_app(
+            on_run_end=_on_run_end,
+            new_session=new_session,
+            on_new_build=_on_new_build,
+            resume_turn=resume_turn,
+        )
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
     where = f" (mind workspace: {workspace})" if workspace is not None else ""
@@ -4132,6 +4225,8 @@ def serve(
         f"[bold]Zak Code[/bold] {__version__} — serving on "
         f"http://{host}:{port}{where}{auth_note}{bound_note}"
     )
+    if restarted is not None:
+        console.print(f"[bold]Zak Code[/bold] restarted into build {restarted} (a zakcode update)")
     # The stdlib event loop, never uvicorn's "auto" (ADR-0197). "auto" picks uvloop wherever it is
     # installed, and `uvicorn[standard]` installs it on every non-Windows box. Under uvloop a
     # child's own ends of its stdin/stdout/stderr stay open at high descriptor numbers in every
@@ -4143,6 +4238,36 @@ def serve(
     server = uvicorn.Server(uvicorn.Config(fastapi_app, host=host, port=port, loop="asyncio"))
     server_holder["server"] = server
     server.run()
+    build = server_holder.get("restart")
+    if build is None:
+        return
+    # ADR-0333: the server has shut down cleanly (sessions saved, nothing in flight). Replace
+    # this process with one on the new build: same pid, so a supervisor sees no restart, and the
+    # same arguments. The environment is kept but for what the .env files put in it, so the new
+    # process reads them afresh; a change to the supervisor's own environment needs its restart.
+    drop_dotenv_exports()
+    os.environ["ZAKCODE_RESTARTED_INTO"] = build.installed or "new build"
+    if build.continuation:
+        os.environ["ZAKCODE_RESTART_CONTINUATION"] = build.continuation
+        os.environ["ZAKCODE_RESTART_BOUNDARY"] = build.boundary or "stop-hook"
+    with contextlib.suppress(Exception):  # costs only the hand-on of background tasks' jobs
+        prepare_restart()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    args = _webapp_restart_args(sys.argv[1:])
+    try:
+        os.execv(sys.executable, _exec_argv([sys.executable, "-m", "zakcode", *args]))
+    except OSError as exc:
+        notice_error(console, "restart failed — the web app stopped on its old build", str(exc))
+        raise typer.Exit(code=1) from exc
+
+
+def _webapp_restart_args(argv: list[str]) -> list[str]:
+    """``argv`` (this process's arguments, program name excluded) for the web app restarting into
+    a new build (ADR-0333): every option kept, the launch's chat choice replaced by
+    ``--no-new-session``, because a restart continues the chat it was serving."""
+    kept = [arg for arg in argv if arg not in ("--new-session", "--no-new-session")]
+    return [*kept, "--no-new-session"]
 
 
 # Registered at the bottom so cockpit's lazy imports back into this module (banner
