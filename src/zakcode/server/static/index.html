@@ -347,8 +347,8 @@
 
     /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
     .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
-    #view-banner { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 44rem; margin: 0 auto .5rem; padding: .45rem .7rem; background: var(--surface); border: 1px solid var(--inset); border-radius: var(--radius-sm); font: 12px/1.45 var(--font-prose); color: var(--muted); }
-    #view-banner[hidden] { display: none; }
+    #view-banner, #page-note { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 44rem; margin: 0 auto .5rem; padding: .45rem .7rem; background: var(--surface); border: 1px solid var(--inset); border-radius: var(--radius-sm); font: 12px/1.45 var(--font-prose); color: var(--muted); }
+    #view-banner[hidden], #page-note[hidden] { display: none; }
     #view-banner .vb-text { flex: 1 1 auto; min-width: 0; }
     #view-banner #make-active { flex: none; padding: .25rem .65rem; background: transparent; border: 1px solid var(--brand); border-radius: var(--radius-sm); color: var(--fg); font: 12px var(--font-prose); cursor: pointer; }
     #view-banner #make-active:hover { background: var(--inset); }
@@ -505,6 +505,7 @@
         <button type="button" id="deny">Deny <kbd>n</kbd></button>
       </div>
     </div>
+    <div id="page-note" role="status" hidden></div>
     <div id="view-banner" hidden>
       <span class="vb-text">You're viewing this chat. Messages go to the active chat.</span>
       <button type="button" id="make-active">Make this chat active</button>
@@ -576,6 +577,7 @@
   const chatsToggle = document.getElementById("chats-toggle");
   const viewBanner = document.getElementById("view-banner");
   const makeActiveBtn = document.getElementById("make-active");
+  const pageNote = document.getElementById("page-note");
 
   let sessionId = null;       // the chat ON SCREEN (viewed); read-only unless it is also the active one
   let currentId = null;       // the workspace's ACTIVE chat (where sends go); may differ from sessionId (ADR-0319)
@@ -1753,7 +1755,14 @@
       if (!resp.ok) throw new Error("session " + resp.status);
       const info = await resp.json();
       currentId = info.id;
-      await openSession(info);
+      // A reload that left this page reading another chat shows that chat again, as a restart on
+      // the same page would have (ADR-0345), while it is still there.
+      let target = info;
+      if (keptView !== null && keptView !== currentId) {
+        const kept = await fetch("/sessions/" + keptView).catch(() => null);
+        if (kept !== null && kept.ok) target = await kept.json().catch(() => info);
+      }
+      await openSession(target);
     } catch (e) {
       setConn("closed", "disconnected");
       add(errCard("could not join a session: " + e.message));
@@ -1772,6 +1781,92 @@
   });
   function whenShown() {
     return document.hidden ? new Promise((resume) => shownAgain.push(resume)) : Promise.resolve();
+  }
+
+  // ── a page that is not the server's (ADR-0345) ──
+  // An open page runs the script it was served with for as long as it stays open: a server that
+  // restarted into a newer build (ADR-0333) left it on the old one, and none of the page's own
+  // fixes reached it until someone reloaded. The server writes the name of its page in place of
+  // the slot below as it serves it (the first 12 hex digits of the page's sha256), and sends the
+  // name with every watch response; a page whose name is not the server's reloads into the
+  // server's. A page that did not come from the server's "/" (a copy kept somewhere else) still
+  // holds the slot: it has no name, and never reloads itself.
+  const PAGE_DIGEST = "__ZAKCODE_PAGE_DIGEST__";
+  const pageDigest = /^[0-9a-f]{12}$/.test(PAGE_DIGEST) ? PAGE_DIGEST : null;
+  // What the page keeps in sessionStorage while it reloads: the page it asks for (also in ?page=,
+  // which something on the way can drop), what is typed in the composer, and the chat it shows
+  // when that is not the active one.
+  const RELOAD_KEY = "zakcode-reload-for";
+  const DRAFT_KEY = "zakcode-draft";
+  const VIEW_KEY = "zakcode-view";
+  // The page the reload that opened this one asked for, or null.
+  let reloadedFor = null;
+  // The chat that reload left this page showing, when it was not the active one, or null.
+  let keptView = null;
+
+  function forget(...keys) {
+    for (const key of keys) {
+      try { sessionStorage.removeItem(key); } catch (e) { /* no storage, so nothing was kept */ }
+    }
+  }
+
+  // Back from a reload into the server's page: what was typed goes back in the composer, the chat
+  // it showed opens again (init), and ?page= leaves the address, so a reload by hand asks for the
+  // page afresh.
+  function backFromReload() {
+    const url = new URL(location.href);
+    reloadedFor = url.searchParams.get("page");
+    if (reloadedFor !== null) {
+      url.searchParams.delete("page");
+      try { history.replaceState(null, "", url.href); } catch (e) { /* the address keeps ?page= */ }
+    }
+    let draft = null;
+    try {
+      if (reloadedFor === null) reloadedFor = sessionStorage.getItem(RELOAD_KEY);
+      draft = sessionStorage.getItem(DRAFT_KEY);
+      keptView = sessionStorage.getItem(VIEW_KEY);
+    } catch (e) { /* no storage, so nothing was kept */ }
+    forget(DRAFT_KEY, VIEW_KEY);
+    if (draft !== null && !input.value) { input.value = draft; autoGrow(); }
+  }
+
+  // Reload into the page the server serves (`served`, a watch response's X-Page-Digest) when it is
+  // not this one, and say whether it did. Once only: the page it asks for is kept, in ?page= and in
+  // sessionStorage, and a page that comes back from that reload still not that one was not served
+  // by the server (something on the way answers with a saved copy), so it says so and stays, where
+  // reloading again would only repeat. What is typed, and a chat shown that is not the active one,
+  // go across in sessionStorage too; where the browser keeps nothing there, the page says a newer
+  // one is there and stays. A server that names no page (an older one) never differs.
+  function reloadIfStale(served) {
+    if (served === null || pageDigest === null) return false;
+    if (served === pageDigest) {
+      if (reloadedFor !== null) { reloadedFor = null; forget(RELOAD_KEY); }  // the server's page now
+      return false;
+    }
+    if (served === reloadedFor) {
+      notePage("This page is older than the server's, and reloading brought the same one back: something between this browser and the server answers with a saved copy of the page.");
+      return false;
+    }
+    try {
+      sessionStorage.setItem(RELOAD_KEY, served);
+      if (input.value) sessionStorage.setItem(DRAFT_KEY, input.value);
+      if (sessionId !== null && currentId !== null && sessionId !== currentId) {
+        sessionStorage.setItem(VIEW_KEY, sessionId);
+      }
+    } catch (e) {
+      forget(RELOAD_KEY, DRAFT_KEY, VIEW_KEY);
+      notePage("The server has a newer version of this page. Reload to use it: this browser lets the page keep nothing across a reload, so copy what you have typed first.");
+      return false;
+    }
+    const url = new URL(location.href);
+    url.searchParams.set("page", served);
+    location.replace(url.href);
+    return true;
+  }
+
+  function notePage(text) {
+    pageNote.textContent = text;
+    pageNote.hidden = false;
   }
 
   // SSE over fetch (EventSource cannot follow the id/cursor resume contract we
@@ -1800,6 +1895,7 @@
         }
         if (!resp.ok) throw new Error("watch " + resp.status);
         setConn("open", "connected");
+        if (reloadIfStale(resp.headers.get("X-Page-Digest"))) return;  // on its way to the server's page
         // A server that names no bus (an older one) never differs, so it never resets the page.
         const epoch = resp.headers.get("X-Bus-Epoch");
         if (epoch !== null) {
@@ -2019,6 +2115,7 @@
     }
   }
 
+  backFromReload();
   init();
   </script>
 </body>

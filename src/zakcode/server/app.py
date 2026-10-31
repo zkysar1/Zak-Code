@@ -37,6 +37,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -51,7 +52,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -197,6 +198,11 @@ _NEW_BUILD_POLL_SECONDS = 5.0
 
 #: How often the say consumer and a waiting restart look at each other (ADR-0333).
 _RESTART_HOLD_SECONDS = 0.25
+
+#: The bundled web page's directory: the page at "/" and the `/app` mount.
+_STATIC_DIR = Path(__file__).parent / "static"
+#: Where the page holds its name until the server writes it in, as it serves the page (ADR-0345).
+_PAGE_DIGEST_SLOT = b"__ZAKCODE_PAGE_DIGEST__"
 
 #: How much of a failed turn's exception the page shows (ADR-0334). The server log keeps the whole
 #: trace. A refusal naming one model with no known context window runs 575 to 645 characters with
@@ -946,6 +952,26 @@ def create_app(
                 for artifact in getattr(block, "artifacts", []):
                     artifacts[artifact.id] = artifact
         return list(artifacts.values())
+
+    # The bundled page, read once as the server starts. An install that lands under a running
+    # server puts another build's page on disk, and this server goes on serving its own until it
+    # restarts into that build (ADR-0333): the page it serves is the one its routes were written
+    # for. Its name, the first 12 hex digits of its sha256, is written into the page served at "/"
+    # and sent with every watch response, so an open page sees when it is not the page the server
+    # serves (ADR-0345). None in a checkout without the page, or where it cannot be read: the
+    # server then starts with no page, and says so, where a read that failed stopped it starting.
+    page_digest: str | None = None
+    served_page = b""
+    page_file = _STATIC_DIR / "index.html"
+    try:
+        raw_page = page_file.read_bytes()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("serving no page: could not read %s (%s)", page_file, exc)
+    else:
+        page_digest = hashlib.sha256(raw_page).hexdigest()[:12]
+        served_page = raw_page.replace(_PAGE_DIGEST_SLOT, page_digest.encode("ascii"), 1)
 
     # ── meta endpoints ─────────────────────────────────────────────────────────
 
@@ -1697,6 +1723,9 @@ def create_app(
         oldest = bus.oldest_cursor
         if oldest is not None:
             headers["X-Bus-Oldest"] = str(oldest)
+        # The page this server serves: a page that is not it reloads into it (ADR-0345).
+        if page_digest is not None:
+            headers["X-Page-Digest"] = page_digest
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
         return EventSourceResponse(event_source(), ping=15, headers=headers)
@@ -2693,15 +2722,17 @@ def create_app(
     # Serve the bundled thin web client (a pure AgentEvent renderer — no agent logic).
     # Mounted LAST so it never shadows the API routes above; ``html=True`` serves
     # ``index.html`` at ``/``. Absent in some checkouts, so guard the mount.
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.is_dir():
+    static_dir = _STATIC_DIR
+    if page_digest is not None:
 
         @app.get("/")
-        def index() -> FileResponse:
+        def index() -> HTMLResponse:
             # no-cache: the browser asks again on every load, so a page it cached before an
-            # upgrade is never what an upgraded server shows.
-            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-cache"})
+            # upgrade is never what an upgraded server shows. The page as read at the start, its
+            # name written in (ADR-0345).
+            return HTMLResponse(served_page, headers={"Cache-Control": "no-cache"})
 
+    if static_dir.is_dir():
         app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
 
     # ── the reactive turn-runner: serve itself consumes the say inbox ────────────
