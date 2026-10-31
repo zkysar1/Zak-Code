@@ -1528,6 +1528,26 @@ _SESSION_START_WHY = {
     "resume": "a saved session is being resumed",
     "compact": "your context was just compacted, so earlier messages are now a summary",
 }
+#: The frame's fixed text on either side of its why clause: how a reader of a saved session
+#: knows the message (:func:`said_by_session_start`).
+_SESSION_START_HEAD, _SESSION_START_TAIL = _SESSION_START_FRAME.split("{text}")[0].split("{why}")
+
+
+def said_by_session_start(text: str) -> str | None:
+    """What a SessionStart hook said, when ``text`` is the message that handed it to the model
+    (:data:`_SESSION_START_FRAME`), else ``None``.
+
+    No person wrote that message, though the model reads it as a user-role one (ADR-0211), so a
+    reader is shown the hook's words as a note from the workspace, not as a line typed in the chat
+    (ADR-0344). The frame is known by its whole first line, with a why clause the loop writes, so
+    a message a person types stays theirs unless it repeats that line word for word.
+    """
+    if not text.startswith(_SESSION_START_HEAD):
+        return None
+    why, tail, said = text[len(_SESSION_START_HEAD) :].partition(_SESSION_START_TAIL)
+    written = why in _SESSION_START_WHY.values() or re.fullmatch(r"source=\w+", why) is not None
+    return said if tail and written else None
+
 
 #: How many newly-unlocked keys the discovery note names before it summarises the rest.
 #: A first perception in a dense room can unlock a whole bubble at once, and the note

@@ -21353,3 +21353,65 @@ restart test red); the loop's switch doing nothing (the first four red); the ser
 loop's latch (both Stop tests red); the run-ended flag without the words check (only the second
 Stop test red); the server counting every turn (the slash test and both Stop tests red). Each
 turned green again once the fix was back. `uv run poe check` green.
+
+## ADR-0344: the web page draws what a SessionStart hook said as a grey note, not as a line typed in the chat
+
+Status: accepted. 2026-10-31. Closes the item ADR-0342 left open. Builds on ADR-0211 (what a
+SessionStart hook says reaches the model) and ADR-0325 (the page draws a chat's saved conversation).
+
+Context. ADR-0211 hands the model what a workspace's SessionStart hook said as one persisted
+user-role message, behind a one-line frame that tells the model why the hook ran, and the
+conversation keeps it where the hook fired. The transcript route returns every user-role message
+that has text, and the page drew each one as a line the person typed. So whenever a chat was drawn
+from its saved conversation (a reload, a server restart, the chat opened again from the list) the
+hook's report stood in the chat as the person's own line: "[hook] This workspace's SessionStart
+hook ran (a saved session is being resumed) and said the following...". Before ADR-0342 there was
+one such line per message. The words never reach the page live: nothing puts them on the watch
+bus, so a turn the bus still holds shows no line for them at all.
+
+Decision.
+1. `said_by_session_start(text)` in the loop, beside the frame it reads, returns the hook's words
+   when a message is the one that handed them to the model, and None for anything else. It knows
+   the frame by its whole first line: the fixed text on both sides of the why clause, and a clause
+   the loop writes there, one of its three reasons (a new session, a resumed one, a compaction) or
+   `source=<name>` for a source it has no reason for. A person's message that starts like the
+   frame but does not finish its first line, or puts other words in the clause, stays theirs. The
+   route reads user-role messages only, so a reply that quotes the frame stays the reply.
+2. Each message of the transcript route carries `hook`: those words, redacted like `text`, or
+   null. `text` is unchanged and still holds the whole message, so a page older than the field
+   draws what it always drew. The route's other readers are unaffected: the environment server's
+   proxy passes the body through as it is, and the member gateway keeps `role` and `text` only.
+3. The page draws a message that carries `hook` as a grey note, "SessionStart hook: " and the
+   first line of what it said, in the muted monospace of the status and plan rows. When there is
+   more, the line ends "(+N more lines)" and the rest opens beneath it on a click.
+
+What was considered and not done. Showing the note live while the turn runs: the words would need
+an event on the watch bus, and every client of the bus would need to know it, so the note appears
+where the line appeared before, in a chat drawn from its saved conversation. The other messages the
+harness adds as user-role ones (its `[harness]` hints, a verification run's output, a message typed
+mid-turn inside its frame) are drawn the same way and are not changed here: each wraps different
+content, and one of them wraps the person's own words. Giving the stored message another role: the
+model must read it as a user-role message (ADR-0211), and the older readers key on `role`. Telling a
+frame the loop added from one a person typed word for word: a message that repeats the frame's whole
+first line, with one of the loop's reasons, is drawn as a note. The model already reads that message
+as the hook's report, so the page draws what the model reads. Telling the two apart would need a
+mark set where the loop adds the message and saved with it, and a saved conversation has none.
+
+The proof. tests/test_webclient_hook_note.py serves a real agent per turn with a start-up hook
+script, as test_served_session_start.py does. The page's own script, run under node against the
+server started again on the same workspace, draws the person's line, then the note, then the reply,
+for a report of one line, of two, of three, and of two with Windows line ends. The transcript
+carries the words in `hook` and the whole frame in `text`; a line a person typed that starts like
+the frame stays theirs, and so does a reply that quotes the frame; a credential in what the hook
+said is redacted in `hook` and in `text`. The frame is known for each reason the loop gives and for
+`source=<name>`, and as each of the three reads in a conversation saved today; it is not known when
+its reason runs over two lines, when it has no tail, or when its reason is one the loop never gives.
+Thirteen sabotages, each run against the file: the page ignoring `hook` (the four page tests red,
+each drawing the frame as a user line, the old behaviour); the route never setting it (the page
+tests, the transcript test and the redaction test red); the route not redacting it (the redaction
+test red); the reader not checking the frame's tail (the no-tail test red); the reader taking any
+one-line reason (the five never-given reasons red); `source=` with no name taken as a reason (that
+test red); the route reading every role (the quoted-reply test red); the page splitting lines on
+`\n` alone (the Windows line ends test red); the fold losing its plural (the three-line test red);
+each of the three reasons reworded (that saved-frame test red), and the frame's own words reworded
+(all three red). Each turned green again once the code was back. `uv run poe check` green.
