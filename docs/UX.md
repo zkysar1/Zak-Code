@@ -497,8 +497,9 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
 - **Page note** — over the composer, in the view banner's look, text only: shown when the page
   is older than the server's and cannot reload into it. Either reloading brought the same page
   back ("something between this browser and the server answers with a saved copy of the
-  page"), or the browser lets the page keep nothing and something is typed. An open page whose
-  server serves another page otherwise reloads at once, keeping what is typed (ADR-0345).
+  page"), or the browser lets the page keep nothing across a reload. An open page whose server
+  serves another page otherwise reloads at once, keeping what is typed and, when the chat on
+  screen is not the active one, that chat (ADR-0345).
 - **Empty state** — centered `✦` + name (`--font-display`, 30px) + `{model} · session
   {id8}` + hint, plus three sample-prompt pills that prefill the composer (never send);
   removed on first append.

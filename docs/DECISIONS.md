@@ -21435,22 +21435,33 @@ its own old routes as soon as an update put that page on disk.
 Decision.
 1. The server reads its page once, as it starts, and serves that copy at `/`. A later install
    puts another build's page on disk, and the server goes on serving its own, the page its routes
-   were written for, until it restarts into that build.
+   were written for, until it restarts into that build. A page it cannot read (a file it may not
+   open, a folder where the file belongs) is a page it does not have: it starts all the same,
+   serves no page and names none, and its log says why. Reading the page at the start must not
+   stop a server starting.
 2. The page's name is the first 12 hex digits of the sha256 of the page file. The server writes it
    into the page it serves, in place of a slot the page holds (`__ZAKCODE_PAGE_DIGEST__`), and sends
    it with every watch response as `X-Page-Digest`, beside the bus's name. It names the page, not
    the build: it changes exactly when reloading would give the page another script, for every
    install shape, and a build that leaves the page alone reloads nobody.
 3. When a watch response names another page, the page reloads into the server's page as soon as
-   the response comes in, before it does anything else with that response. The reload asks for
-   `?page=<the server's name>`. A page that comes back from that reload drops `?page=` from the
-   address. If it is still not that page, because something between the browser and the server
+   the response comes in, before it does anything else with that response. The reload keeps the
+   page's own address (its path, its query, its place in the page) and adds
+   `?page=<the server's name>`. The page keeps the same name in sessionStorage too, so a proxy
+   that drops the query changes nothing. A page that comes back from that reload drops `?page=`
+   from the address; a browser that refuses to change the address leaves it there, and the page
+   goes on. If it is still not that page, because something between the browser and the server
    answers with a saved copy (the proxy case ADR-0342 records), it says so in a note above the
-   composer and does not reload again. What is typed in the composer goes across in
-   sessionStorage and comes back into the composer. Where the browser lets the page keep nothing,
-   a page with something typed says a newer page is there and stays, and a page with nothing
-   typed reloads.
-4. A page that did not come from the server's `/` (a copy of the file kept somewhere else, or the
+   composer and does not reload again. Once its page is the server's, it forgets the name it kept.
+4. What is typed in the composer goes across in sessionStorage and comes back into the composer.
+   So does the chat on screen when it is not the active one: the page comes back on that chat, as
+   a page left open across a restart on the same page stays on it (ADR-0319), where a page opened
+   afresh lands on the active chat. A chat deleted meanwhile is not there to come back to, and the
+   page opens the active one. Where the browser lets the page keep nothing, the page says a newer
+   page is there and stays, whether or not anything is typed: it could keep neither what is typed
+   nor the name it asks for, and without that name a saved copy on the way would have it reload
+   again and again.
+5. A page that did not come from the server's `/` (a copy of the file kept somewhere else, or the
    `/app` mount, which serves the file as it is) still holds the slot. It has no name and never
    reloads itself. A server that sends no name (an older one) never differs.
 
@@ -21460,29 +21471,47 @@ answer can have changed. The build label in place of the page's name, for the re
 Asking `/health`: the page would need a second request, and the watch response already carries
 the answer. Reloading whenever the bus's name changes: a restart on the same build would then
 reload every open page for nothing. Writing the name into the `/app` mount's copy: nothing reads
-that mount but a test. Keeping more than the composer across the reload (where the chat was
-scrolled to, an open card): the reloaded page draws the chat from its saved conversation, as any
-newly opened page does.
+that mount but a test. Keeping more than the composer and the chat on screen across the reload
+(where the chat was scrolled to, an open card): the reloaded page draws the chat from its saved
+conversation, as any newly opened page does.
 
-The proof. tests/test_webclient_page_reload.py runs the page's own script, as a server serves it
-with its name written in, under node against a real loopback server. A page left open on its server
-stays. When that server stops and a server started on another copy of the page takes its address,
-the page reloads once, asking for that page, with what was typed in sessionStorage. The page that
-reload opens is the new server's: it puts the text back in the composer, drops `?page=` and does not
-reload again. A page that comes back from the reload still old says so and stays. Where nothing can
-be kept, a page with something typed says a newer page is there and stays, and a page with nothing
-typed reloads. A page without a name, and a server that names no page, reload nothing. The server
-serves its page with its name written in, sends the same name with a watch response, and goes on
-serving the page it started with after another lands on disk. Ten sabotages, each run against the
-file: the page ignoring the name the watch sends (the restart test, the saved-copy test and both
-cannot-keep tests red); the page not checking that it came back from its own reload (the saved-copy
-test red: it reloads again); the server reading the page on every request (the started-with test
-red); the watch not sending the name (six tests red); what was typed not saved (the restart test
-red); what was saved not put back (the restart test red); reloading where nothing can be kept and
-something is typed (that cannot-keep test red); `?page=` left in the address (the restart and
-saved-copy tests red); the name never written into the page (the restart, name and started-with
-tests red); a page with no name taken as named (the no-name test red). Each turned green again once
-the code was back. Live, in headless Chrome against `zakcode webapp`: a page with text typed in its
-composer, left open while its server stopped and another started on the same port with the page
-changed on disk, asked once for `/?page=<the new name>`, came back on the new page with the text in
-its composer and `?page=` gone from its address, and stayed. `uv run poe check` green.
+The proof. tests/test_webclient_page_reload.py, 13 tests, runs the page's own script, as a server
+serves it with its name written in, under node against a real loopback server. A page left open on
+its server stays, and stays when the server restarts onto the same page. When the server stops and
+one started on another copy of the page takes its address, the page reloads once, from that watch
+response, and asks for nothing after it. The reload keeps the page's address (a path, a query and a
+place in the page) and adds the new name, and the name and what was typed go into sessionStorage.
+The page that reload opens is the new server's: it puts the text back in the composer, takes
+`?page=` out of the address, forgets what it kept and does not reload again. A page reading a chat
+that is not the active one comes back on that chat, its banner still up, and watches no other. A
+page that comes back from the reload still old says so and stays, whether the name it asked for is
+in its address or only in its sessionStorage. Where nothing can be kept, a page says a newer page
+is there and stays, typed or not. A page whose browser refuses to change the address still joins
+its chat. A page without a name, and a server that names no page, reload nothing. The server serves
+its page with its name written in, sends the same name with a watch response, goes on serving the
+page it started with after another lands on disk, and starts without a page it cannot read, its
+log saying why. Twenty-four sabotages, each run by a harness that restores the file and checks it
+byte for byte, with the red tests read from JUnit, and each green again once the code was back:
+- the page ignoring the name the watch sends (six tests red); the watch not sending the name
+  (eight); the name never written into the page (four); the server reading the page on every
+  request (the started-with test); a page with no name taken as named (the no-name test);
+- the page not checking that it came back from its own reload (both saved-copy cases); the name
+  it keeps not read back (the sessionStorage saved-copy case), not kept (both reload tests) or
+  never forgotten (both reload tests);
+- what was typed not kept, or not put back (the restart test); the chat on screen not kept, or not
+  opened again (the viewer test);
+- reloading where nothing can be kept (both cannot-keep cases), or where nothing can be kept and
+  nothing is typed (that case);
+- `?page=` left in the address (the restart test and the address saved-copy case); the reload
+  going to the site root (the restart test); the address losing its query and its place in the
+  page as `?page=` comes out (the restart test);
+- the watch going on after asking for the reload, or the check moved below the bus-epoch block
+  (the restart test); a page that reloads on every restart (the same-build test);
+- `history.replaceState` unguarded (the address test); a page the server cannot read stopping it,
+  or not logged (the cannot-read test).
+
+Live, in headless Chrome against `zakcode webapp`, before the fixes for the chat on screen, the name
+kept in sessionStorage and the page the server cannot read: a page with text typed in its composer,
+left open while its server stopped and another started on the same port with the page changed on
+disk, asked once for `/?page=<the new name>`, came back on the new page with the text in its
+composer and `?page=` gone from its address, and stayed. `uv run poe check` green.

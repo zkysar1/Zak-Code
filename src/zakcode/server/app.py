@@ -958,12 +958,18 @@ def create_app(
     # restarts into that build (ADR-0333): the page it serves is the one its routes were written
     # for. Its name, the first 12 hex digits of its sha256, is written into the page served at "/"
     # and sent with every watch response, so an open page sees when it is not the page the server
-    # serves (ADR-0345). None in a checkout without the page.
+    # serves (ADR-0345). None in a checkout without the page, or where it cannot be read: the
+    # server then starts with no page, and says so, where a read that failed stopped it starting.
     page_digest: str | None = None
     served_page = b""
     page_file = _STATIC_DIR / "index.html"
-    if page_file.is_file():
+    try:
         raw_page = page_file.read_bytes()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("serving no page: could not read %s (%s)", page_file, exc)
+    else:
         page_digest = hashlib.sha256(raw_page).hexdigest()[:12]
         served_page = raw_page.replace(_PAGE_DIGEST_SLOT, page_digest.encode("ascii"), 1)
 

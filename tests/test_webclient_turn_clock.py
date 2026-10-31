@@ -136,13 +136,20 @@ const document = {
 const navigator = { clipboard: { writeText: async () => {} } };
 // The page's address, its history and its session storage, as much of each as the page uses. A
 // reload is kept in `location.replaced`, never made; a storage set `broken` throws, as a browser's
-// does where the site may keep nothing (ADR-0345).
+// does where the site may keep nothing, and so does a history set `broken`, as a browser's does
+// once a page has rewritten its address too often (ADR-0345).
 const location = {
   href: "http://page.test/",
   replaced: [],
   replace(url) { this.replaced.push(String(url)); },
 };
-const history = { replaceState(state, title, url) { location.href = String(url); } };
+const history = {
+  broken: false,
+  replaceState(state, title, url) {
+    if (this.broken) throw new Error("the address may not change now");
+    location.href = String(url);
+  },
+};
 const sessionStorage = {
   items: new Map(),
   broken: false,

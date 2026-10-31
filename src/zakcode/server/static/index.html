@@ -1755,7 +1755,14 @@
       if (!resp.ok) throw new Error("session " + resp.status);
       const info = await resp.json();
       currentId = info.id;
-      await openSession(info);
+      // A reload that left this page reading another chat shows that chat again, as a restart on
+      // the same page would have (ADR-0345), while it is still there.
+      let target = info;
+      if (keptView !== null && keptView !== currentId) {
+        const kept = await fetch("/sessions/" + keptView).catch(() => null);
+        if (kept !== null && kept.ok) target = await kept.json().catch(() => info);
+      }
+      await openSession(target);
     } catch (e) {
       setConn("closed", "disconnected");
       add(errCard("could not join a session: " + e.message));
@@ -1786,46 +1793,70 @@
   // holds the slot: it has no name, and never reloads itself.
   const PAGE_DIGEST = "__ZAKCODE_PAGE_DIGEST__";
   const pageDigest = /^[0-9a-f]{12}$/.test(PAGE_DIGEST) ? PAGE_DIGEST : null;
-  // What is typed in the composer waits here while the page reloads.
+  // What the page keeps in sessionStorage while it reloads: the page it asks for (also in ?page=,
+  // which something on the way can drop), what is typed in the composer, and the chat it shows
+  // when that is not the active one.
+  const RELOAD_KEY = "zakcode-reload-for";
   const DRAFT_KEY = "zakcode-draft";
-  // The page the reload that opened this one asked for (its ?page=), or null.
+  const VIEW_KEY = "zakcode-view";
+  // The page the reload that opened this one asked for, or null.
   let reloadedFor = null;
+  // The chat that reload left this page showing, when it was not the active one, or null.
+  let keptView = null;
 
-  // Back from a reload into the server's page: what was typed goes back in the composer, and
-  // ?page= leaves the address, so a reload by hand asks for the page afresh.
+  function forget(...keys) {
+    for (const key of keys) {
+      try { sessionStorage.removeItem(key); } catch (e) { /* no storage, so nothing was kept */ }
+    }
+  }
+
+  // Back from a reload into the server's page: what was typed goes back in the composer, the chat
+  // it showed opens again (init), and ?page= leaves the address, so a reload by hand asks for the
+  // page afresh.
   function backFromReload() {
     const url = new URL(location.href);
     reloadedFor = url.searchParams.get("page");
     if (reloadedFor !== null) {
       url.searchParams.delete("page");
-      history.replaceState(null, "", url.href);
+      try { history.replaceState(null, "", url.href); } catch (e) { /* the address keeps ?page= */ }
     }
     let draft = null;
     try {
+      if (reloadedFor === null) reloadedFor = sessionStorage.getItem(RELOAD_KEY);
       draft = sessionStorage.getItem(DRAFT_KEY);
-      sessionStorage.removeItem(DRAFT_KEY);
+      keptView = sessionStorage.getItem(VIEW_KEY);
     } catch (e) { /* no storage, so nothing was kept */ }
+    forget(DRAFT_KEY, VIEW_KEY);
     if (draft !== null && !input.value) { input.value = draft; autoGrow(); }
   }
 
   // Reload into the page the server serves (`served`, a watch response's X-Page-Digest) when it is
-  // not this one, and say whether it did. Once only: the reload asks for ?page=<served>, and a page
-  // that comes back from it still not that one was not served by the server (something on the way
-  // answers with a saved copy), so it says so and stays, where reloading again would only repeat.
-  // What is typed goes across in sessionStorage; where that cannot hold it, the page says a newer
+  // not this one, and say whether it did. Once only: the page it asks for is kept, in ?page= and in
+  // sessionStorage, and a page that comes back from that reload still not that one was not served
+  // by the server (something on the way answers with a saved copy), so it says so and stays, where
+  // reloading again would only repeat. What is typed, and a chat shown that is not the active one,
+  // go across in sessionStorage too; where the browser keeps nothing there, the page says a newer
   // one is there and stays. A server that names no page (an older one) never differs.
   function reloadIfStale(served) {
-    if (served === null || pageDigest === null || served === pageDigest) return false;
+    if (served === null || pageDigest === null) return false;
+    if (served === pageDigest) {
+      if (reloadedFor !== null) { reloadedFor = null; forget(RELOAD_KEY); }  // the server's page now
+      return false;
+    }
     if (served === reloadedFor) {
       notePage("This page is older than the server's, and reloading brought the same one back: something between this browser and the server answers with a saved copy of the page.");
       return false;
     }
-    if (input.value) {
-      try { sessionStorage.setItem(DRAFT_KEY, input.value); }
-      catch (e) {
-        notePage("The server has a newer version of this page. Reload to use it; what you have typed is not kept, so copy it first.");
-        return false;
+    try {
+      sessionStorage.setItem(RELOAD_KEY, served);
+      if (input.value) sessionStorage.setItem(DRAFT_KEY, input.value);
+      if (sessionId !== null && currentId !== null && sessionId !== currentId) {
+        sessionStorage.setItem(VIEW_KEY, sessionId);
       }
+    } catch (e) {
+      forget(RELOAD_KEY, DRAFT_KEY, VIEW_KEY);
+      notePage("The server has a newer version of this page. Reload to use it: this browser lets the page keep nothing across a reload, so copy what you have typed first.");
+      return false;
     }
     const url = new URL(location.href);
     url.searchParams.set("page", served);
