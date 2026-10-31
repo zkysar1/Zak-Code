@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop, _collect_stream
+from zakcode.agent.loop import _WORD_LIMIT_FINISH, AgentLoop, _collect_stream
 from zakcode.config import Settings
 from zakcode.messages import Message
 from zakcode.providers import litellm_provider as provider_mod
@@ -164,6 +164,61 @@ def test_collect_stream_closes_a_stream_that_failed_midway() -> None:
     with pytest.raises(TimedOut):
         asyncio.run(_collect_stream(_Failing()))
     assert closed == [True]
+
+
+class _CountedStream:
+    """Hands out its events one at a time, counting them, and records its close."""
+
+    def __init__(self, *events: ProviderStreamEvent) -> None:
+        self.events = list(events)
+        self.taken = 0
+        self.closed = False
+
+    def __aiter__(self) -> _CountedStream:
+        return self
+
+    async def __anext__(self) -> ProviderStreamEvent:
+        if self.taken == len(self.events):
+            raise StopAsyncIteration
+        self.taken += 1
+        return self.events[self.taken - 1]
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_collect_stream_stops_a_text_past_its_word_limit_and_closes_it() -> None:
+    # ADR-0343: a runaway summary costs the words it was allowed, not the whole output cap.
+    # Thinking is not counted, and a word split across deltas counts once.
+    stream = _CountedStream(
+        StreamThinkingDelta(text="a great many words of thinking that are never counted"),
+        StreamTextDelta(text="one two "),
+        StreamTextDelta(text="thr"),
+        StreamTextDelta(text="ee four"),  # still four words: "thr" and "ee" are one
+        StreamTextDelta(text=" five"),
+        StreamTextDelta(text=" never read"),
+        StreamDone(finish_reason="stop"),
+    )
+
+    result = asyncio.run(_collect_stream(stream, max_words=4))
+
+    assert result.finish_reason == _WORD_LIMIT_FINISH
+    assert result.text == "one two three four five"
+    assert stream.taken == 5 and stream.closed  # nothing after the delta that passed the limit
+
+
+def test_collect_stream_at_its_word_limit_is_left_alone() -> None:
+    stream = _CountedStream(
+        StreamTextDelta(text="one two"),
+        StreamTextDelta(text=" three"),
+        StreamUsage(usage=Usage(prompt_tokens=3, completion_tokens=3)),
+        StreamDone(finish_reason="stop"),
+    )
+
+    result = asyncio.run(_collect_stream(stream, max_words=3))
+
+    assert result.finish_reason == "stop" and result.text == "one two three"
+    assert result.usage.completion_tokens == 3 and stream.closed
 
 
 class _StallingStream:

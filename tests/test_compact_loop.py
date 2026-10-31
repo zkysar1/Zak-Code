@@ -38,6 +38,7 @@ from zakcode.agent.loop import (
     _SUMMARY_CLOSE,
     _SUMMARY_OUTPUT_CHARS,
     _SUMMARY_OVER_BUDGET,
+    _SUMMARY_RUNAWAY,
     AgentLoop,
     _clamp_middle,
     _pack_parts,
@@ -1415,3 +1416,74 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert len(asks) == len(slices) + 1
     assert asks[-1].startswith(_CONDENSE_PROMPT.format(said=150 * len(slices)))
     assert text == _words(300)
+
+
+# ── ADR-0343: a runaway summary stopped at its word limit, an earlier one held ───────
+
+
+def test_a_summary_running_past_its_word_limit_is_stopped_and_asked_for_again(
+    tmp_path: Path,
+) -> None:
+    # Measured 2026-10-29/30 (ten worker sessions, the pod's 27B model, 24 hours): 60 summarizer
+    # calls ran to the 32,768-token cap, about 21 minutes each, and each was thrown away. The
+    # response is stopped once it holds four times the budget's words, and asked for again.
+    runaway = "<summary>" + _words(400 * _SUMMARY_RUNAWAY + 1)
+    provider = _CutSummarizer([runaway, _WHOLE], ["stop", "stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert "The session fixed the parser." in loop.session.messages[0].text
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 1
+    assert any("(it ran past its word limit)" in line for line in said)
+
+
+def test_a_summary_at_its_word_limit_is_not_stopped(tmp_path: Path) -> None:
+    # Exactly at the limit: the tags ride on the first and last words.
+    at_limit = f"<summary>{_words(400 * _SUMMARY_RUNAWAY)}</summary>"
+    provider = _CondensesOnRequest(at_limit, f"<summary>{_words(300)}</summary>")
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    # Not stopped: it was condensed as a summary over its budget (ADR-0331), not asked again.
+    assert text == _words(300)
+    assert provider.seen[1][0].text.startswith(_CONDENSE_PROMPT.format(said=400 * _SUMMARY_RUNAWAY))
+
+
+def test_an_earlier_summary_over_the_slack_is_held_to_it_with_its_end_kept() -> None:
+    # Measured 2026-10-29/30: a compaction that read an earlier summary over its budget's slack
+    # ran the next summary to the output cap in 8 of 28 cases, against 23 of 152 below it, and
+    # the elision after a failed summary left that summary in place for the next compaction.
+    installed = Message.system(f"{SUMMARY_MARKER}\n{_words(10)}{CONTINUATION_NOTE}")
+
+    held = AgentLoop._render_for_summary([installed, Message.user("next")], earlier_words=6)
+
+    assert held == (
+        "[earlier summary]\nw0 w1 w2 w3\n[... 4 words of the earlier summary left out ...]\n"
+        "w8 w9\n\n[user]\nnext"
+    )
+    whole = AgentLoop._render_for_summary([installed], earlier_words=10)
+    assert whole == "[earlier summary]\n" + _words(10)
+    assert AgentLoop._render_for_summary([installed]) == whole  # no limit: as ADR-0330 left it
+
+
+def test_a_re_compaction_reads_an_earlier_summary_held_to_the_budgets_slack(
+    tmp_path: Path,
+) -> None:
+    provider = _SummarizerProvider(["<summary>A is done.</summary>"], tokens=100)
+    installed = Message.system(f"{SUMMARY_MARKER}\n{_words(900)}{CONTINUATION_NOTE}")
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction([installed, *_history(3)]))
+
+    (sent,) = provider.seen[0]
+    earlier = sent.text.split("[earlier summary]\n", 1)[1].split("\n\n[user]\n", 1)[0]
+    limit = round(400 * _SUMMARY_OVER_BUDGET)  # 500 of the 400-word budget's slack
+    tail = " ".join(f"w{i}" for i in range(900 - (limit - limit * 2 // 3), 900))
+    assert earlier == (
+        f"{_words(limit * 2 // 3)}\n[... 400 words of the earlier summary left out ...]\n{tail}"
+    )

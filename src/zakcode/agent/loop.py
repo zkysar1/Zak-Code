@@ -464,6 +464,14 @@ _CONDENSE_CLOSE = (
     "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
     "decisions, file paths and unfinished work."
 )
+#: How many times its word budget a summarizer response may write before its stream is stopped
+#: (ADR-0343). Measured 2026-10-29/30 on ten worker sessions of the pod's 27B model, 24 hours:
+#: 60 summarizer calls ran to the 32,768-token output cap, about 21 minutes each, and each was
+#: thrown away (ADR-0275); of the 183 summaries installed, one ran past four times its budget
+#: of 3,100 words. The engines cap reasoning, so a call at the cap is summary text (ADR-0330).
+_SUMMARY_RUNAWAY = 4
+#: The finish reason :func:`_collect_stream` gives a stream it stopped at its word limit.
+_WORD_LIMIT_FINISH = "word_limit"
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -506,6 +514,25 @@ def _earlier_summary_body(text: str) -> str:
     body = text.strip().removeprefix(SUMMARY_MARKER).replace(CONTINUATION_NOTE.strip(), "")
     body = _POSITION_NOTE_RE.sub("", body)
     return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def _held_to_words(text: str, limit: int) -> str:
+    """An earlier summary held for the next summarizer (ADR-0343): whole up to ``limit`` words,
+    past that its first two thirds and its end, with a line saying how many words were left
+    out. Its end is the unfinished work, so it is kept. Measured 2026-10-29/30: a compaction
+    that read an earlier summary over its budget's slack ran the next summary to the output cap
+    in 8 of 28 cases, against 23 of 152 below it, and the elision after a failed summary leaves
+    that summary in place, so the next compaction read it again."""
+    spans = [m.span() for m in re.finditer(r"\S+", text)]
+    if len(spans) <= limit:
+        return text
+    head = max(limit * 2 // 3, 1)
+    tail = max(limit - head, 1)
+    left_out = len(spans) - head - tail
+    return (
+        f"{text[: spans[head - 1][1]]}\n[... {left_out:,} words of the earlier summary left out "
+        f"...]\n{text[spans[-tail][0] :]}"
+    )
 
 
 def _summary_target_words(window: int, room: int) -> int:
@@ -596,10 +623,11 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
 
     The summary is what the response puts inside its ``<summary>`` tags, else the whole
     response, with thinking and tool-call markup stripped. It is not a summary when the output
-    limit cut it off (``finish_reason``, ADR-0275), when it is empty, when it opens as a turn of
-    the transcript it was handed, or when it is shorter than :data:`_SUMMARY_FLOOR_CHARS` for a
-    request of :data:`_SUMMARY_FLOOR_SOURCE` characters or more. ``source_chars`` is the length
-    of that request.
+    limit cut it off (``finish_reason``, ADR-0275), when its stream was stopped at its word
+    limit (ADR-0343), when it is empty, when it opens as a turn of the transcript it was handed,
+    or when it is shorter than :data:`_SUMMARY_FLOOR_CHARS` for a request of
+    :data:`_SUMMARY_FLOOR_SOURCE` characters or more. ``source_chars`` is the length of that
+    request.
 
     A cut summary is the start of one, and what it leaves out is its end: in the 2026-10-02
     census, a section on unfinished work was in 140 of the 207 summaries that finished and 7
@@ -608,6 +636,8 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
     """
     if finish_reason in _LENGTH_FINISH_REASONS:
         return "", "it was cut off at the output limit"
+    if finish_reason == _WORD_LIMIT_FINISH:
+        return "", "it ran past its word limit"
     cleaned = _strip_model_markup(text)
     tagged = _SUMMARY_TAG_RE.search(cleaned)
     summary = (tagged.group(1) if tagged else cleaned).strip()
@@ -635,7 +665,9 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
     return min(room, max_output) if max_output else room
 
 
-async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResult:
+async def _collect_stream(
+    events: AsyncIterator[ProviderStreamEvent], *, max_words: int | None = None
+) -> LLMResult:
     """Fold a provider stream into the :class:`LLMResult` a buffered call would have returned.
 
     The inverse of ``Provider.astream``'s default (which wraps ``acomplete``): text and
@@ -644,15 +676,28 @@ async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResu
     tools, and a text-mode wrapper's synthetic calls are not an answer. The stream is
     closed on the way out whatever ended it, so a stall that the provider's per-gap bound
     cut short releases its socket before the retry opens another (ADR-0251).
+
+    With ``max_words``, the stream is stopped once its text holds more words than that, and the
+    finish reason is :data:`_WORD_LIMIT_FINISH` (ADR-0343): closing it ends the generation, so
+    a runaway costs the words it was allowed instead of the whole output cap. Thinking is not
+    counted. A stopped stream sends no usage event, so its usage is whatever came before.
     """
     text: list[str] = []
     thinking: list[str] = []
     usage = Usage()
     finish_reason: str | None = None
+    words = 0
+    in_word = False  # the text so far ends inside a word, which the next delta may continue
     try:
         async for event in events:
             if isinstance(event, StreamTextDelta):
                 text.append(event.text)
+                if max_words is not None and event.text:
+                    words += len(event.text.split()) - (in_word and not event.text[0].isspace())
+                    in_word = not event.text[-1].isspace()
+                    if words > max_words:
+                        finish_reason = _WORD_LIMIT_FINISH
+                        break
             elif isinstance(event, StreamThinkingDelta):
                 thinking.append(event.text)
             elif isinstance(event, StreamUsage):
@@ -3103,7 +3148,7 @@ class AgentLoop:
             self._egress_proxy = None
 
     @staticmethod
-    def _render_for_summary(messages: list[Message]) -> str:
+    def _render_for_summary(messages: list[Message], earlier_words: int | None = None) -> str:
         """Flatten messages to labeled plain text for the chunked summarize path.
 
         Tool calls are rendered as one compact line (name + clipped input) and tool
@@ -3115,7 +3160,9 @@ class AgentLoop:
         can hand back, not conversation, and the same body loaded through ``use_skill`` is a
         tool output that was already held. Any other user text arrives whole. A previous
         compaction's summary arrives under ``[earlier summary]``, without the lines the harness
-        writes fresh at every compaction (ADR-0330), as history the close says to condense.
+        writes fresh at every compaction (ADR-0330), as history the close says to condense;
+        with ``earlier_words``, held to that many words, its first two thirds and its end
+        (ADR-0343).
         """
         parts: list[str] = []
         for message in messages:
@@ -3124,6 +3171,8 @@ class AgentLoop:
             text = message.text.strip()
             if is_summary(message):
                 label, text = "earlier summary", _earlier_summary_body(text)
+                if earlier_words is not None:
+                    text = _held_to_words(text, earlier_words)
             elif message.role == "user" and _composed_skill_body(text):
                 text = _held_for_summary(text, "this skill's instructions")
             if text:
@@ -3177,8 +3226,10 @@ class AgentLoop:
         # model continues the conversation instead of summarizing it — measured
         # 2026-08-29 (a 27B coordinating session, 131k window): the "summary" was its
         # own last reply plus a text-format tool call, and the session re-ran a skill it
-        # had finished.
-        rendered = self._render_for_summary(messages)
+        # had finished. ADR-0343: an earlier summary arrives held to the budget's slack.
+        rendered = self._render_for_summary(
+            messages, earlier_words=round(words * _SUMMARY_OVER_BUDGET)
+        )
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
         async def ask(prompt: str) -> str:
@@ -3190,13 +3241,15 @@ class AgentLoop:
                 # whole request timeout before a retry; every lost answer measured on the
                 # pod ledger was a summarizer-sized buffered call, and no streamed call in
                 # the same windows was lost. Streamed, this rides the per-gap stall bound.
+                # ADR-0343: and stopped once its text runs past _SUMMARY_RUNAWAY budgets.
                 return _collect_stream(
                     summarizer.astream(
                         [Message.user(prompt)],
                         system=instruction,
                         prompt_cache_key=self._prompt_cache_key(),
                         **{"max_tokens": room, **raised, **call_kw},
-                    )
+                    ),
+                    max_words=words * _SUMMARY_RUNAWAY,
                 )
 
             def account_withheld(usage: Usage | None) -> None:
