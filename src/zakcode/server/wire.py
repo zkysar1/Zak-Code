@@ -384,6 +384,11 @@ class TranscriptMessage(BaseModel):
     #: ``at``; ``None`` if its stored stamp does not parse. Lets a page that joins the watch bus
     #: tell a saved message from one the bus will replay.
     at: float | None = None
+    #: What a SessionStart hook said, when this message is the one that handed it to the model
+    #: (ADR-0211), else ``None``. No person wrote that message, so the served page draws these
+    #: words as a note from the workspace, not ``text`` as a line typed in the chat (ADR-0344).
+    #: ``text`` stays the whole message, so a page that predates this field shows what it did.
+    hook: str | None = None
 
 
 class SessionTranscript(BaseModel):

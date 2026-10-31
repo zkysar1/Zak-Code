@@ -301,6 +301,13 @@
       background: var(--inset); border: 1px solid var(--line-soft); border-radius: 6px;
       font: 12px/1.5 var(--font-mono); color: var(--muted); white-space: pre;
     }
+    /* What the workspace's SessionStart hook said (ADR-0344): a grey note, not a line typed in
+       the chat. Its first line; the rest opens beneath it on a click. */
+    .row.hook > .g { color: var(--muted); font-family: var(--font-mono); }
+    .row.hook > .body { font: 12px/1.5 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+    .row.hook summary { list-style: none; cursor: pointer; }
+    .row.hook summary::-webkit-details-marker { display: none; }
+    .row.hook .said { margin-top: .35rem; white-space: pre-wrap; }
     /* the operator line's stamp and fold, grey like the terminal's user.meta */
     .row.user .umeta { color: var(--muted); font-weight: 400; }
     .row.user button.ufold {
@@ -644,6 +651,20 @@
       body.appendChild(fold);
     }
     return body;
+  }
+
+  // What the workspace's SessionStart hook said (ADR-0344). The model reads it as a user-role
+  // message (ADR-0211), but no person wrote it, so it is a grey note and not a line typed in the
+  // chat: its first line, and the rest beneath it on a click. textContent only.
+  function hookNote(said) {
+    const lines = splitLines(said.trim());
+    const head = "SessionStart hook: " + (lines[0] || "");
+    if (lines.length < 2) return row("hook", el("span", "", "·"), el("div", "", head));
+    const more = lines.length - 1;
+    const card = el("details", "");
+    card.appendChild(el("summary", "", head + "  (+" + more + " more line" + (more === 1 ? "" : "s") + ")"));
+    card.appendChild(el("div", "said", lines.slice(1).join("\n")));
+    return row("hook", el("span", "", "·"), card);
   }
 
   // ── scroll: follow only near the bottom; detached + streaming → jump pill ──
@@ -1642,7 +1663,9 @@
         saved = saved.filter((m) => m.at === null || m.at < t.bus_from);
       }
       for (const m of saved) {
-        if (m.role === "user") {
+        if (typeof m.hook === "string") {
+          add(hookNote(m.hook));  // a note from the workspace, not a line typed in the chat (ADR-0344)
+        } else if (m.role === "user") {
           const body = userBody(m.text, m.at);
           // hhmm() stamps a frame that has no time as it arrives; a saved line must not claim "now".
           if (m.at === null) body.querySelector(".umeta").remove();
