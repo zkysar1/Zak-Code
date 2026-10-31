@@ -20,6 +20,7 @@ from zakcode.tools.builtins._safety import (
     check_literal_content,
     check_skill_claims,
     check_skill_format,
+    check_tree_note_layout,
     diagnose_python_syntax,
     resolve_path,
 )
@@ -95,6 +96,13 @@ class WriteFileTool(Tool):
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
             return ToolResult.error(f"Failed to resolve path {path!r}: {exc}")
+
+        # A note filed one directory above the host framework's tree is refused before the
+        # parent directories below are created for it (ADR-0345).
+        misplaced = check_tree_note_layout(resolved, ctx.virtual_roots)
+        if misplaced is not None:
+            message, fix = misplaced
+            return ToolResult.error(message, data={"refusal": "tree_layout"}, fix=fix)
 
         try:
             if resolved.is_dir():

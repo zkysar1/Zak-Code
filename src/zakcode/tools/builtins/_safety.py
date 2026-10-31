@@ -416,3 +416,34 @@ def check_skill_claims(
         "name). " + _SKILL_CLAIMS_FIX,
         bad,
     )
+
+
+def check_tree_note_layout(
+    resolved: Path, virtual_roots: Mapping[str, Path] | None
+) -> tuple[str, str] | None:
+    """Refuse a file filed one directory above the host framework's knowledge tree (ADR-0345).
+
+    The framework keeps its tree at ``<world>/knowledge/tree/``: its scripts register a note as
+    ``world/knowledge/tree/…`` and its tree readers look nowhere else. A path that resolves to
+    ``<world>/tree/…`` is that spelling with the inner ``knowledge/`` dropped: ``world/tree/…``,
+    a bare ``knowledge/tree/…`` where the world is ``<workspace>/knowledge``, or the absolute
+    path of either. ``Write`` creates the missing parents, so such a write lands, the note is
+    registered, and its body sits where nothing reads it. Only a workspace that declared a
+    ``world/`` is judged. Returns ``(message, fix)``, or ``None``.
+    """
+    world = (virtual_roots or {}).get("world")
+    if world is None:
+        return None
+    try:
+        parts = resolved.relative_to(world).parts
+    except ValueError:
+        return None
+    if len(parts) < 2 or parts[0] != "tree":
+        return None
+    rest = "/".join(parts[1:])
+    return (
+        f"Refusing to write world/tree/{rest}: the framework keeps its knowledge tree at "
+        "world/knowledge/tree/ and reads a registered note's body from there, so a body under "
+        "world/tree/ is published without its article. Nothing was written.",
+        f"Write the same content to world/knowledge/tree/{rest}",
+    )
