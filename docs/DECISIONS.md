@@ -21415,3 +21415,56 @@ test red); the route reading every role (the quoted-reply test red); the page sp
 `\n` alone (the Windows line ends test red); the fold losing its plural (the three-line test red);
 each of the three reasons reworded (that saved-frame test red), and the frame's own words reworded
 (all three red). Each turned green again once the code was back. `uv run poe check` green.
+
+## ADR-0345: a note filed one directory above the host framework's knowledge tree is refused, and the refusal names the path that is read
+
+**Status:** Accepted (2026-10-31)
+
+**Context.** A host framework keeps its knowledge tree at `<world>/knowledge/tree/`: its scripts register a
+note's `file` as `world/knowledge/tree/…`, and its tree readers, the export that builds the member-facing
+bundle among them, look nowhere else. A served Mind's world is `<workspace>/knowledge` (the provisioner writes
+`WORLD_PATH=<workspace>/knowledge`), so its tree is `<workspace>/knowledge/knowledge/tree/`, and
+`<workspace>/knowledge/tree/` beside it is not the tree. The provisioner creates that directory on every boot
+(its comment says the agent writes its tree there), and `Write` creates missing parents, so a note written to it
+lands without an error. The framework's `tree-update.sh --add-child` registers the index entry only, in the real
+tree, so the node publishes with a summary and no article. A fleet audit of 2026-10-23 counted 8 of the 18 tree
+notes that residents wrote by hand since 2026-09-23 in `<workspace>/knowledge/tree/`, over 16 vessels with the
+harness vessel and the pack-installed ones left out; the two bundles it read for that carried the node with
+`body_len` 0, and the positive control carried 2,244.
+
+**Decision.** `check_tree_note_layout` in `tools/builtins/_safety.py` judges the resolved path, so each spelling
+that lands in that directory is judged alike: `world/tree/…` (the framework's spelling with the inner
+`knowledge/` dropped), a bare `knowledge/tree/…` on a served workspace, and the absolute path of either. When the
+workspace declared a `world/` (ADR-0282) and the resolved path is under `<world>/tree/…`, `Write` refuses before
+it creates the parent. The result is an error tagged `data["refusal"] == "tree_layout"`, the tag the loop already
+counts as a refusal of the model's own content (ADR-0118), with a sentence saying why and a `Fix:` line naming the
+same note under `world/knowledge/tree/…`. The spelling `world/knowledge/tree/…` and the paths of the real tree
+land as before.
+
+**Consequences.** A workspace that declares no `world/` is unchanged: a lean agent's notes stay in
+`knowledge/tree/`, where `zakcode.knowledge` reads them (tested with the spelling the served workspace refuses).
+`Edit` of a note already under `<world>/tree/` is not refused, and the notes already there are not moved; the
+export's choice between the two layouts belongs to the host. `Bash` is untouched, as in the framework. The check
+is path arithmetic on the resolved path and the declared world and opens no file. A world whose `<world>/tree/`
+is a directory for something other than the framework's tree would be refused; the framework has none.
+
+The rate. A census of 2026-10-31 (281 vessel dirs, 230 that ran) finds no note in the non-conformant layout dated
+after 2026-10-07. Six mode-unset vessels (not the harness vessel, not an assistant-mode pack install) hold 12
+notes in the real tree between them, their newest notes dated 2026-10-14 to 2026-10-30. The census gives a count
+and the newest date per vessel, not a date per note, and not whether a hand-written note or `bin/note-tree.sh`
+wrote it. ADR-0282 merged on 2026-10-11, makes the virtual spelling land in the real tree, and is the earliest
+candidate for the drop; the census does not say which build wrote a note, so the cause of the drop is not
+established. This ADR guards the spellings that still land in the directory. It does not answer a loss that is
+recurring now.
+
+**Measured.** On the served layout, with the provisioner's `knowledge/tree/` present, on the unmodified tool:
+`world/knowledge/tree/a.md` landed in `knowledge/knowledge/tree/`; `knowledge/tree/b.md`, the absolute path of
+`knowledge/tree/c.md` and `world/tree/e.md` landed in `knowledge/tree/`, all with `is_error` false. With the
+check, those three are refused, nothing is created, and the first lands as before. The tests are in
+`tests/test_virtual_prefix_resolution.py`: the three refusals, the three correct spellings, a workspace with no
+declared world, the check's table, and a scripted turn that files a note at `knowledge/tree/…`, reads the
+refusal and its `Fix:` line, and files it again at the real tree. On the unmodified `Write`, 4 fail (the three
+refusals and the turn) and 47 pass; with the check all 51 pass. `ruff check`, `ruff format --check` and `mypy`
+are clean, and `pytest` passes 6,643 tests with 24 skipped, with `tests/test_saybox.py` and
+`tests/test_ux_family.py` not collected on the build box (`prompt_toolkit`, a declared dependency, is absent from
+its environment).

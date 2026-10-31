@@ -28,7 +28,7 @@ from zakcode.permissions import (
     compile_protected_paths,
 )
 from zakcode.tools.base import ConcurrencyClass, ToolContext, ToolSpec
-from zakcode.tools.builtins._safety import PathEscapeError, resolve_path
+from zakcode.tools.builtins._safety import PathEscapeError, check_tree_note_layout, resolve_path
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.tools.builtins.edit import EditFileTool
 from zakcode.tools.builtins.read_file import ReadFileTool
@@ -382,3 +382,131 @@ def test_the_agent_hands_its_roots_to_the_policy_it_builds(served: Path) -> None
     agent = _agent(served, [reply("hi")])
     expected = {k: str(v) for k, v in _mind_virtual_roots(served).items()}
     assert agent.permission_policy._virtual_roots == expected
+
+
+# ── a note filed one directory above the framework's tree (ADR-0345) ────────────
+#
+# Field 2026-09-23 .. 2026-10-07: 8 of the 18 notes residents wrote by hand landed in
+# ``<workspace>/knowledge/tree/``, one directory above the framework's tree at
+# ``<workspace>/knowledge/knowledge/tree/``, while the note's index entry was registered in the
+# framework's; the node published with a summary and no article. The provisioner pre-creates
+# the directory the write used to land in, and ``Write`` creates missing parents anyway.
+
+_TREE_NOTE = "intelligence/learning-domains.md"
+_NOTE_BODY = "# Learning domains\nwhat the resident found\n"
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["world/tree/{n}", "knowledge/tree/{n}", "{ws}/knowledge/tree/{n}"],
+    ids=["world-minus-inner-knowledge", "bare-from-workspace", "absolute"],
+)
+async def test_write_refuses_a_note_one_directory_above_the_frameworks_tree(
+    served: Path, spelling: str
+) -> None:
+    path = spelling.format(n=_TREE_NOTE, ws=served)
+    result = await WriteFileTool().execute({"path": path, "content": _NOTE_BODY}, _ctx(served))
+    assert result.is_error
+    assert result.data == {"refusal": "tree_layout"}
+    assert result.output.startswith(f"Refusing to write world/tree/{_TREE_NOTE}:")
+    assert result.fix == f"Write the same content to world/knowledge/tree/{_TREE_NOTE}"
+    # refused before the parent was created for it: nothing exists where the note would be
+    assert not (served / "knowledge" / "tree").exists()
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "world/knowledge/tree/{n}",
+        "knowledge/knowledge/tree/{n}",
+        "{ws}/knowledge/knowledge/tree/{n}",
+    ],
+    ids=["virtual", "from-workspace", "absolute"],
+)
+async def test_write_files_the_note_at_the_frameworks_tree_by_every_correct_spelling(
+    served: Path, spelling: str
+) -> None:
+    """Positive control for the refusal above: the same note, one directory down, lands."""
+    path = spelling.format(n=_TREE_NOTE, ws=served)
+    result = await WriteFileTool().execute({"path": path, "content": _NOTE_BODY}, _ctx(served))
+    assert not result.is_error, result.output
+    assert (served / "knowledge" / "knowledge" / "tree" / _TREE_NOTE).read_text() == _NOTE_BODY
+    assert not (served / "knowledge" / "tree").exists()
+
+
+async def test_a_workspace_that_declares_no_world_keeps_its_own_knowledge_tree(
+    tmp_path: Path,
+) -> None:
+    """A lean agent's notes live at ``knowledge/tree/`` and ``zakcode.knowledge`` reads them there.
+
+    The refusal is the host framework's contract, so it needs a declared ``world/``: the
+    spelling the served workspace refuses lands here, which also shows the refusal comes from
+    the declaration and not from the words in the path.
+    """
+    result = await WriteFileTool().execute(
+        {"path": f"knowledge/tree/{_TREE_NOTE}", "content": _NOTE_BODY},
+        _ctx(tmp_path, declared=False),
+    )
+    assert not result.is_error, result.output
+    assert (tmp_path / "knowledge" / "tree" / _TREE_NOTE).read_text() == _NOTE_BODY
+
+
+@pytest.mark.parametrize(
+    ("below_world", "named"),
+    [("tree/a.md", "a.md"), ("tree/intelligence/deep/b.md", "intelligence/deep/b.md")],
+)
+def test_the_layout_check_names_the_same_note_one_directory_down(
+    served: Path, below_world: str, named: str
+) -> None:
+    roots = _mind_virtual_roots(served)
+    verdict = check_tree_note_layout(roots["world"] / below_world, roots)
+    assert verdict is not None
+    message, fix = verdict
+    assert message.startswith(f"Refusing to write world/tree/{named}:")
+    assert fix == f"Write the same content to world/knowledge/tree/{named}"
+
+
+@pytest.mark.parametrize(
+    "below_world",
+    ["knowledge/tree/a.md", "tree", "treehouse/a.md", "notes.md", "meta/x.md", "tree-b/a.md"],
+)
+def test_the_layout_check_leaves_every_other_path_alone(served: Path, below_world: str) -> None:
+    roots = _mind_virtual_roots(served)
+    assert check_tree_note_layout(roots["world"] / below_world, roots) is None
+    # outside the world, and with no world declared at all
+    assert check_tree_note_layout(served / "tree" / "a.md", roots) is None
+    assert check_tree_note_layout(roots["world"] / "tree" / "a.md", {}) is None
+    assert check_tree_note_layout(roots["world"] / "tree" / "a.md", None) is None
+
+
+async def test_a_turn_that_files_a_note_one_directory_too_high_is_told_where_it_goes(
+    served: Path,
+) -> None:
+    """Through the whole stack: the refusal reaches the model with its fix, and the retry lands."""
+    (served / "knowledge" / "tree").mkdir()  # the provisioner leaves this beside the real tree
+    agent = _agent(
+        served,
+        [
+            call_tool(
+                "Write", {"path": f"knowledge/tree/{_TREE_NOTE}", "content": _NOTE_BODY}, id="w1"
+            ),
+            call_tool(
+                "Write",
+                {"path": f"world/knowledge/tree/{_TREE_NOTE}", "content": _NOTE_BODY},
+                id="w2",
+            ),
+            reply("filed it"),
+        ],
+        permission_policy=PermissionPolicy("allow"),
+    )
+    result = await agent.arun_turn("file a note about learning domains")
+    assert result.stop_reason == "completed"
+    refused = agent.session.messages[2].blocks[0]
+    filed = agent.session.messages[4].blocks[0]
+    assert refused.is_error
+    assert refused.output.endswith(
+        f"Fix: Write the same content to world/knowledge/tree/{_TREE_NOTE}"
+    )
+    assert not filed.is_error, filed.output
+    assert (served / "knowledge" / "knowledge" / "tree" / _TREE_NOTE).read_text() == _NOTE_BODY
+    assert list((served / "knowledge" / "tree").iterdir()) == []
