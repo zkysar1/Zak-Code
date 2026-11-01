@@ -21819,3 +21819,77 @@ at 26.1 s, and none over 30 s. The workflow and `pyproject.toml` parse and read 
 
 Not verified: whether a 35-minute cap would have let the cancelled Windows job finish, since how
 long the runner would have waited is not known.
+
+## ADR-0350: a deployment names the web page in its own settings, and the server writes the name in as it serves the page
+
+Status: accepted. 2026-11-01.
+
+Context. The web page named itself "Zak Code" in six places: its tab title, its header, a new
+chat's title, the line under that title ("Ask about this workspace — Zak can read, edit, and run
+things."), the message box's placeholder, and the placeholder the page's script put back when the
+chat on screen was the active one. A new chat also offered three suggestions written for a coding
+workspace. A deployment that shows the page to its own users, behind its own sign-in, had one way
+to show its own name instead: edit the page in the install. `zakcode update` replaces the install
+(ADR-0291), and a server that sees a new build restarts into it (ADR-0333), so the next update put
+"Zak Code" back by itself.
+
+Decision.
+1. Three settings carry the brand: `brand_name`, `brand_tagline` and `brand_suggestions`
+   (`ZAKCODE_BRAND_NAME`, `ZAKCODE_BRAND_TAGLINE`, and `ZAKCODE_BRAND_SUGGESTIONS`, a JSON array
+   of strings). They are read like every other setting, from `~/.zakcode/.env`, the workspace's
+   `.env` or the environment, and an update replaces none of those. Unset, the page is its own.
+2. The page ships a slot wherever it names itself: the tab title, the header, a new chat's title,
+   line and suggestions, the message box's placeholder, and a class on its root. The server fills
+   them, HTML-escaped, as it reads the page at start, before it writes in the page's name
+   (ADR-0345). `zakcode.server.brand` holds the page's own name, line and suggestions, and nothing
+   else does.
+3. The page's name is the sha256 of the page as branded. A server restarted on a new brand serves
+   a page with another name, so an open page reloads into it, as it does after an update.
+4. A line left unset under a deployment's own name names that name ("Ask about this workspace —
+   Acme can read, edit, and run things."), so a name set alone leaves no "Zak" on the page. A name
+   set to "Zak Code", or to nothing, is the page's own, and `[]` shows no suggestions.
+5. A deployment's own name is set in the page's fallback serif. The display face is cut to the
+   letters of "Zak Code" (ADR-0221), so any other name would show its other letters in the
+   fallback face one at a time, mid-word. The root's `own-brand` class sets the whole name in that
+   face instead.
+6. The page's script takes the message box's placeholder from the page as served, so it holds no
+   name of its own.
+7. `/app/` and `/app/index.html` serve the same branded page as `/`. The `/app` mount serves the
+   file as shipped, and that file now carries slots.
+
+What was considered and not done.
+- A branding file beside the settings. It would be a second way to configure the server, and the
+  settings already have the precedence a deployment needs: a box-wide value in `~/.zakcode/.env`,
+  a workspace's own `.env`, and the environment for a service. Following the no-knobs ruling, there
+  is one way and no on/off flag; unset is the page's own brand.
+- Filling the brand in from the browser by asking an endpoint. The page would show "Zak Code"
+  until the answer came back, on every load.
+- A logo or colours: not asked for. The same slots would carry them.
+- The terminal client. The people who run a workspace use the terminal; the brand is for people
+  who reach the page through a deployment's own front door. The terminal is unchanged.
+- The assistant's own name. A workspace's `self.md` already replaces the default identity line
+  (`zakcode.identity`), so the assistant can introduce itself by the deployment's name without
+  this change.
+
+The proof. A full local `poe check` on 2026-11-01: ruff, ruff format (533 files) and mypy (167
+source files) clean, and pytest 6,692 passed, 25 skipped and 4 failed in 1,525.8 s. All four were
+tests that still read the page's old text: the display-face test read the name's slot as letters
+the face must draw, and three chat-switching tests ran the page on a DOM whose message box had no
+placeholder, which the script now takes from the markup. The display-face test now reads the page
+as served with no brand, and checks that the `own-brand` rule takes the face away; the switching
+DOM carries the placeholder as served. Those four files then passed, 67 tests. The nine tests in
+`tests/test_webclient_brand.py` cover the page with nothing set, a brand written in everywhere with
+its markup escaped, a name set alone, the default name and `""` as the page's own, `[]`
+suggestions, the page's name over the branded page, the `/app` paths, the brand read from the
+config home's `.env` through `load_settings`, and a script that holds no name. Seven mutations
+were each run green on the real code, red under the sabotage and green after the restore: the
+page's name taken over the unbranded page, the name not escaped, `/app/` not routed, a line that
+always says "Zak", no root class, a literal placeholder in the script, and the `own-brand` rule
+emptied. A headless Chrome render of a server whose `.env` set a name, a line and two suggestions
+showed all three, with the name in the fallback serif, and a server with nothing set showed the
+page as before. `zakcode update` reinstalls the uv tool environment and keeps its working files in
+`~/.zakcode/update/`; nothing in it removes `~/.zakcode/.env`.
+
+Not verified: a deployment that serves the page behind its own sign-in, and a real `zakcode update`
+on a box whose `~/.zakcode/.env` carries a brand. The read side is tested; that the update leaves
+the file alone was read from the update's code, not run.

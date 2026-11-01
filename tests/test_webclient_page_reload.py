@@ -31,6 +31,7 @@ from tests.test_webclient_reload_history import _app, _converse
 from tests.test_webclient_switching import _put_current
 from tests.test_webclient_turn_clock import _INDEX, _NODE, _page_script
 from zakcode.server import app as server_app
+from zakcode.server.brand import brand_page
 
 _needs_node = pytest.mark.skipif(_NODE is None, reason="needs node on PATH (CI runners carry it)")
 
@@ -140,8 +141,9 @@ def _tail(
 
 
 def _name_of(page_file: Path) -> str:
-    """The name a server gives the page it starts on."""
-    return hashlib.sha256(page_file.read_bytes()).hexdigest()[:12]
+    """The name a server with no brand set gives the page it starts on: that of the page with the
+    page's own brand written in (ADR-0350)."""
+    return hashlib.sha256(brand_page(page_file.read_bytes())).hexdigest()[:12]
 
 
 def _named(name: str) -> str:
@@ -405,7 +407,9 @@ def test_the_page_carries_its_name_and_every_watch_response_sends_it(tmp_path: P
         page = httpx.get(base + "/", timeout=5)
         session_id = httpx.post(base + "/sessions", timeout=5).json()["id"]
         header = _page_header(base, session_id)
-    assert page.content == shipped.replace(server_app._PAGE_DIGEST_SLOT, name.encode(), 1)
+    assert page.content == brand_page(shipped).replace(
+        server_app._PAGE_DIGEST_SLOT, name.encode(), 1
+    )
     assert page.headers["cache-control"] == "no-cache"
     assert header == name
 
@@ -424,7 +428,7 @@ def test_a_server_serves_the_page_it_started_with_whatever_lands_on_disk_after(
         session_id = httpx.post(base + "/sessions", timeout=5).json()["id"]
         header = _page_header(base, session_id)
     slot = server_app._PAGE_DIGEST_SLOT
-    assert page.content == _INDEX.read_bytes().replace(slot, started_with.encode(), 1)
+    assert page.content == brand_page(_INDEX.read_bytes()).replace(slot, started_with.encode(), 1)
     assert header == started_with
 
 

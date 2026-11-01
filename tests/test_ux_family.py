@@ -22,6 +22,7 @@ from rich.default_styles import DEFAULT_STYLES
 
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.cli.saybox import SayBoxEditor
+from zakcode.server.brand import brand_page
 
 _STATIC = Path(__file__).resolve().parents[1] / "src" / "zakcode" / "server" / "static"
 _INDEX = _STATIC / "index.html"
@@ -190,14 +191,21 @@ def test_every_letter_drawn_in_the_display_face_is_in_it() -> None:
         if "var(--font-display)" in body
     ]
     assert uses == ["header .brand", "#empty .t"]
+    # Both moments draw the page's name, which the server writes in (ADR-0350), so the words are
+    # read from the page as served with no brand set.
+    served = brand_page(_INDEX.read_bytes()).decode("utf-8")
     # The ✦ beside the wordmark is not in the latin file the face is cut from (its last
     # character is U+2215), so a symbol font draws it. The words are what the face holds.
-    wordmark = re.search(r'<div class="brand">.*?</span><span>([^<]*)</span></div>', html)
-    name = re.search(r'<div class="t">([^<]*)</div>', html)
+    wordmark = re.search(r'<div class="brand">.*?</span><span>([^<]*)</span></div>', served)
+    name = re.search(r'<div class="t">([^<]*)</div>', served)
     assert wordmark and name
     for words in (wordmark.group(1), name.group(1)):
         missing = set(words) - set(DISPLAY_FACE_CHARS)
         assert not missing, f"{words!r} draws {sorted(missing)}, which the face lacks: recut it"
+    # A deployment's own name holds letters the face lacks: the root class it is served under
+    # takes the face away, so the whole name is drawn in the fallback face.
+    own = re.search(r"html\.own-brand\s*\{([^{}]*)\}", style)
+    assert own and "--font-display:" in own.group(1) and "Fraunces" not in own.group(1)
 
 
 # ── the terminal ────────────────────────────────────────────────────────────
