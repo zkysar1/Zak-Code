@@ -82,6 +82,7 @@ from zakcode.permissions import PermissionOutcome, PermissionPrompter, Permissio
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import provider_key_env_names, strip_url_credentials
+from zakcode.server.brand import brand_page
 from zakcode.server.event_bus import EventBusRegistry
 from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
@@ -956,10 +957,12 @@ def create_app(
     # The bundled page, read once as the server starts. An install that lands under a running
     # server puts another build's page on disk, and this server goes on serving its own until it
     # restarts into that build (ADR-0333): the page it serves is the one its routes were written
-    # for. Its name, the first 12 hex digits of its sha256, is written into the page served at "/"
-    # and sent with every watch response, so an open page sees when it is not the page the server
-    # serves (ADR-0345). None in a checkout without the page, or where it cannot be read: the
-    # server then starts with no page, and says so, where a read that failed stopped it starting.
+    # for. The deployment's brand is written in first (ADR-0350). The page's name, the first 12 hex
+    # digits of the sha256 of the page so branded, is written into the page served at "/" and sent
+    # with every watch response, so an open page sees when it is not the page the server serves
+    # (ADR-0345), and a new brand reloads it as a new build does. None in a checkout without the
+    # page, or where it cannot be read: the server then starts with no page, and says so, where a
+    # read that failed stopped it starting.
     page_digest: str | None = None
     served_page = b""
     page_file = _STATIC_DIR / "index.html"
@@ -970,8 +973,14 @@ def create_app(
     except OSError as exc:
         logger.warning("serving no page: could not read %s (%s)", page_file, exc)
     else:
-        page_digest = hashlib.sha256(raw_page).hexdigest()[:12]
-        served_page = raw_page.replace(_PAGE_DIGEST_SLOT, page_digest.encode("ascii"), 1)
+        branded = brand_page(
+            raw_page,
+            name=resolved_settings.brand_name,
+            line=resolved_settings.brand_tagline,
+            suggestions=resolved_settings.brand_suggestions,
+        )
+        page_digest = hashlib.sha256(branded).hexdigest()[:12]
+        served_page = branded.replace(_PAGE_DIGEST_SLOT, page_digest.encode("ascii"), 1)
 
     # ── meta endpoints ─────────────────────────────────────────────────────────
 
@@ -2726,10 +2735,13 @@ def create_app(
     if page_digest is not None:
 
         @app.get("/")
+        @app.get("/app/")
+        @app.get("/app/index.html")
         def index() -> HTMLResponse:
             # no-cache: the browser asks again on every load, so a page it cached before an
             # upgrade is never what an upgraded server shows. The page as read at the start, its
-            # name written in (ADR-0345).
+            # brand and name written in (ADR-0345, ADR-0350). The /app mount below would serve the
+            # file as shipped, its slots unfilled, so its page is this one too.
             return HTMLResponse(served_page, headers={"Cache-Control": "no-cache"})
 
     if static_dir.is_dir():

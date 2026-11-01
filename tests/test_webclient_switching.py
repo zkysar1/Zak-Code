@@ -27,7 +27,8 @@ import pytest
 
 from tests.test_server_consumer import _LiveServer
 from tests.test_webclient_reload_history import _TAIL, _app, _converse
-from tests.test_webclient_turn_clock import _NODE, _PRELUDE, _page_script
+from tests.test_webclient_turn_clock import _INDEX, _NODE, _PRELUDE, _page_script
+from zakcode.server.brand import brand_page
 
 pytestmark = pytest.mark.skipif(_NODE is None, reason="needs node on PATH (CI runners carry it)")
 
@@ -36,6 +37,13 @@ _USAGE = {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10, "cost_
 A, X, Y = "aaaaaaaa-0001", "xxxxxxxx-0002", "yyyyyyyy-0003"
 
 _DOM = _PRELUDE.split("const __STREAMS = ")[0]
+#: The composer's placeholder as served with no brand set. The page's script puts back the one its
+#: markup carries, where the server wrote it (ADR-0350), so the DOM here carries it as served.
+_SERVED_INPUT = re.search(
+    r'<textarea id="input"[^>]* placeholder="([^"]*)"', brand_page(_INDEX.read_bytes()).decode()
+)
+assert _SERVED_INPUT is not None
+_PLACEHOLDER = _SERVED_INPUT.group(1)
 
 #: The scripted server and the timed steps. Runs after the DOM and before the page's script.
 _SERVER = r"""
@@ -54,6 +62,7 @@ document.addEventListener = (type, fn) => {
   if (type === "visibilitychange") __onVisibility.push(fn);
 };
 document.hidden = Boolean(__SCN.hidden);
+document.getElementById("input").placeholder = __SCN.placeholder;
 function __sse(frames) {
   return frames.map(([id, f]) => `id: ${id}\r\ndata: ${JSON.stringify(f)}\r\n\r\n`).join("");
 }
@@ -238,6 +247,7 @@ def _page(
         "listDelays": list_delays or [],
         "interrupt": interrupt or {},
         "hidden": hidden,
+        "placeholder": _PLACEHOLDER,
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
