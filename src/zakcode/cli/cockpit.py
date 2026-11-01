@@ -8,8 +8,11 @@ Bottom pane: the *say box* — a persistent input that appends every message to 
 JSONL ledger (operator provenance) and delivers it through the workspace **say
 inbox** (``<workspace>/.say`` — ``zakcode.session.say_inbox``): the SAME single-slot
 contract the server's ``POST /say`` writes and the webapp consumes. Every chat
-always listens to its workspace's say inbox (messages arrive exactly like typed
-lines, slash commands included). Inside the cockpit that inbox is the ONLY door:
+listens to its workspace's say inbox (messages arrive exactly like typed lines,
+slash commands included), except while ``zakcode webapp`` serves the workspace:
+then the inbox is the web app's, the box feeds the web app's chat, and the box
+and the chat pane both say so (ADR-0320, ADR-0346). Inside the cockpit that
+inbox is the ONLY door:
 the chat pane runs with ``ZAKCODE_INPUT_FRAME=off`` and does not read its own
 keyboard at all (``_InputMux(keyboard=False)``), so the say box — and the file
 contract behind it, which is what lets outside programs inject into a session —
@@ -51,6 +54,7 @@ from zakcode.session.say_inbox import (
     interrupt_path,
     request_interrupt,
     say_path,
+    served_path,
     write_say,
 )
 
@@ -191,6 +195,24 @@ def _append_ledger(ledger: Path, text: str, *, via: str, operator: str | None) -
     }
     with ledger.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row) + "\n")
+
+
+def _destination(root: Path) -> str | None:
+    """Where a say written now lands, for the sender's receipt (ADR-0346): a web app serving the
+    workspace takes every say for its chat (ADR-0320), and a turn running in another process owns
+    the inbox (ADR-0060). ``None`` when the next chat to read the inbox takes it."""
+    if busy_elsewhere(served_path(root)):
+        return "the web app's chat"
+    if busy_elsewhere(busy_path(root)):
+        return "the running turn"
+    return None
+
+
+def _stopping(root: Path) -> str:
+    """Whose turn a stop written now halts (ADR-0346): a served workspace's is the web app's."""
+    if busy_elsewhere(served_path(root)):
+        return "the web app's turn halts"
+    return "the agent halts its current turn"
 
 
 def _restore_sigint() -> None:
@@ -385,8 +407,9 @@ def cockpit_main(
     """(internal) Top-pane loop: banner, chat, Enter-to-relaunch."""
     workspace = workspace.resolve()
     # The say box below is the single input: hide chat's own input frame. Chat
-    # always listens to the workspace say inbox (the shared POST /say contract),
-    # so the box's messages arrive as real input — no keystroke injection.
+    # listens to the workspace say inbox (the shared POST /say contract), so the
+    # box's messages arrive as real input — no keystroke injection. While a web
+    # app serves the workspace they are its own, and chat says so (ADR-0346).
     # ZAKCODE_COCKPIT_PANE marks the child as already-inside-the-cockpit, which is
     # what stops `zakcode cli`'s self-elevation from recursing.
     env = {**os.environ, "ZAKCODE_INPUT_FRAME": "off", "ZAKCODE_COCKPIT_PANE": "1"}
@@ -469,7 +492,7 @@ def cockpit_say_box(
         carry = ""
         stamp = time.strftime("%H:%M")
         if kind == "interrupt-sent":
-            last = f"⏹ stop signal sent — the agent halts its current turn {stamp}"
+            last = f"⏹ stop signal sent — {_stopping(root)} {stamp}"
             carry = line
             continue
         if not line.strip():
@@ -480,8 +503,8 @@ def cockpit_say_box(
             continue
         _append_ledger(ledger_path, line, via="cockpit-say-box", operator=operator)
         lines = line.count("\n") + 1
-        # Where it will land (ADR-0060): a turn running in another process owns the inbox.
-        routed = " → the running turn" if busy_elsewhere(busy_path(inbox.parent)) else ""
+        where = _destination(root)
+        routed = f" → {where}" if where else ""
         last = f"✓ sent{routed} ({lines} lines) {stamp}" if lines > 1 else f"✓ sent{routed} {stamp}"
 
 
@@ -530,15 +553,18 @@ def say(
         if resp.status_code != 200:
             notice_error(console, f"daemon refused ({resp.status_code})", resp.text[:200])
             raise typer.Exit(code=1)
+        where = None
     else:
-        if not write_say(say_path(workspace.resolve()), text):
+        root = workspace.resolve()
+        if not write_say(say_path(root), text):
             notice_error(
                 console, "a message is already pending", "wait for the agent to pick it up"
             )
             raise typer.Exit(code=1)
+        where = _destination(root)
     ledger_path = ledger if ledger is not None else _default_ledger()
     _append_ledger(ledger_path, text, via="zakcode-say", operator=operator)
-    notice_info(console, "sent")
+    notice_info(console, f"sent to {where}" if where else "sent")
 
 
 def interrupt(
@@ -553,8 +579,9 @@ def interrupt(
     the transcript keeps everything up to the stop, and the prompt returns.
     Idempotent; an idle agent clears the signal without acting on it.
     """
-    request_interrupt(interrupt_path(workspace.resolve()))
-    notice_info(console, "stop signal sent — the agent halts its current turn within a moment")
+    root = workspace.resolve()
+    request_interrupt(interrupt_path(root))
+    notice_info(console, f"stop signal sent — {_stopping(root)} within a moment")
 
 
 def register_cockpit_commands(app: typer.Typer) -> None:

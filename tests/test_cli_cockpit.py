@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from rich.console import Console
 
 from zakcode.cli import cockpit
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.session.say_inbox import busy_path, served_path
 
 
 def _rec_console() -> Console:
@@ -703,6 +706,104 @@ def test_say_box_loop_routes_status_into_the_editor_toolbar(
     assert ed.seen[0] == "" and "✓ sent" in ed.seen[1] and "2 lines" in ed.seen[1]
     assert "✓ sent" not in cockpit.console.export_text()  # the toolbar carries it, not the pane
     assert len(cleared) == len(ed.seen)
+
+
+# ── where a line went: a web app serving the workspace takes it (ADR-0320, ADR-0346) ──
+
+
+def _held_elsewhere(*markers: Path) -> None:
+    """Fresh markers naming some OTHER process: a web app's ``.served``, another turn's ``.busy``."""
+    payload = {"pid": os.getpid() + 100_000, "session": "elsewhere", "since": time.time()}
+    for marker in markers:
+        marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
+def _say_box_statuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replies: list[tuple[str, str]]
+) -> list[str]:
+    """Run the say box over scripted editor replies; the toolbar status before each prompt."""
+
+    class _Ed:
+        def __init__(self) -> None:
+            self.status = ""
+            self.seen: list[str] = []
+            self.replies = iter(replies)
+
+        def prompt(self, default: str = "") -> tuple[str, str]:
+            self.seen.append(self.status)
+            try:
+                return next(self.replies)
+            except StopIteration:
+                raise KeyboardInterrupt from None
+
+    ed = _Ed()
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.setattr(cockpit, "_make_editor", lambda inbox, fp: ed)
+    monkeypatch.setattr(cockpit, "_clear_own_scrollback", lambda: None)
+    with pytest.raises(typer.Exit):
+        cockpit.cockpit_say_box(workspace=tmp_path, ledger=tmp_path / "l.jsonl", operator="h@b")
+    return ed.seen
+
+
+@pytest.mark.parametrize(
+    ("held", "receipt"),
+    [
+        ((), "✓ sent"),
+        (("busy",), "✓ sent → the running turn"),
+        (("served",), "✓ sent → the web app's chat"),
+        (("served", "busy"), "✓ sent → the web app's chat"),  # a served turn holds .busy too
+    ],
+)
+def test_say_box_names_where_its_line_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: tuple[str, ...], receipt: str
+) -> None:
+    _held_elsewhere(*({"busy": busy_path, "served": served_path}[h](tmp_path) for h in held))
+    seen = _say_box_statuses(tmp_path, monkeypatch, [("line", "hello")])
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "hello\n"
+    assert re.fullmatch(re.escape(receipt) + r" \d\d:\d\d", seen[1]), seen[1]
+
+
+@pytest.mark.parametrize(
+    ("served", "halts"),
+    [(False, "the agent halts its current turn"), (True, "the web app's turn halts")],
+)
+def test_say_box_stop_names_whose_turn_it_halts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, served: bool, halts: str
+) -> None:
+    if served:
+        _held_elsewhere(served_path(tmp_path))
+    seen = _say_box_statuses(tmp_path, monkeypatch, [("interrupt-sent", "half typed")])
+    assert re.fullmatch(re.escape(f"⏹ stop signal sent — {halts}") + r" \d\d:\d\d", seen[1])
+
+
+@pytest.mark.parametrize(
+    ("held", "receipt"),
+    [
+        ((), "sent"),
+        (("busy",), "sent to the running turn"),
+        (("served",), "sent to the web app's chat"),
+    ],
+)
+def test_say_names_where_its_line_went(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: tuple[str, ...], receipt: str
+) -> None:
+    _held_elsewhere(*({"busy": busy_path, "served": served_path}[h](tmp_path) for h in held))
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    cockpit.say(text="hi", workspace=tmp_path, url=None, ledger=tmp_path / "l.jsonl", operator=None)
+    assert (tmp_path / ".say").read_text(encoding="utf-8") == "hi\n"
+    assert cockpit.console.export_text().strip().splitlines()[-1].endswith(" " + receipt)
+
+
+def test_interrupt_names_the_web_apps_turn_on_a_served_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _held_elsewhere(served_path(tmp_path))
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    cockpit.interrupt(workspace=tmp_path)
+    assert (tmp_path / ".interrupt").exists()
+    assert "stop signal sent — the web app's turn halts within a moment" in (
+        cockpit.console.export_text()
+    )
 
 
 def test_pane_hooks_are_noops_outside_tmux(monkeypatch: pytest.MonkeyPatch) -> None:

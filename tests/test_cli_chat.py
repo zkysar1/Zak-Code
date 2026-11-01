@@ -1184,6 +1184,44 @@ def test_chat_resume_replays_transcript(tmp_path, monkeypatch) -> None:
     assert "end of replay" in result.stdout
 
 
+def test_chat_resume_draws_the_hook_note_and_the_typed_command(tmp_path, monkeypatch) -> None:
+    """ADR-0346: the redraw draws a saved chat as the page does. What a SessionStart hook said is
+    a note, not a line the person typed (ADR-0344), and a skill turn is the command as it was
+    typed, not its frame (ADR-0335)."""
+    from zakcode.agent.loop import _SESSION_START_FRAME, _SESSION_START_WHY
+    from zakcode.messages import Message
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    store = _seed_session_store(tmp_path, monkeypatch)
+    sess = Session(id="cafe0002", cwd=".", model="test-model")
+    sess.add_message(Message.user(SkillAgent.invocation.turn_text))
+    said = "the release check is in flight\ncall /status first"
+    why = _SESSION_START_WHY["startup"]
+    sess.add_message(Message.user(_SESSION_START_FRAME.format(why=why, text=said)))
+    sess.add_message(Message.assistant_text("booted"))
+    store.save(sess)
+
+    import zakcode.cli as cli_mod
+
+    real_builder = cli_mod._build_chat_agent
+
+    def builder(*args, **kwargs):
+        agent = real_builder(*args, **kwargs)
+        if kwargs.get("session_id"):
+            agent.session = store.load(kwargs["session_id"])
+        return agent
+
+    monkeypatch.setattr(cli_mod, "_build_chat_agent", builder)
+    result = runner.invoke(app, ["cli"], input="/resume cafe\n/exit\n")
+    assert result.exit_code == 0
+    out = " ".join(result.stdout.split())  # a long line wraps at the console's width
+    assert "SessionStart hook: the release check is in flight (+1 more line)" in out
+    assert "This workspace's SessionStart hook ran" not in out
+    assert "/start demo" in out
+    assert "<command-" not in out and "Boot body." not in out
+    assert "booted" in out
+
+
 def test_render_transcript_elides_and_counts_tools() -> None:
     from zakcode.cli import _render_transcript
     from zakcode.messages import Message, TextBlock, ToolUseBlock

@@ -1781,15 +1781,27 @@ def _render_transcript(
     operator report, first field use of ``/resume``). Long messages are elided at
     ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump.
     """
+    from zakcode.agent.loop import said_by_session_start, typed_command
+
     g = resolve_glyphs(console)
     rows: list[tuple[str, str, int]] = []
     for msg in getattr(session, "messages", []):
         if msg.role not in ("user", "assistant"):
             continue
-        tool_count = len(msg.tool_uses) if msg.role == "assistant" else 0
+        role = msg.role
+        tool_count = len(msg.tool_uses) if role == "assistant" else 0
         text = msg.text.strip()
+        if role == "user":
+            # Drawn as the page draws them (ADR-0346): what a SessionStart hook said is a note
+            # from the workspace, not a line typed in the chat (ADR-0344), and a skill turn is
+            # the command as it was typed, not its frame (ADR-0335).
+            said = said_by_session_start(text)
+            if said is not None:
+                role, text = "hook", said.strip()
+            else:
+                text = typed_command(text) or text
         if text or tool_count:
-            rows.append((msg.role, text, tool_count))
+            rows.append((role, text, tool_count))
     if not rows:
         return
     shown = rows[-limit:]
@@ -1801,6 +1813,12 @@ def _render_transcript(
         _dim(console, f"{g['dash']} replaying {len(shown)} message{'s' if len(shown) != 1 else ''}")
     for role, text, tool_count in shown:
         console.print()
+        if role == "hook":
+            lines = text.splitlines()
+            more = len(lines) - 1
+            rest = f"  (+{more} more line{'s' if more != 1 else ''})" if more else ""
+            _dim(console, f"{g['dot']} SessionStart hook: {lines[0]}{rest}")
+            continue
         if len(text) > _REPLAY_CHAR_LIMIT:
             elided_chars = len(text) - _REPLAY_CHAR_LIMIT
             text = text[:_REPLAY_CHAR_LIMIT].rstrip() + f" … (+{elided_chars} chars)"
@@ -1845,6 +1863,18 @@ def _read_stdin_line() -> str:
     return input()
 
 
+#: What a cockpit pane says when a web app starts or stops serving its workspace (ADR-0346).
+_SERVED_NOTICE = {
+    "served": (
+        "a web app is serving this workspace {dash} the say box now feeds the web app's chat, "
+        "and nothing reaches this one until it stops"
+    ),
+    "unserved": (
+        "the web app stopped serving this workspace {dash} the say box feeds this chat again"
+    ),
+}
+
+
 class _InputMux:
     """The ONE owner of interactive input for a chat session.
 
@@ -1877,6 +1907,7 @@ class _InputMux:
         idle_probe: Callable[[], bool] | None = None,
         inject: Callable[[str], None] | None = None,
         wakeup_probe: Callable[[], str | None] | None = None,
+        report_served: bool = False,
     ) -> None:
         from zakcode.session.say_inbox import (
             busy_elsewhere,
@@ -1911,6 +1942,12 @@ class _InputMux:
         #: written for the chat its page has open, a stop for that chat's turn — so this
         #: REPL reads, clears and reports neither, idle or prompting.
         self._served_marker = served_path(inbox.parent)
+        #: Whether the idle wait reports the served marker's changes (ADR-0346): a cockpit pane's
+        #: only door is the say inbox, so while a web app serves the workspace nothing it is sent
+        #: reaches the pane. ``next_input(idle=True)`` then answers ``("served", None)`` once when
+        #: a server starts and ``("unserved", None)`` once when it stops, for the REPL to say so.
+        self._report_served = report_served
+        self._served_reported = False
         #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
@@ -2005,7 +2042,9 @@ class _InputMux:
         here, while the turn's interrupt watcher consumes it and cancels the
         turn. ``stop`` lets a cancelled asker end this wait promptly — without
         it, an abandoned worker thread would poll forever, stealing the next
-        input and blocking interpreter exit.
+        input and blocking interpreter exit. With ``report_served``, an idle wait
+        also answers ``served`` / ``unserved`` when a web app starts or stops
+        serving the workspace (ADR-0346).
         """
         while True:
             if stop is not None and stop.is_set():
@@ -2013,6 +2052,9 @@ class _InputMux:
             # While another process serves the workspace its say slot and its interrupt file
             # are that server's (ADR-0320): this REPL neither reads nor clears them.
             served = self._busy_elsewhere(self._served_marker)
+            if idle and self._report_served and served != self._served_reported:
+                self._served_reported = served
+                return ("served" if served else "unserved", None)
             if idle:
                 if not served:
                     self._take_interrupt(self.interrupt_fp)
@@ -3499,9 +3541,10 @@ def chat(
     zakpick_advisory = [0, 0]
 
     # ── one input rule, two doors, ONE reader ───────────────────────────────────
-    # An interactive chat always listens to (a) its keyboard and (b) its
-    # workspace's say inbox (<workspace>/.say — the same single-slot contract the
-    # server's POST /say and `zakcode say` write). Both arrive as ordinary lines,
+    # An interactive chat listens to (a) its keyboard and (b) its workspace's
+    # say inbox (<workspace>/.say — the same single-slot contract the server's
+    # POST /say and `zakcode say` write), (b) only while no web app serves the
+    # workspace (ADR-0320; the cockpit pane says so, ADR-0346). Both arrive as ordinary lines,
     # slash commands included; inbox lines echo with "(say)" provenance. The
     # _InputMux is the ONLY stdin owner — the permission prompt takes its answers
     # from the same mux (never a second console.input), and the input frame is
@@ -3571,10 +3614,14 @@ def chat(
                 return composed
         return fired_line(prompt)
 
+    pane = os.environ.get("ZAKCODE_COCKPIT_PANE") == "1"
     mux = _InputMux(
         inbox_path,
         interrupt_fp,
-        keyboard=os.environ.get("ZAKCODE_COCKPIT_PANE") != "1",
+        keyboard=not pane,
+        # ADR-0346: the pane's one door is the say box, and a web app serving the workspace
+        # takes everything it sends (ADR-0320), so the pane says when one starts and stops.
+        report_served=pane,
         # ADR-0034: a `zakcode update` that lands while this REPL sits idle restarts it
         # into the new build (resuming this session) instead of leaving it on stale code.
         idle_probe=lambda: install_changed() is not None,
@@ -3636,6 +3683,9 @@ def chat(
             # flight, so hand the session to a fresh process and resume it there.
             _restart_into_new_build(console, agent)
             continue  # reached only when the exec itself failed — keep serving
+        if kind in _SERVED_NOTICE:
+            notice_info(console, _SERVED_NOTICE[kind].format(dash=GLYPHS["dash"]))
+            continue
         if kind == "interrupt":
             # A single Ctrl-C at the prompt must NOT kill the session — terminal
             # muscle memory sends it constantly (aborting a copy, clearing a

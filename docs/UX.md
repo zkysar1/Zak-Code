@@ -280,7 +280,13 @@ The pane starts at 5 rows and **grows with the text** (wrapped rows + toolbar + 
 breath, capped at 16) then shrinks back after each send; a token keeps a paste at one
 row. The last send's status (`✓ sent (12 lines) 14:22`, busy, stop sent) lives in a dim
 bottom toolbar beside the key help, never in the pane's scrollback — which is cleared
-on every prompt so a wheel-up in the box shows nothing stale. In the chat pane a long
+on every prompt so a wheel-up in the box shows nothing stale. A line that went
+somewhere other than the chat pane says where: `✓ sent → the running turn` while a turn
+in another process holds the inbox (ADR-0060), `✓ sent → the web app's chat` while
+`zakcode webapp` serves the workspace, and a stop there reads `stop signal sent — the
+web app's turn halts` (ADR-0346). A served workspace's inbox is the web app's
+(ADR-0320), so the chat pane receives nothing while it is served; it says so with one
+notice when a web app starts serving and one when it stops. In the chat pane a long
 message echoes folded: the first 6 lines then `… (+N more lines)` (`fold_lines`), so a
 200-line paste never buries the turn it started.
 

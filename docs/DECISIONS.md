@@ -19839,6 +19839,10 @@ server's marker, 1; the turn's watcher obeying a served stop, 1; the REPL cleari
 wording, 1; and the survey listing `.served`, 1 (`tests/test_prompt.py`). The project's check (`ruff check`, `ruff
 format --check`, `mypy src/zakcode`, `pytest`) is green: 6,293 passed, 22 skipped.
 
+**Amended by ADR-0346 (2026-10-31):** where a line goes is unchanged, but the person is now told. The cockpit's say
+box, `zakcode say` and `zakcode interrupt` name the web app in their receipt on a served workspace, and the cockpit's chat
+pane says when a web app starts and stops serving it.
+
 ## ADR-0321: a Claude 5 request opts into `drop_block`, replays only signed thinking, reads one stream channel, and ships its own price-map entry
 
 **Status:** Accepted (2026-10-17)
