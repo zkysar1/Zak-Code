@@ -21,7 +21,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Job-level ceiling (matters most for the Windows cell, which cannot use the
     # GNU `timeout` session watchdog below); per-test bound is pytest-timeout.
-    timeout-minutes: 20
+    # Green verify jobs took 706-884 s on Windows and 444-612 s on Linux
+    # (56 jobs, 2026-10-30 to 2026-11-01), so 35 min gives the slowest about
+    # 2.4 times its run (ADR-0349).
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -62,8 +65,9 @@ jobs:
         # Session-level safety bound: PYTHONFAULTHANDLER + `timeout -s ABRT` make
         # any future hang fail in minutes with an all-thread traceback instead of
         # stalling silently to the runner ceiling (the failure class this PR fixes).
-        # Per-test bound is in pyproject (pytest-timeout, timeout=120). The suite
-        # runs in ~90s, so the 600s bound is pure headroom.
+        # Per-test bound is in pyproject (pytest-timeout, timeout=120). This step
+        # took 419-575 s on 42 green Linux jobs (2026-10-30 to 2026-11-01), so the
+        # bound is 1,200 s, about twice the slowest (ADR-0349).
         #
         # --basetemp puts every tmp_path under a folder with a SPACE in its name, like a Windows
         # user's profile folder. A test that builds a command from a temp path must then quote
@@ -71,7 +75,7 @@ jobs:
         # did not, and a hint cut a path at its first space; found by hand on 2026-10-13).
         env:
           PYTHONFAULTHANDLER: "1"
-        run: timeout -s ABRT -k 30 600 uv run --no-sync pytest -q --basetemp "$RUNNER_TEMP/zak code tmp" --cov=zakcode --cov-report=xml --cov-report=term
+        run: timeout -s ABRT -k 30 1200 uv run --no-sync pytest -q --basetemp "$RUNNER_TEMP/zak code tmp" --cov=zakcode --cov-report=xml --cov-report=term
 
       - name: Pytest (Windows)
         if: runner.os == 'Windows'
