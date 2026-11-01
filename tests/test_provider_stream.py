@@ -531,6 +531,36 @@ async def test_a_stream_that_never_sends_a_chunk_is_timed_out(
     assert stream.closed  # the socket is released, not leaked
 
 
+async def test_a_stream_its_reader_leaves_early_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A caller that stops reading before the end closes the event stream (the compaction
+    # summarizer does this to a runaway summary at its word limit). The response under it
+    # must be closed then too: left open, the server goes on generating to its output cap.
+    stream = _StallingStream([_chunk(content=str(i)) for i in range(20)], hang=False)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    events = _fast_provider(stall=5.0).astream(_MSGS)
+    async for event in events:
+        if isinstance(event, StreamTextDelta):
+            break  # leaving an ``async for`` does not close the generator by itself
+    assert not stream.closed
+    await events.aclose()
+    assert stream.closed
+    assert stream.i < 20  # left mid-stream, not read to its end
+
+
+async def test_a_stream_read_to_its_end_is_left_to_release_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The close is for a stream left early; one that ended has nothing more to send.
+    chunks = [_chunk(content="done"), _chunk(content="", finish_reason="stop")]
+    stream = _StallingStream(chunks, hang=False)
+    monkeypatch.setattr(provider_mod.litellm, "acompletion", _serving(stream))
+    events = await _collect(_fast_provider(stall=5.0).astream(_MSGS))
+    assert isinstance(events[-1], StreamDone) and events[-1].finish_reason == "stop"
+    assert not stream.closed
+
+
 async def test_a_stall_midway_reports_how_far_the_stream_got(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
