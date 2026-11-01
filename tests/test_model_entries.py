@@ -278,3 +278,16 @@ class TestRefreshScriptCheck:
 
         assert result.returncode == 1
         assert "0.0.0" in result.stderr
+
+
+class TestTheSuiteReadsTheBundledMap:
+    def test_every_test_reads_the_bundled_map(self) -> None:
+        """``conftest.py`` holds the whole run to litellm's bundled map (ADR-0348), so a test that
+        needs a model only the fetched map holds fails on every runner, not on the one whose fetch
+        failed. Without the setting litellm tries the fetch, and this reads ``is_env_forced`` false
+        whether the fetch works or not."""
+        from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map_source_info
+
+        info = get_model_cost_map_source_info()
+
+        assert info["source"] == "local" and info["is_env_forced"], info
