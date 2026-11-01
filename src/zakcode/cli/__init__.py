@@ -2003,10 +2003,11 @@ class _InputMux:
         (``inject``, ADR-0078), which folds the line into the conversation at its next
         iteration boundary — a typed ``/stop`` on a runner whose turn never ends therefore
         RUNS instead of waiting for the prompt that never comes. Only a mux with no agent
-        attached (a thin ``--server`` REPL, whose turn runs elsewhere) writes the line to
-        the workspace say inbox instead; that slot is a FILE every session on the
-        workspace polls, which is how a line typed at one cockpit reached a sibling
-        session. A slot still busy after the wait falls back to the queue, so no line is
+        attached writes the line to the workspace say inbox instead (the chat REPL always
+        attaches one, and the thin ``--server`` REPL builds no mux: it reads nothing while
+        its turn runs, and reads the next line at its prompt); that slot is a FILE every
+        session on the workspace polls, which is how a line typed at one cockpit reached a
+        sibling session. A slot still busy after the wait falls back to the queue, so no line is
         ever lost; a turn that ends meanwhile releases the line to the prompt at once.
         """
         if not self.turn_active or not line.strip() or _is_repl_command(line):

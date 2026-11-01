@@ -16,7 +16,7 @@ from rich.console import Console
 
 from zakcode.cli import cockpit
 from zakcode.cli._theme import ZAK_THEME
-from zakcode.session.say_inbox import busy_path, served_path
+from zakcode.session.say_inbox import BUSY_STALE_SECONDS, busy_path, served_path
 
 
 def _rec_console() -> Console:
@@ -776,6 +776,28 @@ def test_say_box_stop_names_whose_turn_it_halts(
     assert re.fullmatch(re.escape(f"⏹ stop signal sent — {halts}") + r" \d\d:\d\d", seen[1])
 
 
+@pytest.mark.parametrize("marker", ["stale", "own"])
+def test_say_box_names_no_web_app_for_a_stale_or_own_served_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
+    # Only a FRESH marker naming ANOTHER process is a web app serving the workspace: one a stopped
+    # web app left behind, or one naming this very process, changes neither receipt.
+    path = served_path(tmp_path)
+    if marker == "stale":
+        _held_elsewhere(path)
+        stamp = time.time() - BUSY_STALE_SECONDS - 5
+        os.utime(path, (stamp, stamp))
+    else:
+        payload = {"pid": os.getpid(), "session": "own", "since": time.time()}
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    seen = _say_box_statuses(
+        tmp_path, monkeypatch, [("line", "hello"), ("interrupt-sent", "half typed")]
+    )
+    assert re.fullmatch(re.escape("✓ sent") + r" \d\d:\d\d", seen[1]), seen[1]
+    stop = "⏹ stop signal sent — the agent halts its current turn"
+    assert re.fullmatch(re.escape(stop) + r" \d\d:\d\d", seen[2]), seen[2]
+
+
 @pytest.mark.parametrize(
     ("held", "receipt"),
     [
@@ -792,6 +814,26 @@ def test_say_names_where_its_line_went(
     cockpit.say(text="hi", workspace=tmp_path, url=None, ledger=tmp_path / "l.jsonl", operator=None)
     assert (tmp_path / ".say").read_text(encoding="utf-8") == "hi\n"
     assert cockpit.console.export_text().strip().splitlines()[-1].endswith(" " + receipt)
+
+
+def test_say_url_names_no_destination_from_the_local_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The daemon at --url took the line; the local markers are about some other chat.
+    import httpx
+
+    _held_elsewhere(served_path(tmp_path), busy_path(tmp_path))
+    monkeypatch.setattr(cockpit, "console", _rec_console())
+    monkeypatch.delenv("ZAKCODE_AUTH_TOKEN", raising=False)
+
+    def _fake_post(url, json=None, headers=None, timeout=None):  # noqa: ANN001, ANN204
+        return httpx.Response(200, json={"queued": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    cockpit.say(
+        text="hi", workspace=tmp_path, url="http://x:1", ledger=tmp_path / "l.jsonl", operator=None
+    )
+    assert cockpit.console.export_text().strip().splitlines()[-1].endswith(" sent")
 
 
 def test_interrupt_names_the_web_apps_turn_on_a_served_workspace(
