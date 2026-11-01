@@ -33,7 +33,7 @@ from rich.console import Console
 
 import zakcode
 from tests.test_busy_marker import _loop, _peek_script, _SayWhileRunning
-from tests.test_cli_chat import FakeAgent, runner
+from tests.test_cli_chat import CANNED_TEXT, FakeAgent, runner
 from tests.test_webapp_sessions import _Served
 from zakcode.cli import _InputMux, app
 from zakcode.events import AgentDone, AgentEvent
@@ -296,6 +296,42 @@ def test_a_cockpit_pane_says_when_a_web_app_starts_and_stops_serving_its_workspa
     assert out.count(started) == 1
     assert out.count(stopped) == 1
     assert out.index(started) < out.index(stopped) < out.index("goodbye")
+
+
+def test_an_inline_repl_on_a_served_workspace_says_none_of_the_panes_notices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The notices are the pane's (ADR-0346): an inline REPL reads its own keyboard, and a line
+    # typed there runs in its own chat whether or not a web app serves the workspace.
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("ZAKCODE_COCKPIT_PANE", raising=False)
+    _foreign_served(tmp_path)
+    take = cli_mod._InputMux.try_input
+    wait = cli_mod._InputMux.next_input
+    answered: list[str] = []
+
+    def nothing_typed_ahead_at_first(self: _InputMux) -> tuple[str, str | None] | None:
+        # The person types after the prompt appears, so the REPL's first input is a real idle
+        # wait: the wait a reporting mux answers with "served".
+        return None if not answered else take(self)
+
+    def recorded(self: _InputMux, **kwargs: Any) -> tuple[str, str | None]:
+        got = wait(self, **kwargs)
+        answered.append(got[0])
+        return got
+
+    monkeypatch.setattr(cli_mod._InputMux, "try_input", nothing_typed_ahead_at_first)
+    monkeypatch.setattr(cli_mod._InputMux, "next_input", recorded)
+    result = runner.invoke(app, ["cli"], input="hello\n/exit\n")
+    assert result.exit_code == 0
+    assert answered[0] == "line"  # the first prompt waited, and the typed line answered it
+    out = " ".join(result.output.split())
+    assert CANNED_TEXT in out and "goodbye" in out
+    assert "a web app is serving this workspace" not in out
+    assert "the web app stopped serving this workspace" not in out
 
 
 def test_a_switch_refused_for_another_sessions_turn_says_so(tmp_path: Path) -> None:
