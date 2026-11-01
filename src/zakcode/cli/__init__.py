@@ -81,6 +81,7 @@ from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_perm
 from zakcode.providers.base import ProviderError, UnknownContextWindow
 from zakcode.providers.labels import display_model_id, provider_label
 from zakcode.secrets import strip_url_credentials
+from zakcode.session.framework_agents import start_line, startable_agents
 
 if TYPE_CHECKING:
     from zakcode import Agent
@@ -2723,6 +2724,34 @@ def _print_banner(console: Console, agent: Agent) -> None:
         )
 
 
+def _print_start_agents(console: Console, workspace_root: Path) -> None:
+    """On a chat with nothing in it, offer the workspace's agents before anything is asked.
+
+    The web page's offer, in the terminal (ADR-0351): an agent's identity and what it has learned
+    load only when it is started, so a question typed first is answered without them. Nothing is
+    printed where the workspace has no agent to start.
+    """
+    agents = startable_agents(workspace_root)
+    if not agents:
+        return
+    lines = [
+        Text(
+            f"Start an agent before you ask anything. This workspace has: {', '.join(agents)}.",
+            style="warn",
+        ),
+        Text.assemble(
+            ("  " + start_line(agents[0]), "bold"),
+            ("   or another agent named above" if len(agents) > 1 else "", "notice.dim"),
+        ),
+        Text(
+            "A question typed first is answered without the agent: none of its identity, "
+            "and none of what it has learned.",
+            style="notice.dim",
+        ),
+    ]
+    console.print(Padding(Group(*lines), (0, 0, 0, 2)))
+
+
 #: A factory that produces one turn's event stream. The CLI is agnostic to where
 #: the stream comes from — a local in-process ``Agent`` or a remote ``ServerClient``
 #: — so the same cancellable runner and renderer drive both.
@@ -3480,6 +3509,8 @@ def chat(
             # `-s <id>` resumes: replay the tail so the human sees where they were,
             # exactly as the in-REPL /resume does.
             _render_transcript(console, agent.session)
+        else:
+            _print_start_agents(console, agent.settings.workspace_root)
 
     # Start the live status file writer: one JSON file per session that an outside observer
     # can read to learn what the process is doing (ADR-0266). Fire-and-forget: a status
@@ -3782,6 +3813,7 @@ def chat(
                 zakpick_advisory[:] = [0, 0]
                 _rebind_status(agent)
                 notice_info(console, "started a fresh session")
+                _print_start_agents(console, agent.settings.workspace_root)
                 continue
             if command == "/resume":
                 # In-REPL twin of the `-s/--session` startup flag (2026-08-24 operator

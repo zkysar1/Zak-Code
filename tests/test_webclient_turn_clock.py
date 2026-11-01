@@ -110,7 +110,12 @@ class __Node {
 // the page's markup puts it in. Found by id only while in the document, as a browser finds
 // them: once add() takes the start screen out of the page, it and what is inside it are not.
 const __body = new __Node("body");
-const __INSIDE = { "empty-meta": "empty" };
+const __INSIDE = {
+  "empty-meta": "empty",
+  "start-agents": "empty",
+  "start-agent-buttons": "start-agents",
+  "start-agent-line": "start-agents",
+};
 const __byId = new Map();
 function __element(id) {
   if (!__byId.has(id)) {

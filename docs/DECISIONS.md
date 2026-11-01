@@ -21893,3 +21893,70 @@ page as before. `zakcode update` reinstalls the uv tool environment and keeps it
 Not verified: a deployment that serves the page behind its own sign-in, and a real `zakcode update`
 on a box whose `~/.zakcode/.env` carries a brand. The read side is tested; that the update leaves
 the file alone was read from the update's code, not run.
+
+## ADR-0351: a new chat in a workspace with framework agents offers to start one, and says what is lost without it
+
+Status: accepted. 2026-11-01.
+
+Context. A workspace that runs the framework keeps its agents under `agents/<name>/`. Its rules and
+skills reach every chat, but an agent's identity and what it has learned (its knowledge, its
+lessons, its guardrails) load only when `/start <name>` starts it, and the start ties it to that one
+chat, so every new chat begins without one. Nothing on a new chat said so. The page offered three
+suggestions to type and the terminal a tip, so a first-time user typed a question, got an answer
+without the agent, and had no way to know that the agent they meant to ask had never been there.
+
+Decision.
+1. `zakcode.session.framework_agents.startable_agents(workspace_root)` names the agents a new chat
+   can start: the directories under `agents/` that hold a `self.md`, sorted, and only when the
+   workspace holds the framework's start skill (`.claude/skills/start/SKILL.md`), since that is
+   what the offer runs. A name that is not one plain word (`[A-Za-z0-9][A-Za-z0-9._-]*`) is
+   skipped, so no name carries markup or a second argument into a line. A workspace that cannot be
+   read has no agents: the offer is a help, never a reason for a chat to fail. `start_line(name)` is
+   the line that starts one: `/start <name> --mode assistant`.
+2. `GET /workspace/agents` answers `{"agents": [{"name": ..., "start": ...}]}`, each agent with
+   its start line, so the page sends the line the server gives and the line has one source.
+3. The page asks each time a chat with nothing in it is shown: on load, on a new chat, on a switch
+   to an empty one. With agents, the start screen shows a panel in place of the line and the
+   suggestions: "Start an agent before you ask anything", what starting one does, the warning ("A
+   question typed now is answered without the agent: none of its identity, and none of what it has
+   learned."), one button per agent ("Start scout in assistant mode"), and a note that assistant
+   mode answers and works when asked and does nothing on its own, with the line a button sends,
+   which can be typed instead. A button sends its line as the chat's first message. The
+   suggestions are hidden rather than kept, because each one is a question typed before an agent
+   was started. Without agents, or from a server too old to know the route, the start screen is as
+   it was.
+4. The terminal prints the same offer under its welcome box and after `/clear`, the two places a
+   chat starts empty: the agents, the line that starts the first, and the same warning. A resumed
+   chat (`--session`, `/resume`) gets none. The cockpit's top pane runs `zakcode cli`, so it prints
+   the same offer.
+5. The list is read on each ask, never cached: an agent created in one chat is offered in the next.
+
+What was considered and not done.
+- Writing the agents into the page as it is served, like the brand (ADR-0350). The page is read
+  once at start, so an agent created after that would not be offered until a restart, and the
+  first agent a new user creates is the one that matters.
+- Starting an agent automatically. Which agent, and in which mode, is the user's choice, and a
+  workspace may hold several.
+- Blocking a typed question until an agent is started. A user may mean to ask without one. The
+  offer says what is lost, and the choice stays theirs.
+- Offering autonomous mode as well. It runs on its own until stopped, which is not what a first
+  question needs; it stays a typed command.
+
+The proof. 18 new tests: the finder over tmp workspaces (5); the route on a real app, and the
+page's own script under node against a scripted server (7); the terminal's offer, and the chat
+itself on a new chat, after `/clear` and on a resumed chat (6). Ten mutations were each run green
+on the real code, red under the sabotage and green after the restore: no start-skill check, no
+`self.md` check, a line without the mode, the route reading the process's directory instead of the
+workspace, a page that never asks, a button that builds its own line, the offer shown with no
+agents, the suggestions kept beside it, an offer on a resumed chat, and none after `/clear`. A real
+`zakcode webapp` over two scratch workspaces, driven in Chrome: with agents, the panel showed two
+buttons in place of the line and the suggestions, at 1280 and at 390 pixels wide, and a real click
+on the second sent `/start scout --mode assistant` as the chat's first message, from which the
+server built the start skill's turn; without the framework, the start screen was unchanged and
+the route answered `[]`. The installed `zakcode cli` printed the offer under its welcome box in the
+first workspace and nothing new in the second. A full local `poe check`: ruff, format and mypy
+clean, and pytest 6,714 passed, 25 skipped.
+
+Not verified: the start a button sends, carried through by a real model (the browser check ran
+against a model it could not reach, so it saw the turn begin and nothing after); the offer in a
+live cockpit pane; a deployed server.

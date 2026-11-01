@@ -349,6 +349,26 @@
       transition: color 120ms ease, border-color 120ms ease;
     }
     .pill:hover { color: var(--fg); border-color: var(--brand); }
+    /* The offer to start an agent first (ADR-0351) takes the place of the line and the
+       suggestions while it shows: each of those invites a question typed before an agent is. */
+    #empty.offering .h, #empty.offering .pills { display: none; }
+    #empty .offer {
+      max-width: 34rem; margin: 1.25rem auto 0; padding: .9rem 1.1rem; text-align: left;
+      background: var(--surface); border: 1px solid var(--line-strong);
+      border-left: 3px solid var(--brand); border-radius: var(--radius-sm);
+    }
+    #empty .offer-t { font-weight: 600; font-size: 17px; color: var(--fg); }
+    #empty .offer p { margin: .5rem 0 0; color: var(--muted); }
+    #empty .offer .offer-warn { color: var(--fg); }
+    #empty .offer .offer-how { font-size: 12px; }
+    #empty .offer code { font: 12px/1.5 var(--font-mono); color: var(--fg); }
+    #empty .offer-buttons { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .9rem; }
+    .start-agent {
+      font: 600 13px/1.4 var(--font-prose); color: var(--on-brand); background: var(--brand);
+      border: 1px solid var(--brand); border-radius: var(--radius-sm); padding: .45rem .9rem;
+      cursor: pointer;
+    }
+    .start-agent:hover { background: var(--brand-press); border-color: var(--brand-press); }
 
     /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
     .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
@@ -490,6 +510,17 @@
         <div class="m" id="empty-meta"></div>
         <div class="h">__ZAKCODE_BRAND_LINE__</div>
         <div class="pills">__ZAKCODE_BRAND_SUGGESTIONS__</div>
+        <div class="offer" id="start-agents" hidden>
+          <div class="offer-t">Start an agent before you ask anything</div>
+          <p>This workspace has agents that learn. Starting one loads who it is and what it has
+            learned, and ties it to this chat. A new chat starts with no agent.</p>
+          <p class="offer-warn">A question typed now is answered without the agent: none of its
+            identity, and none of what it has learned.</p>
+          <div class="offer-buttons" id="start-agent-buttons"></div>
+          <p class="offer-how">Assistant mode answers and works when you ask, and does nothing on its
+            own. A button sends its start line as this chat's first message, such as
+            <code id="start-agent-line"></code>. You can type it instead.</p>
+        </div>
       </div>
     </div>
   </main>
@@ -561,6 +592,9 @@
   // Inside the start screen, so held from here: once add() takes the start screen out of the page,
   // looking it up by id finds nothing, and the next chat opened would stop half way through.
   const emptyMeta = document.getElementById("empty-meta");
+  const startAgents = document.getElementById("start-agents");
+  const startAgentButtons = document.getElementById("start-agent-buttons");
+  const startAgentLine = document.getElementById("start-agent-line");
   const input = document.getElementById("input");
   // The composer's own placeholder, which names the page's brand as the server wrote it in
   // (ADR-0350), for when it is not saying something else.
@@ -1625,6 +1659,32 @@
     pill.onclick = () => { input.value = pill.textContent; autoGrow(); input.focus(); };
   }
 
+  // A chat with nothing in it, in a workspace whose framework has agents, offers to start one
+  // first (ADR-0351): an agent's identity and what it has learned load only when it is started,
+  // and a question typed before that is answered without them. Asked each time such a chat is
+  // shown, so an agent made in one chat is offered in the next. A button sends the start line the
+  // server gave it. No answer leaves the start screen as it was.
+  async function offerAgents() {
+    let agents = [];
+    try {
+      const resp = await fetch("/workspace/agents");
+      const answer = resp.ok ? await resp.json() : null;
+      if (answer && Array.isArray(answer.agents)) {
+        agents = answer.agents.filter(
+          (a) => a && typeof a.name === "string" && typeof a.start === "string");
+      }
+    } catch (e) { /* the start screen as it was */ }
+    startAgentButtons.replaceChildren(...agents.map((agent) => {
+      const button = el("button", "start-agent", "Start " + agent.name + " in assistant mode");
+      button.type = "button";
+      button.onclick = () => { input.value = agent.start; autoGrow(); sendMessage(); };
+      return button;
+    }));
+    startAgentLine.textContent = agents.length ? agents[0].start : "";
+    startAgents.hidden = agents.length === 0;
+    emptyState.classList.toggle("offering", agents.length > 0);
+  }
+
   // ── session bootstrap + socket ──
   function setConn(state, label) {
     connDot.className = "cdot " + state;
@@ -1650,8 +1710,10 @@
       if (gen !== shown) return null;  // another chat opened while this one's history was on its way
       // The start screen is for a chat with nothing in it. A chat with a conversation never shows
       // it, not even while the replay that draws its newest turns is still on its way.
-      if (t.messages.length === 0 && !t.running) log.replaceChildren(...(emptyState ? [emptyState] : []));
-      else document.getElementById("empty")?.remove();
+      if (t.messages.length === 0 && !t.running) {
+        log.replaceChildren(...(emptyState ? [emptyState] : []));
+        offerAgents();  // the workspace's agents, to start before anything is asked (ADR-0351)
+      } else document.getElementById("empty")?.remove();
       lastCursor = t.bus_since ?? null;
       replayFloor = t.bus_since ?? 0;
       assistantBody = null;
