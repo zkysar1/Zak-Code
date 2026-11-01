@@ -11,7 +11,9 @@ normally whenever it is present (CI installs it; see ``.github/workflows/ci.yml`
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
+import os
 import re
 import urllib.request
 from collections.abc import Iterator
@@ -20,8 +22,36 @@ from typing import Any
 
 import pytest
 
-from zakcode.messages import Message
-from zakcode.providers.base import Capabilities, LLMResult, Provider
+# Every test reads litellm's BUNDLED price map (ADR-0348). litellm fetches its remote map when it is
+# imported and falls back to the bundled one when the fetch fails, so a test that named a model only
+# the fetched map holds passed on a runner whose fetch worked and failed on one whose fetch did not.
+# Set before the imports below, which import litellm; the subprocesses a test starts inherit it.
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+
+from zakcode.messages import Message  # noqa: E402
+from zakcode.providers.base import Capabilities, LLMResult, Provider  # noqa: E402
+
+#: litellm's own entries, verbatim, for the models the tests name that the bundled map lacks.
+#: Written from the fetched map by ``python scripts/refresh_litellm_model_entries.py --models
+#: <ids> --output tests/fixtures/litellm_model_entries.json``; rerun it when the litellm pin moves.
+_TEST_MODEL_ENTRIES = Path(__file__).parent / "fixtures" / "litellm_model_entries.json"
+
+
+def _register_test_model_entries() -> None:
+    """Register each fixture entry the loaded map lacks, as the provider registers its own.
+
+    Unlike the provider's best-effort registration this raises: a fixture that cannot be read must
+    fail the run, not leave the tests on a map that quietly lacks their models.
+    """
+    import litellm
+
+    entries = json.loads(_TEST_MODEL_ENTRIES.read_text(encoding="utf-8"))["entries"]
+    for model_id, entry in entries.items():
+        if model_id not in litellm.model_cost:
+            litellm.register_model({model_id: entry})
+
+
+_register_test_model_entries()
 
 
 @pytest.fixture(autouse=True)

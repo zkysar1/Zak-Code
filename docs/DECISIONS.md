@@ -21704,3 +21704,65 @@ second wait. Each fails exactly one of the three tests and leaves the other two 
 Not verified: a real Mind ending its turn on reading the line. The tests' agent ends its turn on
 reading it; whether the Mind consolidates and the run ends through the graceful chain is for a
 replay on a DEV resident, which was not run here. The vessel's own log was not read here.
+
+## ADR-0348: the test suite reads litellm's bundled price map, and a fixture gives it the entries its tests name
+
+Status: accepted. 2026-11-01. Builds on ADR-0281 (litellm's own entries for a process that cannot
+fetch the map), whose shipped snapshot is unchanged.
+
+Context. litellm fetches its remote price map when it is imported and falls back to the map bundled
+in the package when the fetch fails (ADR-0281). The suite imported litellm the same way, so a test
+that named a model only the fetched map holds passed on a runner whose fetch worked and failed on
+one whose fetch did not. On PR #825 the py3.11 ubuntu job of CI run 41279454185, attempt 1, failed
+28 tests in five files the PR does not touch (`test_gemini3_sampling_params.py`,
+`test_gpt56_tools_effort_none.py`, `test_hipaa_endpoints.py`, `test_openai_store_default.py`,
+`test_reasoning_effort.py`): `UnknownContextWindow` for `openai/gpt-5.6-luna`, `gpt-5.6-terra` and
+`gemini/gemini-3.5-flash`, `KeyError: 'reasoning_effort'`, and `assert 'none' == 'high'`. The same
+head passed on attempt 2, and py3.13 passed on attempt 1. On a desktop, with
+`LITELLM_LOCAL_MODEL_COST_MAP=True` the five files failed the same 28 tests, the ids identical to the
+CI run's (`28 failed, 144 passed`), and without it they passed (`172 passed`). On litellm 1.86.2,
+the `uv.lock` pin, the bundled map holds 2,716 entries (2,719 once the shipped snapshot is
+registered) and the fetched map 4,553, and the four models these tests need are in the second only.
+That the CI runner's fetch failed is inferred from this; its log records no fetch.
+`tests/test_model_entries.py` already said its tests read no fetched map. The rest of the suite did
+not hold to that.
+
+Decision.
+1. `tests/conftest.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=True` for the whole run, before its own
+   imports, which import litellm. Every test reads the bundled map on every runner, and a
+   subprocess a test starts inherits the setting.
+2. `tests/fixtures/litellm_model_entries.json` holds litellm's own entries, verbatim, for the four
+   models the tests name that the bundled map lacks: `gemini/gemini-3.5-flash`, `gpt-5.6-luna`,
+   `gpt-5.6-terra` and `vertex_ai/gemini-3.8-flash`. `scripts/refresh_litellm_model_entries.py
+   --models <ids> --output tests/fixtures/litellm_model_entries.json` writes it from the fetched
+   map, with the same `_meta` block as the shipped snapshot. `conftest.py` registers each entry the
+   loaded map lacks, after the provider has registered its own. Unlike the provider's best-effort
+   registration it raises when the fixture cannot be read.
+3. `tests/test_model_entries.py` pins point 1. It reads litellm's own report of where its map came
+   from and expects the local map, forced by the environment.
+
+What was considered and not done. Moving the tests to models the shipped snapshot carries: they
+test the gpt-5.6 tier and Gemini 3 by name. Adding the four models to the shipped snapshot: that
+changes what a sealed process prices, which is product behaviour, and
+`test_bundled_price_map_degrades_visibly_not_silently` pins that `gpt-5.6-luna` stays unpriced
+under the bundled map. Registering the entries per test: the fetched map held them for the whole
+process, which is the state the suite has passed under.
+
+Not changed. litellm's Anthropic beta-header allowlist is a second remote read of the same kind.
+litellm fetches it at first use, not at import, unless `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True`.
+Whether any test depends on its fetched copy was not measured here.
+
+The proof. With nothing set in the environment the five files pass (`172 passed`). The whole suite
+on a Windows desktop, py3.11.14: `6685 passed, 25 skipped`, with one test deselected,
+`test_startup_keeps_a_different_say`, which now and then hangs in `asyncio.run`'s teardown whether
+or not litellm fetched (it hung once in five runs alone, with the fetch in place); that is a separate
+fix. `uv run poe check` on the final tree then ran the whole suite with nothing deselected:
+`6687 passed, 25 skipped`. Two mutants, each run by a harness that restores the file and checks it
+byte for byte.
+Renaming the fixture's `vertex_ai/gemini-3.8-flash` entry fails exactly the six tests that name that
+model, on a desktop whose fetch works and whose fetched map holds it. Removing the line in
+`conftest.py` fails exactly the new pin, which then reads `source: remote`, and leaves the file's
+other 21 tests green. Each passes again once restored.
+
+Not verified: a runner whose fetch fails. Such a runner now reads the same map as every other, and
+the pin asserts that on each run.
