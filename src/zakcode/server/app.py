@@ -109,6 +109,7 @@ from zakcode.server.wire import (
     events_schema,
 )
 from zakcode.session.atomic_write import write_text_atomic
+from zakcode.session.framework_agents import start_line, startable_agents
 from zakcode.session.framework_signal import (
     AUTONOMOUS_MODE,
     framework_agent_mode,
@@ -2210,6 +2211,21 @@ def create_app(
             # is unaffected by this key appearing beside it.
             "findings": _list_findings(),
             "session_id": _current_session_id(),
+        }
+
+    @app.get("/workspace/agents")
+    def workspace_agents() -> dict[str, Any]:
+        """The framework agents a new chat can start, each with its start line (ADR-0351).
+
+        The page offers them on a chat with nothing in it and sends the line a button names.
+        ``[]`` when the workspace runs no framework or has no agent yet. Read on every ask, so
+        an agent made in one chat is offered in the next.
+        """
+        return {
+            "agents": [
+                {"name": name, "start": start_line(name)}
+                for name in startable_agents(_workspace_root)
+            ]
         }
 
     @app.get("/sidecar/health")
