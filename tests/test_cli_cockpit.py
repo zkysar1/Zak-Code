@@ -712,7 +712,7 @@ def test_say_box_loop_routes_status_into_the_editor_toolbar(
 
 
 def _held_elsewhere(*markers: Path) -> None:
-    """Fresh markers naming some OTHER process: a web app's ``.served``, another turn's ``.busy``."""
+    """Fresh markers naming some OTHER process: a web app's ``.served``, a turn's ``.busy``."""
     payload = {"pid": os.getpid() + 100_000, "session": "elsewhere", "since": time.time()}
     for marker in markers:
         marker.write_text(json.dumps(payload) + "\n", encoding="utf-8")

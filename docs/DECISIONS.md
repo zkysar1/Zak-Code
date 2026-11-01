@@ -21519,3 +21519,107 @@ kept in sessionStorage and the page the server cannot read: a page with text typ
 left open while its server stopped and another started on the same port with the page changed on
 disk, asked once for `/?page=<the new name>`, came back on the new page with the text in its
 composer and `?page=` gone from its address, and stayed. `uv run poe check` green.
+
+## ADR-0346: on a served workspace the cockpit says where a line went, and its chat pane says when a web app starts and stops serving
+
+Status: accepted. 2026-10-31. Amends ADR-0320 in what the person is told, not in where a line
+goes. Builds on ADR-0060 (the say box's receipt) and on ADR-0335 and ADR-0344 (how the page draws
+a typed command and a SessionStart hook's report).
+
+Context. The owner reported on 2026-10-31 that a line typed in `zakcode cli` reached the web app
+and never showed in the terminal. That is ADR-0320's rule: while `zakcode webapp` serves a
+workspace the say slot is the server's, and "a cockpit pane, whose only door is its say box,
+receives nothing while the workspace is served, and its say box reaches the server's chat
+instead." Nothing showed it. The say box read `✓ sent 14:22` whether the pane took the line or the
+web app did, `zakcode say` printed `sent`, the chat pane printed nothing, and Esc's receipt said
+"the agent halts its current turn" when the stop went to the web app's turn. Measured 2026-10-31
+with the cockpit's say box loop and its chat pane beside a web app on one workspace: before
+ADR-0320 the pane ran 23 of 40 lines, by the race ADR-0320 closed; since, it runs none (0 of 24),
+and on main the say box read `✓ sent HH:MM` for each of the 12 lines the web app ran. Beside it,
+the CLI's redraw of a saved conversation (`/resume`, `zakcode cli -s <id>`) drew a SessionStart
+hook's report and a typed `/command`'s skill frame as lines the person typed, where the page draws
+a grey note (ADR-0344) and the command as typed (ADR-0335).
+
+Decision.
+1. A receipt names where its line went. `_destination` in `cli/cockpit.py` reads the workspace's
+   markers once the line is written: a fresh `.served` naming another process sends it to the web
+   app's chat; otherwise a fresh `.busy` naming another process sends it to the running turn
+   (ADR-0060); otherwise the next chat to read the slot takes it, and the receipt names nothing.
+   The served marker is read first, because the web app's chat gets the line even while another
+   process's turn holds the slot. The say box reads `✓ sent → the web app's chat 14:22`, with
+   `(12 lines)` before the time for a longer message, as it already read `✓ sent → the running
+   turn`. `zakcode say` prints `sent to the web app's chat`, with no arrow, since its console may
+   be a Windows one. With `--url` it still prints `sent`: the line went to the server named, and
+   this machine cannot read that server's markers.
+2. A stop names whose turn it halts. On a served workspace Esc in the say box and
+   `zakcode interrupt` read `stop signal sent — the web app's turn halts`, since the interrupt file
+   is the server's there (ADR-0320). Elsewhere they read as before.
+3. The chat pane says when a web app starts serving its workspace and when it stops. `_InputMux`
+   takes `report_served`, set only in the cockpit's chat pane (`ZAKCODE_COCKPIT_PANE=1`), whose
+   say box is its only door. Its idle wait returns `served` the first time it finds a fresh
+   `.served` naming another process and `unserved` the first time it no longer does, once per
+   change, and the REPL prints each as a notice: "a web app is serving this workspace — the say
+   box now feeds the web app's chat, and nothing reaches this one until it stops", then "the web
+   app stopped serving this workspace — the say box feeds this chat again". A pane started on a
+   workspace already served says so at its first wait. Only the idle wait reports, so a change
+   during a turn is told when the turn ends.
+4. The CLI redraws a saved conversation as the page draws it. `_render_transcript`, which draws one
+   for `/resume` and for `zakcode cli -s <id>`, draws a message that handed the model a
+   SessionStart hook's words as a dim note, "SessionStart hook: " and their first line, then
+   "(+N more lines)" when there are more, through the loop's `said_by_session_start` (ADR-0344);
+   and a message composed from a typed `/command` as the command typed, through `typed_command`
+   (ADR-0335). Every other message is drawn as before.
+
+What was considered and not done. Drawing the web app's chat in the pane while the workspace is
+served, so that a line typed in the box shows in the terminal as well. The pane would become a
+second view of the server's chat, which ADR-0320 chose against: a terminal on a served workspace is
+a side conversation. That is the owner's call and is asked separately; this record changes what
+the person is told, not where a line goes. A turn the pane began before a web app came up keeps its
+permission prompt and its interrupt watcher standing back while the workspace is served
+(ADR-0320), so neither an answer nor a stop typed in the box reaches that turn while the web app
+serves. Not changed here. Naming the server's address in a receipt: the marker names a
+process, not an address (ADR-0320), and "the web app's chat" is what the sender needs. A notice in
+the inline REPL: it reads its own keyboard, and only a line sent through the slot goes elsewhere,
+which `zakcode say`'s receipt now tells its sender.
+
+The proof. `tests/test_cli_cockpit.py` drives the real say box loop with a scripted editor: its
+receipt with no marker, the busy marker, the served marker, and both (the served one wins); its Esc
+receipt with and without the served marker; `zakcode say`'s receipt with no marker, the busy one and
+the served one; and `zakcode interrupt` on a served workspace. `tests/test_served_marker.py` drives
+the mux as the pane builds it, against a marker naming another process: its idle wait reports
+`served` once, a wait that is not idle reports nothing and still takes the say, then `unserved`
+comes once, then a say; and the REPL itself, run as the cockpit's chat pane with a scripted agent,
+prints the served notice once, then the unserved one once, then exits on `/exit`.
+`tests/test_cli_chat.py` resumes a saved chat that holds a typed `/start demo` turn and a two-line
+SessionStart report, and finds the command as typed and the note, and neither frame. Nineteen
+sabotages, each run by a harness that restores the file and checks it byte for byte, with the red
+tests read from JUnit, and each green again once the code was back: the served receipt reworded (the
+say box's two served cases and `zakcode say`'s); the busy marker read before the served one (the say
+box's case with both); the say box dropping where its line went (its three routed cases); `zakcode
+say` reading the markers of the folder above, or printing only `sent` (its two routed cases each);
+the stop text keyed on the busy marker (both served stops), and Esc's and `zakcode interrupt`'s text
+fixed to the agent (one each); the pane not asking for the notice, and the REPL not printing it (the
+REPL test each); the mux never reporting, its latch flipped, and its latch starting as served (both
+pane tests each); reporting at a wait that is not idle (the mux test; the REPL test runs no turn, so
+it makes no such wait); the hook note never found, or drawn as the person's line, the typed command
+not read, the fold's count off by one, and its plural lost (the redraw test each). The first run
+found the REPL test hanging until pytest's timeout under two of those sabotages: on Windows its
+helper thread died deleting a marker the pane held open. The thread now tries the delete again until
+it lands, the pane's waits are bounded and the notices are counted, so each of the six now fails a
+test by an assertion, not by the timeout; run 20 times on the code as it is, the REPL test passed 20
+times in 20.
+
+Run live on this change, against a loopback web app built as the tests build it (the server's app
+with a scripted agent) serving the workspace: the cockpit's chat pane, a process of its own with the
+environment the cockpit gives it, printed the served notice and ran none of the 12 lines sent
+through the real say box loop; the web app's chat ran all 12. That trial ran the say box loop in the
+web app's own process, where the marker names its own process, so the box's receipt there named
+nothing; the tests above pin it. Beside a real `zakcode webapp`, `zakcode say` and `zakcode
+interrupt`, each its own process, read `sent to the web app's chat` and `stop signal sent — the web
+app's turn halts within a moment` while it served, and `sent` and the agent's stop text before it
+started and once its marker was stale. The pane's notice that the web app stopped was not seen live:
+that trial ended with the web app still serving. `uv run poe check` green.
+
+Not verified: a real tmux cockpit. The cockpit runs on posix with tmux; the measurement and the
+tests run its chat pane as a child process or in-process with the environment the cockpit gives it,
+and its say box loop as it is.
