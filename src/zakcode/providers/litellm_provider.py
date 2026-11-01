@@ -24,7 +24,7 @@ import socket
 import time
 import urllib.request
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from typing import Any
 
 import httpx
@@ -2764,7 +2764,7 @@ class LiteLLMProvider(Provider):
 
     async def _bounded_chunks(
         self, resp: Any, *, prompt_estimate: int, started: float
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any, None]:
         """Yield the stream's chunks, bounding the WAIT for each one (ADR-0120, #176).
 
         litellm's scalar ``timeout`` does not bound a streaming READ. Measured on a
@@ -2795,6 +2795,7 @@ class LiteLLMProvider(Provider):
         """
         iterator = resp.__aiter__()
         seen = 0
+        ended = False  # the stream ran to its end, so the response has nothing left to send
         first_wait: float | None = None  # request start → first chunk, once it arrives
         usage: Usage | None = None  # the final chunk's usage, for the cache-read share
         first_bound = self._first_chunk_bound(prompt_estimate)
@@ -2809,10 +2810,9 @@ class LiteLLMProvider(Provider):
                     async with asyncio.timeout(bound):
                         chunk = await iterator.__anext__()
                 except StopAsyncIteration:
+                    ended = True
                     return
                 except TimeoutError as exc:
-                    with contextlib.suppress(Exception):  # release the socket; never mask it
-                        await resp.aclose()
                     if seen == 0:
                         raise self._first_chunk_expiry(prompt_estimate, bound) from exc
                     raise TimedOut(
@@ -2828,6 +2828,13 @@ class LiteLLMProvider(Provider):
                 seen += 1
                 yield chunk
         finally:
+            # Left before its end (a stall above, an error, or a reader that stopped reading):
+            # close the response. Open, it goes on taking the server's output to its cap and
+            # holds the card, while the caller has already moved on. Release the socket; never
+            # mask what ended the stream.
+            if not ended:
+                with contextlib.suppress(Exception):
+                    await resp.aclose()
             # A first chunk that arrived is a measurement however the stream ended; the
             # cache share is known only if the usage chunk came, else the whole prompt is
             # charged, which can only make the backend look faster, never slower.
@@ -2886,6 +2893,7 @@ class LiteLLMProvider(Provider):
         delivered = False  # any text or tool-call fragment reached the caller
         streamed_usage: Usage | None = None  # summed as the loop sums it, for a filtered end
         repairs = 0  # re-issues this call has spent, at most _MAX_REQUEST_REPAIRS (ADR-0303)
+        chunk_stream: AsyncGenerator[Any, None] | None = None  # the response being read
         await self._pace()
         try:
             while True:
@@ -2896,9 +2904,10 @@ class LiteLLMProvider(Provider):
                     resp = await litellm.acompletion(**call_kwargs)
                     # A gateway's fallback headers are on the stream before its first chunk.
                     self._warn_on_fallback(resp)
-                    async for chunk in self._bounded_chunks(
+                    chunk_stream = self._bounded_chunks(
                         resp, prompt_estimate=prompt_estimate, started=started
-                    ):
+                    )
+                    async for chunk in chunk_stream:
                         chunks += 1
                         # No served-model capture here, deliberately (ADR-0214). A chunk's
                         # ``model`` is NOT the server's: litellm's stream wrapper stamps every
@@ -2973,6 +2982,15 @@ class LiteLLMProvider(Provider):
                 "finish_reason": finish_reason,
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
+            # A caller that stops reading early closes THIS generator, and an ``async for``
+            # does not close the generator it was suspended in, so the response would stay
+            # open: close that reader here, and it releases the response at once. The
+            # compaction summarizer stops a runaway summary at its word limit this way, and
+            # the server went on generating that summary to its output cap, on the same card
+            # as the retry that replaced it. A no-op for a stream that already ended.
+            if chunk_stream is not None:
+                with contextlib.suppress(Exception):
+                    await chunk_stream.aclose()
 
         if self._ring is not None and used is not None and streamed_usage is not None:
             # Before the filter check: a stream the provider withheld the answer of was billed.
