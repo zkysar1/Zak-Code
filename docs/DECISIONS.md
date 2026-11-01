@@ -21766,3 +21766,56 @@ other 21 tests green. Each passes again once restored.
 
 Not verified: a runner whose fetch fails. Such a runner now reads the same map as every other, and
 the pin asserts that on each run.
+
+## ADR-0349: the CI test job's time bounds follow its measured run times
+
+Status: accepted. 2026-11-01. Replaces the run-time figures that the bounds' comments carried in
+`.github/workflows/ci.yml` and `pyproject.toml`.
+
+Context. The verify job has three time bounds: pytest-timeout's 120 s per test (`pyproject.toml`),
+a session watchdog of 600 s around the Linux pytest step (`timeout -s ABRT -k 30 600`), and the
+job's `timeout-minutes: 20`, which is the only session bound on the Windows cell. Their comments say
+the suite runs in about 90 s on CI and 84 s locally. Measured from the jobs API over the 14 most
+recent completed CI runs (created 2026-10-30 to 2026-11-01, 56 verify jobs, all green):
+
+| cell | pytest step, min / median / max | job, min / median / max | bound |
+|---|---|---|---|
+| Linux, 42 jobs | 419 / 517 / 575 s | 444 / 550 / 612 s | 600 s watchdog on the step |
+| Windows, 14 jobs | 668 / 768 / 828 s | 706 / 826 / 884 s | 1,200 s job cap |
+
+Two runs outside that window crossed a bound. On PR #825, run 41279454185 attempt 1, the watchdog
+killed the py3.12 Linux step with exit 124 after 605 s, 2 s after "Coverage XML written", when
+every test had finished. On the main push of PR #816's merge, run 41099796238 attempt 1, the
+Windows job was cancelled by its cap. Its pytest step had passed in 769 s (`6608 passed, 19 skipped
+... in 754.27s`); the log's last line, "Cleaning up orphan processes", is at 17:46:53, and the job
+was cancelled at 17:53:52, 20 min 44 s after it started. On a Windows desktop the whole suite takes
+16.5 to 17.5 min, and its slowest single test 26.1 s; no test took more than 30 s.
+
+Decision.
+1. The Linux session watchdog is 1,200 s, about twice the slowest green pytest step measured, so a
+   healthy run is not killed and a hung one still fails inside the job.
+2. The job's `timeout-minutes` is 35. The slowest Windows job measured, 884 s, has about 2.4 times
+   that in room, and a Linux job fits its 1,200 s step bound and its setup.
+3. pytest-timeout's 120 s per test stays: it is more than four times the slowest test measured.
+4. The comments state these measurements and point here, in place of the 90 s and 84 s figures.
+
+What was considered and not done. Splitting the suite across jobs, or running it in parallel with
+pytest-xdist: it would cut the wall time, but it adds a dependency and asks every test to be safe
+to run in parallel, which this suite has not been shown to be. A separate bound per OS: one value
+is simpler, and the Linux watchdog already bounds that cell's test step.
+
+The Windows cancellation was not the suite running long. Its tests had passed, and the job then
+waited about seven minutes in the runner's orphan-process cleanup. The runner logs no process names
+there, so what it waited on is not known. A larger cap gives such a wait room but does not end it,
+and finding the process is a separate change. Three healthy Windows jobs end on the same log line
+about 5 s after the suite and complete within seconds.
+
+The proof. The CI figures come from the jobs API: the `started_at` and `completed_at` of each
+verify job and of its pytest step. The two overruns come from the same API and from each job's
+log. The desktop figures come from the JUnit report of a full run on 2026-11-01: 6,710 tests in
+1,043.8 s, the slowest `test_win_job_kill.py::test_stop_after_a_restart_kills_the_git_bash_tree`
+at 26.1 s, and none over 30 s. The workflow and `pyproject.toml` parse and read back 35 minutes, a
+1,200 s watchdog, and 120 s per test. This change's own CI run is the first under the new bounds.
+
+Not verified: whether a 35-minute cap would have let the cancelled Windows job finish, since how
+long the runner would have waited is not known.
