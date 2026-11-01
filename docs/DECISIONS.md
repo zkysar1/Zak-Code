@@ -16025,6 +16025,9 @@ Both paths coexist in the same release. The legacy path is unchanged and works a
 **Amended by ADR-0328 (2026-10-27):** the sticky `kind` of point 7 keeps a `farewell` as well as a
 `change`, in the order farewell, change, then the newest frame's own.
 
+**Amended by ADR-0347 (2026-11-01):** point 3's retry also runs on each watcher tick while a turn is
+in flight, and only inside the window; after the grace nothing retries.
+
 ## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
 
 Status: accepted. 2026-09-28.
@@ -21623,3 +21626,81 @@ that trial ended with the web app still serving. `uv run poe check` green.
 Not verified: a real tmux cockpit. The cockpit runs on posix with tmux; the measurement and the
 tests run its chat pane as a child process or in-process with the environment the cockpit gives it,
 and its say box loop as it is.
+
+## ADR-0347: a refused run-ending write is retried while a turn is in flight, inside the window and never after it
+
+Status: accepted. 2026-11-01. Amends ADR-0264 point 3 in when the retry of a refused write runs, not
+in what it writes. Builds on ADR-0051 (a running turn reads the say slot at its own boundaries) and
+ADR-0052 (the hold a pending say can wait in).
+
+Context. On 2026-10-31 a member stepped out of a vessel's run while the Mind was mid-turn and a
+member's say already held the say slot (the stamps run 04:21 to 04:27Z; the sequence is the one
+its finder recorded from the sidecar's log, which this change's author did not read). The ending's
+first write was refused, and the server logged that it would retry on the next beat (ADR-0264 point
+3). The running turn then took the member's say at its next boundary, as ADR-0051 has it do, which
+left the slot free, and nothing filled it again. `_retry_run_ending_write` had one call site, the
+beat loop, and the beat loop was parked awaiting that very turn: `_consume_one_say` awaits
+`_run_turn_for_say`, which waits on the turn and on the watcher. The deadline watcher ticked through
+the turn every second but only compared the clock with the window and interrupted at its close.
+When the interrupt ended the turn, the beat loop reached the retry, which wrote the line though the
+window had closed, and the loop's exit retracted it 108 ms later. The Mind never read the line: it
+was interrupted at the window's end with its ending unread. That the one turn stayed in flight for
+the whole 350 s is inferred from the retry line appearing once. An in-process replay of the
+sequence, with the app's own beat loop and watcher, a fake agent that stays in flight and reads the
+slot at each boundary, and a 6 s window standing in for 350 s: the member's say was read at
++0.28 s, the line was first queued at +6.51 s, and the run exited at +6.61 s; with the retry on
+the watcher's tick the line was queued at +1.28 s, read at the turn's next boundary, and the run
+ended at +1.70 s, before the window closed. The cap has the same shape. When it lands inside a
+turn the watcher raises the ending and goes on watching, but only to bound it, so a refused first
+write there waited on the same parked beat loop; writing that case's test showed it, red on the
+first half of this change.
+
+Decision.
+1. The deadline watcher retries a refused ending write on each of its ticks while a turn is in
+   flight, in both of its waits: the one that watches the turn for the cap, and the one that bounds
+   a raised ending. A tick with no turn in flight leaves the retry to the beat loop, which is awake
+   then. What the retry writes, and when it stands down (the line already written or taken, a say
+   in the slot that is not ours), are as ADR-0264 left them.
+2. The retry writes only inside the window. `_retry_run_ending_write` returns before the window has
+   opened and from the moment it has closed, so the beat loop can no longer queue a line after the
+   grace, where nothing is waiting to read it and the loop's exit retracts it. The server's
+   attempts at the line are its opening write and the retries inside the window.
+3. The slot stays single and POST /say is unchanged.
+
+Checked, not changed. The ADR-0052 hold applies only while a plan step is in flight, and holds a
+pending say for at most `_SAY_PATIENCE` (3) boundaries or `_SAY_PATIENCE_S` (120 s) of held time; an
+operator-only slash command is not held at all (ADR-0264 point 6). A retried line therefore reaches
+the model after at most 120 s plus one boundary, inside a 350 s window unless a single boundary
+outlasts about 230 s. The `run_stop_message` a vessel is provisioned with was not read; it is set
+per vessel. POST /say answers 429 while the slot is full, so once the ending is queued a
+member's new say is refused until the running turn reads the line. That order stands: the slot is
+single for both writers, a say already in the slot goes first (ADR-0264 point 3), and the ending is
+the last thing the run says.
+
+What was considered and not done. Interrupting or timing out the turn so the beat loop gets its
+beat: the interrupt is what the ending exists to avoid, since an interrupted turn cannot
+consolidate. Shortening or splitting turns so the boundary comes sooner: ADR-0051 met the same class
+on the consumer side, a channel whose delivery moment is a turn boundary starving under a long
+turn, and fixed it by reading at the iteration boundaries inside the turn, not by shortening turns.
+The producer here is the same class, since its retry waited for that boundary, and it now runs on
+a clock the turn cannot hold. Writing the line over the member's say: that loses a say the operator
+sent first. Retrying
+from the agent loop: the loop knows nothing of the run's ending, and the watcher already owns the
+window.
+
+The proof. `tests/test_run_stop_message.py` gains `_InboxReadingAgent`, a turn that stays in flight
+and reads the slot at its boundaries as the loop does, and three tests. With a member's say in the
+slot and the stop posted, the turn at its first boundary reads the member's say and then the ending
+line, and the run ends `stopped` inside the reserve. The same with the cap landing in the turn: the
+run ends `duration_cap` inside the reserve. And with a turn that reads the slot only as the
+interrupt cuts it, the spy over `write_say` sees one attempt at the line, the refused first one, and
+the slot is empty when the run ends. On origin/main 3a062ee all three fail: twice by the line never
+arriving (`['member message']` against `['member message', '/stop probe']`) and once by a second
+attempt after the grace (`['/stop probe', '/stop probe']`). With the change they pass, and the whole
+file runs 27 passed. Three mutants, each run by a harness that restores the file and checks it byte
+for byte: no retry on the watcher's first wait, no window check in the retry, and no retry on its
+second wait. Each fails exactly one of the three tests and leaves the other two green.
+
+Not verified: a real Mind ending its turn on reading the line. The tests' agent ends its turn on
+reading it; whether the Mind consolidates and the run ends through the graceful chain is for a
+replay on a DEV resident, which was not run here. The vessel's own log was not read here.

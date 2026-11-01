@@ -3401,7 +3401,8 @@ def create_app(
         no-op, the same rule the legacy path follows.
 
         The slot may be full (the operator's say goes first).  A refused write is
-        retried on each beat inside the window — see ``_retry_run_ending_write``.
+        retried on each beat inside the window, and on each watcher tick while a turn is
+        in flight — see ``_retry_run_ending_write``.
         """
         nonlocal run_ending_until, run_ending_written
         if run_ending_until is not None:
@@ -3429,11 +3430,18 @@ def create_app(
     def _retry_run_ending_write() -> None:
         """Best-effort retry of the say write when the slot was full on the first attempt.
 
-        Called on each beat while the window is open. No-op once the line has been
-        written: writing it again after a turn consumed it would deliver the ending twice.
+        Called on each beat while the window is open, and on each watcher tick while a turn
+        is in flight (ADR-0347): the beat loop is parked awaiting that turn, and the turn is
+        what empties the slot, so the tick is the only thing awake to refill it inside the
+        window. No-op once the line has been written: writing it again after a turn consumed
+        it would deliver the ending twice. No-op once the window has closed or before it
+        opened: a line queued after the grace is one nothing is waiting to read, and the loop
+        exit would only retract it.
         """
         nonlocal run_ending_written
         if run_ending_written or run_ending_taken:
+            return
+        if run_ending_until is None or time.monotonic() >= run_ending_until:
             return
         inbox = say_path(resolved_settings.workspace_root)
         if say_pending(inbox):
@@ -3667,6 +3675,10 @@ def create_app(
         unwind a half-finished turn: the cancelled turn returns, and the reserve is still
         on the clock for the digest.
 
+        Its one other act is the retry of a refused ending write (ADR-0347): while a turn is
+        in flight the beat loop is parked awaiting that turn, which is also what empties the
+        slot, so this tick is the only thing awake to put the line back inside the window.
+
         It also NAMES the ending, at the moment the clock raises it. The between-beats
         check below cannot be the only namer: a framework that signs off INSIDE the
         raising turn leaves `_keep_beating()` False when that turn lands back, so the
@@ -3699,6 +3711,10 @@ def create_app(
             await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
             if not inflight:
                 continue
+            # A refused ending write is retried from here too: while a turn is in flight the
+            # beat loop is parked awaiting it, and that turn empties the slot itself, so this
+            # tick is the only thing awake to put the line back inside the window (ADR-0347).
+            _retry_run_ending_write()
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
             # Host-neutral ending: check overrun.
@@ -3743,6 +3759,10 @@ def create_app(
             )
             while not inflight or time.monotonic() < ending_until:
                 await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
+                if inflight:
+                    # The cap's own first write can have been refused too, and the beat loop
+                    # is parked awaiting this turn just the same (ADR-0347).
+                    _retry_run_ending_write()
             if run_ending_until is not None:
                 taken = "taken" if run_ending_taken else "never taken"
                 logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
