@@ -142,6 +142,16 @@ server, and no update reaches it. That is how chat switching stayed broken on on
 fix had shipped (ADR-0342). The server sends the page with `Cache-Control: no-cache`, so a
 browser asks for it again each time it opens it.
 
+An open page reloads itself when the server it watches serves another page, as after a restart
+into a new build (ADR-0345). Each watch response names the server's page in its `X-Page-Digest`
+header, which the proxy passes back as it passes back `X-Bus-Epoch`. A proxy that drops that
+header leaves every open page on its old script, and nothing on the page says so, as with a
+server too old to send it. The reload asks for `/?page=<that name>`, and the page keeps the name
+in the browser's session storage as well, so a proxy that drops the query from the address loses
+nothing. A page that reloads and is given the same old page again does not reload again: a note
+over the composer says that something between the browser and the server answers with a saved
+copy of the page, which is the problem this section describes.
+
 A server with a token (`ZAKCODE_AUTH_TOKEN`) asks for it on every path but `/health`, the page
 included, and a browser has no way to send it: the proxy adds `Authorization: Bearer <token>` to
 each request it passes on, and does its own sign-in in front.
