@@ -22149,9 +22149,13 @@ What was considered and not done.
   from another thread without platform-specific cancellation, and closing the reader from the main
   thread waits on the lock the pump holds: the same wait, moved from shutdown to the main thread
   and lasting until the next line.
-- Reading lines with `os.read` on the file descriptor, which takes no buffered lock. It would lose
-  what `input()` gives on a terminal: line editing and bracketed paste through readline on POSIX,
-  and the console's Unicode line input on Windows.
+- Reading lines with `os.read` on the file descriptor, which takes no buffered lock. On a terminal
+  it would lose what `input()` gives there: line editing and bracketed paste through readline on
+  POSIX, and the console's Unicode line input on Windows. Reading raw only when stdin and stdout
+  are not both terminals, where `input()` goes through the buffered reader anyway, keeps the
+  terminal path, but means assembling lines and decoding bytes by hand, with read-ahead held where
+  no other reader of `sys.stdin` can see it. The reference is one line, and it is what a fixed
+  `input()` does itself.
 - Leaving through `os._exit` once the REPL returns. It skips every exit handler and the flush of
   every other open file.
 - A pump that is not a daemon thread. Shutdown would wait for it, and it waits for a line that may
