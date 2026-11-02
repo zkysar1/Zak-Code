@@ -201,7 +201,7 @@ def test_a_page_left_open_while_the_server_restarts_on_another_build_reloads_int
 ) -> None:
     """The page stays while its server serves it, reloads once the server started in that one's
     place serves another page, and comes back from the reload at its own address, with what was
-    typed."""
+    typed, on the chat it showed."""
     workspace = _workspace(tmp_path)
     old_pages, new_pages = _pages(tmp_path, "old"), _pages(tmp_path, "new", _ANOTHER_BUILD)
     new_name = _name_of(new_pages / "index.html")
@@ -239,6 +239,12 @@ def test_a_page_left_open_while_the_server_restarts_on_another_build_reloads_int
     assert came["href"] == _ADDRESS  # ?page= has left the address
     assert came["storage"] == {}  # what it kept for the reload, gone once the page is the server's
     assert came["note"] is None
+    # It comes back on the chat it showed, the workspace's active one, and watches that chat and
+    # no other: the reload never opens a new chat.
+    watched = left["trace"][-1].split("?")[0]
+    assert left["chip"] and watched.startswith("/watch/" + left["chip"])
+    assert came["chip"] == left["chip"]
+    assert {watch.split("?")[0] for watch in _watches(came)} == {watched}
     assert left["errs"] == [] and came["errs"] == []
 
 
