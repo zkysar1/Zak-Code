@@ -1957,11 +1957,9 @@ class _InputMux:
             read_say,
             served_path,
             take_interrupt,
-            write_say,
         )
 
         self._read_say = read_say
-        self._write_say = write_say
         self._take_interrupt = take_interrupt
         self._busy_elsewhere = busy_elsewhere
         self.inbox = inbox
@@ -1971,9 +1969,9 @@ class _InputMux:
         #: (``inject`` → ``Agent.inject_user_line``, ADR-0078) and folded in at the next
         #: iteration boundary (ADR-0051) instead of waiting in the queue for a turn end
         #: that a runner never reaches (ADR-0073: an operator's ``/stop`` sat unread in a
-        #: live runner's queue). Without an agent attached the say inbox FILE is the
-        #: fallback door — shared by every session on the workspace, so never the first
-        #: choice for the keyboard.
+        #: live runner's queue). The keyboard never writes the say inbox FILE, which every
+        #: session on the workspace shares: a mux with no agent attached (only tests build
+        #: one; the chat REPL always attaches its agent) leaves the line on the queue.
         self.turn_active = False
         self._inject = inject
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
@@ -2022,11 +2020,6 @@ class _InputMux:
         if keyboard:
             threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
 
-    #: How long a line typed mid-turn waits for the single say slot to free before falling
-    #: back to the queue. The loop consumes the slot at its next iteration boundary (one
-    #: tool batch away); a bounded wait keeps the pump reading stdin whatever happens.
-    _INBOX_WAIT_SECONDS = 10.0
-
     def _pump(self) -> None:
         while True:
             try:
@@ -2043,36 +2036,27 @@ class _InputMux:
             self._route_typed(line)
 
     def _route_typed(self, line: str) -> None:
-        """Hand a typed line to whoever can act on it now (ADR-0073).
+        """Hand a typed line to whoever can act on it now (ADR-0073, ADR-0078).
 
-        Idle REPL, an empty line, or a REPL command (``/help``, ``/exit`` …): the queue,
-        read at the prompt. A turn running in this process: the running agent itself
-        (``inject``, ADR-0078), which folds the line into the conversation at its next
-        iteration boundary — a typed ``/stop`` on a runner whose turn never ends therefore
-        RUNS instead of waiting for the prompt that never comes. Only a mux with no agent
-        attached writes the line to the workspace say inbox instead (the chat REPL always
-        attaches one, and the thin ``--server`` REPL builds no mux: it reads nothing while
-        its turn runs, and reads the next line at its prompt); that slot is a FILE every
-        session on the workspace polls, which is how a line typed at one cockpit reached a
-        sibling session. A slot still busy after the wait falls back to the queue, so no line is
-        ever lost; a turn that ends meanwhile releases the line to the prompt at once.
+        A turn running in this process: the running agent itself (``inject``, ADR-0078),
+        which folds the line into the conversation at its next iteration boundary — a typed
+        ``/stop`` on a runner whose turn never ends therefore RUNS instead of waiting for the
+        prompt that never comes. Everything else goes to the queue, read at the prompt: a
+        line typed while the REPL is idle, an empty line, a REPL command (``/help``,
+        ``/exit`` …), and any line on a mux with no agent attached. The keyboard never
+        writes the workspace say inbox: that slot is a FILE every session on the workspace
+        polls, which is how a line typed at one cockpit reached a sibling session. (The thin
+        ``--server`` REPL builds no mux: it reads nothing while its turn runs, and reads the
+        next line at its prompt.)
         """
-        if not self.turn_active or not line.strip() or _is_repl_command(line):
-            self.queue.put(("line", line))
-            return
-        if self._inject is not None:
+        if (
+            self._inject is not None
+            and self.turn_active
+            and line.strip()
+            and not _is_repl_command(line)
+        ):
             self._inject(line)
             return
-        deadline = time.monotonic() + self._INBOX_WAIT_SECONDS
-        while self.turn_active:
-            try:
-                if self._write_say(self.inbox, line):
-                    return
-            except OSError:
-                break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.25)
         self.queue.put(("line", line))
 
     def next_input(
