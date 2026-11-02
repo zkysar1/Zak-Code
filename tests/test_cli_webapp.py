@@ -38,6 +38,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, captured: dict[str, Any]) -> None:
         captured["new_session"] = kw.get("new_session")
         captured["on_new_build"] = kw.get("on_new_build")
         captured["resume_turn"] = kw.get("resume_turn")
+        captured["served_url"] = kw.get("served_url")
         return object()  # dummy ASGI app; the server is stubbed so it is never served
 
     class _FakeServer:
@@ -86,6 +87,28 @@ def test_webapp_without_workspace_uses_configured_default(monkeypatch: pytest.Mo
     assert result.exit_code == 0, result.stdout
     # create_app() is called with no settings (server resolves them from env/.env).
     assert captured["settings"] is None
+
+
+@pytest.mark.parametrize(
+    ("flags", "url"),
+    [
+        (["--port", "8765"], "http://127.0.0.1:8765"),
+        (["--host", "0.0.0.0", "--port", "8766", "--insecure"], "http://127.0.0.1:8766"),
+    ],
+    ids=["loopback", "every-interface"],
+)
+def test_webapp_puts_where_it_listens_in_the_served_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str], url: str
+) -> None:
+    """The address goes into the served marker, so a cockpit pane on the workspace can show the
+    web app's chat (ADR-0352); a bind to every interface is reached over loopback."""
+    captured: dict[str, Any] = {}
+    _patch(monkeypatch, captured)
+
+    result = runner.invoke(app, ["webapp", "--workspace", str(tmp_path), *flags])
+
+    assert result.exit_code == 0, result.stdout
+    assert captured["served_url"] == url
 
 
 @pytest.mark.parametrize(

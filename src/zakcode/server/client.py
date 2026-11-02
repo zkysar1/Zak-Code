@@ -14,6 +14,7 @@ With none, it lazily creates a real client bound to ``base_url``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -24,6 +25,45 @@ from zakcode.events import AgentEvent
 from zakcode.server.wire import event_from_dict
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+
+
+class WatchStream:
+    """An open ``GET /watch/{id}?full=1`` stream: the bus it reads, and its frames.
+
+    ``epoch`` names the bus (``X-Bus-Epoch``, ADR-0289) and ``oldest`` is the oldest cursor that
+    bus still holds (``X-Bus-Oldest``, ADR-0325); either is None from a server too old to send it.
+    """
+
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self.epoch: str | None = response.headers.get("X-Bus-Epoch")
+        oldest = response.headers.get("X-Bus-Oldest", "")
+        self.oldest: int | None = int(oldest) if oldest.isdigit() else None
+
+    async def frames(self) -> AsyncIterator[tuple[int | None, dict[str, Any] | None]]:
+        """Each frame as ``(cursor, data)``, in order, until the stream ends.
+
+        ``cursor`` is the frame's SSE ``id``; ``data`` is its JSON object, or None for a frame
+        that is not one (the caller decides how to show a bad frame). Keepalive comments are
+        skipped.
+        """
+        cursor: int | None = None
+        lines: list[str] = []
+        async for line in self._response.aiter_lines():
+            if not line:
+                if lines:
+                    try:
+                        data = json.loads("\n".join(lines))
+                    except ValueError:
+                        data = None
+                    yield cursor, data if isinstance(data, dict) else None
+                cursor, lines = None, []
+            elif line.startswith("id:"):
+                value = line[len("id:") :].strip()
+                cursor = int(value) if value.isdigit() else None
+            elif line.startswith("data:"):
+                value = line[len("data:") :]
+                lines.append(value[1:] if value.startswith(" ") else value)
 
 
 class ServerClient:
@@ -113,6 +153,36 @@ class ServerClient:
                     if raw:
                         yield event_from_dict(json.loads(raw))
 
+    async def transcript(self, session_id: str = "current") -> dict[str, Any]:
+        """A session's conversation as a reader sees it (``GET /sessions/{id}/transcript``).
+
+        ``current`` is the workspace's current chat. Raises on a non-2xx like the other calls.
+        """
+        resp = await self._http().get(f"/sessions/{session_id}/transcript")
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data
+
+    @contextlib.asynccontextmanager
+    async def watch(
+        self, session_id: str, *, since: int | None = None, epoch: str | None = None
+    ) -> AsyncIterator[WatchStream]:
+        """Open a session's full watch stream (``GET /watch/{id}?full=1``), as the page does.
+
+        Its frames are the raw events and the control frames the session's bus carries, each
+        with its cursor. ``since`` resumes after a cursor, and ``epoch`` names the bus that
+        cursor came from, so a cursor from a bus made since is dropped and the whole replay sent
+        (ADR-0289). Raises on a non-2xx like the other calls.
+        """
+        params = {"full": "1"}
+        if since is not None:
+            params["since"] = str(since)
+        if epoch is not None:
+            params["epoch"] = epoch
+        async with self._http().stream("GET", f"/watch/{session_id}", params=params) as resp:
+            resp.raise_for_status()
+            yield WatchStream(resp)
+
     async def aclose(self) -> None:
         """Close the underlying HTTP client (only if this object created it)."""
         if self._owns_client and self._client is not None:
@@ -120,4 +190,4 @@ class ServerClient:
             self._client = None
 
 
-__all__ = ["ServerClient", "DEFAULT_BASE_URL"]
+__all__ = ["ServerClient", "WatchStream", "DEFAULT_BASE_URL"]

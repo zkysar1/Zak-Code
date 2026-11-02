@@ -807,6 +807,7 @@ def create_app(
     new_session: bool = False,
     on_new_build: Callable[[NewBuild], Awaitable[None]] | None = None,
     resume_turn: str | None = None,
+    served_url: str | None = None,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
@@ -833,6 +834,10 @@ def create_app(
     build it started with. ``resume_turn`` is the line the process this one replaced set aside
     (the skill call its last turn did not make, or a Stop hook's continuation); it runs before
     anything else.
+
+    ``served_url`` is where a process on this machine reaches this server. It goes into the
+    workspace's served marker, so a cockpit pane on the workspace can show the chat the server
+    has open (ADR-0352). Omitted, the marker names no address and a pane keeps to its own chat.
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
@@ -3976,8 +3981,14 @@ def create_app(
                 logger.warning("new session: kept the current chat (%s)", refusal)
         # ADR-0320: the workspace is marked served before the server takes its first request,
         # and for exactly as long as the consumer runs, so a terminal REPL on the workspace
-        # leaves the say slot and the interrupt file to this server.
-        lease = BusyLease(served_path(resolved_settings.workspace_root), "served", take_over=True)
+        # leaves the say slot and the interrupt file to this server. The marker names where the
+        # server listens, so a cockpit pane can show the chat it serves (ADR-0352).
+        lease = BusyLease(
+            served_path(resolved_settings.workspace_root),
+            "served",
+            take_over=True,
+            url=served_url,
+        )
         await lease.acquire()
         consumer_tasks.append(asyncio.create_task(_serve_say_inbox(lease)))
 
