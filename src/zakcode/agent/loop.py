@@ -7903,8 +7903,23 @@ class AgentLoop:
         an instruction typed at a worker and executed a goal it did not hold; a line
         typed at another worker vanished. The slot stays the door for OTHER producers
         (``zakcode say``, ``POST /say``). Safe to call from the stdin pump thread.
+
+        A line no boundary takes stays here when the turn ends; see :meth:`take_typed_lines`.
         """
         self._typed_lines.append(text)
+
+    def take_typed_lines(self) -> list[str]:
+        """Take every typed line the turn did not deliver, oldest first (ADR-0354).
+
+        A line typed during a turn's last model call reaches no later iteration boundary.
+        Left here, it would arrive at the NEXT turn's first boundary, framed as a mid-turn
+        message behind the prompt typed after it. The REPL takes it when the turn ends and
+        runs it as the next turn, as the server does with a say the turn did not take.
+        """
+        taken: list[str] = []
+        while self._typed_lines:
+            taken.append(self._typed_lines.popleft())
+        return taken
 
     async def _deliver_midturn_skill(
         self, text: str, *, source: str = "the say inbox"

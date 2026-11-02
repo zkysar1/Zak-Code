@@ -2357,6 +2357,10 @@ class Agent:
         """
         self.loop.inject_user_line(text)
 
+    def take_typed_lines(self) -> list[str]:
+        """Take the typed lines the turn did not deliver, for the REPL to run next (ADR-0354)."""
+        return self.loop.take_typed_lines()
+
     async def connect_mcp(self) -> DiscoveryReport | None:
         """Spawn configured MCP servers and register their tools into the registry.
 

@@ -576,6 +576,9 @@ def test_chat_delivers_boot_time_say(monkeypatch, tmp_path: Path) -> None:
     class _RecordingAgent(_NoTurnAgent):
         turns: list[str] = []
 
+        def take_typed_lines(self) -> list[str]:  # what the REPL takes at a turn's end (ADR-0354)
+            return []
+
         def astream_turn(self, text: str):  # noqa: ANN202
             _RecordingAgent.turns.append(text)
             from zakcode.events import AgentDone, AgentTextDelta
