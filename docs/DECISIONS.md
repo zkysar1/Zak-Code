@@ -3086,6 +3086,13 @@ skill is not delivered; a non-skill slash is text) and tests/test_cli_chat.py (m
 lines reach the inbox; REPL commands and idle lines stay queued; a busy slot falls back
 to the queue).
 
+**Amended by ADR-0078 (2026-08-29) and on 2026-11-02:** decision (1)'s route is gone. A
+line typed while a turn runs goes to this process's agent in-process (ADR-0078), never
+through the say inbox. The bounded wait for the slot and its fall-back to the queue went
+with the last mux that could reach them (ADR-0078's 2026-11-02 amendment). Decision (2)
+stands: a say that names a skill runs it. The tests above now pin a mid-turn line reaching
+the agent with the slot left alone; REPL commands and idle lines still stay queued.
+
 ## ADR-0074: Compaction is checked before every call, and the overflow bound is per call
 
 **Context.** The compactor's threshold check ran once per turn, at turn start, and the
@@ -3267,6 +3274,20 @@ Pinned by `tests/test_cli_chat.py` (the mux injects and never writes the slot; a
 no agent still does) and `tests/test_loop_say.py` (an injected line is framed, persisted
 and seen by the next provider call; two loops on one workspace cannot receive each
 other's lines; a line is consumed exactly once).
+
+**Amended 2026-11-02 (no mux runs without an agent).** The Decision's last sentence was
+wrong when it was written. Measured 2026-11-01 at `3e9322b`: the thin `--server` REPL
+builds no mux. `chat()` hands `--server` to `_run_server_chat` before any input mux exists,
+and that REPL reads nothing while its turn runs. It reads the next line at its prompt, so a
+line typed during a turn runs as its next turn, in the chat it opened. The one `_InputMux`
+the code builds is the chat REPL's, and it always attaches its agent (`inject=`). So the
+file path was a branch no session took, and only tests reached it. #825 corrected the
+`_route_typed` docstring that said the same thing; this sentence was missed. Now a mux with
+no agent attached leaves a typed line on the queue for the prompt, and the keyboard never
+writes the workspace say slot. The bounded wait for the slot and its fall-back to the queue
+(ADR-0073) are removed with it. Pinned by `tests/test_cli_chat.py`: a mux with no agent
+queues a line typed mid-turn and leaves the slot empty, and the REPL-command, idle-line and
+unconsumed-say tests run with an agent attached.
 
 ## ADR-0079: settings.json hooks are re-read at the turn boundary when the file changes
 

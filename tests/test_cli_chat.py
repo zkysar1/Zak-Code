@@ -2412,7 +2412,7 @@ def test_update_local_checkout_already_current_says_so_with_sha(tmp_path, monkey
     assert "already current" in result.stdout
 
 
-# ── ADR-0073: a line typed while a turn runs reaches the turn through the say inbox ──
+# ── ADR-0073, ADR-0078: a line typed while a turn runs reaches this process's turn ──
 
 
 def _feed_lines(monkeypatch, lines: list[str], gate) -> None:
@@ -2463,10 +2463,10 @@ def test_typed_line_mid_turn_is_injected_into_this_process_agent(monkeypatch, tm
     assert mux.queue.empty()  # not parked for a prompt the runner never reaches
 
 
-def test_typed_line_mid_turn_falls_back_to_the_say_inbox_without_an_agent(
-    monkeypatch, tmp_path
-) -> None:
-    """A mux with no agent attached (the turn runs elsewhere) keeps the file door."""
+def test_typed_line_mid_turn_without_an_agent_waits_on_the_queue(monkeypatch, tmp_path) -> None:
+    """ADR-0078, amended 2026-11-02: the keyboard never writes the workspace say slot, a file
+    every session on the workspace polls. A mux with no agent attached (only tests build one;
+    the chat REPL always attaches its agent) leaves a line typed mid-turn for the prompt."""
     import threading
 
     from zakcode.session import say_inbox as si
@@ -2476,41 +2476,44 @@ def test_typed_line_mid_turn_falls_back_to_the_say_inbox_without_an_agent(
     mux = _make_mux(tmp_path)
     mux.turn_active = True
     gate.set()
-    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
-    assert si.read_say(si.say_path(tmp_path)) == "/stop coach"
-    assert mux.queue.empty()
+    assert mux.queue.get(timeout=5) == ("line", "/stop coach")
+    assert not si.say_pending(si.say_path(tmp_path))  # never the shared slot
 
 
 def test_typed_line_idle_or_repl_command_stays_on_the_queue(monkeypatch, tmp_path) -> None:
     import threading
 
+    from zakcode.cli import _InputMux
     from zakcode.session import say_inbox as si
 
     gate = threading.Event()
     _feed_lines(monkeypatch, ["/exit", "plain text"], gate)
-    mux = _make_mux(tmp_path)
+    injected: list[str] = []
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=injected.append)
     mux.turn_active = True
     gate.set()
     # /exit is the REPL's own command: queued even mid-turn.
     assert mux.queue.get(timeout=5) == ("line", "/exit")
-    # …and the next line went to the inbox (turn still active).
-    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
-    si.read_say(si.say_path(tmp_path))
-    # Idle: everything is queued, nothing touches the inbox.
+    # …and the next line went to the running agent (turn still active).
+    assert _wait_for(lambda: injected == ["plain text"])
+    # Idle: everything is queued, nothing reaches the agent.
     mux.turn_active = False
     mux._route_typed("idle line")
     assert mux.queue.get(timeout=5) == ("line", "idle line")
-    assert not si.say_pending(si.say_path(tmp_path))
+    assert injected == ["plain text"]
+    assert not si.say_pending(si.say_path(tmp_path))  # the keyboard never wrote the slot
 
 
-def test_typed_line_falls_back_to_the_queue_when_the_slot_stays_busy(monkeypatch, tmp_path) -> None:
+def test_typed_line_mid_turn_leaves_an_unconsumed_say_in_the_slot(monkeypatch, tmp_path) -> None:
+    from zakcode.cli import _InputMux
     from zakcode.session import say_inbox as si
 
     _quiet_pump(monkeypatch)
-    mux = _make_mux(tmp_path)
-    monkeypatch.setattr(type(mux), "_INBOX_WAIT_SECONDS", 0.3)
+    injected: list[str] = []
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=injected.append)
     assert si.write_say(si.say_path(tmp_path), "earlier say, unconsumed")
     mux.turn_active = True
     mux._route_typed("second line")
-    assert mux.queue.get(timeout=5) == ("line", "second line")  # never lost
+    assert injected == ["second line"]  # never lost, and never waiting on the slot
+    assert mux.queue.empty()
     assert si.read_say(si.say_path(tmp_path)) == "earlier say, unconsumed"  # slot untouched
