@@ -22098,3 +22098,82 @@ sabotages aimed at the prompt were run again, and each still turns a test red.
 Not verified: a real tmux cockpit (this machine has no tmux, so the live pane ran as `zakcode cli`
 with the cockpit pane's settings); a deployed server; a pane's own permission prompt reached
 through a real model's tool call (the tests drive the real REPL with a scripted agent).
+
+## ADR-0353: a clean /exit leaves exit code 0 whoever holds stdin, because the stdin pump keeps stdin alive while it waits
+
+Status: accepted. 2026-11-02. Builds on ADR-0073 and ADR-0078 (the input mux and its stdin pump).
+
+Context. A clean `/exit` from the inline REPL printed the goodbye line and then, on CPython 3.11:
+
+    Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads
+
+The process then ended with exit code 0xC0000005 (3221225477) on Windows and -6 (SIGABRT) on
+Linux, so a wrapper that checks the exit code read a failure from a clean exit. The input mux's
+pump (`_InputMux._pump`) is a daemon thread, and when the REPL returns it is waiting in `input()`
+for the next line. When stdin and stdout are not both terminals, `input()` reads through
+`sys.stdin.readline()`, which holds the buffered reader's lock until a line or end of file
+arrives. CPython 3.11's `input()` borrows its reference to `sys.stdin`. The python/cpython#130163
+fixes, merged in February 2025 and backported to 3.12 and 3.13, made `input()` hold its own for the
+length of the call; 3.11, by then receiving security fixes only, did not get them. So on 3.11, when
+shutdown clears `sys.stdin`, the reader loses its last reference, and freeing it closes it. Closing
+needs the lock the blocked pump holds, shutdown cannot wait for a daemon thread, and CPython
+aborts. Two cases do not abort. When stdin and stdout are both terminals, `input()` reads through
+the console or readline and takes no lock on the buffered reader. When the writer closes the pipe
+right after `/exit`, the pump reads end of file and has returned by the time shutdown runs.
+
+Measured on the code before this change:
+- Windows, CPython 3.11.14, stdin a pipe the writer keeps open until the process exits: the fatal
+  error and exit code 0xC0000005, 3 runs of 3.
+- The same, with the writer closing the pipe after `/exit`: exit code 0, 3 of 3.
+- Windows, 3.11.14, a real console (a new console window, `/exit` typed into it as key events):
+  exit code 0 and no fatal error, 3 of 3.
+- Windows, 3.11.14, console stdin with stdout and stderr redirected to files: the fatal error and
+  exit code 0xC0000005, 3 of 3. What matters is that stdin and stdout are not both terminals, not
+  that stdin is a pipe.
+- A bare script on Windows, a daemon thread blocked in `input()` on an open pipe while the main
+  thread exits: the fatal error on 3.11.14, none on 3.12.10.
+- CI on this change's tests alone, the first run of #833: the pipe test failed on Linux with 3.11
+  (exit code -6 and the fatal error) and on Windows with 3.11 (0xC0000005 and the fatal error),
+  and passed on Linux with 3.12 and 3.13. The terminal test (exit code 0, no fatal error) passed on
+  Linux with 3.11, 3.12 and 3.13.
+
+Decision. `_read_stdin_line`, the pump's one read point, binds `sys.stdin` to a local for the
+length of the read: the reference a fixed `input()` takes for itself. Interpreter shutdown does not
+tear down a daemon thread's frames, so on 3.11 the reference keeps stdin from being freed, and so
+from being closed, for as long as the pump waits; where `input()` already holds one, it is a second
+and changes nothing. The pump is otherwise unchanged: it reads with `input()`, runs as a daemon
+thread, and stops only at end of file.
+
+What was considered and not done.
+- Ending the pump before shutdown. A blocked read of a pipe or a console cannot be interrupted
+  from another thread without platform-specific cancellation, and closing the reader from the main
+  thread waits on the lock the pump holds: the same wait, moved from shutdown to the main thread
+  and lasting until the next line.
+- Reading lines with `os.read` on the file descriptor, which takes no buffered lock. On a terminal
+  it would lose what `input()` gives there: line editing and bracketed paste through readline on
+  POSIX, and the console's Unicode line input on Windows. Reading raw only when stdin and stdout
+  are not both terminals, where `input()` goes through the buffered reader anyway, keeps the
+  terminal path, but means assembling lines and decoding bytes by hand, with read-ahead held where
+  no other reader of `sys.stdin` can see it. The reference is one line, and it is what a fixed
+  `input()` does itself.
+- Leaving through `os._exit` once the REPL returns. It skips every exit handler and the flush of
+  every other open file.
+- A pump that is not a daemon thread. Shutdown would wait for it, and it waits for a line that may
+  never come.
+- Asking callers to close the pipe first. The callers are anyone's wrappers, and the process should
+  exit cleanly whoever holds its stdin.
+
+The proof. Two tests in `tests/test_cli_exit.py` run `python -m zakcode cli` as a process of its
+own and assert the goodbye line, no fatal error and exit code 0. One writes `/exit` to a pipe it
+keeps open until the process exits. The other, POSIX only, types `/exit` on a pseudo-terminal, with
+`--no-rules` so that a terminal with tmux available does not open the cockpit. The pipe test failed
+against the code before this change, locally (`(3221225477, True) == (0, False)`) and in CI as
+listed above. With the change it passes, and removing the reference turns it red with the same
+fatal error, then green again once restored. The console measurements again with the change, 3 of
+3 each: a real console, exit code 0 and no fatal error; console stdin with stdout and stderr
+redirected, exit code 0 and no fatal error. A full local `poe check` with the change (Windows,
+CPython 3.11.14): ruff, format and mypy clean, and pytest 6,745 passed and 26 skipped.
+
+Not verified: macOS (CI has no macOS cell); a person's own terminal on POSIX (the test's
+pseudo-terminal stands in for it); and a 3.12 or 3.13 release older than the python/cpython#130163
+fixes, whose `input()` borrows the reference as 3.11's does.
