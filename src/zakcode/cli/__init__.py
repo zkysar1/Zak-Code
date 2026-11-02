@@ -1874,6 +1874,14 @@ _TIER_LABEL: dict[PermissionTier, str] = {
 
 def _read_stdin_line() -> str:
     """Read one raw keyboard line — the pump's single read point (patchable in tests)."""
+    # This frame holds stdin for the whole read (ADR-0353). The pump is a daemon thread, still
+    # blocked here at interpreter shutdown, and when stdin and stdout are not both terminals
+    # ``input()`` reads through stdin's buffered reader and holds its lock. On CPython 3.11
+    # ``input()`` keeps no reference of its own to stdin (3.12 does), so shutdown freed stdin,
+    # and closing it needs that lock: a clean /exit aborted with "Fatal Python error:
+    # _enter_buffered_busy". Shutdown leaves a daemon thread's frames alone, so this reference
+    # keeps stdin alive, and unclosed, for as long as the pump waits.
+    held = sys.stdin  # noqa: F841
     return input()
 
 
