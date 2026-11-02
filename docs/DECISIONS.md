@@ -21960,3 +21960,120 @@ clean, and pytest 6,714 passed, 25 skipped.
 Not verified: the start a button sends, carried through by a real model (the browser check ran
 against a model it could not reach, so it saw the turn begin and nothing after); the offer in a
 live cockpit pane; a deployed server.
+
+## ADR-0352: a cockpit pane shows the chat a web app serves on its workspace, and a pane's permission prompt gives way to the web app
+
+Status: accepted. 2026-11-02. Amends ADR-0320, where a terminal on a served workspace was a side
+conversation, and ADR-0346, which left showing the web app's chat in the pane to the owner and left
+a prompting pane turn standing back. Builds on ADR-0289, ADR-0325 and ADR-0327 (how the page joins a
+chat and its watch bus) and ADR-0319 (the workspace's current chat).
+
+Context. While `zakcode webapp` serves a workspace its say slot is the server's (ADR-0320), so a
+cockpit pane, whose only door is its say box, receives nothing: a line sent through the box runs in
+the web app's chat and shows only on the page. ADR-0346 made the pane say so and left showing the
+web app's chat to the owner, who answered on 2026-11-01 that the chat should show in both places.
+ADR-0346 also recorded a turn the pane began before a web app came up: its permission prompt stands
+back from the say slot while the workspace is served, so nothing can answer it, and the turn holds
+the busy marker (ADR-0060) that the server's say consumer waits on. Neither moves. Nothing sent
+through the box can end it either, since the prompt and the turn's interrupt watcher leave the
+interrupt file to the server (ADR-0320).
+
+Decision.
+1. The served marker names where the server listens. `create_app` takes `served_url`, and the
+   server's lease writes it into `.served` as `url`, beside `pid`, `session` and `since`
+   (`claim_busy(..., url=...)`). `zakcode webapp` passes the address a process on the same machine
+   reaches it at, `_served_url(host, port)`: the host it binds, with a bind to every interface
+   (`0.0.0.0`, `::`) reached over loopback and an IPv6 address in brackets, and no address for port
+   0. `served_url(workspace_root)` reads it back: the `http` or `https` address in a fresh marker
+   that names another process, or None.
+2. A cockpit pane shows the web app's chat. When the pane's idle wait reports `served` (ADR-0346),
+   the REPL prints that notice and then makes a view, `ServedChatMirror` in `cli/served_mirror.py`,
+   on the marker's address, saying "showing the web app's chat from <url> — lines from the say box
+   or the page appear here with the replies". The view joins the web app's current chat as the page
+   does. `GET /sessions/current/transcript` gives the saved conversation older than the oldest turn
+   the watch bus holds whole, drawn as `/resume` draws one (`_render_replay`, split out of
+   `_render_transcript` unchanged). `GET /watch/{id}?full=1&since=&epoch=` (`ServerClient.watch`,
+   `WatchStream`) gives the rest. Each line is drawn as the terminal draws its own turn: the line
+   marked `(web app · HH:MM)`, the reply streamed, the footer stamped by when the server published
+   each frame. A permission the web app's turn waits on is drawn with what it asks to run and
+   "answer y (allow once), a (allow for this session) or n in the say box, or on the page". The view
+   writes no say, no interrupt and no route, so the server stays the workspace's one reader
+   (ADR-0320).
+3. The view draws only while the REPL waits idle. It runs on a thread with its own event loop; the
+   REPL resumes it around the idle wait and pauses it around everything else, so the pane's own
+   output never lands inside the web app's. A pause keeps its place, the last frame drawn, so a
+   resume draws nothing twice and misses nothing the bus still holds. When the bus has let that
+   place go, the view says "part of the chat went by while this pane was not drawing — the page has
+   all of it" and draws on.
+4. The view follows the web app's chat. A `session_rotated` frame (the page opened another chat)
+   prints "the web app moved to another chat" and joins the current one, drawing its saved
+   conversation. A bus made again (another `X-Bus-Epoch`: the web app restarted) joins the current
+   chat again, and draws nothing again when that is the chat on screen, as after a restart into a
+   new build (ADR-0333); a restart during a turn says that what was missed is on the page. The REPL
+   keeps the view while the web app is stopped, and goes on in it when one is back at the same
+   address.
+5. A turn the view joined part way through is drawn with no length in its footer:
+   `StreamRenderer.render(..., timed=False)`. A length measured from the middle of a turn reads as
+   a short turn. Every other footer is unchanged.
+6. The view says why when it cannot show the chat, once each: a marker from a server too old to
+   name its address ("this pane cannot show the web app's chat — the web app does not say where it
+   listens (an older build); its chat is on its page"); a refusal (401 or 403: "the web app at <url>
+   refused this pane — it needs the web app's ZAKCODE_AUTH_TOKEN in the pane's environment", and
+   the view stops); a web app it has not reached for 5 s, and then that it reached it again. The
+   pane sends its own `ZAKCODE_AUTH_TOKEN` as a bearer token.
+7. A pane's permission prompt gives way to the web app. On a served workspace the pane's prompt
+   wait (`_InputMux.next_input(idle=False)` with `report_served`) answers `served`; `answer_line`
+   sets `served_stop` and denies, as Ctrl-C does; and the turn's watcher in `_run_streamed_turn`
+   stops the turn, printing "a web app is serving this workspace — the say box feeds its chat, so
+   nothing could answer this turn's permission prompt; turn stopped". The turn releases its busy
+   marker as any ended turn does (the lease's `finally` in the agent loop), so the web app's consumer
+   goes on, and the `y` and the Stop the box wrote stay in place for the web app to read. Only the
+   pane does this: the inline REPL reads its own keyboard, and its prompt is unchanged.
+
+What was considered and not done.
+- Letting the pane's prompt read the say slot while the workspace is served, so that a `y` from the
+  box answers it. The cockpit's say box and the page's `POST /say` write the same file, so the
+  prompt would take lines the page sent for its own chat: the race ADR-0320 closed.
+- Giving the box's lines back to the pane's chat while the workspace is served. On a served
+  workspace the box is the web app's door (ADR-0320); the pane shows that chat instead.
+- Configuring the address on the pane's side, as a setting or a default port. The marker is the one
+  place that says which server serves the workspace, so it also says where.
+- Drawing the web app's chat over the pane's own turns. Two chats would interleave in one terminal.
+- A matching change to the page. The page's own turns ask through the say slot the server owns
+  (`SayInboxPrompter`), so it never meets this deadlock, and it already shows its chat.
+
+The proof. 30 new tests: the marker and the address a pane reaches a web app at (13); the watch
+stream (1); the view against a real web app, served on loopback by uvicorn with the tests'
+scripted agent (11): every line with its reply, the saved chat once and then the bus, a chat the
+page opens, a pause, a bus that let the place go, a restart into a new build and a new start, a
+refusal, a web app it cannot reach and then reaches, an approval, and the same address after a
+stop; the real REPL as a cockpit pane on a served workspace, with a scripted agent (2); and the
+prompt (3): a prompt on a served workspace, a pane turn whose prompt meets one, and a web app that
+starts serving during a pane turn's prompt. 29 mutations were each run green on the real code, red
+under the sabotage and green after the restore, each reddening the test meant for it: the marker's
+address, the web-address and fresh-foreign checks, the server's lease, the loopback and IPv6
+forms, the web app's wiring, the frame parse, the epoch the watch sends, the saved cut, a chat the
+page opens, a bus made again, the place a pause keeps, the note when the bus let it go, a refusal,
+an unreachable web app said once and reached again, an approval, the user line, the saved chat
+drawn twice, the untimed footer, the REPL resuming and pausing the view, the view kept at the same
+address, the prompt answering `served`, the stop it sets, the watcher reading it, a stale one
+cleared, and the REPL passing it to the turn. A live check on Windows, three processes on one
+scratch workspace: a web app (the server's app with the tests' scripted agent, under uvicorn),
+`zakcode cli` from the branch with the cockpit pane's settings, and `zakcode say`. The marker named
+`http://127.0.0.1:<port>`; the pane said the workspace was served and that it was showing the web
+app's chat from that address; a line from `zakcode say`, which answered "sent to the web app's
+chat", and a line posted to the page's `/say` each appeared in the pane, marked
+`(web app · HH:MM)`, with its reply and footer; the web app stopped and the pane said so; and a
+`/exit` from the box then closed the pane with exit code 0. A full local `poe check`: ruff, format
+and mypy clean, and pytest 6,736 passed, 25 skipped and 8 failed, in a run of 81 minutes on a
+machine busy with other agent sessions. Seven are bash-tool, process and stop-window tests this
+change does not touch: run side by side, the bash-tool files fail on main here too (5 failures on
+main and 4 on this branch, a different few each run), and the process and stop-window files, which
+had missed their time bounds (6.08 s against 6.0 s), pass on both. The eighth was a new test here:
+it asserted that the prompt's tool call saw the deny, but the turn's watcher can cancel the call
+first. It and its sibling now take either, and assert that the prompt was shown; the four
+sabotages aimed at the prompt were run again, and each still turns a test red.
+
+Not verified: a real tmux cockpit (this machine has no tmux, so the live pane ran as `zakcode cli`
+with the cockpit pane's settings); a deployed server; a pane's own permission prompt reached
+through a real model's tool call (the tests drive the real REPL with a scripted agent).

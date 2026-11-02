@@ -85,6 +85,7 @@ from zakcode.session.framework_agents import start_line, startable_agents
 
 if TYPE_CHECKING:
     from zakcode import Agent
+    from zakcode.cli.served_mirror import ServedChatMirror
     from zakcode.events import AgentEvent
 
 app = typer.Typer(
@@ -1784,7 +1785,6 @@ def _render_transcript(
     """
     from zakcode.agent.loop import said_by_session_start, typed_command
 
-    g = resolve_glyphs(console)
     rows: list[tuple[str, str, int]] = []
     for msg in getattr(session, "messages", []):
         if msg.role not in ("user", "assistant"):
@@ -1803,6 +1803,19 @@ def _render_transcript(
                 text = typed_command(text) or text
         if text or tool_count:
             rows.append((role, text, tool_count))
+    _render_replay(console, rows, limit=limit)
+
+
+def _render_replay(
+    console: Console, rows: list[tuple[str, str, int]], *, limit: int = _REPLAY_MESSAGE_LIMIT
+) -> None:
+    """Draw the last ``limit`` replay rows as a resumed session's replay.
+
+    A row is ``(role, text, tool calls)``, its role ``user``, ``assistant`` or ``hook`` (what a
+    SessionStart hook said). A cockpit pane joining the web app's chat draws that chat's saved
+    conversation the same way (ADR-0352).
+    """
+    g = resolve_glyphs(console)
     if not rows:
         return
     shown = rows[-limit:]
@@ -1876,6 +1889,34 @@ _SERVED_NOTICE = {
 }
 
 
+def _served_chat_mirror(
+    console: Console, settings: Settings, *, kept: ServedChatMirror | None = None
+) -> ServedChatMirror | None:
+    """The view of the web app's chat a cockpit pane shows while a web app serves its workspace
+    (ADR-0352), saying so, or None, saying why: a web app too old to name its address. ``kept`` is
+    the view the pane showed before; a web app back at the same address goes on in it."""
+    from zakcode.cli.served_mirror import ServedChatMirror
+    from zakcode.session.say_inbox import served_url
+
+    dash = GLYPHS["dash"]
+    url = served_url(settings.workspace_root)
+    if url is None:
+        notice_info(
+            console,
+            f"this pane cannot show the web app's chat {dash} the web app does not say where it "
+            "listens (an older build); its chat is on its page",
+        )
+        return None
+    notice_info(
+        console,
+        f"showing the web app's chat from {url} {dash} lines from the say box or the page appear "
+        "here with the replies",
+    )
+    if kept is not None and kept.url == url and not kept.stopped:
+        return kept
+    return ServedChatMirror(console, url, token=settings.auth_token)
+
+
 class _InputMux:
     """The ONE owner of interactive input for a chat session.
 
@@ -1947,8 +1988,13 @@ class _InputMux:
         #: only door is the say inbox, so while a web app serves the workspace nothing it is sent
         #: reaches the pane. ``next_input(idle=True)`` then answers ``("served", None)`` once when
         #: a server starts and ``("unserved", None)`` once when it stops, for the REPL to say so.
+        #: A permission prompt's wait answers ``("served", None)`` too, for as long as a server
+        #: serves: nothing can answer that prompt any more (ADR-0352).
         self._report_served = report_served
         self._served_reported = False
+        #: Set when a pane's permission prompt met a served workspace (ADR-0352). The prompt is
+        #: denied, and the turn waiting on it stops: ``_run_streamed_turn`` watches this.
+        self.served_stop = threading.Event()
         #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
@@ -2057,6 +2103,11 @@ class _InputMux:
             if idle and self._report_served and served != self._served_reported:
                 self._served_reported = served
                 return ("served" if served else "unserved", None)
+            if not idle and served and self._report_served:
+                # A pane's prompt has one door, the say box, and on a served workspace the box
+                # feeds the web app's chat (ADR-0320): this prompt can no longer be answered, and
+                # its turn's hold on the busy marker would keep the web app waiting (ADR-0352).
+                return ("served", None)
             if idle:
                 if not served:
                     self._take_interrupt(self.interrupt_fp)
@@ -2146,8 +2197,9 @@ class _InputMux:
         input after the turn, never burned on the prompt's re-ask loop; typed
         lines always pass through (a typo should re-ask). EOF denies; Ctrl-C or
         a stop signal denies AND (for the stop file) the turn watcher cancels
-        the turn moments later. A set ``stop`` event ends the wait quietly —
-        the asker was cancelled and nobody will read the result.
+        the turn moments later. So does a web app serving a pane's workspace,
+        through ``served_stop`` (ADR-0352). A set ``stop`` event ends the wait
+        quietly — the asker was cancelled and nobody will read the result.
         """
         while True:
             kind, value = self.next_input(idle=False, stop=stop)
@@ -2171,7 +2223,9 @@ class _InputMux:
                 return text
             if kind == "eof":
                 raise EOFError
-            raise KeyboardInterrupt  # 'interrupt' or 'stop'
+            if kind == "served":
+                self.served_stop.set()  # the turn's watcher stops the turn (ADR-0352)
+            raise KeyboardInterrupt  # 'interrupt', 'stop' or 'served'
 
 
 class ConsolePermissionPrompter:
@@ -3057,6 +3111,7 @@ def _run_streamed_turn(
     make_stream: StreamFactory,
     renderer: StreamRenderer,
     interrupt_file: Path | None = None,
+    served_stop: threading.Event | None = None,
 ) -> bool:
     """Run a streamed turn on the session loop; cancellable via Ctrl-C.
 
@@ -3065,11 +3120,15 @@ def _run_streamed_turn(
     Returns ``True`` if the turn completed, ``False`` if the user interrupted it
     (Ctrl-C): the in-flight task is cancelled cleanly (the loop persists state at
     message boundaries), a dim ``interrupted`` notice is printed, and control
-    returns to the REPL prompt without exiting.
+    returns to the REPL prompt without exiting. ``served_stop`` stops the turn the
+    same way, once a cockpit pane's permission prompt has met a web app serving the
+    workspace and could no longer be answered (ADR-0352).
     """
     loop = _SESSION_LOOP
     if loop is None:  # pragma: no cover — chat()/_run_server_chat always install one
         raise RuntimeError("session loop not initialized")
+    if served_stop is not None:
+        served_stop.clear()  # set for an earlier turn, it is nothing to this one
     task = loop.create_task(_drive_stream(make_stream, renderer))
     # The interrupt FILE is the transport-level twin of Ctrl-C: written by Esc in
     # the cockpit say box or `zakcode interrupt` from any terminal. The watcher
@@ -3077,6 +3136,7 @@ def _run_streamed_turn(
     # Ctrl-C branch performs — so both stops unwind identically (state persisted
     # at message boundaries, the "interrupted" notice, back to the prompt).
     stopped_by_file: list[bool] = []
+    stopped_by_served: list[bool] = []
     watcher = None
     if interrupt_file is not None:
         from zakcode.session.say_inbox import busy_elsewhere, served_path, take_interrupt
@@ -3086,6 +3146,11 @@ def _run_streamed_turn(
         async def _watch_interrupt_file() -> None:
             while True:
                 await asyncio.sleep(0.25)
+                if served_stop is not None and served_stop.is_set():
+                    served_stop.clear()
+                    stopped_by_served.append(True)
+                    task.cancel()
+                    return
                 # While another process serves the workspace, the file stops THAT server's
                 # turn (the page's Stop): this turn leaves it there (ADR-0320).
                 if not busy_elsewhere(served) and take_interrupt(interrupt_file):
@@ -3098,11 +3163,18 @@ def _run_streamed_turn(
         loop.run_until_complete(task)
         return True
     except asyncio.CancelledError:
-        if not stopped_by_file:
+        if not stopped_by_file and not stopped_by_served:
             raise  # not our cancellation — propagate
         if _ACTIVE_WAIT is not None:
             _ACTIVE_WAIT.stop()
-        notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
+        if stopped_by_served:
+            notice_warn(
+                console,
+                f"a web app is serving this workspace {GLYPHS['dash']} the say box feeds its "
+                "chat, so nothing could answer this turn's permission prompt; turn stopped",
+            )
+        else:
+            notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
     except KeyboardInterrupt:
         global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
@@ -3692,6 +3764,12 @@ def chat(
     global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
     _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
     _LAST_CTRL_C_MID_TURN = False
+    # ADR-0352: while a web app serves the workspace, a cockpit pane shows the web app's chat.
+    # The view draws only while this loop waits idle, so the pane's own output never lands in it.
+    # It is kept when the web app stops: one restarting into a new build marks the workspace
+    # again moments later, and the view goes on in the same chat without drawing it twice.
+    mirror: ServedChatMirror | None = None
+    showing = False
     while True:
         # Input that arrived during the turn (a queued say, a typed-ahead line)
         # is taken WITHOUT a frame — opening one just to slam it shut renders a
@@ -3700,10 +3778,15 @@ def chat(
         framed = got is None
         if framed:
             open_input_frame(console)
+            if showing and mirror is not None:
+                _absorb_interrupts(mirror.resume)
             try:
                 got = mux.next_input(idle=True)
             except KeyboardInterrupt:
                 got = ("interrupt", None)
+            finally:
+                if mirror is not None:
+                    _absorb_interrupts(mirror.pause)
         kind, value = got
         if framed:
             close_input_frame(console, newline=kind != "line")
@@ -3717,6 +3800,9 @@ def chat(
             continue  # reached only when the exec itself failed — keep serving
         if kind in _SERVED_NOTICE:
             notice_info(console, _SERVED_NOTICE[kind].format(dash=GLYPHS["dash"]))
+            showing = kind == "served"
+            if showing:
+                mirror = _served_chat_mirror(console, agent.settings, kept=mirror)
             continue
         if kind == "interrupt":
             # A single Ctrl-C at the prompt must NOT kill the session — terminal
@@ -4022,6 +4108,7 @@ def chat(
                 functools.partial(agent.astream_turn, stripped),
                 renderer,
                 interrupt_file=interrupt_fp,
+                served_stop=mux.served_stop,
             )
             _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
             # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
@@ -4149,6 +4236,25 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(candidate).is_loopback
     except ValueError:
         return False
+
+
+def _served_url(host: str, port: int) -> str | None:
+    """Where a process on this machine reaches a web app bound to ``host``:``port`` (ADR-0352).
+
+    The served marker carries it to a cockpit pane on the workspace. A bind to every interface
+    (``0.0.0.0``, ``::``) is reached over loopback, and an IPv6 address goes in brackets. None
+    for port 0, whose port is not known until the server binds.
+    """
+    if port <= 0:
+        return None
+    candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    if candidate in ("", "0.0.0.0"):
+        candidate = "127.0.0.1"
+    elif candidate == "::":
+        candidate = "::1"
+    if ":" in candidate:
+        candidate = f"[{candidate}]"
+    return f"http://{candidate}:{port}"
 
 
 @app.command(name="webapp")
@@ -4284,6 +4390,8 @@ def serve(
         if carried
         else None
     )
+    # ADR-0352: the served marker names this address, so a cockpit pane shows the chat.
+    served_url = _served_url(host, port)
     fastapi_app = (
         create_app(
             settings=resolved_settings,
@@ -4291,6 +4399,7 @@ def serve(
             new_session=new_session,
             on_new_build=_on_new_build,
             resume_turn=resume_turn,
+            served_url=served_url,
         )
         if workspace is not None
         else create_app(
@@ -4298,6 +4407,7 @@ def serve(
             new_session=new_session,
             on_new_build=_on_new_build,
             resume_turn=resume_turn,
+            served_url=served_url,
         )
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
