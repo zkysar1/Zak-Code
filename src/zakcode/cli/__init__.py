@@ -1956,6 +1956,7 @@ class _InputMux:
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
         inject: Callable[[str], None] | None = None,
+        take: Callable[[], list[str]] | None = None,
         wakeup_probe: Callable[[], str | None] | None = None,
         report_served: bool = False,
     ) -> None:
@@ -1982,6 +1983,12 @@ class _InputMux:
         #: one; the chat REPL always attaches its agent) leaves the line on the queue.
         self.turn_active = False
         self._inject = inject
+        #: The lines the agent was handed and never delivered (``take`` →
+        #: ``Agent.take_typed_lines``), taken by :meth:`end_turn` for the prompt (ADR-0354).
+        self._take = take
+        #: Held while a typed line is routed and while a turn ends, so no line reaches the
+        #: agent after :meth:`end_turn` has taken what it holds.
+        self._turn_lock = threading.Lock()
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
         #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
         self._busy_marker = busy_path(inbox.parent)
@@ -2057,15 +2064,32 @@ class _InputMux:
         ``--server`` REPL builds no mux: it reads nothing while its turn runs, and reads the
         next line at its prompt.)
         """
-        if (
-            self._inject is not None
-            and self.turn_active
-            and line.strip()
-            and not _is_repl_command(line)
-        ):
-            self._inject(line)
-            return
-        self.queue.put(("line", line))
+        with self._turn_lock:
+            if (
+                self._inject is not None
+                and self.turn_active
+                and line.strip()
+                and not _is_repl_command(line)
+            ):
+                self._inject(line)
+                return
+            self.queue.put(("line", line))
+
+    def end_turn(self) -> None:
+        """End this process's turn: a line typed from now on waits for the prompt, and a line
+        the agent was handed but never delivered goes to the prompt's queue (ADR-0354).
+
+        A line typed during the turn's last model call reaches no later iteration boundary,
+        so the agent still holds it when the turn ends. Left there, it would reach the model
+        one turn late, framed as a mid-turn message behind the next prompt. At the prompt it
+        runs as the next turn, echoed like any line typed ahead. The routing lock is held
+        throughout, so no line reaches the agent after its lines are taken.
+        """
+        with self._turn_lock:
+            self.turn_active = False
+            if self._take is not None:
+                for line in self._take():
+                    self.queue.put(("line", line))
 
     def next_input(
         self, *, idle: bool, stop: threading.Event | None = None
@@ -3726,6 +3750,9 @@ def chat(
         # on the same checkout would consume first. Late-bound: `agent` is rebuilt on
         # /model and /resume below, and the mux must follow it.
         inject=lambda text: agent.inject_user_line(text),
+        # ADR-0354: a line it was handed that no iteration boundary took comes back to the
+        # prompt when the turn ends, and runs as the next turn.
+        take=lambda: agent.take_typed_lines(),
         wakeup_probe=_due_wakeup,
     )
     repl_mux.append(mux)
@@ -4125,7 +4152,7 @@ def chat(
             notice_error(console, "turn failed", str(exc))
             continue
         finally:
-            mux.turn_active = False
+            mux.end_turn()
 
     _shutdown_session_loop(loop)
 

@@ -184,6 +184,81 @@ async def test_a_typed_line_never_reaches_a_sibling_loop_on_the_same_workspace(
     assert await loop_a._deliver_midturn_say() is None
 
 
+class _TypesDuringFirstCall(_Recording):
+    """The operator types at THIS session's REPL while the first model call runs. With a
+    final answer scripted for that call, it is the turn's last: no iteration boundary
+    follows it."""
+
+    def __init__(self, results: list[LLMResult], text: str) -> None:
+        super().__init__(results)
+        self._text = text
+        self.loop: AgentLoop | None = None
+
+    async def acomplete(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> LLMResult:
+        if self.calls == 0:
+            assert self.loop is not None
+            self.loop.inject_user_line(self._text)
+        return await super().acomplete(messages, system=system, tools=tools, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_a_line_typed_during_the_last_model_call_reaches_the_model_one_turn_late(
+    tmp_path: Path,
+) -> None:
+    """ADR-0354. No iteration boundary follows a turn's last model call, so a line typed
+    during it is not delivered in its turn. It is not lost: the loop outlives the turn (the
+    REPL builds one agent for its whole session), so the line reaches the model at the NEXT
+    turn's first boundary, framed as a mid-turn message behind the prompt typed after it.
+    The REPL therefore takes it when the turn ends (``take_typed_lines``). Streamed, as the
+    REPL runs a turn."""
+    provider = _TypesDuringFirstCall([_DONE, _DONE], "and the README too")
+    loop, session = _loop(provider, tmp_path)
+    provider.loop = loop
+    [e async for e in loop.astream_turn("fix the bug")]
+
+    assert provider.calls == 1
+    assert not any("and the README too" in m.text for m in session.messages)
+
+    [e async for e in loop.astream_turn("next prompt")]
+    users = [m.text for m in provider.seen[1] if m.role == "user"]
+    assert users[-2] == "next prompt"
+    assert "arrived mid-task" in users[-1] and "and the README too" in users[-1]
+
+
+@pytest.mark.asyncio
+async def test_take_typed_lines_hands_over_what_the_turn_did_not_deliver(tmp_path: Path) -> None:
+    """ADR-0354: what the REPL takes at the turn's end, it runs as the next turn, so the loop
+    gives each line up once and never delivers it as well."""
+    provider = _TypesDuringFirstCall([_DONE, _DONE], "and the README too")
+    loop, session = _loop(provider, tmp_path)
+    provider.loop = loop
+    [e async for e in loop.astream_turn("fix the bug")]
+
+    assert loop.take_typed_lines() == ["and the README too"]
+    assert loop.take_typed_lines() == []
+    [e async for e in loop.astream_turn("and the README too")]
+    users = [m.text for m in session.messages if m.role == "user"]
+    assert users == ["fix the bug", "and the README too"]
+
+
+def test_the_agent_hands_over_the_lines_its_loop_holds(tmp_path: Path) -> None:
+    """ADR-0354: the REPL takes the lines through the agent, so ``Agent.take_typed_lines``
+    must reach the loop that ``Agent.inject_user_line`` feeds."""
+    from zakcode.evals import ScriptedProvider, make_agent, reply
+
+    agent = make_agent(ScriptedProvider([reply("ok")]), workspace_root=str(tmp_path))
+    agent.inject_user_line("and the README too")
+    assert agent.take_typed_lines() == ["and the README too"]
+    assert agent.take_typed_lines() == []
+
+
 @pytest.mark.asyncio
 async def test_subagent_shape_never_consumes_the_inbox(tmp_path: Path) -> None:
     """A loop built without ``consume_say_inbox`` (the sub-agent construction shape)

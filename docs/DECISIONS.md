@@ -22177,3 +22177,60 @@ CPython 3.11.14): ruff, format and mypy clean, and pytest 6,745 passed and 26 sk
 Not verified: macOS (CI has no macOS cell); a person's own terminal on POSIX (the test's
 pseudo-terminal stands in for it); and a 3.12 or 3.13 release older than the python/cpython#130163
 fixes, whose `input()` borrows the reference as 3.11's does.
+
+## ADR-0354: a line typed during a turn's last model call runs as the next turn
+
+Status: accepted. 2026-11-02. Builds on ADR-0078 (a typed line goes to this process's agent) and
+ADR-0051 (a message reaches a running turn at an iteration boundary).
+
+Context. Since ADR-0078 a line typed at the REPL while its turn runs goes to the agent in-process
+(`_InputMux._route_typed`, then `Agent.inject_user_line`, then `AgentLoop._typed_lines`), and the
+loop takes it at its next iteration boundary (`_deliver_midturn_say`). A turn's last model call
+answers without a tool call, and no boundary follows it, so a line typed during that call is still
+in the loop when the turn ends, and nothing took it from there. The loop outlives the turn (the
+REPL builds one agent for its whole session), so the line was not lost: it reached the model at
+the next turn's first boundary, framed as a mid-turn message ("user message — arrived mid-task"),
+behind the prompt typed after it. Meanwhile the prompt came back with no sign of the line: the
+person saw it vanish, then saw it answered a turn late, after a newer instruction. A line the
+step-seam hold (ADR-0052) was still waiting on when the turn ended went the same way.
+
+The web page does not have this gap. Its composer sends through `POST /say`; the say slot is a file
+that outlives the turn, and the server's between-turn consumer runs a say the turn did not take as
+the next turn.
+
+Decision. When a turn ends, the REPL takes the lines the agent was handed and never delivered
+(`Agent.take_typed_lines`, which drains `AgentLoop._typed_lines`) and puts them on the input queue.
+There the prompt runs them as the next turn, echoed like any line typed ahead. This is
+`_InputMux.end_turn`, called where the REPL used to clear `turn_active`. Routing a typed line and
+ending the turn hold one lock, so a line on its way to the agent as the turn ends is taken with the
+rest. A line typed after the turn has ended goes to the queue, as before.
+
+What was considered and not done.
+- Going on with the turn: delivering the line after the final answer and calling the model again.
+  In the person's view the turn has ended (its answer is drawn and its turn-end hooks have run),
+  and a REPL command typed in the same moment would wait behind a turn nobody asked for.
+- Having the loop hand the line back at its own turn end. Only the REPL can run the next turn, and
+  only this process's keyboard fills `_typed_lines` (ADR-0078), so the REPL is where it belongs.
+
+Order. A line already on the queue when the turn ends (a REPL command such as `/help`, typed during
+the turn) runs before a line handed back. Typing order across the two is not kept: that would need
+one queue for both, and both arriving within one model call is rare.
+
+The proof. In `tests/test_loop_say.py`, a provider types a line during the turn's only model call,
+on the streamed path the REPL runs. Left alone, the line reaches the model at the next turn's first
+boundary, framed, after the next prompt. `take_typed_lines` gives it up once, and the next turn
+never sees it. `Agent.take_typed_lines` reaches the loop that `inject_user_line` feeds. In
+`tests/test_cli_chat.py`, the REPL runs a line typed during the last model call as the very next
+turn, before the keyboard's next line, and `end_turn` waits for a line on its way to the agent.
+Three mutation proofs, each red on the test meant for it and green after the restore: the turn end
+put back to clearing `turn_active` alone (the line does not run next), the lock removed (the turn
+ends while the line is on its way), and `take_typed_lines` emptied (the line stays in the agent).
+A full local `poe check` with the change (Windows, CPython 3.11.14): ruff, format and mypy
+clean; pytest 6,743 passed, 26 skipped and 7 failed. Six of the seven were test doubles of the
+agent without `take_typed_lines`, which the REPL now calls at the end of every turn; with the
+method added they pass, 38 of 38 in their two files. The seventh,
+`test_stop_after_a_restart_kills_the_git_bash_tree`, fails intermittently on that machine on the
+code before this change as well: run alone, 3 of 6 runs of it failed.
+
+Not verified: a person typing at a real terminal during a live model call. The tests type through
+the REPL's keyboard seam against a scripted agent and a scripted provider.

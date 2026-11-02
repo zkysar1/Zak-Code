@@ -85,6 +85,11 @@ class FakeAgent:
                 self.session.add_usage(event.usage)
         return self._gen()
 
+    def take_typed_lines(self) -> list[str]:
+        # The REPL takes a turn's undelivered typed lines when the turn ends (ADR-0354); no
+        # line ever reaches this agent mid-turn, so there are none.
+        return []
+
     async def _gen(self) -> AsyncIterator[AgentEvent]:
         for event in self.events:
             yield event
@@ -2517,3 +2522,103 @@ def test_typed_line_mid_turn_leaves_an_unconsumed_say_in_the_slot(monkeypatch, t
     assert injected == ["second line"]  # never lost, and never waiting on the slot
     assert mux.queue.empty()
     assert si.read_say(si.say_path(tmp_path)) == "earlier say, unconsumed"  # slot untouched
+
+
+def test_a_line_typed_during_the_last_model_call_runs_as_the_next_turn(monkeypatch) -> None:
+    """ADR-0354: no iteration boundary follows a turn's last model call, so a line typed during
+    it is still in the agent when the turn ends (the agent loop pins that,
+    test_loop_say.py). The REPL takes it then and runs it as the very next turn, echoed like a
+    line typed ahead, instead of leaving it to reach the model a turn late behind the next
+    prompt."""
+    import asyncio
+    import threading
+
+    in_last_call, next_turn = threading.Event(), threading.Event()
+    built: list[FakeAgent] = []
+
+    class _LateLineAgent(FakeAgent):
+        """Holds its first turn's last model call open until a line is typed, and, like the
+        real loop, delivers nothing typed then."""
+
+        def __init__(self, **overrides: object) -> None:
+            super().__init__(**overrides)
+            self.typed: list[str] = []
+            self.handed = threading.Event()
+            built.append(self)
+
+        def inject_user_line(self, text: str) -> None:
+            self.typed.append(text)
+            self.handed.set()
+
+        def take_typed_lines(self) -> list[str]:
+            taken, self.typed = self.typed, []
+            return taken
+
+        async def _gen(self) -> AsyncIterator[AgentEvent]:
+            if len(self.turns) == 1:
+                in_last_call.set()
+                for _ in range(500):  # 10 s at most
+                    if self.handed.is_set():
+                        break
+                    await asyncio.sleep(0.02)
+            else:
+                next_turn.set()
+            async for event in super()._gen():
+                yield event
+
+    def keyboard():
+        yield "fix the bug"
+        in_last_call.wait(timeout=10)
+        yield "and the README too"
+        next_turn.wait(timeout=10)
+        yield "/exit"
+
+    keys = keyboard()
+    monkeypatch.setattr(zakcode, "Agent", _LateLineAgent)
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", lambda: next(keys))
+    result = runner.invoke(app, ["cli"])
+
+    assert result.exit_code == 0, result.stdout
+    assert built[-1].turns == ["fix the bug", "and the README too"]
+    assert built[-1].typed == []
+    assert "and the README too" in result.stdout  # echoed as the turn it opened
+
+
+def test_end_turn_waits_for_a_line_on_its_way_to_the_agent(monkeypatch, tmp_path) -> None:
+    """ADR-0354: the pump routes a line on its own thread. A line on its way to the agent as the
+    turn ends is taken with the rest, never left in an agent whose turn is over: end_turn waits
+    for the routing in flight, under the same lock."""
+    import threading
+
+    from zakcode.cli import _InputMux
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    held: list[str] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def inject(text: str) -> None:  # an agent slow to take the line
+        entered.set()
+        release.wait(timeout=10)
+        held.append(text)
+
+    def take() -> list[str]:
+        taken = held[:]
+        held.clear()
+        return taken
+
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=inject, take=take)
+    mux.turn_active = True
+    router = threading.Thread(target=mux._route_typed, args=("late line",))
+    router.start()
+    assert entered.wait(timeout=5)
+    ender = threading.Thread(target=mux.end_turn)
+    ender.start()
+    ender.join(timeout=0.3)
+    assert ender.is_alive()  # the turn cannot end while the line is still on its way
+    release.set()
+    router.join(timeout=5)
+    ender.join(timeout=5)
+    assert mux.queue.get(timeout=5) == ("line", "late line")
+    assert held == []
+    assert not mux.turn_active
