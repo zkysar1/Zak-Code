@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from zakcode import Agent
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.loop import AgentLoop
@@ -140,6 +142,63 @@ async def test_compaction_summarizer_defaults_to_main_provider(tmp_path: Path) -
     loop = AgentLoop(gen, ToolRegistry(), Session(cwd=str(tmp_path), model="t"), max_iterations=5)
     out = await loop._summarize_for_compaction([Message.user("x")])
     assert out == "gen-summary" and gen.calls == 1
+
+
+def test_a_summarizer_the_user_named_is_asked_as_they_configured_it(tmp_path: Path) -> None:
+    # ADR-0357: a model_roles summarizer is the user's own pick, so its asks keep their thinking,
+    # in the parent loop and in every child. Any other summarizer is left to its route.
+    named = Agent(
+        workspace_root=tmp_path,
+        provider=_Scripted("x"),
+        enable_subagents=True,
+        model_roles={"summarizer": "cheap/y"},
+    )
+    assert named.loop._summarizer_thinking is True
+    assert named.loop.spawner._runner.summarizer_thinking is True  # type: ignore[union-attr]
+
+    chosen = Agent(workspace_root=tmp_path, provider=_Scripted("x"), enable_subagents=True)
+    assert chosen.loop._summarizer_thinking is None
+    assert chosen.loop.spawner._runner.summarizer_thinking is None  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("setting", [True, False])
+def test_the_summarizer_thinking_setting_wins(tmp_path: Path, setting: bool) -> None:
+    # ADR-0357: set either way, the setting decides, a model_roles summarizer included.
+    agent = Agent(
+        workspace_root=tmp_path,
+        provider=_Scripted("x"),
+        enable_subagents=True,
+        model_roles={"summarizer": "cheap/y"},
+        summarizer_thinking=setting,
+    )
+    assert agent.loop._summarizer_thinking is setting
+    assert agent.loop.spawner._runner.summarizer_thinking is setting  # type: ignore[union-attr]
+
+
+def test_a_summarize_category_that_sets_thinking_keeps_its_word(tmp_path: Path) -> None:
+    # ADR-0357: the category's ``thinking`` is the user's word for the summarizer's route; only a
+    # category that leaves it unset gets thinking switched off for its summaries.
+    def summarizer(**entry: object) -> Provider:
+        agent = Agent(
+            workspace_root=tmp_path,
+            default_model="zakpick",
+            api_base="http://localhost:8080/v1",
+            api_key="sk-test",
+            zakpick_models={
+                "summarize": {
+                    "model": "local-27b",
+                    "source": "openai",
+                    "context_window": 131_072,
+                    **entry,
+                }
+            },
+        )
+        assert agent.loop._summarizer_provider is not None
+        return agent.loop._summarizer_provider
+
+    for entry, configured in (({}, False), ({"thinking": True}, True), ({"thinking": False}, True)):
+        caps = summarizer(**entry).capabilities()
+        assert (caps.thinking_switch, caps.thinking_configured) == (True, configured), entry
 
 
 # ── routed models must not be decommissioned ───────────────────────
