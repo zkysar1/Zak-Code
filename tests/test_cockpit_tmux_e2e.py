@@ -1,4 +1,4 @@
-"""The cockpit in a real tmux, read off its own screen (ADR-0355).
+"""The cockpit in a real tmux, read off its own screen (ADR-0356).
 
 Every other cockpit test fakes tmux: it records the commands the cockpit would send and never runs
 them. Nothing showed that a real tmux accepts them, that the panes start with what the cockpit gives
