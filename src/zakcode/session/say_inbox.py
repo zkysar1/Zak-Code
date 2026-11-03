@@ -179,17 +179,24 @@ def busy_elsewhere(path: Path) -> bool:
     return marker is not None and marker.get("pid") != os.getpid()
 
 
-def claim_busy(path: Path, session_id: str, *, take_over: bool = False) -> bool:
+def claim_busy(
+    path: Path, session_id: str, *, take_over: bool = False, url: str | None = None
+) -> bool:
     """Mark this process mid-turn on the workspace.
 
     False (unclaimed) while another process's fresh marker stands — that turn owns the
     inbox and this one runs without a claim. Never raises: the marker is a routing hint,
     not a gate on the turn. ``take_over`` claims over a fresh foreign marker too: the
     served marker's rule, since a server that starts IS the workspace's server (ADR-0320).
+    ``url`` is the served marker's too: where a process on this machine reaches that server
+    (ADR-0352).
     """
     if not take_over and busy_elsewhere(path):
         return False
-    payload = json.dumps({"pid": os.getpid(), "session": session_id, "since": time.time()})
+    marker: dict[str, Any] = {"pid": os.getpid(), "session": session_id, "since": time.time()}
+    if url is not None:
+        marker["url"] = url
+    payload = json.dumps(marker)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -222,15 +229,18 @@ class BusyLease:
     Both are idempotent and never raise.
     """
 
-    def __init__(self, path: Path, session_id: str, *, take_over: bool = False) -> None:
+    def __init__(
+        self, path: Path, session_id: str, *, take_over: bool = False, url: str | None = None
+    ) -> None:
         self.path = path
         self.session_id = session_id
         self.take_over = take_over
+        self.url = url
         self.held = False
         self._task: asyncio.Task[None] | None = None
 
     async def acquire(self) -> None:
-        self.held = claim_busy(self.path, self.session_id, take_over=self.take_over)
+        self.held = claim_busy(self.path, self.session_id, take_over=self.take_over, url=self.url)
         if self.held:
             self._task = asyncio.create_task(self._keep_fresh())
 
@@ -264,7 +274,8 @@ class BusyLease:
 # clears, reports or obeys no stop, idle, prompting or mid-turn. Same staleness rule as
 # ``.busy``: a server that died stops naming anyone two minutes later. A server that
 # starts takes the marker over (``take_over``), so a predecessor that crashed cannot leave
-# it unmarked.
+# it unmarked. The marker also names where the server listens (``url``), so a cockpit pane
+# on the workspace can show the chat it serves (ADR-0352).
 
 #: The served-marker filename under the workspace root.
 SERVED_FILENAME = ".served"
@@ -274,3 +285,17 @@ def served_path(workspace_root: str | os.PathLike[str]) -> Path:
     """The served-marker file for a workspace. :func:`busy_elsewhere` reads it as it reads
     the busy marker: True while a fresh one names a process other than this one."""
     return Path(workspace_root) / SERVED_FILENAME
+
+
+def served_url(workspace_root: str | os.PathLike[str]) -> str | None:
+    """Where the web app serving this workspace from another process listens (ADR-0352).
+
+    The address its fresh served marker names, or None: no fresh marker, one this process
+    holds, or one written by a server too old to name its address.
+    """
+    path = served_path(workspace_root)
+    if not busy_elsewhere(path):
+        return None
+    marker = _read_busy(path)
+    url = marker.get("url") if marker is not None else None
+    return url if isinstance(url, str) and url.startswith(("http://", "https://")) else None

@@ -98,7 +98,7 @@ class WriteFileTool(Tool):
             return ToolResult.error(f"Failed to resolve path {path!r}: {exc}")
 
         # A note filed one directory above the host framework's tree is refused before the
-        # parent directories below are created for it (ADR-0345).
+        # parent directories below are created for it (ADR-0355).
         misplaced = check_tree_note_layout(resolved, ctx.virtual_roots)
         if misplaced is not None:
             message, fix = misplaced

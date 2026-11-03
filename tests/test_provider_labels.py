@@ -290,6 +290,10 @@ class _FakeAgent:
 
         return _turn()
 
+    def take_typed_lines(self) -> list[str]:
+        """What the REPL takes when a turn ends (ADR-0354): nothing is typed here."""
+        return []
+
 
 def _chat(
     monkeypatch: pytest.MonkeyPatch, labels: dict[str, str] | None, agent: type = _FakeAgent

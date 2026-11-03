@@ -138,11 +138,12 @@ markers = [
 # Bare `pytest` (no uv editable install) resolves the src/ layout via pythonpath, so a
 # fresh clone with deps can run the suite without `pip install -e .` first.
 pythonpath = ["src"]
-# Per-test timeout (pytest-timeout). The full suite runs in ~84s locally, so any
-# single test exceeding 120s is genuinely hung -- fail it fast with a traceback
-# instead of letting it stall the whole CI job to GitHub's 45-minute ceiling
-# (the 2026-06-08 incident: an ubuntu-only hang that passes on Windows wedged
-# every run for 45m with no signal). The traceback names the hanging test.
+# Per-test timeout (pytest-timeout). The slowest test in a full local run took
+# 26.1s (2026-11-01, ADR-0349), so any single test exceeding 120s is genuinely
+# hung -- fail it fast with a traceback instead of letting it stall the whole CI
+# job to GitHub's 45-minute ceiling (the 2026-06-08 incident: an ubuntu-only hang
+# that passes on Windows wedged every run for 45m with no signal). The traceback
+# names the hanging test.
 # `thread` method: a watchdog dumps every thread's stack (faulthandler) on
 # timeout and hard-exits -- robust even against C-level/socket blocks that the
 # default `signal` method (SIGALRM, main-thread-only) cannot interrupt.

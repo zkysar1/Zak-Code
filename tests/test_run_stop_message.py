@@ -17,6 +17,8 @@ Each test is grouped by the property it pins:
   are not DONE.
 - **Slot contention.** A human's say goes first; retraction never deletes a
   different say.
+- **Mid-turn retry.** A refused write is retried from the watcher's tick while a turn is in
+  flight (the beat loop is parked awaiting that turn), inside the window and never after it.
 - **Startup drop.** A pending say equal to the configured line is dropped; a
   different one is kept.
 - **Ported cases.** The shared window, zero reserve, ``duration_cap`` naming,
@@ -41,7 +43,7 @@ from zakcode.config import Settings
 from zakcode.events import AgentDone, AgentEvent, AgentTextDelta
 from zakcode.messages import Message
 from zakcode.server.app import create_app
-from zakcode.session.say_inbox import say_path, say_pending, write_say
+from zakcode.session.say_inbox import read_say, say_path, say_pending, write_say
 from zakcode.session.store import Session, SessionStore
 from zakcode.usage import Usage
 
@@ -107,6 +109,60 @@ class _StopReasonAgent:
         reason = self._reasons[turn] if turn < len(self._reasons) else "completed"
         self._seen.append(user_text)
         yield AgentDone(stop_reason=reason, iterations=1, usage=Usage())
+
+
+class _InboxReadingAgent:
+    """A turn that stays in flight and reads the say inbox at its boundaries, as the loop does.
+
+    The agent loop drains the single-slot inbox before every model call
+    (``_deliver_midturn_say``), so while a turn runs it is the TURN, not the beat loop, that
+    empties the slot. This stands in for that. The turn waits on ``gate`` (the test decides when
+    its first boundary happens), then reads the slot every ``boundary`` seconds into ``got``, and
+    ends ``completed`` once it reads ``end_on``. ``seen`` is what each turn was asked.
+    ``read_on_cancel`` makes the last act of a turn the interrupt cuts one more read of the slot.
+    """
+
+    def __init__(
+        self,
+        session: Session,
+        workspace: Path,
+        *,
+        gate: asyncio.Event,
+        seen: list[str],
+        got: list[str],
+        end_on: str | None = None,
+        boundary: float = 0.05,
+        read_on_cancel: bool = False,
+    ) -> None:
+        self.session = session
+        self._inbox = say_path(workspace)
+        self._gate = gate
+        self._seen = seen
+        self._got = got
+        self._end_on = end_on
+        self._boundary = boundary
+        self._read_on_cancel = read_on_cancel
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        self._seen.append(user_text)
+        self.session.add_message(Message.user(user_text))
+        try:
+            await self._gate.wait()
+            while True:
+                line = read_say(self._inbox)
+                if line is not None:
+                    self._got.append(line)
+                    if line == self._end_on:
+                        break
+                await asyncio.sleep(self._boundary)
+        except asyncio.CancelledError:
+            if self._read_on_cancel:
+                last = read_say(self._inbox)
+                if last is not None:
+                    self._got.append(last)
+            raise
+        self.session.add_message(Message.assistant_text("ok"))
+        yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
 
 
 def _build(
@@ -374,6 +430,159 @@ def test_stop_raised_while_a_human_say_is_pending_waits_its_turn(tmp_path: Path)
     asyncio.run(scenario())
     assert seen == ["hello", "human message", STOP_LINE], seen
     assert endings == ["stopped"]
+
+
+def test_a_refused_ending_write_is_retried_while_a_turn_is_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ending line reaches a turn that is IN FLIGHT when the first write was refused.
+
+    A member's say is in the slot when ``/run/stop`` lands, so the ending's first write is
+    refused. The running turn then empties the slot itself, at its next boundary, while the beat
+    loop that retries a refused write is parked awaiting that very turn. Retried only by the beat
+    loop, the line is first queued after the turn ends: past the window, and past the interrupt
+    that cut the turn short (a replay of a vessel's sequence in this process queued the line 6.51 s
+    after the stop against a 6 s window, and the run's exit retracted it 0.1 s later).
+
+    The mutant: retry only from the beat loop. The turn never reads the line, and the run ends at
+    the window's close with the mind interrupted rather than consolidated.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    reserve = 2.0
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()
+    app, endings = _build(
+        tmp_path,
+        reserve=reserve,
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got, end_on=STOP_LINE
+        ),
+    )
+    inbox = say_path(tmp_path)
+    assert write_say(inbox, "hello")
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])  # the long turn is in flight, at its gate
+        assert write_say(inbox, "member message")  # the slot is full while the turn runs
+        stopped = time.monotonic()
+        await _post_stop(app)  # the ending's first write is refused: the slot is full
+        assert say_pending(inbox), "the refused write must leave the member's say in the slot"
+        gate.set()  # the turn's first boundary: it reads the member's say, emptying the slot
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - stopped
+
+    elapsed = asyncio.run(scenario())
+    assert got == ["member message", STOP_LINE], got
+    assert elapsed < reserve, (
+        f"the run ended {elapsed:.2f}s after the stop, past its {reserve}s window"
+    )
+    assert endings == ["stopped"]
+
+
+def test_no_ending_line_is_queued_after_the_window_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry that finds the slot free once the grace has run out writes nothing.
+
+    The turn reads the slot only when the interrupt cuts it, so the member's say holds the slot
+    for the whole window and every retry inside it stands down. The window closes, the watcher
+    interrupts, and the cut turn's last read empties the slot: the beat that follows finds a free
+    slot. Writing then queues a line nothing is waiting to read, only for the loop's exit to
+    retract it (the vessel's ``queued the configured line (retry)`` / ``retracted`` pair).
+
+    The server's one attempt to write the line is therefore the first, refused, one. The mutant:
+    no window check in the retry, which makes it a second attempt, after the grace.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    attempts: list[str] = []
+
+    def _spy(path: Path, text: str) -> bool:
+        attempts.append(text)
+        return write_say(path, text)
+
+    monkeypatch.setattr("zakcode.server.app.write_say", _spy)
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()  # never opened: the turn does not read the slot while it runs
+    app, endings = _build(
+        tmp_path,
+        reserve=1.0,
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got, read_on_cancel=True
+        ),
+    )
+    inbox = say_path(tmp_path)
+    assert write_say(inbox, "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])
+        assert write_say(inbox, "member message")
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    asyncio.run(scenario())
+    assert got == ["member message"], "the turn read the slot only as the interrupt cut it"
+    assert attempts == [STOP_LINE], f"the line was written again after the grace: {attempts}"
+    assert not say_pending(inbox), "a line queued after the window must not outlive the run"
+    assert endings == ["stopped"]
+
+
+def test_a_refused_ending_write_is_retried_when_the_cap_lands_mid_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap's ending line reaches the turn it landed in, when its first write was refused.
+
+    The same defect as above by the other way into the ending: the duration cap lands while a turn
+    runs and a member's say holds the slot. The watcher that raised the ending goes on watching,
+    but only to bound it, so the retry of the refused write was left to the beat loop, which is
+    parked awaiting that turn.
+
+    The mutant: no retry in that second wait. The turn empties the slot, reads nothing more, and
+    the run ends at the window's close with the mind interrupted rather than consolidated.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    attempts: list[str] = []
+
+    def _spy(path: Path, text: str) -> bool:
+        attempts.append(text)
+        return write_say(path, text)
+
+    monkeypatch.setattr("zakcode.server.app.write_say", _spy)
+    reserve = 2.0
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()
+    app, endings = _build(
+        tmp_path,
+        reserve=reserve,
+        max_duration=reserve + 0.5,  # the cap lands 0.5 s into the run, inside the long turn
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got, end_on=STOP_LINE
+        ),
+    )
+    inbox = say_path(tmp_path)
+    assert write_say(inbox, "hello")
+
+    async def scenario() -> float:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])  # the long turn is in flight, at its gate
+        assert write_say(inbox, "member message")  # the slot is full when the cap lands
+        await _until(lambda: attempts == [STOP_LINE])  # the cap landed; its first write was refused
+        assert say_pending(inbox), "the refused write must leave the member's say in the slot"
+        landed = time.monotonic()
+        gate.set()  # the turn's first boundary: it reads the member's say, emptying the slot
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - landed
+
+    elapsed = asyncio.run(scenario())
+    assert got == ["member message", STOP_LINE], got
+    assert elapsed < reserve, (
+        f"the run ended {elapsed:.2f}s after the cap landed, past its {reserve}s window"
+    )
+    assert endings == ["duration_cap"]
 
 
 def test_stop_line_with_surrounding_whitespace_is_still_recognised(tmp_path: Path) -> None:

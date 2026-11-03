@@ -384,7 +384,7 @@ def test_the_agent_hands_its_roots_to_the_policy_it_builds(served: Path) -> None
     assert agent.permission_policy._virtual_roots == expected
 
 
-# ── a note filed one directory above the framework's tree (ADR-0345) ────────────
+# ── a note filed one directory above the framework's tree (ADR-0355) ────────────
 #
 # Field 2026-09-23 .. 2026-10-07: 8 of the 18 notes residents wrote by hand landed in
 # ``<workspace>/knowledge/tree/``, one directory above the framework's tree at

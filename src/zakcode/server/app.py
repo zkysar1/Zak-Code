@@ -37,6 +37,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -51,7 +52,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
@@ -81,6 +82,7 @@ from zakcode.permissions import PermissionOutcome, PermissionPrompter, Permissio
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import provider_key_env_names, strip_url_credentials
+from zakcode.server.brand import brand_page
 from zakcode.server.event_bus import EventBusRegistry
 from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
@@ -107,6 +109,7 @@ from zakcode.server.wire import (
     events_schema,
 )
 from zakcode.session.atomic_write import write_text_atomic
+from zakcode.session.framework_agents import start_line, startable_agents
 from zakcode.session.framework_signal import (
     AUTONOMOUS_MODE,
     framework_agent_mode,
@@ -197,6 +200,11 @@ _NEW_BUILD_POLL_SECONDS = 5.0
 
 #: How often the say consumer and a waiting restart look at each other (ADR-0333).
 _RESTART_HOLD_SECONDS = 0.25
+
+#: The bundled web page's directory: the page at "/" and the `/app` mount.
+_STATIC_DIR = Path(__file__).parent / "static"
+#: Where the page holds its name until the server writes it in, as it serves the page (ADR-0345).
+_PAGE_DIGEST_SLOT = b"__ZAKCODE_PAGE_DIGEST__"
 
 #: How much of a failed turn's exception the page shows (ADR-0334). The server log keeps the whole
 #: trace. A refusal naming one model with no known context window runs 575 to 645 characters with
@@ -799,6 +807,7 @@ def create_app(
     new_session: bool = False,
     on_new_build: Callable[[NewBuild], Awaitable[None]] | None = None,
     resume_turn: str | None = None,
+    served_url: str | None = None,
 ) -> FastAPI:
     """Construct the Zak Code HTTP app.
 
@@ -825,6 +834,10 @@ def create_app(
     build it started with. ``resume_turn`` is the line the process this one replaced set aside
     (the skill call its last turn did not make, or a Stop hook's continuation); it runs before
     anything else.
+
+    ``served_url`` is where a process on this machine reaches this server. It goes into the
+    workspace's served marker, so a cockpit pane on the workspace can show the chat the server
+    has open (ADR-0352). Omitted, the marker names no address and a pane keeps to its own chat.
     """
     resolved_settings = settings or load_settings()
     resolved_store = store or SessionStore.for_workspace(resolved_settings.workspace_root)
@@ -946,6 +959,34 @@ def create_app(
                 for artifact in getattr(block, "artifacts", []):
                     artifacts[artifact.id] = artifact
         return list(artifacts.values())
+
+    # The bundled page, read once as the server starts. An install that lands under a running
+    # server puts another build's page on disk, and this server goes on serving its own until it
+    # restarts into that build (ADR-0333): the page it serves is the one its routes were written
+    # for. The deployment's brand is written in first (ADR-0350). The page's name, the first 12 hex
+    # digits of the sha256 of the page so branded, is written into the page served at "/" and sent
+    # with every watch response, so an open page sees when it is not the page the server serves
+    # (ADR-0345), and a new brand reloads it as a new build does. None in a checkout without the
+    # page, or where it cannot be read: the server then starts with no page, and says so, where a
+    # read that failed stopped it starting.
+    page_digest: str | None = None
+    served_page = b""
+    page_file = _STATIC_DIR / "index.html"
+    try:
+        raw_page = page_file.read_bytes()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("serving no page: could not read %s (%s)", page_file, exc)
+    else:
+        branded = brand_page(
+            raw_page,
+            name=resolved_settings.brand_name,
+            line=resolved_settings.brand_tagline,
+            suggestions=resolved_settings.brand_suggestions,
+        )
+        page_digest = hashlib.sha256(branded).hexdigest()[:12]
+        served_page = branded.replace(_PAGE_DIGEST_SLOT, page_digest.encode("ascii"), 1)
 
     # ── meta endpoints ─────────────────────────────────────────────────────────
 
@@ -1697,6 +1738,9 @@ def create_app(
         oldest = bus.oldest_cursor
         if oldest is not None:
             headers["X-Bus-Oldest"] = str(oldest)
+        # The page this server serves: a page that is not it reloads into it (ADR-0345).
+        if page_digest is not None:
+            headers["X-Page-Digest"] = page_digest
         # ping=15: a 15s keepalive comment so an idle watch (no turn running yet) holds the
         # connection open through proxies without emitting spurious events.
         return EventSourceResponse(event_source(), ping=15, headers=headers)
@@ -2172,6 +2216,21 @@ def create_app(
             # is unaffected by this key appearing beside it.
             "findings": _list_findings(),
             "session_id": _current_session_id(),
+        }
+
+    @app.get("/workspace/agents")
+    def workspace_agents() -> dict[str, Any]:
+        """The framework agents a new chat can start, each with its start line (ADR-0351).
+
+        The page offers them on a chat with nothing in it and sends the line a button names.
+        ``[]`` when the workspace runs no framework or has no agent yet. Read on every ask, so
+        an agent made in one chat is offered in the next.
+        """
+        return {
+            "agents": [
+                {"name": name, "start": start_line(name)}
+                for name in startable_agents(_workspace_root)
+            ]
         }
 
     @app.get("/sidecar/health")
@@ -2693,15 +2752,20 @@ def create_app(
     # Serve the bundled thin web client (a pure AgentEvent renderer — no agent logic).
     # Mounted LAST so it never shadows the API routes above; ``html=True`` serves
     # ``index.html`` at ``/``. Absent in some checkouts, so guard the mount.
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.is_dir():
+    static_dir = _STATIC_DIR
+    if page_digest is not None:
 
         @app.get("/")
-        def index() -> FileResponse:
+        @app.get("/app/")
+        @app.get("/app/index.html")
+        def index() -> HTMLResponse:
             # no-cache: the browser asks again on every load, so a page it cached before an
-            # upgrade is never what an upgraded server shows.
-            return FileResponse(static_dir / "index.html", headers={"Cache-Control": "no-cache"})
+            # upgrade is never what an upgraded server shows. The page as read at the start, its
+            # brand and name written in (ADR-0345, ADR-0350). The /app mount below would serve the
+            # file as shipped, its slots unfilled, so its page is this one too.
+            return HTMLResponse(served_page, headers={"Cache-Control": "no-cache"})
 
+    if static_dir.is_dir():
         app.mount("/app", StaticFiles(directory=static_dir, html=True), name="webclient")
 
     # ── the reactive turn-runner: serve itself consumes the say inbox ────────────
@@ -3370,7 +3434,8 @@ def create_app(
         no-op, the same rule the legacy path follows.
 
         The slot may be full (the operator's say goes first).  A refused write is
-        retried on each beat inside the window — see ``_retry_run_ending_write``.
+        retried on each beat inside the window, and on each watcher tick while a turn is
+        in flight — see ``_retry_run_ending_write``.
         """
         nonlocal run_ending_until, run_ending_written
         if run_ending_until is not None:
@@ -3398,11 +3463,18 @@ def create_app(
     def _retry_run_ending_write() -> None:
         """Best-effort retry of the say write when the slot was full on the first attempt.
 
-        Called on each beat while the window is open. No-op once the line has been
-        written: writing it again after a turn consumed it would deliver the ending twice.
+        Called on each beat while the window is open, and on each watcher tick while a turn
+        is in flight (ADR-0347): the beat loop is parked awaiting that turn, and the turn is
+        what empties the slot, so the tick is the only thing awake to refill it inside the
+        window. No-op once the line has been written: writing it again after a turn consumed
+        it would deliver the ending twice. No-op once the window has closed or before it
+        opened: a line queued after the grace is one nothing is waiting to read, and the loop
+        exit would only retract it.
         """
         nonlocal run_ending_written
         if run_ending_written or run_ending_taken:
+            return
+        if run_ending_until is None or time.monotonic() >= run_ending_until:
             return
         inbox = say_path(resolved_settings.workspace_root)
         if say_pending(inbox):
@@ -3636,6 +3708,10 @@ def create_app(
         unwind a half-finished turn: the cancelled turn returns, and the reserve is still
         on the clock for the digest.
 
+        Its one other act is the retry of a refused ending write (ADR-0347): while a turn is
+        in flight the beat loop is parked awaiting that turn, which is also what empties the
+        slot, so this tick is the only thing awake to put the line back inside the window.
+
         It also NAMES the ending, at the moment the clock raises it. The between-beats
         check below cannot be the only namer: a framework that signs off INSIDE the
         raising turn leaves `_keep_beating()` False when that turn lands back, so the
@@ -3668,6 +3744,10 @@ def create_app(
             await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
             if not inflight:
                 continue
+            # A refused ending write is retried from here too: while a turn is in flight the
+            # beat loop is parked awaiting it, and that turn empties the slot itself, so this
+            # tick is the only thing awake to put the line back inside the window (ADR-0347).
+            _retry_run_ending_write()
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
             # Host-neutral ending: check overrun.
@@ -3712,6 +3792,10 @@ def create_app(
             )
             while not inflight or time.monotonic() < ending_until:
                 await asyncio.sleep(_DEADLINE_WATCH_SECONDS)
+                if inflight:
+                    # The cap's own first write can have been refused too, and the beat loop
+                    # is parked awaiting this turn just the same (ADR-0347).
+                    _retry_run_ending_write()
             if run_ending_until is not None:
                 taken = "taken" if run_ending_taken else "never taken"
                 logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
@@ -3897,8 +3981,14 @@ def create_app(
                 logger.warning("new session: kept the current chat (%s)", refusal)
         # ADR-0320: the workspace is marked served before the server takes its first request,
         # and for exactly as long as the consumer runs, so a terminal REPL on the workspace
-        # leaves the say slot and the interrupt file to this server.
-        lease = BusyLease(served_path(resolved_settings.workspace_root), "served", take_over=True)
+        # leaves the say slot and the interrupt file to this server. The marker names where the
+        # server listens, so a cockpit pane can show the chat it serves (ADR-0352).
+        lease = BusyLease(
+            served_path(resolved_settings.workspace_root),
+            "served",
+            take_over=True,
+            url=served_url,
+        )
         await lease.acquire()
         consumer_tasks.append(asyncio.create_task(_serve_say_inbox(lease)))
 

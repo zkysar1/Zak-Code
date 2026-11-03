@@ -331,6 +331,8 @@ class StreamRenderer:
         #: contiguously beneath it; any other result detaches and names its tool.
         self._last_call_id: str | None = None
         self._turn_start = 0.0
+        #: Whether this turn's footer says how long it took (``render(timed=...)``).
+        self._timed = True
         self._assistant_marked = False
         #: has this turn already announced that the model is reasoning? A reasoning
         #: model emits hundreds of thinking deltas; the CLI announces the PHASE once
@@ -348,9 +350,17 @@ class StreamRenderer:
         #: so a harness plan change is drawn once and a repeat stays silent (ADR-0112).
         self._last_plan_key = ""
 
-    async def render(self, events: AsyncIterator[AgentEvent]) -> AgentDone | None:
-        """Consume ``events``, render them, and return the final ``AgentDone`` (or None)."""
+    async def render(
+        self, events: AsyncIterator[AgentEvent], *, timed: bool = True
+    ) -> AgentDone | None:
+        """Consume ``events``, render them, and return the final ``AgentDone`` (or None).
+
+        ``timed=False`` leaves the turn's length out of its footer: for a turn whose start this
+        renderer never saw, such as one a cockpit pane joins half-way through (ADR-0352). A
+        length measured from the middle would read as a short turn.
+        """
         done: AgentDone | None = None
+        self._timed = timed
         self._turn_start = self._clock()
         self._at_blank = False
         self._last_block = None
@@ -765,21 +775,18 @@ class StreamRenderer:
             # and the footer says so.
             share = round(100 * usage.cache_unsplit_tokens / usage.prompt_tokens)
             tokens_item += f" ({share}% cached, read/write unknown)"
-        body = Text(
-            sep.join(
-                (
-                    label,
-                    f"{done.iterations} iterations",
-                    tokens_item,
-                    cost_text(usage, _fmt_cost(usage.cost_usd)),
-                    _fmt_duration(self._clock() - self._turn_start),
-                    # When the turn ended, wall clock (ADR-0185): with the operator's line
-                    # stamped too, every turn shows its time bracket.
-                    time.strftime("%H:%M", time.localtime(self._wall())),
-                )
-            ),
-            style="footer",
-        )
+        items = [
+            label,
+            f"{done.iterations} iterations",
+            tokens_item,
+            cost_text(usage, _fmt_cost(usage.cost_usd)),
+        ]
+        if self._timed:
+            items.append(_fmt_duration(self._clock() - self._turn_start))
+        # When the turn ended, wall clock (ADR-0185): with the operator's line stamped too,
+        # every turn shows its time bracket.
+        items.append(time.strftime("%H:%M", time.localtime(self._wall())))
+        body = Text(sep.join(items), style="footer")
         self._gap()
         self._out(block(self.console, body, marker=g["marker"], marker_style=marker_style))
 

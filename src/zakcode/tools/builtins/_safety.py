@@ -421,7 +421,7 @@ def check_skill_claims(
 def check_tree_note_layout(
     resolved: Path, virtual_roots: Mapping[str, Path] | None
 ) -> tuple[str, str] | None:
-    """Refuse a file filed one directory above the host framework's knowledge tree (ADR-0345).
+    """Refuse a file filed one directory above the host framework's knowledge tree (ADR-0355).
 
     The framework keeps its tree at ``<world>/knowledge/tree/``: its scripts register a note as
     ``world/knowledge/tree/…`` and its tree readers look nowhere else. A path that resolves to

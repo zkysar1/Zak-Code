@@ -15,6 +15,7 @@ scripted turns, plus one child process for the REPL, since the marker tells proc
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import os
@@ -24,6 +25,7 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +33,7 @@ from rich.console import Console
 
 import zakcode
 from tests.test_busy_marker import _loop, _peek_script, _SayWhileRunning
-from tests.test_cli_chat import FakeAgent, runner
+from tests.test_cli_chat import CANNED_TEXT, FakeAgent, runner
 from tests.test_webapp_sessions import _Served
 from zakcode.cli import _InputMux, app
 from zakcode.events import AgentDone, AgentEvent
@@ -211,6 +213,125 @@ def test_a_repl_starting_on_a_served_workspace_keeps_the_pending_stop(
     assert result.exit_code == 0
     # Served, the stop may be for the server's running turn; unserved, it predates the session.
     assert interrupt_path(tmp_path).exists() is serving
+
+
+# ── a cockpit pane says when a web app takes its say box (ADR-0346) ───────────
+
+
+def test_a_cockpit_panes_idle_wait_says_when_a_web_app_starts_and_stops_serving(
+    tmp_path: Path,
+) -> None:
+    mux = _InputMux(
+        say_path(tmp_path), interrupt_path(tmp_path), keyboard=False, report_served=True
+    )
+    marker = _foreign_served(tmp_path)
+    # Every wait carries a stop, so a wait that never answers fails the test instead of hanging.
+    assert mux.next_input(idle=True, stop=_stopped_after(5)) == ("served", None)
+    assert write_say(say_path(tmp_path), "for the chat on the page")
+    # Said once; then the wait stands back, as every REPL on a served workspace does.
+    assert mux.next_input(idle=True, stop=_stopped_after(0.8)) == ("cancelled", None)
+    assert say_pending(say_path(tmp_path))
+    _age(marker)  # the web app stopped
+    # A prompt in the middle of a turn is not where the pane says it ...
+    assert mux.next_input(idle=False, stop=_stopped_after(5)) == (
+        "say",
+        "for the chat on the page",
+    )
+    # ... the next idle wait is, once, and then the box's lines reach the pane again.
+    assert mux.next_input(idle=True, stop=_stopped_after(5)) == ("unserved", None)
+    assert write_say(say_path(tmp_path), "for the pane again")
+    assert mux.next_input(idle=True, stop=_stopped_after(5)) == ("say", "for the pane again")
+
+
+def test_a_cockpit_pane_says_when_a_web_app_starts_and_stops_serving_its_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pane as the cockpit runs it: frameless, its keyboard unread, its one door the say box.
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("ZAKCODE_COCKPIT_PANE", "1")
+    monkeypatch.setenv("ZAKCODE_INPUT_FRAME", "off")
+    marker = _foreign_served(tmp_path)
+    answered: list[str] = []
+    wait = cli_mod._InputMux.next_input
+    deadline = time.monotonic() + 20
+
+    def recorded(self: _InputMux, **kwargs: Any) -> tuple[str, str | None]:
+        if time.monotonic() > deadline + 5:
+            return ("say", "/exit")  # a pane that loops on its waits fails below, not by hanging
+        got = wait(self, **kwargs)
+        answered.append(got[0])
+        return got
+
+    monkeypatch.setattr(cli_mod._InputMux, "next_input", recorded)
+
+    def the_web_app_stops_then_the_box_says_exit() -> None:
+        while "served" not in answered and time.monotonic() < deadline:
+            time.sleep(0.05)
+        # Windows refuses to delete a file another handle has open, and the pane opens the
+        # marker at every poll, so the delete is tried again until it lands. It has its own
+        # bound: a pane that never said "served" still needs the marker gone to read the exit.
+        give_up = time.monotonic() + 10
+        while marker.exists() and time.monotonic() < give_up:
+            with contextlib.suppress(PermissionError):
+                marker.unlink()
+            time.sleep(0.01)
+        while "unserved" not in answered and time.monotonic() < deadline:
+            time.sleep(0.05)
+        write_say(say_path(tmp_path), "/exit")
+
+    threading.Thread(target=the_web_app_stops_then_the_box_says_exit, daemon=True).start()
+    result = runner.invoke(app, ["cli"])
+    assert result.exit_code == 0
+    out = " ".join(result.output.split())  # the notices wrap at the console's width
+    dash = cli_mod.GLYPHS["dash"]
+    started = (
+        f"a web app is serving this workspace {dash} the say box now feeds the web app's chat, "
+        "and nothing reaches this one until it stops"
+    )
+    stopped = f"the web app stopped serving this workspace {dash} the say box feeds this chat again"
+    # Once each: the pane says so when the web app starts and when it stops, not at every wait.
+    assert out.count(started) == 1
+    assert out.count(stopped) == 1
+    assert out.index(started) < out.index(stopped) < out.index("goodbye")
+
+
+def test_an_inline_repl_on_a_served_workspace_says_none_of_the_panes_notices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The notices are the pane's (ADR-0346): an inline REPL reads its own keyboard, and a line
+    # typed there runs in its own chat whether or not a web app serves the workspace.
+    import zakcode.cli as cli_mod
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    monkeypatch.setenv("ZAKCODE_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("ZAKCODE_COCKPIT_PANE", raising=False)
+    _foreign_served(tmp_path)
+    take = cli_mod._InputMux.try_input
+    wait = cli_mod._InputMux.next_input
+    answered: list[str] = []
+
+    def nothing_typed_ahead_at_first(self: _InputMux) -> tuple[str, str | None] | None:
+        # The person types after the prompt appears, so the REPL's first input is a real idle
+        # wait: the wait a reporting mux answers with "served".
+        return None if not answered else take(self)
+
+    def recorded(self: _InputMux, **kwargs: Any) -> tuple[str, str | None]:
+        got = wait(self, **kwargs)
+        answered.append(got[0])
+        return got
+
+    monkeypatch.setattr(cli_mod._InputMux, "try_input", nothing_typed_ahead_at_first)
+    monkeypatch.setattr(cli_mod._InputMux, "next_input", recorded)
+    result = runner.invoke(app, ["cli"], input="hello\n/exit\n")
+    assert result.exit_code == 0
+    assert answered[0] == "line"  # the first prompt waited, and the typed line answered it
+    out = " ".join(result.output.split())
+    assert CANNED_TEXT in out and "goodbye" in out
+    assert "a web app is serving this workspace" not in out
+    assert "the web app stopped serving this workspace" not in out
 
 
 def test_a_switch_refused_for_another_sessions_turn_says_so(tmp_path: Path) -> None:

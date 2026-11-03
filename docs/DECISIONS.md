@@ -3086,6 +3086,13 @@ skill is not delivered; a non-skill slash is text) and tests/test_cli_chat.py (m
 lines reach the inbox; REPL commands and idle lines stay queued; a busy slot falls back
 to the queue).
 
+**Amended by ADR-0078 (2026-08-29) and on 2026-11-02:** decision (1)'s route is gone. A
+line typed while a turn runs goes to this process's agent in-process (ADR-0078), never
+through the say inbox. The bounded wait for the slot and its fall-back to the queue went
+with the last mux that could reach them (ADR-0078's 2026-11-02 amendment). Decision (2)
+stands: a say that names a skill runs it. The tests above now pin a mid-turn line reaching
+the agent with the slot left alone; REPL commands and idle lines still stay queued.
+
 ## ADR-0074: Compaction is checked before every call, and the overflow bound is per call
 
 **Context.** The compactor's threshold check ran once per turn, at turn start, and the
@@ -3267,6 +3274,20 @@ Pinned by `tests/test_cli_chat.py` (the mux injects and never writes the slot; a
 no agent still does) and `tests/test_loop_say.py` (an injected line is framed, persisted
 and seen by the next provider call; two loops on one workspace cannot receive each
 other's lines; a line is consumed exactly once).
+
+**Amended 2026-11-02 (no mux runs without an agent).** The Decision's last sentence was
+wrong when it was written. Measured 2026-11-01 at `3e9322b`: the thin `--server` REPL
+builds no mux. `chat()` hands `--server` to `_run_server_chat` before any input mux exists,
+and that REPL reads nothing while its turn runs. It reads the next line at its prompt, so a
+line typed during a turn runs as its next turn, in the chat it opened. The one `_InputMux`
+the code builds is the chat REPL's, and it always attaches its agent (`inject=`). So the
+file path was a branch no session took, and only tests reached it. #825 corrected the
+`_route_typed` docstring that said the same thing; this sentence was missed. Now a mux with
+no agent attached leaves a typed line on the queue for the prompt, and the keyboard never
+writes the workspace say slot. The bounded wait for the slot and its fall-back to the queue
+(ADR-0073) are removed with it. Pinned by `tests/test_cli_chat.py`: a mux with no agent
+queues a line typed mid-turn and leaves the slot empty, and the REPL-command, idle-line and
+unconsumed-say tests run with an agent attached.
 
 ## ADR-0079: settings.json hooks are re-read at the turn boundary when the file changes
 
@@ -16025,6 +16046,9 @@ Both paths coexist in the same release. The legacy path is unchanged and works a
 **Amended by ADR-0328 (2026-10-27):** the sticky `kind` of point 7 keeps a `farewell` as well as a
 `change`, in the order farewell, change, then the newest frame's own.
 
+**Amended by ADR-0347 (2026-11-01):** point 3's retry also runs on each watcher tick while a turn is
+in flight, and only inside the window; after the grace nothing retries.
+
 ## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
 
 Status: accepted. 2026-09-28.
@@ -19839,6 +19863,10 @@ server's marker, 1; the turn's watcher obeying a served stop, 1; the REPL cleari
 wording, 1; and the survey listing `.served`, 1 (`tests/test_prompt.py`). The project's check (`ruff check`, `ruff
 format --check`, `mypy src/zakcode`, `pytest`) is green: 6,293 passed, 22 skipped.
 
+**Amended by ADR-0346 (2026-10-31):** where a line goes is unchanged, but the person is now told. The cockpit's say
+box, `zakcode say` and `zakcode interrupt` name the web app in their receipt on a served workspace, and the cockpit's chat
+pane says when a web app starts and stops serving it.
+
 ## ADR-0321: a Claude 5 request opts into `drop_block`, replays only signed thinking, reads one stream channel, and ships its own price-map entry
 
 **Status:** Accepted (2026-10-17)
@@ -21416,7 +21444,798 @@ test red); the route reading every role (the quoted-reply test red); the page sp
 each of the three reasons reworded (that saved-frame test red), and the frame's own words reworded
 (all three red). Each turned green again once the code was back. `uv run poe check` green.
 
-## ADR-0345: a note filed one directory above the host framework's knowledge tree is refused, and the refusal names the path that is read
+## ADR-0345: an open web page reloads itself into the page the server serves
+
+Status: accepted. 2026-10-31. Builds on ADR-0333 (the web app restarts itself into a newer build)
+and ADR-0289 (an open page learns from the bus's name that its server restarted).
+
+Context. ADR-0333 made a served web app restart itself into a newer build once nothing is in
+flight, and an open page reconnects to the new process. But a page runs the script it was served
+with for as long as it stays open, so a fix to the page itself (ADR-0339's release of a hidden
+tab's watch, for one) reached an open page only when someone reloaded it by hand. Nothing told the
+page that the server's page had changed. `/health` reports the package version, which is the same
+for every build. The build label (`running_build()`) is empty for an install with no commit to
+read, changes with every commit even when the page is untouched, and stays the same over a
+checkout reinstalled with edits. And `/` read the page file from disk on every request, so a server
+that does not follow new builds (a host-managed run, ADR-0333) served the new build's page against
+its own old routes as soon as an update put that page on disk.
+
+Decision.
+1. The server reads its page once, as it starts, and serves that copy at `/`. A later install
+   puts another build's page on disk, and the server goes on serving its own, the page its routes
+   were written for, until it restarts into that build. A page it cannot read (a file it may not
+   open, a folder where the file belongs) is a page it does not have: it starts all the same,
+   serves no page and names none, and its log says why. Reading the page at the start must not
+   stop a server starting.
+2. The page's name is the first 12 hex digits of the sha256 of the page file. The server writes it
+   into the page it serves, in place of a slot the page holds (`__ZAKCODE_PAGE_DIGEST__`), and sends
+   it with every watch response as `X-Page-Digest`, beside the bus's name. It names the page, not
+   the build: it changes exactly when reloading would give the page another script, for every
+   install shape, and a build that leaves the page alone reloads nobody.
+3. When a watch response names another page, the page reloads into the server's page as soon as
+   the response comes in, before it does anything else with that response. The reload keeps the
+   page's own address (its path, its query, its place in the page) and adds
+   `?page=<the server's name>`. The page keeps the same name in sessionStorage too, so a proxy
+   that drops the query changes nothing. A page that comes back from that reload drops `?page=`
+   from the address; a browser that refuses to change the address leaves it there, and the page
+   goes on. If it is still not that page, because something between the browser and the server
+   answers with a saved copy (the proxy case ADR-0342 records), it says so in a note above the
+   composer and does not reload again. Once its page is the server's, it forgets the name it kept.
+4. What is typed in the composer goes across in sessionStorage and comes back into the composer.
+   So does the chat on screen when it is not the active one: the page comes back on that chat, as
+   a page left open across a restart on the same page stays on it (ADR-0319), where a page opened
+   afresh lands on the active chat. A chat deleted meanwhile is not there to come back to, and the
+   page opens the active one. Where the browser lets the page keep nothing, the page says a newer
+   page is there and stays, whether or not anything is typed: it could keep neither what is typed
+   nor the name it asks for, and without that name a saved copy on the way would have it reload
+   again and again.
+5. A page that did not come from the server's `/` (a copy of the file kept somewhere else, or the
+   `/app` mount, which serves the file as it is) still holds the slot. It has no name and never
+   reloads itself. A server that sends no name (an older one) never differs.
+
+What was considered and not done. Polling: the page learns the server's page on every watch
+connection, and the restart that matters ends every watch, so the page looks exactly when the
+answer can have changed. The build label in place of the page's name, for the reasons above.
+Asking `/health`: the page would need a second request, and the watch response already carries
+the answer. Reloading whenever the bus's name changes: a restart on the same build would then
+reload every open page for nothing. Writing the name into the `/app` mount's copy: nothing reads
+that mount but a test. Keeping more than the composer and the chat on screen across the reload
+(where the chat was scrolled to, an open card): the reloaded page draws the chat from its saved
+conversation, as any newly opened page does.
+
+The proof. tests/test_webclient_page_reload.py, 13 tests, runs the page's own script, as a server
+serves it with its name written in, under node against a real loopback server. A page left open on
+its server stays, and stays when the server restarts onto the same page. When the server stops and
+one started on another copy of the page takes its address, the page reloads once, from that watch
+response, and asks for nothing after it. The reload keeps the page's address (a path, a query and a
+place in the page) and adds the new name, and the name and what was typed go into sessionStorage.
+The page that reload opens is the new server's: it puts the text back in the composer, takes
+`?page=` out of the address, forgets what it kept and does not reload again. A page reading a chat
+that is not the active one comes back on that chat, its banner still up, and watches no other. A
+page that comes back from the reload still old says so and stays, whether the name it asked for is
+in its address or only in its sessionStorage. Where nothing can be kept, a page says a newer page
+is there and stays, typed or not. A page whose browser refuses to change the address still joins
+its chat. A page without a name, and a server that names no page, reload nothing. The server serves
+its page with its name written in, sends the same name with a watch response, goes on serving the
+page it started with after another lands on disk, and starts without a page it cannot read, its
+log saying why. Twenty-four sabotages, each run by a harness that restores the file and checks it
+byte for byte, with the red tests read from JUnit, and each green again once the code was back:
+- the page ignoring the name the watch sends (six tests red); the watch not sending the name
+  (eight); the name never written into the page (four); the server reading the page on every
+  request (the started-with test); a page with no name taken as named (the no-name test);
+- the page not checking that it came back from its own reload (both saved-copy cases); the name
+  it keeps not read back (the sessionStorage saved-copy case), not kept (both reload tests) or
+  never forgotten (both reload tests);
+- what was typed not kept, or not put back (the restart test); the chat on screen not kept, or not
+  opened again (the viewer test);
+- reloading where nothing can be kept (both cannot-keep cases), or where nothing can be kept and
+  nothing is typed (that case);
+- `?page=` left in the address (the restart test and the address saved-copy case); the reload
+  going to the site root (the restart test); the address losing its query and its place in the
+  page as `?page=` comes out (the restart test);
+- the watch going on after asking for the reload, or the check moved below the bus-epoch block
+  (the restart test); a page that reloads on every restart (the same-build test);
+- `history.replaceState` unguarded (the address test); a page the server cannot read stopping it,
+  or not logged (the cannot-read test).
+
+Live, in headless Chrome against `zakcode webapp`, before the fixes for the chat on screen, the name
+kept in sessionStorage and the page the server cannot read: a page with text typed in its composer,
+left open while its server stopped and another started on the same port with the page changed on
+disk, asked once for `/?page=<the new name>`, came back on the new page with the text in its
+composer and `?page=` gone from its address, and stayed. `uv run poe check` green.
+
+## ADR-0346: on a served workspace the cockpit says where a line went, and its chat pane says when a web app starts and stops serving
+
+Status: accepted. 2026-10-31. Amends ADR-0320 in what the person is told, not in where a line
+goes. Builds on ADR-0060 (the say box's receipt) and on ADR-0335 and ADR-0344 (how the page draws
+a typed command and a SessionStart hook's report).
+
+Context. The owner reported on 2026-10-31 that a line typed in `zakcode cli` reached the web app
+and never showed in the terminal. That is ADR-0320's rule: while `zakcode webapp` serves a
+workspace the say slot is the server's, and "a cockpit pane, whose only door is its say box,
+receives nothing while the workspace is served, and its say box reaches the server's chat
+instead." Nothing showed it. The say box read `✓ sent 14:22` whether the pane took the line or the
+web app did, `zakcode say` printed `sent`, the chat pane printed nothing, and Esc's receipt said
+"the agent halts its current turn" when the stop went to the web app's turn. Measured 2026-10-31
+with the cockpit's say box loop and its chat pane beside a web app on one workspace: before
+ADR-0320 the pane ran 23 of 40 lines, by the race ADR-0320 closed; since, it runs none (0 of 24),
+and on main the say box read `✓ sent HH:MM` for each of the 12 lines the web app ran. Beside it,
+the CLI's redraw of a saved conversation (`/resume`, `zakcode cli -s <id>`) drew a SessionStart
+hook's report and a typed `/command`'s skill frame as lines the person typed, where the page draws
+a grey note (ADR-0344) and the command as typed (ADR-0335).
+
+Decision.
+1. A receipt names where its line went. `_destination` in `cli/cockpit.py` reads the workspace's
+   markers once the line is written: a fresh `.served` naming another process sends it to the web
+   app's chat; otherwise a fresh `.busy` naming another process sends it to the running turn
+   (ADR-0060); otherwise the next chat to read the slot takes it, and the receipt names nothing.
+   The served marker is read first, because the web app's chat gets the line even while another
+   process's turn holds the slot. The say box reads `✓ sent → the web app's chat 14:22`, with
+   `(12 lines)` before the time for a longer message, as it already read `✓ sent → the running
+   turn`. `zakcode say` prints `sent to the web app's chat`, with no arrow, since its console may
+   be a Windows one. With `--url` it still prints `sent`: the line went to the server named, and
+   this machine cannot read that server's markers.
+2. A stop names whose turn it halts. On a served workspace Esc in the say box and
+   `zakcode interrupt` read `stop signal sent — the web app's turn halts`, since the interrupt file
+   is the server's there (ADR-0320). Elsewhere they read as before.
+3. The chat pane says when a web app starts serving its workspace and when it stops. `_InputMux`
+   takes `report_served`, set only in the cockpit's chat pane (`ZAKCODE_COCKPIT_PANE=1`), whose
+   say box is its only door. Its idle wait returns `served` the first time it finds a fresh
+   `.served` naming another process and `unserved` the first time it no longer does, once per
+   change, and the REPL prints each as a notice: "a web app is serving this workspace — the say
+   box now feeds the web app's chat, and nothing reaches this one until it stops", then "the web
+   app stopped serving this workspace — the say box feeds this chat again". A pane started on a
+   workspace already served says so at its first wait. Only the idle wait reports, so a change
+   during a turn is told when the turn ends.
+4. The CLI redraws a saved conversation as the page draws it. `_render_transcript`, which draws one
+   for `/resume` and for `zakcode cli -s <id>`, draws a message that handed the model a
+   SessionStart hook's words as a dim note, "SessionStart hook: " and their first line, then
+   "(+N more lines)" when there are more, through the loop's `said_by_session_start` (ADR-0344);
+   and a message composed from a typed `/command` as the command typed, through `typed_command`
+   (ADR-0335). Every other message is drawn as before.
+
+What was considered and not done. Drawing the web app's chat in the pane while the workspace is
+served, so that a line typed in the box shows in the terminal as well. The pane would become a
+second view of the server's chat, which ADR-0320 chose against: a terminal on a served workspace is
+a side conversation. That is the owner's call and is asked separately; this record changes what
+the person is told, not where a line goes. A turn the pane began before a web app came up keeps its
+permission prompt and its interrupt watcher standing back while the workspace is served
+(ADR-0320), so neither an answer nor a stop typed in the box reaches that turn while the web app
+serves. Not changed here. Naming the server's address in a receipt: the marker names a
+process, not an address (ADR-0320), and "the web app's chat" is what the sender needs. A notice in
+the inline REPL: it reads its own keyboard, and only a line sent through the slot goes elsewhere,
+which `zakcode say`'s receipt now tells its sender.
+
+The proof. `tests/test_cli_cockpit.py` drives the real say box loop with a scripted editor: its
+receipt with no marker, the busy marker, the served marker, and both (the served one wins); its Esc
+receipt with and without the served marker; `zakcode say`'s receipt with no marker, the busy one and
+the served one; and `zakcode interrupt` on a served workspace. `tests/test_served_marker.py` drives
+the mux as the pane builds it, against a marker naming another process: its idle wait reports
+`served` once, a wait that is not idle reports nothing and still takes the say, then `unserved`
+comes once, then a say; and the REPL itself, run as the cockpit's chat pane with a scripted agent,
+prints the served notice once, then the unserved one once, then exits on `/exit`.
+`tests/test_cli_chat.py` resumes a saved chat that holds a typed `/start demo` turn and a two-line
+SessionStart report, and finds the command as typed and the note, and neither frame. Nineteen
+sabotages, each run by a harness that restores the file and checks it byte for byte, with the red
+tests read from JUnit, and each green again once the code was back: the served receipt reworded (the
+say box's two served cases and `zakcode say`'s); the busy marker read before the served one (the say
+box's case with both); the say box dropping where its line went (its three routed cases); `zakcode
+say` reading the markers of the folder above, or printing only `sent` (its two routed cases each);
+the stop text keyed on the busy marker (both served stops), and Esc's and `zakcode interrupt`'s text
+fixed to the agent (one each); the pane not asking for the notice, and the REPL not printing it (the
+REPL test each); the mux never reporting, its latch flipped, and its latch starting as served (both
+pane tests each); reporting at a wait that is not idle (the mux test; the REPL test runs no turn, so
+it makes no such wait); the hook note never found, or drawn as the person's line, the typed command
+not read, the fold's count off by one, and its plural lost (the redraw test each). The first run
+found the REPL test hanging until pytest's timeout under two of those sabotages: on Windows its
+helper thread died deleting a marker the pane held open. The thread now tries the delete again until
+it lands, the pane's waits are bounded and the notices are counted, so each of the six now fails a
+test by an assertion, not by the timeout; run 20 times on the code as it is, the REPL test passed 20
+times in 20.
+
+Run live on this change, against a loopback web app built as the tests build it (the server's app
+with a scripted agent) serving the workspace: the cockpit's chat pane, a process of its own with the
+environment the cockpit gives it, printed the served notice and ran none of the 12 lines sent
+through the real say box loop; the web app's chat ran all 12. That trial ran the say box loop in the
+web app's own process, where the marker names its own process, so the box's receipt there named
+nothing; the tests above pin it. Beside a real `zakcode webapp`, `zakcode say` and `zakcode
+interrupt`, each its own process, read `sent to the web app's chat` and `stop signal sent — the web
+app's turn halts within a moment` while it served, and `sent` and the agent's stop text before it
+started and once its marker was stale. The pane's notice that the web app stopped was not seen live:
+that trial ended with the web app still serving. `uv run poe check` green.
+
+Not verified: a real tmux cockpit. The cockpit runs on posix with tmux; the measurement and the
+tests run its chat pane as a child process or in-process with the environment the cockpit gives it,
+and its say box loop as it is.
+
+## ADR-0347: a refused run-ending write is retried while a turn is in flight, inside the window and never after it
+
+Status: accepted. 2026-11-01. Amends ADR-0264 point 3 in when the retry of a refused write runs, not
+in what it writes. Builds on ADR-0051 (a running turn reads the say slot at its own boundaries) and
+ADR-0052 (the hold a pending say can wait in).
+
+Context. On 2026-10-31 a member stepped out of a vessel's run while the Mind was mid-turn and a
+member's say already held the say slot (the stamps run 04:21 to 04:27Z; the sequence is the one
+its finder recorded from the sidecar's log, which this change's author did not read). The ending's
+first write was refused, and the server logged that it would retry on the next beat (ADR-0264 point
+3). The running turn then took the member's say at its next boundary, as ADR-0051 has it do, which
+left the slot free, and nothing filled it again. `_retry_run_ending_write` had one call site, the
+beat loop, and the beat loop was parked awaiting that very turn: `_consume_one_say` awaits
+`_run_turn_for_say`, which waits on the turn and on the watcher. The deadline watcher ticked through
+the turn every second but only compared the clock with the window and interrupted at its close.
+When the interrupt ended the turn, the beat loop reached the retry, which wrote the line though the
+window had closed, and the loop's exit retracted it 108 ms later. The Mind never read the line: it
+was interrupted at the window's end with its ending unread. That the one turn stayed in flight for
+the whole 350 s is inferred from the retry line appearing once. An in-process replay of the
+sequence, with the app's own beat loop and watcher, a fake agent that stays in flight and reads the
+slot at each boundary, and a 6 s window standing in for 350 s: the member's say was read at
++0.28 s, the line was first queued at +6.51 s, and the run exited at +6.61 s; with the retry on
+the watcher's tick the line was queued at +1.28 s, read at the turn's next boundary, and the run
+ended at +1.70 s, before the window closed. The cap has the same shape. When it lands inside a
+turn the watcher raises the ending and goes on watching, but only to bound it, so a refused first
+write there waited on the same parked beat loop; writing that case's test showed it, red on the
+first half of this change.
+
+Decision.
+1. The deadline watcher retries a refused ending write on each of its ticks while a turn is in
+   flight, in both of its waits: the one that watches the turn for the cap, and the one that bounds
+   a raised ending. A tick with no turn in flight leaves the retry to the beat loop, which is awake
+   then. What the retry writes, and when it stands down (the line already written or taken, a say
+   in the slot that is not ours), are as ADR-0264 left them.
+2. The retry writes only inside the window. `_retry_run_ending_write` returns before the window has
+   opened and from the moment it has closed, so the beat loop can no longer queue a line after the
+   grace, where nothing is waiting to read it and the loop's exit retracts it. The server's
+   attempts at the line are its opening write and the retries inside the window.
+3. The slot stays single and POST /say is unchanged.
+
+Checked, not changed. The ADR-0052 hold applies only while a plan step is in flight, and holds a
+pending say for at most `_SAY_PATIENCE` (3) boundaries or `_SAY_PATIENCE_S` (120 s) of held time; an
+operator-only slash command is not held at all (ADR-0264 point 6). A retried line therefore reaches
+the model after at most 120 s plus one boundary, inside a 350 s window unless a single boundary
+outlasts about 230 s. The `run_stop_message` a vessel is provisioned with was not read; it is set
+per vessel. POST /say answers 429 while the slot is full, so once the ending is queued a
+member's new say is refused until the running turn reads the line. That order stands: the slot is
+single for both writers, a say already in the slot goes first (ADR-0264 point 3), and the ending is
+the last thing the run says.
+
+What was considered and not done. Interrupting or timing out the turn so the beat loop gets its
+beat: the interrupt is what the ending exists to avoid, since an interrupted turn cannot
+consolidate. Shortening or splitting turns so the boundary comes sooner: ADR-0051 met the same class
+on the consumer side, a channel whose delivery moment is a turn boundary starving under a long
+turn, and fixed it by reading at the iteration boundaries inside the turn, not by shortening turns.
+The producer here is the same class, since its retry waited for that boundary, and it now runs on
+a clock the turn cannot hold. Writing the line over the member's say: that loses a say the operator
+sent first. Retrying
+from the agent loop: the loop knows nothing of the run's ending, and the watcher already owns the
+window.
+
+The proof. `tests/test_run_stop_message.py` gains `_InboxReadingAgent`, a turn that stays in flight
+and reads the slot at its boundaries as the loop does, and three tests. With a member's say in the
+slot and the stop posted, the turn at its first boundary reads the member's say and then the ending
+line, and the run ends `stopped` inside the reserve. The same with the cap landing in the turn: the
+run ends `duration_cap` inside the reserve. And with a turn that reads the slot only as the
+interrupt cuts it, the spy over `write_say` sees one attempt at the line, the refused first one, and
+the slot is empty when the run ends. On origin/main 3a062ee all three fail: twice by the line never
+arriving (`['member message']` against `['member message', '/stop probe']`) and once by a second
+attempt after the grace (`['/stop probe', '/stop probe']`). With the change they pass, and the whole
+file runs 27 passed. Three mutants, each run by a harness that restores the file and checks it byte
+for byte: no retry on the watcher's first wait, no window check in the retry, and no retry on its
+second wait. Each fails exactly one of the three tests and leaves the other two green.
+
+Not verified: a real Mind ending its turn on reading the line. The tests' agent ends its turn on
+reading it; whether the Mind consolidates and the run ends through the graceful chain is for a
+replay on a DEV resident, which was not run here. The vessel's own log was not read here.
+
+## ADR-0348: the test suite reads litellm's bundled price map, and a fixture gives it the entries its tests name
+
+Status: accepted. 2026-11-01. Builds on ADR-0281 (litellm's own entries for a process that cannot
+fetch the map), whose shipped snapshot is unchanged.
+
+Context. litellm fetches its remote price map when it is imported and falls back to the map bundled
+in the package when the fetch fails (ADR-0281). The suite imported litellm the same way, so a test
+that named a model only the fetched map holds passed on a runner whose fetch worked and failed on
+one whose fetch did not. On PR #825 the py3.11 ubuntu job of CI run 41279454185, attempt 1, failed
+28 tests in five files the PR does not touch (`test_gemini3_sampling_params.py`,
+`test_gpt56_tools_effort_none.py`, `test_hipaa_endpoints.py`, `test_openai_store_default.py`,
+`test_reasoning_effort.py`): `UnknownContextWindow` for `openai/gpt-5.6-luna`, `gpt-5.6-terra` and
+`gemini/gemini-3.5-flash`, `KeyError: 'reasoning_effort'`, and `assert 'none' == 'high'`. The same
+head passed on attempt 2, and py3.13 passed on attempt 1. On a desktop, with
+`LITELLM_LOCAL_MODEL_COST_MAP=True` the five files failed the same 28 tests, the ids identical to the
+CI run's (`28 failed, 144 passed`), and without it they passed (`172 passed`). On litellm 1.86.2,
+the `uv.lock` pin, the bundled map holds 2,716 entries (2,719 once the shipped snapshot is
+registered) and the fetched map 4,553, and the four models these tests need are in the second only.
+That the CI runner's fetch failed is inferred from this; its log records no fetch.
+`tests/test_model_entries.py` already said its tests read no fetched map. The rest of the suite did
+not hold to that.
+
+Decision.
+1. `tests/conftest.py` sets `LITELLM_LOCAL_MODEL_COST_MAP=True` for the whole run, before its own
+   imports, which import litellm. Every test reads the bundled map on every runner, and a
+   subprocess a test starts inherits the setting.
+2. `tests/fixtures/litellm_model_entries.json` holds litellm's own entries, verbatim, for the four
+   models the tests name that the bundled map lacks: `gemini/gemini-3.5-flash`, `gpt-5.6-luna`,
+   `gpt-5.6-terra` and `vertex_ai/gemini-3.8-flash`. `scripts/refresh_litellm_model_entries.py
+   --models <ids> --output tests/fixtures/litellm_model_entries.json` writes it from the fetched
+   map, with the same `_meta` block as the shipped snapshot. `conftest.py` registers each entry the
+   loaded map lacks, after the provider has registered its own. Unlike the provider's best-effort
+   registration it raises when the fixture cannot be read.
+3. `tests/test_model_entries.py` pins point 1. It reads litellm's own report of where its map came
+   from and expects the local map, forced by the environment.
+
+What was considered and not done. Moving the tests to models the shipped snapshot carries: they
+test the gpt-5.6 tier and Gemini 3 by name. Adding the four models to the shipped snapshot: that
+changes what a sealed process prices, which is product behaviour, and
+`test_bundled_price_map_degrades_visibly_not_silently` pins that `gpt-5.6-luna` stays unpriced
+under the bundled map. Registering the entries per test: the fetched map held them for the whole
+process, which is the state the suite has passed under.
+
+Not changed. litellm's Anthropic beta-header allowlist is a second remote read of the same kind.
+litellm fetches it at first use, not at import, unless `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True`.
+Whether any test depends on its fetched copy was not measured here.
+
+The proof. With nothing set in the environment the five files pass (`172 passed`). The whole suite
+on a Windows desktop, py3.11.14: `6685 passed, 25 skipped`, with one test deselected,
+`test_startup_keeps_a_different_say`, which now and then hangs in `asyncio.run`'s teardown whether
+or not litellm fetched (it hung once in five runs alone, with the fetch in place); that is a separate
+fix. `uv run poe check` on the final tree then ran the whole suite with nothing deselected:
+`6687 passed, 25 skipped`. Two mutants, each run by a harness that restores the file and checks it
+byte for byte.
+Renaming the fixture's `vertex_ai/gemini-3.8-flash` entry fails exactly the six tests that name that
+model, on a desktop whose fetch works and whose fetched map holds it. Removing the line in
+`conftest.py` fails exactly the new pin, which then reads `source: remote`, and leaves the file's
+other 21 tests green. Each passes again once restored.
+
+Not verified: a runner whose fetch fails. Such a runner now reads the same map as every other, and
+the pin asserts that on each run.
+
+## ADR-0349: the CI test job's time bounds follow its measured run times
+
+Status: accepted. 2026-11-01. Replaces the run-time figures that the bounds' comments carried in
+`.github/workflows/ci.yml` and `pyproject.toml`.
+
+Context. The verify job has three time bounds: pytest-timeout's 120 s per test (`pyproject.toml`),
+a session watchdog of 600 s around the Linux pytest step (`timeout -s ABRT -k 30 600`), and the
+job's `timeout-minutes: 20`, which is the only session bound on the Windows cell. Their comments say
+the suite runs in about 90 s on CI and 84 s locally. Measured from the jobs API over the 14 most
+recent completed CI runs (created 2026-10-30 to 2026-11-01, 56 verify jobs, all green):
+
+| cell | pytest step, min / median / max | job, min / median / max | bound |
+|---|---|---|---|
+| Linux, 42 jobs | 419 / 517 / 575 s | 444 / 550 / 612 s | 600 s watchdog on the step |
+| Windows, 14 jobs | 668 / 768 / 828 s | 706 / 826 / 884 s | 1,200 s job cap |
+
+Two runs outside that window crossed a bound. On PR #825, run 41279454185 attempt 1, the watchdog
+killed the py3.12 Linux step with exit 124 after 605 s, 2 s after "Coverage XML written", when
+every test had finished. On the main push of PR #816's merge, run 41099796238 attempt 1, the
+Windows job was cancelled by its cap. Its pytest step had passed in 769 s (`6608 passed, 19 skipped
+... in 754.27s`); the log's last line, "Cleaning up orphan processes", is at 17:46:53, and the job
+was cancelled at 17:53:52, 20 min 44 s after it started. On a Windows desktop the whole suite takes
+16.5 to 17.5 min, and its slowest single test 26.1 s; no test took more than 30 s.
+
+Decision.
+1. The Linux session watchdog is 1,200 s, about twice the slowest green pytest step measured, so a
+   healthy run is not killed and a hung one still fails inside the job.
+2. The job's `timeout-minutes` is 35. The slowest Windows job measured, 884 s, has about 2.4 times
+   that in room, and a Linux job fits its 1,200 s step bound and its setup.
+3. pytest-timeout's 120 s per test stays: it is more than four times the slowest test measured.
+4. The comments state these measurements and point here, in place of the 90 s and 84 s figures.
+
+What was considered and not done. Splitting the suite across jobs, or running it in parallel with
+pytest-xdist: it would cut the wall time, but it adds a dependency and asks every test to be safe
+to run in parallel, which this suite has not been shown to be. A separate bound per OS: one value
+is simpler, and the Linux watchdog already bounds that cell's test step.
+
+The Windows cancellation was not the suite running long. Its tests had passed, and the job then
+waited about seven minutes in the runner's orphan-process cleanup. The runner logs no process names
+there, so what it waited on is not known. A larger cap gives such a wait room but does not end it,
+and finding the process is a separate change. Three healthy Windows jobs end on the same log line
+about 5 s after the suite and complete within seconds.
+
+The proof. The CI figures come from the jobs API: the `started_at` and `completed_at` of each
+verify job and of its pytest step. The two overruns come from the same API and from each job's
+log. The desktop figures come from the JUnit report of a full run on 2026-11-01: 6,710 tests in
+1,043.8 s, the slowest `test_win_job_kill.py::test_stop_after_a_restart_kills_the_git_bash_tree`
+at 26.1 s, and none over 30 s. The workflow and `pyproject.toml` parse and read back 35 minutes, a
+1,200 s watchdog, and 120 s per test. This change's own CI run is the first under the new bounds.
+
+Not verified: whether a 35-minute cap would have let the cancelled Windows job finish, since how
+long the runner would have waited is not known.
+
+## ADR-0350: a deployment names the web page in its own settings, and the server writes the name in as it serves the page
+
+Status: accepted. 2026-11-01.
+
+Context. The web page named itself "Zak Code" in six places: its tab title, its header, a new
+chat's title, the line under that title ("Ask about this workspace — Zak can read, edit, and run
+things."), the message box's placeholder, and the placeholder the page's script put back when the
+chat on screen was the active one. A new chat also offered three suggestions written for a coding
+workspace. A deployment that shows the page to its own users, behind its own sign-in, had one way
+to show its own name instead: edit the page in the install. `zakcode update` replaces the install
+(ADR-0291), and a server that sees a new build restarts into it (ADR-0333), so the next update put
+"Zak Code" back by itself.
+
+Decision.
+1. Three settings carry the brand: `brand_name`, `brand_tagline` and `brand_suggestions`
+   (`ZAKCODE_BRAND_NAME`, `ZAKCODE_BRAND_TAGLINE`, and `ZAKCODE_BRAND_SUGGESTIONS`, a JSON array
+   of strings). They are read like every other setting, from `~/.zakcode/.env`, the workspace's
+   `.env` or the environment, and an update replaces none of those. Unset, the page is its own.
+2. The page ships a slot wherever it names itself: the tab title, the header, a new chat's title,
+   line and suggestions, the message box's placeholder, and a class on its root. The server fills
+   them, HTML-escaped, as it reads the page at start, before it writes in the page's name
+   (ADR-0345). `zakcode.server.brand` holds the page's own name, line and suggestions, and nothing
+   else does.
+3. The page's name is the sha256 of the page as branded. A server restarted on a new brand serves
+   a page with another name, so an open page reloads into it, as it does after an update.
+4. A line left unset under a deployment's own name names that name ("Ask about this workspace —
+   Acme can read, edit, and run things."), so a name set alone leaves no "Zak" on the page. A name
+   set to "Zak Code", or to nothing, is the page's own, and `[]` shows no suggestions.
+5. A deployment's own name is set in the page's fallback serif. The display face is cut to the
+   letters of "Zak Code" (ADR-0221), so any other name would show its other letters in the
+   fallback face one at a time, mid-word. The root's `own-brand` class sets the whole name in that
+   face instead.
+6. The page's script takes the message box's placeholder from the page as served, so it holds no
+   name of its own.
+7. `/app/` and `/app/index.html` serve the same branded page as `/`. The `/app` mount serves the
+   file as shipped, and that file now carries slots.
+
+What was considered and not done.
+- A branding file beside the settings. It would be a second way to configure the server, and the
+  settings already have the precedence a deployment needs: a box-wide value in `~/.zakcode/.env`,
+  a workspace's own `.env`, and the environment for a service. Following the no-knobs ruling, there
+  is one way and no on/off flag; unset is the page's own brand.
+- Filling the brand in from the browser by asking an endpoint. The page would show "Zak Code"
+  until the answer came back, on every load.
+- A logo or colours: not asked for. The same slots would carry them.
+- The terminal client. The people who run a workspace use the terminal; the brand is for people
+  who reach the page through a deployment's own front door. The terminal is unchanged.
+- The assistant's own name. A workspace's `self.md` already replaces the default identity line
+  (`zakcode.identity`), so the assistant can introduce itself by the deployment's name without
+  this change.
+
+The proof. A full local `poe check` on 2026-11-01: ruff, ruff format (533 files) and mypy (167
+source files) clean, and pytest 6,692 passed, 25 skipped and 4 failed in 1,525.8 s. All four were
+tests that still read the page's old text: the display-face test read the name's slot as letters
+the face must draw, and three chat-switching tests ran the page on a DOM whose message box had no
+placeholder, which the script now takes from the markup. The display-face test now reads the page
+as served with no brand, and checks that the `own-brand` rule takes the face away; the switching
+DOM carries the placeholder as served. Those four files then passed, 67 tests. The nine tests in
+`tests/test_webclient_brand.py` cover the page with nothing set, a brand written in everywhere with
+its markup escaped, a name set alone, the default name and `""` as the page's own, `[]`
+suggestions, the page's name over the branded page, the `/app` paths, the brand read from the
+config home's `.env` through `load_settings`, and a script that holds no name. Seven mutations
+were each run green on the real code, red under the sabotage and green after the restore: the
+page's name taken over the unbranded page, the name not escaped, `/app/` not routed, a line that
+always says "Zak", no root class, a literal placeholder in the script, and the `own-brand` rule
+emptied. A headless Chrome render of a server whose `.env` set a name, a line and two suggestions
+showed all three, with the name in the fallback serif, and a server with nothing set showed the
+page as before. `zakcode update` reinstalls the uv tool environment and keeps its working files in
+`~/.zakcode/update/`; nothing in it removes `~/.zakcode/.env`.
+
+Not verified: a deployment that serves the page behind its own sign-in, and a real `zakcode update`
+on a box whose `~/.zakcode/.env` carries a brand. The read side is tested; that the update leaves
+the file alone was read from the update's code, not run.
+
+## ADR-0351: a new chat in a workspace with framework agents offers to start one, and says what is lost without it
+
+Status: accepted. 2026-11-01.
+
+Context. A workspace that runs the framework keeps its agents under `agents/<name>/`. Its rules and
+skills reach every chat, but an agent's identity and what it has learned (its knowledge, its
+lessons, its guardrails) load only when `/start <name>` starts it, and the start ties it to that one
+chat, so every new chat begins without one. Nothing on a new chat said so. The page offered three
+suggestions to type and the terminal a tip, so a first-time user typed a question, got an answer
+without the agent, and had no way to know that the agent they meant to ask had never been there.
+
+Decision.
+1. `zakcode.session.framework_agents.startable_agents(workspace_root)` names the agents a new chat
+   can start: the directories under `agents/` that hold a `self.md`, sorted, and only when the
+   workspace holds the framework's start skill (`.claude/skills/start/SKILL.md`), since that is
+   what the offer runs. A name that is not one plain word (`[A-Za-z0-9][A-Za-z0-9._-]*`) is
+   skipped, so no name carries markup or a second argument into a line. A workspace that cannot be
+   read has no agents: the offer is a help, never a reason for a chat to fail. `start_line(name)` is
+   the line that starts one: `/start <name> --mode assistant`.
+2. `GET /workspace/agents` answers `{"agents": [{"name": ..., "start": ...}]}`, each agent with
+   its start line, so the page sends the line the server gives and the line has one source.
+3. The page asks each time a chat with nothing in it is shown: on load, on a new chat, on a switch
+   to an empty one. With agents, the start screen shows a panel in place of the line and the
+   suggestions: "Start an agent before you ask anything", what starting one does, the warning ("A
+   question typed now is answered without the agent: none of its identity, and none of what it has
+   learned."), one button per agent ("Start scout in assistant mode"), and a note that assistant
+   mode answers and works when asked and does nothing on its own, with the line a button sends,
+   which can be typed instead. A button sends its line as the chat's first message. The
+   suggestions are hidden rather than kept, because each one is a question typed before an agent
+   was started. Without agents, or from a server too old to know the route, the start screen is as
+   it was.
+4. The terminal prints the same offer under its welcome box and after `/clear`, the two places a
+   chat starts empty: the agents, the line that starts the first, and the same warning. A resumed
+   chat (`--session`, `/resume`) gets none. The cockpit's top pane runs `zakcode cli`, so it prints
+   the same offer.
+5. The list is read on each ask, never cached: an agent created in one chat is offered in the next.
+
+What was considered and not done.
+- Writing the agents into the page as it is served, like the brand (ADR-0350). The page is read
+  once at start, so an agent created after that would not be offered until a restart, and the
+  first agent a new user creates is the one that matters.
+- Starting an agent automatically. Which agent, and in which mode, is the user's choice, and a
+  workspace may hold several.
+- Blocking a typed question until an agent is started. A user may mean to ask without one. The
+  offer says what is lost, and the choice stays theirs.
+- Offering autonomous mode as well. It runs on its own until stopped, which is not what a first
+  question needs; it stays a typed command.
+
+The proof. 18 new tests: the finder over tmp workspaces (5); the route on a real app, and the
+page's own script under node against a scripted server (7); the terminal's offer, and the chat
+itself on a new chat, after `/clear` and on a resumed chat (6). Ten mutations were each run green
+on the real code, red under the sabotage and green after the restore: no start-skill check, no
+`self.md` check, a line without the mode, the route reading the process's directory instead of the
+workspace, a page that never asks, a button that builds its own line, the offer shown with no
+agents, the suggestions kept beside it, an offer on a resumed chat, and none after `/clear`. A real
+`zakcode webapp` over two scratch workspaces, driven in Chrome: with agents, the panel showed two
+buttons in place of the line and the suggestions, at 1280 and at 390 pixels wide, and a real click
+on the second sent `/start scout --mode assistant` as the chat's first message, from which the
+server built the start skill's turn; without the framework, the start screen was unchanged and
+the route answered `[]`. The installed `zakcode cli` printed the offer under its welcome box in the
+first workspace and nothing new in the second. A full local `poe check`: ruff, format and mypy
+clean, and pytest 6,714 passed, 25 skipped.
+
+Not verified: the start a button sends, carried through by a real model (the browser check ran
+against a model it could not reach, so it saw the turn begin and nothing after); the offer in a
+live cockpit pane; a deployed server.
+
+## ADR-0352: a cockpit pane shows the chat a web app serves on its workspace, and a pane's permission prompt gives way to the web app
+
+Status: accepted. 2026-11-02. Amends ADR-0320, where a terminal on a served workspace was a side
+conversation, and ADR-0346, which left showing the web app's chat in the pane to the owner and left
+a prompting pane turn standing back. Builds on ADR-0289, ADR-0325 and ADR-0327 (how the page joins a
+chat and its watch bus) and ADR-0319 (the workspace's current chat).
+
+Context. While `zakcode webapp` serves a workspace its say slot is the server's (ADR-0320), so a
+cockpit pane, whose only door is its say box, receives nothing: a line sent through the box runs in
+the web app's chat and shows only on the page. ADR-0346 made the pane say so and left showing the
+web app's chat to the owner, who answered on 2026-11-01 that the chat should show in both places.
+ADR-0346 also recorded a turn the pane began before a web app came up: its permission prompt stands
+back from the say slot while the workspace is served, so nothing can answer it, and the turn holds
+the busy marker (ADR-0060) that the server's say consumer waits on. Neither moves. Nothing sent
+through the box can end it either, since the prompt and the turn's interrupt watcher leave the
+interrupt file to the server (ADR-0320).
+
+Decision.
+1. The served marker names where the server listens. `create_app` takes `served_url`, and the
+   server's lease writes it into `.served` as `url`, beside `pid`, `session` and `since`
+   (`claim_busy(..., url=...)`). `zakcode webapp` passes the address a process on the same machine
+   reaches it at, `_served_url(host, port)`: the host it binds, with a bind to every interface
+   (`0.0.0.0`, `::`) reached over loopback and an IPv6 address in brackets, and no address for port
+   0. `served_url(workspace_root)` reads it back: the `http` or `https` address in a fresh marker
+   that names another process, or None.
+2. A cockpit pane shows the web app's chat. When the pane's idle wait reports `served` (ADR-0346),
+   the REPL prints that notice and then makes a view, `ServedChatMirror` in `cli/served_mirror.py`,
+   on the marker's address, saying "showing the web app's chat from <url> — lines from the say box
+   or the page appear here with the replies". The view joins the web app's current chat as the page
+   does. `GET /sessions/current/transcript` gives the saved conversation older than the oldest turn
+   the watch bus holds whole, drawn as `/resume` draws one (`_render_replay`, split out of
+   `_render_transcript` unchanged). `GET /watch/{id}?full=1&since=&epoch=` (`ServerClient.watch`,
+   `WatchStream`) gives the rest. Each line is drawn as the terminal draws its own turn: the line
+   marked `(web app · HH:MM)`, the reply streamed, the footer stamped by when the server published
+   each frame. A permission the web app's turn waits on is drawn with what it asks to run and
+   "answer y (allow once), a (allow for this session) or n in the say box, or on the page". The view
+   writes no say, no interrupt and no route, so the server stays the workspace's one reader
+   (ADR-0320).
+3. The view draws only while the REPL waits idle. It runs on a thread with its own event loop; the
+   REPL resumes it around the idle wait and pauses it around everything else, so the pane's own
+   output never lands inside the web app's. A pause keeps its place, the last frame drawn, so a
+   resume draws nothing twice and misses nothing the bus still holds. When the bus has let that
+   place go, the view says "part of the chat went by while this pane was not drawing — the page has
+   all of it" and draws on.
+4. The view follows the web app's chat. A `session_rotated` frame (the page opened another chat)
+   prints "the web app moved to another chat" and joins the current one, drawing its saved
+   conversation. A bus made again (another `X-Bus-Epoch`: the web app restarted) joins the current
+   chat again, and draws nothing again when that is the chat on screen, as after a restart into a
+   new build (ADR-0333); a restart during a turn says that what was missed is on the page. The REPL
+   keeps the view while the web app is stopped, and goes on in it when one is back at the same
+   address.
+5. A turn the view joined part way through is drawn with no length in its footer:
+   `StreamRenderer.render(..., timed=False)`. A length measured from the middle of a turn reads as
+   a short turn. Every other footer is unchanged.
+6. The view says why when it cannot show the chat, once each: a marker from a server too old to
+   name its address ("this pane cannot show the web app's chat — the web app does not say where it
+   listens (an older build); its chat is on its page"); a refusal (401 or 403: "the web app at <url>
+   refused this pane — it needs the web app's ZAKCODE_AUTH_TOKEN in the pane's environment", and
+   the view stops); a web app it has not reached for 5 s, and then that it reached it again. The
+   pane sends its own `ZAKCODE_AUTH_TOKEN` as a bearer token.
+7. A pane's permission prompt gives way to the web app. On a served workspace the pane's prompt
+   wait (`_InputMux.next_input(idle=False)` with `report_served`) answers `served`; `answer_line`
+   sets `served_stop` and denies, as Ctrl-C does; and the turn's watcher in `_run_streamed_turn`
+   stops the turn, printing "a web app is serving this workspace — the say box feeds its chat, so
+   nothing could answer this turn's permission prompt; turn stopped". The turn releases its busy
+   marker as any ended turn does (the lease's `finally` in the agent loop), so the web app's consumer
+   goes on, and the `y` and the Stop the box wrote stay in place for the web app to read. Only the
+   pane does this: the inline REPL reads its own keyboard, and its prompt is unchanged.
+
+What was considered and not done.
+- Letting the pane's prompt read the say slot while the workspace is served, so that a `y` from the
+  box answers it. The cockpit's say box and the page's `POST /say` write the same file, so the
+  prompt would take lines the page sent for its own chat: the race ADR-0320 closed.
+- Giving the box's lines back to the pane's chat while the workspace is served. On a served
+  workspace the box is the web app's door (ADR-0320); the pane shows that chat instead.
+- Configuring the address on the pane's side, as a setting or a default port. The marker is the one
+  place that says which server serves the workspace, so it also says where.
+- Drawing the web app's chat over the pane's own turns. Two chats would interleave in one terminal.
+- A matching change to the page. The page's own turns ask through the say slot the server owns
+  (`SayInboxPrompter`), so it never meets this deadlock, and it already shows its chat.
+
+The proof. 30 new tests: the marker and the address a pane reaches a web app at (13); the watch
+stream (1); the view against a real web app, served on loopback by uvicorn with the tests'
+scripted agent (11): every line with its reply, the saved chat once and then the bus, a chat the
+page opens, a pause, a bus that let the place go, a restart into a new build and a new start, a
+refusal, a web app it cannot reach and then reaches, an approval, and the same address after a
+stop; the real REPL as a cockpit pane on a served workspace, with a scripted agent (2); and the
+prompt (3): a prompt on a served workspace, a pane turn whose prompt meets one, and a web app that
+starts serving during a pane turn's prompt. 29 mutations were each run green on the real code, red
+under the sabotage and green after the restore, each reddening the test meant for it: the marker's
+address, the web-address and fresh-foreign checks, the server's lease, the loopback and IPv6
+forms, the web app's wiring, the frame parse, the epoch the watch sends, the saved cut, a chat the
+page opens, a bus made again, the place a pause keeps, the note when the bus let it go, a refusal,
+an unreachable web app said once and reached again, an approval, the user line, the saved chat
+drawn twice, the untimed footer, the REPL resuming and pausing the view, the view kept at the same
+address, the prompt answering `served`, the stop it sets, the watcher reading it, a stale one
+cleared, and the REPL passing it to the turn. A live check on Windows, three processes on one
+scratch workspace: a web app (the server's app with the tests' scripted agent, under uvicorn),
+`zakcode cli` from the branch with the cockpit pane's settings, and `zakcode say`. The marker named
+`http://127.0.0.1:<port>`; the pane said the workspace was served and that it was showing the web
+app's chat from that address; a line from `zakcode say`, which answered "sent to the web app's
+chat", and a line posted to the page's `/say` each appeared in the pane, marked
+`(web app · HH:MM)`, with its reply and footer; the web app stopped and the pane said so; and a
+`/exit` from the box then closed the pane with exit code 0. A full local `poe check`: ruff, format
+and mypy clean, and pytest 6,736 passed, 25 skipped and 8 failed, in a run of 81 minutes on a
+machine busy with other agent sessions. Seven are bash-tool, process and stop-window tests this
+change does not touch: run side by side, the bash-tool files fail on main here too (5 failures on
+main and 4 on this branch, a different few each run), and the process and stop-window files, which
+had missed their time bounds (6.08 s against 6.0 s), pass on both. The eighth was a new test here:
+it asserted that the prompt's tool call saw the deny, but the turn's watcher can cancel the call
+first. It and its sibling now take either, and assert that the prompt was shown; the four
+sabotages aimed at the prompt were run again, and each still turns a test red.
+
+Not verified: a real tmux cockpit (this machine has no tmux, so the live pane ran as `zakcode cli`
+with the cockpit pane's settings); a deployed server; a pane's own permission prompt reached
+through a real model's tool call (the tests drive the real REPL with a scripted agent).
+
+## ADR-0353: a clean /exit leaves exit code 0 whoever holds stdin, because the stdin pump keeps stdin alive while it waits
+
+Status: accepted. 2026-11-02. Builds on ADR-0073 and ADR-0078 (the input mux and its stdin pump).
+
+Context. A clean `/exit` from the inline REPL printed the goodbye line and then, on CPython 3.11:
+
+    Fatal Python error: _enter_buffered_busy: could not acquire lock for <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly due to daemon threads
+
+The process then ended with exit code 0xC0000005 (3221225477) on Windows and -6 (SIGABRT) on
+Linux, so a wrapper that checks the exit code read a failure from a clean exit. The input mux's
+pump (`_InputMux._pump`) is a daemon thread, and when the REPL returns it is waiting in `input()`
+for the next line. When stdin and stdout are not both terminals, `input()` reads through
+`sys.stdin.readline()`, which holds the buffered reader's lock until a line or end of file
+arrives. CPython 3.11's `input()` borrows its reference to `sys.stdin`. The python/cpython#130163
+fixes, merged in February 2025 and backported to 3.12 and 3.13, made `input()` hold its own for the
+length of the call; 3.11, by then receiving security fixes only, did not get them. So on 3.11, when
+shutdown clears `sys.stdin`, the reader loses its last reference, and freeing it closes it. Closing
+needs the lock the blocked pump holds, shutdown cannot wait for a daemon thread, and CPython
+aborts. Two cases do not abort. When stdin and stdout are both terminals, `input()` reads through
+the console or readline and takes no lock on the buffered reader. When the writer closes the pipe
+right after `/exit`, the pump reads end of file and has returned by the time shutdown runs.
+
+Measured on the code before this change:
+- Windows, CPython 3.11.14, stdin a pipe the writer keeps open until the process exits: the fatal
+  error and exit code 0xC0000005, 3 runs of 3.
+- The same, with the writer closing the pipe after `/exit`: exit code 0, 3 of 3.
+- Windows, 3.11.14, a real console (a new console window, `/exit` typed into it as key events):
+  exit code 0 and no fatal error, 3 of 3.
+- Windows, 3.11.14, console stdin with stdout and stderr redirected to files: the fatal error and
+  exit code 0xC0000005, 3 of 3. What matters is that stdin and stdout are not both terminals, not
+  that stdin is a pipe.
+- A bare script on Windows, a daemon thread blocked in `input()` on an open pipe while the main
+  thread exits: the fatal error on 3.11.14, none on 3.12.10.
+- CI on this change's tests alone, the first run of #833: the pipe test failed on Linux with 3.11
+  (exit code -6 and the fatal error) and on Windows with 3.11 (0xC0000005 and the fatal error),
+  and passed on Linux with 3.12 and 3.13. The terminal test (exit code 0, no fatal error) passed on
+  Linux with 3.11, 3.12 and 3.13.
+
+Decision. `_read_stdin_line`, the pump's one read point, binds `sys.stdin` to a local for the
+length of the read: the reference a fixed `input()` takes for itself. Interpreter shutdown does not
+tear down a daemon thread's frames, so on 3.11 the reference keeps stdin from being freed, and so
+from being closed, for as long as the pump waits; where `input()` already holds one, it is a second
+and changes nothing. The pump is otherwise unchanged: it reads with `input()`, runs as a daemon
+thread, and stops only at end of file.
+
+What was considered and not done.
+- Ending the pump before shutdown. A blocked read of a pipe or a console cannot be interrupted
+  from another thread without platform-specific cancellation, and closing the reader from the main
+  thread waits on the lock the pump holds: the same wait, moved from shutdown to the main thread
+  and lasting until the next line.
+- Reading lines with `os.read` on the file descriptor, which takes no buffered lock. On a terminal
+  it would lose what `input()` gives there: line editing and bracketed paste through readline on
+  POSIX, and the console's Unicode line input on Windows. Reading raw only when stdin and stdout
+  are not both terminals, where `input()` goes through the buffered reader anyway, keeps the
+  terminal path, but means assembling lines and decoding bytes by hand, with read-ahead held where
+  no other reader of `sys.stdin` can see it. The reference is one line, and it is what a fixed
+  `input()` does itself.
+- Leaving through `os._exit` once the REPL returns. It skips every exit handler and the flush of
+  every other open file.
+- A pump that is not a daemon thread. Shutdown would wait for it, and it waits for a line that may
+  never come.
+- Asking callers to close the pipe first. The callers are anyone's wrappers, and the process should
+  exit cleanly whoever holds its stdin.
+
+The proof. Two tests in `tests/test_cli_exit.py` run `python -m zakcode cli` as a process of its
+own and assert the goodbye line, no fatal error and exit code 0. One writes `/exit` to a pipe it
+keeps open until the process exits. The other, POSIX only, types `/exit` on a pseudo-terminal, with
+`--no-rules` so that a terminal with tmux available does not open the cockpit. The pipe test failed
+against the code before this change, locally (`(3221225477, True) == (0, False)`) and in CI as
+listed above. With the change it passes, and removing the reference turns it red with the same
+fatal error, then green again once restored. The console measurements again with the change, 3 of
+3 each: a real console, exit code 0 and no fatal error; console stdin with stdout and stderr
+redirected, exit code 0 and no fatal error. A full local `poe check` with the change (Windows,
+CPython 3.11.14): ruff, format and mypy clean, and pytest 6,745 passed and 26 skipped.
+
+Not verified: macOS (CI has no macOS cell); a person's own terminal on POSIX (the test's
+pseudo-terminal stands in for it); and a 3.12 or 3.13 release older than the python/cpython#130163
+fixes, whose `input()` borrows the reference as 3.11's does.
+
+## ADR-0354: a line typed during a turn's last model call runs as the next turn
+
+Status: accepted. 2026-11-02. Builds on ADR-0078 (a typed line goes to this process's agent) and
+ADR-0051 (a message reaches a running turn at an iteration boundary).
+
+Context. Since ADR-0078 a line typed at the REPL while its turn runs goes to the agent in-process
+(`_InputMux._route_typed`, then `Agent.inject_user_line`, then `AgentLoop._typed_lines`), and the
+loop takes it at its next iteration boundary (`_deliver_midturn_say`). A turn's last model call
+answers without a tool call, and no boundary follows it, so a line typed during that call is still
+in the loop when the turn ends, and nothing took it from there. The loop outlives the turn (the
+REPL builds one agent for its whole session), so the line was not lost: it reached the model at
+the next turn's first boundary, framed as a mid-turn message ("user message — arrived mid-task"),
+behind the prompt typed after it. Meanwhile the prompt came back with no sign of the line: the
+person saw it vanish, then saw it answered a turn late, after a newer instruction. A line the
+step-seam hold (ADR-0052) was still waiting on when the turn ended went the same way.
+
+The web page does not have this gap. Its composer sends through `POST /say`; the say slot is a file
+that outlives the turn, and the server's between-turn consumer runs a say the turn did not take as
+the next turn.
+
+Decision. When a turn ends, the REPL takes the lines the agent was handed and never delivered
+(`Agent.take_typed_lines`, which drains `AgentLoop._typed_lines`) and puts them on the input queue.
+There the prompt runs them as the next turn, echoed like any line typed ahead. This is
+`_InputMux.end_turn`, called where the REPL used to clear `turn_active`. Routing a typed line and
+ending the turn hold one lock, so a line on its way to the agent as the turn ends is taken with the
+rest. A line typed after the turn has ended goes to the queue, as before.
+
+What was considered and not done.
+- Going on with the turn: delivering the line after the final answer and calling the model again.
+  In the person's view the turn has ended (its answer is drawn and its turn-end hooks have run),
+  and a REPL command typed in the same moment would wait behind a turn nobody asked for.
+- Having the loop hand the line back at its own turn end. Only the REPL can run the next turn, and
+  only this process's keyboard fills `_typed_lines` (ADR-0078), so the REPL is where it belongs.
+
+Order. A line already on the queue when the turn ends (a REPL command such as `/help`, typed during
+the turn) runs before a line handed back. Typing order across the two is not kept: that would need
+one queue for both, and both arriving within one model call is rare.
+
+The proof. In `tests/test_loop_say.py`, a provider types a line during the turn's only model call,
+on the streamed path the REPL runs. Left alone, the line reaches the model at the next turn's first
+boundary, framed, after the next prompt. `take_typed_lines` gives it up once, and the next turn
+never sees it. `Agent.take_typed_lines` reaches the loop that `inject_user_line` feeds. In
+`tests/test_cli_chat.py`, the REPL runs a line typed during the last model call as the very next
+turn, before the keyboard's next line, and `end_turn` waits for a line on its way to the agent.
+Three mutation proofs, each red on the test meant for it and green after the restore: the turn end
+put back to clearing `turn_active` alone (the line does not run next), the lock removed (the turn
+ends while the line is on its way), and `take_typed_lines` emptied (the line stays in the agent).
+A full local `poe check` with the change (Windows, CPython 3.11.14): ruff, format and mypy
+clean; pytest 6,743 passed, 26 skipped and 7 failed. Six of the seven were test doubles of the
+agent without `take_typed_lines`, which the REPL now calls at the end of every turn; with the
+method added they pass, 38 of 38 in their two files. The seventh,
+`test_stop_after_a_restart_kills_the_git_bash_tree`, fails intermittently on that machine on the
+code before this change as well: run alone, 3 of 6 runs of it failed.
+
+Not verified: a person typing at a real terminal during a live model call. The tests type through
+the REPL's keyboard seam against a scripted agent and a scripted provider.
+
+## ADR-0355: a note filed one directory above the host framework's knowledge tree is refused, and the refusal names the path that is read
 
 **Status:** Accepted (2026-10-31)
 

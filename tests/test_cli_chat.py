@@ -85,6 +85,11 @@ class FakeAgent:
                 self.session.add_usage(event.usage)
         return self._gen()
 
+    def take_typed_lines(self) -> list[str]:
+        # The REPL takes a turn's undelivered typed lines when the turn ends (ADR-0354); no
+        # line ever reaches this agent mid-turn, so there are none.
+        return []
+
     async def _gen(self) -> AsyncIterator[AgentEvent]:
         for event in self.events:
             yield event
@@ -1182,6 +1187,44 @@ def test_chat_resume_replays_transcript(tmp_path, monkeypatch) -> None:
     assert "Zero-RB: load WR early" in result.stdout
     assert "replaying" in result.stdout
     assert "end of replay" in result.stdout
+
+
+def test_chat_resume_draws_the_hook_note_and_the_typed_command(tmp_path, monkeypatch) -> None:
+    """ADR-0346: the redraw draws a saved chat as the page does. What a SessionStart hook said is
+    a note, not a line the person typed (ADR-0344), and a skill turn is the command as it was
+    typed, not its frame (ADR-0335)."""
+    from zakcode.agent.loop import _SESSION_START_FRAME, _SESSION_START_WHY
+    from zakcode.messages import Message
+
+    monkeypatch.setattr(zakcode, "Agent", FakeAgent)
+    store = _seed_session_store(tmp_path, monkeypatch)
+    sess = Session(id="cafe0002", cwd=".", model="test-model")
+    sess.add_message(Message.user(SkillAgent.invocation.turn_text))
+    said = "the release check is in flight\ncall /status first"
+    why = _SESSION_START_WHY["startup"]
+    sess.add_message(Message.user(_SESSION_START_FRAME.format(why=why, text=said)))
+    sess.add_message(Message.assistant_text("booted"))
+    store.save(sess)
+
+    import zakcode.cli as cli_mod
+
+    real_builder = cli_mod._build_chat_agent
+
+    def builder(*args, **kwargs):
+        agent = real_builder(*args, **kwargs)
+        if kwargs.get("session_id"):
+            agent.session = store.load(kwargs["session_id"])
+        return agent
+
+    monkeypatch.setattr(cli_mod, "_build_chat_agent", builder)
+    result = runner.invoke(app, ["cli"], input="/resume cafe\n/exit\n")
+    assert result.exit_code == 0
+    out = " ".join(result.stdout.split())  # a long line wraps at the console's width
+    assert "SessionStart hook: the release check is in flight (+1 more line)" in out
+    assert "This workspace's SessionStart hook ran" not in out
+    assert "/start demo" in out
+    assert "<command-" not in out and "Boot body." not in out
+    assert "booted" in out
 
 
 def test_render_transcript_elides_and_counts_tools() -> None:
@@ -2374,7 +2417,7 @@ def test_update_local_checkout_already_current_says_so_with_sha(tmp_path, monkey
     assert "already current" in result.stdout
 
 
-# ── ADR-0073: a line typed while a turn runs reaches the turn through the say inbox ──
+# ── ADR-0073, ADR-0078: a line typed while a turn runs reaches this process's turn ──
 
 
 def _feed_lines(monkeypatch, lines: list[str], gate) -> None:
@@ -2425,10 +2468,10 @@ def test_typed_line_mid_turn_is_injected_into_this_process_agent(monkeypatch, tm
     assert mux.queue.empty()  # not parked for a prompt the runner never reaches
 
 
-def test_typed_line_mid_turn_falls_back_to_the_say_inbox_without_an_agent(
-    monkeypatch, tmp_path
-) -> None:
-    """A mux with no agent attached (the turn runs elsewhere) keeps the file door."""
+def test_typed_line_mid_turn_without_an_agent_waits_on_the_queue(monkeypatch, tmp_path) -> None:
+    """ADR-0078, amended 2026-11-02: the keyboard never writes the workspace say slot, a file
+    every session on the workspace polls. A mux with no agent attached (only tests build one;
+    the chat REPL always attaches its agent) leaves a line typed mid-turn for the prompt."""
     import threading
 
     from zakcode.session import say_inbox as si
@@ -2438,41 +2481,144 @@ def test_typed_line_mid_turn_falls_back_to_the_say_inbox_without_an_agent(
     mux = _make_mux(tmp_path)
     mux.turn_active = True
     gate.set()
-    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
-    assert si.read_say(si.say_path(tmp_path)) == "/stop coach"
-    assert mux.queue.empty()
+    assert mux.queue.get(timeout=5) == ("line", "/stop coach")
+    assert not si.say_pending(si.say_path(tmp_path))  # never the shared slot
 
 
 def test_typed_line_idle_or_repl_command_stays_on_the_queue(monkeypatch, tmp_path) -> None:
     import threading
 
+    from zakcode.cli import _InputMux
     from zakcode.session import say_inbox as si
 
     gate = threading.Event()
     _feed_lines(monkeypatch, ["/exit", "plain text"], gate)
-    mux = _make_mux(tmp_path)
+    injected: list[str] = []
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=injected.append)
     mux.turn_active = True
     gate.set()
     # /exit is the REPL's own command: queued even mid-turn.
     assert mux.queue.get(timeout=5) == ("line", "/exit")
-    # …and the next line went to the inbox (turn still active).
-    assert _wait_for(lambda: si.say_pending(si.say_path(tmp_path)))
-    si.read_say(si.say_path(tmp_path))
-    # Idle: everything is queued, nothing touches the inbox.
+    # …and the next line went to the running agent (turn still active).
+    assert _wait_for(lambda: injected == ["plain text"])
+    # Idle: everything is queued, nothing reaches the agent.
     mux.turn_active = False
     mux._route_typed("idle line")
     assert mux.queue.get(timeout=5) == ("line", "idle line")
-    assert not si.say_pending(si.say_path(tmp_path))
+    assert injected == ["plain text"]
+    assert not si.say_pending(si.say_path(tmp_path))  # the keyboard never wrote the slot
 
 
-def test_typed_line_falls_back_to_the_queue_when_the_slot_stays_busy(monkeypatch, tmp_path) -> None:
+def test_typed_line_mid_turn_leaves_an_unconsumed_say_in_the_slot(monkeypatch, tmp_path) -> None:
+    from zakcode.cli import _InputMux
     from zakcode.session import say_inbox as si
 
     _quiet_pump(monkeypatch)
-    mux = _make_mux(tmp_path)
-    monkeypatch.setattr(type(mux), "_INBOX_WAIT_SECONDS", 0.3)
+    injected: list[str] = []
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=injected.append)
     assert si.write_say(si.say_path(tmp_path), "earlier say, unconsumed")
     mux.turn_active = True
     mux._route_typed("second line")
-    assert mux.queue.get(timeout=5) == ("line", "second line")  # never lost
+    assert injected == ["second line"]  # never lost, and never waiting on the slot
+    assert mux.queue.empty()
     assert si.read_say(si.say_path(tmp_path)) == "earlier say, unconsumed"  # slot untouched
+
+
+def test_a_line_typed_during_the_last_model_call_runs_as_the_next_turn(monkeypatch) -> None:
+    """ADR-0354: no iteration boundary follows a turn's last model call, so a line typed during
+    it is still in the agent when the turn ends (the agent loop pins that,
+    test_loop_say.py). The REPL takes it then and runs it as the very next turn, echoed like a
+    line typed ahead, instead of leaving it to reach the model a turn late behind the next
+    prompt."""
+    import asyncio
+    import threading
+
+    in_last_call, next_turn = threading.Event(), threading.Event()
+    built: list[FakeAgent] = []
+
+    class _LateLineAgent(FakeAgent):
+        """Holds its first turn's last model call open until a line is typed, and, like the
+        real loop, delivers nothing typed then."""
+
+        def __init__(self, **overrides: object) -> None:
+            super().__init__(**overrides)
+            self.typed: list[str] = []
+            self.handed = threading.Event()
+            built.append(self)
+
+        def inject_user_line(self, text: str) -> None:
+            self.typed.append(text)
+            self.handed.set()
+
+        def take_typed_lines(self) -> list[str]:
+            taken, self.typed = self.typed, []
+            return taken
+
+        async def _gen(self) -> AsyncIterator[AgentEvent]:
+            if len(self.turns) == 1:
+                in_last_call.set()
+                for _ in range(500):  # 10 s at most
+                    if self.handed.is_set():
+                        break
+                    await asyncio.sleep(0.02)
+            else:
+                next_turn.set()
+            async for event in super()._gen():
+                yield event
+
+    def keyboard():
+        yield "fix the bug"
+        in_last_call.wait(timeout=10)
+        yield "and the README too"
+        next_turn.wait(timeout=10)
+        yield "/exit"
+
+    keys = keyboard()
+    monkeypatch.setattr(zakcode, "Agent", _LateLineAgent)
+    monkeypatch.setattr("zakcode.cli._read_stdin_line", lambda: next(keys))
+    result = runner.invoke(app, ["cli"])
+
+    assert result.exit_code == 0, result.stdout
+    assert built[-1].turns == ["fix the bug", "and the README too"]
+    assert built[-1].typed == []
+    assert "and the README too" in result.stdout  # echoed as the turn it opened
+
+
+def test_end_turn_waits_for_a_line_on_its_way_to_the_agent(monkeypatch, tmp_path) -> None:
+    """ADR-0354: the pump routes a line on its own thread. A line on its way to the agent as the
+    turn ends is taken with the rest, never left in an agent whose turn is over: end_turn waits
+    for the routing in flight, under the same lock."""
+    import threading
+
+    from zakcode.cli import _InputMux
+    from zakcode.session import say_inbox as si
+
+    _quiet_pump(monkeypatch)
+    held: list[str] = []
+    entered, release = threading.Event(), threading.Event()
+
+    def inject(text: str) -> None:  # an agent slow to take the line
+        entered.set()
+        release.wait(timeout=10)
+        held.append(text)
+
+    def take() -> list[str]:
+        taken = held[:]
+        held.clear()
+        return taken
+
+    mux = _InputMux(si.say_path(tmp_path), si.interrupt_path(tmp_path), inject=inject, take=take)
+    mux.turn_active = True
+    router = threading.Thread(target=mux._route_typed, args=("late line",))
+    router.start()
+    assert entered.wait(timeout=5)
+    ender = threading.Thread(target=mux.end_turn)
+    ender.start()
+    ender.join(timeout=0.3)
+    assert ender.is_alive()  # the turn cannot end while the line is still on its way
+    release.set()
+    router.join(timeout=5)
+    ender.join(timeout=5)
+    assert mux.queue.get(timeout=5) == ("line", "late line")
+    assert held == []
+    assert not mux.turn_active

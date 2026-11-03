@@ -1022,6 +1022,33 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── The web page's brand (ADR-0350) ──────────────────────────────────────
+    # What the web page calls itself. A deployment sets these in its own settings, never in the
+    # installed page, so `zakcode update`, which replaces the install, keeps them. Unset, the
+    # page is its own (zakcode.server.brand holds its name, line and suggestions).
+    brand_name: str | None = Field(
+        default=None,
+        description=(
+            "The name the web page shows in its tab title, header, new chat and message box "
+            "(ZAKCODE_BRAND_NAME). Unset shows Zak Code."
+        ),
+    )
+    brand_tagline: str | None = Field(
+        default=None,
+        description=(
+            "The line under the name on a new chat (ZAKCODE_BRAND_TAGLINE). Unset says the name "
+            "can read, edit, and run things in this workspace."
+        ),
+    )
+    brand_suggestions: list[str] | None = Field(
+        default=None,
+        description=(
+            "The new chat's suggestion buttons, a JSON array of strings "
+            '(ZAKCODE_BRAND_SUGGESTIONS=["...","..."]); [] shows none. Unset shows the '
+            "page's three."
+        ),
+    )
+
     # ── Web tools (web_search / web_fetch) ───────────────────────────────────
     # Which vendor-agnostic search backend `web_search` uses. ``ddgs`` (the default) is free and
     # needs no key; ``tavily`` reads TAVILY_API_KEY from the env (like other provider keys — never

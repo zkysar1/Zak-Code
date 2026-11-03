@@ -81,9 +81,11 @@ from zakcode.permissions import PermissionOutcome, PermissionRequest, parse_perm
 from zakcode.providers.base import ProviderError, UnknownContextWindow
 from zakcode.providers.labels import display_model_id, provider_label
 from zakcode.secrets import strip_url_credentials
+from zakcode.session.framework_agents import start_line, startable_agents
 
 if TYPE_CHECKING:
     from zakcode import Agent
+    from zakcode.cli.served_mirror import ServedChatMirror
     from zakcode.events import AgentEvent
 
 app = typer.Typer(
@@ -1781,15 +1783,39 @@ def _render_transcript(
     operator report, first field use of ``/resume``). Long messages are elided at
     ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump.
     """
-    g = resolve_glyphs(console)
+    from zakcode.agent.loop import said_by_session_start, typed_command
+
     rows: list[tuple[str, str, int]] = []
     for msg in getattr(session, "messages", []):
         if msg.role not in ("user", "assistant"):
             continue
-        tool_count = len(msg.tool_uses) if msg.role == "assistant" else 0
+        role = msg.role
+        tool_count = len(msg.tool_uses) if role == "assistant" else 0
         text = msg.text.strip()
+        if role == "user":
+            # Drawn as the page draws them (ADR-0346): what a SessionStart hook said is a note
+            # from the workspace, not a line typed in the chat (ADR-0344), and a skill turn is
+            # the command as it was typed, not its frame (ADR-0335).
+            said = said_by_session_start(text)
+            if said is not None:
+                role, text = "hook", said.strip()
+            else:
+                text = typed_command(text) or text
         if text or tool_count:
-            rows.append((msg.role, text, tool_count))
+            rows.append((role, text, tool_count))
+    _render_replay(console, rows, limit=limit)
+
+
+def _render_replay(
+    console: Console, rows: list[tuple[str, str, int]], *, limit: int = _REPLAY_MESSAGE_LIMIT
+) -> None:
+    """Draw the last ``limit`` replay rows as a resumed session's replay.
+
+    A row is ``(role, text, tool calls)``, its role ``user``, ``assistant`` or ``hook`` (what a
+    SessionStart hook said). A cockpit pane joining the web app's chat draws that chat's saved
+    conversation the same way (ADR-0352).
+    """
+    g = resolve_glyphs(console)
     if not rows:
         return
     shown = rows[-limit:]
@@ -1801,6 +1827,12 @@ def _render_transcript(
         _dim(console, f"{g['dash']} replaying {len(shown)} message{'s' if len(shown) != 1 else ''}")
     for role, text, tool_count in shown:
         console.print()
+        if role == "hook":
+            lines = text.splitlines()
+            more = len(lines) - 1
+            rest = f"  (+{more} more line{'s' if more != 1 else ''})" if more else ""
+            _dim(console, f"{g['dot']} SessionStart hook: {lines[0]}{rest}")
+            continue
         if len(text) > _REPLAY_CHAR_LIMIT:
             elided_chars = len(text) - _REPLAY_CHAR_LIMIT
             text = text[:_REPLAY_CHAR_LIMIT].rstrip() + f" … (+{elided_chars} chars)"
@@ -1842,7 +1874,55 @@ _TIER_LABEL: dict[PermissionTier, str] = {
 
 def _read_stdin_line() -> str:
     """Read one raw keyboard line — the pump's single read point (patchable in tests)."""
+    # This frame holds stdin for the whole read (ADR-0353). The pump is a daemon thread, still
+    # blocked here at interpreter shutdown, and when stdin and stdout are not both terminals
+    # ``input()`` reads through stdin's buffered reader and holds its lock. On CPython 3.11
+    # ``input()`` keeps no reference of its own to stdin (3.12 does), so shutdown freed stdin,
+    # and closing it needs that lock: a clean /exit aborted with "Fatal Python error:
+    # _enter_buffered_busy". Shutdown leaves a daemon thread's frames alone, so this reference
+    # keeps stdin alive, and unclosed, for as long as the pump waits.
+    held = sys.stdin  # noqa: F841
     return input()
+
+
+#: What a cockpit pane says when a web app starts or stops serving its workspace (ADR-0346).
+_SERVED_NOTICE = {
+    "served": (
+        "a web app is serving this workspace {dash} the say box now feeds the web app's chat, "
+        "and nothing reaches this one until it stops"
+    ),
+    "unserved": (
+        "the web app stopped serving this workspace {dash} the say box feeds this chat again"
+    ),
+}
+
+
+def _served_chat_mirror(
+    console: Console, settings: Settings, *, kept: ServedChatMirror | None = None
+) -> ServedChatMirror | None:
+    """The view of the web app's chat a cockpit pane shows while a web app serves its workspace
+    (ADR-0352), saying so, or None, saying why: a web app too old to name its address. ``kept`` is
+    the view the pane showed before; a web app back at the same address goes on in it."""
+    from zakcode.cli.served_mirror import ServedChatMirror
+    from zakcode.session.say_inbox import served_url
+
+    dash = GLYPHS["dash"]
+    url = served_url(settings.workspace_root)
+    if url is None:
+        notice_info(
+            console,
+            f"this pane cannot show the web app's chat {dash} the web app does not say where it "
+            "listens (an older build); its chat is on its page",
+        )
+        return None
+    notice_info(
+        console,
+        f"showing the web app's chat from {url} {dash} lines from the say box or the page appear "
+        "here with the replies",
+    )
+    if kept is not None and kept.url == url and not kept.stopped:
+        return kept
+    return ServedChatMirror(console, url, token=settings.auth_token)
 
 
 class _InputMux:
@@ -1876,7 +1956,9 @@ class _InputMux:
         keyboard: bool = True,
         idle_probe: Callable[[], bool] | None = None,
         inject: Callable[[str], None] | None = None,
+        take: Callable[[], list[str]] | None = None,
         wakeup_probe: Callable[[], str | None] | None = None,
+        report_served: bool = False,
     ) -> None:
         from zakcode.session.say_inbox import (
             busy_elsewhere,
@@ -1884,11 +1966,9 @@ class _InputMux:
             read_say,
             served_path,
             take_interrupt,
-            write_say,
         )
 
         self._read_say = read_say
-        self._write_say = write_say
         self._take_interrupt = take_interrupt
         self._busy_elsewhere = busy_elsewhere
         self.inbox = inbox
@@ -1898,11 +1978,17 @@ class _InputMux:
         #: (``inject`` → ``Agent.inject_user_line``, ADR-0078) and folded in at the next
         #: iteration boundary (ADR-0051) instead of waiting in the queue for a turn end
         #: that a runner never reaches (ADR-0073: an operator's ``/stop`` sat unread in a
-        #: live runner's queue). Without an agent attached the say inbox FILE is the
-        #: fallback door — shared by every session on the workspace, so never the first
-        #: choice for the keyboard.
+        #: live runner's queue). The keyboard never writes the say inbox FILE, which every
+        #: session on the workspace shares: a mux with no agent attached (only tests build
+        #: one; the chat REPL always attaches its agent) leaves the line on the queue.
         self.turn_active = False
         self._inject = inject
+        #: The lines the agent was handed and never delivered (``take`` →
+        #: ``Agent.take_typed_lines``), taken by :meth:`end_turn` for the prompt (ADR-0354).
+        self._take = take
+        #: Held while a typed line is routed and while a turn ends, so no line reaches the
+        #: agent after :meth:`end_turn` has taken what it holds.
+        self._turn_lock = threading.Lock()
         #: The workspace's busy marker (ADR-0060): while a turn runs in ANOTHER process,
         #: this idle REPL leaves the inbox to it — a say is for the agent doing the work.
         self._busy_marker = busy_path(inbox.parent)
@@ -1911,6 +1997,17 @@ class _InputMux:
         #: written for the chat its page has open, a stop for that chat's turn — so this
         #: REPL reads, clears and reports neither, idle or prompting.
         self._served_marker = served_path(inbox.parent)
+        #: Whether the idle wait reports the served marker's changes (ADR-0346): a cockpit pane's
+        #: only door is the say inbox, so while a web app serves the workspace nothing it is sent
+        #: reaches the pane. ``next_input(idle=True)`` then answers ``("served", None)`` once when
+        #: a server starts and ``("unserved", None)`` once when it stops, for the REPL to say so.
+        #: A permission prompt's wait answers ``("served", None)`` too, for as long as a server
+        #: serves: nothing can answer that prompt any more (ADR-0352).
+        self._report_served = report_served
+        self._served_reported = False
+        #: Set when a pane's permission prompt met a served workspace (ADR-0352). The prompt is
+        #: denied, and the turn waiting on it stops: ``_run_streamed_turn`` watches this.
+        self.served_stop = threading.Event()
         #: Polled while the REPL is truly idle (ADR-0034): a True verdict ends the wait
         #: with ``("restart", None)`` so the REPL can hand the session to a fresh process.
         #: Never consulted mid-turn (a permission prompt is not an idle boundary).
@@ -1938,11 +2035,6 @@ class _InputMux:
         if keyboard:
             threading.Thread(target=self._pump, daemon=True, name="stdin-pump").start()
 
-    #: How long a line typed mid-turn waits for the single say slot to free before falling
-    #: back to the queue. The loop consumes the slot at its next iteration boundary (one
-    #: tool batch away); a bounded wait keeps the pump reading stdin whatever happens.
-    _INBOX_WAIT_SECONDS = 10.0
-
     def _pump(self) -> None:
         while True:
             try:
@@ -1959,36 +2051,45 @@ class _InputMux:
             self._route_typed(line)
 
     def _route_typed(self, line: str) -> None:
-        """Hand a typed line to whoever can act on it now (ADR-0073).
+        """Hand a typed line to whoever can act on it now (ADR-0073, ADR-0078).
 
-        Idle REPL, an empty line, or a REPL command (``/help``, ``/exit`` …): the queue,
-        read at the prompt. A turn running in this process: the running agent itself
-        (``inject``, ADR-0078), which folds the line into the conversation at its next
-        iteration boundary — a typed ``/stop`` on a runner whose turn never ends therefore
-        RUNS instead of waiting for the prompt that never comes. Only a mux with no agent
-        attached (a thin ``--server`` REPL, whose turn runs elsewhere) writes the line to
-        the workspace say inbox instead; that slot is a FILE every session on the
-        workspace polls, which is how a line typed at one cockpit reached a sibling
-        session. A slot still busy after the wait falls back to the queue, so no line is
-        ever lost; a turn that ends meanwhile releases the line to the prompt at once.
+        A turn running in this process: the running agent itself (``inject``, ADR-0078),
+        which folds the line into the conversation at its next iteration boundary — a typed
+        ``/stop`` on a runner whose turn never ends therefore RUNS instead of waiting for the
+        prompt that never comes. Everything else goes to the queue, read at the prompt: a
+        line typed while the REPL is idle, an empty line, a REPL command (``/help``,
+        ``/exit`` …), and any line on a mux with no agent attached. The keyboard never
+        writes the workspace say inbox: that slot is a FILE every session on the workspace
+        polls, which is how a line typed at one cockpit reached a sibling session. (The thin
+        ``--server`` REPL builds no mux: it reads nothing while its turn runs, and reads the
+        next line at its prompt.)
         """
-        if not self.turn_active or not line.strip() or _is_repl_command(line):
+        with self._turn_lock:
+            if (
+                self._inject is not None
+                and self.turn_active
+                and line.strip()
+                and not _is_repl_command(line)
+            ):
+                self._inject(line)
+                return
             self.queue.put(("line", line))
-            return
-        if self._inject is not None:
-            self._inject(line)
-            return
-        deadline = time.monotonic() + self._INBOX_WAIT_SECONDS
-        while self.turn_active:
-            try:
-                if self._write_say(self.inbox, line):
-                    return
-            except OSError:
-                break
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(0.25)
-        self.queue.put(("line", line))
+
+    def end_turn(self) -> None:
+        """End this process's turn: a line typed from now on waits for the prompt, and a line
+        the agent was handed but never delivered goes to the prompt's queue (ADR-0354).
+
+        A line typed during the turn's last model call reaches no later iteration boundary,
+        so the agent still holds it when the turn ends. Left there, it would reach the model
+        one turn late, framed as a mid-turn message behind the next prompt. At the prompt it
+        runs as the next turn, echoed like any line typed ahead. The routing lock is held
+        throughout, so no line reaches the agent after its lines are taken.
+        """
+        with self._turn_lock:
+            self.turn_active = False
+            if self._take is not None:
+                for line in self._take():
+                    self.queue.put(("line", line))
 
     def next_input(
         self, *, idle: bool, stop: threading.Event | None = None
@@ -2005,7 +2106,9 @@ class _InputMux:
         here, while the turn's interrupt watcher consumes it and cancels the
         turn. ``stop`` lets a cancelled asker end this wait promptly — without
         it, an abandoned worker thread would poll forever, stealing the next
-        input and blocking interpreter exit.
+        input and blocking interpreter exit. With ``report_served``, an idle wait
+        also answers ``served`` / ``unserved`` when a web app starts or stops
+        serving the workspace (ADR-0346).
         """
         while True:
             if stop is not None and stop.is_set():
@@ -2013,6 +2116,14 @@ class _InputMux:
             # While another process serves the workspace its say slot and its interrupt file
             # are that server's (ADR-0320): this REPL neither reads nor clears them.
             served = self._busy_elsewhere(self._served_marker)
+            if idle and self._report_served and served != self._served_reported:
+                self._served_reported = served
+                return ("served" if served else "unserved", None)
+            if not idle and served and self._report_served:
+                # A pane's prompt has one door, the say box, and on a served workspace the box
+                # feeds the web app's chat (ADR-0320): this prompt can no longer be answered, and
+                # its turn's hold on the busy marker would keep the web app waiting (ADR-0352).
+                return ("served", None)
             if idle:
                 if not served:
                     self._take_interrupt(self.interrupt_fp)
@@ -2102,8 +2213,9 @@ class _InputMux:
         input after the turn, never burned on the prompt's re-ask loop; typed
         lines always pass through (a typo should re-ask). EOF denies; Ctrl-C or
         a stop signal denies AND (for the stop file) the turn watcher cancels
-        the turn moments later. A set ``stop`` event ends the wait quietly —
-        the asker was cancelled and nobody will read the result.
+        the turn moments later. So does a web app serving a pane's workspace,
+        through ``served_stop`` (ADR-0352). A set ``stop`` event ends the wait
+        quietly — the asker was cancelled and nobody will read the result.
         """
         while True:
             kind, value = self.next_input(idle=False, stop=stop)
@@ -2127,7 +2239,9 @@ class _InputMux:
                 return text
             if kind == "eof":
                 raise EOFError
-            raise KeyboardInterrupt  # 'interrupt' or 'stop'
+            if kind == "served":
+                self.served_stop.set()  # the turn's watcher stops the turn (ADR-0352)
+            raise KeyboardInterrupt  # 'interrupt', 'stop' or 'served'
 
 
 class ConsolePermissionPrompter:
@@ -2680,6 +2794,34 @@ def _print_banner(console: Console, agent: Agent) -> None:
         )
 
 
+def _print_start_agents(console: Console, workspace_root: Path) -> None:
+    """On a chat with nothing in it, offer the workspace's agents before anything is asked.
+
+    The web page's offer, in the terminal (ADR-0351): an agent's identity and what it has learned
+    load only when it is started, so a question typed first is answered without them. Nothing is
+    printed where the workspace has no agent to start.
+    """
+    agents = startable_agents(workspace_root)
+    if not agents:
+        return
+    lines = [
+        Text(
+            f"Start an agent before you ask anything. This workspace has: {', '.join(agents)}.",
+            style="warn",
+        ),
+        Text.assemble(
+            ("  " + start_line(agents[0]), "bold"),
+            ("   or another agent named above" if len(agents) > 1 else "", "notice.dim"),
+        ),
+        Text(
+            "A question typed first is answered without the agent: none of its identity, "
+            "and none of what it has learned.",
+            style="notice.dim",
+        ),
+    ]
+    console.print(Padding(Group(*lines), (0, 0, 0, 2)))
+
+
 #: A factory that produces one turn's event stream. The CLI is agnostic to where
 #: the stream comes from — a local in-process ``Agent`` or a remote ``ServerClient``
 #: — so the same cancellable runner and renderer drive both.
@@ -2985,6 +3127,7 @@ def _run_streamed_turn(
     make_stream: StreamFactory,
     renderer: StreamRenderer,
     interrupt_file: Path | None = None,
+    served_stop: threading.Event | None = None,
 ) -> bool:
     """Run a streamed turn on the session loop; cancellable via Ctrl-C.
 
@@ -2993,11 +3136,15 @@ def _run_streamed_turn(
     Returns ``True`` if the turn completed, ``False`` if the user interrupted it
     (Ctrl-C): the in-flight task is cancelled cleanly (the loop persists state at
     message boundaries), a dim ``interrupted`` notice is printed, and control
-    returns to the REPL prompt without exiting.
+    returns to the REPL prompt without exiting. ``served_stop`` stops the turn the
+    same way, once a cockpit pane's permission prompt has met a web app serving the
+    workspace and could no longer be answered (ADR-0352).
     """
     loop = _SESSION_LOOP
     if loop is None:  # pragma: no cover — chat()/_run_server_chat always install one
         raise RuntimeError("session loop not initialized")
+    if served_stop is not None:
+        served_stop.clear()  # set for an earlier turn, it is nothing to this one
     task = loop.create_task(_drive_stream(make_stream, renderer))
     # The interrupt FILE is the transport-level twin of Ctrl-C: written by Esc in
     # the cockpit say box or `zakcode interrupt` from any terminal. The watcher
@@ -3005,6 +3152,7 @@ def _run_streamed_turn(
     # Ctrl-C branch performs — so both stops unwind identically (state persisted
     # at message boundaries, the "interrupted" notice, back to the prompt).
     stopped_by_file: list[bool] = []
+    stopped_by_served: list[bool] = []
     watcher = None
     if interrupt_file is not None:
         from zakcode.session.say_inbox import busy_elsewhere, served_path, take_interrupt
@@ -3014,6 +3162,11 @@ def _run_streamed_turn(
         async def _watch_interrupt_file() -> None:
             while True:
                 await asyncio.sleep(0.25)
+                if served_stop is not None and served_stop.is_set():
+                    served_stop.clear()
+                    stopped_by_served.append(True)
+                    task.cancel()
+                    return
                 # While another process serves the workspace, the file stops THAT server's
                 # turn (the page's Stop): this turn leaves it there (ADR-0320).
                 if not busy_elsewhere(served) and take_interrupt(interrupt_file):
@@ -3026,11 +3179,18 @@ def _run_streamed_turn(
         loop.run_until_complete(task)
         return True
     except asyncio.CancelledError:
-        if not stopped_by_file:
+        if not stopped_by_file and not stopped_by_served:
             raise  # not our cancellation — propagate
         if _ACTIVE_WAIT is not None:
             _ACTIVE_WAIT.stop()
-        notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
+        if stopped_by_served:
+            notice_warn(
+                console,
+                f"a web app is serving this workspace {GLYPHS['dash']} the say box feeds its "
+                "chat, so nothing could answer this turn's permission prompt; turn stopped",
+            )
+        else:
+            notice_warn(console, f"interrupted {GLYPHS['dash']} turn stopped, returning to prompt")
         return False
     except KeyboardInterrupt:
         global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
@@ -3437,6 +3597,8 @@ def chat(
             # `-s <id>` resumes: replay the tail so the human sees where they were,
             # exactly as the in-REPL /resume does.
             _render_transcript(console, agent.session)
+        else:
+            _print_start_agents(console, agent.settings.workspace_root)
 
     # Start the live status file writer: one JSON file per session that an outside observer
     # can read to learn what the process is doing (ADR-0266). Fire-and-forget: a status
@@ -3499,9 +3661,10 @@ def chat(
     zakpick_advisory = [0, 0]
 
     # ── one input rule, two doors, ONE reader ───────────────────────────────────
-    # An interactive chat always listens to (a) its keyboard and (b) its
-    # workspace's say inbox (<workspace>/.say — the same single-slot contract the
-    # server's POST /say and `zakcode say` write). Both arrive as ordinary lines,
+    # An interactive chat listens to (a) its keyboard and (b) its workspace's
+    # say inbox (<workspace>/.say — the same single-slot contract the server's
+    # POST /say and `zakcode say` write), (b) only while no web app serves the
+    # workspace (ADR-0320; the cockpit pane says so, ADR-0346). Both arrive as ordinary lines,
     # slash commands included; inbox lines echo with "(say)" provenance. The
     # _InputMux is the ONLY stdin owner — the permission prompt takes its answers
     # from the same mux (never a second console.input), and the input frame is
@@ -3571,10 +3734,14 @@ def chat(
                 return composed
         return fired_line(prompt)
 
+    pane = os.environ.get("ZAKCODE_COCKPIT_PANE") == "1"
     mux = _InputMux(
         inbox_path,
         interrupt_fp,
-        keyboard=os.environ.get("ZAKCODE_COCKPIT_PANE") != "1",
+        keyboard=not pane,
+        # ADR-0346: the pane's one door is the say box, and a web app serving the workspace
+        # takes everything it sends (ADR-0320), so the pane says when one starts and stops.
+        report_served=pane,
         # ADR-0034: a `zakcode update` that lands while this REPL sits idle restarts it
         # into the new build (resuming this session) instead of leaving it on stale code.
         idle_probe=lambda: install_changed() is not None,
@@ -3583,6 +3750,9 @@ def chat(
         # on the same checkout would consume first. Late-bound: `agent` is rebuilt on
         # /model and /resume below, and the mux must follow it.
         inject=lambda text: agent.inject_user_line(text),
+        # ADR-0354: a line it was handed that no iteration boundary took comes back to the
+        # prompt when the turn ends, and runs as the next turn.
+        take=lambda: agent.take_typed_lines(),
         wakeup_probe=_due_wakeup,
     )
     repl_mux.append(mux)
@@ -3613,6 +3783,12 @@ def chat(
     global _LAST_CTRL_C, _LAST_CTRL_C_MID_TURN
     _LAST_CTRL_C = 0.0  # the double-press window is per-session; never inherit one
     _LAST_CTRL_C_MID_TURN = False
+    # ADR-0352: while a web app serves the workspace, a cockpit pane shows the web app's chat.
+    # The view draws only while this loop waits idle, so the pane's own output never lands in it.
+    # It is kept when the web app stops: one restarting into a new build marks the workspace
+    # again moments later, and the view goes on in the same chat without drawing it twice.
+    mirror: ServedChatMirror | None = None
+    showing = False
     while True:
         # Input that arrived during the turn (a queued say, a typed-ahead line)
         # is taken WITHOUT a frame — opening one just to slam it shut renders a
@@ -3621,10 +3797,15 @@ def chat(
         framed = got is None
         if framed:
             open_input_frame(console)
+            if showing and mirror is not None:
+                _absorb_interrupts(mirror.resume)
             try:
                 got = mux.next_input(idle=True)
             except KeyboardInterrupt:
                 got = ("interrupt", None)
+            finally:
+                if mirror is not None:
+                    _absorb_interrupts(mirror.pause)
         kind, value = got
         if framed:
             close_input_frame(console, newline=kind != "line")
@@ -3636,6 +3817,12 @@ def chat(
             # flight, so hand the session to a fresh process and resume it there.
             _restart_into_new_build(console, agent)
             continue  # reached only when the exec itself failed — keep serving
+        if kind in _SERVED_NOTICE:
+            notice_info(console, _SERVED_NOTICE[kind].format(dash=GLYPHS["dash"]))
+            showing = kind == "served"
+            if showing:
+                mirror = _served_chat_mirror(console, agent.settings, kept=mirror)
+            continue
         if kind == "interrupt":
             # A single Ctrl-C at the prompt must NOT kill the session — terminal
             # muscle memory sends it constantly (aborting a copy, clearing a
@@ -3731,6 +3918,7 @@ def chat(
                 zakpick_advisory[:] = [0, 0]
                 _rebind_status(agent)
                 notice_info(console, "started a fresh session")
+                _print_start_agents(console, agent.settings.workspace_root)
                 continue
             if command == "/resume":
                 # In-REPL twin of the `-s/--session` startup flag (2026-08-24 operator
@@ -3939,6 +4127,7 @@ def chat(
                 functools.partial(agent.astream_turn, stripped),
                 renderer,
                 interrupt_file=interrupt_fp,
+                served_stop=mux.served_stop,
             )
             _maybe_zakpick_advisory(console, renderer.last_done, zakpick_advisory)
             # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
@@ -3963,7 +4152,7 @@ def chat(
             notice_error(console, "turn failed", str(exc))
             continue
         finally:
-            mux.turn_active = False
+            mux.end_turn()
 
     _shutdown_session_loop(loop)
 
@@ -4066,6 +4255,25 @@ def _is_loopback_host(host: str) -> bool:
         return ipaddress.ip_address(candidate).is_loopback
     except ValueError:
         return False
+
+
+def _served_url(host: str, port: int) -> str | None:
+    """Where a process on this machine reaches a web app bound to ``host``:``port`` (ADR-0352).
+
+    The served marker carries it to a cockpit pane on the workspace. A bind to every interface
+    (``0.0.0.0``, ``::``) is reached over loopback, and an IPv6 address goes in brackets. None
+    for port 0, whose port is not known until the server binds.
+    """
+    if port <= 0:
+        return None
+    candidate = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    if candidate in ("", "0.0.0.0"):
+        candidate = "127.0.0.1"
+    elif candidate == "::":
+        candidate = "::1"
+    if ":" in candidate:
+        candidate = f"[{candidate}]"
+    return f"http://{candidate}:{port}"
 
 
 @app.command(name="webapp")
@@ -4201,6 +4409,8 @@ def serve(
         if carried
         else None
     )
+    # ADR-0352: the served marker names this address, so a cockpit pane shows the chat.
+    served_url = _served_url(host, port)
     fastapi_app = (
         create_app(
             settings=resolved_settings,
@@ -4208,6 +4418,7 @@ def serve(
             new_session=new_session,
             on_new_build=_on_new_build,
             resume_turn=resume_turn,
+            served_url=served_url,
         )
         if workspace is not None
         else create_app(
@@ -4215,6 +4426,7 @@ def serve(
             new_session=new_session,
             on_new_build=_on_new_build,
             resume_turn=resume_turn,
+            served_url=served_url,
         )
     )
     auth_note = " [auth: on]" if resolved_settings.auth_token else ""
