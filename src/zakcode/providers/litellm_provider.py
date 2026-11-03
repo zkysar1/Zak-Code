@@ -90,6 +90,7 @@ from zakcode.providers.hipaa import (
 from zakcode.providers.labels import ModelRef
 from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
+from zakcode.providers.spend_gate import get_gate
 from zakcode.providers.thinking import (
     reasoning_effort_reaches,
     render_reasoning_effort,
@@ -2478,6 +2479,9 @@ class LiteLLMProvider(Provider):
         start = time.perf_counter()
         repairs = 0
         while True:
+            # The spend gate: a Mind that has spent its cap sends nothing. Every dispatch asks,
+            # a re-issue included, and outside the try so the refusal is not re-mapped.
+            get_gate().admit()
             try:
                 response = await litellm.acompletion(**call_kwargs)
                 break
@@ -2528,6 +2532,9 @@ class LiteLLMProvider(Provider):
             response, carried_breakpoint=_carries_cache_breakpoint(call_kwargs)
         )
         result.clamped_output_cap = clamped  # ADR-0310: what the request that answered carried
+        # The spend gate: the answered call counts against this Mind's cap, before the filter check
+        # below for the same reason as the pool's: a withheld answer was still billed.
+        get_gate().charge(result.usage)
         if self._ring is not None and used is not None:
             # Before the filter check below: a call the provider withheld the answer of was billed.
             self._ring.on_success(result.usage, self.model, used=used)
@@ -2889,6 +2896,8 @@ class LiteLLMProvider(Provider):
         await self._pace()
         try:
             while True:
+                # As in acomplete, every dispatch asks the spend gate first.
+                get_gate().admit()
                 try:
                     started = time.monotonic()  # the first-chunk wait counts from here
                     # Of the request about to be sent, so a repaired re-issue is read as sent.
@@ -2974,6 +2983,9 @@ class LiteLLMProvider(Provider):
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
 
+        # The spend gate: the stream counts against this Mind's cap. A stream that reported no usage
+        # is counted as unpriced, never guessed.
+        get_gate().charge(streamed_usage)
         if self._ring is not None and used is not None and streamed_usage is not None:
             # Before the filter check: a stream the provider withheld the answer of was billed.
             self._ring.on_success(streamed_usage, self.model, used=used)
