@@ -129,7 +129,7 @@ jobs:
   # The cockpit is tmux, and every cockpit test in `verify` fakes tmux: they record the commands the
   # cockpit would send and never run them, so none of them shows what a person sees. This opens the
   # real cockpit in a real tmux, types into its box and reads its panes, with a stand-in model on
-  # loopback, so it needs no key (ADR-0355). Linux only, since the cockpit needs tmux. Like
+  # loopback, so it needs no key (ADR-0356). Linux only, since the cockpit needs tmux. Like
   # update-e2e, neither publish-sidecar nor the failure alert waits on it.
   cockpit-e2e:
     name: cockpit in a real tmux
