@@ -226,8 +226,8 @@ def _env(tmp_path: Path, tmux_dir: Path, stand_in: StandIn, key: str) -> dict[st
     return env
 
 
-def _tmux(env: dict[str, str], *args: str) -> str:
-    proc = subprocess.run(
+def _tmux_run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["tmux", *args],
         env=env,
         capture_output=True,
@@ -237,6 +237,10 @@ def _tmux(env: dict[str, str], *args: str) -> str:
         timeout=30,
         check=False,
     )
+
+
+def _tmux(env: dict[str, str], *args: str) -> str:
+    proc = _tmux_run(env, *args)
     assert proc.returncode == 0, f"tmux {' '.join(args)} -> rc {proc.returncode}: {proc.stderr}"
     return proc.stdout
 
@@ -247,12 +251,13 @@ class Cockpit:
 
     env: dict[str, str]
     session: str
+    #: Each pane's tmux id, by the index it had when the cockpit opened. When a pane closes, tmux
+    #: renumbers the others, so an index can come to name the wrong pane; an id never does.
+    panes: dict[str, str]
 
     def screen(self, pane: str = SCREEN) -> str:
         """Everything the pane has shown, its scrollback included, wrapped lines joined."""
-        return _tmux(
-            self.env, "capture-pane", "-p", "-J", "-S", "-", "-t", f"{self.session}:{pane}"
-        )
+        return _tmux(self.env, "capture-pane", "-p", "-J", "-S", "-", "-t", self.panes[pane])
 
     def wait_for(self, what: str, holds: Callable[[str], bool], pane: str = SCREEN) -> str:
         """Poll ``pane`` until ``holds`` is true of it, or fail showing both panes."""
@@ -267,27 +272,24 @@ class Cockpit:
 
     def type_in_box(self, text: str) -> None:
         """Type ``text`` into the box and press Enter, as a person at the keyboard does."""
-        _tmux(self.env, "send-keys", "-t", f"{self.session}:{BOX}", "-l", text)
-        _tmux(self.env, "send-keys", "-t", f"{self.session}:{BOX}", "Enter")
+        _tmux(self.env, "send-keys", "-t", self.panes[BOX], "-l", text)
+        _tmux(self.env, "send-keys", "-t", self.panes[BOX], "Enter")
 
     def alive(self) -> bool:
-        return (
-            subprocess.run(
-                ["tmux", "has-session", "-t", self.session],
-                env=self.env,
-                capture_output=True,
-                check=False,
-            ).returncode
-            == 0
-        )
+        return _tmux_run(self.env, "has-session", "-t", self.session).returncode == 0
 
     def both(self) -> str:
+        """Both panes as they stand, for a failure report; a pane that has closed says so."""
         if not self.alive():
             return "(the cockpit's tmux session is gone)"
-        return (
-            f"--- screen ({SCREEN}) ---\n{self.screen(SCREEN)}\n--- box ({BOX}) ---\n"
-            f"{self.screen(BOX)}"
-        )
+        shown = []
+        for name, pane in (("screen", SCREEN), ("box", BOX)):
+            proc = _tmux_run(
+                self.env, "capture-pane", "-p", "-J", "-S", "-", "-t", self.panes[pane]
+            )
+            body = proc.stdout if proc.returncode == 0 else f"(closed: {proc.stderr.strip()})"
+            shown.append(f"--- {name} ({pane}) ---\n{body}")
+        return "\n".join(shown)
 
 
 def _open(env: dict[str, str], workspace: Path, tmp_path: Path) -> Cockpit:
@@ -317,9 +319,12 @@ def _open(env: dict[str, str], workspace: Path, tmp_path: Path) -> Cockpit:
         check=False,
     )
     assert proc.returncode == 0, f"cockpit -> rc {proc.returncode}\n{proc.stdout}\n{proc.stderr}"
-    cockpit = Cockpit(env, session)
-    assert cockpit.alive(), f"no tmux session {session} after the cockpit was built\n{proc.stdout}"
-    return cockpit
+    listing = _tmux(
+        env, "list-panes", "-s", "-t", session, "-F", "#{window_index}.#{pane_index} #{pane_id}"
+    )
+    panes = dict(line.split() for line in listing.splitlines() if line.strip())
+    assert SCREEN in panes and BOX in panes, f"the cockpit opened panes {panes}\n{proc.stdout}"
+    return Cockpit(env, session, panes)
 
 
 def _last_line(screen: str) -> str:
@@ -411,7 +416,7 @@ def test_exit_in_the_box_ends_the_chat_and_ctrl_c_closes_the_cockpit(
     cockpit.type_in_box("/exit")
     screen = cockpit.wait_for("the chat ending", lambda s: "chat exited" in _last_line(s))
     assert "Traceback" not in screen, cockpit.both()
-    _tmux(cockpit.env, "send-keys", "-t", f"{cockpit.session}:{SCREEN}", "C-c")
+    _tmux(cockpit.env, "send-keys", "-t", cockpit.panes[SCREEN], "C-c")
     end = time.monotonic() + DEADLINE
     while cockpit.alive():
         if time.monotonic() > end:
