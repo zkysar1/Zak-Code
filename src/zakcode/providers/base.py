@@ -154,6 +154,14 @@ class Capabilities(BaseModel):
     #: OpenAI Chat Completions API rejects more than 4). ``None`` means unbounded / unknown;
     #: the text tool-calling layer caps its sentinel list to this when set. (audit2 #8)
     max_stop_sequences: int | None = None
+    #: The thinking switch reaches the model as written (ADR-0357): through a self-hosted
+    #: OpenAI-compatible server on a configured ``api_base`` (ADR-0181), and the server has not
+    #: refused it by name. The compaction summarizer turns thinking off only where this holds.
+    thinking_switch: bool = False
+    #: The route's own request body sets the switch (ADR-0357): a zakpick category's ``thinking``
+    #: or the operator's ``extra_body``. The summarizer is then asked as configured, unless the
+    #: ``summarizer_thinking`` setting is false.
+    thinking_configured: bool = False
 
 
 # ── Streaming events (yielded by Provider.astream) ───────────────────────────

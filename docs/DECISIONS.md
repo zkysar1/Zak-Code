@@ -22364,3 +22364,118 @@ the green runs, the four checks took 33.62 s to 41.20 s.
 
 Not verified: macOS (CI has no macOS cell), a tmux older than 3.6, and a person's own terminal
 attached to the cockpit. The test never attaches; it reads what tmux holds for each pane.
+
+## ADR-0357: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
+
+Status: accepted. 2026-11-03. Builds on ADR-0275 (the summarizer's output cap), ADR-0330 (the word
+budget), ADR-0331 (the condensing ask), ADR-0242 (the one resample), ADR-0056 and ADR-0181 (the
+thinking switch), and ADR-0307 and ADR-0315 (a refused override). It takes over a closed draft that
+sent the same switch under an 8,192-token cap.
+
+Context. Every summarizer ask has 32,768 output tokens (ADR-0275), room made for a reasoning model's
+thinking, and the one resample of a summary the limit cut off asks the same way again. Measured
+2026-11-03 on a self-hosted pod serving ten worker sessions with a 27B model and a 131k window, from
+the inference router's ledger and transcript metadata (sizes and counts, no conversation text):
+
+- The workers' `extra_body` turns thinking on for every call and allows it 4,096 tokens a request,
+  with a budget message (`reasoning_budget_tokens`, which the pod's llama.cpp build reads). The
+  summarizer's asks carry the same body, so each may think 4,096 tokens before it writes a word.
+- In 24 hours, 50 summarizer calls ran to the 32,768-token cap: 1,086 engine-minutes, about 22
+  minutes each. With at most 4,096 of those tokens thinking, the rest was summary text. 17 of the 50
+  were followed by no summary at all: the resample ran to the cap too, and the compaction fell back
+  to elision (ADR-0083). They cluster where the summary before them was long: of the windows whose
+  earlier summary ran 6,000 words or more, 10 of 15 had a call at the cap, against 2 of 22 under
+  2,000 words.
+- 121 installed summaries, each paired with the call that wrote it, ran 7.92 characters a word, and
+  2.32 characters an output token if the call did not think, 4.17 if it used all 4,096 thinking
+  tokens. The spread at 4,096 is narrow (3.76 to 4.92 from the 10th to the 90th percentile), which
+  suggests most calls think the whole budget, about 2.7 minutes each at the pod's rate. At the
+  no-thinking end a word is about 3.4 tokens; `_WORDS_PER_TOKEN` assumes 1.33.
+- Of the 120 summaries installed in those 24 hours, the call that wrote one went past 8,192 tokens
+  78 times, past 12,288 tokens 24 times and past 16,469 tokens 16 times, thinking included.
+
+Published practice, reviewed the same day, agrees on three things. The summary call runs with
+thinking off: Qwen Code sends `enable_thinking: false` for Qwen models, and Cline sends
+`thinking: false`. Its output cap is sized to the summaries a model actually writes: Claude Code's
+is 20,000 tokens against a measured p99.99 of 17,387. A retry differs from the ask that failed, with
+a smaller input or a tighter target, as Hermes Agent and OpenCode do. Qwen's own report scores
+thinking mode slightly below non-thinking mode on long inputs.
+
+Decision.
+- A provider reports two facts. `Capabilities.thinking_switch`: the switch reaches the model as
+  written, through an OpenAI-compatible server on a configured `api_base` (ADR-0181), and the server
+  has not refused that key by name. It reads `thinking_switch_verbatim`, the predicate
+  `render_thinking_switch` now uses for the same decision. `Capabilities.thinking_configured`: the
+  route's own body already sets the switch, a zakpick category's `thinking` or the operator's
+  `extra_body`.
+- A new setting, `summarizer_thinking` (`ZAKCODE_SUMMARIZER_THINKING`), decides the summarizer's
+  thinking where the switch reaches the model. Unset, every summarizer ask goes with
+  `thinking_extra_body(False)` unless the route's body sets the switch or `model_roles` names the
+  summarizer: those are asked as configured. `false` sends the switch even where `extra_body` turns
+  thinking on for every other call; the per-call body merges over the configured one (ADR-0056), so
+  only the summarizer's asks change. `true` asks the summarizer as configured. The session resolves
+  it once, and the spawner hands it to every child loop.
+- An ask sent with thinking off, the whole transcript, a slice, a fold or the condensing ask, has a
+  cap of a summary at its condensing line, `_SUMMARY_OVER_BUDGET` times the word budget, at
+  `_SUMMARY_TOKENS_PER_WORD` (3.4, the no-thinking end) with a quarter again
+  (`_SUMMARY_SWITCHED_HEADROOM`): 16,469 tokens for 3,100 words, where it was 32,768. It is never
+  under the 8,192-token floor and never over the room the ask had. Sized at the no-thinking end, it
+  cuts no summary within the condensing line whichever end of the measurement is true.
+- A summary the output limit cut off is asked for again once (ADR-0242), at half its word budget
+  (`_shorter_budget`, rounded to hundreds: 1,600 for 3,100), under the same cap. The same budget is
+  written the same way, and the cap is what held it. If the cut response carried thinking although
+  the switch was sent, the route took the switch and thought anyway, and that resample asks with the
+  room the ask had before, at the same budget. On an ask without the switch the room is unchanged and
+  the shorter budget applies. Any other rejection is asked again as before.
+- A refusal that names nothing, of an ask that carried the switch, sends the ask again without it,
+  and the switch is recorded as refused for that provider (ADR-0315), so the session's later asks
+  and overflow retries to it leave it off.
+
+What was considered and not done.
+- Overriding a configured switch with no setting. An `extra_body` switch is the operator's word for
+  every call they send; the summarizer leaves it alone unless they say otherwise.
+- The closed draft's cap: the budget in tokens at `_WORDS_PER_TOKEN`, with half again, which is
+  8,192 on a 131k window. At the no-thinking density it would have cut 78 of the 120 summaries.
+- A 12,288-token cap, or one sized at the 4,096-thinking density. Either could cut a summary within
+  its budget if the calls measured thought less than their budget allows. The trial measures it:
+  with thinking off, a call's tokens are all summary.
+- Setting `_WORDS_PER_TOKEN` to the measured density. That halves every summary's word budget. It
+  changes what a summary holds, not what a call may spend, and needs its own measurement.
+- Ending the stream once the text passes a multiple of the budget. Tried on four sessions for three
+  days: the bound fired late (median 1,147 seconds), and because the stream was left open, 40 of the
+  48 calls it fired on still ran to the cap. A cap the server enforces needs no close.
+- A smaller per-request thinking budget for the summarizer. It keeps a cost the published practice
+  removes, and an abrupt end to thinking costs quality where no budget message is set.
+- A presence penalty or the DRY sampler against repetition. A summary repeats paths and ids by
+  design, and llama.cpp's penalty window starts on the end of the prompt. Not measured.
+- A `</summary>` stop sequence. llama.cpp matches stop strings against the reasoning too, so with
+  thinking on, one can end a call before its summary starts.
+- Holding the carried earlier summary to its budget before the next summarizer reads it. The windows
+  above point at it, but it changes what a summary keeps, and it is measured on its own.
+
+Not verified.
+- That the pod's model writes summaries as good with thinking off. The change runs on a few worker
+  sessions with `ZAKCODE_SUMMARIZER_THINKING=false`, against the rest, measured by calls at the cap,
+  summarizer engine-minutes per hour, compactions that install nothing, and installed summaries'
+  words.
+- That a model asked for half the words after a cut keeps under the cap. The 16 summaries over
+  16,469 tokens all followed long earlier summaries.
+- Hosted APIs and gateways. A route the switch does not reach keeps its 32,768-token room.
+
+Consequences.
+- Where the switch reaches the model and the setting or the route allows it, a summarizer call may
+  spend at most half what it did, none of it thinking, and the resample of a cut summary asks for
+  less instead of the same.
+- `ask` takes the prompt's body and its close template, so a resample can state a different budget.
+
+The proof. `tests/test_compact_loop.py` pins the cap for each budget and room, the shorter budget,
+the switch on every ask (slices, folds and the condensing ask included), the resample of a cut
+summary at half the words under the same cap, the resample with the old room on a route that thought
+anyway, an unchanged resample for any other rejection, a route whose body sets the switch asked as
+configured unless the setting is false, a `model_roles` summarizer asked as configured, and the
+refused switch learned for its provider. Two mutations fail them: a resample at the same budget
+fails 2, and the closed draft's 8,192-token cap fails 4. `tests/test_model_routing.py` pins how the
+session resolves the setting for the loop and every child, and `tests/test_thinking_switch_rendering.py`
+pins the two capabilities and the shared predicate. A request built with the workers' body shape
+sends `enable_thinking: false` and a 16,469-token cap on the summarizer's ask and leaves every other
+call as configured.

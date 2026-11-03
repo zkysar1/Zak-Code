@@ -464,6 +464,22 @@ _CONDENSE_CLOSE = (
     "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
     "decisions, file paths and unfinished work."
 )
+#: Output tokens per word of a summary, at most (ADR-0357). Measured 2026-11-03 on the pod's 27B
+#: model: 121 installed summaries, each paired with the call that wrote it in the inference
+#: router's ledger (sizes only), ran 7.92 characters a word, and 2.32 characters an output token if
+#: the call did not think, 4.17 if it used all 4,096 thinking tokens its requests allow. The narrow
+#: spread at 4,096 suggests most did. This is the no-thinking end, about 3.4 tokens a word, so a cap
+#: sized with it cuts no summary within its condensing line whichever end is true; a call sent with
+#: thinking off writes only its summary and measures the truth. :data:`_WORDS_PER_TOKEN` sizes the
+#: word budget (ADR-0330) and is left as it is.
+_SUMMARY_TOKENS_PER_WORD = 3.4
+#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0357), over a summary at
+#: the length one is condensed past (:data:`_SUMMARY_OVER_BUDGET`) at
+#: :data:`_SUMMARY_TOKENS_PER_WORD`: 16,469 tokens for a 3,100-word budget. Of the 120 summaries
+#: the pod installed in the 24 hours to 2026-11-03T16:00Z, the call that wrote one went past 8,192
+#: tokens 78 times and past 16,469 tokens 16 times, thinking included; under the 32,768 cap, 50
+#: calls ran to it in those hours.
+_SUMMARY_SWITCHED_HEADROOM = 1.25
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -633,6 +649,26 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
     """
     room = min(_SUMMARY_OUTPUT_TOKENS, max(window // 4, _SUMMARY_OUTPUT_FLOOR))
     return min(room, max_output) if max_output else room
+
+
+def _summary_switched_room(words: int, room: int) -> int:
+    """The output cap of a summarizer ask sent with thinking off (ADR-0357): a summary of
+    :data:`_SUMMARY_OVER_BUDGET` times its word budget ``words``, the length past which one is
+    condensed (ADR-0331), at :data:`_SUMMARY_TOKENS_PER_WORD`, with
+    :data:`_SUMMARY_SWITCHED_HEADROOM`, never under :data:`_SUMMARY_OUTPUT_FLOOR` and never over
+    ``room``, the cap the ask has with thinking on (ADR-0275)."""
+    tokens = round(
+        words * _SUMMARY_OVER_BUDGET * _SUMMARY_TOKENS_PER_WORD * _SUMMARY_SWITCHED_HEADROOM
+    )
+    return min(room, max(tokens, _SUMMARY_OUTPUT_FLOOR))
+
+
+def _shorter_budget(words: int) -> int:
+    """The word budget a summary the output limit cut off is asked for again with (ADR-0357): half
+    of ``words``, rounded to hundreds and never under 100, as :func:`_summary_target_words` rounds.
+    A summary that ran past its cap was already over its budget, and asked again for the same
+    budget the model writes it the same way."""
+    return max(100, round(words / 2 / 100) * 100)
 
 
 async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResult:
@@ -2515,6 +2551,7 @@ class AgentLoop:
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
         summarizer_provider: Provider | None = None,
+        summarizer_thinking: bool | None = None,
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
         main_provider_for: MainProviderFor | None = None,
@@ -2673,6 +2710,10 @@ class AgentLoop:
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
         self._summarizer_provider = summarizer_provider
+        # The summarizer's thinking (ADR-0357): None leaves it to the route, off unless the route's
+        # own body sets the switch; False turns it off wherever the switch reaches the model; True
+        # asks as configured. The session passes True for a summarizer named in ``model_roles``.
+        self._summarizer_thinking = summarizer_thinking
         self.registry = registry
         self.session = session
         self.prompt_builder = prompt_builder or SystemPromptBuilder()
@@ -2878,8 +2919,9 @@ class AgentLoop:
         #: the ``/compact`` command surface it, so a failed summarizer is never silent.
         self.last_compaction = ""
         #: The overflow-retry overrides each provider refused naming neither and then took the
-        #: call without, for the session (ADR-0315), by the provider's id. The provider rides
-        #: along so that id cannot be reused, and a routed or failed-over one learns its own.
+        #: call without, for the session (ADR-0315), by the provider's id, and the thinking switch
+        #: a summarizer ask was refused the same way (ADR-0357). The provider rides along so that
+        #: id cannot be reused, and a routed or failed-over one learns its own.
         self._refused_overrides: dict[int, tuple[Provider, set[str]]] = {}
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
         #: and its summarizer calls, noted on the compaction's intervention row.
@@ -3187,11 +3229,17 @@ class AgentLoop:
         # ADR-0275: room to think and still finish the summary. Every ask carries it, the
         # resample, every slice and every fold included.
         room = _summary_output_room(window, caps.max_output)
-        # ADR-0330: every close states the same word budget, a slice's and a fold's included.
+        # ADR-0330: every close states the same word budget, a slice's, a fold's and the condensing
+        # ask's (ADR-0331) included; only a resample of a summary that was cut off asks for less.
         words = _summary_target_words(window, room)
-        close = _SUMMARY_CLOSE.format(words=words)
-        fold_close = _FOLD_CLOSE.format(words=words)
-        condense_close = _CONDENSE_CLOSE.format(words=words)  # ADR-0331
+        # ADR-0357: where the switch reaches the model as written, every ask goes with thinking off
+        # and a cap its budget sets, unless the route's own body sets the switch and the setting
+        # leaves it to the route, or the setting asks for the summarizer as configured.
+        setting = self._summarizer_thinking
+        thinking_off = caps.thinking_switch and (
+            setting is False or (setting is None and not caps.thinking_configured)
+        )
+        switched_room = _summary_switched_room(words, room)
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
@@ -3201,8 +3249,15 @@ class AgentLoop:
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
-        async def ask(prompt: str) -> str:
+        async def ask(body: str, close: str) -> str:
+            # ``close`` is the template that ends the prompt; its ``{words}`` is the budget asked.
+            asked = words
+            prompt = body + close.format(words=asked)
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
+            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0357)
+            entry = self._refused_overrides.get(id(summarizer))
+            if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
+                switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
 
             def request(call_kw: dict[str, Any]) -> Awaitable[LLMResult]:
                 # ADR-0251: streamed and collected, never buffered. A buffered answer can
@@ -3215,7 +3270,7 @@ class AgentLoop:
                         [Message.user(prompt)],
                         system=instruction,
                         prompt_cache_key=self._prompt_cache_key(),
-                        **{"max_tokens": room, **raised, **call_kw},
+                        **{"max_tokens": room, **switched, **raised, **call_kw},
                     )
                 )
 
@@ -3235,14 +3290,54 @@ class AgentLoop:
                         raised = {"temperature": self._rejection_retry_temperature(resample)}
                     # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out
                     # here exactly as it is on the main call, instead of failing the compaction.
-                    result = await self._complete_with_retry(request, on_withheld=account_withheld)
+                    try:
+                        result = await self._complete_with_retry(
+                            request, on_withheld=account_withheld
+                        )
+                    except RequestFailed as exc:
+                        # ADR-0357: a refusal that names nothing, of an ask that switched thinking
+                        # off, is ADR-0307's shape, and the ask without the switch is the one every
+                        # summary took before. It is sent again without it, and the switch is left
+                        # off this provider's later asks and overflow retries (ADR-0315).
+                        if type(exc) is not RequestFailed or not switched:
+                            raise
+                        switched.clear()
+                        said = "the summarizer refused the thinking switch; asking without it"
+                        logger.warning("compaction: %s", said)
+                        self._note(
+                            "intervention", said, kind="summarizer_switch_refused", error=str(exc)
+                        )
+                        sink = self._status_sink
+                        if sink is not None:
+                            sink(f"compaction: {said}")
+                        result = await self._complete_with_retry(
+                            request, on_withheld=account_withheld
+                        )
+                        entry = self._refused_overrides.setdefault(
+                            id(summarizer), (summarizer, set())
+                        )
+                        entry[1].add(_SWITCH_OVERRIDE)
                     self._account_summarizer_usage(result.usage, summarizer)
                     summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
                     if summary:
                         return summary
                     self._compaction_cost["summarizer_rejected"] += 1
                     if resample < _SUMMARY_RESAMPLES:
-                        said = f"the summarizer's response was not a summary ({why}); asking again"
+                        again = "asking again"
+                        if result.finish_reason in _LENGTH_FINISH_REASONS:
+                            # ADR-0357: a summary the output limit cut off is not asked for the
+                            # same way twice. Where the route took the switch and thought anyway,
+                            # again with the room the ask had with thinking on (ADR-0275).
+                            # Otherwise for half the words under the same cap: the same budget is
+                            # written the same way, and the cap is what held it.
+                            if switched.get("max_tokens") and result.thinking:
+                                switched.pop("max_tokens")
+                                again = "asking again with room to think"
+                            else:
+                                asked = _shorter_budget(asked)
+                                prompt = body + close.format(words=asked)
+                                again = f"asking again for {asked:,} words"
+                        said = f"the summarizer's response was not a summary ({why}); {again}"
                         logger.warning("compaction: %s", said)
                         sink = self._status_sink
                         if sink is not None:
@@ -3269,14 +3364,14 @@ class AgentLoop:
             if sink is not None:
                 sink(f"compaction: {note}")
             try:
-                condensed = await ask(_CONDENSE_PROMPT.format(said=said) + summary + condense_close)
+                condensed = await ask(_CONDENSE_PROMPT.format(said=said) + summary, _CONDENSE_CLOSE)
             except Exception:  # noqa: BLE001 — the condensing ask is a model call; it can fail
                 logger.warning("compaction: condensing failed; the summary stands", exc_info=True)
                 return summary
             return condensed if len(condensed.split()) < said else summary
 
         if len(rendered) <= chunk_chars:
-            summary = await ask(_SUMMARY_PROMPT + rendered + close)
+            summary = await ask(_SUMMARY_PROMPT + rendered, _SUMMARY_CLOSE)
             return self._finish_summary(await held_to_budget(summary), messages)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
@@ -3295,7 +3390,7 @@ class AgentLoop:
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(
-                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}{close}"
+                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", _SUMMARY_CLOSE
             )
             parts.append(text.strip())
         for _ in range(_MAX_FOLD_PASSES):
@@ -3303,7 +3398,7 @@ class AgentLoop:
                 break
             folded: list[str] = []
             for group in _pack_parts(parts, chunk_chars):
-                text = await ask(_FOLD_PROMPT + "\n\n".join(group) + fold_close)
+                text = await ask(_FOLD_PROMPT + "\n\n".join(group), _FOLD_CLOSE)
                 folded.append(text.strip())
             parts = folded
         combined = "\n\n".join(parts)
@@ -3316,7 +3411,7 @@ class AgentLoop:
                 chunk_chars,
             )
             text = await ask(
-                _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries") + fold_close
+                _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"), _FOLD_CLOSE
             )
             combined = text.strip()
         return self._finish_summary(await held_to_budget(combined), messages)
