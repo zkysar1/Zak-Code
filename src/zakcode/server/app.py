@@ -80,12 +80,15 @@ from zakcode.hooks.settings_loader import SettingsHooks
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
+from zakcode.providers.spend_gate import STOP_REASON as SPEND_STOP_REASON
+from zakcode.providers.spend_gate import get_gate
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import provider_key_env_names, strip_url_credentials
 from zakcode.server.brand import brand_page
 from zakcode.server.event_bus import EventBusRegistry
 from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
+    BudgetPush,
     ChatRequest,
     ChatResponse,
     CompleteRequest,
@@ -2252,6 +2255,9 @@ def create_app(
             # surface the env-server already polls, so the bridge becomes observable
             # without a new endpoint or a new poller.
             "observation_intake": dict(_observation_stats),
+            # The per-Mind spend gate. `armed` false means no budget has been
+            # pushed, and nothing is refused; the vessel pushes again when it reads that.
+            "spend_gate": get_gate().snapshot(),
         }
 
     # ── viewer nudge ─────────────────────────────────────────────────────────────
@@ -4112,10 +4118,14 @@ def create_app(
         ``reason`` becomes the run's stop reason. Idempotent; bearer-gated by the server
         middleware like every other route.
         """
-        nonlocal run_stop_reason
         reason = (request.reason if request is not None else None) or "stopped"
         if not _RUN_STOP_REASON_RE.fullmatch(reason):
             raise HTTPException(status_code=400, detail="reason must match [a-z][a-z0-9_]{0,31}")
+        return await _request_run_stop(reason)
+
+    async def _request_run_stop(reason: str) -> dict[str, Any]:
+        """The ending ``POST /run/stop`` asks for, also started by the spend gate's soft trip."""
+        nonlocal run_stop_reason
         if run_ended.is_set():
             return {"stopping": False, "ended": True, "reason": run_stop_reason}
         if not run_stopping.is_set():
@@ -4126,6 +4136,35 @@ def create_app(
             await _begin_graceful_ending()
             run_stopping.set()
         return {"stopping": True, "reason": run_stop_reason}
+
+    # When this Mind's spend first reaches its cap less the reserve, the spend gate
+    # starts the same ending a vessel's POST /run/stop would, with reason mind_budget_cap. The
+    # gate calls the hook from inside a model call on this loop; the task is held so it is not
+    # collected before it runs.
+    spend_stop_tasks: set[asyncio.Task[Any]] = set()
+
+    def _spend_soft_trip() -> None:
+        task = asyncio.get_running_loop().create_task(_request_run_stop(SPEND_STOP_REASON))
+        spend_stop_tasks.add(task)
+        task.add_done_callback(spend_stop_tasks.discard)
+
+    get_gate().set_soft_trip_hook(_spend_soft_trip)
+
+    @app.post("/budget")
+    async def budget(request: BudgetPush) -> dict[str, Any]:
+        """Arm or update this Mind's spend gate from the vessel's meter row.
+
+        Bearer-gated by the server middleware like every other route. A value that is not a
+        finite, non-negative amount, or a reserve above the cap, is refused with 400 and
+        changes nothing.
+        """
+        try:
+            snapshot = get_gate().set_budget(
+                request.cap_usd, request.reserve_usd, request.floor_usd
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"spend_gate": snapshot}
 
     # (The lifespan defined above app construction starts/stops the consumer.)
     # Test seam: exercise one consumer beat without running the background loop

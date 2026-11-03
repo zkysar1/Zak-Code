@@ -56,6 +56,20 @@ def _client(workspace: Path, *, auth_token: str | None = None) -> TestClient:
     return TestClient(_make_app(workspace, auth_token=auth_token))
 
 
+#: /sidecar/health's spend_gate before the vessel has pushed a budget: armed false, all zeros.
+_UNARMED_SPEND_GATE = {
+    "armed": False,
+    "cap_usd": 0.0,
+    "reserve_usd": 0.0,
+    "spent_usd": 0.0,
+    "soft_tripped": False,
+    "tripped": False,
+    "refused_calls": 0,
+    "unpriced_calls": 0,
+    "ledger_ok": True,
+}
+
+
 def _seed_research(workspace: Path, journal: str, findings: list[str]) -> None:
     research = workspace / "research"
     research.mkdir(parents=True, exist_ok=True)
@@ -192,6 +206,9 @@ def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
     # single test going red — and every counter is asserted PRESENT-and-zero because a
     # counter that only appears after the first failure cannot tell "healthy" from
     # "nobody called it".
+    #
+    # spend_gate joined: the vessel reads `armed` here to know whether this Mind's
+    # budget still needs pushing. Unarmed, it is all zeros and refuses nothing.
     assert body == {
         "status": "ok",
         "active_session_id": "sess-777",
@@ -207,6 +224,7 @@ def test_sidecar_health_reports_active_session(tmp_path: Path) -> None:
             "last_frame_age_seconds": None,
             "last_observed_at": None,
         },
+        "spend_gate": _UNARMED_SPEND_GATE,
     }
 
 
@@ -228,6 +246,7 @@ def test_sidecar_health_active_session_none_before_first_turn(tmp_path: Path) ->
             "last_frame_age_seconds": None,
             "last_observed_at": None,
         },
+        "spend_gate": _UNARMED_SPEND_GATE,
     }
 
 

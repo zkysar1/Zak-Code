@@ -105,6 +105,17 @@ class RunStopRequest(BaseModel):
     reason: str | None = None
 
 
+class BudgetPush(BaseModel):
+    """Body of ``POST /budget`` — the vessel pushes this Mind's budget from its meter row.
+    ``cap_usd`` is the Mind's cap, ``reserve_usd`` what its graceful ending may
+    spend, and ``floor_usd`` what the row says the Mind has already spent. The first push arms
+    the spend gate (:mod:`zakcode.providers.spend_gate`)."""
+
+    cap_usd: float
+    reserve_usd: float = 0.0
+    floor_usd: float = 0.0
+
+
 class InterruptRequest(BaseModel):
     """Body of ``POST /interrupt``, and optional. ``session_id`` names the chat whose turn is to
     stop, as the page names the chat it shows; with no body the workspace's turn is asked to
