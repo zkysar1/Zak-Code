@@ -22287,3 +22287,80 @@ refusals and the turn) and 47 pass; with the check all 51 pass. `ruff check`, `r
 are clean, and `pytest` passes 6,643 tests with 24 skipped, with `tests/test_saybox.py` and
 `tests/test_ux_family.py` not collected on the build box (`prompt_toolkit`, a declared dependency, is absent from
 its environment).
+
+## ADR-0356: CI runs the cockpit in a real tmux and reads what its panes show
+
+Status: accepted. 2026-11-03. Builds on ADR-0346 (the cockpit says where a line went), ADR-0351 (a
+new chat offers to start an agent) and ADR-0352 (a cockpit pane shows the chat a web app serves).
+
+Context. The cockpit is a tmux session: the chat runs in the top pane and the say box in the pane
+below it. `zakcode cli` builds it when it has a terminal and tmux, and `zakcode cockpit --no-attach`
+builds it for provisioning. Every cockpit test in `verify` fakes tmux: it records the commands the
+cockpit would send and never runs them. Those tests pin the commands, but none of them shows what a
+person sees: that a real tmux accepts the commands, that each pane starts what it is given, and
+that a line typed in the box reaches the chat and its reply shows on the screen. ADR-0346 and
+ADR-0352 both list "a real tmux cockpit" under Not verified, because the machine they were built on
+has no tmux. That gap is where a person typed a line in the cockpit and saw it only on the web page,
+the case ADR-0352 fixed.
+
+Decision. `tests/test_cockpit_tmux_e2e.py` opens the real cockpit with `zakcode cockpit --no-attach`
+in a tmux server of the test's own (its own `TMUX_TMPDIR`, killed at the end), types into the box
+with `tmux send-keys`, and reads the panes with `tmux capture-pane`. A stand-in model on loopback,
+an OpenAI-compatible endpoint, answers every completion with a reply no other text contains. Each
+process gets its own API key, so the stand-in records which process asked. Panes are addressed by
+the tmux pane id recorded when the cockpit opens: when a pane closes, tmux renumbers the others, and
+an index can come to name the wrong pane. Every wait has a deadline (90 s), and a deadline that
+passes prints both panes. A marker the test waits for is never text it typed, and never text a
+banner or a help line also shows.
+
+Four checks:
+1. A new chat offers the workspace's agent: the screen shows `/start scout --mode assistant` under
+   "Start an agent before you ask anything".
+2. A line typed in the box reaches the model through the chat, as the stand-in records, and the
+   screen shows the line and the reply.
+3. While a web app serves the workspace (`zakcode webapp` on a free port), the screen says it shows
+   the web app's chat, the box's receipt says the line went to the web app's chat, and the screen
+   shows the line and the reply. Only the web app's key asked the model; the pane's own chat asked
+   nothing.
+4. `/exit` typed in the box ends the chat with no traceback, the pane says the chat exited, and
+   Ctrl-C there closes the whole cockpit.
+
+The tests are skipped unless `ZAKCODE_COCKPIT_E2E=1`, and skipped on Windows. A new CI job,
+`cockpit-e2e` (ubuntu-latest, Python 3.11), installs tmux if it is missing (ubuntu-latest has
+shipped tmux 3.6 on every run so far), sets the variable, and fails if any test is skipped. Without
+that, a job that skipped everything would be green having tested nothing. Like `update-e2e`, it is
+a job of its own, and neither `publish-sidecar` nor the failure alert waits on it.
+
+What was considered and not done.
+- A real model. CI would need its key as a repository secret, and the repository holds no model
+  key, which is also why the bench workflow does not run. What the cockpit does with a reply does
+  not depend on which model wrote it, and a stand-in's reply is text that cannot reach the screen
+  any other way.
+- Running the checks in `verify`. Its Windows cell cannot run them, and in its Linux cells a real
+  terminal's timing would join the gate on publishing the sidecar.
+- Making `publish-sidecar` or the failure alert wait on the new job. The job has no record yet, and
+  until it has one, a runner too slow for a deadline should not hold back a publish or send an
+  alert. That can change once it has a record.
+- A pseudo-terminal without tmux. That tests the chat, which `tests/test_cli_exit.py` already does.
+  The cockpit is the tmux part.
+
+The proof. On the PR's first run the job passed with tmux 3.6: 4 passed in 39.01 s. The mutation
+proof ran on a throwaway branch, never merged, whose workflow broke the cockpit in one way per
+cell and then ran the four checks:
+- the control, nothing broken: all 4 passed;
+- the workspace offers no agent (`startable_agents` always empty): checks 1, 2 and 4 failed (2 and
+  4 wait for the offer to know the chat has started), and check 3 passed;
+- the box reports a line sent and never writes it: checks 2, 3 and 4 failed, and check 1 passed;
+- the pane cannot find where the web app serves: check 3 alone failed;
+- Ctrl-C on the exited chat no longer closes the cockpit (the pane's closing `tmux kill-session`
+  replaced by `tmux display-message`): check 4 alone failed.
+
+Each red was the check's own deadline passing: "the start offer", "the model's reply", "the served
+notice", "the cockpit was still open 90s after Ctrl-C". The first run of the last cell also found a
+defect in the test. Its failure report read the panes by index, the chat pane had closed, and the
+report itself failed with "can't find pane: 1". Addressing panes by id fixed that. The whole matrix
+ran again on the fixed test with the same results, and the report now says which pane closed. On
+the green runs, the four checks took 33.62 s to 41.20 s.
+
+Not verified: macOS (CI has no macOS cell), a tmux older than 3.6, and a person's own terminal
+attached to the cockpit. The test never attaches; it reads what tmux holds for each pane.
