@@ -126,6 +126,44 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: uv run --no-sync pytest -q -s tests/test_update_e2e.py
 
+  # The cockpit is tmux, and every cockpit test in `verify` fakes tmux: they record the commands the
+  # cockpit would send and never run them, so none of them shows what a person sees. This opens the
+  # real cockpit in a real tmux, types into its box and reads its panes, with a stand-in model on
+  # loopback, so it needs no key (ADR-0355). Linux only, since the cockpit needs tmux. Like
+  # update-e2e, neither publish-sidecar nor the failure alert waits on it.
+  cockpit-e2e:
+    name: cockpit in a real tmux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install tmux
+        run: |
+          command -v tmux || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
+          tmux -V
+
+      - name: Sync (dev + server extras)
+        run: uv sync --extra dev --extra server --python 3.11
+
+      - name: The cockpit end to end
+        env:
+          ZAKCODE_COCKPIT_E2E: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set -o pipefail
+          uv run --no-sync pytest -q -rs tests/test_cockpit_tmux_e2e.py | tee "$RUNNER_TEMP/cockpit-e2e.txt"
+          # A skipped test makes this job green while testing nothing, so a skip fails it.
+          if grep -Eq '[0-9]+ skipped' "$RUNNER_TEMP/cockpit-e2e.txt"; then
+            echo "::error::the cockpit tests were skipped, so this job tested nothing"
+            exit 1
+          fi
+
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
   # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
