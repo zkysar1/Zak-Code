@@ -161,6 +161,17 @@ def _tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run([_tmux_bin(), *args], check=check)
 
 
+def _tmux_ids(*args: str) -> list[str]:
+    """Run a tmux command that prints ids (``-P -F``) and return them in the order printed.
+
+    The cockpit targets its window and panes by these ids, never by number: a person's tmux.conf
+    can number windows and panes from 1 (``base-index``, ``pane-base-index``), and then
+    ``session:0`` or ``session:0.1`` names nothing (ADR-0357).
+    """
+    done = subprocess.run([_tmux_bin(), *args], check=True, stdout=subprocess.PIPE)
+    return done.stdout.decode().split()
+
+
 def _has_session(name: str) -> bool:
     return (
         subprocess.run(
@@ -315,11 +326,15 @@ def launch_cockpit(
         # sh -c, so the trailing kill-session fires on any exit path.
         main_cmd = f"{main_cmd}; tmux kill-session -t {shlex.quote(session)}"
         # The say box is created FIRST so the session-scoped history-limit is already
-        # set when the chat pane (split -b, placed above → index 0) is created — tmux
-        # applies history-limit at pane creation, never retroactively.
-        _tmux(
+        # set when the chat pane (split -b, placed above it) is created — tmux
+        # applies history-limit at pane creation, never retroactively. Every command
+        # after that targets the window and panes by the ids tmux prints for them.
+        window, box = _tmux_ids(
             "new-session",
             "-d",
+            "-P",
+            "-F",
+            "#{window_id} #{pane_id}",
             "-s",
             session,
             "-c",
@@ -332,26 +347,38 @@ def launch_cockpit(
         )
         _tmux("set-option", "-t", session, "history-limit", str(_HISTORY_LIMIT))
         _tmux("set-option", "-t", session, "mouse", "on")
-        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-status", "top")
-        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-format", " #{pane_title} ")
+        _tmux("set-option", "-w", "-t", window, "pane-border-status", "top")
+        _tmux("set-option", "-w", "-t", window, "pane-border-format", " #{pane_title} ")
         # Focus-follows-color: the focused pane's border + title glow orange, the
         # rest recede to gray — so "where will my keys land" is answerable at a
         # glance. Set per-window (not left to host tmux.conf) so every box looks
         # the same (2026-08-25 operator report: one pod had it via a hand conf,
         # another did not).
-        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-border-style", "fg=colour240")
-        _tmux("set-option", "-w", "-t", f"{session}:0", "pane-active-border-style", "fg=colour214")
-        _tmux("split-window", "-b", "-v", "-t", f"{session}:0.0", "-c", str(workspace), main_cmd)
-        _tmux("resize-pane", "-t", f"{session}:0.1", "-y", str(_SAY_BOX_HEIGHT))
+        _tmux("set-option", "-w", "-t", window, "pane-border-style", "fg=colour240")
+        _tmux("set-option", "-w", "-t", window, "pane-active-border-style", "fg=colour214")
+        (screen,) = _tmux_ids(
+            "split-window",
+            "-b",
+            "-v",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            box,
+            "-c",
+            str(workspace),
+            main_cmd,
+        )
+        _tmux("resize-pane", "-t", box, "-y", str(_SAY_BOX_HEIGHT))
         screen_title = (
             f"{workspace.name.upper()} — screen · type in the box below"
             " · wheel scrolls (q snaps back)"
         )
-        _tmux("select-pane", "-t", f"{session}:0.0", "-T", screen_title)
+        _tmux("select-pane", "-t", screen, "-T", screen_title)
         _tmux(
             "select-pane",
             "-t",
-            f"{session}:0.1",
+            box,
             "-T",
             "YOUR MESSAGE — Enter sends · Ctrl+J newline · Esc stops the agent / recalls a "
             "pending message",
@@ -359,7 +386,7 @@ def launch_cockpit(
         # Focus lands on the MESSAGE BOX — the one place to type. Focusing the
         # screen pane sent the operator's first keystrokes into the booting chat
         # (2026-08-25 field report: "was not able to type anything at first").
-        _tmux("select-pane", "-t", f"{session}:0.1")
+        _tmux("select-pane", "-t", box)
         notice_info(console, f"cockpit session '{session}' created")
     if attach and os.environ.get("TMUX"):
         # Already inside a tmux client: nesting an attach is refused by tmux, so

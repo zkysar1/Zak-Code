@@ -32,7 +32,7 @@ import threading
 import time
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -55,7 +55,7 @@ pytestmark = [
 #: prices its turns as it would for a real one, while every call still lands on loopback.
 MODEL = "openai/gpt-4o"
 #: The chat's screen is the top pane; the box a person types in is the one below it.
-SCREEN, BOX = "0.0", "0.1"
+SCREEN, BOX = "screen", "box"
 #: How long one step may take. Generous because a CI runner can be slow to start a process; a
 #: deadline that holds costs nothing, and one that passes is reported with both panes.
 DEADLINE = 90.0
@@ -194,18 +194,29 @@ def tmux_dir() -> Iterator[Path]:
     try:
         yield root
     finally:
-        subprocess.run(
-            ["tmux", "kill-server"],
-            env={**os.environ, "TMUX_TMPDIR": str(root)},
-            capture_output=True,
-            check=False,
-        )
+        _end_test_server(root)
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _no_caller_tmux(environ: Mapping[str, str]) -> dict[str, str]:
+    """``environ`` without the caller's own tmux. Inside a tmux pane ``$TMUX`` names that pane's
+    server, and tmux takes its server from ``$TMUX`` before it reads ``TMUX_TMPDIR``."""
+    return {k: v for k, v in environ.items() if k not in ("TMUX", "TMUX_PANE")}
+
+
+def _end_test_server(root: Path) -> None:
+    """End the tmux server whose socket is under ``root``, and only that one."""
+    subprocess.run(
+        ["tmux", "kill-server"],
+        env={**_no_caller_tmux(os.environ), "TMUX_TMPDIR": str(root)},
+        capture_output=True,
+        check=False,
+    )
 
 
 def _env(tmp_path: Path, tmux_dir: Path, stand_in: StandIn, key: str) -> dict[str, str]:
     """What a person's shell would hand the cockpit, pointed at the stand-in and nothing else."""
-    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    env = _no_caller_tmux(os.environ)
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     env.update(
@@ -251,8 +262,9 @@ class Cockpit:
 
     env: dict[str, str]
     session: str
-    #: Each pane's tmux id, by the index it had when the cockpit opened. When a pane closes, tmux
-    #: renumbers the others, so an index can come to name the wrong pane; an id never does.
+    #: Each pane's tmux id, by its place in the window: the screen on top, the box below it. A
+    #: number can name the wrong pane, or none: tmux renumbers the panes when one closes, and a
+    #: person's tmux.conf can count from 1. An id never changes.
     panes: dict[str, str]
 
     def screen(self, pane: str = SCREEN) -> str:
@@ -319,12 +331,14 @@ def _open(env: dict[str, str], workspace: Path, tmp_path: Path) -> Cockpit:
         check=False,
     )
     assert proc.returncode == 0, f"cockpit -> rc {proc.returncode}\n{proc.stdout}\n{proc.stderr}"
-    listing = _tmux(
-        env, "list-panes", "-s", "-t", session, "-F", "#{window_index}.#{pane_index} #{pane_id}"
+    listing = _tmux(env, "list-panes", "-s", "-t", session, "-F", "#{pane_top} #{pane_id}")
+    rows = sorted(
+        (int(top), pane)
+        for top, pane in (line.split() for line in listing.splitlines() if line.strip())
     )
-    panes = dict(line.split() for line in listing.splitlines() if line.strip())
-    assert SCREEN in panes and BOX in panes, f"the cockpit opened panes {panes}\n{proc.stdout}"
-    return Cockpit(env, session, panes)
+    assert len(rows) == 2, f"the cockpit opened panes {listing!r}\n{proc.stdout}"
+    (_, screen), (_, box) = rows
+    return Cockpit(env, session, {SCREEN: screen, BOX: box})
 
 
 def _last_line(screen: str) -> str:
@@ -424,6 +438,63 @@ def test_exit_in_the_box_ends_the_chat_and_ctrl_c_closes_the_cockpit(
                 f"the cockpit was still open {DEADLINE:.0f}s after Ctrl-C\n{cockpit.both()}"
             )
         time.sleep(0.25)
+
+
+def test_the_cockpit_opens_when_a_person_s_tmux_counts_from_one(
+    tmp_path: Path, workspace: Path, tmux_dir: Path, stand_in: StandIn
+) -> None:
+    """A tmux.conf that numbers windows and panes from 1 (``base-index``, ``pane-base-index``) is
+    common. The cockpit opens the same under it: the chat on top, and the box below it with the
+    cursor in it. The tests above run tmux with no tmux.conf at all."""
+    env = _env(tmp_path, tmux_dir, stand_in, "key-cockpit")
+    (Path(env["HOME"]) / ".tmux.conf").write_text(
+        "set -g base-index 1\nsetw -g pane-base-index 1\n", encoding="utf-8"
+    )
+    cockpit = _open(env, workspace, tmp_path)
+    cockpit.wait_for("the start offer", lambda s: "/start scout --mode assistant" in s)
+    # Window 1's second pane: so the tmux.conf was read, and the cursor is in the box.
+    box = _tmux(
+        env,
+        "display-message",
+        "-p",
+        "-t",
+        cockpit.panes[BOX],
+        "#{window_index}.#{pane_index} #{pane_active}",
+    )
+    assert box.split() == ["1.2", "1"], f"the box reads {box!r}\n{cockpit.both()}"
+
+
+# ── the test's own tmux server, and a person's ──────────────────────────────────────────────────
+
+
+def test_the_teardown_ends_the_test_s_tmux_and_leaves_the_caller_s() -> None:
+    """Run from inside a tmux pane, the caller's ``$TMUX`` names their own server, and tmux reaches
+    that server before it reads ``TMUX_TMPDIR``. The teardown must end the test's server and leave
+    theirs running."""
+    clean = _no_caller_tmux(os.environ)
+    tmp = "/tmp" if os.path.isdir("/tmp") else None
+    theirs = Path(tempfile.mkdtemp(prefix="zcc-", dir=tmp))
+    ours = Path(tempfile.mkdtemp(prefix="zct-", dir=tmp))
+    their_socket = theirs / "s"
+    our_env = {**clean, "TMUX_TMPDIR": str(ours)}
+    try:
+        _tmux(clean, "-S", str(their_socket), "new-session", "-d", "-s", "theirs")
+        _tmux(our_env, "new-session", "-d", "-s", "ours")
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv("TMUX", f"{their_socket},1,0")  # what every pane of their server holds
+            patch.setenv("TMUX_PANE", "%0")
+            _end_test_server(ours)
+        assert _tmux_run(clean, "-S", str(their_socket), "has-session").returncode == 0, (
+            "the teardown ended the caller's tmux server"
+        )
+        assert _tmux_run(our_env, "has-session").returncode != 0, (
+            "the test's own tmux server is still running"
+        )
+    finally:
+        _tmux_run(clean, "-S", str(their_socket), "kill-server")
+        _tmux_run(our_env, "kill-server")
+        shutil.rmtree(theirs, ignore_errors=True)
+        shutil.rmtree(ours, ignore_errors=True)
 
 
 # ── helpers for the served case ─────────────────────────────────────────────────────────────────

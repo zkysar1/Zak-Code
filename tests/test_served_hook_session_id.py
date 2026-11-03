@@ -9,7 +9,10 @@ would fail; the record would just never be found again.
 
 So these tests serve a REAL agent per turn, as the app does, with a hook in that framework's
 shape: it writes down the session id it is handed and puts it into the command, which prints
-it. Hermetic: a tmp workspace, the scripted provider, no network.
+it. Hermetic: a tmp workspace, the scripted provider, no network. The first ones hand the app a
+factory of their own, so the hook and the model are spelled out in the test; the last one runs
+the factory ``zakcode webapp`` itself uses, with the hook in the workspace's settings.json, so a
+fault in that factory's wiring shows too.
 """
 
 from __future__ import annotations
@@ -131,4 +134,47 @@ def test_two_messages_a_driver_sends_to_one_chat_hand_its_hooks_one_session_id(
         assert client.post(path, json={"message": text, "session_id": chat}).status_code == 200
 
     assert [run["session"] for run in _hook_runs(tmp_path)] == [chat, chat]
+    assert _printed(store, chat) == [chat, chat]
+
+
+def test_the_web_app_s_own_agent_factory_hands_its_hooks_one_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The factory ``zakcode webapp`` runs, not one of this file's: the hook comes from the
+    workspace's ``.claude/settings.json``, the way a framework ships it, and only the model is
+    scripted. A test that hands ``create_app()`` a factory of its own cannot see this one."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")  # no hook from the real home
+    workspace = tmp_path / "ws"
+    script = workspace / "bind_hook.py"
+    settings_json = workspace / ".claude" / "settings.json"
+    settings_json.parent.mkdir(parents=True)
+    script.write_text(_HOOK.format(log=str(workspace / "hook-runs.jsonl")), encoding="utf-8")
+    hook = {"type": "command", "command": f'"{sys.executable}" "{script}"'}
+    settings_json.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [hook]}]}}),
+        encoding="utf-8",
+    )
+
+    def scripted(self: Agent, model: str, **_: object) -> ScriptedProvider:  # noqa: ARG001
+        return ScriptedProvider(
+            script=[call_tool("bash", {"command": 'echo "bound=$BOUND_SID"'}), reply("ok")]
+        )
+
+    monkeypatch.setattr(Agent, "_build_provider", scripted)
+    settings = Settings(
+        default_model=MODEL, context_window=8192, workspace_root=workspace, permission_mode="allow"
+    )
+    store = SessionStore(base_dir=workspace / "sessions")
+    app = create_app(settings=settings, store=store)
+
+    async def turns() -> None:
+        for text in MESSAGES:
+            assert write_say(say_path(workspace), text)
+            assert await app.state.consume_one_say() is True
+
+    asyncio.run(turns())
+
+    chat = (workspace / ".current-session").read_text(encoding="utf-8").strip()
+    assert chat
+    assert [run["session"] for run in _hook_runs(workspace)] == [chat, chat]
     assert _printed(store, chat) == [chat, chat]
