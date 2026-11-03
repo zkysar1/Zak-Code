@@ -205,10 +205,10 @@ def _no_caller_tmux(environ: Mapping[str, str]) -> dict[str, str]:
 
 
 def _end_test_server(root: Path) -> None:
-    """End the tmux server whose socket is under ``root``."""
+    """End the tmux server whose socket is under ``root``, and only that one."""
     subprocess.run(
         ["tmux", "kill-server"],
-        env={**os.environ, "TMUX_TMPDIR": str(root)},
+        env={**_no_caller_tmux(os.environ), "TMUX_TMPDIR": str(root)},
         capture_output=True,
         check=False,
     )

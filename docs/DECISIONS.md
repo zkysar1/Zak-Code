@@ -22364,3 +22364,65 @@ the green runs, the four checks took 33.62 s to 41.20 s.
 
 Not verified: macOS (CI has no macOS cell), a tmux older than 3.6, and a person's own terminal
 attached to the cockpit. The test never attaches; it reads what tmux holds for each pane.
+
+## ADR-0357: the cockpit names its window and panes by tmux id, and four gaps in its tests close
+
+Status: accepted. 2026-11-03. Builds on ADR-0356 (CI runs the cockpit in a real tmux) and ADR-0342,
+which records that each message of a served chat runs on an agent of its own.
+
+Context. A review of `tests/test_cockpit_tmux_e2e.py` (ADR-0356) and
+`tests/test_served_hook_session_id.py` found four gaps.
+1. The cockpit addressed its window as `<session>:0` and its panes as `<session>:0.0` and `:0.1`,
+   on the person's own tmux server and tmux.conf. A tmux.conf that counts from 1
+   (`set -g base-index 1`, `setw -g pane-base-index 1`) leaves those numbers naming the wrong
+   window or pane, or none: with both set, `zakcode cockpit` stops with a `CalledProcessError` at
+   the first of them, `set-option -w -t <session>:0`. The e2e tests could not see it, because they
+   run tmux with a HOME of their own, which holds no tmux.conf.
+2. The e2e teardown ran `tmux kill-server` with the caller's environment. tmux takes its server
+   from `$TMUX` before it reads `TMUX_TMPDIR`, so a run from inside a tmux pane, a cockpit's
+   included, ended that pane's server and every session on it, pytest with them, and left the
+   test's own server running. ADR-0356's "killed at the end" held only where `$TMUX` is unset, as
+   on CI.
+3. The served-hook tests hand `create_app()` a factory of their own, so `_default_agent_factory`,
+   the one `zakcode webapp` runs, was never under test. Changed to give each turn's agent a session
+   of its own, the fault those tests exist for, it left all three green.
+4. Nothing acted on a red `cockpit-e2e`. It was not a required check on `main`, and the failure
+   alert did not wait on it; ADR-0356 deferred the alert until the job had a record.
+
+Decision.
+- The cockpit takes the ids tmux prints when it creates the window and the box
+  (`new-session -P -F '#{window_id} #{pane_id}'`) and the chat pane
+  (`split-window -P -F '#{pane_id}'`), and targets those ids from then on. The panes are made in
+  the same order as before, and the session keeps its name, so a re-run joins an open cockpit as
+  it did.
+- The e2e teardown drops `TMUX` and `TMUX_PANE`, as `_env()` already did for the cockpit. The e2e
+  helper finds the screen and the box by their place in the window, not by number.
+- `alert-on-failure` waits on `cockpit-e2e`; `publish-sidecar` still does not. `cockpit-e2e` is a
+  required status check on `main`, set in branch protection, outside the repository. Before this
+  change it ran on 3 pushes to `main` and 7 pull-request runs: 9 passed, 1 was cancelled, none
+  failed, and each passing run took 40 s to 71 s.
+
+New tests.
+- e2e: the cockpit opens under a tmux.conf that numbers windows and panes from 1, the chat starts,
+  and the box is window 1's second pane with the cursor in it. That last check also shows the
+  tmux.conf was read, so the test cannot pass by tmux ignoring it.
+- e2e: the teardown, run with `$TMUX` naming a second tmux server, leaves that server running and
+  ends the test's own.
+- unit, with tmux faked, on every platform: every target is the session's name or an id tmux
+  printed; the window options go to the window id, the chat splits off the box, and the titles go
+  to the screen and then the box.
+- served hook: two messages through the web app's own factory, with the hook in the workspace's
+  `.claude/settings.json` and only the model scripted, hand both turns' hooks the chat's one
+  session id.
+
+The proof. The PR's first commit held the new tests and the CI change without the fixes. On it,
+`cockpit-e2e` ran with tmux 3.6 and reported 2 failed, 4 passed in 40.23 s: the cockpit under the
+counted-from-1 tmux.conf stopped with `tmux set-option -w -t e2e-ed1a8b:0 pane-border-status top`
+returning 1, and the teardown test failed with "the teardown ended the caller's tmux server". The
+four checks of ADR-0356 passed. Locally, the served-hook test failed when the factory gave each
+turn's agent a session of its own, and again when hooks were handed the agent's own id instead of
+the session's; with each change restored it passed. The unit test failed with the focus, or a
+window option, pointed back at a number, and passed with each restored.
+
+Not verified: a tmux older than 3.6 (CI runs 3.6), macOS, and a person's own terminal attached to
+the cockpit.

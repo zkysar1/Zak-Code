@@ -24,7 +24,14 @@ def _rec_console() -> Console:
 
 
 class _FakeTmux:
-    """Records every subprocess argv; answers has-session / capture-pane per config."""
+    """Records every subprocess argv; answers has-session / capture-pane per config.
+
+    A command that asks tmux to print ids (``-P``) gets the ids a real tmux would print: the
+    new session's window ``@1`` and its first pane ``%1`` (the box), then ``%2`` for the pane the
+    chat splits off above it.
+    """
+
+    WINDOW, BOX, SCREEN = "@1", "%1", "%2"
 
     def __init__(self, *, has_session_rc: int = 1, capture_stdout: bytes = b"") -> None:
         self.calls: list[list[str]] = []
@@ -44,6 +51,11 @@ class _FakeTmux:
             return subprocess.CompletedProcess(
                 argv, self.display_rc, stdout=self.display_stdout, stderr=b""
             )
+        if sub == "new-session" and "-P" in argv:
+            printed = f"{self.WINDOW} {self.BOX}\n".encode()
+            return subprocess.CompletedProcess(argv, 0, stdout=printed, stderr=b"")
+        if sub == "split-window" and "-P" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{self.SCREEN}\n".encode())
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
     def subcommands(self) -> list[str]:
@@ -64,6 +76,11 @@ def fake_tmux(monkeypatch: pytest.MonkeyPatch) -> _FakeTmux:
     monkeypatch.setattr(cockpit.subprocess, "run", fake)
     monkeypatch.setattr(cockpit, "console", _rec_console())
     return fake
+
+
+def _target(call: list[str]) -> str:
+    """The ``-t`` target of one recorded tmux call."""
+    return call[call.index("-t") + 1]
 
 
 def test_cockpit_refuses_without_tmux(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -89,9 +106,27 @@ def test_cockpit_creates_session_in_inheritance_safe_order(
     history = next(c for c in fake_tmux.calls if "history-limit" in c)
     assert str(cockpit._HISTORY_LIMIT) in history
     resize = next(c for c in fake_tmux.calls if c[1] == "resize-pane")
-    assert resize[-1] == str(cockpit._SAY_BOX_HEIGHT) and "agentbox:0.1" in resize
+    assert resize[-1] == str(cockpit._SAY_BOX_HEIGHT) and _target(resize) == _FakeTmux.BOX
     # stdin is not a tty under pytest, so no attach happened.
     assert "attach-session" not in subs
+
+
+def test_cockpit_targets_its_window_and_panes_by_id_never_by_number(
+    fake_tmux: _FakeTmux, tmp_path: Path
+) -> None:
+    """A person's tmux.conf can number windows and panes from 1 (base-index, pane-base-index), and
+    then ``agentbox:0`` or ``agentbox:0.1`` names nothing and the cockpit fails to open (ADR-0357).
+    Every target is the session's name or an id tmux printed when it made the window or pane."""
+    cockpit.cockpit(session="agentbox", workspace=tmp_path, ledger=None, attach=True)
+    targets = [_target(c) for c in fake_tmux.calls if "-t" in c]
+    ids = {"agentbox", _FakeTmux.WINDOW, _FakeTmux.BOX, _FakeTmux.SCREEN}
+    assert targets and set(targets) <= ids, targets
+    window_options = [c for c in fake_tmux.calls if c[1] == "set-option" and "-w" in c]
+    assert window_options and {_target(c) for c in window_options} == {_FakeTmux.WINDOW}
+    split = next(c for c in fake_tmux.calls if c[1] == "split-window")
+    assert _target(split) == _FakeTmux.BOX  # the chat opens above the box
+    titled = [_target(c) for c in fake_tmux.calls if c[1] == "select-pane" and "-T" in c]
+    assert titled == [_FakeTmux.SCREEN, _FakeTmux.BOX]
 
 
 def test_cockpit_sets_focus_follows_color_borders(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
@@ -537,7 +572,7 @@ def test_root_dispatch_covers_every_chat_option() -> None:
 def test_launch_cockpit_focuses_the_message_box(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
     cockpit.launch_cockpit(tmp_path, session="x", attach=False)
     selects = [c for c in fake_tmux.calls if c[1] == "select-pane" and "-T" not in c]
-    assert selects and selects[-1][-1].endswith(":0.1")  # the box, not the screen
+    assert selects and selects[-1][-1] == _FakeTmux.BOX  # the box, not the screen
 
 
 def test_launch_cockpit_clears_stale_say_at_creation(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
