@@ -377,6 +377,8 @@ class SessionSummary(BaseModel):
     message_count: int = 0
     #: Whether it is the workspace's current conversation, the one the next turn runs on.
     current: bool = False
+    #: Whether a turn in it waits on a permission answer right now (ADR-0362).
+    awaiting_approval: bool = False
 
 
 class CurrentSessionRequest(BaseModel):
