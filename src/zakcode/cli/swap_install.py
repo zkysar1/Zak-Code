@@ -22,7 +22,8 @@ The order is the whole design:
 3. run the reinstall into the now-empty place;
 4. start the new environment and import the package from it;
 5. only then delete the old one. A program still running from it keeps its files from being
-   deleted: the log says so and leaves the folder, which the next update removes.
+   deleted: the log says so and leaves the folder, which the next update removes, or moves aside
+   when something still holds it, so that it never stops an update (ADR-0360).
 
 A failure after step 2 deletes whatever the reinstall made and moves the old environment back, so a
 failed update leaves the environment that was there. The checkout the updater pulled stays pulled:
@@ -127,6 +128,11 @@ def _rmtree(path: Path) -> None:
     A link is removed as the link it is and never followed: ``shutil.rmtree`` refuses one, and the
     handler below would then ``chmod`` the directory it points at and report success with the link
     still in place.
+
+    On Windows the tree is named in its extended-length form, which reaches any depth. uv writes
+    paths longer than 260 characters, and with long paths switched off, as Windows ships, a path
+    that long cannot be deleted by its usual name: "The system cannot find the path specified"
+    (measured, ADR-0360).
     """
     if _is_link(path):
         try:
@@ -134,6 +140,17 @@ def _rmtree(path: Path) -> None:
         except OSError:
             os.rmdir(path)  # a directory link on Windows is removed like an empty directory
         return
+    target: str | Path = path
+    if sys.platform == "win32":
+        # abspath first: the extended form takes the path as written, so a forward slash or a ".."
+        # in it would name nothing.
+        full = os.path.abspath(path)
+        if full.startswith("\\\\?\\"):
+            target = full
+        elif full.startswith("\\\\"):
+            target = "\\\\?\\UNC\\" + full[2:]  # \\server\share\... is \\?\UNC\server\share\...
+        else:
+            target = "\\\\?\\" + full
 
     def clear_and_retry(func: Any, name: str, _exc: Any) -> None:
         os.chmod(name, stat.S_IWRITE)
@@ -143,9 +160,9 @@ def _rmtree(path: Path) -> None:
     # environment, so try the new name and fall back to the old one.
     rmtree: Any = shutil.rmtree
     try:
-        rmtree(path, onexc=clear_and_retry)
+        rmtree(target, onexc=clear_and_retry)
     except TypeError:
-        rmtree(path, onerror=clear_and_retry)
+        rmtree(target, onerror=clear_and_retry)
 
 
 def _starts(verify: list[str]) -> tuple[bool, str]:
@@ -167,6 +184,29 @@ def _starts(verify: list[str]) -> tuple[bool, str]:
     if proc.returncode != 0:
         return False, (proc.stderr or proc.stdout).strip()[-1500:]
     return True, proc.stdout.strip()
+
+
+#: Why Windows can refuse to delete an old install that no program runs from (ADR-0360).
+_HELD = (
+    "Windows keeps any file a program has loaded, and uv links the files it installs from its "
+    "cache, so a program running from another install that shares them holds them here too."
+)
+
+
+def _set_aside(path: Path) -> Path | None:
+    """Rename a folder that cannot be deleted to the first free ``<name>.stale-<n>`` beside it: the
+    new path, or None when it cannot be renamed either. Windows will not delete a file a program has
+    loaded, but lets its folder be renamed (ADR-0360)."""
+    for n in range(1, 1000):
+        aside = path.with_name(f"{path.name}.stale-{n}")
+        if aside.exists():
+            continue
+        try:
+            os.replace(path, aside)
+        except OSError:
+            return None
+        return aside
+    return None
 
 
 def _by_hand(env_dir: Path, backup: Path) -> str:
@@ -203,22 +243,49 @@ def run(job: dict[str, Any], log: TextIO) -> int:
     say(f"update started for {env_dir}")
     _wait_for_exit(int(job.get("wait_pid", 0)), _WAIT_SECONDS)
 
+    # Folders an earlier update moved aside (below) go once nothing holds them. Swept first, so a
+    # folder this run moves aside is not tried again at once.
+    try:
+        beside = sorted(backup.parent.iterdir())
+    except OSError:
+        beside = []  # the folder cannot be listed: the move below says what is wrong with it
+    prefix = backup.name + ".stale-"
+    for stale in beside:
+        n = stale.name[len(prefix) :]
+        if not (stale.name.startswith(prefix) and n.isascii() and n.isdigit()):
+            continue  # only a name _set_aside gives: a folder merely named alike is not this one's
+        try:
+            _rmtree(stale)
+        except OSError:
+            continue  # still held: a later update tries again
+        say(f"removed {stale}, which an earlier update moved aside")
+
     if backup.exists():
         # A run that was cut off between moving the install aside and finishing leaves this behind,
         # and so does one that could not delete the old install because a program ran from it.
         # Delete it only when the install in place works; otherwise it may be the only good copy.
+        # One that cannot be deleted is moved aside, so it no longer stops every update after it.
         if env_dir.exists() and _starts(verify)[0]:
             try:
                 _rmtree(backup)
             except OSError as exc:
+                aside = _set_aside(backup)
+                if aside is None:
+                    say(
+                        f"update failed: {backup}, left by an earlier update, can be neither "
+                        f"deleted ({exc}) nor moved aside. {_HELD} Close the programs that run "
+                        "zakcode and run zakcode update again, or delete the folder by hand. The "
+                        "install in place was not touched."
+                    )
+                    return fail(2)
                 say(
-                    f"update failed: {backup}, left by an earlier update, cannot be deleted "
-                    f"({exc}). A program is probably still running from it. Close that program "
-                    "and run zakcode update again, or delete the folder by hand. The install in "
-                    "place was not touched."
+                    f"could not delete {backup}, left by an earlier update ({exc}). {_HELD} "
+                    f"Moved it to {aside}, which a later update deletes once nothing holds it."
                 )
-                return fail(2)
-            say(f"removed {backup}, left by an earlier update, since the install in place works")
+            else:
+                say(
+                    f"removed {backup}, left by an earlier update, since the install in place works"
+                )
         else:
             say(
                 f"update failed: {backup} is left from an earlier update and {env_dir} is "
@@ -298,10 +365,10 @@ def run(job: dict[str, Any], log: TextIO) -> int:
             _rmtree(backup)
         except OSError as exc:
             say(
-                f"could not delete {backup} ({exc}). It is the old install, and a program is "
-                "probably still running from it: restart that program to use the new install. "
-                "The folder is safe to delete by hand once it has exited, and the next update "
-                "deletes it."
+                f"could not delete {backup} ({exc}). It is the old install. {_HELD} If a program "
+                "still runs from the old install, restart that program to use the new one. The "
+                "folder is safe to delete by hand once nothing holds it; the next update deletes "
+                "it, or moves it aside if something still does."
             )
     say("update complete")
     return 0

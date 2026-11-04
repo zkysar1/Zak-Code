@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -293,7 +294,7 @@ def test_an_old_install_a_program_still_holds_is_left_and_the_update_still_compl
     assert (env / "version.txt").read_text() == "new"
     assert _snapshot(backup) == old  # only the delete that failed could have removed anything
     assert "could not delete" in log and "safe to delete by hand" in log
-    assert "restart that program" in log
+    assert "restart that program" in log and "uv links the files it installs" in log
     assert log.rstrip().endswith("update complete")
     # The next update finds the leftover, sees the install in place works, and deletes it.
     (tmp_path / "update.log").unlink()
@@ -303,11 +304,40 @@ def test_an_old_install_a_program_still_holds_is_left_and_the_update_still_compl
     assert not backup.exists()
 
 
-def test_a_leftover_backup_that_cannot_be_deleted_stops_the_update_before_anything_moves(
+def test_a_leftover_backup_that_cannot_be_deleted_is_moved_aside_and_the_update_goes_on(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """The leftover may still have a program running from it. That is not a crash and not a reason
-    to touch the install in place: the update says so and stops, with the note on the checkout."""
+    """Measured on Windows (ADR-0360): a file another install's program has loaded cannot be
+    deleted through this install's link to it, so the leftover could not be deleted, and every
+    update after it refused until a person deleted the folder. Its folder can still be renamed."""
+    env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
+    _old_env(env)
+    backup.mkdir()
+    (backup / "stale.txt").write_text("an earlier run's leftovers")
+    real, held = swap_install._rmtree, [backup]
+
+    def rmtree(path: Path) -> None:
+        if path in held:
+            held.remove(path)  # held this once, as at the start; the old install deletes at the end
+            raise PermissionError("[WinError 5] Access is denied")
+        real(path)
+
+    monkeypatch.setattr(swap_install, "_rmtree", rmtree)
+    code, log = _run(_job(tmp_path, env, _install(env)))
+    assert code == 0, log
+    assert (env / "version.txt").read_text() == "new"
+    aside = tmp_path / "toolenv.update-backup.stale-1"
+    assert (aside / "stale.txt").read_text() == "an earlier run's leftovers"
+    assert not backup.exists()  # the old install, deleted once the new one started
+    assert f"could not delete {backup}, left by an earlier update" in log
+    assert f"Moved it to {aside}" in log and "uv links the files it installs" in log
+    assert log.rstrip().endswith("update complete")
+
+
+def test_a_leftover_backup_that_can_be_neither_deleted_nor_moved_stops_before_anything_moves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Then nothing is touched: the update says so and stops, with the note on the checkout."""
     env, backup = tmp_path / "toolenv", tmp_path / "toolenv.update-backup"
     _old_env(env)
     backup.mkdir()
@@ -316,14 +346,140 @@ def test_a_leftover_backup_that_cannot_be_deleted_stops_the_update_before_anythi
     marker = tmp_path / "ran.txt"
     command = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
     monkeypatch.setattr(swap_install, "_rmtree", _locked)
+    monkeypatch.setattr(swap_install, "_set_aside", lambda path: None)
     code, log = _run(_job(tmp_path, env, command, checkout_note=_NOTE))
     assert code == 2, log
     assert _snapshot(env) == before
+    assert (backup / "stale.txt").is_file()
     assert not marker.exists(), "a command ran although the leftover could not be cleared"
-    assert "cannot be deleted" in log and "run zakcode update again" in log
+    assert "can be neither deleted" in log and "run zakcode update again" in log
     assert "The install in place was not touched" in log
+    # It stops right there: what comes after the leftover never ran, so it never spoke.
+    assert "Moved it to" not in log and "if this log stops here" not in log
     assert "unexpectedly" not in log and "Traceback" not in log
     assert log.rstrip().endswith(_NOTE)
+
+
+def test_a_folder_an_earlier_update_moved_aside_goes_once_nothing_holds_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    env = tmp_path / "toolenv"
+    _old_env(env)
+    first = tmp_path / "toolenv.update-backup.stale-1"
+    second = tmp_path / "toolenv.update-backup.stale-2"
+    for aside in (first, second):
+        aside.mkdir()
+        (aside / "dep.pyd").write_bytes(b"MZ")
+    other = tmp_path / "othertool"  # another tool's install, beside this one
+    other.mkdir()
+    alike = tmp_path / "toolenv.update-backup.stale-notes"  # a person's folder, named alike
+    alike.mkdir()
+    (alike / "notes.txt").write_text("mine")
+    real = swap_install._rmtree
+
+    def rmtree(path: Path) -> None:
+        if path == second:
+            raise PermissionError("[WinError 5] Access is denied")  # still held
+        real(path)
+
+    monkeypatch.setattr(swap_install, "_rmtree", rmtree)
+    code, log = _run(_job(tmp_path, env, _install(env)))
+    assert code == 0, log
+    assert not first.exists() and f"removed {first}, which an earlier update moved aside" in log
+    assert (second / "dep.pyd").is_file() and str(second) not in log  # a later update tries again
+    assert other.is_dir() and (alike / "notes.txt").read_text() == "mine"
+    assert (env / "version.txt").read_text() == "new"
+
+
+def test_a_folder_is_moved_aside_to_the_first_free_name(tmp_path: Path) -> None:
+    """One moved aside earlier may still be held, so its name is taken: the next goes beside it."""
+    backup = tmp_path / "toolenv.update-backup"
+    backup.mkdir()
+    (backup / "new.txt").write_text("this run's")
+    taken = tmp_path / "toolenv.update-backup.stale-1"
+    taken.mkdir()
+    (taken / "old.txt").write_text("an earlier run's")
+    aside = swap_install._set_aside(backup)
+    assert aside == tmp_path / "toolenv.update-backup.stale-2"
+    assert (aside / "new.txt").read_text() == "this run's"
+    assert (taken / "old.txt").read_text() == "an earlier run's"
+    assert swap_install._set_aside(tmp_path / "gone") is None  # nothing there to rename
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows keeps a loaded file from deletion")
+def test_on_windows_a_file_loaded_through_another_link_stops_the_delete_and_not_the_move(
+    tmp_path: Path,
+) -> None:
+    """The case behind ADR-0360, made for real: a DLL that a program loaded through one link (the
+    uv cache's, or another install's) cannot be deleted through another (this install's), and the
+    folder holding that other link can still be moved aside."""
+    dll = Path(sys.base_prefix, "python3.dll")
+    if not dll.is_file():
+        pytest.skip(f"no {dll} to load")
+    (tmp_path / "cache").mkdir()
+    shared = tmp_path / "cache" / "shared.dll"
+    shutil.copy2(dll, shared)
+    backup = tmp_path / "toolenv.update-backup"
+    backup.mkdir()
+    os.link(shared, backup / "shared.dll")
+    loads = f"import ctypes, time; ctypes.CDLL({str(shared)!r}); print('up', flush=True); "
+    # The base interpreter, not the venv's launcher: killing the launcher need not end the process
+    # behind it, and that process is the one holding the file.
+    base_python = getattr(sys, "_base_executable", None) or PY
+    holder = subprocess.Popen(
+        [base_python, "-c", loads + "time.sleep(120)"], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout is not None and holder.stdout.readline().strip() == "up"
+        with pytest.raises(PermissionError):
+            swap_install._rmtree(backup)
+        aside = swap_install._set_aside(backup)
+        assert aside == tmp_path / "toolenv.update-backup.stale-1"
+        assert not backup.exists() and (aside / "shared.dll").is_file()
+    finally:
+        holder.kill()
+        holder.wait()
+        if holder.stdout is not None:
+            holder.stdout.close()
+    swap_install._rmtree(aside)  # nothing holds it now
+    assert not aside.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the 260-character limit is Windows'")
+def test_on_windows_a_tree_deeper_than_260_characters_is_deleted(tmp_path: Path) -> None:
+    """uv writes paths that long: a real install held a file 244 characters deep, 266 once renamed
+    to its backup and moved aside. With long paths switched off, as Windows ships, such a path
+    cannot be deleted by its usual name, so the folder stayed and every update after it refused or,
+    moved aside, it was never cleared (measured, ADR-0360). This fails only where long paths are
+    off, which is what was measured here."""
+    top = tmp_path / "toolenv.update-backup.stale-1"
+    deep = os.path.abspath(top)
+    while len(deep) < 270:
+        deep = os.path.join(deep, "d" * 40)
+    os.makedirs("\\\\?\\" + deep)
+    Path("\\\\?\\" + os.path.join(deep, "results.json")).write_text("{}")
+    swap_install._rmtree(top)
+    assert not os.path.exists("\\\\?\\" + os.path.abspath(top))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the extended-length form is Windows'")
+def test_on_windows_a_tree_is_deleted_by_its_extended_length_name(monkeypatch) -> None:
+    """A drive path gains the prefix, a share's takes the UNC form, and one already extended is
+    left as it is: either of the other two would name nothing."""
+    seen: list[str] = []
+    monkeypatch.setattr(swap_install, "_is_link", lambda path: False)
+    monkeypatch.setattr(shutil, "rmtree", lambda path, **_: seen.append(str(path)))
+    for given in (
+        "C:/tools/toolenv.update-backup",
+        "\\\\server\\share\\tools\\toolenv.update-backup",
+        "\\\\?\\C:\\tools\\toolenv.update-backup",
+    ):
+        swap_install._rmtree(Path(given))
+    assert seen == [
+        "\\\\?\\C:\\tools\\toolenv.update-backup",
+        "\\\\?\\UNC\\server\\share\\tools\\toolenv.update-backup",
+        "\\\\?\\C:\\tools\\toolenv.update-backup",
+    ]
 
 
 @pytest.mark.parametrize("env_state", ["missing", "does not start"])
@@ -370,7 +526,7 @@ def test_when_the_old_install_cannot_be_put_back_the_log_says_how(
         ("cannot be moved", 2),
         ("cannot be put back", 3),
         ("stale backup", 2),
-        ("undeletable backup", 2),
+        ("backup neither deleted nor moved", 2),
     ],
 )
 def test_every_failure_ends_with_the_note_about_the_checkout(
@@ -392,9 +548,10 @@ def test_every_failure_ends_with_the_note_about_the_checkout(
     if failure == "stale backup":
         backup.mkdir()
         (env / "version.txt").unlink()  # the install in place cannot vouch for the backup
-    if failure == "undeletable backup":
+    if failure == "backup neither deleted nor moved":
         backup.mkdir()
         monkeypatch.setattr(swap_install, "_rmtree", _locked)
+        monkeypatch.setattr(swap_install, "_set_aside", lambda path: None)
     code, log = _run(_job(tmp_path, env, command, checkout_note=_NOTE))
     assert code == exit_code, log
     assert log.rstrip().endswith(_NOTE)
