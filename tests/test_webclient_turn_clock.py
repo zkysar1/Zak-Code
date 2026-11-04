@@ -163,6 +163,16 @@ const sessionStorage = {
   setItem(key, value) { this.check(); this.items.set(key, String(value)); },
   removeItem(key) { this.check(); this.items.delete(key); },
 };
+// The page's own repeating timer (it asks for its chat list again, ADR-0362) and its window's
+// focus wait for a test to fire them: a real timer would fire in the middle of what a test reads,
+// and keep node from ever finishing. A test that needs a repeating timer of its own uses __every.
+const __every = setInterval;
+const __repeating = [];
+globalThis.setInterval = (fn) => { __repeating.push(fn); return __repeating.length; };
+const window = {
+  listeners: {},
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+};
 
 const __STREAMS = JSON.parse(process.argv[2]);
 // The watch bus that serves each connection, keyed like `__STREAMS` and sent as X-Bus-Epoch. A

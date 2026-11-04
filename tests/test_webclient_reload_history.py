@@ -124,7 +124,7 @@ globalThis.fetch = (url, opts) => __realFetch(new URL(url, __BASE), opts);
 const __log = document.getElementById("log");
 const __t0 = Date.now();
 let __seen = "", __changed = Date.now(), __said = false;
-setInterval(() => {
+__every(() => {
   const rows = __log.children.map((r) => ({
     cls: [...r.classes].filter((c) => c !== "row").join(" "),
     text: r.textContent,

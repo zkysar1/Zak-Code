@@ -7,8 +7,8 @@ turn-clock tests use (test_webclient_turn_clock.py says why not a browser), agai
 server holding several chats. Each chat has its transcripts (served in order, the last again once
 they are spent), its watch connections keyed by the ``since`` each one asks with ("null" on the
 first; dropped after their frames or held open, each naming the oldest cursor its bus holds), and
-an answer delay for its GET /sessions/{id}. Timed steps click a chat in the list or look at what
-the page shows.
+an answer delay for its GET /sessions/{id}. Timed steps click a chat in the list, fire the page's
+repeating timer or its window's focus, or look at what the page shows.
 
 One test runs a real server instead, for a rotation the page used to replay from the bus.
 """
@@ -63,6 +63,14 @@ document.addEventListener = (type, fn) => {
 };
 document.hidden = Boolean(__SCN.hidden);
 document.getElementById("input").placeholder = __SCN.placeholder;
+document.getElementById("wait-note").hidden = true;  // as the page's markup has it
+// The chat list is drawn by replacing its rows: counted, so a test tells a list drawn again from
+// one left as it was. Its requests are counted too.
+const __chatList = document.getElementById("chats");
+const __replaceRows = __chatList.replaceChildren.bind(__chatList);
+let __draws = 0;
+__chatList.replaceChildren = (...rows) => { __draws++; __replaceRows(...rows); };
+let __lists = 0;
 function __sse(frames) {
   return frames.map(([id, f]) => `id: ${id}\r\ndata: ${JSON.stringify(f)}\r\n\r\n`).join("");
 }
@@ -84,10 +92,12 @@ globalThis.fetch = async (url, opts) => {
     return __answer(chats[__SCN.current].info, 200, 0);
   }
   if (u.pathname === "/sessions/recent") {
+    __lists++;
     if (__SCN.listFails) return __answer({}, 500, 0);
     const list = Object.values(chats).map((c) => ({
       id: c.info.id, title: c.title, message_count: 2,
       updated_at: "2026-10-27T10:00:00+00:00", current: c.info.id === __SCN.current,
+      awaiting_approval: c.info.id === __SCN.waiting,
     }));
     return __answer(list, 200, __SCN.listDelays.shift() || 0);  // the list as it was when asked
   }
@@ -144,8 +154,16 @@ function __look(label) {
   const rows = document.getElementById("log").children.map((r) => ({
     cls: [...r.classes].filter((c) => c !== "row").join(" "), text: r.textContent }));
   const statusOn = document.getElementById("stream-status").classes.has("show");
+  const activeRow = __chatList.children.find((c) => c.classes.has("active"));
+  const viewingRow = __chatList.children.find((c) => c.classes.has("viewing"));
+  const waitNote = document.getElementById("wait-note");
   return {
     label, rows,
+    active: activeRow ? activeRow.children[0].textContent : null,
+    viewing: viewingRow ? viewingRow.children[0].textContent : null,
+    wait: waitNote.hidden ? null : document.getElementById("wait-text").textContent,
+    lists: __lists,
+    draws: __draws,
     send: document.getElementById("send").textContent,
     approval_hidden: document.getElementById("approval").hidden,
     status: statusOn ? document.getElementById("status-text").textContent : "",
@@ -180,6 +198,10 @@ for (const step of __SCN.steps) {
     } else if (step.hidden !== undefined) {
       document.hidden = step.hidden;
       for (const told of __onVisibility) told();
+    } else if (step.tick) {
+      for (const fire of __repeating) fire();  // the page's repeating timer comes round
+    } else if (step.focus) {
+      for (const told of window.listeners.focus || []) told();  // its window is focused
     } else {
       __seen.push(__look(step.look));
     }
@@ -231,12 +253,15 @@ def _page(
     list_delays: list[int] | None = None,
     interrupt: dict[str, Any] | None = None,
     hidden: bool = False,
+    waiting: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
     ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default).
     ``list_delays`` holds back the answers to the page's chat-list requests, in the order asked.
     ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``.
-    ``hidden`` opens the page in a background tab; a ``hidden`` step moves it there or back."""
+    ``hidden`` opens the page in a background tab; a ``hidden`` step moves it there or back.
+    ``waiting`` names the chat whose turn waits on a permission, as the chat list marks it; a
+    ``set`` step changes it, or the current chat."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -248,6 +273,7 @@ def _page(
         "interrupt": interrupt or {},
         "hidden": hidden,
         "placeholder": _PLACEHOLDER,
+        "waiting": waiting,
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
@@ -890,6 +916,158 @@ def test_the_banner_follows_the_chat_on_screen_even_when_the_chat_list_cannot_lo
     assert after["chip"] == on_screen[:8]
     assert after["banner_hidden"] is True
     assert after["placeholder"] == "Message Zak Code…"
+
+
+# ── what changes where the page is not watching (ADR-0362) ───────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "told",
+    [[{"tick": True}], [{"focus": True}], [{"hidden": True}, {"hidden": False}]],
+    ids=["every few seconds", "when its window is focused", "when it is shown again"],
+)
+def test_a_page_on_another_chat_learns_which_chat_is_active_with_no_frame_to_tell_it(
+    tmp_path: Path, told: list[dict[str, Any]]
+) -> None:
+    """Another page, or the terminal, makes a third chat active. A page showing a chat that is not
+    the active one watches only that chat's bus, and nothing on it says so: the page went on
+    marking the old chat active until it opened a chat itself. It asks for its chat list again
+    every few seconds while it is shown, when it is shown again and when its window is focused,
+    and it stays on the chat on screen."""
+    chats = [_chat(A, "chat A"), _chat(X, "chat X"), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 150, "click": "chat X"},
+        {"at": 300, "set": {"current": Y}},  # another surface makes Y active
+        {"at": 350, "look": "before"},
+        *({"at": 400 + 50 * i, **step} for i, step in enumerate(told)),
+        {"at": 700, "look": "after"},
+    ]
+    before, after = _page(tmp_path, chats, steps)
+    assert before["active"] == "chat A"  # nothing has told it yet
+    assert after["active"] == "chat Y"
+    assert after["chip"] == X[:8]  # it stays on the chat on screen
+    assert after["banner_hidden"] is False  # which is still not the active one
+
+
+def test_a_page_in_a_background_tab_asks_for_its_chat_list_only_once_shown(tmp_path: Path) -> None:
+    """The timer asks only while the page is shown: a background tab asks for nothing, and asks at
+    once when it is shown again (ADR-0362)."""
+    chats = [_chat(A, "chat A"), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 200, "hidden": True},
+        {"at": 300, "look": "hidden"},
+        {"at": 350, "set": {"current": Y}},
+        {"at": 400, "tick": True},
+        {"at": 500, "look": "after the timer"},
+        {"at": 550, "hidden": False},
+        {"at": 750, "look": "shown"},
+    ]
+    hidden, ticked, shown = _page(tmp_path, chats, steps)
+    assert ticked["lists"] == hidden["lists"]
+    assert ticked["active"] == "chat A"
+    assert shown["lists"] > hidden["lists"]
+    assert shown["active"] == "chat Y"
+
+
+def test_a_chat_list_asked_for_again_unchanged_is_not_drawn_again(tmp_path: Path) -> None:
+    """Drawn again under the pointer or the keyboard, the list loses the row being clicked or the
+    focus, and the timer asks for it every few seconds: a list that comes back as it was is left
+    as it was. One that changed is drawn, and so is one whose chat on screen changed, since the
+    row of that chat is marked (ADR-0362)."""
+    chats = [_chat(A, "chat A"), _chat(X, "chat X"), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 300, "look": "drawn"},
+        {"at": 350, "tick": True},
+        {"at": 500, "look": "unchanged"},
+        {"at": 550, "set": {"current": Y}},
+        {"at": 600, "tick": True},
+        {"at": 800, "look": "changed"},
+        {"at": 850, "click": "chat X"},  # the list it asks for comes back as it was
+        {"at": 1050, "look": "another on screen"},
+    ]
+    drawn, unchanged, changed, opened = _page(tmp_path, chats, steps)
+    assert unchanged["lists"] == drawn["lists"] + 1  # it asked
+    assert unchanged["draws"] == drawn["draws"]  # and left the list as it was
+    assert changed["draws"] == drawn["draws"] + 1
+    assert changed["active"] == "chat Y"
+    assert (changed["viewing"], opened["viewing"]) == ("chat A", "chat X")
+    assert opened["chip"] == X[:8]
+
+
+@pytest.mark.parametrize("active", [True, False], ids=["the active chat", "another chat"])
+def test_a_page_on_another_chat_says_a_chat_waits_on_a_permission_and_opens_it_on_the_card(
+    tmp_path: Path, active: bool
+) -> None:
+    """A turn's permission card is drawn only on the pages showing its chat, so a page showing
+    another chat never knew the turn waited, and the turn waited out the server's clock and was
+    denied. The chat list marks a chat whose turn waits: a page on another chat says so, naming
+    the chat unless it is the active one, and Open it opens that chat on its card (ADR-0362)."""
+    asks = _frame(
+        3,
+        type="action_required",
+        tool_name="run",
+        arguments={"command": "make deploy"},
+        reason="needs your approval",
+        at=_T0 + 2,
+    )
+    chats = [_chat(X, "chat X"), _chat(A, "chat A", watch={"null": {"frames": [*_TURN, asks]}})]
+    steps = [
+        {"at": 200, "look": "before"},
+        {"at": 250, "set": {"waiting": A, **({"current": A} if active else {})}},
+        {"at": 300, "tick": True},
+        {"at": 450, "look": "told"},
+        {"at": 500, "press": "open-waiting"},
+        {"at": 900, "look": "opened"},
+    ]
+    before, told, opened = _page(tmp_path, chats, steps)
+    assert before["wait"] is None
+    named = "The active chat" if active else "“chat A”"
+    assert told["wait"] == named + " is waiting for your permission."
+    assert told["approval_hidden"] is True  # the card is in chat A, not on this page
+    assert opened["chip"] == A[:8]
+    assert opened["approval_hidden"] is False  # the card the turn waits on
+    assert opened["status"] == "waiting on you"
+    assert opened["wait"] is None  # the chat that waits is the one on screen now
+
+
+def test_the_note_is_never_on_the_chat_that_waits_even_while_the_list_cannot_load(
+    tmp_path: Path,
+) -> None:
+    """The page showing the chat that waits draws its card and no note: not when it opens on it,
+    and not when it goes back to it from another chat while the chat list cannot load (ADR-0362).
+    """
+    chats = [_chat(A, "chat A"), _chat(X, "chat X")]
+    steps = [
+        {"at": 200, "tick": True},
+        {"at": 350, "look": "on the chat that waits"},
+        {"at": 400, "click": "chat X"},
+        {"at": 600, "look": "on another"},
+        {"at": 650, "set": {"listFails": True}},
+        {"at": 700, "click": "chat A"},
+        {"at": 900, "look": "back on it"},
+    ]
+    on_it, on_another, back = _page(tmp_path, chats, steps, waiting=A)
+    assert on_it["wait"] is None
+    assert on_another["wait"] == "The active chat is waiting for your permission."
+    assert back["chip"] == A[:8]
+    assert back["wait"] is None
+
+
+def test_the_note_goes_once_the_chat_list_no_longer_marks_the_chat(tmp_path: Path) -> None:
+    """On another chat the note goes once the chat list no longer marks the chat that waited: its
+    turn was answered, or gave up (ADR-0362)."""
+    chats = [_chat(A, "chat A"), _chat(X, "chat X")]
+    steps = [
+        {"at": 150, "click": "chat X"},
+        {"at": 300, "tick": True},
+        {"at": 450, "look": "told"},
+        {"at": 500, "set": {"waiting": None}},
+        {"at": 550, "tick": True},
+        {"at": 750, "look": "answered"},
+    ]
+    told, answered = _page(tmp_path, chats, steps, waiting=A)
+    assert told["wait"] == "The active chat is waiting for your permission."
+    assert answered["wait"] is None
 
 
 # ── a rotation the page replayed, on a real server (ADR-0325) ─────────────────────────────────

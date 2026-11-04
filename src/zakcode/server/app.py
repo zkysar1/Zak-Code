@@ -610,6 +610,10 @@ class SayInboxPrompter:
     answer within ``timeout`` denies — fail toward safe — so an unattended
     ask-mode deployment degrades to exactly the old behavior, just ``timeout``
     later.
+
+    ``waiting`` is told ``True`` as a prompt starts and ``False`` once it ends,
+    however it ends: the server's chat list marks the chat meanwhile, so a page
+    showing another chat can say that this one waits (ADR-0362).
     """
 
     def __init__(
@@ -617,6 +621,7 @@ class SayInboxPrompter:
         workspace_root: str | os.PathLike[str],
         *,
         publish: Callable[[Any], Any] | None = None,
+        waiting: Callable[[bool], None] | None = None,
         timeout: float = APPROVAL_TIMEOUT_SECONDS,
         poll: float = 0.3,
     ) -> None:
@@ -625,6 +630,7 @@ class SayInboxPrompter:
         self._inbox = say_path(workspace_root)
         self._interrupt = interrupt_path(workspace_root)
         self._publish = publish
+        self._waiting = waiting
         self._timeout = timeout
         self._poll = poll
 
@@ -635,6 +641,8 @@ class SayInboxPrompter:
         if self._publish is not None:
             with contextlib.suppress(Exception):  # observability must never break the turn
                 self._publish(WSActionRequired.from_request(request).model_dump(mode="json"))
+        if self._waiting is not None:
+            self._waiting(True)
         held: list[str] = []
         try:
             loop = asyncio.get_running_loop()
@@ -651,6 +659,8 @@ class SayInboxPrompter:
                 await asyncio.sleep(self._poll)
             return PermissionOutcome.DENY_ONCE  # timeout — fail toward safe
         finally:
+            if self._waiting is not None:
+                self._waiting(False)
             if held:
                 task = asyncio.get_running_loop().create_task(_requeue_held_says(self._inbox, held))
                 _REQUEUE_TASKS.add(task)
@@ -920,6 +930,17 @@ def create_app(
     # message counted as "a saved session is being resumed": the workspace's start-up hooks ran
     # again and what they said was added to the chat again. A chat's first turn here still fires.
     started_chats: set[str] = set()
+    # The chats whose turn waits on a permission answer from the say inbox (ADR-0362). The chat
+    # list marks them: the card is drawn only on the pages that show the chat it was asked in, so a
+    # page showing another chat says that this one waits. A chat runs one turn at a time, and a
+    # turn asks one permission at a time: only read-only calls run side by side, and none asks.
+    approvals_waiting: set[str] = set()
+
+    def _approval_waits(session_id: str, waiting: bool) -> None:
+        if waiting:
+            approvals_waiting.add(session_id)
+        else:
+            approvals_waiting.discard(session_id)
 
     # Held while a say is checked against the current conversation and queued, and while the
     # current conversation changes (ADR-0319). A say then lands either before the change, which
@@ -1123,6 +1144,7 @@ def create_app(
         (ADR-0319). Each is titled by its first ask (:func:`_chat_title`) and dated by its last
         save. One with nothing asked in it is left out unless it is the current one: a new chat
         nobody has written in yet is still the chat on screen. ``limit`` caps the list, 1 to 500.
+        A chat whose turn waits on a permission answer is marked (ADR-0362).
         """
         limit = max(1, min(limit, 500))
         current = _current_session_id()
@@ -1151,6 +1173,7 @@ def create_app(
                     updated_at=datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds"),
                     message_count=count,
                     current=session_id == current,
+                    awaiting_approval=session_id in approvals_waiting,
                 )
             )
         return chats
@@ -1447,6 +1470,7 @@ def create_app(
         return SayInboxPrompter(
             resolved_settings.workspace_root,
             publish=event_bus_registry.get_or_create(session_id).publish,
+            waiting=lambda waiting: _approval_waits(session_id, waiting),
         )
 
     @app.post("/chat")
