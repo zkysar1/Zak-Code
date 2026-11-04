@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import os
 import sys
 from collections.abc import AsyncIterator
@@ -1542,6 +1543,51 @@ def test_update_keeps_the_python_and_an_editable_install(tmp_path, monkeypatch) 
     )
     assert "--editable" in reinstall
     assert reinstall[-1].startswith("zakcode @ file://")  # no extras in this receipt
+
+
+def test_update_keeps_the_packages_added_with_with(tmp_path, monkeypatch) -> None:
+    """uv writes the receipt from the command that installs, so a reinstall naming zakcode alone
+    dropped every package added with `uv tool install --with` (ADR-0359). Each comes back in the
+    form uv records it, each form measured with uv 0.9.6: a name with its extras, version and
+    marker, a URL, a git repository at the ref it named, either with a subdirectory, a local
+    folder, a local wheel, an editable folder."""
+    local, editable = (tmp_path / "localpkg").as_posix(), (tmp_path / "tinypkg").as_posix()
+    wheel = (tmp_path / "wheelfile-1.0-py3-none-any.whl").as_posix()
+    receipt = (
+        "[tool]\nrequirements = [\n"
+        '  { name = "zakcode", extras = ["server"] },\n'
+        '  { name = "six", specifier = ">=1.10,<2" },\n'
+        '  { name = "art", extras = ["extra"], marker = "python_full_version >= \'3.8\'",'
+        ' specifier = ">=6" },\n'
+        '  { name = "wheelpkg", url = "https://example.test/wheelpkg-1.0-py3-none-any.whl" },\n'
+        '  { name = "subu", url = "https://example.test/mono.zip", subdirectory = "pkgs/subu" },\n'
+        '  { name = "attrs", git = "https://github.com/python-attrs/attrs?rev=25.3.0" },\n'
+        '  { name = "sub", git = "https://example.test/mono.git?subdirectory=pkgs%2Fsub&rev=dev"'
+        " },\n"
+        f'  {{ name = "localpkg", directory = "{local}" }},\n'
+        f'  {{ name = "wheelfile", path = "{wheel}" }},\n'
+        f'  {{ name = "tinypkg", editable = "{editable}" }},\n'
+        "]\n"
+    )
+    h = _update_harness(tmp_path, monkeypatch, receipt)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    reinstall = h.calls[1][0]
+    added = [
+        (flag, value) for flag, value in itertools.pairwise(reinstall) if flag.startswith("--with")
+    ]
+    assert added == [
+        ("--with", "six>=1.10,<2"),
+        ("--with", "art[extra]>=6 ; python_full_version >= '3.8'"),
+        ("--with", "wheelpkg @ https://example.test/wheelpkg-1.0-py3-none-any.whl"),
+        ("--with", "subu @ https://example.test/mono.zip#subdirectory=pkgs/subu"),
+        ("--with", "attrs @ git+https://github.com/python-attrs/attrs@25.3.0"),
+        ("--with", "sub @ git+https://example.test/mono.git@dev#subdirectory=pkgs/sub"),
+        ("--with", f"localpkg @ {Path(local).as_uri()}"),
+        ("--with", f"wheelfile @ {Path(wheel).as_uri()}"),
+        ("--with-editable", editable),
+    ]
+    assert reinstall[-1].startswith("zakcode[server] @ file://")  # zakcode itself, as before
 
 
 def _head(clone) -> str:
