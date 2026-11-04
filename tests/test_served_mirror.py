@@ -77,7 +77,8 @@ def _streams_serve(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class _Echo:
     """The web app's agent, scripted: each line gets a saved reply. A line asking to run a command
-    first asks the web app's prompter, as a tool call needing approval does."""
+    first asks the web app's prompter, as a tool call needing approval does. A line starting
+    "fail" raises once it is saved, as a turn whose pod went away does."""
 
     def __init__(self, session: Session, prompter: Any) -> None:
         self.session = session
@@ -85,6 +86,8 @@ class _Echo:
 
     async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
         self.session.add_message(Message.user(user_text))
+        if user_text.startswith("fail"):
+            raise RuntimeError("the pod went away")
         reply = f"reply to {user_text}"
         if user_text.startswith("run "):
             command = user_text[len("run ") :]
@@ -377,6 +380,53 @@ def test_a_pane_joining_draws_the_saved_chat_once_then_what_the_bus_holds(tmp_pa
         assert text.count("an old answer") == 1
         assert text.count("a new question (web app") == 1  # drawn from the bus, not the save
         assert text.count("reply to a new question") == 1
+
+
+def test_a_pane_draws_how_a_failed_turn_ended_once_from_the_bus_or_the_save(tmp_path: Path) -> None:
+    """ADR-0361: a pane joining while the bus holds a failed turn draws its end from the bus, and
+    one joining after a restart draws it from the save, where it ended, as the page does."""
+    with _Web(tmp_path) as web:
+        _say(tmp_path, "fail please")
+        _until(lambda: bool(web.transcript()["ends"]), what="the failed turn's end to be saved")
+        live, mirror = _view(web.url)
+        with _showing(mirror):
+            _say(tmp_path, "after it")
+            _until(lambda: "reply to after it" in live.text(), what="the turn after it")
+    with _Web(tmp_path, new_session=False) as web:  # the bus is gone; the save is not
+        restarted, mirror = _view(web.url)
+        with _showing(mirror):
+            _until(lambda: "reply to after it" in restarted.text(), what="the saved chat")
+    for screen in (live, restarted):
+        text = screen.text()
+        assert text.count("RuntimeError: the pod went away") == 1, text
+        order = ["fail please", "provider error", "after it", "reply to after it"]
+        assert [text.index(part) for part in order] == sorted(text.index(p) for p in order), text
+    assert "replaying 3 messages" in restarted.text()  # an end is not counted as a message
+
+
+def test_a_joining_pane_draws_the_saved_ends_the_bus_will_not() -> None:
+    """The cut the page makes (ADR-0361): an end placed past the saved messages kept is the
+    replay's, and where no saved line marks the turn the bus starts with, an end is told from the
+    bus's by its stamp."""
+
+    def said(role: str, text: str, at: float) -> dict[str, Any]:
+        return {"role": role, "text": text, "at": at}
+
+    def end(after: int, at: float) -> dict[str, Any]:
+        return {"after": after, "at": at, "stop_reason": "stuck", "error": "", "degraded": False}
+
+    messages = [said("user", "one", 1.0), said("assistant", "echo one", 2.0)]
+    messages.append(said("user", "two", 5.0))
+    ends = [end(2, 3.0), end(3, 6.0)]
+
+    def cut(bus_from: float | None, bus_since: int | None) -> Any:
+        transcript = {"messages": messages, "ends": ends, "bus_from": bus_from}
+        return served_mirror._saved_before_the_bus({**transcript, "bus_since": bus_since})
+
+    assert cut(None, None) == (messages, ends)  # no bus: all of it is saved
+    assert cut(5.0, 7) == (messages[:2], ends[:1])  # the bus's turn starts at "two"
+    assert cut(5.5, 7) == (messages, ends[:1])  # no saved line marks its start
+    assert cut(4.0, None) == (messages[:2], ends[:1])  # a running turn the bus holds part of
 
 
 def test_a_pane_follows_the_web_app_to_the_chat_its_page_opens(tmp_path: Path) -> None:

@@ -67,6 +67,13 @@ RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop", 
 #: Suffix marking an in-progress temp file written during an atomic save.
 _TMP_SUFFIX = ".tmp"
 
+#: How many turn ends a session keeps (ADR-0361): more than a page draws, and a bound on a
+#: document that a long unattended run rewrites at every save.
+TURN_ENDS_KEPT = 200
+
+#: How much of a turn's error a turn end keeps. The page draws its first line.
+_TURN_END_ERROR_CHARS = 2000
+
 
 def _new_id() -> str:
     """Return a fresh random session id (uuid4 hex)."""
@@ -132,6 +139,24 @@ class SessionVersionError(SessionError):
             f"Session {session_id!r} has schema version {found}, but this build "
             f"supports at most {supported}; upgrade Zak Code to read it"
         )
+
+
+class TurnEnd(BaseModel):
+    """How a turn that did not simply finish ended (ADR-0361).
+
+    The web page draws a turn's end as a row of its own ("provider error — …", "stopped early —
+    max iterations", "interrupted"). The row came only from the watch bus, which is in memory, so a
+    page reopened after the server restarted drew the turn's words and not how it ended. ``after``
+    is how many of the session's messages came before the end: the row goes back in its place by
+    count, since two stamps in one tick of Windows' clock compare equal (ADR-0327).
+    """
+
+    after: int
+    at: str = Field(default_factory=_now_iso)
+    stop_reason: str
+    error: str = ""
+    degraded: bool = False
+    open_steps: int = 0
 
 
 class Session(BaseModel):
@@ -309,10 +334,49 @@ class Session(BaseModel):
     #: append-only: an OLDER build drops the field, and the chat goes back to its first ask as
     #: its title (fails SAFE: the pre-ADR-0358 title, nothing else is lost).
     title: str = ""
+    #: How each turn that did not simply finish ended, oldest first: the last
+    #: :data:`TURN_ENDS_KEPT` (ADR-0361). Schema v1 stays append-only: an OLDER build drops the
+    #: field, and a reopened page draws those turns without their end, as it did before (fails
+    #: SAFE: only the rows are lost).
+    turn_ends: list[TurnEnd] = Field(default_factory=list)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""
         self.messages.append(msg)
+
+    def keep_turn_end(
+        self, stop_reason: str, *, error: str = "", degraded: bool = False, open_steps: int = 0
+    ) -> None:
+        """Keep how the turn that just ended ended, after the messages it left (ADR-0361).
+
+        A plain "done" is not kept: every turn has one, and the saved conversation reads the same
+        without it. Every other end is, whatever its color on the page.
+        """
+        if stop_reason == "completed" and not degraded and not open_steps:
+            return
+        end = TurnEnd(
+            after=len(self.messages),
+            stop_reason=stop_reason,
+            error=error[:_TURN_END_ERROR_CHARS],
+            degraded=degraded,
+            open_steps=open_steps,
+        )
+        self.turn_ends = [*self.turn_ends, end][-TURN_ENDS_KEPT:]
+
+    def shift_turn_ends(self, before: int, *, summarized: bool) -> None:
+        """Put each turn end back in its place after ``messages`` was compacted from ``before``.
+
+        A compaction that summarizes puts one summary in place of the old region and keeps the
+        tail; one that only elides keeps every message where it was. An end that falls at or
+        before the summary belongs to a turn now told only in it, and goes (ADR-0361).
+        """
+        shift = len(self.messages) - before
+        floor = 2 if summarized else 0  # 0 is before the summary and 1 just after it
+        self.turn_ends = [
+            end.model_copy(update={"after": end.after + shift})
+            for end in self.turn_ends
+            if end.after + shift >= floor
+        ]
 
     def resume_notice(self, *, running_build: str | None) -> str | None:
         """Why this transcript must be compacted before it continues, or ``None`` (ADR-0033).

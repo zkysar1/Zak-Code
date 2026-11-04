@@ -105,6 +105,7 @@ from zakcode.server.wire import (
     SessionTranscript,
     ToolInfo,
     TranscriptMessage,
+    TranscriptTurnEnd,
     UploadRequest,
     UploadResponse,
     WatchMarkerRequest,
@@ -158,6 +159,7 @@ from zakcode.session.store import (
     SessionNotFound,
     SessionStore,
     SessionVersionError,
+    TurnEnd,
 )
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
@@ -1188,8 +1190,37 @@ def create_app(
                 raise HTTPException(status_code=404, detail="no current session")
             session_id = resolved
         session = _load_session_or_404(session_id)
+
+        def epoch(stamp: str) -> float | None:
+            try:
+                created = datetime.fromisoformat(stamp)
+            except ValueError:
+                return None
+            return (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
+
+        # A turn's end goes after the messages it followed, counted among the spoken ones; an end
+        # that names more messages than there are is not drawn (ADR-0361).
+        placed: dict[int, list[TurnEnd]] = {}
+        for kept in session.turn_ends:
+            placed.setdefault(kept.after, []).append(kept)
         spoken: list[TranscriptMessage] = []
-        for message in session.messages:
+        ends: list[TranscriptTurnEnd] = []
+
+        def ends_at(place: int) -> None:
+            for end in placed.get(place, ()):
+                ends.append(
+                    TranscriptTurnEnd(
+                        after=len(spoken),
+                        at=epoch(end.at),
+                        stop_reason=end.stop_reason,
+                        error=safe_projection.redact(end.error),
+                        degraded=end.degraded,
+                        open_steps=end.open_steps,
+                    )
+                )
+
+        for index, message in enumerate(session.messages):
+            ends_at(index)
             if message.role not in ("user", "assistant"):
                 continue
             text = message.text
@@ -1199,22 +1230,24 @@ def create_app(
             if message.role == "user":
                 hook = said_by_session_start(text)  # a note from the workspace (ADR-0344)
                 text = typed_command(text) or text  # as typed, not the skill frame (ADR-0335)
-            at: float | None
-            try:
-                created = datetime.fromisoformat(message.created_at)
-                at = (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
-            except ValueError:
-                at = None
             spoken.append(
                 TranscriptMessage(
                     role=message.role,
                     text=safe_projection.redact(text),
-                    at=at,
+                    at=epoch(message.created_at),
                     hook=None if hook is None else safe_projection.redact(hook),
                 )
             )
+        ends_at(len(session.messages))
         if limit is not None and limit >= 0:
+            # An end at or before the first message kept belongs to a turn the limit left out.
+            dropped = len(spoken) - (min(limit, len(spoken)) if limit else 0)
             spoken = spoken[-limit:] if limit else []
+            ends = [
+                end.model_copy(update={"after": end.after - dropped})
+                for end in ends
+                if end.after > dropped
+            ]
         # The cut between `messages` and the in-memory watch bus falls where the oldest turn the
         # bus holds whole begins, so no turn is drawn half from each (see SessionTranscript,
         # ADR-0325). The bus's name goes with it, read from the same bus object, so the page can
@@ -1240,6 +1273,7 @@ def create_app(
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
+            ends=ends,
             message_count=len(session.messages),
             bus_from=bus_from,
             bus_since=bus_since,
@@ -3046,6 +3080,7 @@ def create_app(
             from zakcode.events import AgentDone
             from zakcode.usage import Usage
 
+            error = _turn_failure_error(exc, safe_projection.redact)
             with contextlib.suppress(Exception):
                 bus.publish(
                     AgentDone(
@@ -3053,9 +3088,11 @@ def create_app(
                         iterations=0,
                         usage=Usage(),
                         degraded=True,
-                        error=_turn_failure_error(exc, safe_projection.redact),
+                        error=error,
                     )
                 )
+            if agent is not None:  # saved below, so a page reopened later draws it too (ADR-0361)
+                agent.session.keep_turn_end("provider_error", error=error, degraded=True)
         finally:
             # First, before anything awaited: the turn is over, and a Stop has nothing to reach.
             if turn_stops.get(session.id) is stop:
