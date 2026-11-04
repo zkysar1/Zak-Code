@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -78,6 +79,7 @@ from zakcode.events import AgentEvent
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.hooks.settings_loader import SettingsHooks
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
+from zakcode.messages import Message
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.spend_gate import STOP_REASON as SPEND_STOP_REASON
@@ -917,6 +919,10 @@ def create_app(
     # naming the session sets it (ADR-0327). The say consumer's turns watch the workspace's
     # `.interrupt` file instead, as they always have.
     turn_stops: dict[str, asyncio.Event] = {}
+    # The agent each streamed turn runs on, by session: the say consumer's and POST /chat/stream's,
+    # whose every event reaches the watch bus as it is made. The transcript asks it what the turn
+    # holds in memory once the bus has dropped where the turn began (ADR-0363).
+    turn_agents: dict[str, AgentLike] = {}
     # The chats whose SessionStart hooks this server has run (ADR-0342). Every turn runs on an
     # agent of its own, and an agent's loop fires SessionStart before its first turn, so every
     # message counted as "a saved session is being resumed": the workspace's start-up hooks ran
@@ -1182,7 +1188,8 @@ def create_app(
         response carries): the served page draws the saved messages older than the cut and lets
         the watch replay draw the rest, so a reopened page shows the whole conversation. The
         literal id ``current`` resolves to the workspace's current conversation (404 when there is
-        none), like ``/watch/current``.
+        none), like ``/watch/current``. A running turn the bus no longer holds the start of is read
+        from its loop instead, with what its model call has written so far (``partial``, ADR-0363).
         """
         if session_id == "current":
             resolved = _current_session_id()
@@ -1198,10 +1205,57 @@ def create_app(
                 return None
             return (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
 
+        def held_by_the_turn() -> tuple[list[Message], list[TurnEnd], str, int] | None:
+            # Run on the event loop, where the turn runs: its chat, what its model call has
+            # written and the bus's cursor, read in one step, so no part is in two or in none.
+            loop = getattr(turn_agents.get(session.id), "loop", None)
+            held_bus = event_bus_registry.get(session.id)
+            if loop is None or held_bus is None:
+                return None  # an agent with no loop to ask
+            chat = loop.session
+            return (
+                list(chat.messages),
+                list(chat.turn_ends),
+                loop.reply_so_far,
+                held_bus.latest_cursor,
+            )
+
+        # The cut between `messages` and the in-memory watch bus falls where the oldest turn the
+        # bus holds whole begins, so no turn is drawn half from each (see SessionTranscript,
+        # ADR-0325). The bus's name goes with it, read from the same bus object, so the page can
+        # tell if the watch is another. `latest` is read first: a turn starting meanwhile lands
+        # after it, in the replay.
+        bus = event_bus_registry.get(session.id)
+        running = session.id in inflight
+        bus_from: float | None = None
+        bus_since: int | None = None
+        partial: str | None = None
+        messages, turn_ends = session.messages, session.turn_ends
+        if bus is not None:
+            latest = bus.latest_cursor
+            start = bus.oldest_where(
+                lambda event: (
+                    isinstance(event, WatchMarkerRequest) and event.event == "user_message"
+                )
+            )
+            if start is not None:
+                bus_since, bus_from = start[0] - 1, start[1]
+            elif running and (held := anyio.from_thread.run_sync(held_by_the_turn)) is not None:
+                # The bus has dropped where the running turn began, and the reply in progress began
+                # before its oldest event. The turn's loop holds all of it: the chat with every
+                # reply the turn has finished, and what the call in progress has written. The page
+                # draws those, and the replay goes on after the cursor read with them (ADR-0363).
+                messages, turn_ends, written, bus_since = held
+                partial = safe_projection.redact(written) if written else None
+            elif running:
+                bus_from = bus.oldest_at  # the call in progress is in the bus alone: replay it
+            elif latest:
+                bus_since = latest  # the tail of an ended, saved turn: drawn from here alone
+
         # A turn's end goes after the messages it followed, counted among the spoken ones; an end
         # that names more messages than there are is not drawn (ADR-0361).
         placed: dict[int, list[TurnEnd]] = {}
-        for kept in session.turn_ends:
+        for kept in turn_ends:
             placed.setdefault(kept.after, []).append(kept)
         spoken: list[TranscriptMessage] = []
         ends: list[TranscriptTurnEnd] = []
@@ -1219,7 +1273,7 @@ def create_app(
                     )
                 )
 
-        for index, message in enumerate(session.messages):
+        for index, message in enumerate(messages):
             ends_at(index)
             if message.role not in ("user", "assistant"):
                 continue
@@ -1238,7 +1292,7 @@ def create_app(
                     hook=None if hook is None else safe_projection.redact(hook),
                 )
             )
-        ends_at(len(session.messages))
+        ends_at(len(messages))
         if limit is not None and limit >= 0:
             # An end at or before the first message kept belongs to a turn the limit left out.
             dropped = len(spoken) - (min(limit, len(spoken)) if limit else 0)
@@ -1248,37 +1302,16 @@ def create_app(
                 for end in ends
                 if end.after > dropped
             ]
-        # The cut between `messages` and the in-memory watch bus falls where the oldest turn the
-        # bus holds whole begins, so no turn is drawn half from each (see SessionTranscript,
-        # ADR-0325). The bus's name goes with it, read from the same bus object, so the page can
-        # tell if the watch is another. `latest` is read first: a turn starting meanwhile lands
-        # after it, in the replay.
-        bus = event_bus_registry.get(session.id)
-        running = session.id in inflight
-        bus_from: float | None = None
-        bus_since: int | None = None
-        if bus is not None:
-            latest = bus.latest_cursor
-            start = bus.oldest_where(
-                lambda event: (
-                    isinstance(event, WatchMarkerRequest) and event.event == "user_message"
-                )
-            )
-            if start is not None:
-                bus_since, bus_from = start[0] - 1, start[1]
-            elif running:
-                bus_from = bus.oldest_at  # the call in progress is in the bus alone: replay it
-            elif latest:
-                bus_since = latest  # the tail of an ended, saved turn: drawn from here alone
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
             ends=ends,
-            message_count=len(session.messages),
+            message_count=len(messages),
             bus_from=bus_from,
             bus_since=bus_since,
             bus_epoch=bus.epoch if bus is not None else None,
             running=running,
+            partial=partial,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)
@@ -1450,6 +1483,7 @@ def create_app(
     def _release_session(session_id: str) -> None:
         """Undo :func:`_claim_session` once its turn is over."""
         turn_stops.pop(session_id, None)
+        turn_agents.pop(session_id, None)
         inflight.discard(session_id)
 
     def _turn_agent(
@@ -1605,6 +1639,7 @@ def create_app(
         except BaseException:
             _release_session(session.id)
             raise
+        turn_agents[session.id] = agent  # every event of its turn reaches the bus (ADR-0363)
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             from zakcode.events import AgentStatus
@@ -3000,6 +3035,7 @@ def create_app(
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
             agent = _turn_agent(session, None, _inbox_prompter(session.id))
+            turn_agents[session.id] = agent  # what a late page asks of the turn (ADR-0363)
             message: str
             if wakeup:
                 # A fired wake-up is the harness's own turn (ADR-0189): never a slash
@@ -3112,6 +3148,7 @@ def create_app(
                         restart_carry = (str(carried), str(boundary))
                         restart_pending.set()
                     await _release_turn_agent(agent, session.id)
+                turn_agents.pop(session.id, None)  # in the step `running` ends, so they agree
                 inflight.discard(session.id)
                 # Host-neutral ending: check SEEN and DONE after every turn.
                 if run_ending_until is not None:

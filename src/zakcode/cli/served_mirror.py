@@ -35,7 +35,7 @@ from zakcode.cli._glyphs import resolve_glyphs
 from zakcode.cli._layout import block, notice_info, user_line
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.cli.saybox import fold_lines
-from zakcode.events import AgentDone, AgentEvent, AgentStatus
+from zakcode.events import AgentDone, AgentEvent, AgentStatus, AgentTextDelta
 from zakcode.server.client import ServerClient, WatchStream
 from zakcode.server.wire import event_from_dict
 
@@ -235,6 +235,13 @@ class ServedChatMirror:
             # app restarted on is on screen already, and its saved conversation is not drawn again.
             self._draw_saved(*_saved_before_the_bus(transcript))
             self._shown = session
+            partial = transcript.get("partial")
+            if isinstance(partial, str) and partial:
+                # A turn longer than the bus: the reply being written, as far as it has come. The
+                # watch, after the cursor, draws the rest into the same turn (ADR-0363).
+                await self._end_turn()
+                self._turn = self._new_turn(timed=False)
+                await self._turn.draw(AgentTextDelta(text=partial))
         self._session = session
 
     async def _tail(self, client: ServerClient) -> None:
