@@ -412,7 +412,9 @@ def test_on_windows_a_file_loaded_through_another_link_stops_the_delete_and_not_
 ) -> None:
     """The case behind ADR-0360, made for real: a DLL that a program loaded through one link (the
     uv cache's, or another install's) cannot be deleted through another (this install's), and the
-    folder holding that other link can still be moved aside."""
+    folder holding that other link can still be moved aside. That is Windows 10's way. CI's
+    runner, on Windows Server 2025, deletes the other link, and there the delete must simply work.
+    A third link, deleted first, tells which of the two this machine is."""
     dll = Path(sys.base_prefix, "python3.dll")
     if not dll.is_file():
         pytest.skip(f"no {dll} to load")
@@ -422,6 +424,8 @@ def test_on_windows_a_file_loaded_through_another_link_stops_the_delete_and_not_
     backup = tmp_path / "toolenv.update-backup"
     backup.mkdir()
     os.link(shared, backup / "shared.dll")
+    probe = tmp_path / "probe.dll"
+    os.link(shared, probe)
     loads = f"import ctypes, time; ctypes.CDLL({str(shared)!r}); print('up', flush=True); "
     # The base interpreter, not the venv's launcher: killing the launcher need not end the process
     # behind it, and that process is the one holding the file.
@@ -431,6 +435,14 @@ def test_on_windows_a_file_loaded_through_another_link_stops_the_delete_and_not_
     )
     try:
         assert holder.stdout is not None and holder.stdout.readline().strip() == "up"
+        try:
+            probe.unlink()
+        except PermissionError:
+            pass  # this Windows keeps the loaded file through every one of its links
+        else:
+            swap_install._rmtree(backup)  # nothing is stuck, so nothing is moved aside
+            assert not backup.exists()
+            return
         with pytest.raises(PermissionError):
             swap_install._rmtree(backup)
         aside = swap_install._set_aside(backup)

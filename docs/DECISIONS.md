@@ -22614,10 +22614,11 @@ it refused to go on until a person deleted the folder: "left by an earlier updat
 deleted ... A program is probably still running from it". Two causes were measured, and neither
 needs a program running from the old install:
 - uv links the files it installs from its cache, so two installs of one package share one file,
-  and Windows will not delete a file a program has loaded through any of its links. A DLL loaded by
-  one process through one link could not be deleted through another (WinError 5); the folder
-  holding that other link could still be renamed; once the process exited, the delete went
-  through. In the end-to-end test on a developer's machine the holder was the test runner: it had
+  and Windows 10 will not delete a file a program has loaded through any of its links. A DLL
+  loaded by one process through one link could not be deleted through another (WinError 5); the
+  folder holding that other link could still be renamed; once the process exited, the delete went
+  through. CI's runner, on Windows Server 2025, deleted the other link with the DLL still loaded.
+  In the end-to-end test on a developer's machine the holder was the test runner: it had
   loaded fastuuid's `.pyd` from its own environment, a link to the same cache file, and no program
   ran from the test's install (the modules of every process, listed at the moment of the refusal).
 - uv writes paths longer than 260 characters, and with long paths switched off, as Windows ships,
@@ -22657,7 +22658,9 @@ New tests.
   one still held stays, and a folder merely named alike and one of another tool beside them are
   left; on Windows the delete is handed each path in its extended-length form, a share's as
   `\\?\UNC\` and one already in that form as it is. On Windows, for real: a DLL loaded through one
-  hard link stops the delete through another and not the rename; a tree deeper than 260
+  hard link stops the delete through another and not the rename where Windows refuses that
+  delete, and where it does not the delete simply works (a third link, deleted first, tells which
+  case a machine is: Windows 10 here refuses, CI's runner does not); a tree deeper than 260
   characters is deleted.
 - `tests/test_update_e2e.py` (CI's `update-e2e`): the test has a uv cache of its own, since with the
   machine's cache the runner itself held files the update had to delete. Step 4 keeps a program
@@ -22675,3 +22678,6 @@ Windows machine (9 minutes): the run ADR-0359 could not make there.
 Not verified.
 - A machine with long paths switched on, where the extended-length form is not needed.
 - A holder other than a loaded file, such as a program working in a folder inside the install.
+- Why CI's runner lets the delete through another link go and Windows 10 here does not: its
+  Windows (Server 2025) and its drive (D:, against C: here) were not told apart, and Python was
+  3.11 on both. Windows 11 was not tried. The update goes on either way.
