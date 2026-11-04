@@ -240,6 +240,12 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         "ZAKCODE_HOME": str(home),
         "PYTHONUTF8": "1",
     }
+    if WINDOWS:
+        # A uv cache of the test's own. uv links the files it installs from its cache, and Windows
+        # keeps a loaded file from deletion through every link to it: with the cache the machine's
+        # other environments use, the test runner itself held a file the update had to delete
+        # (measured, ADR-0360), so what the update could delete hung on what else was running.
+        env["UV_CACHE_DIR"] = str(base / "uv cache")
     scripts = "Scripts" if WINDOWS else "bin"
     exe = ".exe" if WINDOWS else ""
     zakcode = bin_dir / f"zakcode{exe}"
@@ -343,18 +349,43 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         _ok([str(tool_python), "-c", "import zakcode"])  # the new install works
         receipt_before = (tool_env / "uv-receipt.toml").read_text(encoding="utf-8")
 
-        # ── 4. the reinstall fails: the old install comes back, whole ──
-        # The program that held the leftover in 3 has exited, so this update clears it first.
-        offline = {**env, "UV_OFFLINE": "1", "UV_NO_CACHE": "1"}
-        proc = _run([str(zakcode), "update"], env=offline)
-        assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
-        # The last lines, not the first: "update failed" is written before the old install is put
-        # back, so a test that stopped there would read the tree while it was still being restored.
-        # This update pulls nothing, so no note about the checkout follows the last line.
-        text = _wait_for_log(
-            log, ("restored the previous environment", "could NOT be put back", "update complete")
+        # ── 4. a program holds a file in the leftover of 3, and the reinstall fails ──
+        # The leftover cannot be deleted while the file is held, so the update moves it aside and
+        # goes on (ADR-0360). Then the reinstall fails, and the old install comes back, whole.
+        # How much of the leftover is left depends on how far its delete got in 3, so the held
+        # file is put there: a DLL loaded from a folder stops its delete and not its rename
+        # (measured on Windows).
+        held = tool_dir / "zakcode.update-backup" / "held.dll"
+        shutil.copy2(Path(sys.base_prefix, "python3.dll"), held)
+        loads = "import ctypes, sys; ctypes.CDLL(sys.argv[1]); print('up', flush=True); "
+        holder = subprocess.Popen(
+            [base_python, "-I", "-c", loads + "sys.stdin.read()", str(held)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
         )
-        assert "left by an earlier update" in text, text
+        try:
+            assert holder.stdout is not None and holder.stdout.readline().strip() == "up"
+            offline = {**env, "UV_OFFLINE": "1", "UV_NO_CACHE": "1"}
+            proc = _run([str(zakcode), "update"], env=offline)
+            assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+            # The last lines, not the first: "update failed" is written before the old install is
+            # put back, so a test that stopped there would read the tree while it was still being
+            # restored. This update pulls nothing, so no note about the checkout follows them.
+            text = _wait_for_log(
+                log,
+                (
+                    "restored the previous environment",
+                    "could NOT be put back",
+                    "update complete",
+                    "can be neither deleted",
+                ),
+            )
+            assert (tool_dir / "zakcode.update-backup.stale-1").is_dir(), text
+        finally:
+            holder.communicate(timeout=60)  # its input closes, so it exits and lets the folder go
+        assert "could not delete" in text and "left by an earlier update" in text, text
+        assert "Moved it to" in text, text
         assert "update failed" in text and "restored the previous environment" in text, text
         assert tool_python.is_file() and _ok([str(tool_python), "-c", "import zakcode"]) is not None
         assert (tool_env / "uv-receipt.toml").read_text(encoding="utf-8") == receipt_before
@@ -376,6 +407,9 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
         assert str(log) in shown or log.name in shown, f"the log is not named:\n{shown}"
         text = _wait_for_log(log, ("update failed", "update complete"))
         assert "update complete" in text, text
+        # Nothing runs from the folder 4 moved aside any more, so this update deletes it.
+        assert "which an earlier update moved aside" in text, text
+        assert not list(tool_dir.glob("zakcode.update-backup.stale-*")), text
     assert _head(checkout) == new_head, "the checkout was not pulled"
     assert tool_python.is_file(), f"no environment at {tool_env}:\n{shown}"
     _ok([str(tool_python), "-c", "import zakcode, zakcode.cli"])
