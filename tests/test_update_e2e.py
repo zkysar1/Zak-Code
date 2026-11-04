@@ -41,6 +41,9 @@ _SKIP_TOP = ("tests", "docs", "bench")
 #: An older build backend than ``pyproject.toml`` pins. The seed is built with it, so the update
 #: has to build with the pinned one, read from the tree it pulls, whatever is newest that day.
 _PREVIOUS_BACKEND = "hatchling==1.31.0"
+#: A package added with ``uv tool install --with``: small, pure Python, and no dependency of
+#: zakcode's, so it is installed after the update only if the update kept it (ADR-0359).
+_WITH = "pyjokes>=0.6"
 
 
 def _run(
@@ -245,8 +248,10 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
     log = home / "update" / "update.log"
 
     # ── the install a user has: editable, from a local checkout, dependencies at the newest ──
+    # ...and a package added beside it with --with, which every update must keep (ADR-0359).
     _ok(
-        [uv, "tool", "install", "--python", "3.11", "--editable", f"zakcode @ {checkout.as_uri()}"],
+        [uv, "tool", "install", "--python", "3.11", "--editable", "--with", _WITH]
+        + [f"zakcode @ {checkout.as_uri()}"],
         env=env,
     )
     assert zakcode.is_file(), f"no {zakcode} after the install"
@@ -377,6 +382,9 @@ def test_update_replaces_the_install_it_runs_from(tmp_path: Path) -> None:
     receipt = tomllib.loads((tool_env / "uv-receipt.toml").read_text(encoding="utf-8"))
     requirement = next(r for r in receipt["tool"]["requirements"] if r["name"] == "zakcode")
     assert "editable" in requirement, f"the install is no longer editable: {requirement}"
+    kept = [r for r in receipt["tool"]["requirements"] if r["name"] == "pyjokes"]
+    assert kept == [{"name": "pyjokes", "specifier": ">=0.6"}], receipt["tool"]["requirements"]
+    _ok([str(tool_python), "-c", "import pyjokes"])  # installed, not only recorded
     built = _built_by(tool_python)
     assert built == pinned.replace("==", " "), f"built by {built}; the pulled tree pins {pinned}"
     after = _installed(tool_python)
