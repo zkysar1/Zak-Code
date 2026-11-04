@@ -22681,3 +22681,62 @@ Not verified.
 - Why CI's runner lets the delete through another link go and Windows 10 here does not: its
   Windows (Server 2025) and its drive (D:, against C: here) were not told apart, and Python was
   3.11 on both. Windows 11 was not tried. The update goes on either way.
+
+## ADR-0362: a page showing another chat keeps its chat list current, and says when a chat waits on a permission
+
+Status: accepted. 2026-11-04. Builds on ADR-0319 (the chat list, and viewing a chat that is not
+the active one), ADR-0325 (the page draws a chat it opens or comes back to, once) and ADR-0339 (a hidden page lets
+go of its watch).
+
+Context. A page watches only the chat on screen. When another page, or the terminal, made another
+chat active, a page showing a third chat heard nothing: its list kept the "active" badge on the
+old chat until the page opened a chat itself. A send from it was refused once and the page then
+followed the active chat, so nothing went to the wrong chat, but the badge and the banner were
+wrong until then. And a turn's permission card is published on its own chat's bus, so only the
+pages showing that chat drew it. A page showing any other chat never knew the turn waited, and the
+turn waited out the server's clock (`APPROVAL_TIMEOUT_SECONDS`) and was denied.
+
+Decision.
+- The page asks for its chat list again when it is shown again, when its window is focused, and
+  every 10 seconds while it is shown. Each is one request answered from what the server holds; no
+  connection is held open, since a browser keeps six to a server (ADR-0339). A hidden page asks
+  for nothing on the timer.
+- A list that comes back as it was is not drawn again: drawn again under the pointer or the
+  keyboard, the list loses the row being clicked or the focus. A changed list is drawn, and so is
+  the list when the chat on screen changed, since its row is marked.
+- The server keeps which chats' turns wait on a permission answer from the say inbox:
+  `SayInboxPrompter` is told as its prompt starts and once it ends, however it ends, and
+  `GET /sessions/recent` marks those chats (`awaiting_approval`). A chat runs one turn at a time,
+  and a turn asks one permission at a time (only read-only calls run side by side, and none of them
+  asks), so the server keeps a set of chats, not a count.
+- A page showing another chat than the one that waits says "The active chat is waiting for your
+  permission.", or names the chat when it is not the active one, and Open it opens that chat,
+  whose bus draws the card. The note is never shown on the chat that waits, not even while the list
+  cannot load, and it goes once the list no longer marks the chat.
+
+The terminal. It has no chat list. A cockpit pane follows the web app's current chat
+(`session_rotated`) and draws the permission it waits on (`action_required`), and the inline REPL
+asks in place. Nothing changes there.
+
+Not chosen: a stream of chat-list changes to every page. It would hold one more connection per
+page, of the six a browser keeps to a server.
+
+New tests.
+- `tests/test_webclient_switching.py` (+6, 9 cases), the page's own script under node: a page on
+  another chat moves the active badge on the timer, on focus and when shown again, and stays on its
+  chat; a background tab asks for nothing until shown; a list read again unchanged is not drawn
+  again, and is drawn when it or the chat on screen changed; the note names the chat that waits
+  (the active one or another) and Open it lands on the card; no note on the chat that waits, even
+  while the list cannot load; the note goes when the mark does.
+- `tests/test_server_say_approvals.py` (+2, 5 cases): the prompt says it waits until it ends,
+  allowed, denied, interrupted or timed out; `GET /sessions/recent` marks the chat while its turn
+  waits and not after the answer.
+- The fake DOM the page tests share gives the page a `window` and holds its repeating timer until
+  a test fires it; the reload tests' own poll keeps the real timer.
+- Mutations: 18 of the new code, and each turned a named test red: 12 in the page (when it asks
+  for the list, when it draws it, and the note) and 6 in the server (the prompt saying it waits and
+  that it ended, and the list's mark).
+
+Not verified.
+- A browser. The page's script ran under node on the tests' fake DOM.
+- Two real browser windows side by side.
