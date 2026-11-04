@@ -587,24 +587,75 @@ def _refresh_checkout(directory: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
-def _uv_receipt_requirement() -> dict[str, Any]:
-    """The ``zakcode`` entry of uv's install receipt, or ``{}`` when the receipt is unreadable.
+def _uv_receipt_requirements() -> list[dict[str, Any]]:
+    """Every requirement uv's install receipt records, or ``[]`` when the receipt is unreadable.
 
-    The receipt (``uv-receipt.toml`` at the tool env root) records the requirement
-    as originally requested: its extras, and whether it was installed editable.
-    Both have to survive an update. Unreadable receipt ⇒ ``{}``: the update still
-    lands, worst case a provider needs one manual reinstall.
+    The receipt (``uv-receipt.toml`` at the tool env root) records each requirement
+    as originally requested: zakcode's with its extras and whether it was installed
+    editable, then each package added with ``uv tool install --with``. All of it has
+    to survive an update. Unreadable receipt ⇒ ``[]``: the update still lands, worst
+    case a provider needs one manual reinstall.
     """
     try:
         import tomllib
 
         data = tomllib.loads((Path(sys.prefix) / "uv-receipt.toml").read_text(encoding="utf-8"))
-        for req in data.get("tool", {}).get("requirements", []):
-            if isinstance(req, dict) and req.get("name") == "zakcode":
-                return req
+        found = data.get("tool", {}).get("requirements", [])
     except Exception:  # noqa: BLE001 - the receipt is a nicety, never block the update
-        pass
-    return {}
+        return []
+    return [req for req in found if isinstance(req, dict)] if isinstance(found, list) else []
+
+
+def _uv_receipt_requirement() -> dict[str, Any]:
+    """The ``zakcode`` entry of uv's install receipt, or ``{}`` when it has none."""
+    return next((req for req in _uv_receipt_requirements() if req.get("name") == "zakcode"), {})
+
+
+def _uv_with_options() -> list[str]:
+    """``--with`` and ``--with-editable`` for each package the receipt records beside zakcode.
+
+    uv writes the receipt from the command that installs, so a reinstall naming zakcode alone
+    dropped every package added with ``uv tool install --with`` (ADR-0359). Each comes back in
+    the form uv recorded it: a name with its extras, version and marker; a URL; a git
+    repository at the ref it named (not the commit that ref was then), so an update follows a
+    branch as the install did; a local folder or file; an editable folder.
+    """
+    from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+    options: list[str] = []
+    for req in _uv_receipt_requirements():
+        name = req.get("name")
+        if not isinstance(name, str) or not name or name == "zakcode":
+            continue
+        if isinstance(req.get("editable"), str):
+            options += ["--with-editable", req["editable"]]
+            continue
+        extras = req.get("extras")
+        if isinstance(extras, list) and extras:
+            name += "[" + ",".join(e for e in extras if isinstance(e, str)) + "]"
+        local, url, git = req.get("directory") or req.get("path"), req.get("url"), req.get("git")
+        if isinstance(url, str):
+            sub = req.get("subdirectory")
+            spec = f"{name} @ {url}" + (f"#subdirectory={sub}" if isinstance(sub, str) else "")
+        elif isinstance(git, str):
+            # Recorded as https://host/repo?subdirectory=pkg&rev=main, the ref as it was typed
+            # whatever it names; read back as git+https://host/repo@main#subdirectory=pkg.
+            parts = urlsplit(git)
+            query = parse_qs(parts.query)
+            ref = query.get("rev", [""])[0]
+            repo = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+            spec = f"{name} @ " + ("" if repo.startswith("git+") else "git+") + repo
+            spec += (f"@{ref}" if ref else "") + (
+                f"#subdirectory={query['subdirectory'][0]}" if "subdirectory" in query else ""
+            )
+        elif isinstance(local, str):
+            spec = f"{name} @ {Path(local).absolute().as_uri()}"
+        else:
+            specifier = req.get("specifier")
+            spec = name + (specifier if isinstance(specifier, str) else "")
+        marker = req.get("marker")
+        options += ["--with", spec + (f" ; {marker}" if isinstance(marker, str) and marker else "")]
+    return options
 
 
 def _uv_tool_spec(source: str, added: Sequence[str] = ()) -> str:
@@ -734,10 +785,11 @@ def _reinstall_commands(
 
     A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
     there; the ``uv-receipt.toml`` at the env root is the discriminator. uv is one
-    command (a full resolve, dependencies included) and it carries three things
+    command (a full resolve, dependencies included) and it carries four things
     forward that a bare ``uv tool install`` would drop (ADR-0291): the Python the
-    install runs on, ``--editable`` when the install was editable, and, for a
-    ``checkout``, the versions its ``uv.lock`` pins. pip is TWO: the
+    install runs on, ``--editable`` when the install was editable, the packages
+    added with ``--with`` (ADR-0359), and, for a ``checkout``, the versions its
+    ``uv.lock`` pins. pip is TWO: the
     ``--force-reinstall --no-deps`` pass replaces the package code even when the
     version string is unchanged (pip's same-version no-op trap) without churning
     the whole dependency tree — but it also means a build that ADDS a dependency
@@ -763,6 +815,7 @@ def _reinstall_commands(
         options = ["--python", f"{sys.version_info.major}.{sys.version_info.minor}"]
         if _uv_receipt_requirement().get("editable"):
             options.append("--editable")
+        options += _uv_with_options()
         if checkout is not None:
             options += ["--constraints", _pin_to_lock(uv, checkout, note).name]
         spec = _uv_tool_spec(source, extras)
