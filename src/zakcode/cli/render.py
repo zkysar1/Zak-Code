@@ -791,48 +791,57 @@ class StreamRenderer:
         self._out(block(self.console, body, marker=g["marker"], marker_style=marker_style))
 
     def _stop_label(self, done: AgentDone) -> tuple[str, str]:
-        """The footer's leading outcome word(s) + the marker's state style.
-
-        A turn that ended with plan steps still open says so here (ADR-0115): "done —
-        struggled" alone read as finished to a user watching a 14-step plan stop at 9/14.
-        """
-        label, style = self._stop_label_base(done)
-        if done.open_steps:
-            label += f" {self._g['dash']} {done.open_steps} plan step(s) left open"
-        return label, style
-
-    def _stop_label_base(self, done: AgentDone) -> tuple[str, str]:
-        reason = done.stop_reason
-        template = _STOP_LABEL.get(reason)
-        label = (
-            template.format(dash=self._g["dash"])
-            if template is not None
-            else reason.replace("_", " ")
+        """The footer's leading outcome word(s) + the marker's state style (``stop_label``)."""
+        return stop_label(
+            done.stop_reason, done.degraded, done.open_steps, done.error, dash=self._g["dash"]
         )
-        if reason == "completed":
-            # A degraded completion (the turn engaged failure recovery — a stuck nudge,
-            # a truncation continuation, a plan left unresolved) must not print an
-            # indistinguishable clean "done": the flag was computed and then silently
-            # dropped here, so a nudged give-up looked identical to a good turn
-            # (field incident 2026-08-25).
-            #
-            # But one blanket word over-reaches the other way (ADR-0122). That incident was a
-            # give-up, and give-ups got their OWN terminal the next day (``gave_up``), so the
-            # blanket is residue. Every OTHER degraded completion is a rail that fired and then
-            # let the turn FINISH — the stuck ladder's step-back, a length continuation, a
-            # capped cascade — which is the harness working, not the model failing. Exactly one
-            # degraded path leaves real work owing, and it is already the one ``open_steps``
-            # reports. So split there: work left open is a struggle, work finished behind a rail
-            # is a recovery. Both stay ``warn`` — the operator still sees that something fired.
-            if done.degraded:
-                word = "struggled" if done.open_steps else "recovered"
-                return f"done {self._g['dash']} {word}", "warn"
-            return label, "ok"
-        if reason in ("provider_error", "skill_too_large"):
-            if done.error:
-                label += f" {self._g['dash']} {done.error.splitlines()[0]}"
-            return label, "err"
-        return label, "warn"
+
+
+def stop_label(
+    reason: str, degraded: bool, open_steps: int, error: str, *, dash: str
+) -> tuple[str, str]:
+    """A turn footer's leading outcome word(s) + its marker's state style.
+
+    Takes the done frame's fields rather than the frame, so a turn end the session kept is drawn
+    in the same words when a saved conversation is drawn again (ADR-0361). A turn that ended with
+    plan steps still open says so here (ADR-0115): "done — struggled" alone read as finished to a
+    user watching a 14-step plan stop at 9/14.
+    """
+    label, style = _stop_label_base(reason, degraded, open_steps, error, dash)
+    if open_steps:
+        label += f" {dash} {open_steps} plan step(s) left open"
+    return label, style
+
+
+def _stop_label_base(
+    reason: str, degraded: bool, open_steps: int, error: str, dash: str
+) -> tuple[str, str]:
+    template = _STOP_LABEL.get(reason)
+    label = template.format(dash=dash) if template is not None else reason.replace("_", " ")
+    if reason == "completed":
+        # A degraded completion (the turn engaged failure recovery — a stuck nudge,
+        # a truncation continuation, a plan left unresolved) must not print an
+        # indistinguishable clean "done": the flag was computed and then silently
+        # dropped here, so a nudged give-up looked identical to a good turn
+        # (field incident 2026-08-25).
+        #
+        # But one blanket word over-reaches the other way (ADR-0122). That incident was a
+        # give-up, and give-ups got their OWN terminal the next day (``gave_up``), so the
+        # blanket is residue. Every OTHER degraded completion is a rail that fired and then
+        # let the turn FINISH — the stuck ladder's step-back, a length continuation, a
+        # capped cascade — which is the harness working, not the model failing. Exactly one
+        # degraded path leaves real work owing, and it is already the one ``open_steps``
+        # reports. So split there: work left open is a struggle, work finished behind a rail
+        # is a recovery. Both stay ``warn`` — the operator still sees that something fired.
+        if degraded:
+            word = "struggled" if open_steps else "recovered"
+            return f"done {dash} {word}", "warn"
+        return label, "ok"
+    if reason in ("provider_error", "skill_too_large"):
+        if error:
+            label += f" {dash} {error.splitlines()[0]}"
+        return label, "err"
+    return label, "warn"
 
 
 #: A horizontal rule on a line of its own: the section break it means is a gap.

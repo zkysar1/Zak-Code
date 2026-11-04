@@ -46,6 +46,7 @@ from zakcode.build_info import (
 )
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
+    block,
     close_input_frame,
     heading,
     kv_table,
@@ -66,7 +67,7 @@ from zakcode.cli.logsink import (
     log_level_from_env,
     set_provider_labels,
 )
-from zakcode.cli.render import StreamRenderer, cost_text, display_call
+from zakcode.cli.render import StreamRenderer, cost_text, display_call, stop_label
 from zakcode.cli.saybox import fold_lines
 from zakcode.config import (
     PermissionTier,
@@ -1834,12 +1835,31 @@ def _render_transcript(
     count per message. Without it a resume prints ``resumed (N messages)`` over a blank
     screen: the model remembers a conversation the operator cannot see (2026-08-24
     operator report, first field use of ``/resume``). Long messages are elided at
-    ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump.
+    ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump. A turn that did not
+    simply finish is drawn as the footer it ended on, after the messages it followed, as the page
+    draws a saved one (ADR-0361).
     """
     from zakcode.agent.loop import said_by_session_start, typed_command
 
-    rows: list[tuple[str, str, int]] = []
-    for msg in getattr(session, "messages", []):
+    messages = list(getattr(session, "messages", []))
+    ends = list(getattr(session, "turn_ends", []))
+    rows: list[tuple[str, str, int, str]] = []
+
+    def ends_up_to(count: int) -> None:
+        while ends and ends[0].after <= count:
+            end = ends.pop(0)
+            at: float | None = None
+            try:
+                stamp = datetime.fromisoformat(end.at)
+                at = (stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)).timestamp()
+            except ValueError:
+                pass  # a stamp this build cannot read: the row goes without its time
+            rows.append(
+                _turn_end_row(console, end.stop_reason, end.degraded, end.open_steps, end.error, at)
+            )
+
+    for index, msg in enumerate(messages):
+        ends_up_to(index)
         if msg.role not in ("user", "assistant"):
             continue
         role = msg.role
@@ -1855,31 +1875,60 @@ def _render_transcript(
             else:
                 text = typed_command(text) or text
         if text or tool_count:
-            rows.append((role, text, tool_count))
+            rows.append((role, text, tool_count, ""))
+    ends_up_to(len(messages))  # an end placed past the messages the session has is not drawn
     _render_replay(console, rows, limit=limit)
 
 
-def _render_replay(
-    console: Console, rows: list[tuple[str, str, int]], *, limit: int = _REPLAY_MESSAGE_LIMIT
-) -> None:
-    """Draw the last ``limit`` replay rows as a resumed session's replay.
+def _turn_end_row(
+    console: Console,
+    stop_reason: str,
+    degraded: bool,
+    open_steps: int,
+    error: str,
+    at: float | None,
+) -> tuple[str, str, int, str]:
+    """A replay row for how a saved turn ended (ADR-0361): the footer the turn drew, from what the
+    session keeps of its done frame. Its tokens and its time taken are not kept, so the row has
+    neither; ``at`` (epoch seconds) is when it ended."""
+    g = resolve_glyphs(console)
+    label, tone = stop_label(stop_reason, degraded, open_steps, error, dash=g["dash"])
+    if at is not None:
+        label += f" {g['dot']} {time.strftime('%H:%M', time.localtime(at))}"
+    return ("end", label, 0, tone)
 
-    A row is ``(role, text, tool calls)``, its role ``user``, ``assistant`` or ``hook`` (what a
-    SessionStart hook said). A cockpit pane joining the web app's chat draws that chat's saved
-    conversation the same way (ADR-0352).
+
+def _render_replay(
+    console: Console,
+    rows: list[tuple[str, str, int, str]],
+    *,
+    limit: int = _REPLAY_MESSAGE_LIMIT,
+) -> None:
+    """Draw the last ``limit`` messages of a resumed session's replay.
+
+    A row is ``(role, text, tool calls, tone)``, its role ``user``, ``assistant``, ``hook`` (what
+    a SessionStart hook said) or ``end``: how a turn that did not simply finish ended, drawn as the
+    footer it ended on with its marker in ``tone`` (ADR-0361). An end is not a message: it is
+    shown when the message before it is. A cockpit pane joining the web app's chat draws that
+    chat's saved conversation the same way (ADR-0352).
     """
     g = resolve_glyphs(console)
-    if not rows:
+    said = [index for index, row in enumerate(rows) if row[0] != "end"]
+    if not said:
         return
-    shown = rows[-limit:]
+    shown = rows[said[-limit] :] if len(said) > limit else rows
+    count = min(limit, len(said))
     console.print()
-    elided = len(rows) - len(shown)
-    if elided:
-        _dim(console, f"{g['dash']} replaying the last {len(shown)} of {len(rows)} messages")
+    if count < len(said):
+        _dim(console, f"{g['dash']} replaying the last {count} of {len(said)} messages")
     else:
-        _dim(console, f"{g['dash']} replaying {len(shown)} message{'s' if len(shown) != 1 else ''}")
-    for role, text, tool_count in shown:
+        _dim(console, f"{g['dash']} replaying {count} message{'s' if count != 1 else ''}")
+    for role, text, tool_count, tone in shown:
         console.print()
+        if role == "end":
+            body = Text(text, style="footer")
+            console.print(block(console, body, marker=g["marker"], marker_style=tone))
+            continue
         if role == "hook":
             lines = text.splitlines()
             more = len(lines) - 1

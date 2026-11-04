@@ -22682,6 +22682,74 @@ Not verified.
   Windows (Server 2025) and its drive (D:, against C: here) were not told apart, and Python was
   3.11 on both. Windows 11 was not tried. The update goes on either way.
 
+## ADR-0361: how a turn ended is kept with the chat, so a page or pane opened after a restart draws it
+
+Status: accepted. 2026-11-04. Builds on ADR-0286 (a reopened page draws the saved conversation,
+then lets the watch replay draw the rest), ADR-0288 (the bus stamps events with the clock a saved
+message is stamped with), ADR-0115 (the footer counts what was left open) and ADR-0352 (a cockpit
+pane shows the served chat).
+
+Context. The web page draws how each turn ended as a row of its own, after the turn's words:
+"provider error — …", "stopped early — max iterations", "interrupted", "done — recovered", "done —
+2 plan step(s) left open". The row came from the turn's `done` frame on the watch bus, which lives
+in memory. A page reopened after the server restarted, or after the bus no longer held the turn,
+drew the turn's words from the saved chat (ADR-0286) and not how it ended, so a turn the provider
+failed read as if the assistant had simply said nothing more. The terminal had the same gap twice:
+a cockpit pane joining a served chat drew its saved messages without their ends, and
+`zakcode -s <id>` and `/resume` replayed the tail with no ends at all.
+
+Decision.
+- The chat keeps how each turn that did not simply finish ended (`Session.turn_ends`): the stop
+  reason, the first 2000 characters of the error, whether the turn degraded, the plan steps it left
+  open, the time, and how many messages came before it. A plain "done" is not kept; "done —
+  recovered" and "done — N plan step(s) left open" are. The last 200 are kept. A document an older
+  build saved loads with none, and an older build drops the field when it next saves the chat:
+  those turns are drawn without their end, as before.
+- The loop keeps each end where it publishes it, for a buffered turn and a streamed one alike, and
+  keeps "interrupted" for a turn stopped part way. The say consumer keeps the end it publishes for
+  a turn that raised past the loop, in the words the page drew live.
+- A compaction moves each end with the messages it followed. A summary takes the place of the
+  turns it tells, so an end placed among them goes with them; an elision keeps every message, and
+  every end stays where it was.
+- `GET /sessions/{id}/transcript` hands over the ends (`ends`), each placed among the spoken
+  messages it hands over: a tool result between two lines is not drawn, so an end after it goes
+  after the line before it. Its error is redacted as the messages are. With `limit`, the ends of
+  the messages left out are left out. An end placed past the messages the chat has is not handed
+  over.
+- The page draws each saved end after the messages it followed, as the live row is drawn, with its
+  time. When the replay starts with a turn's own line, the saved messages stop before that line,
+  and an end that turn left is the replay's to draw; it is told from the earlier ones by its stamp.
+
+The terminal. The inline REPL draws a turn's end as the footer it ends on, as before; its words now
+come from one function (`stop_label`), which the replays share. `zakcode -s <id>` and `/resume`
+draw each end as that footer, after the messages it followed, and the count of messages replayed
+does not count ends. A cockpit pane joining a served chat draws the saved ends with the saved
+messages and leaves the rest to the bus, so each end is drawn once.
+
+Not chosen: keeping the watch bus on disk. A reopened page needs one row per turn, not every frame,
+and a saved bus would grow with every token streamed.
+
+New tests.
+- `tests/test_turn_ends.py` (12): what the chat keeps and how much of it; that it is saved, and an
+  older document loads; both compactions; where the loop keeps the end of a failed buffered turn,
+  a failed streamed turn and a stopped one; the loop's compaction; the route's placing, redaction
+  and `limit`; an end past the messages; the say consumer's end.
+- `tests/test_webclient_reload_history.py` (+4), the page's own script under node against a live
+  server: a failed turn's end drawn after a restart, in order with the turns after it; drawn from
+  the bus while the bus holds it; drawn once when the bus holds only the turns after it; and the
+  end of a turn that failed before its line was saved.
+- `tests/test_cli_chat.py` (+1): the replay draws an end after the messages it followed, with the
+  end's own time, and an end left out with its messages is not drawn.
+- `tests/test_served_mirror.py` (+2): what a joining pane takes from the save and leaves to the bus;
+  a live pane and a restarted pane each draw a failed turn's end once.
+- Mutations: 38 of the new code, and each turned a named test red: 9 in what the chat keeps and
+  how a compaction moves it, 6 in the loop, 8 in the route and the say consumer, 6 in the page,
+  5 in the terminal's replay and 4 in the cockpit pane.
+
+Not verified.
+- A browser. The page's script ran under node against a live server, as ADR-0286's tests run it.
+- A real provider failing; the tests' providers raise.
+
 ## ADR-0362: a page showing another chat keeps its chat list current, and says when a chat waits on a permission
 
 Status: accepted. 2026-11-04. Builds on ADR-0319 (the chat list, and viewing a chat that is not

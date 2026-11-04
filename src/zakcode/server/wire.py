@@ -412,6 +412,22 @@ class TranscriptMessage(BaseModel):
     hook: str | None = None
 
 
+class TranscriptTurnEnd(BaseModel):
+    """How a turn that did not simply finish ended, where its row goes (ADR-0361).
+
+    ``after`` is how many of the response's ``messages`` come before the row: a turn's end belongs
+    after its last spoken message, and a count puts it there where two stamps in one clock tick
+    could not. The fields are the done frame's, so the page draws the row it drew live.
+    """
+
+    after: int
+    at: float | None = None
+    stop_reason: str
+    error: str = ""
+    degraded: bool = False
+    open_steps: int = 0
+
+
 class SessionTranscript(BaseModel):
     """``GET /sessions/{id}/transcript`` — the conversation as a reader would see it.
 
@@ -447,10 +463,16 @@ class SessionTranscript(BaseModel):
 
     ``bus_epoch`` names that bus (the ``X-Bus-Epoch`` its watch response carries), ``None`` when
     there is no bus. The cut holds only against that bus, so a page that opens the watch and is
-    answered by another one (a restart in between) knows to cut again (ADR-0289)."""
+    answered by another one (a restart in between) knows to cut again (ADR-0289).
+
+    ``ends`` are how the turns among ``messages`` that did not simply finish ended (ADR-0361), the
+    rows the page drew at each one's end ("provider error — …", "interrupted"). Those rows came
+    only from the bus, so a page reopened after a restart drew none. A page draws the ones whose
+    place falls among the messages it draws from here; the replay draws the rest."""
 
     session_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
+    ends: list[TranscriptTurnEnd] = Field(default_factory=list)
     message_count: int = 0
     bus_from: float | None = None
     bus_since: int | None = None
