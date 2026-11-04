@@ -2065,9 +2065,14 @@
     // marked active the chat that was active before (and the chat now active as only viewed).
     if (ask !== listed) return;
     // recent_sessions flags the workspace's current chat — the authoritative, always-fresh
-    // source for currentId even when this page never opened it (ADR-0319).
+    // source for currentId even when this page never opened it (ADR-0319). Not while the chat on
+    // screen is the active one: when another chat is made active, this chat's own bus brings
+    // `session_rotated`, and followCurrent follows from what the page knew before the move. Moved
+    // here first, by a list read as the page is shown again and answered before the resumed watch
+    // replayed that frame, the page stayed where it was instead of following (ADR-0362). The
+    // badge moves all the same: it is drawn from the list.
     const cur = chats.find((c) => c.current);
-    if (cur) currentId = cur.id;
+    if (cur && currentId !== sessionId) currentId = cur.id;
     listedChats = chats;
     // A name being typed or a delete being asked about holds the list still: drawn again, the
     // box would lose what was typed in it. The list is drawn as it now is once that is done. A

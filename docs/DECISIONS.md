@@ -22704,6 +22704,13 @@ Decision.
 - A list that comes back as it was is not drawn again: drawn again under the pointer or the
   keyboard, the list loses the row being clicked or the focus. A changed list is drawn, and so is
   the list when the chat on screen changed, since its row is marked.
+- The list moves the chat the page takes as active only while the chat on screen is another one.
+  On the active chat a move is told by that chat's own bus (`session_rotated`), and the page
+  follows it from what it knew before the move (ADR-0319). The list asked for as a page is shown
+  again can answer before the resumed watch replays that frame. When the list moved the active
+  chat first, the frame found a page already parked on another chat, and a tab brought back stayed
+  where it was instead of following. The browser run below found it. The badge moves with the list
+  all the same.
 - The server keeps which chats' turns wait on a permission answer from the say inbox:
   `SayInboxPrompter` is told as its prompt starts and once it ends, however it ends, and
   `GET /sessions/recent` marks those chats (`awaiting_approval`). A chat runs one turn at a time,
@@ -22722,9 +22729,10 @@ Not chosen: a stream of chat-list changes to every page. It would hold one more 
 page, of the six a browser keeps to a server.
 
 New tests.
-- `tests/test_webclient_switching.py` (+6, 9 cases), the page's own script under node: a page on
+- `tests/test_webclient_switching.py` (+7, 10 cases), the page's own script under node: a page on
   another chat moves the active badge on the timer, on focus and when shown again, and stays on its
-  chat; a background tab asks for nothing until shown; a list read again unchanged is not drawn
+  chat; a background tab asks for nothing until shown; a page on the active chat follows a move
+  its list hears of before its resumed watch replays it; a list read again unchanged is not drawn
   again, and is drawn when it or the chat on screen changed; the note names the chat that waits
   (the active one or another) and Open it lands on the card; no note on the chat that waits, even
   while the list cannot load; the note goes when the mark does.
@@ -22733,10 +22741,22 @@ New tests.
   waits and not after the answer.
 - The fake DOM the page tests share gives the page a `window` and holds its repeating timer until
   a test fires it; the reload tests' own poll keeps the real timer.
-- Mutations: 18 of the new code, and each turned a named test red: 12 in the page (when it asks
-  for the list, when it draws it, and the note) and 6 in the server (the prompt saying it waits and
-  that it ended, and the list's mark).
+- Mutations: 20 of the new code, and each turned a named test red: 14 in the page (when it asks
+  for the list, when it draws it, which chat it takes as active, and the note) and 6 in the server
+  (the prompt saying it waits and that it ended, and the list's mark).
+
+In a browser. Headless Edge on Windows, two pages on one real server answering from a stand-in
+model. The page in front is shown and the other is hidden, as two tabs of one window are. A page
+parked on one chat moved the active badge to a chat made active by another client at its next
+ask, and stayed on its chat. A list read again unchanged was not drawn again (0 draws over a
+tick), and a changed one was drawn once. With the active chat waiting on a permission, the parked
+page said "The active chat is waiting for your permission." within one ask, Open it landed on the
+card, and Allow once ran the write, which reached the workspace. A hidden page asked for nothing
+for 11 seconds and showed the new active chat as soon as it was shown. One run found the race
+above: a tab brought back stayed on the chat that had been active. With the fix, it followed.
+Which of the list and the replayed frame answers first cannot be seen from outside the page, so
+the page test fixes that order; the browser run shows the follow end to end.
 
 Not verified.
-- A browser. The page's script ran under node on the tests' fake DOM.
-- Two real browser windows side by side.
+- Two windows side by side on a screen, where both pages are shown at once.
+- In a browser, the note naming a chat that is not the active one; the page test covers it.

@@ -969,6 +969,34 @@ def test_a_page_in_a_background_tab_asks_for_its_chat_list_only_once_shown(tmp_p
     assert shown["active"] == "chat Y"
 
 
+def test_a_page_on_the_active_chat_follows_it_when_its_list_hears_of_the_move_first(
+    tmp_path: Path,
+) -> None:
+    """A page on the active chat follows it when another page or the terminal makes another chat
+    active: the chat's own bus says so, and the page opens the chat now active (ADR-0319). Shown
+    again, a page asks for its chat list at once (ADR-0362), and the list can answer before the
+    resumed watch replays that frame. It set the active chat first, so the frame then found a page
+    parked on another chat, and the page stayed where it was: measured in a real browser, a tab
+    brought back stayed on the old chat. The list leaves that move to the frame."""
+    rotated = _frame(2, event="session_rotated", reason="another chat was opened")
+    watch = {
+        "null": {"frames": [_frame(1, event="text", text="still here", at=_T0 + 5)]},
+        "1": {"frames": [rotated], "delay": 200},  # the replay comes after the list
+    }
+    chats = [_chat(A, "chat A", watch=watch), _chat(Y, "chat Y")]
+    steps = [
+        {"at": 200, "hidden": True},
+        {"at": 300, "set": {"current": Y}},  # another page makes Y active
+        {"at": 400, "hidden": False},
+        {"at": 1000, "look": "shown again"},
+    ]
+    [shown] = _page(tmp_path, chats, steps)
+    assert shown["chip"] == Y[:8]  # it followed the active chat
+    assert (shown["active"], shown["viewing"]) == ("chat Y", "chat Y")
+    assert shown["banner_hidden"] is True
+    assert all("session restarted" not in row["text"] for row in shown["rows"])
+
+
 def test_a_chat_list_asked_for_again_unchanged_is_not_drawn_again(tmp_path: Path) -> None:
     """Drawn again under the pointer or the keyboard, the list loses the row being clicked or the
     focus, and the timer asks for it every few seconds: a list that comes back as it was is left
