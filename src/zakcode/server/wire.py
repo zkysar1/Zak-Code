@@ -386,6 +386,14 @@ class CurrentSessionRequest(BaseModel):
     session_id: str | None = None
 
 
+class ChatNameRequest(BaseModel):
+    """Body of ``PUT /sessions/{id}/title`` (ADR-0358): the name to give a saved conversation in
+    the chat list. Its whitespace is folded to single spaces, and an empty name gives the chat
+    back its first ask as its title."""
+
+    title: str = Field(max_length=200)
+
+
 class TranscriptMessage(BaseModel):
     """One spoken turn of a session, projected for a viewer (ADR-0041)."""
 

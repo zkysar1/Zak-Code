@@ -500,6 +500,20 @@ to action. Focus rings are `--focus` gold, as everywhere in the family.
   chat closes it. The list is asked for again whenever it can change (a chat opened, a turn
   ended); one that cannot be read keeps what it showed, and an answer that comes back after
   a later ask's is dropped.
+  Each chat ends in a **⋯** button (`--faint`, `--inset` under the pointer; on a device with a
+  pointer it shows only under the pointer or with focus in the row). It opens, in the chat's
+  own row on `--inset`, the chat's name and **Rename**, **Delete** and **Cancel** as small
+  outlined pills. Rename puts a name box in the row holding the chat's name (at most 200
+  characters; empty gives the chat back its first ask): Enter or **Save** names it, Escape or
+  **Cancel** leaves it as it was. Delete asks in the row, "Delete “name”?", beside a **Delete**
+  in `--err` and **Cancel**; only that second Delete deletes. No browser dialog is used.
+  While a row is open the list holds still, so a turn that ends meanwhile does not take what
+  is being typed; it is drawn again once the row closes. A refusal (a turn running in that
+  chat) is said on the status line, and the row stays open with what was typed. A name keeps
+  the chat's place in the list. A deleted chat leaves the list; one on screen gives way to the
+  active chat, and deleting the active chat makes a new chat active, which every page on it
+  follows (ADR-0358). A new chat takes its first ask as its title as the ask is sent, not when
+  its first answer ends.
 - **Page note** — over the composer, in the view banner's look, text only: shown when the page
   is older than the server's and cannot reload into it. Either reloading brought the same page
   back ("something between this browser and the server answers with a saved copy of the

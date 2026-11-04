@@ -179,6 +179,16 @@ def busy_elsewhere(path: Path) -> bool:
     return marker is not None and marker.get("pid") != os.getpid()
 
 
+def busy_session_elsewhere(path: Path) -> str | None:
+    """The chat whose turn another process's fresh marker names, else None (ADR-0358).
+    Fail-open, as :func:`busy_elsewhere` is."""
+    if not busy_elsewhere(path):
+        return None
+    marker = _read_busy(path)
+    session = marker.get("session") if marker is not None else None
+    return session if isinstance(session, str) else None
+
+
 def claim_busy(
     path: Path, session_id: str, *, take_over: bool = False, url: str | None = None
 ) -> bool:
