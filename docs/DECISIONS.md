@@ -22548,3 +22548,57 @@ changed: 6,813 passed, and those two failed, as the change meant them to; both p
 
 Not verified: a real browser (the page tests run the page's own script on a scripted DOM under
 node), and a delete made through a gateway end to end.
+
+## ADR-0359: `zakcode update` keeps the packages added with `uv tool install --with`
+
+Status: accepted. 2026-11-04. Closes what ADR-0340 left open. Builds on ADR-0291 (the update
+reinstalls with uv and carries forward what a bare reinstall drops).
+
+Context. uv writes a tool's receipt (`uv-receipt.toml`) from the command that installs it: zakcode's
+requirement, then each package added with `--with`. `zakcode update` reinstalls with
+`uv tool install --force --reinstall` naming zakcode, its extras and nothing else, so uv wrote a
+receipt without the added packages and removed them. An install made with
+`uv tool install --with six zakcode` lost `six` at its next update, and nothing said so.
+
+Decision. The reinstall hands each package the receipt records beside zakcode back to uv, in the
+form uv recorded it:
+- a package from an index as `--with "name[extras]specifier ; marker"`;
+- a URL as `--with "name @ url"`, with `#subdirectory=` when uv recorded a `subdirectory` beside it;
+- a git source, recorded as `https://host/repo?subdirectory=<dir>&rev=<ref>`, as
+  `--with "name @ git+https://host/repo@<ref>#subdirectory=<dir>"`. uv records the ref as it was
+  typed, whatever it names, and not the commit it resolved to, so an update follows a branch as
+  the install did;
+- a local folder (`directory`) or file (`path`) as `--with "name @ file:///…"`;
+- an editable folder as `--with-editable <folder>`.
+The lock's constraints (ADR-0291) bind these packages as they bind every other. A package the new
+build's lock cannot satisfy fails the reinstall, and the update with it, as any other conflict
+does; on Windows the second process then puts the old install back (ADR-0291).
+
+Measured, with uv 0.9.6 on Windows. A receipt holding each form above was read back through the
+new code and installed again with uv, and the receipt uv then wrote held the same requirements,
+compared whole: a package from an index with extras, a version and a marker; a wheel URL; a source
+archive URL with a subdirectory; a git repository at a ref; a git repository with a subdirectory at
+a branch; a local folder; a local wheel; an editable folder. uv 0.9.6, 0.11.33 and 0.12.24 each
+read a `--with` value whole when it holds a comma (`six>=1.10,<2`, `idna[all,test]==3.10`) or a
+space (a marker), so the split at a space that ADR-0301 measured for a `--constraints` path does
+not reach `--with`.
+
+New tests.
+- `tests/test_cli_chat.py::test_update_keeps_the_packages_added_with_with`: a receipt holding each
+  measured form gives the reinstall each `--with` and `--with-editable` in uv's form, and zakcode's
+  own spec as before. Each of ten changes to the new code, one per form, turned this test red, and
+  the restored code passed it again: no `--with` at all; the git ref, a URL's subdirectory, a git
+  subdirectory, the extras, the marker or a local folder dropped; an editable folder handed over as
+  a plain `--with`; a wheel's `path` ignored; zakcode's own entry not skipped.
+- `tests/test_update_e2e.py` (CI's `update-e2e` job, on Windows and Ubuntu): the install a user has
+  now carries `--with pyjokes>=0.6`, a package zakcode does not depend on; after the update the
+  receipt still records it, and it imports.
+
+Not verified.
+- The end-to-end test was not seen to pass on a developer's Windows machine. Run there, it stopped
+  before the update it checks: the test runner had loaded a file that uv's cache shared with the
+  install the update had to delete, the case ADR-0360 is about. CI runs it.
+- `uv tool install --with-requirements` was not tried. The requirements it reads are expected in
+  the receipt in the forms above.
+- A receipt's `constraints` and `overrides` are still not carried, as before this change.
+- Receipts written by a uv other than 0.9.6 were not read; their shape is taken to be the same.

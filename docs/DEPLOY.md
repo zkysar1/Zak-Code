@@ -62,7 +62,8 @@ systemctl status zakcode-webapp                            # is it up, when did 
 
 `zakcode update` reinstalls in place from the install's own recorded source (a git URL or a
 local checkout) and prints old → new build identity. `--extra NAME` adds one of zakcode's
-optional extras on the way, and the updates after it keep it (ADR-0340). The running server notices the new build
+optional extras on the way, and the updates after it keep it (ADR-0340). A package added beside
+zakcode with `uv tool install --with` stays installed too (ADR-0359). The running server notices the new build
 within five seconds and, once no turn is in flight, restarts itself into it on the same chat:
 it finishes the turn it is running, takes no new one on the old build, and replaces its own
 process, so the pid and the unit stay as they were and the journal says
