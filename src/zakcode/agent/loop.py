@@ -3527,6 +3527,7 @@ class AgentLoop:
         before = len(self.session.messages)
         pre_tokens = self.session.prompt_anchor_tokens  # measured, and about to be forgotten
         self.session.messages[:] = messages
+        self.session.shift_turn_ends(before, summarized=summary is not None)  # ADR-0361
         self._mark_transcript_compacted(
             summary, trigger=trigger, before=before, pre_tokens=pre_tokens
         )
@@ -7721,6 +7722,10 @@ class AgentLoop:
         is exactly the lie the file exists to prevent. Cancellation, a closed stream and
         Ctrl-C read as ``interrupted``; anything else reads as ``error``.
 
+        An interrupted turn is also kept as a turn end, ``interrupted`` as the page draws it, so a
+        page reopened later draws it too (ADR-0361). Any other exception keeps none here: the say
+        consumer that catches it publishes the turn's end itself, and keeps that one.
+
         Called from the ``except`` clauses of :meth:`arun_turn` and :meth:`astream_turn`,
         never from their ``finally``: there the only view of an in-flight exception is
         ``sys.exc_info()``, and that also reports an exception the CALLER is handling, so a
@@ -7728,6 +7733,8 @@ class AgentLoop:
         """
         interrupted = isinstance(exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt))
         _status_writer().leave_turn(self.session.id, "interrupted" if interrupted else "error")
+        if interrupted:
+            self.session.keep_turn_end("interrupted")
 
     async def _deliver_midturn_say(self) -> str | None:
         """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
@@ -9611,6 +9618,11 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
+        left_open = len(self.session.task_network.actionable_remaining())
+        self.session.keep_turn_end(  # for a page reopened once the bus is gone (ADR-0361)
+            stop_reason, error=turn_error, degraded=degraded, open_steps=left_open
+        )
         self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
@@ -9623,8 +9635,8 @@ class AgentLoop:
             usage=turn_usage,
             stop_reason=stop_reason,
             error=turn_error,
-            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            open_steps=len(self.session.task_network.actionable_remaining()),
+            degraded=degraded,
+            open_steps=left_open,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,
@@ -11691,6 +11703,11 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
+        left_open = len(self.session.task_network.actionable_remaining())
+        self.session.keep_turn_end(  # for a page reopened once the bus is gone (ADR-0361)
+            stop_reason, error=turn_error, degraded=degraded, open_steps=left_open
+        )
         self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
@@ -11701,8 +11718,8 @@ class AgentLoop:
             iterations=iterations,
             usage=turn_usage,
             error=turn_error,
-            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            open_steps=len(self.session.task_network.actionable_remaining()),
+            degraded=degraded,
+            open_steps=left_open,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,

@@ -1260,6 +1260,37 @@ def test_render_transcript_elides_and_counts_tools() -> None:
     assert "(+1000 chars)" in console2.export_text()
 
 
+def test_render_transcript_draws_how_a_turn_ended_after_the_messages_it_followed() -> None:
+    """ADR-0361: /resume and ``zakcode cli -s`` draw a saved turn that did not simply finish as
+    the footer it ended on, where the page draws it. An end is not a message: it goes out with
+    the message before it, and only the error's first line is drawn, as the live footer draws it."""
+    from datetime import datetime
+
+    from zakcode.cli import _render_transcript
+    from zakcode.messages import Message
+
+    sess = Session(id="feed0004", cwd=".", model="test-model")
+    sess.add_message(Message.user("question 0"))
+    sess.add_message(Message.assistant_text("answer 0"))
+    sess.keep_turn_end("max_iterations")  # its turn is left out below, so it is not drawn
+    sess.add_message(Message.user("question 1"))
+    sess.keep_turn_end("provider_error", error="HTTP 503 from the pod\nretry later", degraded=True)
+    sess.add_message(Message.user("question 2"))
+    sess.add_message(Message.assistant_text("answer 2"))
+    sess.keep_turn_end("completed")  # a turn that simply finished keeps none
+    console = Console(record=True, width=200, force_terminal=True, legacy_windows=False)
+    _render_transcript(console, sess, limit=3)
+    lines = [line.strip() for line in console.export_text().splitlines() if line.strip()]
+    assert any("replaying the last 3 of 5 messages" in line for line in lines)
+    said = [line for line in lines if "question" in line or "answer" in line or "error" in line]
+    assert len(said) == 4, lines
+    assert "question 1" in said[0] and "question 2" in said[2] and "answer 2" in said[3]
+    ended = datetime.fromisoformat(sess.turn_ends[1].at).astimezone().strftime("%H:%M")
+    assert said[1].endswith(ended), said[1]  # when it ended, on this machine's clock
+    assert "provider error" in said[1] and "HTTP 503 from the pod" in said[1]
+    assert not any("retry later" in line or "max iterations" in line for line in lines)
+
+
 # ── zakcode update: self-update from the recorded install source ──
 
 
