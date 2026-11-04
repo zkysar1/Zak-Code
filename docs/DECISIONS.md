@@ -22602,3 +22602,76 @@ Not verified.
   the receipt in the forms above.
 - A receipt's `constraints` and `overrides` are still not carried, as before this change.
 - Receipts written by a uv other than 0.9.6 were not read; their shape is taken to be the same.
+
+## ADR-0360: an old install the update cannot delete is moved aside, and the update deletes at any depth
+
+Status: accepted. 2026-11-04. Builds on ADR-0291 (the second process that replaces the install on
+Windows).
+
+Context. On Windows the update moves the install aside, reinstalls, starts the new one, and then
+deletes the old one. When that delete failed it left `<env>.update-backup`, and every update after
+it refused to go on until a person deleted the folder: "left by an earlier update, cannot be
+deleted ... A program is probably still running from it". Two causes were measured, and neither
+needs a program running from the old install:
+- uv links the files it installs from its cache, so two installs of one package share one file,
+  and Windows will not delete a file a program has loaded through any of its links. A DLL loaded by
+  one process through one link could not be deleted through another (WinError 5); the folder
+  holding that other link could still be renamed; once the process exited, the delete went
+  through. In the end-to-end test on a developer's machine the holder was the test runner: it had
+  loaded fastuuid's `.pyd` from its own environment, a link to the same cache file, and no program
+  ran from the test's install (the modules of every process, listed at the moment of the refusal).
+- uv writes paths longer than 260 characters, and with long paths switched off, as Windows ships,
+  such a path cannot be deleted by its usual name: WinError 3, "The system cannot find the path
+  specified". A real install held a litellm file 244 characters deep: 258 once renamed to its
+  backup, two short of the limit, and 266 once moved aside. In the test's deeper folder neither the
+  backup nor the folder moved aside could be deleted, and both went at once in the extended-length
+  form.
+The message blamed "a program still running from it", which was wrong in both cases.
+
+Decision.
+- A tree is deleted in its extended-length form on Windows (`\\?\` before the absolute path,
+  `\\?\UNC\` for a share), so depth never stops a delete: the leftover, the old install at the
+  end, and what a failed reinstall made.
+- A leftover the update cannot delete is renamed to the first free `<env>.update-backup.stale-<n>`
+  beside it, and the update goes on. Only one that can be neither deleted nor renamed stops the
+  update, with nothing moved, as before.
+- Each update first deletes the folders an earlier one moved aside, skipping any still held. Only
+  a name the update gives, `.stale-` and a number, is swept: a folder merely named alike is left.
+  They are swept before the leftover is handled, so a folder moved aside in this run is not tried
+  again at once.
+- The messages say what is known: Windows keeps any file a program has loaded, and uv links the
+  files it installs from its cache, so a program running from another install that shares them
+  holds them too.
+Not chosen: reinstalling with `uv --link-mode copy`. Copying every file costs time and disk at
+every update, the first install a person makes still links, a program running from the old install
+still holds it, and moving aside makes the condition harmless whatever holds the file.
+
+The update that installs this change is still carried out by the code it replaces (the update
+copies the running install's `swap_install.py`), so a leftover that stops it stops it once more;
+every update after it goes on.
+
+New tests.
+- `tests/test_update_swap.py`: a leftover that cannot be deleted is moved aside and the update
+  completes; one that can be neither deleted nor moved stops it with nothing touched and nothing
+  after it run; a folder goes to the first free name; a folder moved aside earlier goes once free,
+  one still held stays, and a folder merely named alike and one of another tool beside them are
+  left; on Windows the delete is handed each path in its extended-length form, a share's as
+  `\\?\UNC\` and one already in that form as it is. On Windows, for real: a DLL loaded through one
+  hard link stops the delete through another and not the rename; a tree deeper than 260
+  characters is deleted.
+- `tests/test_update_e2e.py` (CI's `update-e2e`): the test has a uv cache of its own, since with the
+  machine's cache the runner itself held files the update had to delete. Step 4 keeps a program
+  running from the leftover of step 3: the update moves it aside, goes on, fails the reinstall and
+  puts the old install back, and the last update deletes the folder moved aside.
+Each of eleven changes to the new code turned these tests red, and the restored code passed them
+again: no extended-length form for a drive path (the real tree deeper than 260 characters then
+could not be deleted, WinError 3), a share's path given the drive's form, the form doubled on a
+path already in it; a leftover not moved aside; the update going on after a leftover that could be
+neither deleted nor moved; the sweep off, run after the leftover instead of before it, or taking a
+folder merely named alike; a taken name not skipped; either message not saying why the folder was
+held. The end-to-end test, with ADR-0359's `--with` package in it, passed on a developer's
+Windows machine (9 minutes): the run ADR-0359 could not make there.
+
+Not verified.
+- A machine with long paths switched on, where the extended-length form is not needed.
+- A holder other than a loaded file, such as a program working in a folder inside the install.
