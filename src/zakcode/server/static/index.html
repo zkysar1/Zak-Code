@@ -397,11 +397,12 @@
 
     /* ── dock: overlay + jump pill + approval + composer, all in-column ── */
     .dock { flex: none; position: relative; width: 100%; max-width: 44rem; margin: 0 auto; padding: 0 1.25rem; }
-    #view-banner, #page-note { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 44rem; margin: 0 auto .5rem; padding: .45rem .7rem; background: var(--surface); border: 1px solid var(--inset); border-radius: var(--radius-sm); font: 12px/1.45 var(--font-prose); color: var(--muted); }
-    #view-banner[hidden], #page-note[hidden] { display: none; }
-    #view-banner .vb-text { flex: 1 1 auto; min-width: 0; }
-    #view-banner #make-active { flex: none; padding: .25rem .65rem; background: transparent; border: 1px solid var(--brand); border-radius: var(--radius-sm); color: var(--fg); font: 12px var(--font-prose); cursor: pointer; }
-    #view-banner #make-active:hover { background: var(--inset); }
+    #view-banner, #page-note, #wait-note { display: flex; align-items: center; gap: .6rem; width: 100%; max-width: 44rem; margin: 0 auto .5rem; padding: .45rem .7rem; background: var(--surface); border: 1px solid var(--inset); border-radius: var(--radius-sm); font: 12px/1.45 var(--font-prose); color: var(--muted); }
+    #view-banner[hidden], #page-note[hidden], #wait-note[hidden] { display: none; }
+    #view-banner .vb-text, #wait-text { flex: 1 1 auto; min-width: 0; }
+    #view-banner #make-active, #open-waiting { flex: none; padding: .25rem .65rem; background: transparent; border: 1px solid var(--brand); border-radius: var(--radius-sm); color: var(--fg); font: 12px var(--font-prose); cursor: pointer; }
+    #view-banner #make-active:hover, #open-waiting:hover { background: var(--inset); }
+    #wait-note { border-left: 3px solid var(--warn); color: var(--fg); }
     #stream-status {
       position: absolute; bottom: calc(100% + .4rem); left: 0; right: 0; text-align: center;
       pointer-events: none; font: 12px/1.5 var(--font-mono); color: var(--muted);
@@ -563,6 +564,10 @@
       </div>
     </div>
     <div id="page-note" role="status" hidden></div>
+    <div id="wait-note" role="status" hidden>
+      <span id="wait-text"></span>
+      <button type="button" id="open-waiting">Open it</button>
+    </div>
     <div id="view-banner" hidden>
       <span class="vb-text">You're viewing this chat. Messages go to the active chat.</span>
       <button type="button" id="make-active">Make this chat active</button>
@@ -641,6 +646,8 @@
   const viewBanner = document.getElementById("view-banner");
   const makeActiveBtn = document.getElementById("make-active");
   const pageNote = document.getElementById("page-note");
+  const waitNote = document.getElementById("wait-note");
+  const waitText = document.getElementById("wait-text");
 
   let sessionId = null;       // the chat ON SCREEN (viewed); read-only unless it is also the active one
   let currentId = null;       // the workspace's ACTIVE chat (where sends go); may differ from sessionId (ADR-0319)
@@ -651,6 +658,8 @@
   let viewing = 0;           // counts the chats asked for; only the last one asked for opens (ADR-0325)
   let listed = 0;            // counts the chat-list requests; only the last one's answer is drawn
   let listedChats = [];      // the chat list as last read, drawn by drawChats()
+  let drawnList = "";        // what the list was last drawn from: read again unchanged, it is not drawn again (ADR-0362)
+  let waitingId = null;      // a chat not on screen whose turn waits on a permission (ADR-0362)
   let chatEdit = null;       // the chat whose menu, name box or delete question is open: { id, mode } (ADR-0358)
   let nameBox = null;        // the name box, while one is open
   let watchAbort = null;     // ends the open watch connection when another chat opens
@@ -1686,6 +1695,7 @@
     sendMessage();
   };
   makeActiveBtn.onclick = () => switchTo(sessionId);
+  document.getElementById("open-waiting").onclick = () => { if (waitingId !== null) viewChat(waitingId); };
   attachBtn.onclick = () => {
     if (!turnActive) fileInput.click();
   };
@@ -1858,6 +1868,7 @@
     document.getElementById("chip-session").textContent = id8;
     emptyMeta.textContent = info.model + " · session " + id8;
     updateComposerState();  // the banner is about the chat on screen: it moves with it, list or no list (ADR-0325)
+    updateWaitNote();       // and a chat that waits is no longer one on another screen once it is on this one
     resetView();
     const epoch = await renderHistory(gen);  // the bus the history was cut against: see startOver()
     if (gen !== shown) return;
@@ -1898,10 +1909,19 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { if (watchAbort) watchAbort.abort(); return; }
     for (const resume of shownAgain.splice(0)) resume();
+    refreshChats();  // what changed while it was hidden (ADR-0362)
   });
   function whenShown() {
     return document.hidden ? new Promise((resume) => shownAgain.push(resume)) : Promise.resolve();
   }
+
+  // Another page or the terminal can make another chat active, and a turn in another chat can wait
+  // on a permission, with nothing on the bus of the chat on screen to say so (ADR-0362). So the
+  // list is asked for again when the page is shown again (above), when its window is focused, and
+  // every CHAT_LIST_EVERY_MS while it is shown: one request each time, and no connection held open.
+  const CHAT_LIST_EVERY_MS = 10000;
+  setInterval(() => { if (!document.hidden) refreshChats(); }, CHAT_LIST_EVERY_MS);
+  window.addEventListener("focus", () => refreshChats());
 
   // ── a page that is not the server's (ADR-0345) ──
   // An open page runs the script it was served with for as long as it stays open: a server that
@@ -2070,14 +2090,23 @@
     // marked active the chat that was active before (and the chat now active as only viewed).
     if (ask !== listed) return;
     // recent_sessions flags the workspace's current chat — the authoritative, always-fresh
-    // source for currentId even when this page never opened it (ADR-0319).
+    // source for currentId even when this page never opened it (ADR-0319). Not while the chat on
+    // screen is the active one: when another chat is made active, this chat's own bus brings
+    // `session_rotated`, and followCurrent follows from what the page knew before the move. Moved
+    // here first, by a list read as the page is shown again and answered before the resumed watch
+    // replayed that frame, the page stayed where it was instead of following (ADR-0362). The
+    // badge moves all the same: it is drawn from the list.
     const cur = chats.find((c) => c.current);
-    if (cur) currentId = cur.id;
+    if (cur && currentId !== sessionId) currentId = cur.id;
     listedChats = chats;
     // A name being typed or a delete being asked about holds the list still: drawn again, the
-    // box would lose what was typed in it. The list is drawn as it now is once that is done.
-    if (chatEdit === null) drawChats();
+    // box would lose what was typed in it. The list is drawn as it now is once that is done. A
+    // list read again unchanged is not drawn again: drawn again under the pointer or the
+    // keyboard, it would lose the row being clicked or the focus (ADR-0362).
+    const drawn = JSON.stringify([sessionId, chats]);
+    if (chatEdit === null && drawn !== drawnList) { drawnList = drawn; drawChats(); }
     updateComposerState();
+    updateWaitNote();
   }
 
   function drawChats() {
@@ -2272,6 +2301,20 @@
     const viewingOther = currentId !== null && sessionId !== null && sessionId !== currentId;
     viewBanner.hidden = !viewingOther;
     input.placeholder = viewingOther ? "Make this chat active to send here" : composePlaceholder;
+  }
+
+  // A turn in a chat other than the one on screen waits on a permission (ADR-0362). Its card is
+  // drawn only in its own chat, which this page does not watch, so the page says so here and Open
+  // it opens that chat, where the card is. The note comes and goes with the chat list's mark.
+  function updateWaitNote() {
+    const waiting = sessionId === null ? undefined
+      : listedChats.find((c) => c.awaiting_approval && c.id !== sessionId);
+    waitingId = waiting ? waiting.id : null;
+    waitNote.hidden = !waiting;
+    if (waiting) {
+      waitText.textContent = (waiting.current ? "The active chat" : "“" + (waiting.title || "New chat") + "”")
+        + " is waiting for your permission.";
+    }
   }
 
   // Make the chat on screen the workspace's ACTIVE conversation (ADR-0319): the next message runs

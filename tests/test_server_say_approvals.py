@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from zakcode.permissions import PermissionOutcome, PermissionRequest, PermissionTier
 from zakcode.server.app import SayInboxPrompter
 from zakcode.session.say_inbox import (
@@ -124,3 +126,82 @@ def test_rest_turns_receive_the_inbox_prompter(tmp_path: Path, monkeypatch) -> N
 
     asyncio.run(run())
     assert received and isinstance(received[0], SayInboxPrompter)
+
+
+@pytest.mark.parametrize(
+    "answer", ["y", "n", "interrupt", None], ids=["allowed", "denied", "interrupted", "timed out"]
+)
+def test_the_prompt_says_it_waits_until_it_ends_however_it_ends(
+    tmp_path: Path, answer: str | None
+) -> None:
+    """The chat list marks a chat while its turn waits on a permission (ADR-0362): the prompt says
+    it waits as it starts, and that it no longer does once it ends, answered or not."""
+    told: list[bool] = []
+
+    async def run() -> list[bool]:
+        prompter = _prompter(tmp_path, waiting=told.append, timeout=0.3 if answer is None else 5.0)
+        asking = asyncio.create_task(prompter.confirm(_request()))
+        while not told:
+            await asyncio.sleep(0.01)
+        during = list(told)
+        if answer == "interrupt":
+            request_interrupt(interrupt_path(tmp_path))
+        elif answer is not None:
+            assert write_say(say_path(tmp_path), answer)
+        await asking
+        return during
+
+    assert asyncio.run(run()) == [True]
+    assert told == [True, False]
+
+
+def test_the_chat_list_marks_the_chat_whose_turn_waits_on_a_permission(tmp_path: Path) -> None:
+    """GET /sessions/recent marks the chat whose turn waits on a permission while it waits, and
+    not once it is answered (ADR-0362): a page showing another chat says so from the mark."""
+    import httpx
+
+    from zakcode.agent import TurnResult
+    from zakcode.config import Settings
+    from zakcode.server.app import create_app
+    from zakcode.session.store import Session, SessionStore
+
+    class _AskingAgent:
+        def __init__(self, session: Session, prompter: SayInboxPrompter) -> None:
+            self.session = session
+            self.prompter = prompter
+
+        async def arun_turn(self, message: str) -> TurnResult:
+            await self.prompter.confirm(_request())
+            return TurnResult(text="ok", stop_reason="completed", iterations=1)
+
+    def factory(session: Session, model: str | None, prompter: SayInboxPrompter) -> _AskingAgent:
+        return _AskingAgent(session, prompter)
+
+    settings = Settings(workspace_root=tmp_path, session_dir=tmp_path / "sessions")
+    app = create_app(
+        settings=settings, store=SessionStore(tmp_path / "sessions"), agent_factory=factory
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async def marks(client: httpx.AsyncClient) -> dict[str, bool]:
+        chats = (await client.get("/sessions/recent")).json()
+        return {chat["id"]: chat["awaiting_approval"] for chat in chats}
+
+    async def run() -> tuple[str, dict[str, bool], dict[str, bool]]:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            sid = (await client.put("/sessions/current", json={"session_id": None})).json()["id"]
+            turn = asyncio.create_task(
+                client.post("/chat", json={"message": "hi", "session_id": sid})
+            )
+            for _ in range(500):
+                waiting = await marks(client)
+                if waiting.get(sid):
+                    break
+                await asyncio.sleep(0.01)
+            assert write_say(say_path(tmp_path), "y")
+            assert (await turn).status_code == 200
+            return sid, waiting, await marks(client)
+
+    sid, waiting, answered = asyncio.run(run())
+    assert waiting == {sid: True}
+    assert answered == {sid: False}
