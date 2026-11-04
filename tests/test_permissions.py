@@ -375,6 +375,22 @@ async def test_request_carries_tier_and_reason() -> None:
     assert req.reason
 
 
+def test_an_approval_says_in_plain_words_what_the_tool_can_do() -> None:
+    """The prompt said ``'DANGER_FULL_ACCESS' requires confirmation in 'ask' mode``: the tier's
+    name, which nobody reading it at the page had been told the meaning of (ADR-0358)."""
+    policy = PermissionPolicy(PermissionMode.ASK)
+
+    assert policy.decide(BASH, {"command": "ls"}) == (
+        PermissionDecision.ASK,
+        "This needs your OK: it can run commands and reach beyond the workspace "
+        "(permission mode: ask).",
+    )
+    assert policy.decide(WRITE, {"path": "a", "content": "x"}) == (
+        PermissionDecision.ASK,
+        "This needs your OK: it changes files in the workspace (permission mode: ask).",
+    )
+
+
 # ── confirm_tools: the opt-in web_fetch egress gate ─────────────────────────────────
 
 WEBFETCH = _spec("web_fetch", PermissionTier.READ_ONLY)

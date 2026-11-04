@@ -144,6 +144,16 @@ _ABOVE_CEILING: dict[PermissionMode, PermissionDecision] = {
     PermissionMode.BYPASS: PermissionDecision.ALLOW,  # unreachable (ceiling is max); totality
 }
 
+#: What a tier lets a tool do, in the words an approval prompt shows a person (ADR-0358). The
+#: prompt said ``'DANGER_FULL_ACCESS' requires confirmation in 'ask' mode`` before: the enum's
+#: name, which nobody reading it at the page had been told the meaning of.
+_TIER_DOES: dict[PermissionTier, str] = {
+    PermissionTier.READ_ONLY: "it only reads",
+    PermissionTier.WORKSPACE_WRITE: "it changes files in the workspace",
+    # The shell tools and every MCP tool, whose reach this side cannot see.
+    PermissionTier.DANGER_FULL_ACCESS: "it can run commands and reach beyond the workspace",
+}
+
 #: Looseness rank for grant-restore filtering (D12): a persisted grant recorded under
 #: mode X is honored only while the ACTIVE mode is at least as loose as X — a session
 #: resumed under a TIGHTER posture re-asks (or denies) instead of inheriting grants.
@@ -931,7 +941,7 @@ class PermissionPolicy:
             return (base, f"'{tier.name}' is blocked in '{mode.value}' mode")
         if confirm_escalated:
             return (base, f"'{tool_name}' requires confirmation before reaching the network")
-        return (base, f"'{tier.name}' requires confirmation in '{mode.value}' mode")
+        return (base, f"This needs your OK: {_TIER_DOES[tier]} (permission mode: {mode.value}).")
 
     # ── stateful authorization ────────────────────────────────────────────────
 

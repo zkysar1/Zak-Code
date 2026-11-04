@@ -22426,3 +22426,125 @@ window option, pointed back at a number, and passed with each restored.
 
 Not verified: a tmux older than 3.6 (CI runs 3.6), macOS, and a person's own terminal attached to
 the cockpit.
+
+## ADR-0358: a chat in the web page's list is renamed or deleted, and a deleted chat goes to the trash
+
+Status: accepted. 2026-11-04. Builds on ADR-0319 (the chat list), ADR-0325 (a page follows the chat a
+switch makes current), ADR-0327 (a deleted chat's bus is let go) and ADR-0352 (a cockpit pane shows
+the served chat).
+
+Context. People using the web app asked to manage their own chats: rename one to keep the list
+organised, and delete the ones they no longer need. The page offered neither. The server held a
+`DELETE /sessions/{id}` that unlinked the chat's document and did nothing else.
+1. A turn running on the chat holds the conversation in memory and saves it whole as it ends, so a
+   chat deleted during a turn came back a moment later, after a delete that answered 204.
+2. Deleting the current chat left `.current-session` naming a chat that was gone, and the pages
+   showing it were not told.
+3. The chat's transcript projection (ADR-0061) and its uploads stayed on disk.
+4. Nothing could be undone.
+Three smaller things went with it. A new chat read "New chat" in the list until its first answer
+ended: the server titles a chat by its first ask once the turn has saved it, and the page asked for
+the list again only when the turn ended. An approval said
+`'DANGER_FULL_ACCESS' requires confirmation in 'ask' mode`, a tier's name the person at the page had
+never been told the meaning of. And the page named no icon, so the browser asked for `/favicon.ico`
+on every load and its 404 sat in the console.
+
+Decision.
+- `DELETE /sessions/{id}` moves the chat to the trash beside the store: `trash/<id>/`, which is
+  `.zakcode/trash/` on a served workspace, or `<id>-2` and on when that folder is taken. The
+  document, the transcript and the chat's uploads move there, and `deleted.json` names where each
+  came from and what was left behind. Moving them back undoes the delete. The document moves first
+  and alone decides the outcome: one that cannot be moved answers 503 and leaves the chat where it
+  was. A transcript or uploads folder that cannot be moved stays, and `deleted.json` names it under
+  `left`. The trash ignores itself in git, is private to the user where the platform allows, and the
+  server never empties it.
+- A delete answers 409 while a turn runs on the chat, whether this process runs it or, by the
+  workspace's busy marker, another (a terminal `zakcode` on the same workspace). The current chat is
+  deleted only when the current chat could change: the refusals of `PUT /sessions/current` apply (a
+  turn running, a say or a suggestion queued), ending "then delete it". Otherwise a new chat is made
+  current first, as New chat makes one, and the pages and cockpit panes watching the deleted chat
+  get `session_rotated` with the reason "this chat was deleted" and follow. So the marker never
+  names a chat that is gone; a 503 after that step leaves the new chat current and the old one
+  listed. The deleted chat's bus is let go, as ADR-0327 lets it go.
+- `PUT /sessions/{id}/title` names a chat: at most 200 characters (422 above), whitespace folded to
+  single spaces, and an empty name gives the chat back its first ask. The name is saved in the
+  chat's document (`Session.title`, which a build older than this one drops when it next saves that
+  chat) without changing the file's time: a name is not a message, so the chat keeps its place in
+  the list. 409 while a turn runs on the chat, which would save the chat as it holds it and drop
+  the name; 404 for an unknown chat. The list shows the name where it showed the first ask, cut at
+  a word at 80 characters as the ask is.
+- The page. Each chat row ends in ⋯, which opens Rename, Delete and Cancel in the row. Rename puts
+  a name box in the row: Enter or Save names the chat, Escape or Cancel leaves it as it was. Delete
+  asks in the row, "Delete “name”?", and only the second Delete sends the request. No browser
+  dialog is used: `confirm()` and `prompt()` stop the whole page, and a frame that embeds the page
+  can turn them off. While a row is open the list is not drawn again, so a turn that ends meanwhile
+  does not take what is typed; it is drawn once the row closes. A refusal is said on the status
+  line, and the row stays open with what was typed. A deleted chat that was on screen gives way to
+  the active chat.
+- A new chat is titled in the list from its first `user_message` frame, as the ask is drawn. The
+  server's title replaces it when the turn ends, as before.
+- An approval says what the tool can do: "This needs your OK: it can run commands and reach beyond
+  the workspace (permission mode: ask)." for a command or MCP tool, "it changes files in the
+  workspace" for a write. A refusal's wording and the network gate's are unchanged.
+- The page names an empty icon (`<link rel="icon" href="data:,">`). The browser stops asking for
+  `/favicon.ico`, and a page that a product embeds under its own name shows no brand of ours.
+
+The terminal. The inline REPL's `/resume` lists the user store (`~/.zakcode/sessions`), not a
+served workspace's, by id and age. It shows no names and has no rename or delete; a chat renamed or
+deleted in the web app is in the workspace's store, which `/resume` does not list. The cockpit's pane
+shows the served chat (ADR-0352) and follows the rotation that deleting the active chat sends,
+saying "the web app moved to another chat — this chat was deleted"; the say box then feeds the new
+current chat. The pane draws no chat names.
+
+A gateway that forwards a member's delete to a served sidecar, as Vinheim's does, already answers a
+409 as a conversation it may not close ("protected"), and its words to the member say a
+conversation is closed, never that it is gone for good. The trash changes nothing it promises.
+
+Considered and not done.
+- Rename and delete in the terminal, and names in `/resume`. The REPL lists another store, so the
+  web app's names would not reach it; that is a decision of its own.
+- Undo in the page. The trash holds what is needed and `deleted.json` says where it goes back, but
+  no route restores it.
+- Emptying the trash. A deleted chat is kept until someone removes it: a cap or an age would make a
+  delete permanent with no person deciding it.
+- A delete that waits for the running turn to end. The refusal says why and leaves the choice to
+  the person, who can Stop the turn.
+
+New tests.
+- Server, `tests/test_webapp_chat_manage.py`: a deleted chat's document, transcript and uploads land
+  in the trash with `deleted.json`; a second delete and an unknown chat answer 404; deleting the
+  current chat makes a new one current, sends "this chat was deleted" on the old chat's bus and lets
+  that bus go; the current chat is not deleted while a say is queued; a turn running on a chat
+  refuses its delete and its name while another chat is renamed and deleted; another process's
+  busy marker refuses only its own chat; a name keeps the chat's place and date and outlives a
+  restart and a later turn; an empty name gives back the first ask; 201 characters answer 422, and
+  the list cuts a long name at a word; an unknown chat cannot be named.
+- Store, `tests/test_session_trash.py`: a missing chat is not trashed; a chat deleted, put back as
+  `deleted.json` says and deleted again gets `<id>-2`; a document that cannot be moved leaves
+  everything in place; a transcript that cannot be moved stays and is named; `keep_time` keeps the
+  file's time. `tests/test_server_session_store_location.py`: the store names the transcript path
+  the loop writes.
+- Page, `tests/test_webclient_chat_manage.py`, the page's own script under node: a chat is renamed
+  from its row; Escape sends nothing; a refused name says why and keeps the box; the list holds
+  still while a name is typed; Delete sends nothing until it is answered in the row; Cancel deletes
+  nothing; a refused delete says why; deleting the chat on screen shows the active chat; deleting
+  the active chat shows the new one; a new chat is titled as its first message arrives.
+- `tests/test_permissions.py`: the approval's words for a command tool and for a write.
+- Changed: `test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep` expected 204 for
+  a delete while a turn ran on the chat. It now expects 409, and the chat still saved once the turn
+  ends. `test_client_is_self_contained` refused any `<link>` in the page; it now admits exactly the
+  empty `data:` icon, which fetches nothing, so the page still works offline.
+
+The proof. Sixteen lines the new tests guard were each broken in turn, with the one test that
+guards it run three times: green on the real code, red with the line broken, green again with the
+line restored byte for byte. The lines: the delete's and the rename's refusal while a turn runs in
+this process, and the refusal for a turn in another; the new current chat a delete makes; the
+rename's save that keeps the file's time, and the store's `keep_time`; the uploads and the
+transcript moving with the chat; the name reaching the document; on the page, the first Delete
+only asking, Enter naming the chat, the list held while a row is open, a refused name keeping its
+box, a deleted chat on screen giving way to the active one, and a new chat's title from its first
+message; and the approval's words. The full suite ran once before the two tests above were
+changed: 6,813 passed, and those two failed, as the change meant them to; both pass as changed.
+
+Not verified: a real browser (the page tests run the page's own script on a scripted DOM under
+node), and a delete made through a gateway end to end.

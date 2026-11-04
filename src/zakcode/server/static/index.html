@@ -4,6 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>__ZAKCODE_BRAND_NAME__</title>
+  <!-- No icon, said so: the browser stops asking for /favicon.ico, whose 404 sat in every
+       console (ADR-0358). An empty one carries no brand, so a white-labelled page shows none. -->
+  <link rel="icon" href="data:," />
   <style>
     /* ── The Zak look (docs/UX.md): the terminal grammar in proportional type,
        worn in the Vinheim family's colours (ADR-0218). Every colour lives in
@@ -138,7 +141,29 @@
     .chat.viewing { background: var(--inset); color: var(--fg); }
     .chat .cb { flex: none; font: 10px/1 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--brand); border: 1px solid var(--brand); border-radius: 999px; padding: .12rem .34rem; }
     .chat .ct { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chat button.ct { padding: 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
     .chat .cm { flex: none; font: 11px/1.45 var(--font-mono); color: var(--faint); }
+    /* ⋯ and what it opens (ADR-0358). Where a pointer can hover, ⋯ shows on the row it is over or
+       the row the keyboard is in; on a touch screen it always shows. */
+    .chat-more {
+      flex: none; align-self: center; padding: 0 .3rem; background: none; border: 0;
+      border-radius: var(--radius-sm); color: var(--faint); font: 15px/1.2 var(--font-prose); cursor: pointer;
+    }
+    .chat-more:hover, .chat-more:focus-visible { color: var(--fg); background: var(--inset); }
+    @media (hover: hover) { .chat:not(:hover):not(:focus-within) .chat-more { visibility: hidden; } }
+    .chat.editing { flex-wrap: wrap; align-items: center; gap: .4rem; cursor: default; background: var(--inset); color: var(--fg); }
+    .chat .chat-ask { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
+    .chat-name {
+      flex: 1 1 100%; min-width: 0; padding: .25rem .45rem; font: inherit; color: var(--fg);
+      background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+    }
+    .chat-name:focus { outline: none; border-color: var(--brand); }
+    .chat-act {
+      font: 600 12px/1.4 var(--font-prose); color: var(--fg); background: transparent; cursor: pointer;
+      border: 1px solid var(--line-strong); border-radius: 999px; padding: .1rem .65rem;
+    }
+    .chat-act:hover { border-color: var(--brand); }
+    .chat-act.danger { color: var(--err); border-color: var(--err); }
     @media (max-width: 48rem) {
       #chats-toggle { display: inline-block; }
       #sidebar {
@@ -625,6 +650,9 @@
   let shown = 0;             // counts the chats opened; work begun for an earlier one draws nothing (ADR-0319)
   let viewing = 0;           // counts the chats asked for; only the last one asked for opens (ADR-0325)
   let listed = 0;            // counts the chat-list requests; only the last one's answer is drawn
+  let listedChats = [];      // the chat list as last read, drawn by drawChats()
+  let chatEdit = null;       // the chat whose menu, name box or delete question is open: { id, mode } (ADR-0358)
+  let nameBox = null;        // the name box, while one is open
   let watchAbort = null;     // ends the open watch connection when another chat opens
   let turnActive = false;
   let turnAt = null;                            // the turn's user_message publish stamp
@@ -1422,6 +1450,7 @@
         assistantBody = null;
         thinkingBody = null;
         add(row("user", el("span", "", "›"), userBody(ev.text || "", ev.at)));
+        nameNewChat(ev.text || "");  // a new chat's title, before its answer (ADR-0358)
         turnActive = true;
         turnSeq++;  // a Stop still on its way was for the turn before
         turnAt = ev.at;
@@ -2019,22 +2048,162 @@
     // source for currentId even when this page never opened it (ADR-0319).
     const cur = chats.find((c) => c.current);
     if (cur) currentId = cur.id;
-    const now = Date.now() / 1000;
-    chatList.replaceChildren(...chats.map((c) => chatItem(c, now)));
+    listedChats = chats;
+    // A name being typed or a delete being asked about holds the list still: drawn again, the
+    // box would lose what was typed in it. The list is drawn as it now is once that is done.
+    if (chatEdit === null) drawChats();
     updateComposerState();
   }
 
+  function drawChats() {
+    const now = Date.now() / 1000;
+    chatList.replaceChildren(...listedChats.map((c) =>
+      (chatEdit !== null && chatEdit.id === c.id ? chatEditor(c) : chatItem(c, now))));
+  }
+
   function chatItem(c, now) {
-    const item = el("button", "chat");
-    item.appendChild(el("span", "ct", c.title || "New chat"));
+    // The row opens the chat, and its title is a button so the keyboard can too. ⋯ opens what
+    // can be done to the chat (ADR-0358). The title is the row's first child.
+    const item = el("div", "chat");
+    const title = el("button", "ct", c.title || "New chat");
+    title.type = "button";
+    item.appendChild(title);
     if (c.current) { item.classList.add("active"); item.appendChild(el("span", "cb", "active")); }  // the workspace's active chat (ADR-0319)
     item.appendChild(el("span", "cm", ago(now - Date.parse(c.updated_at) / 1000)));
     if (c.id === sessionId) {
       item.classList.add("viewing");   // the chat on screen — distinct from the active one above
-      item.setAttribute("aria-current", "page");
+      title.setAttribute("aria-current", "page");
     }
+    const more = chatAction("⋯", () => editChat(c.id, "menu"), "chat-more");
+    more.title = "Rename or delete";
+    more.setAttribute("aria-label", "Rename or delete " + (c.title || "New chat"));
+    item.appendChild(more);
     item.onclick = () => viewChat(c.id);
     return item;
+  }
+
+  // What ⋯ opens (ADR-0358), in the chat's own row: a menu, the name box, or the question whether
+  // to delete it. Nothing pops over the page, and nothing asks through the browser's own dialogs.
+  function chatEditor(c) {
+    const item = el("div", "chat editing");
+    const name = c.title || "New chat";
+    nameBox = null;
+    if (chatEdit.mode === "rename") {
+      const box = el("input", "chat-name");
+      box.type = "text";
+      box.maxLength = 200;
+      box.value = c.title || "";
+      box.placeholder = "Empty: named by its first message";
+      box.setAttribute("aria-label", "New name for " + name);
+      box.onkeydown = (e) => {
+        if (e.isComposing || e.keyCode === 229) return;  // the Enter that ends an IME composition
+        if (e.key === "Enter") { e.preventDefault(); renameChat(c.id, box.value); }
+        else if (e.key === "Escape") { e.preventDefault(); closeChatEdit(); }
+      };
+      nameBox = box;
+      item.append(box, chatAction("Save", () => renameChat(c.id, box.value)),
+                  chatAction("Cancel", closeChatEdit));
+    } else if (chatEdit.mode === "delete") {
+      item.append(el("span", "chat-ask", "Delete “" + name + "”?"),
+                  chatAction("Delete", () => deleteChat(c.id), "chat-act danger"),
+                  chatAction("Cancel", closeChatEdit));
+    } else {
+      item.append(el("span", "chat-ask", name),
+                  chatAction("Rename", () => editChat(c.id, "rename")),
+                  chatAction("Delete", () => editChat(c.id, "delete")),
+                  chatAction("Cancel", closeChatEdit));
+    }
+    return item;
+  }
+
+  // A button in a chat's row. Its click stops at it: the row's own opens the chat.
+  function chatAction(label, act, cls) {
+    const button = el("button", cls || "chat-act", label);
+    button.type = "button";
+    button.onclick = (e) => { if (e) e.stopPropagation(); act(); };
+    return button;
+  }
+
+  function editChat(id, mode) {
+    chatEdit = { id, mode };
+    drawChats();
+    if (nameBox) { nameBox.focus(); if (nameBox.select) nameBox.select(); }
+  }
+
+  function closeChatEdit() {
+    chatEdit = null;
+    drawChats();
+  }
+
+  // The words of a refusal the server gave, else what failed and its status.
+  async function refusalOf(resp, failed) {
+    const body = await resp.json().catch(() => ({}));
+    return typeof body.detail === "string" ? body.detail : failed + ": HTTP " + resp.status;
+  }
+
+  // Name a chat (ADR-0358). Refused while a turn runs on it, since the turn saves the chat as it
+  // holds it: the status line says why, and the box keeps what was typed.
+  async function renameChat(id, name) {
+    let resp;
+    try {
+      resp = await fetch("/sessions/" + id + "/title", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: name }),
+      });
+    } catch (e) {
+      setStatus("could not rename the chat: " + e.message);
+      return;
+    }
+    if (!resp.ok) { setStatus(await refusalOf(resp, "could not rename the chat")); return; }
+    if (!turnActive) hideStatus();  // a refusal said before, if any; a running turn keeps its own
+    const named = await resp.json().catch(() => null);
+    const listedChat = listedChats.find((c) => c.id === id);
+    if (listedChat && named && typeof named.title === "string") listedChat.title = named.title;
+    closeChatEdit();
+    refreshChats();
+  }
+
+  // Delete a chat (ADR-0358): the server moves it to the workspace's trash. When it was the chat
+  // on screen, the page shows the active chat, which is a new one when the active chat was the one
+  // deleted. A 404 is a chat already gone, which is what was asked.
+  async function deleteChat(id) {
+    let resp;
+    try {
+      resp = await fetch("/sessions/" + id, { method: "DELETE" });
+    } catch (e) {
+      setStatus("could not delete the chat: " + e.message);
+      return;
+    }
+    if (!resp.ok && resp.status !== 404) {
+      setStatus(await refusalOf(resp, "could not delete the chat"));
+      return;
+    }
+    if (!turnActive) hideStatus();
+    chatEdit = null;
+    listedChats = listedChats.filter((c) => c.id !== id);
+    drawChats();
+    if (id === sessionId) {
+      ++viewing;  // a chat clicked before this opens nothing when it answers (see viewChat)
+      let info = null;
+      try {
+        const current = await fetch("/sessions/current");
+        if (current.ok) info = await current.json();
+      } catch (e) { /* the list below still shows what there is */ }
+      if (info !== null) { currentId = info.id; await openSession(info); }
+    }
+    refreshChats();
+  }
+
+  // A new chat is titled by its first ask, which the server saves only once the turn has begun,
+  // so its title came with the turn's end. It is drawn as the ask is (ADR-0358).
+  function nameNewChat(text) {
+    const listedChat = listedChats.find((c) => c.id === sessionId);
+    if (!listedChat || listedChat.title) return;
+    const line = text.split(/\s+/).filter(Boolean).join(" ");
+    if (!line) return;
+    listedChat.title = line.length > 80 ? line.slice(0, 80) + "…" : line;
+    if (chatEdit === null) drawChats();
   }
 
   // How long ago, as the terminal's /resume picker prints it (cli _age_str).
@@ -2054,6 +2223,7 @@
   // so an answer that comes back after a later click (or a switch) opens nothing (ADR-0325).
   async function viewChat(target) {
     closeChats();
+    if (chatEdit !== null) closeChatEdit();  // another chat opened: a name half typed is let go
     const ask = ++viewing;
     if (target === null) { switchTo(null); return; }
     if (target === sessionId) return;
@@ -2084,6 +2254,7 @@
   // message waits. A plain tab click VIEWS (viewChat) and never comes here; only this moves the marker.
   async function switchTo(target) {
     closeChats();
+    if (chatEdit !== null) closeChatEdit();
     ++viewing;   // a chat clicked before this opens nothing when it answers (see viewChat)
     if (target !== null && target === currentId) return;   // already the active chat
     if (turnActive) { setStatus("a turn is running — stop it or let it finish, then switch"); return; }
