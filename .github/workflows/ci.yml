@@ -131,6 +131,9 @@ jobs:
   # real cockpit in a real tmux, types into its box and reads its panes, with a stand-in model on
   # loopback, so it needs no key (ADR-0356). Linux only, since the cockpit needs tmux.
   # publish-sidecar does not wait on it; the failure alert does (ADR-0357).
+  # Its workspace and home sit under a folder with a SPACE in its name, as `verify`'s tmp paths
+  # do (see there): there a path reaches only the fakes, here it reaches the commands a real tmux
+  # runs. The tmux socket stays in a short folder of its own (the `tmux_dir` fixture).
   cockpit-e2e:
     name: cockpit in a real tmux
     runs-on: ubuntu-latest
@@ -157,7 +160,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: |
           set -o pipefail
-          uv run --no-sync pytest -q -rs tests/test_cockpit_tmux_e2e.py | tee "$RUNNER_TEMP/cockpit-e2e.txt"
+          uv run --no-sync pytest -q -rs --basetemp "$RUNNER_TEMP/zak code tmp" tests/test_cockpit_tmux_e2e.py | tee "$RUNNER_TEMP/cockpit-e2e.txt"
           # A skipped test makes this job green while testing nothing, so a skip fails it.
           if grep -Eq '[0-9]+ skipped' "$RUNNER_TEMP/cockpit-e2e.txt"; then
             echo "::error::the cockpit tests were skipped, so this job tested nothing"
