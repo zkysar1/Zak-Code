@@ -1,0 +1,131 @@
+name: Dev channel
+
+# Publish a CANDIDATE build to the DEV artifact channel, zak-code-deployments/dev/ (g-370-47).
+# The only trigger is a dispatch:  gh workflow run dev-channel.yml --ref main -f lane=dev -f ref=<ref>
+#
+# WHY A DISPATCH ON MAIN AND NOT A BRANCH. This repository has no dev branch and must not get one
+# (the SDLC charter: its dev plane is the artifact CHANNEL). A candidate zakcode change reaches a
+# dev vessel by being built from its ref into dev/, with no merge to main, so a change that has to
+# be tried on a vessel no longer has to ride the hotfix lane to main first (the 2026-09-01
+# ZAKCODE_FALLBACK_MODEL fix, #336).
+#
+# WHY A FILE OF ITS OWN. A skipped job in ci.yml posts a check run on whatever ref a dispatch
+# targets, required contexts included, so a dispatch aimed at a pull request's branch would stamp
+# that branch with skipped copies of ci.yml's checks. This file shares no job name with ci.yml, and
+# ci.yml has no dispatch trigger.
+#
+# THE CONTROL IS THE PUBLISH ROLE'S TRUST POLICY, NOT THE CHECKS BELOW. The role trusts this
+# repository's main ref and carries no condition on which workflow file runs, so any dispatch on
+# main can assume it. A dispatch from a candidate branch runs the candidate's own copy of this
+# file, which could drop every check here; what stops it is that its OIDC subject is not main. The
+# first step exists so a wrong dispatch fails early, before a checkout or a credential, with a
+# message that says what to do instead. The candidate is only checked out and archived: nothing
+# from it runs here. Its tests are the checks of its own pull request.
+#
+# THE LANE RESOLVES THROUGH AN EXPLICIT ALLOWLIST THAT DEFAULTS TO REFUSE. An unrecognised lane
+# fails the step. It never falls through to the production name, and nothing in this file can
+# write latest/: that pointer belongs to ci.yml's publish-sidecar alone, gated to a push to main.
+# The discriminator and its refusal land in the same change as the trigger.
+#
+# THE CONTRACT FOR THE CONSUMER, which is not built yet (it is the follow-up in the environment
+# server's provisioner): its default is the OPPOSITE of the one here, and that is not an
+# inconsistency. Here a wrong channel corrupts what production boots, so the safe default is
+# REFUSE. A vessel's provisioner that cannot resolve a channel is a broken launch, so there only
+# the exact literal dev opens the dev prefix and everything else, unset included, reads prod. Both
+# are allowlists; they differ in which direction is expensive. Do not make them match by flipping
+# either one.
+#
+# WRITE-SET AUDIT. This file has ONE writer outside the runner: the dev/ object below, with
+# lane=dev and branch=<the ref built> in its metadata. The writers in the other workflow files are
+# in the allowlist of tests/test_ci_dev_channel_lane.py, which scans every workflow file for them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: Artifact lane to publish to. dev is the only lane a dispatch can open.
+        type: choice
+        options: [dev]
+        required: true
+      ref:
+        description: Branch, tag or full sha of this repository to build into that lane.
+        type: string
+        required: true
+
+jobs:
+  publish-dev-channel:
+    name: Publish candidate to the dev channel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A permissions block REPLACES the job default set: name contents (checkout + git archive)
+    # explicitly alongside the OIDC id-token.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # FIRST, before a checkout or a credential. Every value arrives through env and no expression
+      # is interpolated into the script (the runner would evaluate one even inside a comment), so a
+      # ref name cannot become shell.
+      - name: Refuse anything but the dev lane, from main, for a plain ref
+        env:
+          LANE: ${{ inputs.lane }}
+          CANDIDATE: ${{ inputs.ref }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          [ "$WORKFLOW_REF" = "refs/heads/main" ] \
+            || { echo "::error::dispatch on main (--ref main) and name the candidate in the ref input"; exit 1; }
+          # LANE -> CHANNEL, an explicit allowlist that DEFAULTS TO REFUSE.
+          case "$LANE" in
+            dev) CHANNEL="dev" ;;
+            *)
+              echo "::error::Unrecognised lane -- refusing to publish. Add the lane here, with its own channel, before opening it." >&2
+              exit 1
+              ;;
+          esac
+          # The candidate becomes a git ref and a value in the object's metadata (comma-separated
+          # key=value pairs): this character set keeps a comma, a space, a leading dash and ".." out.
+          case "$CANDIDATE" in
+            ''|-*|*..*|*[!A-Za-z0-9._/-]*)
+              echo "::error::ref must be a branch, tag or sha of this repository (letters, digits, . _ / -)" >&2
+              exit 1
+              ;;
+          esac
+          # The only value a later step takes from this one. It can only be a literal from the
+          # allowlist above, and a step that runs without it stops under `set -u` before any write.
+          echo "CHANNEL=${CHANNEL}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Configure AWS credentials (OIDC, keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::891377285145:role/ayoai-zds-ci-alert-oidc
+          aws-region: us-east-2
+
+      - name: Build the candidate and publish it to the dev channel
+        env:
+          BUCKET: ayoai-jar-deployments
+          CANDIDATE: ${{ inputs.ref }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          git archive --format=tar.gz -o zak-code-main.tar.gz HEAD
+          echo "tarball size: $(du -h zak-code-main.tar.gz | cut -f1)"
+          # Positive control, as in ci.yml's publish-sidecar: list to a file first, since piping
+          # tar into grep -q trips SIGPIPE under pipefail exactly when the file is present.
+          tar tzf zak-code-main.tar.gz > tarball-contents.txt
+          grep -q '^src/zakcode/server/app.py$' tarball-contents.txt \
+            || { echo "::error::src/zakcode/server/app.py absent from tarball -- refusing to publish" >&2; exit 1; }
+          # branch= says which ref produced the object and lane= says which channel it was written
+          # to, so a consumer reads both rather than inferring either from the sha or the key.
+          # The object keeps prod's filename under its own prefix: a vessel reads a channel by
+          # prefix and never by name.
+          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/${CHANNEL}/zak-code-main.tar.gz" \
+            --metadata "commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=${CANDIDATE},lane=${CHANNEL}"
+          echo "published ${SHA} (${CANDIDATE}) to the ${CHANNEL} channel"

@@ -5,19 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # A dispatch publishes a CANDIDATE build to the DEV artifact channel and runs nothing else
-  # (g-370-47; see publish-dev-channel). `gh workflow run ci.yml --ref main -f lane=dev -f ref=<ref>`.
-  workflow_dispatch:
-    inputs:
-      lane:
-        description: Artifact lane to publish to. dev is the only lane a dispatch can open.
-        type: choice
-        options: [dev]
-        required: true
-      ref:
-        description: Branch, tag or full sha of this repository to build into that lane.
-        type: string
-        required: true
 
 # Cancel superseded runs on the same ref -- for pull requests. A push to main gets a group of
 # its own, keyed on the commit: with one shared group for main, RE-RUNNING an older run's failed
@@ -31,8 +18,6 @@ concurrency:
 jobs:
   verify:
     name: lint · type · test (py${{ matrix.python-version }}, ${{ matrix.os }})
-    # A dispatch (publish-dev-channel) is not a test run: it tests main's copy, not the candidate.
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     # Job-level ceiling (matters most for the Windows cell, which cannot use the
     # GNU `timeout` session watchdog below); per-test bound is pytest-timeout.
@@ -118,7 +103,6 @@ jobs:
   # offline and fast; neither publish-sidecar nor the failure alert waits on it.
   update-e2e:
     name: update end to end (${{ matrix.os }})
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -152,7 +136,6 @@ jobs:
   # runs. The tmux socket stays in a short folder of its own (the `tmux_dir` fixture).
   cockpit-e2e:
     name: cockpit in a real tmux
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -184,6 +167,22 @@ jobs:
             exit 1
           fi
 
+  # WRITES OUTSIDE THE RUNNER IN THIS FILE, AUDITED (g-370-47): every step that writes anywhere but
+  # the runner's own disk, and what tells a consumer which lane produced it.
+  # tests/test_ci_dev_channel_lane.py scans EVERY workflow file for these shapes and fails on a
+  # writer its allowlist lacks, so a new writer is added there, with its reason, before it is added
+  # here. That allowlist also holds the other workflow files' writers, which are not repeated here.
+  #   verify, update-e2e, cockpit-e2e, "Install uv" (enable-cache) .. the uv cache: GitHub's cache
+  #                                             store, scoped to the ref that saved it; not a channel
+  #   verify, "Upload coverage report" ........ GitHub's artifact store, this run only; not a channel
+  #   publish-sidecar, sha-keyed copy ......... a sha is unique per commit, lane-safe by construction;
+  #                                             the job runs on a push to main only
+  #   publish-sidecar, latest/ pointer ........ the prod channel; push to main only, and main's tip;
+  #                                             lane=prod and branch=main in the metadata
+  #   alert-on-failure, SES mail .............. not an artifact; a failed push to main only
+  # The dev channel (zak-code-deployments/dev/) is written by dev-channel.yml alone, on a dispatch;
+  # this file has no dispatch trigger and no step that can write that prefix.
+  #
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
   # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
@@ -238,9 +237,9 @@ jobs:
           RUN: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          # branch= tells a consumer which lane produced the object it runs (rb-10344). The job's
-          # own `if` makes this lane main, so the value is not read from the event.
-          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=main"
+          # branch= and lane= tell a consumer which lane produced the object it runs.
+          # This job runs on a push to main only, so both are fixed here and not read from the event.
+          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=main,lane=prod"
           # The latest/ pointer only ever moves to main's TIP. A re-run of an OLDER run is
           # a push-to-main run too, and it used to publish its older build over a newer one:
           # measured 2026-09-18, latest/ went acbd40e -> 853178e for 18 minutes. Read the
@@ -259,109 +258,6 @@ jobs:
           # The legacy mind-sidecar-deployments/artifacts/ bridge write was retired
           # here (g-357-10 item 2) once provision-env.sh was repointed to the
           # zak-code-deployments/latest/ pointer above; it had no remaining reader.
-
-  # Publish a CANDIDATE build to the DEV artifact channel, zak-code-deployments/dev/ (g-370-47).
-  # The only trigger is a dispatch: gh workflow run ci.yml --ref main -f lane=dev -f ref=<ref>
-  #
-  # WHY A DISPATCH ON MAIN AND NOT A BRANCH. This repository has no dev branch and must not get one
-  # (the SDLC charter: its dev plane is the artifact CHANNEL). A candidate zakcode change reaches a
-  # dev vessel by being built from its ref into dev/, with no merge to main, so a change that has to
-  # be tried on a vessel no longer has to ride the hotfix lane to main first (the 2026-09-01
-  # ZAKCODE_FALLBACK_MODEL fix, #336).
-  #
-  # THIS JOB RUNS MAIN'S COPY OF THIS FILE. It refuses unless the workflow ref is refs/heads/main,
-  # so the OIDC subject is the one the publish role already trusts, and a dispatch from a candidate
-  # branch (which carries the candidate's own copy of this file) cannot mint credentials. The
-  # candidate is only checked out and archived: nothing from it runs here. Its tests are the checks
-  # of its own pull request.
-  #
-  # THE LANE RESOLVES THROUGH AN EXPLICIT ALLOWLIST THAT DEFAULTS TO REFUSE (guard-5402). An
-  # unrecognised lane fails the step. It never falls through to the production name, and nothing in
-  # this job can write latest/: that pointer belongs to publish-sidecar alone, gated to a push to
-  # main. Order mattered: the discriminator and its refusal land in the same change as the trigger.
-  #
-  # THE CONSUMER'S DEFAULT IS THE OPPOSITE, and that is not an inconsistency. Here a wrong channel
-  # corrupts what production boots, so the safe default is REFUSE. A vessel's provisioner that cannot
-  # resolve a channel is a broken launch, so there only the exact literal dev opens the dev prefix and
-  # everything else, unset included, reads prod. Both are allowlists; they differ in which direction
-  # is expensive. Do not make them match by flipping either one.
-  #
-  # guard-5410 AUDIT. Every step in this file that writes outside the runner, and what tells the
-  # consumer which lane produced it (tests/test_ci_dev_channel_lane.py checks the gating):
-  #   verify, "Upload coverage report" ........ GitHub's artifact store, this run only; no channel
-  #   publish-sidecar, sha-keyed copy ......... a sha is unique per commit, lane-safe by construction;
-  #                                             the job runs on a push to main only
-  #   publish-sidecar, latest/ pointer ........ the prod channel; push to main only, and main's tip
-  #   alert-on-failure, SES mail .............. not an artifact; a failed push to main only
-  #   publish-dev-channel, dev/ object ........ lane from the allowlist below; branch= says which ref
-  # No other step writes outside the runner.
-  publish-dev-channel:
-    name: Publish candidate to the dev channel
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # A permissions block REPLACES the job default set: name contents (checkout + git archive)
-    # explicitly alongside the OIDC id-token.
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ref }}
-
-      - name: Configure AWS credentials (OIDC, keyless)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::891377285145:role/ayoai-zds-ci-alert-oidc
-          aws-region: us-east-2
-
-      - name: Build the candidate and publish it to the dev channel
-        env:
-          BUCKET: ayoai-jar-deployments
-          LANE: ${{ inputs.lane }}
-          CANDIDATE: ${{ inputs.ref }}
-          WORKFLOW_REF: ${{ github.ref }}
-          REPO: ${{ github.repository }}
-          RUN: ${{ github.run_number }}
-        run: |
-          set -euo pipefail
-          export LC_ALL=C
-          # Every value below arrives through env and no expression is interpolated into this
-          # script (the runner would evaluate one even inside a comment), so a ref name cannot
-          # become shell.
-          [ "$WORKFLOW_REF" = "refs/heads/main" ] \
-            || { echo "::error::dispatch on main (--ref main) and name the candidate in the ref input"; exit 1; }
-          # LANE -> CHANNEL, an explicit allowlist that DEFAULTS TO REFUSE (guard-5402).
-          case "$LANE" in
-            dev) CHANNEL="dev" ;;
-            *)
-              echo "::error::Unrecognised lane -- refusing to publish. Add the lane here, with its own channel, before opening it." >&2
-              exit 1
-              ;;
-          esac
-          # The candidate becomes a git ref and a value in the object's metadata (comma-separated
-          # key=value pairs): this character set keeps a comma, a space, a leading dash and ".." out.
-          case "$CANDIDATE" in
-            ''|-*|*..*|*[!A-Za-z0-9._/-]*)
-              echo "::error::ref must be a branch, tag or sha of this repository (letters, digits, . _ / -)" >&2
-              exit 1
-              ;;
-          esac
-          SHA="$(git rev-parse HEAD)"
-          git archive --format=tar.gz -o zak-code-main.tar.gz HEAD
-          echo "tarball size: $(du -h zak-code-main.tar.gz | cut -f1)"
-          # Positive control, as in publish-sidecar: list to a file first, since piping tar into
-          # grep -q trips SIGPIPE under pipefail exactly when the file is present.
-          tar tzf zak-code-main.tar.gz > tarball-contents.txt
-          grep -q '^src/zakcode/server/app.py$' tarball-contents.txt \
-            || { echo "::error::src/zakcode/server/app.py absent from tarball -- refusing to publish" >&2; exit 1; }
-          # branch= is what lets a consumer resolve which ref produced the object it is running,
-          # rather than infer it from the sha (rb-10344). The object is the same filename as prod's
-          # under its own prefix: a vessel reads the channel by prefix and never by name.
-          aws s3 cp zak-code-main.tar.gz "s3://${BUCKET}/zak-code-deployments/${CHANNEL}/zak-code-main.tar.gz" \
-            --metadata "commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=${CANDIDATE}"
-          echo "published ${SHA} (${CANDIDATE}) to the ${CHANNEL} channel"
 
   # Single alert job that runs ONCE after the whole matrix (needs: verify + cockpit-e2e +
   # publish-sidecar), not once per py-version cell. `failure()` here is true iff a job it
