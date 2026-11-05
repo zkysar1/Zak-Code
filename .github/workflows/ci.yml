@@ -167,6 +167,22 @@ jobs:
             exit 1
           fi
 
+  # WRITES OUTSIDE THE RUNNER IN THIS FILE, AUDITED (g-370-47): every step that writes anywhere but
+  # the runner's own disk, and what tells a consumer which lane produced it.
+  # tests/test_ci_dev_channel_lane.py scans EVERY workflow file for these shapes and fails on a
+  # writer its allowlist lacks, so a new writer is added there, with its reason, before it is added
+  # here. That allowlist also holds the other workflow files' writers, which are not repeated here.
+  #   verify, update-e2e, cockpit-e2e, "Install uv" (enable-cache) .. the uv cache: GitHub's cache
+  #                                             store, scoped to the ref that saved it; not a channel
+  #   verify, "Upload coverage report" ........ GitHub's artifact store, this run only; not a channel
+  #   publish-sidecar, sha-keyed copy ......... a sha is unique per commit, lane-safe by construction;
+  #                                             the job runs on a push to main only
+  #   publish-sidecar, latest/ pointer ........ the prod channel; push to main only, and main's tip;
+  #                                             lane=prod and branch=main in the metadata
+  #   alert-on-failure, SES mail .............. not an artifact; a failed push to main only
+  # The dev channel (zak-code-deployments/dev/) is written by dev-channel.yml alone, on a dispatch;
+  # this file has no dispatch trigger and no step that can write that prefix.
+  #
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
   # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
@@ -221,7 +237,9 @@ jobs:
           RUN: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN}"
+          # branch= and lane= tell a consumer which lane produced the object it runs.
+          # This job runs on a push to main only, so both are fixed here and not read from the event.
+          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=main,lane=prod"
           # The latest/ pointer only ever moves to main's TIP. A re-run of an OLDER run is
           # a push-to-main run too, and it used to publish its older build over a newer one:
           # measured 2026-09-18, latest/ went acbd40e -> 853178e for 18 minutes. Read the
