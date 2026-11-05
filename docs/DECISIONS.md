@@ -19793,6 +19793,11 @@ errors its stream before another frame is read, so a test against a real fetch c
 chunk already read when the abort lands, whose rows and cursor would otherwise land in the next chat. `uv run poe check`
 is green: 6,281 passed, 22 skipped.
 
+**Amended on 2026-10-21 (commit c6aabeb):** the first stated choice is reversed. A plain `zakcode webapp` opens a new
+chat at launch, and `--no-new-session` continues the workspace's current chat, as a restart must: the systemd unit
+starts with it (ADR-0332), a self-update passes it (ADR-0333), and `docs/DEPLOY.md` asks for it in every unit, script
+and container command a deployment's users rely on.
+
 ## ADR-0320: a served workspace's say slot and interrupt file are the server's, so a terminal on the same workspace leaves the page's message and its Stop alone
 
 **Status:** Accepted (2026-10-16)
