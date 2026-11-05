@@ -1804,6 +1804,9 @@
         }
       }
       endsUpTo(saved.length);  // an end placed past the messages drawn here is the replay's
+      // A turn longer than the bus: the reply being written, as far as it has come. The chat does
+      // not hold it yet, and the replay, after bus_since, writes the rest into this row (ADR-0363).
+      if (t.partial) onTextDelta(t.partial);
       if (t.running) {
         // A turn is under way, and the replay may not show it starting (a long turn's user line
         // is evicted from the bus first): show it running now, so Stop is there. Its user_message,

@@ -2837,6 +2837,10 @@ class AgentLoop:
         #: ephemeral tail of the very next call — the one that exists only to hand the tool
         #: result back — and recomputed from each completion, so it is never stale by a turn.
         self._answer_already_given = False
+        #: What the model call in progress has streamed that the session does not hold yet: the
+        #: list that call writes into, from its start until its reply is saved or thrown away.
+        #: Read through :attr:`reply_so_far` (ADR-0363).
+        self._reply_parts: list[str] | None = None
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -7269,6 +7273,19 @@ class AgentLoop:
         self._session_start_done = True
 
     @property
+    def reply_so_far(self) -> str:
+        """What the model call in progress has streamed that the session does not hold yet, or ""
+        between calls (ADR-0363).
+
+        A served page opened in the middle of a long reply, after the watch bus has dropped where
+        the reply began, draws this as the reply's start and the bus draws the rest. It is the
+        call's own list, so it holds exactly the parts yielded so far: each part goes into it in
+        the step that yields it, and the list is let go in the step that saves the reply or throws
+        it away, with no await between.
+        """
+        return "".join(self._reply_parts) if self._reply_parts is not None else ""
+
+    @property
     def session_started(self) -> bool:
         """Whether SessionStart has run on this loop to its end, with what it said added to the
         session, or is never to run (ADR-0211, ADR-0342).
@@ -10017,6 +10034,7 @@ class AgentLoop:
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
                 while True:
                     text_parts: list[str] = []
+                    self._reply_parts = text_parts  # what a page opened mid-reply draws (ADR-0363)
                     # Streamed thinking, split into blocks: a signature closes the block
                     # it rides on, so the closed blocks keep their own signatures and the
                     # open fragments are the block still being written.
@@ -10249,6 +10267,7 @@ class AgentLoop:
                             if cause and cause != told_cause:
                                 notice += f" — {cause}"
                                 told_cause = cause
+                            self._reply_parts = None  # what this attempt streamed is thrown away
                             yield AgentStatus(message=notice)
                             await asyncio.sleep(delay)
                             continue
@@ -10362,6 +10381,7 @@ class AgentLoop:
                     stop_reason = "provider_error"
                     turn_error = provider_failure
                     partial_text = "".join(text_parts)
+                    self._reply_parts = None  # saved here, or there was nothing (ADR-0363)
                     if partial_text:
                         self.session.add_message(self._stream_assistant_message(partial_text, []))
                         self.session.add_message(
@@ -10450,6 +10470,7 @@ class AgentLoop:
                 if degen_unit is None and not tool_calls and assistant_text:
                     degen_unit = repeated_tail(assistant_text)
                 if degen_unit is not None:
+                    self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
@@ -10489,6 +10510,7 @@ class AgentLoop:
                     and _apology_spiral(assistant_text)
                 ):
                     apology_retries += 1
+                    self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True
                     self._refund_iteration()  # the discarded completion did no work
@@ -10533,6 +10555,7 @@ class AgentLoop:
                     streamed_thinking or None,
                 )
                 self.session.add_message(assistant_msg)
+                self._reply_parts = None  # the reply is the session's now (ADR-0363)
                 turn_assistant.append(assistant_msg)
                 self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
                 self._persist()
@@ -11674,6 +11697,7 @@ class AgentLoop:
             self._status_leave_turn(exc)  # an unwinding turn must not stay "working" (ADR-0266)
             raise
         finally:
+            self._reply_parts = None  # a Stop mid-reply saves none of it (ADR-0363)
             self._complete_transcript()  # the record holds the whole turn (ADR-0206)
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
