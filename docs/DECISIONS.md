@@ -22974,6 +22974,12 @@ the third of seven edits is refused and the ladder climbs on the refusals. The r
 used to pin is still reached where the bound does not reach, when a non-work call such as a skill
 load sits between the edits. A new control pins that path, on both turn paths.
 
+ADR-0075's third drop meets the bound when a model collapses a skill's plan three times in a
+row: the third collapse is refused by this bound. The drop is still the model's decision once
+another tool has run, because the restore count is kept per turn. Its test,
+`test_a_third_drop_is_the_models_decision`, now puts a look at the workspace before the third
+collapse.
+
 Tests. `tests/test_plan_only_bound.py` covers the counting, the run ending at another call and at
 a moved plan, an errored plan call that does not end it, the reset, the refusal's own signal with
 the ladder's timing, and the refusal's words. On both turn paths it pins the third completion
@@ -22987,6 +22993,9 @@ Not verified.
   measurement: one session on this build, and its plan-only share, minutes in runs of three or
   more, and goals completed against its own previous 4 h and against the sessions still on the
   previous build, read with the same transcript probe.
+- The refusal does not read the refused completion's arguments, so a third plan call that would
+  have closed a step is refused too. It costs one round trip: the step can be closed once another
+  tool has run. How often that happens in a served run was not measured.
 - The `TodoWrite` alias is not in the loop's plan-tool set, so a run of `TodoWrite`-only
   completions is not bounded. The loop's work count (ADR-0196) already counts that alias as work.
 - No bench arm was run.
