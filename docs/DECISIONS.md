@@ -22828,3 +22828,81 @@ the page test fixes that order; the browser run shows the follow end to end.
 Not verified.
 - Two windows side by side on a screen, where both pages are shown at once.
 - In a browser, the note naming a chat that is not the active one; the page test covers it.
+
+## ADR-0363: a page or pane opened in the middle of a reply longer than the watch bus draws the reply whole
+
+Status: accepted. 2026-11-05. Builds on ADR-0286 (a reopened page draws the saved conversation,
+then lets the watch replay draw the rest), ADR-0325 and ADR-0327 (where the saved conversation
+hands over to the replay) and ADR-0352 (a cockpit pane shows the chat a web app serves). Closes
+what ADR-0332 left open: a running turn longer than the bus replayed without its head.
+
+Context. The watch bus keeps a chat's newest 5000 events in memory (`_DEFAULT_MAXLEN`), and a
+streamed reply is one event for each piece the model sends. A turn that runs past that pushes its
+own start out of the bus: its user line first, then the start of the reply being written. A page
+opened then found no turn's start in the bus, drew the saved chat, and let the replay draw the bus
+from its oldest event, which fell in the middle of the reply. The reply's first part was not drawn
+at all, and what was drawn read as the whole reply. A cockpit pane joining the chat drew the same.
+
+Decision.
+- The loop keeps the list the model call in progress writes its reply into, from the call's start
+  until the reply is saved or thrown away, and hands out what the list holds as `reply_so_far`. A
+  part goes into the list in the step that yields it. The list is let go in the step that saves
+  the reply or throws it away: a call retried after an error, a reply thrown away as degenerate or
+  as an apology spiral, a failed call whose text is saved with its error, and a turn stopped part
+  way, which saves none of it.
+- The server keeps, by chat, the agent each streamed turn runs on: the say consumer's and
+  `POST /chat/stream`'s, whose every event reaches the bus as it is made. It lets go of it in the
+  step the turn stops counting as running. `POST /chat` is left out: its turn reaches the bus only
+  once it is done, each reply whole (ADR-0327), so a page drawing what its loop holds would draw
+  the reply twice.
+- `GET /sessions/{id}/transcript` asks that loop when the bus holds no turn's start and a turn is
+  running on an agent with a loop. It reads the chat as the loop holds it (the turn's own line
+  and every reply the turn has finished, saved to disk or not), how its turns ended, what the call
+  in progress has written, and the bus's newest cursor, all in one step on the event loop the turn
+  runs on. The route runs in a worker thread, and two reads from there could fall on either side
+  of a part, which would then be in both or in neither. In one step they cannot: a part is added
+  in the step its event is yielded, and an event is published in the step it is received. The
+  written part is handed over as `partial`, redacted as the messages are, and the cursor as
+  `bus_since`.
+- The page draws `partial` after the saved messages, as the start of the reply's row, and the
+  replay after `bus_since` writes the rest into the same row.
+- A turn on an agent with no loop to ask is drawn as before: the saved chat, then the bus from its
+  oldest event.
+
+The terminal. A cockpit pane joining a served chat draws `partial` as the start of a turn of its
+own, and the watch after the cursor draws the rest into it, so the reply is drawn once and whole.
+The inline REPL streams its own turns, so it never joins one part way.
+
+Not chosen.
+- A bigger bus. A reply can be longer than any ring, and every chat's bus holds its ring in memory.
+- Keeping the bus on disk, for ADR-0361's reason: it would grow with every piece streamed.
+
+Limits. What the running turn did before the bus's oldest event, other than its words, is not
+drawn again: its tool cards and its thinking. Its finished replies are drawn from the chat as lines
+(ADR-0286), and the reply in progress is drawn whole.
+
+New tests.
+- `tests/test_reply_so_far.py` (10 cases): the loop holds each part once its event is out, and
+  none once the reply is saved, before its tool runs, or thrown away (retried, degenerate, an
+  apology spiral, failed with its text saved, stopped). On a live server with a bus of four, a
+  running turn longer than the bus is read from its loop and its reply drawn once, for a say turn
+  and a `POST /chat/stream` turn, and `partial` is redacted as the chat is.
+- `tests/test_webclient_reload_history.py` (+1), the page's own script under node against a live
+  server: a page opened in the middle of a reply longer than the bus draws it whole, in one row.
+- `tests/test_served_mirror.py` (+1): a pane joining in the middle of such a reply draws it whole,
+  each part once.
+- `tests/test_server_transcript.py`: the long-turn test is now the case of an agent with no loop to
+  ask.
+- Mutations: 19 of the new code, and 17 turned a named test red: 8 in the loop (each place the
+  list is taken or let go, and `reply_so_far` itself), 6 in the route and the two doors (the
+  branch, the redaction, the cursor, the chat it reads, each door keeping its agent), 2 in the page
+  and 1 in the pane. The 2 that stayed green are the lines that let go of a finished turn's agent.
+  Once a turn stops running nothing reads the registry for it, so no test can see them; they keep
+  a finished turn's agent from being held until the chat's next turn.
+
+Not verified.
+- A browser. The page's script ran under node against a live server, as ADR-0286's tests run it.
+- A real provider's long reply; the tests stream scripted parts.
+- A part arriving at the moment the route reads. The tests hold the turn still while the page or
+  pane reads, so that no part is in both or in neither rests on the code (a part is added in the
+  step its event is yielded, an event is published in the step it is received), not on a race run.

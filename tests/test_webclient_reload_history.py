@@ -16,6 +16,7 @@ test_webclient_turn_clock.py for why.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import subprocess
@@ -27,6 +28,7 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.test_reply_so_far import _Loop
 from tests.test_server_consumer import _LiveServer
 from tests.test_webclient_turn_clock import _NODE, _PRELUDE, _page_script
 from zakcode.config import Settings
@@ -193,15 +195,21 @@ _CLOCK = re.compile(r"\s+\(\d\d:\d\d\)$")
 
 
 def _open_page(
-    base: str, tmp_path: Path, want: int, say: str = "", before: int = 0, ends: bool = False
+    base: str,
+    tmp_path: Path,
+    want: int,
+    say: str = "",
+    before: int = 0,
+    ends: bool = False,
+    extra: str = "",
 ) -> list[tuple[str, str]]:
     """Open the page against the server; return the user and assistant rows it drew, and its
     notes of what a SessionStart hook said (ADR-0344), in order. With ``ends``, the rows saying
-    how a turn ended too, each as its outcome words (ADR-0361)."""
+    how a turn ended too, each as its outcome words (ADR-0361). ``extra`` runs after the tail."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     dom = _PRELUDE.split("const __STREAMS = ")[0]
-    script.write_text(dom + _TAIL + _page_script(), encoding="utf-8")
+    script.write_text(dom + _TAIL + extra + _page_script(), encoding="utf-8")
     proc = subprocess.run(
         [_NODE, str(script), base, str(want), say, str(before)],
         capture_output=True,
@@ -278,6 +286,75 @@ def test_a_page_reopened_on_a_turn_longer_than_the_bus_draws_its_reply_whole(
             ("user", "one"),
             ("assistant", "".join(_parts("one"))),
         ]
+
+
+def _held_reply(release: Path) -> Callable[[Session], Any]:
+    """An agent whose reply is eight parts, with a loop to ask (ADR-0363). It streams six, waits
+    until ``release`` exists, streams the last two and saves the reply after the stream, as the
+    agent loop does."""
+
+    class _HeldReply:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+            self.loop = _Loop(session)
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            for i in range(8):
+                if i == 6:
+                    deadline = time.monotonic() + 20
+                    while not release.exists() and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                part = f"{user_text}-{i} "
+                self.loop.parts.append(part)
+                yield AgentTextDelta(text=part)
+            self.session.add_message(Message.assistant_text(self.loop.reply_so_far))
+            self.loop.parts = []
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    return _HeldReply
+
+
+def _release_when_drawn(held: str, release: Path) -> str:
+    """For :func:`_open_page`: once the page shows ``held`` as the reply, write ``release`` so the
+    turn goes on, and keep the page open while the reply still shows only that much."""
+    return f"""
+const __HELD = {json.dumps(held)};
+let __released = false;
+__every(() => {{
+  const row = __log.children.find((r) => r.classes.has("assistant"));
+  if (!row || row.textContent !== __HELD) return;
+  __changed = Date.now();  // the rest of the reply is still to come
+  if (!__released) {{
+    __released = true;
+    require("fs").writeFileSync({json.dumps(str(release))}, "");
+  }}
+}}, 20);
+"""
+
+
+def test_a_page_opened_in_the_middle_of_a_reply_longer_than_the_bus_draws_it_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The turn's line and six parts are out and the turn waits: a ring of four holds parts 2 to 5,
+    # so where the reply began is gone from the bus, and the page drew from the bus's oldest part
+    # on. It now draws the six parts from the transcript (ADR-0363); once it shows them the turn
+    # goes on, and the last two stream into the same row: the reply whole, each part once.
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=4))
+    release = tmp_path / "release"
+    held = "".join(f"one-{i} " for i in range(6))
+    with _LiveServer(_app(tmp_path, _held_reply(release))) as base:
+        posted = httpx.post(base + "/say", json={"text": "one"}, timeout=5)
+        assert posted.status_code in (200, 202), posted.text
+        deadline = time.monotonic() + 15
+        while True:
+            resp = httpx.get(base + "/sessions/current/transcript", timeout=5)
+            if resp.status_code == 200 and resp.json().get("partial") == held:
+                break
+            assert time.monotonic() < deadline, "the turn did not reach its sixth part"
+            time.sleep(0.05)
+        rows = _open_page(base, tmp_path, want=2, extra=_release_when_drawn(held, release))
+    assert rows == [("user", "one"), ("assistant", "".join(f"one-{i} " for i in range(8)))]
 
 
 def test_a_page_reopened_on_a_bus_that_starts_inside_a_turn_joins_the_bus_at_the_next_turn(
