@@ -1558,6 +1558,38 @@ def test_a_route_that_thought_anyway_is_asked_again_with_today_s_room(tmp_path: 
     assert [_asked_words(provider, i) for i in (0, 1)] == ["3,100", "3,100"]
 
 
+def test_a_route_that_thought_through_the_switch_is_asked_as_configured_from_then_on(
+    tmp_path: Path,
+) -> None:
+    # A chat template that never reads the switch thinks through it on every ask, and each cut
+    # costs one more (ADR-0366): after the first, this provider is asked with today's room and
+    # no switch.
+    provider = _ThinksAnyway([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 16_469, "extra_body": OFF},
+        {"max_tokens": 32_768, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+        {"max_tokens": 32_768},
+    ]
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
+
+
+def test_thinking_under_the_switch_that_was_not_cut_keeps_the_switch(tmp_path: Path) -> None:
+    # Only a cut costs an ask; a summary written under the cap is a summary (ADR-0366).
+    provider = _ThinksAnyway([_WHOLE], ["stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 16_469, "extra_body": OFF}] * 2
+    assert id(provider) not in loop._refused_overrides
+
+
 def test_a_rejection_other_than_a_cut_is_asked_again_as_before(tmp_path: Path) -> None:
     # An answer that is not a summary for another reason (here, the transcript's next turn) keeps
     # its budget and its cap; only the temperature rises (ADR-0242).

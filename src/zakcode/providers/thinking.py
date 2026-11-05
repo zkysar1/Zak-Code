@@ -16,7 +16,10 @@ This module is the fix at the SPELLING level (ADR-0181): the provider renders th
 internal form into whatever the destination understands, at request-build time.
 
 * An OpenAI-compatible server reached through a configured ``api_base`` (llama.cpp,
-  vLLM, the zds pod) keeps the body key verbatim — the measured, working case.
+  vLLM, the zds pod) keeps the body key verbatim — the measured, working case. Where that
+  body also budgets reasoning per request (llama.cpp's ``reasoning_budget_tokens``), "off"
+  sets the budget to 0 with nothing forced in: a chat template that never reads the switch
+  ignores it, and the server's budget sampler does not (measured 2026-11-05, ADR-0366).
 * A Gemini model (``vertex_ai`` / ``vertex_ai_beta`` / ``gemini``) gets litellm's
   first-class ``reasoning_effort="minimal"`` for "off": litellm maps it per model to the
   tightest thinking budget the model accepts (128 for 2.5-pro, which cannot switch
@@ -57,6 +60,13 @@ from zakcode.providers.endpoints import model_uses_generic_endpoint, provider_pr
 #: The internal spelling's body key (llama.cpp / vLLM ``chat_template_kwargs``).
 THINKING_SWITCH_KEY = "chat_template_kwargs"
 
+#: The body keys a llama.cpp server reads a per-request reasoning budget from, and the text it
+#: forces into the thinking once that budget is spent (ADR-0366). The switch above only sets a
+#: chat-template variable, which a template that never reads it ignores; the budget is enforced
+#: by the server's sampler whatever the template says.
+REASONING_BUDGET_KEYS: tuple[str, ...] = ("reasoning_budget_tokens", "thinking_budget_tokens")
+REASONING_BUDGET_MESSAGE_KEY = "reasoning_budget_message"
+
 #: litellm prefixes whose Gemini models take ``reasoning_effort`` (mapped by litellm to
 #: ``thinkingConfig``). A Claude model served through Vertex takes Anthropic's mapping
 #: instead, so the model name must ALSO name Gemini — see :func:`_is_gemini`.
@@ -96,6 +106,15 @@ def thinking_switch_enabled(body: dict[str, Any]) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _budget_closed(body: dict[str, Any]) -> dict[str, Any]:
+    """``body`` with each per-request reasoning budget it carries at 0 and nothing forced in
+    (ADR-0366); a body that carries none is returned unchanged, with no key added."""
+    budgets = [key for key in REASONING_BUDGET_KEYS if key in body]
+    if not budgets:
+        return body
+    return {**body, **dict.fromkeys(budgets, 0), REASONING_BUDGET_MESSAGE_KEY: ""}
+
+
 def thinking_switch_verbatim(model: str, api_base: str | None) -> bool:
     """Whether the internal switch reaches ``model`` as written: a self-hosted
     OpenAI-compatible server through a configured ``api_base``, the measured, working case.
@@ -118,8 +137,9 @@ def render_thinking_switch(
     if THINKING_SWITCH_KEY not in body:
         return body, {}
     if thinking_switch_verbatim(model, api_base):
-        # A self-hosted OpenAI-compatible server: the measured, working spelling.
-        return body, {}
+        # A self-hosted OpenAI-compatible server: the measured, working spelling. Where the body
+        # also budgets reasoning per request, "off" closes that budget too (ADR-0366).
+        return (_budget_closed(body) if enabled is False else body), {}
     rest = {k: v for k, v in body.items() if k != THINKING_SWITCH_KEY}
     if enabled is False and _is_gemini(model):
         return rest, {"reasoning_effort": GEMINI_THINKING_OFF_EFFORT}

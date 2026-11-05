@@ -22921,10 +22921,10 @@ Not verified.
 
 ## ADR-0366: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
 
-Status: accepted. 2026-11-03. Builds on ADR-0275 (the summarizer's output cap), ADR-0330 (the word
-budget), ADR-0331 (the condensing ask), ADR-0242 (the one resample), ADR-0056 and ADR-0181 (the
-thinking switch), and ADR-0307 and ADR-0315 (a refused override). It takes over a closed draft that
-sent the same switch under an 8,192-token cap.
+Status: accepted. 2026-11-03, amended 2026-11-05 (below). Builds on ADR-0275 (the summarizer's
+output cap), ADR-0330 (the word budget), ADR-0331 (the condensing ask), ADR-0242 (the one
+resample), ADR-0056 and ADR-0181 (the thinking switch), and ADR-0307 and ADR-0315 (a refused
+override). It takes over a closed draft that sent the same switch under an 8,192-token cap.
 
 Context. Every summarizer ask has 32,768 output tokens (ADR-0275), room made for a reasoning model's
 thinking, and the one resample of a summary the limit cut off asks the same way again. Measured
@@ -23033,3 +23033,59 @@ session resolves the setting for the loop and every child, and `tests/test_think
 pins the two capabilities and the shared predicate. A request built with the workers' body shape
 sends `enable_thinking: false` and a 16,469-token cap on the summarizer's ask and leaves every other
 call as configured.
+
+### Amended 2026-11-05: off also closes a per-request reasoning budget, and a route that thinks through the switch is learned
+
+Context. The trial stopped on 2026-11-03 within an hour. A summarizer ask sent with the switch
+still thought, was cut at 16,469 tokens with thinking in the answer, and was asked again with the
+old room: one ask more per cut than before. The cause, read on 2026-11-05 from the pod without
+changing it: its chat template never reads `enable_thinking`, and its generation prompt opens the
+assistant turn and leaves the `<think>` to the model, so the switch sets a template variable nothing
+uses (`reasoning_effort: "none"` sets the same one). The pod's llama.cpp build also reads a
+per-request `reasoning_budget_tokens` (or `thinking_budget_tokens`; -1 means the server's own) and,
+where it knows the model's thinking tags, arms a sampler that forces `reasoning_budget_message` and
+the end tag once the budget is spent. Three calls through a worker's own configuration, on an ask
+that needs a little arithmetic:
+
+| Request | Thinking | Completion tokens |
+| --- | --- | --- |
+| budget 0, the route's 108-character message | that message, exactly | 38 |
+| budget 0, an empty message | none (right answer) | 5 |
+| as configured (budget 4,096) | 833 characters | 260 |
+
+The 2026-11-03 reading of 108 thinking characters at a budget of 0 was the forced message, not the
+model thinking.
+
+Decision.
+- `render_thinking_switch` keeps the switch verbatim on a self-hosted route, and where the switch
+  says off and the body carries a per-request reasoning budget (`REASONING_BUDGET_KEYS`), it sets
+  each to 0 and `reasoning_budget_message` to the empty string. A body without a budget gains no
+  key, a body with thinking on is unchanged, and a key the server refused by name stays out (that
+  filter runs after the render). Every "off" goes this way: the summarizer's, the reasoning-overflow
+  retry's (ADR-0056) and a category's `thinking: false`. A budget of 0 is thinking off, not the
+  smaller budget set aside above: nothing is cut short, and nothing is forced in.
+- A switched ask cut at its cap with thinking in the answer still asks again with the old room, and
+  its provider is now recorded in the same refused-override entry as a refused switch (ADR-0315), so
+  the session's later asks to it go as configured: no switch, the old room. A route that thought
+  through the switch once will again, and every cut costs an ask. Thinking in an ask that was not
+  cut changes nothing: its summary was written under the cap.
+
+What was considered and not done.
+- Changing the server's chat template to read the switch. It is the server's configuration, not
+  this repository's, and a budget of 0 reaches the model through the template as it is.
+- Learning from any thinking under the switch, cut or not. A server that forces a budget message of
+  its own would read as thinking while the model's thinking is off, and the switch would be dropped
+  where it works.
+- Adding a budget key to a body that carries none. Nothing says that server reads it, and some
+  servers refuse a body field they do not know (ADR-0181).
+
+Not verified. Summary quality with thinking off on the pod's model, as before: the trial measures
+it, now with thinking actually off.
+
+The proof. `tests/test_thinking_switch_rendering.py` pins the closed budget in both spellings, an
+unchanged budget with thinking on, and the workers' body shape: a switched call sends
+`enable_thinking: false` with a budget of 0 and an empty message, and an unswitched call its
+configured budget. `tests/test_compact_loop.py` pins a route that thought through the switch asked
+as configured from its next compaction, and one that thought under the cap still switched. Two
+mutations fail them: rendering off without closing the budget fails 3, and not recording the route
+fails 1.

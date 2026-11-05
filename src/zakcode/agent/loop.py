@@ -3337,6 +3337,19 @@ class AgentLoop:
                             if switched.get("max_tokens") and result.thinking:
                                 switched.pop("max_tokens")
                                 again = "asking again with room to think"
+                                # And this provider's later asks go as configured, with that room
+                                # and no switch: a route that thought through it once will again,
+                                # and each cut costs an ask (ADR-0366).
+                                entry = self._refused_overrides.setdefault(
+                                    id(summarizer), (summarizer, set())
+                                )
+                                entry[1].add(_SWITCH_OVERRIDE)
+                                self._note(
+                                    "intervention",
+                                    "the summarizer thought through the thinking switch; "
+                                    "later asks go as configured",
+                                    kind="summarizer_switch_ignored",
+                                )
                             else:
                                 asked = _shorter_budget(asked)
                                 prompt = body + close.format(words=asked)

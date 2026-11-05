@@ -44,6 +44,31 @@ def test_a_bare_model_name_on_a_custom_base_keeps_it_too() -> None:
     assert body == OFF and kwargs == {}
 
 
+#: A body that budgets reasoning per request, as llama.cpp reads it (ADR-0366).
+BUDGETED = {"reasoning_budget_tokens": 4096, "reasoning_budget_message": "Time to answer."}
+
+
+def test_off_closes_a_per_request_reasoning_budget_the_body_carries() -> None:
+    # Measured 2026-11-05 on a self-hosted server whose chat template never reads the switch:
+    # the switch alone, 833 thinking characters; a budget of 0 with nothing forced in, none.
+    assert render_thinking_switch("openai/local-27b", POD, {**OFF, **BUDGETED}) == (
+        {**OFF, "reasoning_budget_tokens": 0, "reasoning_budget_message": ""},
+        {},
+    )
+
+
+def test_the_other_spelling_of_the_budget_is_closed_too() -> None:
+    body, _ = render_thinking_switch("openai/local-27b", POD, {**OFF, "thinking_budget_tokens": 9})
+    assert body == {**OFF, "thinking_budget_tokens": 0, "reasoning_budget_message": ""}
+
+
+def test_on_keeps_the_budget_as_configured() -> None:
+    assert render_thinking_switch("openai/local-27b", POD, {**ON, **BUDGETED}) == (
+        {**ON, **BUDGETED},
+        {},
+    )
+
+
 @pytest.mark.parametrize(
     "model",
     ["vertex_ai_beta/gemini-2.5-pro", "vertex_ai/gemini-2.5-flash", "gemini/gemini-2.5-flash"],
@@ -178,6 +203,18 @@ def test_a_route_that_refused_the_switch_by_name_takes_none() -> None:
     provider.rejected_request_fields.append(THINKING_SWITCH_KEY)
     caps = provider.capabilities()
     assert (caps.thinking_switch, caps.thinking_configured) == (False, False)
+
+
+def test_a_switched_call_over_a_budgeted_body_sends_the_budget_closed() -> None:
+    # The workers' body turns thinking on for every call under a budget. A per-call "off" (the
+    # summarizer's, the overflow retry's) replaces the switch and closes the budget; every other
+    # call goes as configured.
+    provider = _self_hosted(extra_body={**ON, **BUDGETED})
+    off = provider._build_kwargs(MSGS, None, extra_body=thinking_extra_body(False))["extra_body"]
+    on = provider._build_kwargs(MSGS, None)["extra_body"]
+    assert off[THINKING_SWITCH_KEY] == {"enable_thinking": False}
+    assert (off["reasoning_budget_tokens"], off["reasoning_budget_message"]) == (0, "")
+    assert {k: on[k] for k in (THINKING_SWITCH_KEY, *BUDGETED)} == {**ON, **BUDGETED}
 
 
 @pytest.mark.parametrize(
