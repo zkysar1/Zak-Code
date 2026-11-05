@@ -20690,3 +20690,84 @@ The proof.
 - Five sabotages were each run green, red, green (2026-10-29): with the single-call path or the sliced path not held to the
   budget, without the quarter's slack, without the fewer-words check, and with the failure guard narrowed, the tests that
   cover each turned red.
+
+## ADR-0364: a run of plan-only completions is bounded: the third in a row is answered unexecuted
+
+Status: accepted. 2026-11-05. The net ADR-0192 left undone ("a bound on consecutive plan-only
+completions"). Builds on ADR-0168 and ADR-0202 (the plan advance and its evidence trigger),
+ADR-0196 (what counts as work), ADR-0057 (the steps rung 1 seeds) and ADR-0198 (a rail says only
+what was counted). Amends one control of ADR-0209.
+
+Context. A completion whose every call is a plan tool, and which neither closes a step nor draws
+the harness's advance, cannot move the plan: a step moves on a status the model sends, an outcome
+it records, or the work done while it is current, and such a completion supplies none of them.
+The existing nets each see one shape of that churn. The unchanged rail answers a byte-identical
+resend. The advance (lever N) needs evidence, so it cannot fire before any work. The doom guard
+needs an identical batch. The receipt rung of ADR-0209 needs the same receipt three times, and a
+plan whose step count or current step changes on each call returns a different receipt each time.
+A model that keeps rewriting its plan, adding a step here and retitling one there, passes all
+four.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model on ten
+GPUs, read from each session's own transcript (tool names, times, plan step counts and status
+values only), 2026-11-05. In the 4 h to 13:26 UTC, 279 of 2,175 tool calls (12.8%) sat in runs of
+three or more plan-only completions, and the first-to-last call of those runs spanned 346 of
+2,400 session-minutes (14.4%, a lower bound: it leaves out each run's last call). Per session
+the share of calls ran from 3% to 71%, and the longest run was 19 completions. In the 2 h to
+13:25 UTC, 169 of 256 `update_plan` calls (66%) sent steps with no status at all, so none of those
+plans could move except through the advance, and the advance only follows work. The worst session
+had run step 1 of its instructions, then sent seven such plans in a row with nothing between
+them, growing from 11 steps to 13.
+
+Decision.
+- The stuck tracker counts the plan-only completions in a row: every call is one of the loop's
+  plan tools (`_PLAN_TOOLS`). The run ends at any other call, even in the same completion. It also
+  ends at a plan call that moved the plan, meaning a receipt that reports more steps done than the
+  last one did, or the harness's advance. And it ends at a reset (a refused turn end sends the
+  model round again).
+- The third such completion in a row is answered unexecuted, on both turn paths. Every call
+  gets an error result, `data={"plan_only_bound": True}`, that names the current step: "Not
+  executed: this is response 3 in a row that calls only the plan tools ... its current step is
+  <id> '<title>': do that step now with a tool call. The plan tools are accepted again once
+  another tool has run." The loop notes each refusal `kind="plan_only_bound"`. The plan in force
+  is the one the model last had accepted, and a refused completion pulls no skill page.
+- A refused completion fires `SIG_PLAN_ONLY` and nothing else. It is no failure of the plan tool
+  and no look at the world, so the error counts and the outcome counts never see it. The first
+  draft let the ladder count the refusals as failures: it said "update_plan has failed 3 times"
+  and seeded "Investigate: why `update_plan` keeps failing", which is false and asks for more plan
+  work. The signal drives the ladder one rung per refusal after the first, since the first is
+  itself the intervention: a nudge at the 4th plan-only completion, read-only tools at the 5th,
+  the step back at the 6th, a stop at the 7th. The nudge says what was counted. Rung 1 seeds the
+  step the receipt case seeds, the work itself, with a note true of a refusal.
+- There is no setting (ADR-0202). With no plan tools named, the tracker counts nothing.
+
+ADR-0209's control "rewriting the plan with nothing in between still climbs" now reads the bound:
+the third of seven edits is refused and the ladder climbs on the refusals. The receipt rung it
+used to pin is still reached where the bound does not reach, when a non-work call such as a skill
+load sits between the edits. A new control pins that path, on both turn paths.
+
+ADR-0075's third drop meets the bound when a model collapses a skill's plan three times in a
+row: the third collapse is refused by this bound. The drop is still the model's decision once
+another tool has run, because the restore count is kept per turn. Its test,
+`test_a_third_drop_is_the_models_decision`, now puts a look at the workspace before the third
+collapse.
+
+Tests. `tests/test_plan_only_bound.py` covers the counting, the run ending at another call and at
+a moved plan, an errored plan call that does not end it, the reset, the refusal's own signal with
+the ladder's timing, and the refusal's words. On both turn paths it pins the third completion
+refused, the plan after it unchanged, and the next plan taken once a probe has run. It also pins
+planning between real steps as never refused. The two controls are in
+`tests/test_stuck_counts_by_lap.py`. Mutation: removing the refusal from one turn path fails that
+path's two loop-level cases and no others.
+
+Not verified.
+- Whether a refusal makes the served model act, or whether it keeps planning into the ladder. The
+  measurement: one session on this build, and its plan-only share, minutes in runs of three or
+  more, and goals completed against its own previous 4 h and against the sessions still on the
+  previous build, read with the same transcript probe.
+- The refusal does not read the refused completion's arguments, so a third plan call that would
+  have closed a step is refused too. It costs one round trip: the step can be closed once another
+  tool has run. How often that happens in a served run was not measured.
+- The `TodoWrite` alias is not in the loop's plan-tool set, so a run of `TodoWrite`-only
+  completions is not bounded. The loop's work count (ADR-0196) already counts that alias as work.
+- No bench arm was run.
