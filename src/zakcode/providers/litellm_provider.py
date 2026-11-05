@@ -3025,7 +3025,7 @@ class LiteLLMProvider(Provider):
         # knows of its name: the switch is the only source for an alias it has never heard of.
         if self.prompt_caching and not caps.supports_caching:
             caps = caps.model_copy(update={"supports_caching": True})
-        # ADR-0357: a route the thinking switch reaches as written says so (ADR-0181), and says
+        # ADR-0366: a route the thinking switch reaches as written says so (ADR-0181), and says
         # whether its own body already carries the switch (a category's ``thinking``, the
         # operator's ``extra_body``), which is the operator's word. A server that refused the
         # switch by name has said it takes none.

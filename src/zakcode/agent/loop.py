@@ -446,7 +446,7 @@ _CONDENSE_CLOSE = (
     "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
     "decisions, file paths and unfinished work."
 )
-#: Output tokens per word of a summary, at most (ADR-0357). Measured 2026-11-03 on the pod's 27B
+#: Output tokens per word of a summary, at most (ADR-0366). Measured 2026-11-03 on the pod's 27B
 #: model: 121 installed summaries, each paired with the call that wrote it in the inference
 #: router's ledger (sizes only), ran 7.92 characters a word, and 2.32 characters an output token if
 #: the call did not think, 4.17 if it used all 4,096 thinking tokens its requests allow. The narrow
@@ -455,7 +455,7 @@ _CONDENSE_CLOSE = (
 #: thinking off writes only its summary and measures the truth. :data:`_WORDS_PER_TOKEN` sizes the
 #: word budget (ADR-0330) and is left as it is.
 _SUMMARY_TOKENS_PER_WORD = 3.4
-#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0357), over a summary at
+#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0366), over a summary at
 #: the length one is condensed past (:data:`_SUMMARY_OVER_BUDGET`) at
 #: :data:`_SUMMARY_TOKENS_PER_WORD`: 16,469 tokens for a 3,100-word budget. Of the 120 summaries
 #: the pod installed in the 24 hours to 2026-11-03T16:00Z, the call that wrote one went past 8,192
@@ -634,7 +634,7 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
 
 
 def _summary_switched_room(words: int, room: int) -> int:
-    """The output cap of a summarizer ask sent with thinking off (ADR-0357): a summary of
+    """The output cap of a summarizer ask sent with thinking off (ADR-0366): a summary of
     :data:`_SUMMARY_OVER_BUDGET` times its word budget ``words``, the length past which one is
     condensed (ADR-0331), at :data:`_SUMMARY_TOKENS_PER_WORD`, with
     :data:`_SUMMARY_SWITCHED_HEADROOM`, never under :data:`_SUMMARY_OUTPUT_FLOOR` and never over
@@ -646,7 +646,7 @@ def _summary_switched_room(words: int, room: int) -> int:
 
 
 def _shorter_budget(words: int) -> int:
-    """The word budget a summary the output limit cut off is asked for again with (ADR-0357): half
+    """The word budget a summary the output limit cut off is asked for again with (ADR-0366): half
     of ``words``, rounded to hundreds and never under 100, as :func:`_summary_target_words` rounds.
     A summary that ran past its cap was already over its budget, and asked again for the same
     budget the model writes it the same way."""
@@ -2651,7 +2651,7 @@ class AgentLoop:
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
         self._summarizer_provider = summarizer_provider
-        # The summarizer's thinking (ADR-0357): None leaves it to the route, off unless the route's
+        # The summarizer's thinking (ADR-0366): None leaves it to the route, off unless the route's
         # own body sets the switch; False turns it off wherever the switch reaches the model; True
         # asks as configured. The session passes True for a summarizer named in ``model_roles``.
         self._summarizer_thinking = summarizer_thinking
@@ -2861,7 +2861,7 @@ class AgentLoop:
         self.last_compaction = ""
         #: The overflow-retry overrides each provider refused naming neither and then took the
         #: call without, for the session (ADR-0315), by the provider's id, and the thinking switch
-        #: a summarizer ask was refused the same way (ADR-0357). The provider rides along so that
+        #: a summarizer ask was refused the same way (ADR-0366). The provider rides along so that
         #: id cannot be reused, and a routed or failed-over one learns its own.
         self._refused_overrides: dict[int, tuple[Provider, set[str]]] = {}
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
@@ -3169,7 +3169,7 @@ class AgentLoop:
         # ADR-0330: every close states the same word budget, a slice's, a fold's and the condensing
         # ask's (ADR-0331) included; only a resample of a summary that was cut off asks for less.
         words = _summary_target_words(window, room)
-        # ADR-0357: where the switch reaches the model as written, every ask goes with thinking off
+        # ADR-0366: where the switch reaches the model as written, every ask goes with thinking off
         # and a cap its budget sets, unless the route's own body sets the switch and the setting
         # leaves it to the route, or the setting asks for the summarizer as configured.
         setting = self._summarizer_thinking
@@ -3191,7 +3191,7 @@ class AgentLoop:
             asked = words
             prompt = body + close.format(words=asked)
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
-            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0357)
+            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0366)
             entry = self._refused_overrides.get(id(summarizer))
             if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
                 switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
@@ -3232,7 +3232,7 @@ class AgentLoop:
                             request, on_withheld=account_withheld
                         )
                     except RequestFailed as exc:
-                        # ADR-0357: a refusal that names nothing, of an ask that switched thinking
+                        # ADR-0366: a refusal that names nothing, of an ask that switched thinking
                         # off, is ADR-0307's shape, and the ask without the switch is the one every
                         # summary took before. It is sent again without it, and the switch is left
                         # off this provider's later asks and overflow retries (ADR-0315).
@@ -3262,7 +3262,7 @@ class AgentLoop:
                     if resample < _SUMMARY_RESAMPLES:
                         again = "asking again"
                         if result.finish_reason in _LENGTH_FINISH_REASONS:
-                            # ADR-0357: a summary the output limit cut off is not asked for the
+                            # ADR-0366: a summary the output limit cut off is not asked for the
                             # same way twice. Where the route took the switch and thought anyway,
                             # again with the room the ask had with thinking on (ADR-0275).
                             # Otherwise for half the words under the same cap: the same budget is
@@ -3270,6 +3270,19 @@ class AgentLoop:
                             if switched.get("max_tokens") and result.thinking:
                                 switched.pop("max_tokens")
                                 again = "asking again with room to think"
+                                # And this provider's later asks go as configured, with that room
+                                # and no switch: a route that thought through it once will again,
+                                # and each cut costs an ask (ADR-0366).
+                                entry = self._refused_overrides.setdefault(
+                                    id(summarizer), (summarizer, set())
+                                )
+                                entry[1].add(_SWITCH_OVERRIDE)
+                                self._note(
+                                    "intervention",
+                                    "the summarizer thought through the thinking switch; "
+                                    "later asks go as configured",
+                                    kind="summarizer_switch_ignored",
+                                )
                             else:
                                 asked = _shorter_budget(asked)
                                 prompt = body + close.format(words=asked)

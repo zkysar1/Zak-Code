@@ -202,7 +202,7 @@ class SubAgentRunner:
         # means each loop asks its own provider for the summary, as the parent loop does.
         self.compactor = compactor
         self.summarizer_provider = summarizer_provider
-        # The summarizer's thinking setting (ADR-0357), as the session resolved it: a child asks
+        # The summarizer's thinking setting (ADR-0366), as the session resolved it: a child asks
         # its summarizer the way the parent does.
         self.summarizer_thinking = summarizer_thinking
 
