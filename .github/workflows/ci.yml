@@ -129,8 +129,11 @@ jobs:
   # The cockpit is tmux, and every cockpit test in `verify` fakes tmux: they record the commands the
   # cockpit would send and never run them, so none of them shows what a person sees. This opens the
   # real cockpit in a real tmux, types into its box and reads its panes, with a stand-in model on
-  # loopback, so it needs no key (ADR-0356). Linux only, since the cockpit needs tmux. Like
-  # update-e2e, neither publish-sidecar nor the failure alert waits on it.
+  # loopback, so it needs no key (ADR-0356). Linux only, since the cockpit needs tmux.
+  # publish-sidecar does not wait on it; the failure alert does (ADR-0357).
+  # Its workspace and home sit under a folder with a SPACE in its name, as `verify`'s tmp paths
+  # do (see there): there a path reaches only the fakes, here it reaches the commands a real tmux
+  # runs. The tmux socket stays in a short folder of its own (the `tmux_dir` fixture).
   cockpit-e2e:
     name: cockpit in a real tmux
     runs-on: ubuntu-latest
@@ -157,13 +160,29 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: |
           set -o pipefail
-          uv run --no-sync pytest -q -rs tests/test_cockpit_tmux_e2e.py | tee "$RUNNER_TEMP/cockpit-e2e.txt"
+          uv run --no-sync pytest -q -rs --basetemp "$RUNNER_TEMP/zak code tmp" tests/test_cockpit_tmux_e2e.py | tee "$RUNNER_TEMP/cockpit-e2e.txt"
           # A skipped test makes this job green while testing nothing, so a skip fails it.
           if grep -Eq '[0-9]+ skipped' "$RUNNER_TEMP/cockpit-e2e.txt"; then
             echo "::error::the cockpit tests were skipped, so this job tested nothing"
             exit 1
           fi
 
+  # WRITES OUTSIDE THE RUNNER IN THIS FILE, AUDITED (g-370-47): every step that writes anywhere but
+  # the runner's own disk, and what tells a consumer which lane produced it.
+  # tests/test_ci_dev_channel_lane.py scans EVERY workflow file for these shapes and fails on a
+  # writer its allowlist lacks, so a new writer is added there, with its reason, before it is added
+  # here. That allowlist also holds the other workflow files' writers, which are not repeated here.
+  #   verify, update-e2e, cockpit-e2e, "Install uv" (enable-cache) .. the uv cache: GitHub's cache
+  #                                             store, scoped to the ref that saved it; not a channel
+  #   verify, "Upload coverage report" ........ GitHub's artifact store, this run only; not a channel
+  #   publish-sidecar, sha-keyed copy ......... a sha is unique per commit, lane-safe by construction;
+  #                                             the job runs on a push to main only
+  #   publish-sidecar, latest/ pointer ........ the prod channel; push to main only, and main's tip;
+  #                                             lane=prod and branch=main in the metadata
+  #   alert-on-failure, SES mail .............. not an artifact; a failed push to main only
+  # The dev channel (zak-code-deployments/dev/) is written by dev-channel.yml alone, on a dispatch;
+  # this file has no dispatch trigger and no step that can write that prefix.
+  #
   # Publish the sidecar runtime artifact to S3. This is the env-server JAR
   # pattern (build-ayo-environment-server.yml) applied to zak-code: the sidecar
   # runs on env-servers from an S3 tarball, NOT a git clone, so a merge that is
@@ -218,7 +237,9 @@ jobs:
           RUN: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN}"
+          # branch= and lane= tell a consumer which lane produced the object it runs.
+          # This job runs on a push to main only, so both are fixed here and not read from the event.
+          META="commit_sha=${SHA},repo=${REPO},build_number=${RUN},branch=main,lane=prod"
           # The latest/ pointer only ever moves to main's TIP. A re-run of an OLDER run is
           # a push-to-main run too, and it used to publish its older build over a newer one:
           # measured 2026-09-18, latest/ went acbd40e -> 853178e for 18 minutes. Read the
@@ -238,9 +259,9 @@ jobs:
           # here (g-357-10 item 2) once provision-env.sh was repointed to the
           # zak-code-deployments/latest/ pointer above; it had no remaining reader.
 
-  # Single alert job that runs ONCE after the whole matrix (needs: verify + publish-sidecar),
-  # not once per py-version cell. `failure()` here is true iff any verify cell
-  # failed; cancelled runs (concurrency cancel-in-progress) are not failures,
+  # Single alert job that runs ONCE after the whole matrix (needs: verify + cockpit-e2e +
+  # publish-sidecar), not once per py-version cell. `failure()` here is true iff a job it
+  # needs failed; cancelled runs (concurrency cancel-in-progress) are not failures,
   # so superseded pushes never alert. Gated to push-to-main so PR/feature-branch
   # runs (and fork PRs, which never receive secrets) stay quiet.
   #
@@ -252,7 +273,7 @@ jobs:
   # CLI are pre-installed on ubuntu-latest; no checkout needed.
   alert-on-failure:
     name: Alert agent inbox on CI failure
-    needs: [verify, publish-sidecar]
+    needs: [verify, cockpit-e2e, publish-sidecar]
     if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # OIDC keyless (g-010-82). A permissions block REPLACES the job's full

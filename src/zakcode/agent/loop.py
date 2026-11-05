@@ -464,7 +464,7 @@ _CONDENSE_CLOSE = (
     "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
     "decisions, file paths and unfinished work."
 )
-#: Output tokens per word of a summary, at most (ADR-0357). Measured 2026-11-03 on the pod's 27B
+#: Output tokens per word of a summary, at most (ADR-0366). Measured 2026-11-03 on the pod's 27B
 #: model: 121 installed summaries, each paired with the call that wrote it in the inference
 #: router's ledger (sizes only), ran 7.92 characters a word, and 2.32 characters an output token if
 #: the call did not think, 4.17 if it used all 4,096 thinking tokens its requests allow. The narrow
@@ -473,7 +473,7 @@ _CONDENSE_CLOSE = (
 #: thinking off writes only its summary and measures the truth. :data:`_WORDS_PER_TOKEN` sizes the
 #: word budget (ADR-0330) and is left as it is.
 _SUMMARY_TOKENS_PER_WORD = 3.4
-#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0357), over a summary at
+#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0366), over a summary at
 #: the length one is condensed past (:data:`_SUMMARY_OVER_BUDGET`) at
 #: :data:`_SUMMARY_TOKENS_PER_WORD`: 16,469 tokens for a 3,100-word budget. Of the 120 summaries
 #: the pod installed in the 24 hours to 2026-11-03T16:00Z, the call that wrote one went past 8,192
@@ -652,7 +652,7 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
 
 
 def _summary_switched_room(words: int, room: int) -> int:
-    """The output cap of a summarizer ask sent with thinking off (ADR-0357): a summary of
+    """The output cap of a summarizer ask sent with thinking off (ADR-0366): a summary of
     :data:`_SUMMARY_OVER_BUDGET` times its word budget ``words``, the length past which one is
     condensed (ADR-0331), at :data:`_SUMMARY_TOKENS_PER_WORD`, with
     :data:`_SUMMARY_SWITCHED_HEADROOM`, never under :data:`_SUMMARY_OUTPUT_FLOOR` and never over
@@ -664,7 +664,7 @@ def _summary_switched_room(words: int, room: int) -> int:
 
 
 def _shorter_budget(words: int) -> int:
-    """The word budget a summary the output limit cut off is asked for again with (ADR-0357): half
+    """The word budget a summary the output limit cut off is asked for again with (ADR-0366): half
     of ``words``, rounded to hundreds and never under 100, as :func:`_summary_target_words` rounds.
     A summary that ran past its cap was already over its budget, and asked again for the same
     budget the model writes it the same way."""
@@ -2710,7 +2710,7 @@ class AgentLoop:
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
         self._summarizer_provider = summarizer_provider
-        # The summarizer's thinking (ADR-0357): None leaves it to the route, off unless the route's
+        # The summarizer's thinking (ADR-0366): None leaves it to the route, off unless the route's
         # own body sets the switch; False turns it off wherever the switch reaches the model; True
         # asks as configured. The session passes True for a summarizer named in ``model_roles``.
         self._summarizer_thinking = summarizer_thinking
@@ -2878,6 +2878,10 @@ class AgentLoop:
         #: ephemeral tail of the very next call — the one that exists only to hand the tool
         #: result back — and recomputed from each completion, so it is never stale by a turn.
         self._answer_already_given = False
+        #: What the model call in progress has streamed that the session does not hold yet: the
+        #: list that call writes into, from its start until its reply is saved or thrown away.
+        #: Read through :attr:`reply_so_far` (ADR-0363).
+        self._reply_parts: list[str] | None = None
         self._turn_paging: dict[str, dict[str, Any]] = {}
         # Repeated-outcome epoch (ADR-0038): successful FILE-EDIT calls this turn. The stuck
         # tracker keys identical tool outputs on it, so edit → test → edit → test never reads
@@ -2920,7 +2924,7 @@ class AgentLoop:
         self.last_compaction = ""
         #: The overflow-retry overrides each provider refused naming neither and then took the
         #: call without, for the session (ADR-0315), by the provider's id, and the thinking switch
-        #: a summarizer ask was refused the same way (ADR-0357). The provider rides along so that
+        #: a summarizer ask was refused the same way (ADR-0366). The provider rides along so that
         #: id cannot be reused, and a routed or failed-over one learns its own.
         self._refused_overrides: dict[int, tuple[Provider, set[str]]] = {}
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
@@ -3232,7 +3236,7 @@ class AgentLoop:
         # ADR-0330: every close states the same word budget, a slice's, a fold's and the condensing
         # ask's (ADR-0331) included; only a resample of a summary that was cut off asks for less.
         words = _summary_target_words(window, room)
-        # ADR-0357: where the switch reaches the model as written, every ask goes with thinking off
+        # ADR-0366: where the switch reaches the model as written, every ask goes with thinking off
         # and a cap its budget sets, unless the route's own body sets the switch and the setting
         # leaves it to the route, or the setting asks for the summarizer as configured.
         setting = self._summarizer_thinking
@@ -3254,7 +3258,7 @@ class AgentLoop:
             asked = words
             prompt = body + close.format(words=asked)
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
-            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0357)
+            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0366)
             entry = self._refused_overrides.get(id(summarizer))
             if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
                 switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
@@ -3295,7 +3299,7 @@ class AgentLoop:
                             request, on_withheld=account_withheld
                         )
                     except RequestFailed as exc:
-                        # ADR-0357: a refusal that names nothing, of an ask that switched thinking
+                        # ADR-0366: a refusal that names nothing, of an ask that switched thinking
                         # off, is ADR-0307's shape, and the ask without the switch is the one every
                         # summary took before. It is sent again without it, and the switch is left
                         # off this provider's later asks and overflow retries (ADR-0315).
@@ -3325,7 +3329,7 @@ class AgentLoop:
                     if resample < _SUMMARY_RESAMPLES:
                         again = "asking again"
                         if result.finish_reason in _LENGTH_FINISH_REASONS:
-                            # ADR-0357: a summary the output limit cut off is not asked for the
+                            # ADR-0366: a summary the output limit cut off is not asked for the
                             # same way twice. Where the route took the switch and thought anyway,
                             # again with the room the ask had with thinking on (ADR-0275).
                             # Otherwise for half the words under the same cap: the same budget is
@@ -3622,6 +3626,7 @@ class AgentLoop:
         before = len(self.session.messages)
         pre_tokens = self.session.prompt_anchor_tokens  # measured, and about to be forgotten
         self.session.messages[:] = messages
+        self.session.shift_turn_ends(before, summarized=summary is not None)  # ADR-0361
         self._mark_transcript_compacted(
             summary, trigger=trigger, before=before, pre_tokens=pre_tokens
         )
@@ -7363,6 +7368,19 @@ class AgentLoop:
         self._session_start_done = True
 
     @property
+    def reply_so_far(self) -> str:
+        """What the model call in progress has streamed that the session does not hold yet, or ""
+        between calls (ADR-0363).
+
+        A served page opened in the middle of a long reply, after the watch bus has dropped where
+        the reply began, draws this as the reply's start and the bus draws the rest. It is the
+        call's own list, so it holds exactly the parts yielded so far: each part goes into it in
+        the step that yields it, and the list is let go in the step that saves the reply or throws
+        it away, with no await between.
+        """
+        return "".join(self._reply_parts) if self._reply_parts is not None else ""
+
+    @property
     def session_started(self) -> bool:
         """Whether SessionStart has run on this loop to its end, with what it said added to the
         session, or is never to run (ADR-0211, ADR-0342).
@@ -7816,6 +7834,10 @@ class AgentLoop:
         is exactly the lie the file exists to prevent. Cancellation, a closed stream and
         Ctrl-C read as ``interrupted``; anything else reads as ``error``.
 
+        An interrupted turn is also kept as a turn end, ``interrupted`` as the page draws it, so a
+        page reopened later draws it too (ADR-0361). Any other exception keeps none here: the say
+        consumer that catches it publishes the turn's end itself, and keeps that one.
+
         Called from the ``except`` clauses of :meth:`arun_turn` and :meth:`astream_turn`,
         never from their ``finally``: there the only view of an in-flight exception is
         ``sys.exc_info()``, and that also reports an exception the CALLER is handling, so a
@@ -7823,6 +7845,8 @@ class AgentLoop:
         """
         interrupted = isinstance(exc, (asyncio.CancelledError, GeneratorExit, KeyboardInterrupt))
         _status_writer().leave_turn(self.session.id, "interrupted" if interrupted else "error")
+        if interrupted:
+            self.session.keep_turn_end("interrupted")
 
     async def _deliver_midturn_say(self) -> str | None:
         """Consume a pending say into the conversation at an iteration boundary (ADR-0051).
@@ -9706,6 +9730,11 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
+        left_open = len(self.session.task_network.actionable_remaining())
+        self.session.keep_turn_end(  # for a page reopened once the bus is gone (ADR-0361)
+            stop_reason, error=turn_error, degraded=degraded, open_steps=left_open
+        )
         self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
@@ -9718,8 +9747,8 @@ class AgentLoop:
             usage=turn_usage,
             stop_reason=stop_reason,
             error=turn_error,
-            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            open_steps=len(self.session.task_network.actionable_remaining()),
+            degraded=degraded,
+            open_steps=left_open,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,
@@ -10100,6 +10129,7 @@ class AgentLoop:
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
                 while True:
                     text_parts: list[str] = []
+                    self._reply_parts = text_parts  # what a page opened mid-reply draws (ADR-0363)
                     # Streamed thinking, split into blocks: a signature closes the block
                     # it rides on, so the closed blocks keep their own signatures and the
                     # open fragments are the block still being written.
@@ -10332,6 +10362,7 @@ class AgentLoop:
                             if cause and cause != told_cause:
                                 notice += f" — {cause}"
                                 told_cause = cause
+                            self._reply_parts = None  # what this attempt streamed is thrown away
                             yield AgentStatus(message=notice)
                             await asyncio.sleep(delay)
                             continue
@@ -10445,6 +10476,7 @@ class AgentLoop:
                     stop_reason = "provider_error"
                     turn_error = provider_failure
                     partial_text = "".join(text_parts)
+                    self._reply_parts = None  # saved here, or there was nothing (ADR-0363)
                     if partial_text:
                         self.session.add_message(self._stream_assistant_message(partial_text, []))
                         self.session.add_message(
@@ -10533,6 +10565,7 @@ class AgentLoop:
                 if degen_unit is None and not tool_calls and assistant_text:
                     degen_unit = repeated_tail(assistant_text)
                 if degen_unit is not None:
+                    self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
@@ -10572,6 +10605,7 @@ class AgentLoop:
                     and _apology_spiral(assistant_text)
                 ):
                     apology_retries += 1
+                    self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True
                     self._refund_iteration()  # the discarded completion did no work
@@ -10616,6 +10650,7 @@ class AgentLoop:
                     streamed_thinking or None,
                 )
                 self.session.add_message(assistant_msg)
+                self._reply_parts = None  # the reply is the session's now (ADR-0363)
                 turn_assistant.append(assistant_msg)
                 self._answer_already_given = _answered_then_called_a_tool(assistant_msg)  # ADR-0217
                 self._persist()
@@ -11757,6 +11792,7 @@ class AgentLoop:
             self._status_leave_turn(exc)  # an unwinding turn must not stay "working" (ADR-0266)
             raise
         finally:
+            self._reply_parts = None  # a Stop mid-reply saves none of it (ADR-0363)
             self._complete_transcript()  # the record holds the whole turn (ADR-0206)
             if lease is not None:
                 await lease.release()  # the busy marker lives exactly one turn (ADR-0060)
@@ -11786,6 +11822,11 @@ class AgentLoop:
         )
         self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
+        degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
+        left_open = len(self.session.task_network.actionable_remaining())
+        self.session.keep_turn_end(  # for a page reopened once the bus is gone (ADR-0361)
+            stop_reason, error=turn_error, degraded=degraded, open_steps=left_open
+        )
         self._close_wake_repeat_guard(stop_reason, turn_assistant)  # ADR-0216
         self._persist()
         self._note_paging_summary()  # the ADR-0067 effectiveness signal, once per turn
@@ -11796,8 +11837,8 @@ class AgentLoop:
             iterations=iterations,
             usage=turn_usage,
             error=turn_error,
-            degraded=turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS,
-            open_steps=len(self.session.task_network.actionable_remaining()),
+            degraded=degraded,
+            open_steps=left_open,
             routed_category=routed_category,  # None when zakpick is off
             routed_escalated=routed_escalated,
             trace=self._trace,

@@ -16,6 +16,7 @@ test_webclient_turn_clock.py for why.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import subprocess
@@ -27,6 +28,7 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.test_reply_so_far import _Loop
 from tests.test_server_consumer import _LiveServer
 from tests.test_webclient_turn_clock import _NODE, _PRELUDE, _page_script
 from zakcode.config import Settings
@@ -74,6 +76,35 @@ def _parts(text: str) -> list[str]:
     return [f"{text}-{i} " for i in range(6)]
 
 
+class _FailsOnTwoAgent(_EchoAgent):
+    """Echoes, but the turn for "two" raises past the agent loop once its line is saved, as a
+    turn whose pod went away does: the say consumer ends it with a provider error (ADR-0361)."""
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        if user_text == "two":
+            self.session.add_message(Message.user(user_text))
+            raise RuntimeError("the pod went away")
+        async for event in super().astream_turn(user_text):
+            yield event
+
+
+class _FailsOnTwoUnsavedAgent(_EchoAgent):
+    """As :class:`_FailsOnTwoAgent`, but the turn for "two" raises before its line is saved: the
+    session keeps how it ended, and no line of it."""
+
+    async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+        if user_text == "two":
+            raise RuntimeError("the pod went away")
+        async for event in super().astream_turn(user_text):
+            yield event
+
+
+#: The words the page ends that turn with, live or saved: the say consumer's error, first line.
+_FAILED = "provider error — " + server_app._turn_failure_error(
+    RuntimeError("the pod went away"), lambda s: s
+)
+
+
 def _app(workspace: Path, agent: Callable[[Session], Any] = _EchoAgent) -> Any:
     settings = Settings(
         default_model="scripted/test", context_window=8192, workspace_root=workspace
@@ -110,6 +141,16 @@ def _converse(base: str, texts: list[str]) -> None:
             time.sleep(0.05)
 
 
+def _fail(base: str, text: str) -> None:
+    """Say a text whose turn fails, and wait until how it ended is saved: it saves no reply."""
+    posted = httpx.post(base + "/say", json={"text": text}, timeout=5)
+    assert posted.status_code in (200, 202), posted.text
+    deadline = time.monotonic() + 15
+    while not _transcript(base)["ends"]:
+        assert time.monotonic() < deadline, f"the end of the turn for {text!r} was not saved"
+        time.sleep(0.05)
+
+
 #: Runs after the page's DOM and before its script. `fetch` becomes the real one, pointed at the
 #: live server; the tail exits once `__WANT` user and assistant rows are drawn and nothing has
 #: changed for a beat (so a late duplicate would still show), or at a hard deadline. With `__SAY`
@@ -124,7 +165,7 @@ globalThis.fetch = (url, opts) => __realFetch(new URL(url, __BASE), opts);
 const __log = document.getElementById("log");
 const __t0 = Date.now();
 let __seen = "", __changed = Date.now(), __said = false;
-setInterval(() => {
+__every(() => {
   const rows = __log.children.map((r) => ({
     cls: [...r.classes].filter((c) => c !== "row").join(" "),
     text: r.textContent,
@@ -154,14 +195,21 @@ _CLOCK = re.compile(r"\s+\(\d\d:\d\d\)$")
 
 
 def _open_page(
-    base: str, tmp_path: Path, want: int, say: str = "", before: int = 0
+    base: str,
+    tmp_path: Path,
+    want: int,
+    say: str = "",
+    before: int = 0,
+    ends: bool = False,
+    extra: str = "",
 ) -> list[tuple[str, str]]:
     """Open the page against the server; return the user and assistant rows it drew, and its
-    notes of what a SessionStart hook said (ADR-0344), in order."""
+    notes of what a SessionStart hook said (ADR-0344), in order. With ``ends``, the rows saying
+    how a turn ended too, each as its outcome words (ADR-0361). ``extra`` runs after the tail."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     dom = _PRELUDE.split("const __STREAMS = ")[0]
-    script.write_text(dom + _TAIL + _page_script(), encoding="utf-8")
+    script.write_text(dom + _TAIL + extra + _page_script(), encoding="utf-8")
     proc = subprocess.run(
         [_NODE, str(script), base, str(want), say, str(before)],
         capture_output=True,
@@ -179,6 +227,8 @@ def _open_page(
             rows.append(("user", _CLOCK.sub("", row["text"]).removeprefix("›")))
         elif row["cls"] in ("assistant", "hook"):
             rows.append((row["cls"], row["text"]))
+        elif ends and row["cls"] == "turnend":
+            rows.append(("end", row["text"].split(" · ")[0]))
     return rows
 
 
@@ -238,6 +288,75 @@ def test_a_page_reopened_on_a_turn_longer_than_the_bus_draws_its_reply_whole(
         ]
 
 
+def _held_reply(release: Path) -> Callable[[Session], Any]:
+    """An agent whose reply is eight parts, with a loop to ask (ADR-0363). It streams six, waits
+    until ``release`` exists, streams the last two and saves the reply after the stream, as the
+    agent loop does."""
+
+    class _HeldReply:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+            self.loop = _Loop(session)
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            for i in range(8):
+                if i == 6:
+                    deadline = time.monotonic() + 20
+                    while not release.exists() and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                part = f"{user_text}-{i} "
+                self.loop.parts.append(part)
+                yield AgentTextDelta(text=part)
+            self.session.add_message(Message.assistant_text(self.loop.reply_so_far))
+            self.loop.parts = []
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    return _HeldReply
+
+
+def _release_when_drawn(held: str, release: Path) -> str:
+    """For :func:`_open_page`: once the page shows ``held`` as the reply, write ``release`` so the
+    turn goes on, and keep the page open while the reply still shows only that much."""
+    return f"""
+const __HELD = {json.dumps(held)};
+let __released = false;
+__every(() => {{
+  const row = __log.children.find((r) => r.classes.has("assistant"));
+  if (!row || row.textContent !== __HELD) return;
+  __changed = Date.now();  // the rest of the reply is still to come
+  if (!__released) {{
+    __released = true;
+    require("fs").writeFileSync({json.dumps(str(release))}, "");
+  }}
+}}, 20);
+"""
+
+
+def test_a_page_opened_in_the_middle_of_a_reply_longer_than_the_bus_draws_it_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The turn's line and six parts are out and the turn waits: a ring of four holds parts 2 to 5,
+    # so where the reply began is gone from the bus, and the page drew from the bus's oldest part
+    # on. It now draws the six parts from the transcript (ADR-0363); once it shows them the turn
+    # goes on, and the last two stream into the same row: the reply whole, each part once.
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=4))
+    release = tmp_path / "release"
+    held = "".join(f"one-{i} " for i in range(6))
+    with _LiveServer(_app(tmp_path, _held_reply(release))) as base:
+        posted = httpx.post(base + "/say", json={"text": "one"}, timeout=5)
+        assert posted.status_code in (200, 202), posted.text
+        deadline = time.monotonic() + 15
+        while True:
+            resp = httpx.get(base + "/sessions/current/transcript", timeout=5)
+            if resp.status_code == 200 and resp.json().get("partial") == held:
+                break
+            assert time.monotonic() < deadline, "the turn did not reach its sixth part"
+            time.sleep(0.05)
+        rows = _open_page(base, tmp_path, want=2, extra=_release_when_drawn(held, release))
+    assert rows == [("user", "one"), ("assistant", "".join(f"one-{i} " for i in range(8)))]
+
+
 def test_a_page_reopened_on_a_bus_that_starts_inside_a_turn_joins_the_bus_at_the_next_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -267,6 +386,78 @@ def test_a_message_sent_from_a_reopened_page_is_drawn_once_after_the_history(
         ("user", "three"),
         ("assistant", "echo three"),
     ]
+
+
+def test_a_page_reopened_after_a_server_restart_draws_how_a_turn_ended(tmp_path: Path) -> None:
+    """ADR-0361: the row saying a turn failed came from the bus alone, so after a restart the page
+    drew the turn's line and not how it ended. It is drawn where the turn ended, before the turns
+    after it; a turn that simply finished keeps no end."""
+    with _LiveServer(_app(tmp_path, _FailsOnTwoAgent)) as base:
+        _converse(base, ["one"])
+        _fail(base, "two")
+        _converse(base, ["three"])
+    with _LiveServer(_app(tmp_path, _FailsOnTwoAgent)) as base:
+        assert _open_page(base, tmp_path, want=5, ends=True) == [
+            ("user", "one"),
+            ("assistant", "echo one"),
+            ("user", "two"),
+            ("end", _FAILED),
+            ("user", "three"),
+            ("assistant", "echo three"),
+        ]
+
+
+def test_a_page_reopened_while_the_bus_holds_a_turns_end_draws_it_once(tmp_path: Path) -> None:
+    # The bus holds every turn, so the replay draws each end; the saved one is not drawn too.
+    with _LiveServer(_app(tmp_path, _FailsOnTwoAgent)) as base:
+        _converse(base, ["one"])
+        _fail(base, "two")
+        assert _open_page(base, tmp_path, want=3, ends=True) == [
+            ("user", "one"),
+            ("assistant", "echo one"),
+            ("end", "done"),
+            ("user", "two"),
+            ("end", _FAILED),
+        ]
+
+
+def test_a_page_reopened_when_the_bus_kept_only_a_later_turn_draws_the_saved_end_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A ring of three holds the last turn alone: the failed turn before it, and how it ended, are
+    # drawn from the saved session, and the last turn's end from the bus.
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=3))
+    with _LiveServer(_app(tmp_path, _FailsOnTwoAgent)) as base:
+        _converse(base, ["one"])
+        _fail(base, "two")
+        _converse(base, ["three"])
+        assert _open_page(base, tmp_path, want=5, ends=True) == [
+            ("user", "one"),
+            ("assistant", "echo one"),
+            ("user", "two"),
+            ("end", _FAILED),
+            ("user", "three"),
+            ("assistant", "echo three"),
+            ("end", "done"),
+        ]
+
+
+def test_a_page_reopened_on_a_turn_that_failed_before_its_line_was_saved_draws_its_end_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A ring of two holds that turn whole (its line and its end) while the session holds only its
+    # end, placed after "echo one": no saved line marks where the bus's turn starts, so the saved
+    # end is told from the bus's by its stamp, and the replay alone draws it.
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=2))
+    with _LiveServer(_app(tmp_path, _FailsOnTwoUnsavedAgent)) as base:
+        _converse(base, ["one"])
+        _fail(base, "two")
+        assert _open_page(base, tmp_path, want=3, ends=True) == [
+            ("user", "one"),
+            ("assistant", "echo one"),
+            ("user", "two"),
+            ("end", _FAILED),
+        ]
 
 
 def test_the_transcript_stamps_each_message_and_says_where_the_bus_starts(tmp_path: Path) -> None:

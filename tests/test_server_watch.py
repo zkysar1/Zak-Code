@@ -515,7 +515,8 @@ async def test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A turn holds its bus to publish on, and publishing on a bus that was let go raises, so
-    while the turn runs its chat's bus stays, deleted or idle."""
+    while the turn runs its chat's bus stays, idle or asked to be deleted. A delete is refused
+    while the turn runs, which saves the chat again as it ends (ADR-0358)."""
     monkeypatch.setattr(event_bus, "_IDLE_BUSES", 0)
     registry = EventBusRegistry()
     monkeypatch.setattr(server_app, "EventBusRegistry", lambda: registry)
@@ -546,10 +547,11 @@ async def test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep(
         bus = registry.get(sid)  # the turn's own: its prompter publishes on it
         assert bus is not None
         registry.get_or_create("another")  # a sweep that keeps no idle bus
-        assert (await ac.delete(f"/sessions/{sid}")).status_code == 204
+        assert (await ac.delete(f"/sessions/{sid}")).status_code == 409
         assert not bus.closed
         release.set()
         assert (await turn).status_code == 200
+    assert store.exists(sid)
 
 
 # ── a POST /chat turn on the bus (ADR-0327) ──────────────────────────────────

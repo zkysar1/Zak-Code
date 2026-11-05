@@ -34,9 +34,12 @@ from __future__ import annotations
 import builtins
 import contextlib
 import json
+import logging
 import ntpath
 import os
+import shutil
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,6 +54,8 @@ from zakcode.tasks import TaskNetwork
 from zakcode.usage import Usage
 from zakcode.wakeup import Wakeup
 
+logger = logging.getLogger(__name__)
+
 #: Highest on-disk schema version this build can write and fully understand.
 CURRENT_SCHEMA_VERSION = 1
 
@@ -61,6 +66,13 @@ RESUME_COMPACT_STOP_REASONS = frozenset({"gave_up", "degenerated", "doom_loop", 
 
 #: Suffix marking an in-progress temp file written during an atomic save.
 _TMP_SUFFIX = ".tmp"
+
+#: How many turn ends a session keeps (ADR-0361): more than a page draws, and a bound on a
+#: document that a long unattended run rewrites at every save.
+TURN_ENDS_KEPT = 200
+
+#: How much of a turn's error a turn end keeps. The page draws its first line.
+_TURN_END_ERROR_CHARS = 2000
 
 
 def _new_id() -> str:
@@ -127,6 +139,24 @@ class SessionVersionError(SessionError):
             f"Session {session_id!r} has schema version {found}, but this build "
             f"supports at most {supported}; upgrade Zak Code to read it"
         )
+
+
+class TurnEnd(BaseModel):
+    """How a turn that did not simply finish ended (ADR-0361).
+
+    The web page draws a turn's end as a row of its own ("provider error — …", "stopped early —
+    max iterations", "interrupted"). The row came only from the watch bus, which is in memory, so a
+    page reopened after the server restarted drew the turn's words and not how it ended. ``after``
+    is how many of the session's messages came before the end: the row goes back in its place by
+    count, since two stamps in one tick of Windows' clock compare equal (ADR-0327).
+    """
+
+    after: int
+    at: str = Field(default_factory=_now_iso)
+    stop_reason: str
+    error: str = ""
+    degraded: bool = False
+    open_steps: int = 0
 
 
 class Session(BaseModel):
@@ -299,10 +329,54 @@ class Session(BaseModel):
     #: drops the field and only forgets the table — the processes run on and their output
     #: files remain (fails SAFE — nothing is killed, nothing is invented).
     background_tasks: list[BackgroundTask] = Field(default_factory=list)
+    #: The name a person gave this conversation in the web page's chat list (ADR-0358), on one
+    #: line. Empty until then, and the list titles it by its first ask. Schema v1 stays
+    #: append-only: an OLDER build drops the field, and the chat goes back to its first ask as
+    #: its title (fails SAFE: the pre-ADR-0358 title, nothing else is lost).
+    title: str = ""
+    #: How each turn that did not simply finish ended, oldest first: the last
+    #: :data:`TURN_ENDS_KEPT` (ADR-0361). Schema v1 stays append-only: an OLDER build drops the
+    #: field, and a reopened page draws those turns without their end, as it did before (fails
+    #: SAFE: only the rows are lost).
+    turn_ends: list[TurnEnd] = Field(default_factory=list)
 
     def add_message(self, msg: Message) -> None:
         """Append ``msg`` to the conversation history."""
         self.messages.append(msg)
+
+    def keep_turn_end(
+        self, stop_reason: str, *, error: str = "", degraded: bool = False, open_steps: int = 0
+    ) -> None:
+        """Keep how the turn that just ended ended, after the messages it left (ADR-0361).
+
+        A plain "done" is not kept: every turn has one, and the saved conversation reads the same
+        without it. Every other end is, whatever its color on the page.
+        """
+        if stop_reason == "completed" and not degraded and not open_steps:
+            return
+        end = TurnEnd(
+            after=len(self.messages),
+            stop_reason=stop_reason,
+            error=error[:_TURN_END_ERROR_CHARS],
+            degraded=degraded,
+            open_steps=open_steps,
+        )
+        self.turn_ends = [*self.turn_ends, end][-TURN_ENDS_KEPT:]
+
+    def shift_turn_ends(self, before: int, *, summarized: bool) -> None:
+        """Put each turn end back in its place after ``messages`` was compacted from ``before``.
+
+        A compaction that summarizes puts one summary in place of the old region and keeps the
+        tail; one that only elides keeps every message where it was. An end that falls at or
+        before the summary belongs to a turn now told only in it, and goes (ADR-0361).
+        """
+        shift = len(self.messages) - before
+        floor = 2 if summarized else 0  # 0 is before the summary and 1 just after it
+        self.turn_ends = [
+            end.model_copy(update={"after": end.after + shift})
+            for end in self.turn_ends
+            if end.after + shift >= floor
+        ]
 
     def resume_notice(self, *, running_build: str | None) -> str | None:
         """Why this transcript must be compacted before it continues, or ``None`` (ADR-0033).
@@ -374,14 +448,17 @@ class SessionStore:
     ``<zakcode_home>/sessions`` -- ``~/.zakcode/sessions`` unless ``ZAKCODE_HOME`` re-roots
     it (the terminal client's store; a served workspace uses :meth:`for_workspace`) -- and is
     created on construction. Session ids are validated as
-    safe single filename components (:func:`_is_safe_session_id`) on save/load/delete, so a
-    request-supplied id can never traverse out of ``base_dir`` — load/delete treat an unsafe
+    safe single filename components (:func:`_is_safe_session_id`) on save/load/trash, so a
+    request-supplied id can never traverse out of ``base_dir`` — load/trash treat an unsafe
     id as not-found, and save rejects it.
     """
 
     #: Where a SERVED workspace keeps its conversations (ADR-0032): the user store's layout
     #: re-rooted at the workspace, beside the project-level ``.zakcode/settings.json``.
     WORKSPACE_SUBDIR = Path(".zakcode") / "sessions"
+    #: Where a deleted conversation goes (ADR-0358): a ``trash`` directory beside this store's
+    #: own and its ``transcripts``, so a deletion is undone by moving the files back.
+    TRASH_DIRNAME = "trash"
 
     def __init__(self, base_dir: str | os.PathLike[str] | None = None) -> None:
         if base_dir is None:
@@ -414,7 +491,7 @@ class SessionStore:
         """Return the JSON file path for ``session_id``."""
         return self.base_dir / f"{session_id}.json"
 
-    def save(self, session: Session) -> Path:
+    def save(self, session: Session, *, keep_time: bool = False) -> Path:
         """Persist ``session`` atomically and return its file path.
 
         The document is rendered fully in memory first, written to a uniquely
@@ -428,10 +505,17 @@ class SessionStore:
         page loading the conversation), so it is retried (``replace_retrying``,
         ADR-0326). A served turn starts from the file, so a save that gave up
         lost its turn.
+
+        ``keep_time`` gives the file back the modification time it had, for a change that is
+        not a new message (a name, ADR-0358): the chat list is ordered and dated by that time.
         """
         if not _is_safe_session_id(session.id):
             raise ValueError(f"unsafe session id {session.id!r} (would escape the store dir)")
         path = self._path_for(session.id)
+        before: os.stat_result | None = None
+        if keep_time:
+            with contextlib.suppress(OSError):
+                before = path.stat()
         # Render before touching the filesystem: if serialization raises, the
         # existing on-disk file (if any) is never disturbed.
         payload = session.model_dump_json()
@@ -452,7 +536,14 @@ class SessionStore:
             with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
             raise
+        if before is not None:
+            with contextlib.suppress(OSError):  # the save stands; the chat only moves up the list
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return path
+
+    def exists(self, session_id: str) -> bool:
+        """Whether the store holds a conversation under ``session_id``, readable or not."""
+        return _is_safe_session_id(session_id) and self._path_for(session_id).is_file()
 
     def load(self, session_id: str) -> Session:
         """Load and return the session stored under ``session_id``.
@@ -539,16 +630,69 @@ class SessionStore:
         """Load a previously saved session so work can continue."""
         return self.load(session_id)
 
-    def delete(self, session_id: str) -> bool:
-        """Delete the session stored under ``session_id``.
+    def transcript_path(self, session_id: str) -> Path:
+        """Where the agent loop keeps ``session_id``'s append-only transcript (ADR-0061): in a
+        ``transcripts`` directory beside this store's own. ``AgentLoop._transcript_file`` writes
+        it there, and a test holds the two to the same path."""
+        return self.base_dir.parent / "transcripts" / f"{session_id}.jsonl"
 
-        Returns ``True`` if a session file was removed, ``False`` if none existed.
-        Never raises for a missing session, so a double-delete is harmless.
+    def trash(self, session_id: str, *, also: Mapping[str, Path] | None = None) -> Path | None:
+        """Move the conversation ``session_id`` out of the store and into the trash (ADR-0358),
+        and return the folder it went to; ``None`` when the store holds no such conversation.
+
+        The folder is ``<store parent>/trash/<id>/`` (``<id>-2`` and on when that is taken). The
+        session document goes first: once it has moved, the conversation is in no list and cannot
+        be loaded. If it cannot be moved, nothing has moved and the error is raised. Its
+        transcript goes next, then each of ``also`` that exists (a name in the folder, and a path
+        the conversation owns: its uploads). One of those that cannot be moved stays where it was
+        and is logged, and the conversation is deleted all the same. ``deleted.json`` in the
+        folder records where each thing came from, so a deletion is undone by moving them back.
+        Never raises for a missing session, so a double delete is harmless.
         """
-        if not _is_safe_session_id(session_id):
-            return False  # an unsafe id names no session here — nothing to delete
+        if not self.exists(session_id):
+            return None  # an unsafe id names no session here either — nothing to move
+        document = self._path_for(session_id)
+        root = self.base_dir.parent / self.TRASH_DIRNAME
+        root.mkdir(parents=True, exist_ok=True)
+        ignore = root / ".gitignore"
+        if not ignore.exists():  # never overwritten, as the store's own
+            with contextlib.suppress(OSError):
+                ignore.write_text("*\n", encoding="utf-8")
+        with contextlib.suppress(OSError):  # POSIX perms, as the transcripts': whole conversations
+            os.chmod(root, 0o700)
+        folder = root / session_id
+        taken = 1
+        while True:
+            try:
+                folder.mkdir()
+                break
+            except FileExistsError:
+                taken += 1
+                folder = root / f"{session_id}-{taken}"
         try:
-            self._path_for(session_id).unlink()
-            return True
-        except FileNotFoundError:
-            return False
+            replace_retrying(document, folder / document.name)
+        except OSError:
+            with contextlib.suppress(OSError):
+                folder.rmdir()
+            raise
+        moved = {document.name: str(document)}
+        left: dict[str, str] = {}
+        transcript = self.transcript_path(session_id)
+        for name, source in {transcript.name: transcript, **(also or {})}.items():
+            if not source.exists():
+                continue
+            try:
+                shutil.move(source, folder / name)
+            except OSError as exc:
+                logger.warning(
+                    "deleted chat %s: %s stays where it was: %s", session_id, source, exc
+                )
+                left[name] = str(source)
+            else:
+                moved[name] = str(source)
+        record = {"id": session_id, "deleted_at": _now_iso(), "moved": moved, "left": left}
+        with contextlib.suppress(OSError):
+            (folder / "deleted.json").write_text(
+                json.dumps(record, indent=2) + "\n", encoding="utf-8"
+            )
+        return folder

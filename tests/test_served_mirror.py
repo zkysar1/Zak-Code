@@ -40,6 +40,7 @@ from sse_starlette.sse import AppStatus
 import zakcode
 import zakcode.cli as cli_mod
 from tests.test_cli_chat import CANNED_TEXT, FakeAgent, runner
+from tests.test_reply_so_far import _Loop
 from tests.test_served_marker import _age, _stopped_after
 from tests.test_server_watch import _free_port
 from zakcode.cli import _InputMux, _served_url, app, served_mirror
@@ -77,7 +78,8 @@ def _streams_serve(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class _Echo:
     """The web app's agent, scripted: each line gets a saved reply. A line asking to run a command
-    first asks the web app's prompter, as a tool call needing approval does."""
+    first asks the web app's prompter, as a tool call needing approval does. A line starting
+    "fail" raises once it is saved, as a turn whose pod went away does."""
 
     def __init__(self, session: Session, prompter: Any) -> None:
         self.session = session
@@ -85,6 +87,8 @@ class _Echo:
 
     async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
         self.session.add_message(Message.user(user_text))
+        if user_text.startswith("fail"):
+            raise RuntimeError("the pod went away")
         reply = f"reply to {user_text}"
         if user_text.startswith("run "):
             command = user_text[len("run ") :]
@@ -103,6 +107,7 @@ class _Echo:
 
 def _web_app(workspace: Path, **kwargs: Any) -> FastAPI:
     token = kwargs.pop("token", None)
+    agent = kwargs.pop("agent", _Echo)
     settings = Settings(
         default_model="scripted/test",
         context_window=8192,
@@ -112,7 +117,7 @@ def _web_app(workspace: Path, **kwargs: Any) -> FastAPI:
     return create_app(
         settings=settings,
         store=SessionStore(base_dir=workspace / "sessions"),
-        agent_factory=lambda session, model, prompter: _Echo(session, prompter),
+        agent_factory=lambda session, model, prompter: agent(session, prompter),
         **kwargs,
     )
 
@@ -128,11 +133,14 @@ class _Web:
         port: int = 0,
         token: str | None = None,
         new_session: bool = True,
+        agent: Callable[[Session, Any], Any] = _Echo,
     ) -> None:
         self.port = port or _free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self._headers = {"Authorization": f"Bearer {token}"} if token else None
-        fastapi_app = _web_app(workspace, token=token, new_session=new_session, served_url=self.url)
+        fastapi_app = _web_app(
+            workspace, token=token, new_session=new_session, served_url=self.url, agent=agent
+        )
         config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=self.port, log_level="error")
         self._server = uvicorn.Server(config)
         self._thread = threading.Thread(target=self._server.run, daemon=True)
@@ -377,6 +385,103 @@ def test_a_pane_joining_draws_the_saved_chat_once_then_what_the_bus_holds(tmp_pa
         assert text.count("an old answer") == 1
         assert text.count("a new question (web app") == 1  # drawn from the bus, not the save
         assert text.count("reply to a new question") == 1
+
+
+def test_a_pane_joining_in_the_middle_of_a_reply_longer_than_the_bus_draws_it_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0363: the turn's line and six parts are out and the turn waits, so a ring of four no
+    longer holds where the reply began. A pane joining then draws the six parts from the
+    transcript, and the last two from the bus, into the same turn: the reply whole, each part
+    once."""
+    monkeypatch.setattr(server_app, "EventBusRegistry", lambda: EventBusRegistry(maxlen=4))
+    parts = [f"part{i} " for i in range(8)]
+    joined = threading.Event()
+
+    class _HeldReply:
+        def __init__(self, session: Session, prompter: Any) -> None:
+            self.session = session
+            self.loop = _Loop(session)
+
+        async def astream_turn(self, user_text: str) -> AsyncIterator[AgentEvent]:
+            self.session.add_message(Message.user(user_text))
+            for i, part in enumerate(parts):
+                if i == 6:
+                    deadline = time.monotonic() + 20
+                    while not joined.is_set() and time.monotonic() < deadline:
+                        await asyncio.sleep(0.02)
+                self.loop.parts.append(part)
+                yield AgentTextDelta(text=part)
+            self.session.add_message(Message.assistant_text(self.loop.reply_so_far))
+            self.loop.parts = []
+            yield AgentDone(stop_reason="completed", iterations=1, usage=Usage())
+
+    read = ServerClient.transcript
+
+    async def read_then_go(client: ServerClient, session_id: str = "current") -> dict[str, Any]:
+        transcript = await read(client, session_id)
+        joined.set()  # the pane has read the turn in the middle of its reply: it goes on
+        return transcript
+
+    monkeypatch.setattr(ServerClient, "transcript", read_then_go)
+    with _Web(tmp_path, agent=_HeldReply) as web:
+        _say(tmp_path, "a long one")
+        _until(lambda: web.transcript().get("partial") == "".join(parts[:6]), what="six parts")
+        screen, mirror = _view(web.url)
+        with _showing(mirror):
+            _until(lambda: "part7" in screen.text(), what="the reply's last part")
+            _until(lambda: not web.transcript()["running"], what="the turn's end")
+    text = screen.text()
+    assert text.count("a long one") == 1
+    assert text.count("".join(parts).strip()) == 1, text  # the reply whole, once
+    assert text.count("part2") == 1, text  # no part the bus still held drawn again
+
+
+def test_a_pane_draws_how_a_failed_turn_ended_once_from_the_bus_or_the_save(tmp_path: Path) -> None:
+    """ADR-0361: a pane joining while the bus holds a failed turn draws its end from the bus, and
+    one joining after a restart draws it from the save, where it ended, as the page does."""
+    with _Web(tmp_path) as web:
+        _say(tmp_path, "fail please")
+        _until(lambda: bool(web.transcript()["ends"]), what="the failed turn's end to be saved")
+        live, mirror = _view(web.url)
+        with _showing(mirror):
+            _say(tmp_path, "after it")
+            _until(lambda: "reply to after it" in live.text(), what="the turn after it")
+    with _Web(tmp_path, new_session=False) as web:  # the bus is gone; the save is not
+        restarted, mirror = _view(web.url)
+        with _showing(mirror):
+            _until(lambda: "reply to after it" in restarted.text(), what="the saved chat")
+    for screen in (live, restarted):
+        text = screen.text()
+        assert text.count("RuntimeError: the pod went away") == 1, text
+        order = ["fail please", "provider error", "after it", "reply to after it"]
+        assert [text.index(part) for part in order] == sorted(text.index(p) for p in order), text
+    assert "replaying 3 messages" in restarted.text()  # an end is not counted as a message
+
+
+def test_a_joining_pane_draws_the_saved_ends_the_bus_will_not() -> None:
+    """The cut the page makes (ADR-0361): an end placed past the saved messages kept is the
+    replay's, and where no saved line marks the turn the bus starts with, an end is told from the
+    bus's by its stamp."""
+
+    def said(role: str, text: str, at: float) -> dict[str, Any]:
+        return {"role": role, "text": text, "at": at}
+
+    def end(after: int, at: float) -> dict[str, Any]:
+        return {"after": after, "at": at, "stop_reason": "stuck", "error": "", "degraded": False}
+
+    messages = [said("user", "one", 1.0), said("assistant", "echo one", 2.0)]
+    messages.append(said("user", "two", 5.0))
+    ends = [end(2, 3.0), end(3, 6.0)]
+
+    def cut(bus_from: float | None, bus_since: int | None) -> Any:
+        transcript = {"messages": messages, "ends": ends, "bus_from": bus_from}
+        return served_mirror._saved_before_the_bus({**transcript, "bus_since": bus_since})
+
+    assert cut(None, None) == (messages, ends)  # no bus: all of it is saved
+    assert cut(5.0, 7) == (messages[:2], ends[:1])  # the bus's turn starts at "two"
+    assert cut(5.5, 7) == (messages, ends[:1])  # no saved line marks its start
+    assert cut(4.0, None) == (messages[:2], ends[:1])  # a running turn the bus holds part of
 
 
 def test_a_pane_follows_the_web_app_to_the_chat_its_page_opens(tmp_path: Path) -> None:

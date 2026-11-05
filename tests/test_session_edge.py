@@ -107,9 +107,10 @@ def test_save_rejects_traversal_id(tmp_path: Path, bad_id: str) -> None:
 
 
 @pytest.mark.parametrize("bad_id", _TRAVERSAL_IDS)
-def test_delete_rejects_traversal_id(tmp_path: Path, bad_id: str) -> None:
-    store = SessionStore(base_dir=tmp_path)
-    assert store.delete(bad_id) is False  # nothing deleted, no traversal
+def test_trash_rejects_traversal_id(tmp_path: Path, bad_id: str) -> None:
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    assert store.trash(bad_id) is None  # nothing moved, no traversal
+    assert not (tmp_path / "trash").exists()  # and no trash made for it
 
 
 def test_load_invalid_json_raises_corrupt_and_preserves_file(tmp_path: Path) -> None:

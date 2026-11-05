@@ -1004,7 +1004,7 @@ class Agent:
             summarizer_provider = self._resolve_task_provider("summarize")[0]
         else:
             summarizer_provider = None
-        # ADR-0357: the summarizer's thinking. The setting decides when it is set; unset, a
+        # ADR-0366: the summarizer's thinking. The setting decides when it is set; unset, a
         # summarizer the user named in model_roles is asked as they configured it, and any other
         # goes with thinking off where its route leaves the switch to the caller.
         summarizer_thinking = self.settings.summarizer_thinking

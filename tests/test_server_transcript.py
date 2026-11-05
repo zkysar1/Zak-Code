@@ -252,10 +252,11 @@ class _LongTurn:
 def test_a_turn_longer_than_the_bus_is_replayed_while_it_runs_and_drawn_from_disk_once_it_ends(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A turn whose user line the bus has already evicted. While it runs, the call in progress
-    is in the bus alone, so the replay draws the bus's tail as before, and ``running`` says a
-    turn is under way that the replay may not show starting. Once it has ended the whole turn is
-    saved, so every saved message is drawn from here and the replay starts after the bus
+    """A turn whose user line the bus has already evicted, on an agent with no loop to ask (a
+    turn with one is read from it: test_reply_so_far.py, ADR-0363). While it runs, the call in
+    progress is in the bus alone, so the replay draws the bus's tail as before, and ``running``
+    says a turn is under way that the replay may not show starting. Once it has ended the whole
+    turn is saved, so every saved message is drawn from here and the replay starts after the bus
     (ADR-0325)."""
     monkeypatch.setattr(
         server_app, "EventBusRegistry", lambda: event_bus.EventBusRegistry(maxlen=4)

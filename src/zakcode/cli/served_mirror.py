@@ -35,7 +35,7 @@ from zakcode.cli._glyphs import resolve_glyphs
 from zakcode.cli._layout import block, notice_info, user_line
 from zakcode.cli.render import StreamRenderer, display_call
 from zakcode.cli.saybox import fold_lines
-from zakcode.events import AgentDone, AgentEvent, AgentStatus
+from zakcode.events import AgentDone, AgentEvent, AgentStatus, AgentTextDelta
 from zakcode.server.client import ServerClient, WatchStream
 from zakcode.server.wire import event_from_dict
 
@@ -233,8 +233,15 @@ class ServedChatMirror:
         if session != self._shown:
             # A chat not on screen yet: the first one, or another the page opened. One the web
             # app restarted on is on screen already, and its saved conversation is not drawn again.
-            self._draw_saved(_saved_before_the_bus(transcript))
+            self._draw_saved(*_saved_before_the_bus(transcript))
             self._shown = session
+            partial = transcript.get("partial")
+            if isinstance(partial, str) and partial:
+                # A turn longer than the bus: the reply being written, as far as it has come. The
+                # watch, after the cursor, draws the rest into the same turn (ADR-0363).
+                await self._end_turn()
+                self._turn = self._new_turn(timed=False)
+                await self._turn.draw(AgentTextDelta(text=partial))
         self._session = session
 
     async def _tail(self, client: ServerClient) -> None:
@@ -359,17 +366,38 @@ class ServedChatMirror:
             block(self._console, Group(*rows), marker=g["bang"], marker_style="warn")
         )
 
-    def _draw_saved(self, messages: list[dict[str, Any]]) -> None:
+    def _draw_saved(self, messages: list[dict[str, Any]], ends: list[dict[str, Any]]) -> None:
         # The replay /resume draws. Imported here: the package imports this module lazily.
-        from zakcode.cli import _render_replay
+        from zakcode.cli import _render_replay, _turn_end_row
 
-        rows: list[tuple[str, str, int]] = []
-        for message in messages:
+        rows: list[tuple[str, str, int, str]] = []
+        waiting = list(ends)
+
+        def ends_up_to(count: int) -> None:
+            # How each saved turn that did not simply finish ended, after the messages it
+            # followed, as the page draws it (ADR-0361).
+            while waiting and waiting[0]["after"] <= count:
+                end = waiting.pop(0)
+                at = end.get("at")
+                rows.append(
+                    _turn_end_row(
+                        self._console,
+                        str(end.get("stop_reason") or ""),
+                        bool(end.get("degraded")),
+                        int(end.get("open_steps") or 0),
+                        str(end.get("error") or ""),
+                        at if isinstance(at, (int, float)) else None,
+                    )
+                )
+
+        for index, message in enumerate(messages):
+            ends_up_to(index)
             hook = message.get("hook")
             role = "hook" if isinstance(hook, str) else str(message.get("role") or "")
             text = (hook if isinstance(hook, str) else str(message.get("text") or "")).strip()
             if text and role in ("hook", "user", "assistant"):
-                rows.append((role, text, 0))
+                rows.append((role, text, 0, ""))
+        ends_up_to(len(messages))
         _render_replay(self._console, rows)
 
     def _note(self, message: str) -> None:
@@ -391,24 +419,39 @@ class ServedChatMirror:
         self._failing_since = None
 
 
-def _saved_before_the_bus(transcript: dict[str, Any]) -> list[dict[str, Any]]:
-    """The saved messages a joining view draws; the watch replay draws the rest (ADR-0325).
+def _saved_before_the_bus(
+    transcript: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The saved messages a joining view draws, and the turn ends placed among them; the watch
+    replay draws the rest (ADR-0325, ADR-0361).
 
-    At a turn start (``bus_since``) they end at that turn's own user line, the first one at or
-    after the moment the bus starts (``bus_from``). With no turn start, a message at or after it
-    is the bus's. The page cuts the same way (ADR-0327).
+    At a turn start (``bus_since``) the messages end at that turn's own user line, the first one at
+    or after the moment the bus starts (``bus_from``). With no turn start, a message at or after it
+    is the bus's. An end placed past the messages kept is the replay's to draw. The page cuts the
+    same way (ADR-0327).
     """
     messages = [m for m in transcript.get("messages") or [] if isinstance(m, dict)]
+    ends = [
+        e
+        for e in transcript.get("ends") or []
+        if isinstance(e, dict) and isinstance(e.get("after"), int)
+    ]
     bus_from = transcript.get("bus_from")
-    if not isinstance(bus_from, (int, float)):
-        return messages
-    if isinstance(transcript.get("bus_since"), int):
+    if isinstance(bus_from, (int, float)) and isinstance(transcript.get("bus_since"), int):
         for index, message in enumerate(messages):
             at = message.get("at")
             if message.get("role") == "user" and isinstance(at, (int, float)) and at >= bus_from:
-                return messages[:index]
-        return messages
-    return [m for m in messages if not isinstance(m.get("at"), (int, float)) or m["at"] < bus_from]
+                messages = messages[:index]
+                break
+        else:
+            # The turn the replay starts with left no line here, so any end it left is placed
+            # among the saved messages: it is told from the rest by its stamp.
+            ends = [e for e in ends if isinstance(e.get("at"), (int, float)) and e["at"] < bus_from]
+    elif isinstance(bus_from, (int, float)):
+        messages = [
+            m for m in messages if not isinstance(m.get("at"), (int, float)) or m["at"] < bus_from
+        ]
+    return messages, [e for e in ends if e["after"] <= len(messages)]
 
 
 def _agent_event(frame: dict[str, Any]) -> AgentEvent | None:

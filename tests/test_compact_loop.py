@@ -1422,7 +1422,7 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert text == _words(300)
 
 
-# ── ADR-0357: thinking off, a cap the budget sets, and a resample that differs ─────────
+# ── ADR-0366: thinking off, a cap the budget sets, and a resample that differs ─────────
 
 
 class _SwitchableSummarizer(_CutSummarizer):

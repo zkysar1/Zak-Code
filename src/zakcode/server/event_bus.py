@@ -7,7 +7,7 @@ a parent watching a kid's agent, a dashboard tailing activity. This module is th
 
 Guarantees:
 
-* **Bounded memory.** Each session retains at most ``maxlen`` events (default 1000) in a ring
+* **Bounded memory.** Each session retains at most ``maxlen`` events (default 5000) in a ring
   buffer; the oldest are evicted. A slow or abandoned watcher can never grow memory without
   bound. Because cursors are monotonic, a watcher that fell behind the retained window can
   tell: the oldest cursor the bus still holds (``oldest_cursor``) is past the one after its

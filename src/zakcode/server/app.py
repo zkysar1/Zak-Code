@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -78,6 +79,7 @@ from zakcode.events import AgentEvent
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload
 from zakcode.hooks.settings_loader import SettingsHooks
 from zakcode.knowledge import okf_bundle, read_knowledge_bundle
+from zakcode.messages import Message
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.spend_gate import STOP_REASON as SPEND_STOP_REASON
@@ -89,6 +91,7 @@ from zakcode.server.event_bus import EventBusRegistry
 from zakcode.server.safe_projection import SafeEventProjection
 from zakcode.server.wire import (
     BudgetPush,
+    ChatNameRequest,
     ChatRequest,
     ChatResponse,
     CompleteRequest,
@@ -104,6 +107,7 @@ from zakcode.server.wire import (
     SessionTranscript,
     ToolInfo,
     TranscriptMessage,
+    TranscriptTurnEnd,
     UploadRequest,
     UploadResponse,
     WatchMarkerRequest,
@@ -141,6 +145,7 @@ from zakcode.session.say_inbox import (
     BusyLease,
     busy_elsewhere,
     busy_path,
+    busy_session_elsewhere,
     interrupt_path,
     read_say,
     request_interrupt,
@@ -156,6 +161,7 @@ from zakcode.session.store import (
     SessionNotFound,
     SessionStore,
     SessionVersionError,
+    TurnEnd,
 )
 from zakcode.tools.base import ToolRegistry
 from zakcode.tools.builtins.default_registry import default_registry
@@ -303,11 +309,16 @@ def _safe_upload_filename(filename: str) -> str:
     return name
 
 
+def _uploads_dir(workspace_root: Path, session_id: str) -> Path:
+    """Where a conversation's uploads are kept: ``uploads/<session>/`` in the workspace. The
+    FULL session id (not an 8-char prefix), so two sessions never share an upload dir."""
+    return (workspace_root.resolve() / "uploads" / session_id).resolve()
+
+
 def _unique_upload_path(workspace_root: Path, session: Session, filename: str) -> Path:
     """Allocate a non-clobbering upload path under ``uploads/<session>/``."""
     root = workspace_root.resolve()
-    # The FULL session id (not an 8-char prefix) so two sessions never share an upload dir.
-    upload_dir = (root / "uploads" / session.id).resolve()
+    upload_dir = _uploads_dir(workspace_root, session.id)
     try:
         upload_dir.relative_to(root)
     except ValueError as exc:  # pragma: no cover - defensive; path is internally derived
@@ -603,6 +614,10 @@ class SayInboxPrompter:
     answer within ``timeout`` denies — fail toward safe — so an unattended
     ask-mode deployment degrades to exactly the old behavior, just ``timeout``
     later.
+
+    ``waiting`` is told ``True`` as a prompt starts and ``False`` once it ends,
+    however it ends: the server's chat list marks the chat meanwhile, so a page
+    showing another chat can say that this one waits (ADR-0362).
     """
 
     def __init__(
@@ -610,6 +625,7 @@ class SayInboxPrompter:
         workspace_root: str | os.PathLike[str],
         *,
         publish: Callable[[Any], Any] | None = None,
+        waiting: Callable[[bool], None] | None = None,
         timeout: float = APPROVAL_TIMEOUT_SECONDS,
         poll: float = 0.3,
     ) -> None:
@@ -618,6 +634,7 @@ class SayInboxPrompter:
         self._inbox = say_path(workspace_root)
         self._interrupt = interrupt_path(workspace_root)
         self._publish = publish
+        self._waiting = waiting
         self._timeout = timeout
         self._poll = poll
 
@@ -628,6 +645,8 @@ class SayInboxPrompter:
         if self._publish is not None:
             with contextlib.suppress(Exception):  # observability must never break the turn
                 self._publish(WSActionRequired.from_request(request).model_dump(mode="json"))
+        if self._waiting is not None:
+            self._waiting(True)
         held: list[str] = []
         try:
             loop = asyncio.get_running_loop()
@@ -644,6 +663,8 @@ class SayInboxPrompter:
                 await asyncio.sleep(self._poll)
             return PermissionOutcome.DENY_ONCE  # timeout — fail toward safe
         finally:
+            if self._waiting is not None:
+                self._waiting(False)
             if held:
                 task = asyncio.get_running_loop().create_task(_requeue_held_says(self._inbox, held))
                 _REQUEUE_TASKS.add(task)
@@ -743,18 +764,21 @@ _CHAT_TITLE_CHARS = 80
 
 
 def _chat_title(session: Session, redact: Callable[[str], str]) -> str:
-    """A saved conversation's title in the chat list: its first ask on one line, redacted, cut
-    at a word (ADR-0319). Empty when nothing was asked in it.
+    """A saved conversation's title in the chat list: the name a person gave it (ADR-0358), else
+    its first ask, on one line, redacted, cut at a word (ADR-0319). Empty when it has no name
+    and nothing was asked in it.
 
     The first ask is the pinned ``task`` (ADR-0233), which a compaction does not move, else
     its first user message with text. A skill turn's ask is the command it was typed as, not
     the frame it runs under (ADR-0335). It is redacted before its lines are joined, so a
     credential written over several lines is still one to the redactor.
     """
-    text = session.task or next(
-        (m.text for m in session.messages if m.role == "user" and m.text.strip()), ""
-    )
-    text = typed_command(text) or text
+    text = session.title
+    if not text:
+        text = session.task or next(
+            (m.text for m in session.messages if m.role == "user" and m.text.strip()), ""
+        )
+        text = typed_command(text) or text
     line = " ".join(redact(text).split())
     if len(line) <= _CHAT_TITLE_CHARS:
         return line
@@ -905,11 +929,26 @@ def create_app(
     # naming the session sets it (ADR-0327). The say consumer's turns watch the workspace's
     # `.interrupt` file instead, as they always have.
     turn_stops: dict[str, asyncio.Event] = {}
+    # The agent each streamed turn runs on, by session: the say consumer's and POST /chat/stream's,
+    # whose every event reaches the watch bus as it is made. The transcript asks it what the turn
+    # holds in memory once the bus has dropped where the turn began (ADR-0363).
+    turn_agents: dict[str, AgentLike] = {}
     # The chats whose SessionStart hooks this server has run (ADR-0342). Every turn runs on an
     # agent of its own, and an agent's loop fires SessionStart before its first turn, so every
     # message counted as "a saved session is being resumed": the workspace's start-up hooks ran
     # again and what they said was added to the chat again. A chat's first turn here still fires.
     started_chats: set[str] = set()
+    # The chats whose turn waits on a permission answer from the say inbox (ADR-0362). The chat
+    # list marks them: the card is drawn only on the pages that show the chat it was asked in, so a
+    # page showing another chat says that this one waits. A chat runs one turn at a time, and a
+    # turn asks one permission at a time: only read-only calls run side by side, and none asks.
+    approvals_waiting: set[str] = set()
+
+    def _approval_waits(session_id: str, waiting: bool) -> None:
+        if waiting:
+            approvals_waiting.add(session_id)
+        else:
+            approvals_waiting.discard(session_id)
 
     # Held while a say is checked against the current conversation and queued, and while the
     # current conversation changes (ADR-0319). A say then lands either before the change, which
@@ -1113,6 +1152,7 @@ def create_app(
         (ADR-0319). Each is titled by its first ask (:func:`_chat_title`) and dated by its last
         save. One with nothing asked in it is left out unless it is the current one: a new chat
         nobody has written in yet is still the chat on screen. ``limit`` caps the list, 1 to 500.
+        A chat whose turn waits on a permission answer is marked (ADR-0362).
         """
         limit = max(1, min(limit, 500))
         current = _current_session_id()
@@ -1141,6 +1181,7 @@ def create_app(
                     updated_at=datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds"),
                     message_count=count,
                     current=session_id == current,
+                    awaiting_approval=session_id in approvals_waiting,
                 )
             )
         return chats
@@ -1170,7 +1211,8 @@ def create_app(
         response carries): the served page draws the saved messages older than the cut and lets
         the watch replay draw the rest, so a reopened page shows the whole conversation. The
         literal id ``current`` resolves to the workspace's current conversation (404 when there is
-        none), like ``/watch/current``.
+        none), like ``/watch/current``. A running turn the bus no longer holds the start of is read
+        from its loop instead, with what its model call has written so far (``partial``, ADR-0363).
         """
         if session_id == "current":
             resolved = _current_session_id()
@@ -1178,33 +1220,29 @@ def create_app(
                 raise HTTPException(status_code=404, detail="no current session")
             session_id = resolved
         session = _load_session_or_404(session_id)
-        spoken: list[TranscriptMessage] = []
-        for message in session.messages:
-            if message.role not in ("user", "assistant"):
-                continue
-            text = message.text
-            if not text.strip():
-                continue  # a tool-only or empty turn is not a spoken one
-            hook: str | None = None
-            if message.role == "user":
-                hook = said_by_session_start(text)  # a note from the workspace (ADR-0344)
-                text = typed_command(text) or text  # as typed, not the skill frame (ADR-0335)
-            at: float | None
+
+        def epoch(stamp: str) -> float | None:
             try:
-                created = datetime.fromisoformat(message.created_at)
-                at = (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
+                created = datetime.fromisoformat(stamp)
             except ValueError:
-                at = None
-            spoken.append(
-                TranscriptMessage(
-                    role=message.role,
-                    text=safe_projection.redact(text),
-                    at=at,
-                    hook=None if hook is None else safe_projection.redact(hook),
-                )
+                return None
+            return (created if created.tzinfo else created.replace(tzinfo=UTC)).timestamp()
+
+        def held_by_the_turn() -> tuple[list[Message], list[TurnEnd], str, int] | None:
+            # Run on the event loop, where the turn runs: its chat, what its model call has
+            # written and the bus's cursor, read in one step, so no part is in two or in none.
+            loop = getattr(turn_agents.get(session.id), "loop", None)
+            held_bus = event_bus_registry.get(session.id)
+            if loop is None or held_bus is None:
+                return None  # an agent with no loop to ask
+            chat = loop.session
+            return (
+                list(chat.messages),
+                list(chat.turn_ends),
+                loop.reply_so_far,
+                held_bus.latest_cursor,
             )
-        if limit is not None and limit >= 0:
-            spoken = spoken[-limit:] if limit else []
+
         # The cut between `messages` and the in-memory watch bus falls where the oldest turn the
         # bus holds whole begins, so no turn is drawn half from each (see SessionTranscript,
         # ADR-0325). The bus's name goes with it, read from the same bus object, so the page can
@@ -1214,6 +1252,8 @@ def create_app(
         running = session.id in inflight
         bus_from: float | None = None
         bus_since: int | None = None
+        partial: str | None = None
+        messages, turn_ends = session.messages, session.turn_ends
         if bus is not None:
             latest = bus.latest_cursor
             start = bus.oldest_where(
@@ -1223,18 +1263,78 @@ def create_app(
             )
             if start is not None:
                 bus_since, bus_from = start[0] - 1, start[1]
+            elif running and (held := anyio.from_thread.run_sync(held_by_the_turn)) is not None:
+                # The bus has dropped where the running turn began, and the reply in progress began
+                # before its oldest event. The turn's loop holds all of it: the chat with every
+                # reply the turn has finished, and what the call in progress has written. The page
+                # draws those, and the replay goes on after the cursor read with them (ADR-0363).
+                messages, turn_ends, written, bus_since = held
+                partial = safe_projection.redact(written) if written else None
             elif running:
                 bus_from = bus.oldest_at  # the call in progress is in the bus alone: replay it
             elif latest:
                 bus_since = latest  # the tail of an ended, saved turn: drawn from here alone
+
+        # A turn's end goes after the messages it followed, counted among the spoken ones; an end
+        # that names more messages than there are is not drawn (ADR-0361).
+        placed: dict[int, list[TurnEnd]] = {}
+        for kept in turn_ends:
+            placed.setdefault(kept.after, []).append(kept)
+        spoken: list[TranscriptMessage] = []
+        ends: list[TranscriptTurnEnd] = []
+
+        def ends_at(place: int) -> None:
+            for end in placed.get(place, ()):
+                ends.append(
+                    TranscriptTurnEnd(
+                        after=len(spoken),
+                        at=epoch(end.at),
+                        stop_reason=end.stop_reason,
+                        error=safe_projection.redact(end.error),
+                        degraded=end.degraded,
+                        open_steps=end.open_steps,
+                    )
+                )
+
+        for index, message in enumerate(messages):
+            ends_at(index)
+            if message.role not in ("user", "assistant"):
+                continue
+            text = message.text
+            if not text.strip():
+                continue  # a tool-only or empty turn is not a spoken one
+            hook: str | None = None
+            if message.role == "user":
+                hook = said_by_session_start(text)  # a note from the workspace (ADR-0344)
+                text = typed_command(text) or text  # as typed, not the skill frame (ADR-0335)
+            spoken.append(
+                TranscriptMessage(
+                    role=message.role,
+                    text=safe_projection.redact(text),
+                    at=epoch(message.created_at),
+                    hook=None if hook is None else safe_projection.redact(hook),
+                )
+            )
+        ends_at(len(messages))
+        if limit is not None and limit >= 0:
+            # An end at or before the first message kept belongs to a turn the limit left out.
+            dropped = len(spoken) - (min(limit, len(spoken)) if limit else 0)
+            spoken = spoken[-limit:] if limit else []
+            ends = [
+                end.model_copy(update={"after": end.after - dropped})
+                for end in ends
+                if end.after > dropped
+            ]
         return SessionTranscript(
             session_id=session.id,
             messages=spoken,
-            message_count=len(session.messages),
+            ends=ends,
+            message_count=len(messages),
             bus_from=bus_from,
             bus_since=bus_since,
             bus_epoch=bus.epoch if bus is not None else None,
             running=running,
+            partial=partial,
         )
 
     @app.post("/sessions/{session_id}/uploads", status_code=201)
@@ -1312,15 +1412,82 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return FileResponse(path, media_type=artifact.mime_type, filename=artifact.filename)
 
+    @app.put("/sessions/{session_id}/title")
+    async def rename_session(session_id: str, request: ChatNameRequest) -> SessionSummary:
+        """Name a saved conversation in the chat list (ADR-0358), and return it as the list shows
+        it. The name's whitespace is folded to single spaces, and an empty name gives the chat
+        back its first ask as its title. The chat keeps its place in the list: its file keeps its
+        time, since a new name is not a new message. 404 for an unknown id. 409 while a turn runs
+        on it, here or in another process on this workspace: the turn saves the conversation as
+        it holds it, which would drop the name. Async on purpose: no turn can start on the event
+        loop between the check and the save.
+        """
+        refusal = _turn_refusal(session_id, "rename it")
+        if refusal is not None:
+            raise HTTPException(status_code=409, detail=refusal)
+        session = _load_session_or_404(session_id)
+        session.title = " ".join(request.title.split())
+        path = resolved_store.save(session, keep_time=True)
+        chat_summaries.pop(session_id, None)  # its time is the same, so the cache would not see it
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = time.time()
+        return SessionSummary(
+            id=session.id,
+            title=_chat_title(session, safe_projection.redact),
+            updated_at=datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds"),
+            message_count=len(session.messages),
+            current=session.id == _current_session_id(),
+        )
+
     @app.delete("/sessions/{session_id}", status_code=204)
     async def delete_session(session_id: str) -> None:
-        # async, so the bus below is closed on the event loop its watchers wait on.
-        if not resolved_store.delete(session_id):
+        """Delete a saved conversation (ADR-0358). It leaves the chat list, and its document, its
+        transcript and its uploads go to the workspace's trash, where moving them back undoes the
+        deletion (:meth:`SessionStore.trash`). 404 for an unknown id. 409 while a turn runs on
+        it, here or in another process on this workspace: the turn would save it again. The
+        workspace's current chat is deleted only when the current chat could change
+        (:func:`_switch_refusal`, else 409): a new chat is made current first, and every page
+        watching the deleted one gets a ``session_rotated`` frame and follows. 503 when the
+        document cannot be moved, and then nothing is deleted. Async on purpose: no turn can
+        start on the event loop between the checks and the move, and the bus is closed on the
+        loop its watchers wait on.
+        """
+        refusal = _turn_refusal(session_id, "delete it")
+        if refusal is not None:
+            raise HTTPException(status_code=409, detail=refusal)
+        if not resolved_store.exists(session_id):
             raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+        if session_id == _current_session_id():
+            with current_lock:
+                refusal = _switch_refusal("delete it")
+                if refusal is not None:
+                    raise HTTPException(status_code=409, detail=refusal)
+                fresh = Session(
+                    cwd=str(resolved_settings.workspace_root),
+                    model=resolved_settings.default_model,
+                )
+                resolved_store.save(fresh)
+                try:
+                    _make_current(fresh, reason="this chat was deleted")
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=503, detail=f"could not change the current chat: {exc}"
+                    ) from exc
+        uploads = _uploads_dir(resolved_settings.workspace_root, session_id)
+        try:
+            trashed = resolved_store.trash(session_id, also={"uploads": uploads})
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not delete the chat: {exc}"
+            ) from exc
+        if trashed is None:
+            raise HTTPException(status_code=404, detail=f"no session {session_id!r}")
+        chat_summaries.pop(session_id, None)
         # Its bus goes with it: a page watching it is let go, and its reconnect hears the chat
-        # is gone. Not while a turn runs on it, which holds the bus to publish on (ADR-0327).
-        if session_id not in inflight:
-            event_bus_registry.discard(session_id)
+        # is gone. No turn runs on it (refused above), so none holds the bus (ADR-0327).
+        event_bus_registry.discard(session_id)
 
     # ── chat ───────────────────────────────────────────────────────────────────
 
@@ -1339,6 +1506,7 @@ def create_app(
     def _release_session(session_id: str) -> None:
         """Undo :func:`_claim_session` once its turn is over."""
         turn_stops.pop(session_id, None)
+        turn_agents.pop(session_id, None)
         inflight.discard(session_id)
 
     def _turn_agent(
@@ -1370,6 +1538,7 @@ def create_app(
         return SayInboxPrompter(
             resolved_settings.workspace_root,
             publish=event_bus_registry.get_or_create(session_id).publish,
+            waiting=lambda waiting: _approval_waits(session_id, waiting),
         )
 
     @app.post("/chat")
@@ -1494,6 +1663,7 @@ def create_app(
         except BaseException:
             _release_session(session.id)
             raise
+        turn_agents[session.id] = agent  # every event of its turn reaches the bus (ADR-0363)
 
         async def event_source() -> AsyncIterator[dict[str, str]]:
             from zakcode.events import AgentStatus
@@ -1817,26 +1987,41 @@ def create_app(
 
     event_bus_registry.in_use = _buses_in_use
 
-    def _switch_refusal() -> str | None:
+    def _switch_refusal(then: str = "switch") -> str | None:
         """Why the current conversation cannot change now, or None when it can (ADR-0319): a
         turn running here or in another process on this workspace, or a say or a suggestion
-        queued for the conversation on screen."""
+        queued for the conversation on screen. ``then`` names what to do once it can: deleting
+        the current chat changes it too (ADR-0358)."""
         workspace = resolved_settings.workspace_root
         if inflight:
             # The chat the turn runs in, not "this chat": the page asks from whichever chat it
             # shows, and the one it shows is often not the one running the turn. A say turn runs
             # in the active chat; a turn driven through POST /chat can run in any other.
             where = "the active chat" if _current_session_id() in inflight else "another chat"
-            return f"a turn is running in {where}; stop it or let it finish, then switch"
+            return f"a turn is running in {where}; stop it or let it finish, then {then}"
         if busy_elsewhere(busy_path(workspace)):
             # Another process's turn (a terminal on the workspace, say): not this chat's, so the
             # page's Stop is not the way to end it (ADR-0320).
             return (
-                "a turn is running in another session on this workspace; let it finish, then switch"
+                "a turn is running in another session on this workspace; "
+                f"let it finish, then {then}"
             )
         if say_pending(say_path(workspace)) or _nudge_pending():
             # A queued message runs in the active chat, whichever chat the asking page shows.
-            return "a message is queued for the active chat; let it run, then switch"
+            return f"a message is queued for the active chat; let it run, then {then}"
+        return None
+
+    def _turn_refusal(session_id: str, then: str) -> str | None:
+        """Why the saved conversation ``session_id`` cannot be renamed or deleted now, or None
+        (ADR-0358): a turn running on it, here or in another process on this workspace. That turn
+        holds the conversation in memory and saves it whole, which would undo either."""
+        if session_id in inflight:
+            return f"a turn is running in this chat; stop it or let it finish, then {then}"
+        if busy_session_elsewhere(busy_path(resolved_settings.workspace_root)) == session_id:
+            return (
+                "a turn is running in this chat in another session on this workspace; "
+                f"let it finish, then {then}"
+            )
         return None
 
     def _new_chat() -> Session:
@@ -1852,9 +2037,10 @@ def create_app(
         resolved_store.save(session)
         return session
 
-    def _make_current(session: Session) -> None:
+    def _make_current(session: Session, reason: str = "another chat was opened") -> None:
         """Point the ``.current-session`` marker at ``session`` and tell the pages watching the
-        conversation it replaces to follow, with a ``session_rotated`` frame (ADR-0319).
+        conversation it replaces to follow, with a ``session_rotated`` frame saying ``reason``
+        (ADR-0319).
 
         The marker is written beside itself and moved into place, so no reader finds it empty: a
         turn that read an empty marker would start a conversation of its own. Raises OSError
@@ -1878,9 +2064,7 @@ def create_app(
         bus = event_bus_registry.get(previous) if previous is not None else None
         if bus is not None:
             with contextlib.suppress(Exception):
-                bus.publish(
-                    WatchMarkerRequest(event="session_rotated", reason="another chat was opened")
-                )
+                bus.publish(WatchMarkerRequest(event="session_rotated", reason=reason))
         own = event_bus_registry.get(session.id)
         if own is not None:
             own.forget(
@@ -2875,6 +3059,7 @@ def create_app(
         take_interrupt(interrupt_fp)  # a signal predating this turn has nothing to stop
         try:
             agent = _turn_agent(session, None, _inbox_prompter(session.id))
+            turn_agents[session.id] = agent  # what a late page asks of the turn (ADR-0363)
             message: str
             if wakeup:
                 # A fired wake-up is the harness's own turn (ADR-0189): never a slash
@@ -2955,6 +3140,7 @@ def create_app(
             from zakcode.events import AgentDone
             from zakcode.usage import Usage
 
+            error = _turn_failure_error(exc, safe_projection.redact)
             with contextlib.suppress(Exception):
                 bus.publish(
                     AgentDone(
@@ -2962,9 +3148,11 @@ def create_app(
                         iterations=0,
                         usage=Usage(),
                         degraded=True,
-                        error=_turn_failure_error(exc, safe_projection.redact),
+                        error=error,
                     )
                 )
+            if agent is not None:  # saved below, so a page reopened later draws it too (ADR-0361)
+                agent.session.keep_turn_end("provider_error", error=error, degraded=True)
         finally:
             # First, before anything awaited: the turn is over, and a Stop has nothing to reach.
             if turn_stops.get(session.id) is stop:
@@ -2984,6 +3172,7 @@ def create_app(
                         restart_carry = (str(carried), str(boundary))
                         restart_pending.set()
                     await _release_turn_agent(agent, session.id)
+                turn_agents.pop(session.id, None)  # in the step `running` ends, so they agree
                 inflight.discard(session.id)
                 # Host-neutral ending: check SEEN and DONE after every turn.
                 if run_ending_until is not None:

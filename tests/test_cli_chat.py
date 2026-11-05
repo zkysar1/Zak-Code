@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import itertools
 import os
 import sys
 from collections.abc import AsyncIterator
@@ -1260,6 +1261,37 @@ def test_render_transcript_elides_and_counts_tools() -> None:
     assert "(+1000 chars)" in console2.export_text()
 
 
+def test_render_transcript_draws_how_a_turn_ended_after_the_messages_it_followed() -> None:
+    """ADR-0361: /resume and ``zakcode cli -s`` draw a saved turn that did not simply finish as
+    the footer it ended on, where the page draws it. An end is not a message: it goes out with
+    the message before it, and only the error's first line is drawn, as the live footer draws it."""
+    from datetime import datetime
+
+    from zakcode.cli import _render_transcript
+    from zakcode.messages import Message
+
+    sess = Session(id="feed0004", cwd=".", model="test-model")
+    sess.add_message(Message.user("question 0"))
+    sess.add_message(Message.assistant_text("answer 0"))
+    sess.keep_turn_end("max_iterations")  # its turn is left out below, so it is not drawn
+    sess.add_message(Message.user("question 1"))
+    sess.keep_turn_end("provider_error", error="HTTP 503 from the pod\nretry later", degraded=True)
+    sess.add_message(Message.user("question 2"))
+    sess.add_message(Message.assistant_text("answer 2"))
+    sess.keep_turn_end("completed")  # a turn that simply finished keeps none
+    console = Console(record=True, width=200, force_terminal=True, legacy_windows=False)
+    _render_transcript(console, sess, limit=3)
+    lines = [line.strip() for line in console.export_text().splitlines() if line.strip()]
+    assert any("replaying the last 3 of 5 messages" in line for line in lines)
+    said = [line for line in lines if "question" in line or "answer" in line or "error" in line]
+    assert len(said) == 4, lines
+    assert "question 1" in said[0] and "question 2" in said[2] and "answer 2" in said[3]
+    ended = datetime.fromisoformat(sess.turn_ends[1].at).astimezone().strftime("%H:%M")
+    assert said[1].endswith(ended), said[1]  # when it ended, on this machine's clock
+    assert "provider error" in said[1] and "HTTP 503 from the pod" in said[1]
+    assert not any("retry later" in line or "max iterations" in line for line in lines)
+
+
 # ── zakcode update: self-update from the recorded install source ──
 
 
@@ -1511,6 +1543,51 @@ def test_update_keeps_the_python_and_an_editable_install(tmp_path, monkeypatch) 
     )
     assert "--editable" in reinstall
     assert reinstall[-1].startswith("zakcode @ file://")  # no extras in this receipt
+
+
+def test_update_keeps_the_packages_added_with_with(tmp_path, monkeypatch) -> None:
+    """uv writes the receipt from the command that installs, so a reinstall naming zakcode alone
+    dropped every package added with `uv tool install --with` (ADR-0359). Each comes back in the
+    form uv records it, each form measured with uv 0.9.6: a name with its extras, version and
+    marker, a URL, a git repository at the ref it named, either with a subdirectory, a local
+    folder, a local wheel, an editable folder."""
+    local, editable = (tmp_path / "localpkg").as_posix(), (tmp_path / "tinypkg").as_posix()
+    wheel = (tmp_path / "wheelfile-1.0-py3-none-any.whl").as_posix()
+    receipt = (
+        "[tool]\nrequirements = [\n"
+        '  { name = "zakcode", extras = ["server"] },\n'
+        '  { name = "six", specifier = ">=1.10,<2" },\n'
+        '  { name = "art", extras = ["extra"], marker = "python_full_version >= \'3.8\'",'
+        ' specifier = ">=6" },\n'
+        '  { name = "wheelpkg", url = "https://example.test/wheelpkg-1.0-py3-none-any.whl" },\n'
+        '  { name = "subu", url = "https://example.test/mono.zip", subdirectory = "pkgs/subu" },\n'
+        '  { name = "attrs", git = "https://github.com/python-attrs/attrs?rev=25.3.0" },\n'
+        '  { name = "sub", git = "https://example.test/mono.git?subdirectory=pkgs%2Fsub&rev=dev"'
+        " },\n"
+        f'  {{ name = "localpkg", directory = "{local}" }},\n'
+        f'  {{ name = "wheelfile", path = "{wheel}" }},\n'
+        f'  {{ name = "tinypkg", editable = "{editable}" }},\n'
+        "]\n"
+    )
+    h = _update_harness(tmp_path, monkeypatch, receipt)
+    result = runner.invoke(app, ["update"])
+    assert result.exit_code == 0, result.stdout
+    reinstall = h.calls[1][0]
+    added = [
+        (flag, value) for flag, value in itertools.pairwise(reinstall) if flag.startswith("--with")
+    ]
+    assert added == [
+        ("--with", "six>=1.10,<2"),
+        ("--with", "art[extra]>=6 ; python_full_version >= '3.8'"),
+        ("--with", "wheelpkg @ https://example.test/wheelpkg-1.0-py3-none-any.whl"),
+        ("--with", "subu @ https://example.test/mono.zip#subdirectory=pkgs/subu"),
+        ("--with", "attrs @ git+https://github.com/python-attrs/attrs@25.3.0"),
+        ("--with", "sub @ git+https://example.test/mono.git@dev#subdirectory=pkgs/sub"),
+        ("--with", f"localpkg @ {Path(local).as_uri()}"),
+        ("--with", f"wheelfile @ {Path(wheel).as_uri()}"),
+        ("--with-editable", editable),
+    ]
+    assert reinstall[-1].startswith("zakcode[server] @ file://")  # zakcode itself, as before
 
 
 def _head(clone) -> str:

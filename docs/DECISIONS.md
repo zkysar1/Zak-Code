@@ -19793,6 +19793,11 @@ errors its stream before another frame is read, so a test against a real fetch c
 chunk already read when the abort lands, whose rows and cursor would otherwise land in the next chat. `uv run poe check`
 is green: 6,281 passed, 22 skipped.
 
+**Amended on 2026-10-21 (commit c6aabeb):** the first stated choice is reversed. A plain `zakcode webapp` opens a new
+chat at launch, and `--no-new-session` continues the workspace's current chat, as a restart must: the systemd unit
+starts with it (ADR-0332), a self-update passes it (ADR-0333), and `docs/DEPLOY.md` asks for it in every unit, script
+and container command a deployment's users rely on.
+
 ## ADR-0320: a served workspace's say slot and interrupt file are the server's, so a terminal on the same workspace leaves the page's message and its Stop alone
 
 **Status:** Accepted (2026-10-16)
@@ -22365,7 +22370,556 @@ the green runs, the four checks took 33.62 s to 41.20 s.
 Not verified: macOS (CI has no macOS cell), a tmux older than 3.6, and a person's own terminal
 attached to the cockpit. The test never attaches; it reads what tmux holds for each pane.
 
-## ADR-0357: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
+## ADR-0357: the cockpit names its window and panes by tmux id, and four gaps in its tests close
+
+Status: accepted. 2026-11-03. Builds on ADR-0356 (CI runs the cockpit in a real tmux) and ADR-0342,
+which records that each message of a served chat runs on an agent of its own.
+
+Context. A review of `tests/test_cockpit_tmux_e2e.py` (ADR-0356) and
+`tests/test_served_hook_session_id.py` found four gaps.
+1. The cockpit addressed its window as `<session>:0` and its panes as `<session>:0.0` and `:0.1`,
+   on the person's own tmux server and tmux.conf. A tmux.conf that counts from 1
+   (`set -g base-index 1`, `setw -g pane-base-index 1`) leaves those numbers naming the wrong
+   window or pane, or none: with both set, `zakcode cockpit` stops with a `CalledProcessError` at
+   the first of them, `set-option -w -t <session>:0`. The e2e tests could not see it, because they
+   run tmux with a HOME of their own, which holds no tmux.conf.
+2. The e2e teardown ran `tmux kill-server` with the caller's environment. tmux takes its server
+   from `$TMUX` before it reads `TMUX_TMPDIR`, so a run from inside a tmux pane, a cockpit's
+   included, ended that pane's server and every session on it, pytest with them, and left the
+   test's own server running. ADR-0356's "killed at the end" held only where `$TMUX` is unset, as
+   on CI.
+3. The served-hook tests hand `create_app()` a factory of their own, so `_default_agent_factory`,
+   the one `zakcode webapp` runs, was never under test. Changed to give each turn's agent a session
+   of its own, the fault those tests exist for, it left all three green.
+4. Nothing acted on a red `cockpit-e2e`. It was not a required check on `main`, and the failure
+   alert did not wait on it; ADR-0356 deferred the alert until the job had a record.
+
+Decision.
+- The cockpit takes the ids tmux prints when it creates the window and the box
+  (`new-session -P -F '#{window_id} #{pane_id}'`) and the chat pane
+  (`split-window -P -F '#{pane_id}'`), and targets those ids from then on. The panes are made in
+  the same order as before, and the session keeps its name, so a re-run joins an open cockpit as
+  it did.
+- The e2e teardown drops `TMUX` and `TMUX_PANE`, as `_env()` already did for the cockpit. The e2e
+  helper finds the screen and the box by their place in the window, not by number.
+- `alert-on-failure` waits on `cockpit-e2e`; `publish-sidecar` still does not. `cockpit-e2e` is a
+  required status check on `main`, set in branch protection, outside the repository. Before this
+  change it ran on 3 pushes to `main` and 7 pull-request runs: 9 passed, 1 was cancelled, none
+  failed, and each passing run took 40 s to 71 s.
+
+New tests.
+- e2e: the cockpit opens under a tmux.conf that numbers windows and panes from 1, the chat starts,
+  and the box is window 1's second pane with the cursor in it. That last check also shows the
+  tmux.conf was read, so the test cannot pass by tmux ignoring it.
+- e2e: the teardown, run with `$TMUX` naming a second tmux server, leaves that server running and
+  ends the test's own.
+- unit, with tmux faked, on every platform: every target is the session's name or an id tmux
+  printed; the window options go to the window id, the chat splits off the box, and the titles go
+  to the screen and then the box.
+- served hook: two messages through the web app's own factory, with the hook in the workspace's
+  `.claude/settings.json` and only the model scripted, hand both turns' hooks the chat's one
+  session id.
+
+The proof. The PR's first commit held the new tests and the CI change without the fixes. On it,
+`cockpit-e2e` ran with tmux 3.6 and reported 2 failed, 4 passed in 40.23 s: the cockpit under the
+counted-from-1 tmux.conf stopped with `tmux set-option -w -t e2e-ed1a8b:0 pane-border-status top`
+returning 1, and the teardown test failed with "the teardown ended the caller's tmux server". The
+four checks of ADR-0356 passed. Locally, the served-hook test failed when the factory gave each
+turn's agent a session of its own, and again when hooks were handed the agent's own id instead of
+the session's; with each change restored it passed. The unit test failed with the focus, or a
+window option, pointed back at a number, and passed with each restored.
+
+Not verified: a tmux older than 3.6 (CI runs 3.6), macOS, and a person's own terminal attached to
+the cockpit.
+
+## ADR-0358: a chat in the web page's list is renamed or deleted, and a deleted chat goes to the trash
+
+Status: accepted. 2026-11-04. Builds on ADR-0319 (the chat list), ADR-0325 (a page follows the chat a
+switch makes current), ADR-0327 (a deleted chat's bus is let go) and ADR-0352 (a cockpit pane shows
+the served chat).
+
+Context. People using the web app asked to manage their own chats: rename one to keep the list
+organised, and delete the ones they no longer need. The page offered neither. The server held a
+`DELETE /sessions/{id}` that unlinked the chat's document and did nothing else.
+1. A turn running on the chat holds the conversation in memory and saves it whole as it ends, so a
+   chat deleted during a turn came back a moment later, after a delete that answered 204.
+2. Deleting the current chat left `.current-session` naming a chat that was gone, and the pages
+   showing it were not told.
+3. The chat's transcript projection (ADR-0061) and its uploads stayed on disk.
+4. Nothing could be undone.
+Three smaller things went with it. A new chat read "New chat" in the list until its first answer
+ended: the server titles a chat by its first ask once the turn has saved it, and the page asked for
+the list again only when the turn ended. An approval said
+`'DANGER_FULL_ACCESS' requires confirmation in 'ask' mode`, a tier's name the person at the page had
+never been told the meaning of. And the page named no icon, so the browser asked for `/favicon.ico`
+on every load and its 404 sat in the console.
+
+Decision.
+- `DELETE /sessions/{id}` moves the chat to the trash beside the store: `trash/<id>/`, which is
+  `.zakcode/trash/` on a served workspace, or `<id>-2` and on when that folder is taken. The
+  document, the transcript and the chat's uploads move there, and `deleted.json` names where each
+  came from and what was left behind. Moving them back undoes the delete. The document moves first
+  and alone decides the outcome: one that cannot be moved answers 503 and leaves the chat where it
+  was. A transcript or uploads folder that cannot be moved stays, and `deleted.json` names it under
+  `left`. The trash ignores itself in git, is private to the user where the platform allows, and the
+  server never empties it.
+- A delete answers 409 while a turn runs on the chat, whether this process runs it or, by the
+  workspace's busy marker, another (a terminal `zakcode` on the same workspace). The current chat is
+  deleted only when the current chat could change: the refusals of `PUT /sessions/current` apply (a
+  turn running, a say or a suggestion queued), ending "then delete it". Otherwise a new chat is made
+  current first, as New chat makes one, and the pages and cockpit panes watching the deleted chat
+  get `session_rotated` with the reason "this chat was deleted" and follow. So the marker never
+  names a chat that is gone; a 503 after that step leaves the new chat current and the old one
+  listed. The deleted chat's bus is let go, as ADR-0327 lets it go.
+- `PUT /sessions/{id}/title` names a chat: at most 200 characters (422 above), whitespace folded to
+  single spaces, and an empty name gives the chat back its first ask. The name is saved in the
+  chat's document (`Session.title`, which a build older than this one drops when it next saves that
+  chat) without changing the file's time: a name is not a message, so the chat keeps its place in
+  the list. 409 while a turn runs on the chat, which would save the chat as it holds it and drop
+  the name; 404 for an unknown chat. The list shows the name where it showed the first ask, cut at
+  a word at 80 characters as the ask is.
+- The page. Each chat row ends in ⋯, which opens Rename, Delete and Cancel in the row. Rename puts
+  a name box in the row: Enter or Save names the chat, Escape or Cancel leaves it as it was. Delete
+  asks in the row, "Delete “name”?", and only the second Delete sends the request. No browser
+  dialog is used: `confirm()` and `prompt()` stop the whole page, and a frame that embeds the page
+  can turn them off. While a row is open the list is not drawn again, so a turn that ends meanwhile
+  does not take what is typed; it is drawn once the row closes. A refusal is said on the status
+  line, and the row stays open with what was typed. A deleted chat that was on screen gives way to
+  the active chat.
+- A new chat is titled in the list from its first `user_message` frame, as the ask is drawn. The
+  server's title replaces it when the turn ends, as before.
+- An approval says what the tool can do: "This needs your OK: it can run commands and reach beyond
+  the workspace (permission mode: ask)." for a command or MCP tool, "it changes files in the
+  workspace" for a write. A refusal's wording and the network gate's are unchanged.
+- The page names an empty icon (`<link rel="icon" href="data:,">`). The browser stops asking for
+  `/favicon.ico`, and a page that a product embeds under its own name shows no brand of ours.
+
+The terminal. The inline REPL's `/resume` lists the user store (`~/.zakcode/sessions`), not a
+served workspace's, by id and age. It shows no names and has no rename or delete; a chat renamed or
+deleted in the web app is in the workspace's store, which `/resume` does not list. The cockpit's pane
+shows the served chat (ADR-0352) and follows the rotation that deleting the active chat sends,
+saying "the web app moved to another chat — this chat was deleted"; the say box then feeds the new
+current chat. The pane draws no chat names.
+
+A gateway that forwards a member's delete to a served sidecar, as Vinheim's does, already answers a
+409 as a conversation it may not close ("protected"), and its words to the member say a
+conversation is closed, never that it is gone for good. The trash changes nothing it promises.
+
+Considered and not done.
+- Rename and delete in the terminal, and names in `/resume`. The REPL lists another store, so the
+  web app's names would not reach it; that is a decision of its own.
+- Undo in the page. The trash holds what is needed and `deleted.json` says where it goes back, but
+  no route restores it.
+- Emptying the trash. A deleted chat is kept until someone removes it: a cap or an age would make a
+  delete permanent with no person deciding it.
+- A delete that waits for the running turn to end. The refusal says why and leaves the choice to
+  the person, who can Stop the turn.
+
+New tests.
+- Server, `tests/test_webapp_chat_manage.py`: a deleted chat's document, transcript and uploads land
+  in the trash with `deleted.json`; a second delete and an unknown chat answer 404; deleting the
+  current chat makes a new one current, sends "this chat was deleted" on the old chat's bus and lets
+  that bus go; the current chat is not deleted while a say is queued; a turn running on a chat
+  refuses its delete and its name while another chat is renamed and deleted; another process's
+  busy marker refuses only its own chat; a name keeps the chat's place and date and outlives a
+  restart and a later turn; an empty name gives back the first ask; 201 characters answer 422, and
+  the list cuts a long name at a word; an unknown chat cannot be named.
+- Store, `tests/test_session_trash.py`: a missing chat is not trashed; a chat deleted, put back as
+  `deleted.json` says and deleted again gets `<id>-2`; a document that cannot be moved leaves
+  everything in place; a transcript that cannot be moved stays and is named; `keep_time` keeps the
+  file's time. `tests/test_server_session_store_location.py`: the store names the transcript path
+  the loop writes.
+- Page, `tests/test_webclient_chat_manage.py`, the page's own script under node: a chat is renamed
+  from its row; Escape sends nothing; a refused name says why and keeps the box; the list holds
+  still while a name is typed; Delete sends nothing until it is answered in the row; Cancel deletes
+  nothing; a refused delete says why; deleting the chat on screen shows the active chat; deleting
+  the active chat shows the new one; a new chat is titled as its first message arrives.
+- `tests/test_permissions.py`: the approval's words for a command tool and for a write.
+- Changed: `test_a_running_turns_bus_is_let_go_neither_by_a_delete_nor_by_a_sweep` expected 204 for
+  a delete while a turn ran on the chat. It now expects 409, and the chat still saved once the turn
+  ends. `test_client_is_self_contained` refused any `<link>` in the page; it now admits exactly the
+  empty `data:` icon, which fetches nothing, so the page still works offline.
+
+The proof. Sixteen lines the new tests guard were each broken in turn, with the one test that
+guards it run three times: green on the real code, red with the line broken, green again with the
+line restored byte for byte. The lines: the delete's and the rename's refusal while a turn runs in
+this process, and the refusal for a turn in another; the new current chat a delete makes; the
+rename's save that keeps the file's time, and the store's `keep_time`; the uploads and the
+transcript moving with the chat; the name reaching the document; on the page, the first Delete
+only asking, Enter naming the chat, the list held while a row is open, a refused name keeping its
+box, a deleted chat on screen giving way to the active one, and a new chat's title from its first
+message; and the approval's words. The full suite ran once before the two tests above were
+changed: 6,813 passed, and those two failed, as the change meant them to; both pass as changed.
+
+Not verified: a real browser (the page tests run the page's own script on a scripted DOM under
+node), and a delete made through a gateway end to end.
+
+## ADR-0359: `zakcode update` keeps the packages added with `uv tool install --with`
+
+Status: accepted. 2026-11-04. Closes what ADR-0340 left open. Builds on ADR-0291 (the update
+reinstalls with uv and carries forward what a bare reinstall drops).
+
+Context. uv writes a tool's receipt (`uv-receipt.toml`) from the command that installs it: zakcode's
+requirement, then each package added with `--with`. `zakcode update` reinstalls with
+`uv tool install --force --reinstall` naming zakcode, its extras and nothing else, so uv wrote a
+receipt without the added packages and removed them. An install made with
+`uv tool install --with six zakcode` lost `six` at its next update, and nothing said so.
+
+Decision. The reinstall hands each package the receipt records beside zakcode back to uv, in the
+form uv recorded it:
+- a package from an index as `--with "name[extras]specifier ; marker"`;
+- a URL as `--with "name @ url"`, with `#subdirectory=` when uv recorded a `subdirectory` beside it;
+- a git source, recorded as `https://host/repo?subdirectory=<dir>&rev=<ref>`, as
+  `--with "name @ git+https://host/repo@<ref>#subdirectory=<dir>"`. uv records the ref as it was
+  typed, whatever it names, and not the commit it resolved to, so an update follows a branch as
+  the install did;
+- a local folder (`directory`) or file (`path`) as `--with "name @ file:///…"`;
+- an editable folder as `--with-editable <folder>`.
+The lock's constraints (ADR-0291) bind these packages as they bind every other. A package the new
+build's lock cannot satisfy fails the reinstall, and the update with it, as any other conflict
+does; on Windows the second process then puts the old install back (ADR-0291).
+
+Measured, with uv 0.9.6 on Windows. A receipt holding each form above was read back through the
+new code and installed again with uv, and the receipt uv then wrote held the same requirements,
+compared whole: a package from an index with extras, a version and a marker; a wheel URL; a source
+archive URL with a subdirectory; a git repository at a ref; a git repository with a subdirectory at
+a branch; a local folder; a local wheel; an editable folder. uv 0.9.6, 0.11.33 and 0.12.24 each
+read a `--with` value whole when it holds a comma (`six>=1.10,<2`, `idna[all,test]==3.10`) or a
+space (a marker), so the split at a space that ADR-0301 measured for a `--constraints` path does
+not reach `--with`.
+
+New tests.
+- `tests/test_cli_chat.py::test_update_keeps_the_packages_added_with_with`: a receipt holding each
+  measured form gives the reinstall each `--with` and `--with-editable` in uv's form, and zakcode's
+  own spec as before. Each of ten changes to the new code, one per form, turned this test red, and
+  the restored code passed it again: no `--with` at all; the git ref, a URL's subdirectory, a git
+  subdirectory, the extras, the marker or a local folder dropped; an editable folder handed over as
+  a plain `--with`; a wheel's `path` ignored; zakcode's own entry not skipped.
+- `tests/test_update_e2e.py` (CI's `update-e2e` job, on Windows and Ubuntu): the install a user has
+  now carries `--with pyjokes>=0.6`, a package zakcode does not depend on; after the update the
+  receipt still records it, and it imports.
+
+Not verified.
+- The end-to-end test was not seen to pass on a developer's Windows machine. Run there, it stopped
+  before the update it checks: the test runner had loaded a file that uv's cache shared with the
+  install the update had to delete, the case ADR-0360 is about. CI runs it.
+- `uv tool install --with-requirements` was not tried. The requirements it reads are expected in
+  the receipt in the forms above.
+- A receipt's `constraints` and `overrides` are still not carried, as before this change.
+- Receipts written by a uv other than 0.9.6 were not read; their shape is taken to be the same.
+
+## ADR-0360: an old install the update cannot delete is moved aside, and the update deletes at any depth
+
+Status: accepted. 2026-11-04. Builds on ADR-0291 (the second process that replaces the install on
+Windows).
+
+Context. On Windows the update moves the install aside, reinstalls, starts the new one, and then
+deletes the old one. When that delete failed it left `<env>.update-backup`, and every update after
+it refused to go on until a person deleted the folder: "left by an earlier update, cannot be
+deleted ... A program is probably still running from it". Two causes were measured, and neither
+needs a program running from the old install:
+- uv links the files it installs from its cache, so two installs of one package share one file,
+  and Windows 10 will not delete a file a program has loaded through any of its links. A DLL
+  loaded by one process through one link could not be deleted through another (WinError 5); the
+  folder holding that other link could still be renamed; once the process exited, the delete went
+  through. CI's runner, on Windows Server 2025, deleted the other link with the DLL still loaded.
+  In the end-to-end test on a developer's machine the holder was the test runner: it had
+  loaded fastuuid's `.pyd` from its own environment, a link to the same cache file, and no program
+  ran from the test's install (the modules of every process, listed at the moment of the refusal).
+- uv writes paths longer than 260 characters, and with long paths switched off, as Windows ships,
+  such a path cannot be deleted by its usual name: WinError 3, "The system cannot find the path
+  specified". A real install held a litellm file 244 characters deep: 258 once renamed to its
+  backup, two short of the limit, and 266 once moved aside. In the test's deeper folder neither the
+  backup nor the folder moved aside could be deleted, and both went at once in the extended-length
+  form.
+The message blamed "a program still running from it", which was wrong in both cases.
+
+Decision.
+- A tree is deleted in its extended-length form on Windows (`\\?\` before the absolute path,
+  `\\?\UNC\` for a share), so depth never stops a delete: the leftover, the old install at the
+  end, and what a failed reinstall made.
+- A leftover the update cannot delete is renamed to the first free `<env>.update-backup.stale-<n>`
+  beside it, and the update goes on. Only one that can be neither deleted nor renamed stops the
+  update, with nothing moved, as before.
+- Each update first deletes the folders an earlier one moved aside, skipping any still held. Only
+  a name the update gives, `.stale-` and a number, is swept: a folder merely named alike is left.
+  They are swept before the leftover is handled, so a folder moved aside in this run is not tried
+  again at once.
+- The messages say what is known: Windows keeps any file a program has loaded, and uv links the
+  files it installs from its cache, so a program running from another install that shares them
+  holds them too.
+Not chosen: reinstalling with `uv --link-mode copy`. Copying every file costs time and disk at
+every update, the first install a person makes still links, a program running from the old install
+still holds it, and moving aside makes the condition harmless whatever holds the file.
+
+The update that installs this change is still carried out by the code it replaces (the update
+copies the running install's `swap_install.py`), so a leftover that stops it stops it once more;
+every update after it goes on.
+
+New tests.
+- `tests/test_update_swap.py`: a leftover that cannot be deleted is moved aside and the update
+  completes; one that can be neither deleted nor moved stops it with nothing touched and nothing
+  after it run; a folder goes to the first free name; a folder moved aside earlier goes once free,
+  one still held stays, and a folder merely named alike and one of another tool beside them are
+  left; on Windows the delete is handed each path in its extended-length form, a share's as
+  `\\?\UNC\` and one already in that form as it is. On Windows, for real: a DLL loaded through one
+  hard link stops the delete through another and not the rename where Windows refuses that
+  delete, and where it does not the delete simply works (a third link, deleted first, tells which
+  case a machine is: Windows 10 here refuses, CI's runner does not); a tree deeper than 260
+  characters is deleted.
+- `tests/test_update_e2e.py` (CI's `update-e2e`): the test has a uv cache of its own, since with the
+  machine's cache the runner itself held files the update had to delete. Step 4 keeps a program
+  running from the leftover of step 3: the update moves it aside, goes on, fails the reinstall and
+  puts the old install back, and the last update deletes the folder moved aside.
+Each of eleven changes to the new code turned these tests red, and the restored code passed them
+again: no extended-length form for a drive path (the real tree deeper than 260 characters then
+could not be deleted, WinError 3), a share's path given the drive's form, the form doubled on a
+path already in it; a leftover not moved aside; the update going on after a leftover that could be
+neither deleted nor moved; the sweep off, run after the leftover instead of before it, or taking a
+folder merely named alike; a taken name not skipped; either message not saying why the folder was
+held. The end-to-end test, with ADR-0359's `--with` package in it, passed on a developer's
+Windows machine (9 minutes): the run ADR-0359 could not make there.
+
+Not verified.
+- A machine with long paths switched on, where the extended-length form is not needed.
+- A holder other than a loaded file, such as a program working in a folder inside the install.
+- Why CI's runner lets the delete through another link go and Windows 10 here does not: its
+  Windows (Server 2025) and its drive (D:, against C: here) were not told apart, and Python was
+  3.11 on both. Windows 11 was not tried. The update goes on either way.
+
+## ADR-0361: how a turn ended is kept with the chat, so a page or pane opened after a restart draws it
+
+Status: accepted. 2026-11-04. Builds on ADR-0286 (a reopened page draws the saved conversation,
+then lets the watch replay draw the rest), ADR-0288 (the bus stamps events with the clock a saved
+message is stamped with), ADR-0115 (the footer counts what was left open) and ADR-0352 (a cockpit
+pane shows the served chat).
+
+Context. The web page draws how each turn ended as a row of its own, after the turn's words:
+"provider error — …", "stopped early — max iterations", "interrupted", "done — recovered", "done —
+2 plan step(s) left open". The row came from the turn's `done` frame on the watch bus, which lives
+in memory. A page reopened after the server restarted, or after the bus no longer held the turn,
+drew the turn's words from the saved chat (ADR-0286) and not how it ended, so a turn the provider
+failed read as if the assistant had simply said nothing more. The terminal had the same gap twice:
+a cockpit pane joining a served chat drew its saved messages without their ends, and
+`zakcode -s <id>` and `/resume` replayed the tail with no ends at all.
+
+Decision.
+- The chat keeps how each turn that did not simply finish ended (`Session.turn_ends`): the stop
+  reason, the first 2000 characters of the error, whether the turn degraded, the plan steps it left
+  open, the time, and how many messages came before it. A plain "done" is not kept; "done —
+  recovered" and "done — N plan step(s) left open" are. The last 200 are kept. A document an older
+  build saved loads with none, and an older build drops the field when it next saves the chat:
+  those turns are drawn without their end, as before.
+- The loop keeps each end where it publishes it, for a buffered turn and a streamed one alike, and
+  keeps "interrupted" for a turn stopped part way. The say consumer keeps the end it publishes for
+  a turn that raised past the loop, in the words the page drew live.
+- A compaction moves each end with the messages it followed. A summary takes the place of the
+  turns it tells, so an end placed among them goes with them; an elision keeps every message, and
+  every end stays where it was.
+- `GET /sessions/{id}/transcript` hands over the ends (`ends`), each placed among the spoken
+  messages it hands over: a tool result between two lines is not drawn, so an end after it goes
+  after the line before it. Its error is redacted as the messages are. With `limit`, the ends of
+  the messages left out are left out. An end placed past the messages the chat has is not handed
+  over.
+- The page draws each saved end after the messages it followed, as the live row is drawn, with its
+  time. When the replay starts with a turn's own line, the saved messages stop before that line,
+  and an end that turn left is the replay's to draw; it is told from the earlier ones by its stamp.
+
+The terminal. The inline REPL draws a turn's end as the footer it ends on, as before; its words now
+come from one function (`stop_label`), which the replays share. `zakcode -s <id>` and `/resume`
+draw each end as that footer, after the messages it followed, and the count of messages replayed
+does not count ends. A cockpit pane joining a served chat draws the saved ends with the saved
+messages and leaves the rest to the bus, so each end is drawn once.
+
+Not chosen: keeping the watch bus on disk. A reopened page needs one row per turn, not every frame,
+and a saved bus would grow with every token streamed.
+
+New tests.
+- `tests/test_turn_ends.py` (12): what the chat keeps and how much of it; that it is saved, and an
+  older document loads; both compactions; where the loop keeps the end of a failed buffered turn,
+  a failed streamed turn and a stopped one; the loop's compaction; the route's placing, redaction
+  and `limit`; an end past the messages; the say consumer's end.
+- `tests/test_webclient_reload_history.py` (+4), the page's own script under node against a live
+  server: a failed turn's end drawn after a restart, in order with the turns after it; drawn from
+  the bus while the bus holds it; drawn once when the bus holds only the turns after it; and the
+  end of a turn that failed before its line was saved.
+- `tests/test_cli_chat.py` (+1): the replay draws an end after the messages it followed, with the
+  end's own time, and an end left out with its messages is not drawn.
+- `tests/test_served_mirror.py` (+2): what a joining pane takes from the save and leaves to the bus;
+  a live pane and a restarted pane each draw a failed turn's end once.
+- Mutations: 38 of the new code, and each turned a named test red: 9 in what the chat keeps and
+  how a compaction moves it, 6 in the loop, 8 in the route and the say consumer, 6 in the page,
+  5 in the terminal's replay and 4 in the cockpit pane.
+
+Not verified.
+- A browser. The page's script ran under node against a live server, as ADR-0286's tests run it.
+- A real provider failing; the tests' providers raise.
+
+## ADR-0362: a page showing another chat keeps its chat list current, and says when a chat waits on a permission
+
+Status: accepted. 2026-11-04. Builds on ADR-0319 (the chat list, and viewing a chat that is not
+the active one), ADR-0325 (the page draws a chat it opens or comes back to, once) and ADR-0339 (a hidden page lets
+go of its watch).
+
+Context. A page watches only the chat on screen. When another page, or the terminal, made another
+chat active, a page showing a third chat heard nothing: its list kept the "active" badge on the
+old chat until the page opened a chat itself. A send from it was refused once and the page then
+followed the active chat, so nothing went to the wrong chat, but the badge and the banner were
+wrong until then. And a turn's permission card is published on its own chat's bus, so only the
+pages showing that chat drew it. A page showing any other chat never knew the turn waited, and the
+turn waited out the server's clock (`APPROVAL_TIMEOUT_SECONDS`) and was denied.
+
+Decision.
+- The page asks for its chat list again when it is shown again, when its window is focused, and
+  every 10 seconds while it is shown. Each is one request answered from what the server holds; no
+  connection is held open, since a browser keeps six to a server (ADR-0339). A hidden page asks
+  for nothing on the timer.
+- A list that comes back as it was is not drawn again: drawn again under the pointer or the
+  keyboard, the list loses the row being clicked or the focus. A changed list is drawn, and so is
+  the list when the chat on screen changed, since its row is marked.
+- The list moves the chat the page takes as active only while the chat on screen is another one.
+  On the active chat a move is told by that chat's own bus (`session_rotated`), and the page
+  follows it from what it knew before the move (ADR-0319). The list asked for as a page is shown
+  again can answer before the resumed watch replays that frame. When the list moved the active
+  chat first, the frame found a page already parked on another chat, and a tab brought back stayed
+  where it was instead of following. The browser run below found it. The badge moves with the list
+  all the same.
+- The server keeps which chats' turns wait on a permission answer from the say inbox:
+  `SayInboxPrompter` is told as its prompt starts and once it ends, however it ends, and
+  `GET /sessions/recent` marks those chats (`awaiting_approval`). A chat runs one turn at a time,
+  and a turn asks one permission at a time (only read-only calls run side by side, and none of them
+  asks), so the server keeps a set of chats, not a count.
+- A page showing another chat than the one that waits says "The active chat is waiting for your
+  permission.", or names the chat when it is not the active one, and Open it opens that chat,
+  whose bus draws the card. The note is never shown on the chat that waits, not even while the list
+  cannot load, and it goes once the list no longer marks the chat.
+
+The terminal. It has no chat list. A cockpit pane follows the web app's current chat
+(`session_rotated`) and draws the permission it waits on (`action_required`), and the inline REPL
+asks in place. Nothing changes there.
+
+Not chosen: a stream of chat-list changes to every page. It would hold one more connection per
+page, of the six a browser keeps to a server.
+
+New tests.
+- `tests/test_webclient_switching.py` (+7, 10 cases), the page's own script under node: a page on
+  another chat moves the active badge on the timer, on focus and when shown again, and stays on its
+  chat; a background tab asks for nothing until shown; a page on the active chat follows a move
+  its list hears of before its resumed watch replays it; a list read again unchanged is not drawn
+  again, and is drawn when it or the chat on screen changed; the note names the chat that waits
+  (the active one or another) and Open it lands on the card; no note on the chat that waits, even
+  while the list cannot load; the note goes when the mark does.
+- `tests/test_server_say_approvals.py` (+2, 5 cases): the prompt says it waits until it ends,
+  allowed, denied, interrupted or timed out; `GET /sessions/recent` marks the chat while its turn
+  waits and not after the answer.
+- The fake DOM the page tests share gives the page a `window` and holds its repeating timer until
+  a test fires it; the reload tests' own poll keeps the real timer.
+- Mutations: 20 of the new code, and each turned a named test red: 14 in the page (when it asks
+  for the list, when it draws it, which chat it takes as active, and the note) and 6 in the server
+  (the prompt saying it waits and that it ended, and the list's mark).
+
+In a browser. Headless Edge on Windows, two pages on one real server answering from a stand-in
+model. The page in front is shown and the other is hidden, as two tabs of one window are. A page
+parked on one chat moved the active badge to a chat made active by another client at its next
+ask, and stayed on its chat. A list read again unchanged was not drawn again (0 draws over a
+tick), and a changed one was drawn once. With the active chat waiting on a permission, the parked
+page said "The active chat is waiting for your permission." within one ask, Open it landed on the
+card, and Allow once ran the write, which reached the workspace. A hidden page asked for nothing
+for 11 seconds and showed the new active chat as soon as it was shown. One run found the race
+above: a tab brought back stayed on the chat that had been active. With the fix, it followed.
+Which of the list and the replayed frame answers first cannot be seen from outside the page, so
+the page test fixes that order; the browser run shows the follow end to end.
+
+Not verified.
+- Two windows side by side on a screen, where both pages are shown at once.
+- In a browser, the note naming a chat that is not the active one; the page test covers it.
+
+## ADR-0363: a page or pane opened in the middle of a reply longer than the watch bus draws the reply whole
+
+Status: accepted. 2026-11-05. Builds on ADR-0286 (a reopened page draws the saved conversation,
+then lets the watch replay draw the rest), ADR-0325 and ADR-0327 (where the saved conversation
+hands over to the replay) and ADR-0352 (a cockpit pane shows the chat a web app serves). Closes
+what ADR-0332 left open: a running turn longer than the bus replayed without its head.
+
+Context. The watch bus keeps a chat's newest 5000 events in memory (`_DEFAULT_MAXLEN`), and a
+streamed reply is one event for each piece the model sends. A turn that runs past that pushes its
+own start out of the bus: its user line first, then the start of the reply being written. A page
+opened then found no turn's start in the bus, drew the saved chat, and let the replay draw the bus
+from its oldest event, which fell in the middle of the reply. The reply's first part was not drawn
+at all, and what was drawn read as the whole reply. A cockpit pane joining the chat drew the same.
+
+Decision.
+- The loop keeps the list the model call in progress writes its reply into, from the call's start
+  until the reply is saved or thrown away, and hands out what the list holds as `reply_so_far`. A
+  part goes into the list in the step that yields it. The list is let go in the step that saves
+  the reply or throws it away: a call retried after an error, a reply thrown away as degenerate or
+  as an apology spiral, a failed call whose text is saved with its error, and a turn stopped part
+  way, which saves none of it.
+- The server keeps, by chat, the agent each streamed turn runs on: the say consumer's and
+  `POST /chat/stream`'s, whose every event reaches the bus as it is made. It lets go of it in the
+  step the turn stops counting as running. `POST /chat` is left out: its turn reaches the bus only
+  once it is done, each reply whole (ADR-0327), so a page drawing what its loop holds would draw
+  the reply twice.
+- `GET /sessions/{id}/transcript` asks that loop when the bus holds no turn's start and a turn is
+  running on an agent with a loop. It reads the chat as the loop holds it (the turn's own line
+  and every reply the turn has finished, saved to disk or not), how its turns ended, what the call
+  in progress has written, and the bus's newest cursor, all in one step on the event loop the turn
+  runs on. The route runs in a worker thread, and two reads from there could fall on either side
+  of a part, which would then be in both or in neither. In one step they cannot: a part is added
+  in the step its event is yielded, and an event is published in the step it is received. The
+  written part is handed over as `partial`, redacted as the messages are, and the cursor as
+  `bus_since`.
+- The page draws `partial` after the saved messages, as the start of the reply's row, and the
+  replay after `bus_since` writes the rest into the same row.
+- A turn on an agent with no loop to ask is drawn as before: the saved chat, then the bus from its
+  oldest event.
+
+The terminal. A cockpit pane joining a served chat draws `partial` as the start of a turn of its
+own, and the watch after the cursor draws the rest into it, so the reply is drawn once and whole.
+The inline REPL streams its own turns, so it never joins one part way.
+
+Not chosen.
+- A bigger bus. A reply can be longer than any ring, and every chat's bus holds its ring in memory.
+- Keeping the bus on disk, for ADR-0361's reason: it would grow with every piece streamed.
+
+Limits. What the running turn did before the bus's oldest event, other than its words, is not
+drawn again: its tool cards and its thinking. Its finished replies are drawn from the chat as lines
+(ADR-0286), and the reply in progress is drawn whole.
+
+New tests.
+- `tests/test_reply_so_far.py` (10 cases): the loop holds each part once its event is out, and
+  none once the reply is saved, before its tool runs, or thrown away (retried, degenerate, an
+  apology spiral, failed with its text saved, stopped). On a live server with a bus of four, a
+  running turn longer than the bus is read from its loop and its reply drawn once, for a say turn
+  and a `POST /chat/stream` turn, and `partial` is redacted as the chat is.
+- `tests/test_webclient_reload_history.py` (+1), the page's own script under node against a live
+  server: a page opened in the middle of a reply longer than the bus draws it whole, in one row.
+- `tests/test_served_mirror.py` (+1): a pane joining in the middle of such a reply draws it whole,
+  each part once.
+- `tests/test_server_transcript.py`: the long-turn test is now the case of an agent with no loop to
+  ask.
+- Mutations: 19 of the new code, and 17 turned a named test red: 8 in the loop (each place the
+  list is taken or let go, and `reply_so_far` itself), 6 in the route and the two doors (the
+  branch, the redaction, the cursor, the chat it reads, each door keeping its agent), 2 in the page
+  and 1 in the pane. The 2 that stayed green are the lines that let go of a finished turn's agent.
+  Once a turn stops running nothing reads the registry for it, so no test can see them; they keep
+  a finished turn's agent from being held until the chat's next turn.
+
+Checked in a real browser: headless Edge over the DevTools protocol, a live server, and a stand-in
+model streaming 8,000 numbered tokens, 6,000 at once (past the 5,000-event bus) and then one every
+25 ms. On main before this change, a page opened mid-reply after the bus had dropped the start drew
+the reply from token 2,790 on, and still lacked the first 2,789 after the turn ended. With this
+change, pages opened and reloaded mid-reply, a page following from the start and a page opened
+after the end each drew tokens 1 to 8,000 once, with no gap and no repeat.
+
+Not verified.
+- A real provider's long reply; the tests and the browser check stream scripted parts.
+- A part arriving at the moment the route reads, as a race run. In the browser check three pages
+  opened while parts arrived every 25 ms and each drew every part once, but that crosses the window
+  three times. That no part is in both or in neither still rests on the code (a part is added in
+  the step its event is yielded, an event is published in the step it is received).
+
+## ADR-0366: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
 
 Status: accepted. 2026-11-03. Builds on ADR-0275 (the summarizer's output cap), ADR-0330 (the word
 budget), ADR-0331 (the condensing ask), ADR-0242 (the one resample), ADR-0056 and ADR-0181 (the

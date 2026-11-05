@@ -135,6 +135,18 @@ def test_served_transcript_projection_lands_under_the_workspace(
     assert not (fake_home / ".zakcode" / "transcripts").exists()
 
 
+def test_the_store_names_the_transcript_the_loop_writes(fake_home: Path, tmp_path: Path) -> None:
+    """A deleted chat's transcript goes to the trash with it (ADR-0358), found where the store
+    says it is: that is where the loop writes it, or it stays behind when the chat is gone."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = SessionStore.for_workspace(ws)
+    agent = _agent_on(ws, store)
+    _spoken(agent)
+
+    assert Path(agent.loop._cc_transcript_path()) == store.transcript_path(agent.session.id)
+
+
 def test_two_served_workspaces_do_not_share_a_transcript_directory(
     fake_home: Path, tmp_path: Path
 ) -> None:

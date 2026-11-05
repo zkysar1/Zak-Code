@@ -377,6 +377,8 @@ class SessionSummary(BaseModel):
     message_count: int = 0
     #: Whether it is the workspace's current conversation, the one the next turn runs on.
     current: bool = False
+    #: Whether a turn in it waits on a permission answer right now (ADR-0362).
+    awaiting_approval: bool = False
 
 
 class CurrentSessionRequest(BaseModel):
@@ -384,6 +386,14 @@ class CurrentSessionRequest(BaseModel):
     workspace's current one, or ``None`` for a new one."""
 
     session_id: str | None = None
+
+
+class ChatNameRequest(BaseModel):
+    """Body of ``PUT /sessions/{id}/title`` (ADR-0358): the name to give a saved conversation in
+    the chat list. Its whitespace is folded to single spaces, and an empty name gives the chat
+    back its first ask as its title."""
+
+    title: str = Field(max_length=200)
 
 
 class TranscriptMessage(BaseModel):
@@ -400,6 +410,22 @@ class TranscriptMessage(BaseModel):
     #: words as a note from the workspace, not ``text`` as a line typed in the chat (ADR-0344).
     #: ``text`` stays the whole message, so a page that predates this field shows what it did.
     hook: str | None = None
+
+
+class TranscriptTurnEnd(BaseModel):
+    """How a turn that did not simply finish ended, where its row goes (ADR-0361).
+
+    ``after`` is how many of the response's ``messages`` come before the row: a turn's end belongs
+    after its last spoken message, and a count puts it there where two stamps in one clock tick
+    could not. The fields are the done frame's, so the page draws the row it drew live.
+    """
+
+    after: int
+    at: float | None = None
+    stop_reason: str
+    error: str = ""
+    degraded: bool = False
+    open_steps: int = 0
 
 
 class SessionTranscript(BaseModel):
@@ -428,24 +454,38 @@ class SessionTranscript(BaseModel):
     When the bus holds no turn's start, the turn its events belong to has ended or is still
     running. Ended, it is saved: ``bus_from`` is ``None``, every message is drawn from here, and
     ``bus_since`` is the bus's newest cursor, so the replay draws none of the tail again. Running,
-    the call in progress is in the bus alone: ``bus_from`` is the stamp of the bus's oldest event
-    and ``bus_since`` is ``None``, so the replay draws the bus's tail. With no bus, or an empty
-    one, both are ``None``.
+    the turn's loop is asked (ADR-0363): ``messages`` are the chat as the loop holds it, every
+    reply the turn has finished included, ``partial`` is what the model call in progress has
+    written that the chat does not hold yet, and ``bus_since`` is the bus's newest cursor, read
+    in the same step, so the replay goes on after it. A turn whose agent has no loop to ask
+    leaves ``bus_from`` at the stamp of the bus's oldest event and ``bus_since`` at ``None``, and
+    the replay draws the bus's tail, which can begin in the middle of a reply. With no bus, or an
+    empty one, both are ``None``.
+
+    ``partial`` is redacted as ``messages`` are, and ``None`` but in that one case: the page draws
+    it as the start of the reply being written, and the replay writes the rest into the same row.
 
     ``running`` says a turn is under way on this session here, which the replay may not show
     starting (its user line evicted), so the page shows it as running from the start.
 
     ``bus_epoch`` names that bus (the ``X-Bus-Epoch`` its watch response carries), ``None`` when
     there is no bus. The cut holds only against that bus, so a page that opens the watch and is
-    answered by another one (a restart in between) knows to cut again (ADR-0289)."""
+    answered by another one (a restart in between) knows to cut again (ADR-0289).
+
+    ``ends`` are how the turns among ``messages`` that did not simply finish ended (ADR-0361), the
+    rows the page drew at each one's end ("provider error — …", "interrupted"). Those rows came
+    only from the bus, so a page reopened after a restart drew none. A page draws the ones whose
+    place falls among the messages it draws from here; the replay draws the rest."""
 
     session_id: str
     messages: list[TranscriptMessage] = Field(default_factory=list)
+    ends: list[TranscriptTurnEnd] = Field(default_factory=list)
     message_count: int = 0
     bus_from: float | None = None
     bus_since: int | None = None
     bus_epoch: str | None = None
     running: bool = False
+    partial: str | None = None
 
 
 class ToolInfo(BaseModel):

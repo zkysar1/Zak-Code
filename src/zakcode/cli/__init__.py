@@ -46,6 +46,7 @@ from zakcode.build_info import (
 )
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
 from zakcode.cli._layout import (
+    block,
     close_input_frame,
     heading,
     kv_table,
@@ -66,7 +67,7 @@ from zakcode.cli.logsink import (
     log_level_from_env,
     set_provider_labels,
 )
-from zakcode.cli.render import StreamRenderer, cost_text, display_call
+from zakcode.cli.render import StreamRenderer, cost_text, display_call, stop_label
 from zakcode.cli.saybox import fold_lines
 from zakcode.config import (
     PermissionTier,
@@ -587,24 +588,75 @@ def _refresh_checkout(directory: str) -> tuple[str, str]:
     return old_sha, new_sha
 
 
-def _uv_receipt_requirement() -> dict[str, Any]:
-    """The ``zakcode`` entry of uv's install receipt, or ``{}`` when the receipt is unreadable.
+def _uv_receipt_requirements() -> list[dict[str, Any]]:
+    """Every requirement uv's install receipt records, or ``[]`` when the receipt is unreadable.
 
-    The receipt (``uv-receipt.toml`` at the tool env root) records the requirement
-    as originally requested: its extras, and whether it was installed editable.
-    Both have to survive an update. Unreadable receipt ⇒ ``{}``: the update still
-    lands, worst case a provider needs one manual reinstall.
+    The receipt (``uv-receipt.toml`` at the tool env root) records each requirement
+    as originally requested: zakcode's with its extras and whether it was installed
+    editable, then each package added with ``uv tool install --with``. All of it has
+    to survive an update. Unreadable receipt ⇒ ``[]``: the update still lands, worst
+    case a provider needs one manual reinstall.
     """
     try:
         import tomllib
 
         data = tomllib.loads((Path(sys.prefix) / "uv-receipt.toml").read_text(encoding="utf-8"))
-        for req in data.get("tool", {}).get("requirements", []):
-            if isinstance(req, dict) and req.get("name") == "zakcode":
-                return req
+        found = data.get("tool", {}).get("requirements", [])
     except Exception:  # noqa: BLE001 - the receipt is a nicety, never block the update
-        pass
-    return {}
+        return []
+    return [req for req in found if isinstance(req, dict)] if isinstance(found, list) else []
+
+
+def _uv_receipt_requirement() -> dict[str, Any]:
+    """The ``zakcode`` entry of uv's install receipt, or ``{}`` when it has none."""
+    return next((req for req in _uv_receipt_requirements() if req.get("name") == "zakcode"), {})
+
+
+def _uv_with_options() -> list[str]:
+    """``--with`` and ``--with-editable`` for each package the receipt records beside zakcode.
+
+    uv writes the receipt from the command that installs, so a reinstall naming zakcode alone
+    dropped every package added with ``uv tool install --with`` (ADR-0359). Each comes back in
+    the form uv recorded it: a name with its extras, version and marker; a URL; a git
+    repository at the ref it named (not the commit that ref was then), so an update follows a
+    branch as the install did; a local folder or file; an editable folder.
+    """
+    from urllib.parse import parse_qs, urlsplit, urlunsplit
+
+    options: list[str] = []
+    for req in _uv_receipt_requirements():
+        name = req.get("name")
+        if not isinstance(name, str) or not name or name == "zakcode":
+            continue
+        if isinstance(req.get("editable"), str):
+            options += ["--with-editable", req["editable"]]
+            continue
+        extras = req.get("extras")
+        if isinstance(extras, list) and extras:
+            name += "[" + ",".join(e for e in extras if isinstance(e, str)) + "]"
+        local, url, git = req.get("directory") or req.get("path"), req.get("url"), req.get("git")
+        if isinstance(url, str):
+            sub = req.get("subdirectory")
+            spec = f"{name} @ {url}" + (f"#subdirectory={sub}" if isinstance(sub, str) else "")
+        elif isinstance(git, str):
+            # Recorded as https://host/repo?subdirectory=pkg&rev=main, the ref as it was typed
+            # whatever it names; read back as git+https://host/repo@main#subdirectory=pkg.
+            parts = urlsplit(git)
+            query = parse_qs(parts.query)
+            ref = query.get("rev", [""])[0]
+            repo = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+            spec = f"{name} @ " + ("" if repo.startswith("git+") else "git+") + repo
+            spec += (f"@{ref}" if ref else "") + (
+                f"#subdirectory={query['subdirectory'][0]}" if "subdirectory" in query else ""
+            )
+        elif isinstance(local, str):
+            spec = f"{name} @ {Path(local).absolute().as_uri()}"
+        else:
+            specifier = req.get("specifier")
+            spec = name + (specifier if isinstance(specifier, str) else "")
+        marker = req.get("marker")
+        options += ["--with", spec + (f" ; {marker}" if isinstance(marker, str) and marker else "")]
+    return options
 
 
 def _uv_tool_spec(source: str, added: Sequence[str] = ()) -> str:
@@ -734,10 +786,11 @@ def _reinstall_commands(
 
     A uv tool environment has NO pip module, so ``sys.executable -m pip`` fails
     there; the ``uv-receipt.toml`` at the env root is the discriminator. uv is one
-    command (a full resolve, dependencies included) and it carries three things
+    command (a full resolve, dependencies included) and it carries four things
     forward that a bare ``uv tool install`` would drop (ADR-0291): the Python the
-    install runs on, ``--editable`` when the install was editable, and, for a
-    ``checkout``, the versions its ``uv.lock`` pins. pip is TWO: the
+    install runs on, ``--editable`` when the install was editable, the packages
+    added with ``--with`` (ADR-0359), and, for a ``checkout``, the versions its
+    ``uv.lock`` pins. pip is TWO: the
     ``--force-reinstall --no-deps`` pass replaces the package code even when the
     version string is unchanged (pip's same-version no-op trap) without churning
     the whole dependency tree — but it also means a build that ADDS a dependency
@@ -763,6 +816,7 @@ def _reinstall_commands(
         options = ["--python", f"{sys.version_info.major}.{sys.version_info.minor}"]
         if _uv_receipt_requirement().get("editable"):
             options.append("--editable")
+        options += _uv_with_options()
         if checkout is not None:
             options += ["--constraints", _pin_to_lock(uv, checkout, note).name]
         spec = _uv_tool_spec(source, extras)
@@ -1781,12 +1835,31 @@ def _render_transcript(
     count per message. Without it a resume prints ``resumed (N messages)`` over a blank
     screen: the model remembers a conversation the operator cannot see (2026-08-24
     operator report, first field use of ``/resume``). Long messages are elided at
-    ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump.
+    ``_REPLAY_CHAR_LIMIT`` — the replay is orientation, not an archive dump. A turn that did not
+    simply finish is drawn as the footer it ended on, after the messages it followed, as the page
+    draws a saved one (ADR-0361).
     """
     from zakcode.agent.loop import said_by_session_start, typed_command
 
-    rows: list[tuple[str, str, int]] = []
-    for msg in getattr(session, "messages", []):
+    messages = list(getattr(session, "messages", []))
+    ends = list(getattr(session, "turn_ends", []))
+    rows: list[tuple[str, str, int, str]] = []
+
+    def ends_up_to(count: int) -> None:
+        while ends and ends[0].after <= count:
+            end = ends.pop(0)
+            at: float | None = None
+            try:
+                stamp = datetime.fromisoformat(end.at)
+                at = (stamp if stamp.tzinfo else stamp.replace(tzinfo=UTC)).timestamp()
+            except ValueError:
+                pass  # a stamp this build cannot read: the row goes without its time
+            rows.append(
+                _turn_end_row(console, end.stop_reason, end.degraded, end.open_steps, end.error, at)
+            )
+
+    for index, msg in enumerate(messages):
+        ends_up_to(index)
         if msg.role not in ("user", "assistant"):
             continue
         role = msg.role
@@ -1802,31 +1875,60 @@ def _render_transcript(
             else:
                 text = typed_command(text) or text
         if text or tool_count:
-            rows.append((role, text, tool_count))
+            rows.append((role, text, tool_count, ""))
+    ends_up_to(len(messages))  # an end placed past the messages the session has is not drawn
     _render_replay(console, rows, limit=limit)
 
 
-def _render_replay(
-    console: Console, rows: list[tuple[str, str, int]], *, limit: int = _REPLAY_MESSAGE_LIMIT
-) -> None:
-    """Draw the last ``limit`` replay rows as a resumed session's replay.
+def _turn_end_row(
+    console: Console,
+    stop_reason: str,
+    degraded: bool,
+    open_steps: int,
+    error: str,
+    at: float | None,
+) -> tuple[str, str, int, str]:
+    """A replay row for how a saved turn ended (ADR-0361): the footer the turn drew, from what the
+    session keeps of its done frame. Its tokens and its time taken are not kept, so the row has
+    neither; ``at`` (epoch seconds) is when it ended."""
+    g = resolve_glyphs(console)
+    label, tone = stop_label(stop_reason, degraded, open_steps, error, dash=g["dash"])
+    if at is not None:
+        label += f" {g['dot']} {time.strftime('%H:%M', time.localtime(at))}"
+    return ("end", label, 0, tone)
 
-    A row is ``(role, text, tool calls)``, its role ``user``, ``assistant`` or ``hook`` (what a
-    SessionStart hook said). A cockpit pane joining the web app's chat draws that chat's saved
-    conversation the same way (ADR-0352).
+
+def _render_replay(
+    console: Console,
+    rows: list[tuple[str, str, int, str]],
+    *,
+    limit: int = _REPLAY_MESSAGE_LIMIT,
+) -> None:
+    """Draw the last ``limit`` messages of a resumed session's replay.
+
+    A row is ``(role, text, tool calls, tone)``, its role ``user``, ``assistant``, ``hook`` (what
+    a SessionStart hook said) or ``end``: how a turn that did not simply finish ended, drawn as the
+    footer it ended on with its marker in ``tone`` (ADR-0361). An end is not a message: it is
+    shown when the message before it is. A cockpit pane joining the web app's chat draws that
+    chat's saved conversation the same way (ADR-0352).
     """
     g = resolve_glyphs(console)
-    if not rows:
+    said = [index for index, row in enumerate(rows) if row[0] != "end"]
+    if not said:
         return
-    shown = rows[-limit:]
+    shown = rows[said[-limit] :] if len(said) > limit else rows
+    count = min(limit, len(said))
     console.print()
-    elided = len(rows) - len(shown)
-    if elided:
-        _dim(console, f"{g['dash']} replaying the last {len(shown)} of {len(rows)} messages")
+    if count < len(said):
+        _dim(console, f"{g['dash']} replaying the last {count} of {len(said)} messages")
     else:
-        _dim(console, f"{g['dash']} replaying {len(shown)} message{'s' if len(shown) != 1 else ''}")
-    for role, text, tool_count in shown:
+        _dim(console, f"{g['dash']} replaying {count} message{'s' if count != 1 else ''}")
+    for role, text, tool_count, tone in shown:
         console.print()
+        if role == "end":
+            body = Text(text, style="footer")
+            console.print(block(console, body, marker=g["marker"], marker_style=tone))
+            continue
         if role == "hook":
             lines = text.splitlines()
             more = len(lines) - 1

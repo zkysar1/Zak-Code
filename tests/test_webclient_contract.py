@@ -133,7 +133,9 @@ def test_dom_writes_are_textcontent_only() -> None:
 def test_client_is_self_contained() -> None:
     # No CDN, no external fonts/scripts/styles: the bundled asset works offline.
     html = _html().lower()
-    assert "<link" not in html
+    # One link only: the page's empty icon, a data: URI, which spares the browser a fetch of
+    # /favicon.ico (ADR-0358). Nothing else is linked.
+    assert re.findall(r"<link\b[^>]*>", html) == ['<link rel="icon" href="data:," />']
     assert "<script src" not in html
     assert "@import" not in html
     # Every stylesheet url() is inline: the display face is a data: URI (ADR-0221), never
