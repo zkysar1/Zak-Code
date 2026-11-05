@@ -22905,9 +22905,16 @@ New tests.
   Once a turn stops running nothing reads the registry for it, so no test can see them; they keep
   a finished turn's agent from being held until the chat's next turn.
 
+Checked in a real browser: headless Edge over the DevTools protocol, a live server, and a stand-in
+model streaming 8,000 numbered tokens, 6,000 at once (past the 5,000-event bus) and then one every
+25 ms. On main before this change, a page opened mid-reply after the bus had dropped the start drew
+the reply from token 2,790 on, and still lacked the first 2,789 after the turn ended. With this
+change, pages opened and reloaded mid-reply, a page following from the start and a page opened
+after the end each drew tokens 1 to 8,000 once, with no gap and no repeat.
+
 Not verified.
-- A browser. The page's script ran under node against a live server, as ADR-0286's tests run it.
-- A real provider's long reply; the tests stream scripted parts.
-- A part arriving at the moment the route reads. The tests hold the turn still while the page or
-  pane reads, so that no part is in both or in neither rests on the code (a part is added in the
-  step its event is yielded, an event is published in the step it is received), not on a race run.
+- A real provider's long reply; the tests and the browser check stream scripted parts.
+- A part arriving at the moment the route reads, as a race run. In the browser check three pages
+  opened while parts arrived every 25 ms and each drew every part once, but that crosses the window
+  three times. That no part is in both or in neither still rests on the code (a part is added in
+  the step its event is yielded, an event is published in the step it is received).
