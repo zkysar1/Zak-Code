@@ -173,6 +173,12 @@ class HookPayload(BaseModel):
     #: Path to the Claude-Code-shaped ``.jsonl`` transcript. Claude Code hands it to every
     #: hook, a tool gate included; empty when no transcript is materialized.
     transcript_path: str = ""
+    #: Set only on a call a sub-agent makes, as Claude Code sets them (ADR-0367): ``agent_id``
+    #: names the sub-agent the hook fires in and ``agent_type`` its type, while ``session_id``
+    #: stays the parent session's. Empty on a main-thread call, and then off the wire, so the
+    #: main thread's hook input is unchanged.
+    agent_id: str = ""
+    agent_type: str = ""
     # PostToolUse only: the result the tool produced.
     output: str | None = None
     is_error: bool | None = None
@@ -466,6 +472,10 @@ def wire_payload(payload: HookPayload) -> bytes:
         # generic shape, so the key is there for every PostToolUse hook.
         response = payload.tool_response
         doc["tool_response"] = response if response is not None else (payload.output or "")
+    # Claude Code sends the two only from inside a sub-agent (ADR-0367).
+    for key in ("agent_id", "agent_type"):
+        if not doc.get(key):
+            doc.pop(key, None)
     return json.dumps(doc).encode("utf-8")
 
 
@@ -1316,6 +1326,45 @@ class HookManager:
         return (message, mutated, deny, additional)
 
 
+#: The events a sub-agent's own calls fire in the session's hooks (ADR-0367).
+SUBAGENT_HOOK_EVENTS = frozenset({HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE})
+
+
+class SubAgentHookManager(HookManager):
+    """The session's hooks as a sub-agent's loop runs them (ADR-0367), as Claude Code does.
+
+    Claude Code fires the session's ``PreToolUse`` and ``PostToolUse`` hooks for a
+    sub-agent's tool calls "the same way they do in the main conversation" (its sub-agents
+    guide, "Define hooks for subagents"), with the session's ``session_id`` and two more
+    fields, ``agent_id`` and ``agent_type``. Nothing else of the session's runs in the child:
+    no ``SessionStart`` (the session already started), no ``TurnEnd`` (Claude Code fires
+    ``SubagentStop`` for a sub-agent, never ``Stop``, so a host's stop gate cannot hold a
+    child's turn open), no ``UserPromptSubmit`` for the delegated prompt, no ``PreLLMCall``
+    context and no ``PreCompact``. So this holds only the parent's tool-event hooks, shell and
+    in-process, and stamps each payload with the parent's identity. ``session_id`` empty
+    leaves the child's own id on the payload.
+    """
+
+    def __init__(
+        self, parent: HookManager, *, session_id: str, agent_id: str, agent_type: str
+    ) -> None:
+        super().__init__(
+            [spec for spec in parent.shell_hooks if spec.event in SUBAGENT_HOOK_EVENTS],
+            in_process={
+                event: list(hooks)
+                for event, hooks in parent.in_process.items()
+                if event in SUBAGENT_HOOK_EVENTS
+            },
+        )
+        self._identity = {"agent_id": agent_id, "agent_type": agent_type}
+        if session_id:
+            self._identity["session_id"] = session_id
+
+    async def run(self, payload: HookPayload) -> HookResult:
+        """Run the parent's tool hooks for a sub-agent's call, under the parent's identity."""
+        return await super().run(payload.model_copy(update=self._identity))
+
+
 def _valid_cwd(cwd: str) -> str | None:
     """The directory a hook should run in: the workspace root when it exists, else inherit.
 
@@ -1364,6 +1413,8 @@ __all__ = [
     "TurnEndResult",
     "HookSpec",
     "HookManager",
+    "SUBAGENT_HOOK_EVENTS",
+    "SubAgentHookManager",
     "InProcessHook",
     "InProcessTurnEndHook",
     "ContextHook",

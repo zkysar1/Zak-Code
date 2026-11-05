@@ -22918,3 +22918,83 @@ Not verified.
   opened while parts arrived every 25 ms and each drew every part once, but that crosses the window
   three times. That no part is in both or in neither still rests on the code (a part is added in
   the step its event is yielded, an event is published in the step it is received).
+
+## ADR-0367: a sub-agent's tool calls run the session's tool hooks, under the session's id
+
+Status: accepted. 2026-11-05. Reverses the 2026-06-21 change that gave every sub-agent an empty
+hook set. The part of it that #89 started stands: a sub-agent does not rerun the session's
+SessionStart. Corrects the reason ADR-0079's 2026-09-30 amendment gives for wiring its re-read to
+the main loop only.
+
+Context. A sub-agent ran with no hooks at all, on the reading that Claude Code runs a sub-agent
+with only the hooks in its own frontmatter. Claude Code's documentation says otherwise. Its
+sub-agents guide ("Define hooks for subagents"): hooks in `settings.json` "also fire inside
+subagents. Tool events such as `PreToolUse` and `PostToolUse` fire for the subagent's tool calls
+the same way they do in the main conversation", and "a `PreToolUse` hook in `settings.json` also
+runs before every tool a subagent uses." Its hooks reference gives a hook that fires inside a
+sub-agent two more input fields, `agent_id` and `agent_type`, and fires `SubagentStop`, not
+`Stop`, when a sub-agent finishes. What the 2026-06-21 change checked held for SessionStart only.
+
+What the gap cost, measured on self-hosted workers in November 2026. Every `PreToolUse` gate a
+workspace declares, on the paths a write may touch and the commands a session may run, was
+skipped for a sub-agent's writes and commands. And a hook that keys on the session id to keep the
+session's own state never saw a sub-agent's call, so a host framework could not tell a session
+waiting on its sub-agent from one that had stopped. One parent waited inside a single task call
+for 2 h 43 m with no hook firing at all. Four times, on four machines, the host read a waiting
+session as gone while its sub-agent was still working.
+
+Decision.
+- `SubAgentRunner` builds each child loop with a `SubAgentHookManager` over the parent's hooks.
+  It holds the parent's `PreToolUse` and `PostToolUse` hooks, shell and in-process (a plugin's
+  included), and nothing else: no `SessionStart`, no turn-end hook or observer, no
+  `UserPromptSubmit`, no `PreLLMCall` context hook, no `PreCompact`.
+- Every payload it runs carries the parent session's `session_id`, and the sub-agent's
+  `agent_id` (the child loop's own session id) and `agent_type` (its definition's name). A shell
+  hook reads all three on stdin. On a main-thread call `agent_id` and `agent_type` are empty and
+  left off the wire, so the main thread's hook input is byte-for-byte what it was.
+- A parent with no hooks gives the child none, as before.
+
+The child copies the session's tool hooks when it starts. ADR-0079's re-read stays wired to the
+main loop: it replaces the parent's list only at the top of a parent iteration, and the parent is
+inside the task call for as long as its child runs, so the copy and the re-read cannot race. A
+hook that reaches the settings files while a sub-agent runs reaches the sub-agents started after.
+
+Not chosen.
+- The parent's whole hook set in the child, which Zak Code ran before 2026-06-21. A host's
+  turn-end hook would then judge each child's turn end, where Claude Code fires `SubagentStop`;
+  a context hook would inject the session's context into every child call; and a host's session
+  boot would rerun per child.
+- The child's own session id in the payload. A hook keyed on the session would read each
+  sub-agent as a session it never saw start. Claude Code never shows it one.
+- A new event that fires on a timer while a sub-agent runs, for a hook that must see the session
+  is still working. Claude Code has none, and the session's tool hooks firing for the child's own
+  calls already show it.
+
+Cost. The session's tool gates run for every sub-agent tool call: the 2026-06-21 change counted
+about 144 hook runs over a six-task delegation loop. A Claude Code session pays the same for the
+same work. A hook that wants to skip sub-agent calls reads `agent_type`.
+
+Limits. `SubagentStart` and `SubagentStop` are not fired yet. A hook added while a sub-agent runs
+does not reach that sub-agent (above).
+
+New tests.
+- `tests/test_subagent_tool_hooks.py` (3 cases), end to end through `Agent(enable_subagents=True)`
+  with the real shell tool: a child's command runs the session's `PreToolUse` and `PostToolUse`
+  hooks under the parent's session id, with `agent_type` and an `agent_id` of its own, while the
+  session's own calls carry neither; the session's turn-end observer and context hook do not run
+  for the child; and a shell hook reads the three fields from its own stdin, and on the session's
+  own call finds the two sub-agent keys absent.
+- `tests/test_subagent.py`: `test_subagent_gets_the_sessions_tool_hooks_and_nothing_else`
+  replaces `test_subagent_gets_its_own_empty_hooks_not_the_parents`. Given a parent with a hook
+  of every kind, the child's set holds exactly the tool-event hooks and the identity it stamps; a
+  parent with no hooks gives the child none.
+- Each case was checked against the code it guards. Building the child with no hooks again fails
+  the two tool-hook cases. Copying the parent's context, turn-end and lifecycle hooks into the
+  child fails the third, and so does copying its turn-end observers alone.
+
+Not verified.
+- Which `session_id` Claude Code sends for a sub-agent's tool call is not stated in its reference.
+  Its `SubagentStart` and `SubagentStop` examples carry the same `session_id` as the main thread,
+  and on Claude Code 2.1.287 (measured 2026-10-19) a hook that resolves the session from
+  `session_id` resolved a sub-agent's Bash call to the parent session.
+- A served worker's long delegation on this build; the tests run scripted models.
