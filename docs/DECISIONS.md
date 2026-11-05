@@ -22918,3 +22918,54 @@ Not verified.
   opened while parts arrived every 25 ms and each drew every part once, but that crosses the window
   three times. That no part is in both or in neither still rests on the code (a part is added in
   the step its event is yielded, an event is published in the step it is received).
+
+## ADR-0365: a compaction drops every copy of the harness's position note, a model's echoes included
+
+Status: accepted. 2026-11-05. Builds on ADR-0082 (the harness writes the position note; the
+summarizer never does) and ADR-0330 (an earlier summary reaches the summarizer without the notes
+the harness writes fresh).
+
+Context. ADR-0330 took the position notes out of the earlier summary before the summarizer reads
+it. A model can also write the note: one that restates where it is after a compaction copies the
+note, head line and all, into its own reply. Those copies reached the summarizer as ordinary
+assistant text, the summarizer carried them into the new summary, and the harness then appended
+its own note after them. Measured 2026-11-05 on a worker running a 27B model on the pod: one
+installed summary (22,825 characters) held three exact position notes, two of them stale (their
+lines matched older notes) and the harness's last. In the window it summarized, the model had
+echoed the whole note nine times in its own replies, and never in a tool result or a user message.
+The twelve other installs counted that day, from windows with no echoes, held one note each. A
+resumed model reads every note as authoritative, so two of the three positions it was handed were
+wrong.
+
+Decision.
+- The summarizer's copy of a message loses any position note it holds, from the head line to the
+  end of its block, as the earlier summary's copy already did. That covers every message except an
+  earlier summary (ADR-0330) and a skill body (ADR-0238). The conversation keeps every reply whole;
+  only the summarizer's copy changes.
+- The summary a model writes loses any position note in it before the harness appends its own
+  (`_finish_summary`). An installed summary then holds the harness's note and no other, wherever a
+  copy came from: a tool output the summarizer read, or the model writing one from memory.
+- A summary that held nothing but copied notes installs the harness's note alone, with no blank
+  lines before it.
+
+Not chosen.
+- Telling the model not to echo the note. The echo is the model keeping its place, which the note
+  is for, and an instruction a small model ignores leaves every copy in.
+- Keeping the newest copy. A reader of the text cannot tell a copy from the harness's own note, and
+  the harness writes a fresh one at every compaction anyway.
+
+Limits. A note's block ends at a blank line, as in ADR-0330, so prose a model wrote straight on
+under a copied note, with no blank line between them, leaves the summarizer's copy with it. Tool
+outputs reach the summarizer with any note they hold, since a file or a log can show the head line
+as data; the summary side drops what the summarizer copies from them.
+
+New tests. `tests/test_compact_loop.py` (+4): a reply that echoed the note reaches the summarizer
+without it; a summary whose model copied the note twice installs with the harness's note once and
+none of the stale lines; a copied note is dropped when the harness has no note to write; a summary
+that was only a copied note installs the harness's note alone. Mutations: the summarizer-side
+strip, the summary-side strip and the join each turned a named test red (1, 3 and 1 tests).
+
+Not verified.
+- On a live worker, that a window with echoes now installs one note. The 2026-11-05 counts were
+  read from installed summaries and from the window's records, as numbers; the summarizer's input
+  itself was not captured.
