@@ -36,13 +36,21 @@ from zakcode.agent.loop import (
     _MAX_SUMMARY_SLICES,
     _POSITION_NOTE_HEAD,
     _SUMMARY_CLOSE,
+    _SUMMARY_HELD_LINE,
+    _SUMMARY_ORDER,
     _SUMMARY_OUTPUT_CHARS,
     _SUMMARY_OVER_BUDGET,
+    _SWITCH_OVERRIDE,
     AgentLoop,
     _clamp_middle,
+    _earlier_summary_body,
+    _first_words,
+    _held_to_words,
     _pack_parts,
+    _shorter_budget,
     _summary_of,
     _summary_output_room,
+    _summary_switched_room,
     _summary_target_words,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -53,7 +61,9 @@ from zakcode.providers.base import (
     LLMResult,
     Provider,
     RateLimited,
+    RequestFailed,
 )
+from zakcode.providers.routing import thinking_extra_body
 from zakcode.session.status_file import StatusFileWriter
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolRegistry
@@ -285,8 +295,8 @@ def test_summarize_chunks_an_oversized_history(tmp_path: Path) -> None:
 #: One slice at an 8192-token window: max(4096, int(8192 * 0.5) * 2) characters.
 _SLICE = 8192
 #: Prompt overhead a slice-sized call may add ("Part i of N …", the fold instruction, and
-#: since ADR-0242 the closing instruction after the transcript).
-_OVERHEAD = 384
+#: since ADR-0242 the closing instruction after the transcript, and since ADR-0369 its order).
+_OVERHEAD = 640
 
 
 class _StrictWindowProvider(_SummarizerProvider):
@@ -1166,8 +1176,9 @@ _WHOLE = "<summary>The session fixed the parser.</summary>"
 
 def test_a_summary_cut_off_at_the_output_limit_is_asked_for_again(tmp_path: Path) -> None:
     # The field shape (a worker on the pod, 2026-09-24): 8,192 completion tokens, and a summary
-    # that stopped mid-sentence was installed as the whole history. Now it is thrown away and
-    # asked for again, and both responses' tokens are counted, since both were spent.
+    # that stopped mid-sentence was installed as the whole history. One with nothing to keep is
+    # thrown away and asked for again (ADR-0369 keeps a cut reply's whole lines; this has none),
+    # and both responses' tokens are counted, since both were spent.
     provider = _CutSummarizer([_CUT, _WHOLE], ["length", "stop"])
     loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
     loop.session.messages.extend(_history(5))
@@ -1407,23 +1418,32 @@ def test_a_summary_within_its_slack_is_not_condensed(tmp_path: Path) -> None:
     assert len(provider.seen) == 1
 
 
-def test_a_condensed_answer_that_is_no_shorter_leaves_the_summary(tmp_path: Path) -> None:
+#: What a held summary adds to its words: the note of what was left out (ADR-0369).
+_HELD_NOTE_WORDS = len(["[...", "1", "words", "of", "this", "summary", "left", "out", "...]"])
+
+
+def _held(summary: str) -> str:
+    """``summary``, over the 8k window's line, as it is installed (ADR-0369)."""
+    return f"{_held_to_words(summary, 500)}\n\n{_POSITION_NOTE_HEAD}\n{_SUMMARY_HELD_LINE}"
+
+
+def test_a_condensed_answer_that_is_no_shorter_leaves_the_summary_held(tmp_path: Path) -> None:
     long = _words(600)
     provider = _SummarizerProvider(
         [f"<summary>{long}</summary>", f"<summary>{_words(650)}</summary>"], tokens=100
     )
     loop = _loop(provider, tmp_path)
 
-    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == _held(long)
     assert len(provider.seen) == 2
 
 
-def test_a_condensing_ask_that_writes_no_summary_leaves_the_summary(tmp_path: Path) -> None:
+def test_a_condensing_ask_that_writes_no_summary_leaves_the_summary_held(tmp_path: Path) -> None:
     long = _words(600)
     provider = _SummarizerProvider([f"<summary>{long}</summary>", "[user]\nnext"], tokens=100)
     loop = _loop(provider, tmp_path)
 
-    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == _held(long)
     assert len(provider.seen) == 3  # the condensing ask and its one resample (ADR-0242)
 
 
@@ -1436,12 +1456,12 @@ class _DownAfterTheSummary(_SummarizerProvider):
         return await super().acomplete(messages, system=system, tools=tools, **kw)
 
 
-def test_a_condensing_ask_that_fails_leaves_the_summary(tmp_path: Path) -> None:
+def test_a_condensing_ask_that_fails_leaves_the_summary_held(tmp_path: Path) -> None:
     long = _words(600)
     provider = _DownAfterTheSummary([f"<summary>{long}</summary>"], tokens=100)
     loop = _loop(provider, tmp_path)
 
-    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == long
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))) == _held(long)
 
 
 class _CondensesOnRequest(_SummarizerProvider):
@@ -1476,3 +1496,431 @@ def test_part_summaries_joined_over_the_budget_are_condensed_once(tmp_path: Path
     assert len(asks) == len(slices) + 1
     assert asks[-1].startswith(_CONDENSE_PROMPT.format(said=150 * len(slices)))
     assert text == _words(300)
+
+
+# ── ADR-0366: thinking off, a cap the budget sets, and a resample that differs ─────────
+
+
+class _SwitchableSummarizer(_CutSummarizer):
+    """A route that leaves the thinking switch to the caller (a self-hosted server)."""
+
+    def capabilities(self) -> Capabilities:
+        return super().capabilities().model_copy(update={"thinking_switch": True})
+
+
+class _ThinksAnyway(_SwitchableSummarizer):
+    """A route that takes the switch and thinks anyway (ADR-0307 measured three gateways)."""
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        return result.model_copy(update={"thinking": "Let me plan the summary first."})
+
+
+def _sent(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """What one ask asked for, less the session's affinity key."""
+    return {k: v for k, v in kwargs.items() if k != "prompt_cache_key"}
+
+
+def _asked_words(provider: _ScriptedSummarizer, ask: int) -> str:
+    """The budget the close of ask ``ask`` states, as it reads ("3,100")."""
+    prompt = provider.seen[ask][0].text
+    return prompt.rsplit("in at most ", 1)[1].split(" words", 1)[0]
+
+
+OFF = thinking_extra_body(False)
+
+
+@pytest.mark.parametrize(
+    ("words", "room", "cap"),
+    [
+        # The pod's budget: a summary at the condensing line, 3.4 tokens a word, a quarter again.
+        (3_100, 32_768, 16_469),
+        (4_600, 32_768, 24_438),  # a long window's budget
+        (400, 8_192, 8_192),  # a small window keeps the floor
+        (1_500, 4_096, 4_096),  # never over the room the ask has with thinking on
+    ],
+)
+def test_the_switched_cap_follows_the_budget(words: int, room: int, cap: int) -> None:
+    assert _summary_switched_room(words, room) == cap
+
+
+def test_the_switched_cap_holds_a_summary_at_the_condensing_line() -> None:
+    # Measured 2026-11-03 (121 summaries and the calls that wrote them): 7.92 characters a word,
+    # 2.32 to 2.97 characters a token. A summary at the length one is condensed past still fits.
+    words = 3_100
+    longest_kept = words * _SUMMARY_OVER_BUDGET * 7.92 / 2.32  # tokens, at the densest median
+    assert _summary_switched_room(words, 32_768) > longest_kept
+
+
+@pytest.mark.parametrize(("words", "shorter"), [(3_100, 1_600), (400, 200), (100, 100)])
+def test_a_shorter_budget_is_half_rounded_to_hundreds(words: int, shorter: int) -> None:
+    assert _shorter_budget(words) == shorter
+
+
+def test_a_route_that_takes_the_switch_is_asked_with_thinking_off(tmp_path: Path) -> None:
+    # Measured 2026-11-03 (the pod's 27B model, thinking on): 50 summarizer calls in 24 hours ran
+    # to the 32,768-token cap, about 22 minutes each.
+    provider = _SwitchableSummarizer([_WHOLE], ["stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 16_469, "extra_body": OFF}]
+
+
+def test_a_route_without_the_switch_keeps_its_room_and_asks_a_cut_summary_for_less(
+    tmp_path: Path,
+) -> None:
+    provider = _CutSummarizer([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 32_768},
+        {"max_tokens": 32_768, "temperature": pytest.approx(0.5)},
+    ]
+    assert [_asked_words(provider, i) for i in (0, 1)] == ["3,100", "1,600"]
+
+
+def test_every_ask_goes_with_thinking_off_the_condensing_one_included(tmp_path: Path) -> None:
+    provider = _SwitchableSummarizer(["x" * 5000], ["stop"])
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(40)))
+    assert len(provider.kwargs) > 2  # the premise: slices and folds
+    assert all(_sent(kw) == {"max_tokens": 8_192, "extra_body": OFF} for kw in provider.kwargs)
+
+    long, short = _words(600), _words(300)
+    condensed = _SwitchableSummarizer(
+        [f"<summary>{long}</summary>", f"<summary>{short}</summary>"], ["stop"]
+    )
+    assert asyncio.run(_loop(condensed, tmp_path)._summarize_for_compaction(_history(3))) == short
+    assert condensed.seen[1][0].text.startswith(_CONDENSE_PROMPT.format(said=600))
+    assert _sent(condensed.kwargs[1]) == {"max_tokens": 8_192, "extra_body": OFF}
+
+
+def test_a_summary_the_switched_cap_cut_off_is_asked_for_half_the_words_under_the_same_cap(
+    tmp_path: Path,
+) -> None:
+    # The same budget is written the same way: 17 of the 50 calls that ran to the cap in the 24
+    # hours to 2026-11-03T16:00Z were followed by no summary at all.
+    provider = _SwitchableSummarizer([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(3))).startswith(
+        "The session fixed the parser."
+    )
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 16_469, "extra_body": OFF},
+        {"max_tokens": 16_469, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+    ]
+    assert [_asked_words(provider, i) for i in (0, 1)] == ["3,100", "1,600"]
+    assert any("cut off at the output limit); asking again for 1,600 words" in x for x in said)
+
+
+def test_a_route_that_thought_anyway_is_asked_again_with_today_s_room(tmp_path: Path) -> None:
+    # Thinking, not the summary, may have filled the cap: the resample gets the room it had
+    # before (ADR-0275), and the same budget.
+    provider = _ThinksAnyway([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 16_469, "extra_body": OFF},
+        {"max_tokens": 32_768, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+    ]
+    assert [_asked_words(provider, i) for i in (0, 1)] == ["3,100", "3,100"]
+
+
+def test_a_route_that_thought_through_the_switch_is_asked_as_configured_from_then_on(
+    tmp_path: Path,
+) -> None:
+    # A chat template that never reads the switch thinks through it on every ask, and each cut
+    # costs one more (ADR-0366): after the first, this provider is asked with today's room and
+    # no switch.
+    provider = _ThinksAnyway([_CUT, _WHOLE], ["length", "stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 16_469, "extra_body": OFF},
+        {"max_tokens": 32_768, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+        {"max_tokens": 32_768},
+    ]
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
+
+
+def test_thinking_under_the_switch_that_was_not_cut_keeps_the_switch(tmp_path: Path) -> None:
+    # Only a cut costs an ask; a summary written under the cap is a summary (ADR-0366).
+    provider = _ThinksAnyway([_WHOLE], ["stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 16_469, "extra_body": OFF}] * 2
+    assert id(provider) not in loop._refused_overrides
+
+
+def test_a_rejection_other_than_a_cut_is_asked_again_as_before(tmp_path: Path) -> None:
+    # An answer that is not a summary for another reason (here, the transcript's next turn) keeps
+    # its budget and its cap; only the temperature rises (ADR-0242).
+    provider = _SwitchableSummarizer(["[assistant] Next I will run the tests.", _WHOLE], ["stop"])
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 8_192, "extra_body": OFF},
+        {"max_tokens": 8_192, "extra_body": OFF, "temperature": pytest.approx(0.5)},
+    ]
+    assert _asked_words(provider, 0) == _asked_words(provider, 1)
+
+
+def test_a_summarizer_the_user_named_is_asked_as_configured(tmp_path: Path) -> None:
+    provider = _SwitchableSummarizer([_WHOLE], ["stop"], window=131_072)
+    loop = AgentLoop(
+        _SummarizerProvider(["unused"], tokens=100),
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        summarizer_provider=provider,
+        summarizer_thinking=True,  # a model_roles summarizer, or the setting true
+    )
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 32_768}]
+
+
+class _ConfiguredSwitch(_SwitchableSummarizer):
+    """A route whose own body sets the switch: the operator's extra_body, sent with every call."""
+
+    def capabilities(self) -> Capabilities:
+        return super().capabilities().model_copy(update={"thinking_configured": True})
+
+
+@pytest.mark.parametrize(
+    ("setting", "sent"),
+    [
+        (None, {"max_tokens": 32_768}),  # the route's body is the operator's word
+        (True, {"max_tokens": 32_768}),
+        (False, {"max_tokens": 16_469, "extra_body": OFF}),  # the setting overrides it
+    ],
+)
+def test_a_route_that_sets_the_switch_is_asked_as_configured_unless_the_setting_is_false(
+    tmp_path: Path, setting: bool | None, sent: dict[str, Any]
+) -> None:
+    # The pod's workers send enable_thinking true with every call (2026-11-03), so their summaries
+    # change only where the summarizer setting says false.
+    provider = _ConfiguredSwitch([_WHOLE], ["stop"], window=131_072)
+    loop = AgentLoop(
+        _SummarizerProvider(["unused"], tokens=100),
+        ToolRegistry(),
+        Session(cwd=str(tmp_path), model="test"),
+        workspace_root=tmp_path,
+        summarizer_provider=provider,
+        summarizer_thinking=setting,
+    )
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [sent]
+
+
+class _RefusesTheSwitch(_SwitchableSummarizer):
+    """A route that refuses a request carrying the switch and names nothing (ADR-0307)."""
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        if "extra_body" in kw:
+            self.kwargs.append(kw)
+            raise RequestFailed("The model returned the following errors: Validation Error")
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Path) -> None:
+    provider = _RefusesTheSwitch([_WHOLE], ["stop"], window=131_072)
+    loop = _loop(provider, tmp_path)
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [
+        {"max_tokens": 16_469, "extra_body": OFF},
+        {"max_tokens": 32_768},
+        {"max_tokens": 32_768},
+    ]
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
+    assert any("refused the thinking switch" in line for line in said)
+
+
+# ── ADR-0369: a cut reply is kept, and nothing installed runs past the line ─────────────
+
+
+def _lines(n: int) -> str:
+    """``n`` lines of ten words each, the shape of a summary."""
+    return "\n".join(" ".join(f"l{i}w{j}" for j in range(10)) for i in range(n))
+
+
+def _cut_reply(n: int) -> str:
+    """A reply the limit stopped: ``n`` whole lines and an unfinished one."""
+    return f"<summary>{_lines(n)}\nand then the session"
+
+
+def _body(summary: str) -> str:
+    """A finished summary without its position note."""
+    return summary.partition(_POSITION_NOTE_HEAD)[0].strip()
+
+
+def test_a_cut_reply_keeps_its_whole_lines() -> None:
+    assert _summary_of(_cut_reply(20), 900, "length") == (_lines(20), "")
+
+
+@pytest.mark.parametrize("source_chars", [900, 20_000, 400_000])
+def test_a_cut_reply_with_too_little_left_is_no_summary_whatever_the_request(
+    source_chars: int,
+) -> None:
+    # Two lines of a summary are not one, though a finished short summary of a short request is.
+    assert _summary_of(_cut_reply(2), source_chars, "length") == (
+        "",
+        "it was cut off at the output limit",
+    )
+
+
+def test_a_cut_reply_that_never_opened_its_tags_is_no_summary() -> None:
+    # A first-person plan or the transcript's next turn runs to the limit as easily as a summary
+    # does (ADR-0242), and it has no tag to tell them apart by.
+    reply = _cut_reply(20).removeprefix("<summary>")
+    assert _summary_of(reply, 900, "length") == ("", "it was cut off at the output limit")
+
+
+def test_a_reply_cut_at_the_limit_is_installed_on_the_first_ask_held_to_its_line(
+    tmp_path: Path,
+) -> None:
+    # Measured 2026-11-06 on a self-hosted pod: two asks cut at the limit installed nothing, each
+    # 9 to 22 minutes of an engine, and the compaction fell back to eliding tool outputs.
+    provider = _CutSummarizer([_cut_reply(80)], ["length"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    summary = loop.session.messages[0].text
+    assert "l49w9" in summary and "l50w0" not in summary  # 50 lines of ten words: the 500-word line
+    assert "and then the session" not in summary
+    assert _SUMMARY_HELD_LINE in summary
+    assert "SummaryNotWritten" not in loop.last_compaction
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_cut"] == 1
+    assert row["summarizer_rejected"] == 0
+    assert any("cut off at the output limit; keeping 500 words of it" in line for line in said)
+
+
+def test_a_cut_reply_under_the_line_is_kept_whole_and_not_condensed(tmp_path: Path) -> None:
+    provider = _CutSummarizer([_cut_reply(30)], ["length"])
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert len(provider.seen) == 1
+    assert _body(text) == _lines(30)
+    assert text.endswith(_SUMMARY_HELD_LINE)
+
+
+def test_a_condensing_ask_cut_at_the_limit_is_kept(tmp_path: Path) -> None:
+    # The 94k and 72k summaries of 2026-11-06: a summary over its line, and a condensing ask cut
+    # twice, so the summary stood at full size and the next compaction started from it.
+    finished = f"<summary>{_lines(60)}</summary>"
+    provider = _CutSummarizer([finished, _cut_reply(80)], ["stop", "length"])
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert len(provider.seen) == 2
+    assert _body(text) == _lines(50)
+    assert text.endswith(_SUMMARY_HELD_LINE)
+
+
+def test_part_summaries_cut_at_the_limit_end_at_the_line(tmp_path: Path) -> None:
+    provider = _CutSummarizer([_cut_reply(30)], ["length"])
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(40)))
+
+    assert any(call[0].text.startswith("Part ") for call in provider.seen)
+    assert len(_body(text).split()) <= 500 + _HELD_NOTE_WORDS
+    assert text.endswith(_SUMMARY_HELD_LINE)
+
+
+def test_a_condensed_answer_still_over_the_line_is_held_to_it(tmp_path: Path) -> None:
+    # A condensed answer can be shorter and still long: 4,752 words against 3,875 on 2026-11-06.
+    provider = _SummarizerProvider(
+        [f"<summary>{_words(800)}</summary>", f"<summary>{_words(600)}</summary>"], tokens=100
+    )
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert _body(text) == _held_to_words(_words(600), 500)
+    assert text.endswith(_SUMMARY_HELD_LINE)
+
+
+def test_a_summary_at_its_line_is_not_marked_held(tmp_path: Path) -> None:
+    provider = _SummarizerProvider([f"<summary>{_words(500)}</summary>"], tokens=100)
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert text == _words(500)
+
+
+@pytest.mark.parametrize("position", ["", "\n- plan: every step closed"])
+def test_the_note_that_a_summary_was_cut_is_not_carried_into_the_next_one(position: str) -> None:
+    note = f"{_POSITION_NOTE_HEAD}{position}\n{_SUMMARY_HELD_LINE}"
+    assert _earlier_summary_body(f"{_lines(3)}\n\n{note}") == _lines(3)
+
+
+@pytest.mark.parametrize("close", [_SUMMARY_CLOSE, _FOLD_CLOSE, _CONDENSE_CLOSE])
+def test_every_close_asks_for_the_unfinished_work_before_the_history(close: str) -> None:
+    stated = close.format(words=3_100)
+    assert _SUMMARY_ORDER in stated
+    assert "3,100 words" in stated
+    assert stated.index("Unfinished work") < stated.index("Older history")
+
+
+def test_a_route_that_thought_and_still_wrote_a_summary_keeps_the_switch(tmp_path: Path) -> None:
+    # Only a cut with nothing to keep costs a second ask, so only that one teaches the provider.
+    provider = _ThinksAnyway([_cut_reply(60)], ["length"], window=131_072)
+    loop = _loop(provider, tmp_path)
+
+    asyncio.run(loop._summarize_for_compaction(_history(3)))
+
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 16_469, "extra_body": OFF}]
+    assert id(provider) not in loop._refused_overrides
+
+
+@pytest.mark.parametrize(
+    ("text", "words", "kept"),
+    [
+        ("a b\nc d\ne f", 4, "a b\nc d"),  # the line end falls on the limit
+        ("a b\nc d\ne f", 3, "a b"),  # the limit falls inside a line
+        ("a b c d", 3, "a b c"),  # a single line has no line end to fall back on
+        ("a b", 3, "a b"),
+    ],
+)
+def test_first_words_ends_on_a_whole_line_where_one_fits(text: str, words: int, kept: str) -> None:
+    assert _first_words(text, words) == kept
+
+
+def test_a_held_summary_keeps_its_start_and_its_end_and_says_what_it_left_out() -> None:
+    held = _held_to_words(_words(600), 300)
+
+    assert held.startswith(_words(200))
+    assert held.endswith(" ".join(f"w{i}" for i in range(500, 600)))
+    assert "[... 300 words of this summary left out ...]" in held
+    assert len(held.split()) == 300 + _HELD_NOTE_WORDS

@@ -22919,6 +22919,87 @@ Not verified.
   three times. That no part is in both or in neither still rests on the code (a part is added in
   the step its event is yielded, an event is published in the step it is received).
 
+## ADR-0364: a run of plan-only completions is bounded: the third in a row is answered unexecuted
+
+Status: accepted. 2026-11-05. The net ADR-0192 left undone ("a bound on consecutive plan-only
+completions"). Builds on ADR-0168 and ADR-0202 (the plan advance and its evidence trigger),
+ADR-0196 (what counts as work), ADR-0057 (the steps rung 1 seeds) and ADR-0198 (a rail says only
+what was counted). Amends one control of ADR-0209.
+
+Context. A completion whose every call is a plan tool, and which neither closes a step nor draws
+the harness's advance, cannot move the plan: a step moves on a status the model sends, an outcome
+it records, or the work done while it is current, and such a completion supplies none of them.
+The existing nets each see one shape of that churn. The unchanged rail answers a byte-identical
+resend. The advance (lever N) needs evidence, so it cannot fire before any work. The doom guard
+needs an identical batch. The receipt rung of ADR-0209 needs the same receipt three times, and a
+plan whose step count or current step changes on each call returns a different receipt each time.
+A model that keeps rewriting its plan, adding a step here and retitling one there, passes all
+four.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model on ten
+GPUs, read from each session's own transcript (tool names, times, plan step counts and status
+values only), 2026-11-05. In the 4 h to 13:26 UTC, 279 of 2,175 tool calls (12.8%) sat in runs of
+three or more plan-only completions, and the first-to-last call of those runs spanned 346 of
+2,400 session-minutes (14.4%, a lower bound: it leaves out each run's last call). Per session
+the share of calls ran from 3% to 71%, and the longest run was 19 completions. In the 2 h to
+13:25 UTC, 169 of 256 `update_plan` calls (66%) sent steps with no status at all, so none of those
+plans could move except through the advance, and the advance only follows work. The worst session
+had run step 1 of its instructions, then sent seven such plans in a row with nothing between
+them, growing from 11 steps to 13.
+
+Decision.
+- The stuck tracker counts the plan-only completions in a row: every call is one of the loop's
+  plan tools (`_PLAN_TOOLS`). The run ends at any other call, even in the same completion. It also
+  ends at a plan call that moved the plan, meaning a receipt that reports more steps done than the
+  last one did, or the harness's advance. And it ends at a reset (a refused turn end sends the
+  model round again).
+- The third such completion in a row is answered unexecuted, on both turn paths. Every call
+  gets an error result, `data={"plan_only_bound": True}`, that names the current step: "Not
+  executed: this is response 3 in a row that calls only the plan tools ... its current step is
+  <id> '<title>': do that step now with a tool call. The plan tools are accepted again once
+  another tool has run." The loop notes each refusal `kind="plan_only_bound"`. The plan in force
+  is the one the model last had accepted, and a refused completion pulls no skill page.
+- A refused completion fires `SIG_PLAN_ONLY` and nothing else. It is no failure of the plan tool
+  and no look at the world, so the error counts and the outcome counts never see it. The first
+  draft let the ladder count the refusals as failures: it said "update_plan has failed 3 times"
+  and seeded "Investigate: why `update_plan` keeps failing", which is false and asks for more plan
+  work. The signal drives the ladder one rung per refusal after the first, since the first is
+  itself the intervention: a nudge at the 4th plan-only completion, read-only tools at the 5th,
+  the step back at the 6th, a stop at the 7th. The nudge says what was counted. Rung 1 seeds the
+  step the receipt case seeds, the work itself, with a note true of a refusal.
+- There is no setting (ADR-0202). With no plan tools named, the tracker counts nothing.
+
+ADR-0209's control "rewriting the plan with nothing in between still climbs" now reads the bound:
+the third of seven edits is refused and the ladder climbs on the refusals. The receipt rung it
+used to pin is still reached where the bound does not reach, when a non-work call such as a skill
+load sits between the edits. A new control pins that path, on both turn paths.
+
+ADR-0075's third drop meets the bound when a model collapses a skill's plan three times in a
+row: the third collapse is refused by this bound. The drop is still the model's decision once
+another tool has run, because the restore count is kept per turn. Its test,
+`test_a_third_drop_is_the_models_decision`, now puts a look at the workspace before the third
+collapse.
+
+Tests. `tests/test_plan_only_bound.py` covers the counting, the run ending at another call and at
+a moved plan, an errored plan call that does not end it, the reset, the refusal's own signal with
+the ladder's timing, and the refusal's words. On both turn paths it pins the third completion
+refused, the plan after it unchanged, and the next plan taken once a probe has run. It also pins
+planning between real steps as never refused. The two controls are in
+`tests/test_stuck_counts_by_lap.py`. Mutation: removing the refusal from one turn path fails that
+path's two loop-level cases and no others.
+
+Not verified.
+- Whether a refusal makes the served model act, or whether it keeps planning into the ladder. The
+  measurement: one session on this build, and its plan-only share, minutes in runs of three or
+  more, and goals completed against its own previous 4 h and against the sessions still on the
+  previous build, read with the same transcript probe.
+- The refusal does not read the refused completion's arguments, so a third plan call that would
+  have closed a step is refused too. It costs one round trip: the step can be closed once another
+  tool has run. How often that happens in a served run was not measured.
+- The `TodoWrite` alias is not in the loop's plan-tool set, so a run of `TodoWrite`-only
+  completions is not bounded. The loop's work count (ADR-0196) already counts that alias as work.
+- No bench arm was run.
+
 ## ADR-0365: a compaction drops every copy of the harness's position note, a model's echoes included
 
 Status: accepted. 2026-11-05. Builds on ADR-0082 (the harness writes the position note; the
@@ -22969,3 +23050,407 @@ Not verified.
 - On a live worker, that a window with echoes now installs one note. The 2026-11-05 counts were
   read from installed summaries and from the window's records, as numbers; the summarizer's input
   itself was not captured.
+
+## ADR-0366: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
+
+Status: accepted. 2026-11-03, amended 2026-11-05 (below). Builds on ADR-0275 (the summarizer's
+output cap), ADR-0330 (the word budget), ADR-0331 (the condensing ask), ADR-0242 (the one
+resample), ADR-0056 and ADR-0181 (the thinking switch), and ADR-0307 and ADR-0315 (a refused
+override). It takes over a closed draft that sent the same switch under an 8,192-token cap.
+
+Context. Every summarizer ask has 32,768 output tokens (ADR-0275), room made for a reasoning model's
+thinking, and the one resample of a summary the limit cut off asks the same way again. Measured
+2026-11-03 on a self-hosted pod serving ten worker sessions with a 27B model and a 131k window, from
+the inference router's ledger and transcript metadata (sizes and counts, no conversation text):
+
+- The workers' `extra_body` turns thinking on for every call and allows it 4,096 tokens a request,
+  with a budget message (`reasoning_budget_tokens`, which the pod's llama.cpp build reads). The
+  summarizer's asks carry the same body, so each may think 4,096 tokens before it writes a word.
+- In 24 hours, 50 summarizer calls ran to the 32,768-token cap: 1,086 engine-minutes, about 22
+  minutes each. With at most 4,096 of those tokens thinking, the rest was summary text. 17 of the 50
+  were followed by no summary at all: the resample ran to the cap too, and the compaction fell back
+  to elision (ADR-0083). They cluster where the summary before them was long: of the windows whose
+  earlier summary ran 6,000 words or more, 10 of 15 had a call at the cap, against 2 of 22 under
+  2,000 words.
+- 121 installed summaries, each paired with the call that wrote it, ran 7.92 characters a word, and
+  2.32 characters an output token if the call did not think, 4.17 if it used all 4,096 thinking
+  tokens. The spread at 4,096 is narrow (3.76 to 4.92 from the 10th to the 90th percentile), which
+  suggests most calls think the whole budget, about 2.7 minutes each at the pod's rate. At the
+  no-thinking end a word is about 3.4 tokens; `_WORDS_PER_TOKEN` assumes 1.33.
+- Of the 120 summaries installed in those 24 hours, the call that wrote one went past 8,192 tokens
+  78 times, past 12,288 tokens 24 times and past 16,469 tokens 16 times, thinking included.
+
+Published practice, reviewed the same day, agrees on three things. The summary call runs with
+thinking off: Qwen Code sends `enable_thinking: false` for Qwen models, and Cline sends
+`thinking: false`. Its output cap is sized to the summaries a model actually writes: Claude Code's
+is 20,000 tokens against a measured p99.99 of 17,387. A retry differs from the ask that failed, with
+a smaller input or a tighter target, as Hermes Agent and OpenCode do. Qwen's own report scores
+thinking mode slightly below non-thinking mode on long inputs.
+
+Decision.
+- A provider reports two facts. `Capabilities.thinking_switch`: the switch reaches the model as
+  written, through an OpenAI-compatible server on a configured `api_base` (ADR-0181), and the server
+  has not refused that key by name. It reads `thinking_switch_verbatim`, the predicate
+  `render_thinking_switch` now uses for the same decision. `Capabilities.thinking_configured`: the
+  route's own body already sets the switch, a zakpick category's `thinking` or the operator's
+  `extra_body`.
+- A new setting, `summarizer_thinking` (`ZAKCODE_SUMMARIZER_THINKING`), decides the summarizer's
+  thinking where the switch reaches the model. Unset, every summarizer ask goes with
+  `thinking_extra_body(False)` unless the route's body sets the switch or `model_roles` names the
+  summarizer: those are asked as configured. `false` sends the switch even where `extra_body` turns
+  thinking on for every other call; the per-call body merges over the configured one (ADR-0056), so
+  only the summarizer's asks change. `true` asks the summarizer as configured. The session resolves
+  it once, and the spawner hands it to every child loop.
+- An ask sent with thinking off, the whole transcript, a slice, a fold or the condensing ask, has a
+  cap of a summary at its condensing line, `_SUMMARY_OVER_BUDGET` times the word budget, at
+  `_SUMMARY_TOKENS_PER_WORD` (3.4, the no-thinking end) with a quarter again
+  (`_SUMMARY_SWITCHED_HEADROOM`): 16,469 tokens for 3,100 words, where it was 32,768. It is never
+  under the 8,192-token floor and never over the room the ask had. Sized at the no-thinking end, it
+  cuts no summary within the condensing line whichever end of the measurement is true.
+- A summary the output limit cut off is asked for again once (ADR-0242), at half its word budget
+  (`_shorter_budget`, rounded to hundreds: 1,600 for 3,100), under the same cap. The same budget is
+  written the same way, and the cap is what held it. If the cut response carried thinking although
+  the switch was sent, the route took the switch and thought anyway, and that resample asks with the
+  room the ask had before, at the same budget. On an ask without the switch the room is unchanged and
+  the shorter budget applies. Any other rejection is asked again as before.
+- A refusal that names nothing, of an ask that carried the switch, sends the ask again without it,
+  and the switch is recorded as refused for that provider (ADR-0315), so the session's later asks
+  and overflow retries to it leave it off.
+
+What was considered and not done.
+- Overriding a configured switch with no setting. An `extra_body` switch is the operator's word for
+  every call they send; the summarizer leaves it alone unless they say otherwise.
+- The closed draft's cap: the budget in tokens at `_WORDS_PER_TOKEN`, with half again, which is
+  8,192 on a 131k window. At the no-thinking density it would have cut 78 of the 120 summaries.
+- A 12,288-token cap, or one sized at the 4,096-thinking density. Either could cut a summary within
+  its budget if the calls measured thought less than their budget allows. The trial measures it:
+  with thinking off, a call's tokens are all summary.
+- Setting `_WORDS_PER_TOKEN` to the measured density. That halves every summary's word budget. It
+  changes what a summary holds, not what a call may spend, and needs its own measurement.
+- Ending the stream once the text passes a multiple of the budget. Tried on four sessions for three
+  days: the bound fired late (median 1,147 seconds), and because the stream was left open, 40 of the
+  48 calls it fired on still ran to the cap. A cap the server enforces needs no close.
+- A smaller per-request thinking budget for the summarizer. It keeps a cost the published practice
+  removes, and an abrupt end to thinking costs quality where no budget message is set.
+- A presence penalty or the DRY sampler against repetition. A summary repeats paths and ids by
+  design, and llama.cpp's penalty window starts on the end of the prompt. Not measured.
+- A `</summary>` stop sequence. llama.cpp matches stop strings against the reasoning too, so with
+  thinking on, one can end a call before its summary starts.
+- Holding the carried earlier summary to its budget before the next summarizer reads it. The windows
+  above point at it, but it changes what a summary keeps, and it is measured on its own.
+
+Not verified.
+- That the pod's model writes summaries as good with thinking off. The change runs on a few worker
+  sessions with `ZAKCODE_SUMMARIZER_THINKING=false`, against the rest, measured by calls at the cap,
+  summarizer engine-minutes per hour, compactions that install nothing, and installed summaries'
+  words.
+- That a model asked for half the words after a cut keeps under the cap. The 16 summaries over
+  16,469 tokens all followed long earlier summaries.
+- Hosted APIs and gateways. A route the switch does not reach keeps its 32,768-token room.
+
+Consequences.
+- Where the switch reaches the model and the setting or the route allows it, a summarizer call may
+  spend at most half what it did, none of it thinking, and the resample of a cut summary asks for
+  less instead of the same.
+- `ask` takes the prompt's body and its close template, so a resample can state a different budget.
+
+The proof. `tests/test_compact_loop.py` pins the cap for each budget and room, the shorter budget,
+the switch on every ask (slices, folds and the condensing ask included), the resample of a cut
+summary at half the words under the same cap, the resample with the old room on a route that thought
+anyway, an unchanged resample for any other rejection, a route whose body sets the switch asked as
+configured unless the setting is false, a `model_roles` summarizer asked as configured, and the
+refused switch learned for its provider. Two mutations fail them: a resample at the same budget
+fails 2, and the closed draft's 8,192-token cap fails 4. `tests/test_model_routing.py` pins how the
+session resolves the setting for the loop and every child, and `tests/test_thinking_switch_rendering.py`
+pins the two capabilities and the shared predicate. A request built with the workers' body shape
+sends `enable_thinking: false` and a 16,469-token cap on the summarizer's ask and leaves every other
+call as configured.
+
+### Amended 2026-11-05: off also closes a per-request reasoning budget, and a route that thinks through the switch is learned
+
+Context. The trial stopped on 2026-11-03 within an hour. A summarizer ask sent with the switch
+still thought, was cut at 16,469 tokens with thinking in the answer, and was asked again with the
+old room: one ask more per cut than before. The cause, read on 2026-11-05 from the pod without
+changing it: its chat template never reads `enable_thinking`, and its generation prompt opens the
+assistant turn and leaves the `<think>` to the model, so the switch sets a template variable nothing
+uses (`reasoning_effort: "none"` sets the same one). The pod's llama.cpp build also reads a
+per-request `reasoning_budget_tokens` (or `thinking_budget_tokens`; -1 means the server's own) and,
+where it knows the model's thinking tags, arms a sampler that forces `reasoning_budget_message` and
+the end tag once the budget is spent. Three calls through a worker's own configuration, on an ask
+that needs a little arithmetic:
+
+| Request | Thinking | Completion tokens |
+| --- | --- | --- |
+| budget 0, the route's 108-character message | that message, exactly | 38 |
+| budget 0, an empty message | none (right answer) | 5 |
+| as configured (budget 4,096) | 833 characters | 260 |
+
+The 2026-11-03 reading of 108 thinking characters at a budget of 0 was the forced message, not the
+model thinking.
+
+Decision.
+- `render_thinking_switch` keeps the switch verbatim on a self-hosted route, and where the switch
+  says off and the body carries a per-request reasoning budget (`REASONING_BUDGET_KEYS`), it sets
+  each to 0 and `reasoning_budget_message` to the empty string. A body without a budget gains no
+  key, a body with thinking on is unchanged, and a key the server refused by name stays out (that
+  filter runs after the render). Every "off" goes this way: the summarizer's, the reasoning-overflow
+  retry's (ADR-0056) and a category's `thinking: false`. A budget of 0 is thinking off, not the
+  smaller budget set aside above: nothing is cut short, and nothing is forced in.
+- A switched ask cut at its cap with thinking in the answer still asks again with the old room, and
+  its provider is now recorded in the same refused-override entry as a refused switch (ADR-0315), so
+  the session's later asks to it go as configured: no switch, the old room. A route that thought
+  through the switch once will again, and every cut costs an ask. Thinking in an ask that was not
+  cut changes nothing: its summary was written under the cap.
+
+What was considered and not done.
+- Changing the server's chat template to read the switch. It is the server's configuration, not
+  this repository's, and a budget of 0 reaches the model through the template as it is.
+- Learning from any thinking under the switch, cut or not. A server that forces a budget message of
+  its own would read as thinking while the model's thinking is off, and the switch would be dropped
+  where it works.
+- Adding a budget key to a body that carries none. Nothing says that server reads it, and some
+  servers refuse a body field they do not know (ADR-0181).
+
+Not verified. Summary quality with thinking off on the pod's model, as before: the trial measures
+it, now with thinking actually off.
+
+The proof. `tests/test_thinking_switch_rendering.py` pins the closed budget in both spellings, an
+unchanged budget with thinking on, and the workers' body shape: a switched call sends
+`enable_thinking: false` with a budget of 0 and an empty message, and an unswitched call its
+configured budget. `tests/test_compact_loop.py` pins a route that thought through the switch asked
+as configured from its next compaction, and one that thought under the cap still switched. Two
+mutations fail them: rendering off without closing the budget fails 3, and not recording the route
+fails 1.
+
+## ADR-0367: a sub-agent's tool calls run the session's tool hooks, under the session's id
+
+Status: accepted. 2026-11-05. Reverses the 2026-06-21 change that gave every sub-agent an empty
+hook set. The part of it that #89 started stands: a sub-agent does not rerun the session's
+SessionStart. Corrects the reason ADR-0079's 2026-09-30 amendment gives for wiring its re-read to
+the main loop only.
+
+Context. A sub-agent ran with no hooks at all, on the reading that Claude Code runs a sub-agent
+with only the hooks in its own frontmatter. Claude Code's documentation says otherwise. Its
+sub-agents guide ("Define hooks for subagents"): hooks in `settings.json` "also fire inside
+subagents. Tool events such as `PreToolUse` and `PostToolUse` fire for the subagent's tool calls
+the same way they do in the main conversation", and "a `PreToolUse` hook in `settings.json` also
+runs before every tool a subagent uses." Its hooks reference gives a hook that fires inside a
+sub-agent two more input fields, `agent_id` and `agent_type`, and fires `SubagentStop`, not
+`Stop`, when a sub-agent finishes. What the 2026-06-21 change checked held for SessionStart only.
+
+What the gap cost, measured on self-hosted workers in November 2026. Every `PreToolUse` gate a
+workspace declares, on the paths a write may touch and the commands a session may run, was
+skipped for a sub-agent's writes and commands. And a hook that keys on the session id to keep the
+session's own state never saw a sub-agent's call, so a host framework could not tell a session
+waiting on its sub-agent from one that had stopped. One parent waited inside a single task call
+for 2 h 43 m with no hook firing at all. Four times, on four machines, the host read a waiting
+session as gone while its sub-agent was still working.
+
+Decision.
+- `SubAgentRunner` builds each child loop with a `SubAgentHookManager` over the parent's hooks.
+  It holds the parent's `PreToolUse` and `PostToolUse` hooks, shell and in-process (a plugin's
+  included), and nothing else: no `SessionStart`, no turn-end hook or observer, no
+  `UserPromptSubmit`, no `PreLLMCall` context hook, no `PreCompact`.
+- Every payload it runs carries the parent session's `session_id`, and the sub-agent's
+  `agent_id` (the child loop's own session id) and `agent_type` (its definition's name). A shell
+  hook reads all three on stdin. On a main-thread call `agent_id` and `agent_type` are empty and
+  left off the wire, so the main thread's hook input is byte-for-byte what it was.
+- A parent with no hooks gives the child none, as before.
+
+The child copies the session's tool hooks when it starts. ADR-0079's re-read stays wired to the
+main loop: it replaces the parent's list only at the top of a parent iteration, and the parent is
+inside the task call for as long as its child runs, so the copy and the re-read cannot race. A
+hook that reaches the settings files while a sub-agent runs reaches the sub-agents started after.
+
+Not chosen.
+- The parent's whole hook set in the child, which Zak Code ran before 2026-06-21. A host's
+  turn-end hook would then judge each child's turn end, where Claude Code fires `SubagentStop`;
+  a context hook would inject the session's context into every child call; and a host's session
+  boot would rerun per child.
+- The child's own session id in the payload. A hook keyed on the session would read each
+  sub-agent as a session it never saw start. Claude Code never shows it one.
+- A new event that fires on a timer while a sub-agent runs, for a hook that must see the session
+  is still working. Claude Code has none, and the session's tool hooks firing for the child's own
+  calls already show it.
+
+Cost. The session's tool gates run for every sub-agent tool call: the 2026-06-21 change counted
+about 144 hook runs over a six-task delegation loop. A Claude Code session pays the same for the
+same work. A hook that wants to skip sub-agent calls reads `agent_type`.
+
+Limits. `SubagentStart` and `SubagentStop` are not fired yet. A hook added while a sub-agent runs
+does not reach that sub-agent (above).
+
+New tests.
+- `tests/test_subagent_tool_hooks.py` (3 cases), end to end through `Agent(enable_subagents=True)`
+  with the real shell tool: a child's command runs the session's `PreToolUse` and `PostToolUse`
+  hooks under the parent's session id, with `agent_type` and an `agent_id` of its own, while the
+  session's own calls carry neither; the session's turn-end observer and context hook do not run
+  for the child; and a shell hook reads the three fields from its own stdin, and on the session's
+  own call finds the two sub-agent keys absent.
+- `tests/test_subagent.py`: `test_subagent_gets_the_sessions_tool_hooks_and_nothing_else`
+  replaces `test_subagent_gets_its_own_empty_hooks_not_the_parents`. Given a parent with a hook
+  of every kind, the child's set holds exactly the tool-event hooks and the identity it stamps; a
+  parent with no hooks gives the child none.
+- Each case was checked against the code it guards. Building the child with no hooks again fails
+  the two tool-hook cases. Copying the parent's context, turn-end and lifecycle hooks into the
+  child fails the third, and so does copying its turn-end observers alone.
+
+Not verified.
+- Which `session_id` Claude Code sends for a sub-agent's tool call is not stated in its reference.
+  Its `SubagentStart` and `SubagentStop` examples carry the same `session_id` as the main thread,
+  and on Claude Code 2.1.287 (measured 2026-10-19) a hook that resolves the session from
+  `session_id` resolved a sub-agent's Bash call to the parent session.
+- A served worker's long delegation on this build; the tests run scripted models.
+
+## ADR-0368: a capped reply that restates itself is discarded, not continued
+
+Status: accepted. 2026-11-06. Extends ADR-0018 (the degeneration guard and its one-retry
+bound) to the long repeating unit that guard leaves alone. Builds on parity #5 (the length
+continuation) and ADR-0026 (the broken-record guard).
+
+Context. A final answer stopped by the output cap is continued, up to three times a run, and
+the continuation runs before the broken-record guard. ADR-0018's detector convicts only a
+short repeating unit, 200 characters or less, on the reasoning that a model restating a whole
+paragraph is a quality problem the per-completion cap bounds. The continuation undid that
+bound: each capped reply was continued, then re-prompted by every later rail, and nothing
+compared the replies with each other. On 2026-11-05 a served session wrote eleven replies of
+15,355 to 24,237 characters in 63 minutes. Each stopped at its 8,192-token cap and restated the
+one before, four were byte-identical, none called a tool, and only an operator restart ended
+the turn.
+
+What was measured, before building. Every assistant text block of 12,000 or more characters in
+ten served sessions' transcripts from 2026-11-01 to 2026-11-06: 219 blocks. The transcripts
+carry no stop reason, and the replies capped at 8,192 tokens there ran 13,002 to 45,878
+characters, so this population holds every capped reply and some longer uncapped ones. Each
+block was measured for its zlib ratio, its share of distinct lines, and the share of its 64-byte
+windows, taken at every offset, that already occurred earlier in the same text.
+- The eleven incident replies read 0.44 to 0.79 on that share. Of the 200 others, 128 read under
+  0.25, 23 between 0.25 and 0.40, and 49 at 0.40 or more. Those 49 were in 16 sessions on eight
+  machines, with a median distinct-line share of 0.30.
+- The zlib ratio could not separate them. The incident's highest was 0.254, and blocks that
+  repeat almost nothing read as low as 0.165.
+- A first version of the window measure stepped 16 bytes at a time. It read 0.0 on most incident
+  replies, because a repeat that starts at another offset never lines up. Taking every offset
+  fixed it.
+- Verbatim repeats occurred with no repetition inside the text: one 14k-character block was sent
+  four times, and it read 0.003.
+
+Decision.
+- On both turn paths, inside ADR-0018's guard, a text-only completion the output cap stopped
+  (finish reason `length` or `max_tokens`) is judged before it is continued. It is a
+  restatement in either of two cases. In the first, its text (normalized as the broken-record
+  guard normalizes it) matches an earlier capped reply this turn, or an earlier completion that
+  guard counted. In the second, the text is at least 12,000 characters long and
+  `self_repetition` (in `zakcode.agent.degeneration`) reads 0.40 or more.
+- A restatement shares ADR-0018's bound and recovery. It never reaches the transcript, the turn
+  is marked degraded and latches the struggle flag, and the iteration is refunded. The first is
+  retried behind a rail that asks for a tool call: "Your previous response was discarded: it ran
+  to the output limit restating what it had already written. Do not write it again. Take the
+  next concrete step with a tool call, or state in one sentence what is blocking you." The note
+  is `kind="restatement"`. The second degenerate or restated completion in a turn ends it as
+  `degenerated`.
+- A long capped answer that is neither is continued as before. A completion that calls a tool,
+  or one the cap did not stop, is not judged here.
+- The measure reads at most 64 KiB of the text. There is no setting.
+
+Tests. `tests/test_capped_restatement.py` covers:
+- the measure, on a restated text, a varied one, copies shifted to different offsets, a
+  half-repeated text and a short one;
+- the guard's scope: capped completions only; the length floor; a verbatim repeat caught with no
+  repetition inside; the broken-record counts read but not changed;
+- on both turn paths, a restatement discarded with the rail, the second one ending the turn, and
+  a clean capped answer still continued;
+- on the buffered path, the same capped reply sent twice, and an uncapped restatement left
+  alone.
+
+Two older tests of the continuation bound, in `tests/test_resilience_length.py`, scripted the
+same capped reply on every call. Under this decision the second copy is a restatement and the
+turn ends `degenerated`, so they now script a different capped reply each time. The bound they
+test is unchanged.
+
+Mutation results:
+- Raising the floor out of reach lets the restated reply through to the continuation; a test
+  pins this.
+- Removing the verbatim check fails three tests.
+- Unwiring the buffered or the streaming path fails that path's cases (three and two).
+
+Not verified.
+- Whether the served model acts on the rail, or restates again into the `degenerated` stop.
+  The measurement: runs of four or more capped replies in a row on a build with this decision,
+  against those on the previous build, over 24 h.
+- The 49 blocks above the floor besides the incident's were classified by the measure, not read.
+  A legitimate capped answer at 0.40 or more would be discarded and asked for a tool call.
+  Whether any of the 49 was one was not checked.
+- Below 12,000 characters the floor was never measured, so a configuration with a much lower
+  output cap gets the verbatim check only.
+- No bench arm was run.
+
+## ADR-0369: a summary the output limit cut off is kept, its most important parts first, and nothing installed runs past its line
+
+Status: accepted. 2026-11-06. Reverses two calls of earlier decisions: ADR-0275's that a cut summary
+is thrown away, and ADR-0331's that a summary is never truncated. Builds on ADR-0242 (the one
+resample), ADR-0330 (the word budget) and ADR-0366 (thinking off, a lower cap).
+
+Context. A summary the limit cut off installs nothing (ADR-0275), so everything the summarizer wrote
+is paid for and lost. Read 2026-11-06 from the source and from call sizes in the inference router's
+ledger (sizes and counts, no conversation text), on a self-hosted pod serving ten worker sessions
+with a 27B model and a 131k window, two paths end badly:
+
+- The ask is cut, and so is its one resample. `SummaryNotWritten` falls back to eliding tool outputs
+  (ADR-0083) and no summary installs. Seen at the 32,768-token cap (32,765 and 32,766 tokens; 32,770
+  and 32,769), and at ADR-0366's 16,469-token cap (16,471 twice, on two sessions).
+- The ask finishes over the condensing line (ADR-0331), the condensing ask is cut, and so is its
+  resample. The summary then stands at full size, and the next compaction starts from it. One
+  compaction ran 26,869, 6,064, 32,770 and 32,769 tokens, 39.5 engine-minutes, and left a summary of
+  94k characters. Another left 72k. A third installed 36k characters, 4,752 words against a line of
+  3,875, because a condensed answer that is shorter is taken however long it still is.
+
+The two are one failure. ADR-0366's lower cap moves compactions from the second to the first: a
+summary that would have finished long and stood is now cut, and installs nothing. An oversized
+summary then feeds the next: the windows with a long earlier summary are the ones that reach the cap
+(ADR-0366).
+
+ADR-0275 threw a cut summary away because what a cut loses is its end, and the end was the
+unfinished work. ADR-0331 would not truncate for the same reason. Both are true of a summary written
+in the order things happened, and neither asks whether a summary should be written in that order.
+
+Decision.
+- Every close (the whole transcript or a part, a fold, the condensing ask) asks for one order,
+  `_SUMMARY_ORDER`: four headings, Current goal and state, then Unfinished work and next step, then
+  Decisions and key facts, then Older history, and it says a summary can be cut off and only its
+  start is sure to be kept. The closes of a transcript also say an earlier summary goes under Older
+  history. So what a cut loses is the oldest history, not the next step.
+- A reply the limit cut off keeps its whole lines and is not asked for again. It is no summary if it
+  never opened its `<summary>` tag, since a plan or the transcript's next turn (ADR-0242) runs to the
+  limit as easily, or if under `_SUMMARY_FLOOR_CHARS` (500) of whole lines are left, whatever the
+  request's length. Either goes on to ADR-0366's resample, which stays for that case. A cut reply is
+  held to the line by its first words, ending on a whole line: it has no end to keep.
+- Nothing installed runs past the condensing line. The condensing ask stays. Whatever is left over
+  the line, a condensed answer still long, a summary whose condensing ask was cut, gave nothing or
+  failed, is held to it by its first two thirds and its last third, with the number of words left
+  out said between them: the end stays, whether or not the model kept the order.
+- A summary cut or held says so in its position note (`_SUMMARY_HELD_LINE`): a model resuming from it
+  knows part of the older history is missing. The note is stripped before the next compaction, like
+  the rest of the position note (ADR-0330), so it is not carried forward.
+- `summarizer_cut` counts the replies kept, beside `summarizer_rejected`.
+
+What was considered and not done.
+- Keeping ADR-0275 and lowering the word budget again. The budget does not hold a summary that is the
+  last one plus everything since (ADR-0331), and each cut still costs a whole ask.
+- Stopping the stream once the word budget is written. A closed draft tried it: the stop fired late,
+  and it holds the words, not their order.
+- Holding the earlier summary before the ask, which ADR-0366 also left out. The close now says what
+  to do with it; the trial counts whether that is enough.
+- Holding a finished summary by its first words alone. A model that ignored the order would lose its
+  unfinished work, which is ADR-0331's whole point.
+
+Not verified, and the trial measures each by counts alone. Whether the pod's model keeps the order
+(heading positions, the census ADR-0275 used). Whether a cut reply spends its room copying the
+earlier summary (lines over 40 characters copied verbatim, ADR-0331's method). Whether a worker
+resumes as well from a summary that says part of it is missing.
+
+The proof. `tests/test_compact_loop.py` pins a cut reply kept to its whole lines and installed on the
+first ask, held to its line, counted and said; one with too little left, or that never opened its
+tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
+over its line held to it, a failed condensing ask included; the note, and what strips it; and the
+order in all three closes. 23 mutations, one a behaviour, each fail the file.

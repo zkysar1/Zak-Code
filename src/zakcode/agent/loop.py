@@ -118,7 +118,14 @@ from zakcode.agent.compact import (
     Compactor,
     is_summary,
 )
-from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
+from zakcode.agent.degeneration import (
+    BURST_MIN_REPEATS,
+    RESTATEMENT_FLOOR,
+    RESTATEMENT_MIN_CHARS,
+    burst_repetition,
+    repeated_tail,
+    self_repetition,
+)
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.pinned_inputs import change_notice
 from zakcode.agent.prompt import SystemPromptBuilder
@@ -398,20 +405,29 @@ _SUMMARY_PROMPT = "Conversation transcript to summarize (each turn is labeled by
 #: on the harness note and its kept tail alone. The instruction sat only in the system prompt,
 #: above some 40,000 tokens of agent turns. ``{words}`` is the summary's word budget, and an
 #: earlier summary is named as history to condense (ADR-0330).
+#: How every summary is asked to be laid out (ADR-0369): what the next step needs first, so a reply
+#: the output limit cuts off, or a summary held to its line, loses the oldest history and not the
+#: unfinished work. Named headings because a small model keeps an outline better than a word count,
+#: and a reader can count them.
+_SUMMARY_ORDER = (
+    "Put the most important things first, under these four headings in this order: Current goal "
+    "and state; Unfinished work and next step; Decisions and key facts; Older history. A summary "
+    "can be cut off, and only its start is sure to be kept."
+)
 _SUMMARY_CLOSE = (
     "\n\n[end of transcript]\n\nThe transcript stops here. You are not in it: do not continue "
     "it, reply to anyone in it, or call a tool. Summarize it now, in the third person and in at "
-    "most {words:,} words, inside <summary></summary>. An [earlier summary] in it is history to "
-    "condense with the rest, not text to copy."
+    "most {words:,} words, inside <summary></summary>. " + _SUMMARY_ORDER + " An [earlier "
+    "summary] in it is history to condense with the rest, not text to copy: it goes under Older "
+    "history."
 )
 #: What closes the part-summaries a fold reads (ADR-0242), with the same word budget (ADR-0330).
 _FOLD_CLOSE = (
     "\n\n[end of part-summaries]\n\nFold them now into one summary, in the third person and in "
-    "at most {words:,} words, inside <summary></summary>."
+    "at most {words:,} words, inside <summary></summary>. " + _SUMMARY_ORDER
 )
 #: The summary inside a response's tags (ADR-0242); a response that ends before its closing tag
-#: keeps what it wrote. One that the output limit ended is not a summary at all (ADR-0275): the
-#: finish reason decides that, not the tag.
+#: keeps what it wrote. The finish reason says whether the output limit ended it, not the tag.
 _SUMMARY_TAG_RE = re.compile(r"<summary>(.*?)(?:</summary>|\Z)", re.S | re.I)
 #: A response that opens as a turn of the transcript it was handed, under the renderer's own
 #: label for a turn of the conversation (ADR-0242). The other labels are left out: on a
@@ -461,9 +477,25 @@ _SUMMARY_OVER_BUDGET = 1.25
 _CONDENSE_PROMPT = "This summary of one conversation runs {said:,} words, over its budget:\n\n"
 _CONDENSE_CLOSE = (
     "\n\n[end of summary]\n\nRewrite it now in at most {words:,} words, in the third person, "
-    "inside <summary></summary>. Shorten the oldest history the most; keep the goals, "
-    "decisions, file paths and unfinished work."
+    "inside <summary></summary>. " + _SUMMARY_ORDER + " Shorten the oldest history the most; keep "
+    "the goals, decisions, file paths and unfinished work."
 )
+#: Output tokens per word of a summary, at most (ADR-0366). Measured 2026-11-03 on the pod's 27B
+#: model: 121 installed summaries, each paired with the call that wrote it in the inference
+#: router's ledger (sizes only), ran 7.92 characters a word, and 2.32 characters an output token if
+#: the call did not think, 4.17 if it used all 4,096 thinking tokens its requests allow. The narrow
+#: spread at 4,096 suggests most did. This is the no-thinking end, about 3.4 tokens a word, so a cap
+#: sized with it cuts no summary within its condensing line whichever end is true; a call sent with
+#: thinking off writes only its summary and measures the truth. :data:`_WORDS_PER_TOKEN` sizes the
+#: word budget (ADR-0330) and is left as it is.
+_SUMMARY_TOKENS_PER_WORD = 3.4
+#: The headroom on the cap of a summarizer ask sent with thinking off (ADR-0366), over a summary at
+#: the length one is condensed past (:data:`_SUMMARY_OVER_BUDGET`) at
+#: :data:`_SUMMARY_TOKENS_PER_WORD`: 16,469 tokens for a 3,100-word budget. Of the 120 summaries
+#: the pod installed in the 24 hours to 2026-11-03T16:00Z, the call that wrote one went past 8,192
+#: tokens 78 times and past 16,469 tokens 16 times, thinking included; under the 32,768 cap, 50
+#: calls ran to it in those hours.
+_SUMMARY_SWITCHED_HEADROOM = 1.25
 #: What the summarizer reads of one tool output, head and tail (ADR-0232), and of the skill
 #: body a turn was composed from (ADR-0238). Tool outputs were 85-95% of the characters it
 #: re-read, and the summarizer shares no prefix with the conversation, so every one of them
@@ -476,6 +508,10 @@ _SUMMARY_OUTPUT_CHARS = 2000
 #: earlier summary: that line through the end of its block (ADR-0330).
 _POSITION_NOTE_HEAD = "Harness position (authoritative — generated by the harness, not summarized):"
 _POSITION_NOTE_RE = re.compile(re.escape(_POSITION_NOTE_HEAD) + r".*?(?=\n[ \t]*\n|\Z)", re.S)
+#: The line a summary that was cut or held adds to that note (ADR-0369): a resumed model must not
+#: read it as the whole history (ADR-0275), and the note is written fresh at every compaction, so
+#: the line is not carried into the next summary.
+_SUMMARY_HELD_LINE = "- summary: cut to its length limit, so part of the older history is missing"
 #: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
 #: call, or thinking tags — which must never survive into a compaction summary.
 _MODEL_MARKUP_RE = re.compile(
@@ -573,9 +609,10 @@ def _pack_parts(parts: list[str], budget: int) -> list[list[str]]:
 def _zero_compaction_cost() -> dict[str, float]:
     """A compaction's cost record before anything ran (ADR-0241): the PreCompact hooks'
     seconds, then the summarizer's calls, tokens and seconds (every slice and fold), how
-    many of its responses were not summaries (ADR-0242), and the size of the summary that
-    was installed (ADR-0241 amendment) — the completion tokens the summarizer billed are
-    mostly a reasoning model's thinking, and only the summary's own size tells the two apart."""
+    many of its responses were not summaries (ADR-0242), how many the output limit cut off and
+    were kept (ADR-0369), and the size of the summary that was installed (ADR-0241 amendment) —
+    the completion tokens the summarizer billed are mostly a reasoning model's thinking, and only
+    the summary's own size tells the two apart."""
     return {
         "pre_compact_s": 0.0,
         "summarizer_calls": 0,
@@ -584,6 +621,7 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_completion_tokens": 0,
         "summarizer_s": 0.0,
         "summarizer_rejected": 0,
+        "summarizer_cut": 0,
         "summary_chars": 0,
         "summary_tokens_estimate": 0,
     }
@@ -605,22 +643,26 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
     """The summary in a summarizer's response, or ``""`` and why it has none (ADR-0242).
 
     The summary is what the response puts inside its ``<summary>`` tags, else the whole
-    response, with thinking and tool-call markup stripped. It is not a summary when the output
-    limit cut it off (``finish_reason``, ADR-0275), when it is empty, when it opens as a turn of
-    the transcript it was handed, or when it is shorter than :data:`_SUMMARY_FLOOR_CHARS` for a
-    request of :data:`_SUMMARY_FLOOR_SOURCE` characters or more. ``source_chars`` is the length
-    of that request.
+    response, with thinking and tool-call markup stripped. It is not a summary when it is empty,
+    when it opens as a turn of the transcript it was handed, or when it is shorter than
+    :data:`_SUMMARY_FLOOR_CHARS` for a request of :data:`_SUMMARY_FLOOR_SOURCE` characters or more.
+    ``source_chars`` is the length of that request.
 
-    A cut summary is the start of one, and what it leaves out is its end: in the 2026-10-02
-    census, a section on unfinished work was in 140 of the 207 summaries that finished and 7
-    of the 27 that were cut. Installed, it read as the whole history to the model that resumed
-    from it.
+    A response the output limit cut off (``finish_reason``) stops mid-line, so it keeps its whole
+    lines. It has no summary if it never opened its tags, since a plan or the transcript's next
+    turn runs to the limit as easily, or if those lines come to under :data:`_SUMMARY_FLOOR_CHARS`
+    whatever the request's length (ADR-0369). ADR-0275 threw every cut response away because what
+    a cut loses is its end, and the end was the unfinished work: a section on it was in 140 of the
+    207 summaries that finished and 7 of the 27 that were cut. The summary now asks for that work
+    first (:data:`_SUMMARY_ORDER`), and a position note line says the summary was cut.
     """
-    if finish_reason in _LENGTH_FINISH_REASONS:
-        return "", "it was cut off at the output limit"
     cleaned = _strip_model_markup(text)
     tagged = _SUMMARY_TAG_RE.search(cleaned)
     summary = (tagged.group(1) if tagged else cleaned).strip()
+    if finish_reason in _LENGTH_FINISH_REASONS:
+        summary = summary.rpartition("\n")[0].rstrip() if tagged else ""
+        if len(summary) < _SUMMARY_FLOOR_CHARS:
+            return "", "it was cut off at the output limit"
     if not summary:
         return "", "it was empty"
     if _TRANSCRIPT_TURN_RE.match(summary):
@@ -628,6 +670,34 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
     if source_chars >= _SUMMARY_FLOOR_SOURCE and len(summary) < _SUMMARY_FLOOR_CHARS:
         return "", f"{len(summary)} characters for {source_chars:,} of transcript"
     return summary, ""
+
+
+def _first_words(text: str, words: int) -> str:
+    """The first ``words`` words of ``text``, ending on a whole line where one fits (ADR-0369): how
+    a reply the output limit cut off is held to its line. It has no end to keep."""
+    spans = list(re.finditer(r"\S+", text))
+    if len(spans) <= words:
+        return text
+    kept = text[: spans[words].start()]  # through what follows its last word: a line end, if so
+    return (kept.rpartition("\n")[0] or kept).rstrip()
+
+
+def _held_to_words(text: str, words: int) -> str:
+    """A finished summary over its line, held to ``words`` words (ADR-0369): its first two thirds
+    and its end, with what was left out said between them. ADR-0331 would not truncate a summary
+    because its end is the unfinished work, so the end stays, whether or not the model kept the
+    order it was asked for."""
+    spans = list(re.finditer(r"\S+", text))
+    if len(spans) <= words:
+        return text
+    tail = words // 3
+    head = words - tail
+    left_out = len(spans) - words
+    return (
+        f"{text[: spans[head - 1].end()]}\n\n"
+        f"[... {left_out:,} words of this summary left out ...]\n\n"
+        f"{text[spans[-tail].start() :]}"
+    )
 
 
 def _summary_output_room(window: int, max_output: int | None) -> int:
@@ -643,6 +713,26 @@ def _summary_output_room(window: int, max_output: int | None) -> int:
     """
     room = min(_SUMMARY_OUTPUT_TOKENS, max(window // 4, _SUMMARY_OUTPUT_FLOOR))
     return min(room, max_output) if max_output else room
+
+
+def _summary_switched_room(words: int, room: int) -> int:
+    """The output cap of a summarizer ask sent with thinking off (ADR-0366): a summary of
+    :data:`_SUMMARY_OVER_BUDGET` times its word budget ``words``, the length past which one is
+    condensed (ADR-0331), at :data:`_SUMMARY_TOKENS_PER_WORD`, with
+    :data:`_SUMMARY_SWITCHED_HEADROOM`, never under :data:`_SUMMARY_OUTPUT_FLOOR` and never over
+    ``room``, the cap the ask has with thinking on (ADR-0275)."""
+    tokens = round(
+        words * _SUMMARY_OVER_BUDGET * _SUMMARY_TOKENS_PER_WORD * _SUMMARY_SWITCHED_HEADROOM
+    )
+    return min(room, max(tokens, _SUMMARY_OUTPUT_FLOOR))
+
+
+def _shorter_budget(words: int) -> int:
+    """The word budget a summary the output limit cut off is asked for again with (ADR-0366): half
+    of ``words``, rounded to hundreds and never under 100, as :func:`_summary_target_words` rounds.
+    A summary that ran past its cap was already over its budget, and asked again for the same
+    budget the model writes it the same way."""
+    return max(100, round(words / 2 / 100) * 100)
 
 
 async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResult:
@@ -955,6 +1045,44 @@ _DEGENERATION_NUDGE = (
     "Your previous response was discarded because it repeated the same content over and "
     "over. Start fresh: answer the user's request once, in a few plain sentences, then stop."
 )
+#: The rail behind a discarded restatement (ADR-0368). It asks for a tool call: in the
+#: incident the run of capped replies never reached one, and only work moves such a turn.
+_RESTATEMENT_NUDGE = (
+    "Your previous response was discarded: it ran to the output limit restating what it had "
+    "already written. Do not write it again. Take the next concrete step with a tool call, "
+    "or state in one sentence what is blocking you."
+)
+
+
+def _capped_restatement(
+    text: str,
+    finish_reason: str | None,
+    capped_texts: set[str],
+    completion_counts: dict[str, int],
+) -> str | None:
+    """Why a text-only completion the output cap stopped is a restatement, or ``None``.
+
+    ADR-0368. A capped final answer is length-continued, and the continuation runs before the
+    broken-record guard (ADR-0026), so that guard never saw these texts. Two shapes are
+    caught here: the same capped text again this turn (it is recorded in ``capped_texts``, and
+    an earlier uncapped completion is looked up in ``completion_counts``, which this does not
+    change), or a text at least :data:`RESTATEMENT_MIN_CHARS` long whose
+    :func:`self_repetition` reaches :data:`RESTATEMENT_FLOOR`. A long capped answer that does
+    neither is still continued."""
+    if finish_reason not in _LENGTH_FINISH_REASONS:
+        return None
+    key = " ".join(text.split()).lower()
+    if key in capped_texts or completion_counts.get(key):
+        return "the same text as an earlier reply this turn"
+    capped_texts.add(key)
+    if len(text) < RESTATEMENT_MIN_CHARS:
+        return None
+    share = self_repetition(text)
+    if share >= RESTATEMENT_FLOOR:
+        return f"{share:.0%} of it repeats what it had already written"
+    return None
+
+
 #: False-done guard (ADR-0024): a completion whose tail ANNOUNCES actions is not a
 #: completion. Field incident 2026-08-26: a small model ended its turn on "Now I will use
 #: the `create_file` command … I will then use `mv` …" and the turn completed with none of
@@ -2525,6 +2653,7 @@ class AgentLoop:
         spawner: SubAgentSpawner | None = None,
         compactor: Compactor | None = None,
         summarizer_provider: Provider | None = None,
+        summarizer_thinking: bool | None = None,
         attempt_cap: int = 3,
         model_failover: Callable[[ProviderError], tuple[Provider, str] | None] | None = None,
         main_provider_for: MainProviderFor | None = None,
@@ -2683,6 +2812,10 @@ class AgentLoop:
         # can route the cheap "summarizer" role to a cheaper/local model than the generator.
         # ``None`` falls back to ``provider`` — so the default path is unchanged.
         self._summarizer_provider = summarizer_provider
+        # The summarizer's thinking (ADR-0366): None leaves it to the route, off unless the route's
+        # own body sets the switch; False turns it off wherever the switch reaches the model; True
+        # asks as configured. The session passes True for a summarizer named in ``model_roles``.
+        self._summarizer_thinking = summarizer_thinking
         self.registry = registry
         self.session = session
         self.prompt_builder = prompt_builder or SystemPromptBuilder()
@@ -2892,8 +3025,9 @@ class AgentLoop:
         #: the ``/compact`` command surface it, so a failed summarizer is never silent.
         self.last_compaction = ""
         #: The overflow-retry overrides each provider refused naming neither and then took the
-        #: call without, for the session (ADR-0315), by the provider's id. The provider rides
-        #: along so that id cannot be reused, and a routed or failed-over one learns its own.
+        #: call without, for the session (ADR-0315), by the provider's id, and the thinking switch
+        #: a summarizer ask was refused the same way (ADR-0366). The provider rides along so that
+        #: id cannot be reused, and a routed or failed-over one learns its own.
         self._refused_overrides: dict[int, tuple[Provider, set[str]]] = {}
         #: What the compaction in progress has cost so far (ADR-0241): its PreCompact hooks
         #: and its summarizer calls, noted on the compaction's intervention row.
@@ -3203,11 +3337,20 @@ class AgentLoop:
         # ADR-0275: room to think and still finish the summary. Every ask carries it, the
         # resample, every slice and every fold included.
         room = _summary_output_room(window, caps.max_output)
-        # ADR-0330: every close states the same word budget, a slice's and a fold's included.
+        # ADR-0330: every close states the same word budget, a slice's, a fold's and the condensing
+        # ask's (ADR-0331) included; only a resample of a summary that was cut off asks for less.
         words = _summary_target_words(window, room)
-        close = _SUMMARY_CLOSE.format(words=words)
-        fold_close = _FOLD_CLOSE.format(words=words)
-        condense_close = _CONDENSE_CLOSE.format(words=words)  # ADR-0331
+        # ADR-0331's condensing line. ADR-0369: nothing installed runs past it.
+        line = int(words * _SUMMARY_OVER_BUDGET)
+        held = False  # this summary was cut or held to the line, so its note says so (ADR-0369)
+        # ADR-0366: where the switch reaches the model as written, every ask goes with thinking off
+        # and a cap its budget sets, unless the route's own body sets the switch and the setting
+        # leaves it to the route, or the setting asks for the summarizer as configured.
+        setting = self._summarizer_thinking
+        thinking_off = caps.thinking_switch and (
+            setting is False or (setting is None and not caps.thinking_configured)
+        )
+        switched_room = _summary_switched_room(words, room)
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
@@ -3217,8 +3360,16 @@ class AgentLoop:
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
-        async def ask(prompt: str) -> str:
+        async def ask(body: str, close: str) -> str:
+            # ``close`` is the template that ends the prompt; its ``{words}`` is the budget asked.
+            nonlocal held
+            asked = words
+            prompt = body + close.format(words=asked)
             raised: dict[str, Any] = {}  # a resample's temperature (ADR-0242)
+            switched: dict[str, Any] = {}  # thinking off and its cap (ADR-0366)
+            entry = self._refused_overrides.get(id(summarizer))
+            if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
+                switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
 
             def request(call_kw: dict[str, Any]) -> Awaitable[LLMResult]:
                 # ADR-0251: streamed and collected, never buffered. A buffered answer can
@@ -3231,7 +3382,7 @@ class AgentLoop:
                         [Message.user(prompt)],
                         system=instruction,
                         prompt_cache_key=self._prompt_cache_key(),
-                        **{"max_tokens": room, **raised, **call_kw},
+                        **{"max_tokens": room, **switched, **raised, **call_kw},
                     )
                 )
 
@@ -3251,14 +3402,81 @@ class AgentLoop:
                         raised = {"temperature": self._rejection_retry_temperature(resample)}
                     # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out
                     # here exactly as it is on the main call, instead of failing the compaction.
-                    result = await self._complete_with_retry(request, on_withheld=account_withheld)
+                    try:
+                        result = await self._complete_with_retry(
+                            request, on_withheld=account_withheld
+                        )
+                    except RequestFailed as exc:
+                        # ADR-0366: a refusal that names nothing, of an ask that switched thinking
+                        # off, is ADR-0307's shape, and the ask without the switch is the one every
+                        # summary took before. It is sent again without it, and the switch is left
+                        # off this provider's later asks and overflow retries (ADR-0315).
+                        if type(exc) is not RequestFailed or not switched:
+                            raise
+                        switched.clear()
+                        said = "the summarizer refused the thinking switch; asking without it"
+                        logger.warning("compaction: %s", said)
+                        self._note(
+                            "intervention", said, kind="summarizer_switch_refused", error=str(exc)
+                        )
+                        sink = self._status_sink
+                        if sink is not None:
+                            sink(f"compaction: {said}")
+                        result = await self._complete_with_retry(
+                            request, on_withheld=account_withheld
+                        )
+                        entry = self._refused_overrides.setdefault(
+                            id(summarizer), (summarizer, set())
+                        )
+                        entry[1].add(_SWITCH_OVERRIDE)
                     self._account_summarizer_usage(result.usage, summarizer)
                     summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
                     if summary:
+                        if result.finish_reason in _LENGTH_FINISH_REASONS:
+                            # ADR-0369: what a cut reply wrote is kept, not asked for again. Both
+                            # asks cut used to install nothing, each at the cost of a whole ask.
+                            summary = _first_words(summary, line)
+                            held = True
+                            self._compaction_cost["summarizer_cut"] += 1
+                            said = (
+                                "the summarizer's response was cut off at the output limit; "
+                                f"keeping {len(summary.split()):,} words of it"
+                            )
+                            logger.warning("compaction: %s", said)
+                            sink = self._status_sink
+                            if sink is not None:
+                                sink(f"compaction: {said}")
                         return summary
                     self._compaction_cost["summarizer_rejected"] += 1
                     if resample < _SUMMARY_RESAMPLES:
-                        said = f"the summarizer's response was not a summary ({why}); asking again"
+                        again = "asking again"
+                        if result.finish_reason in _LENGTH_FINISH_REASONS:
+                            # ADR-0366: a summary the output limit cut off is not asked for the
+                            # same way twice. Where the route took the switch and thought anyway,
+                            # again with the room the ask had with thinking on (ADR-0275).
+                            # Otherwise for half the words under the same cap: the same budget is
+                            # written the same way, and the cap is what held it.
+                            if switched.get("max_tokens") and result.thinking:
+                                switched.pop("max_tokens")
+                                again = "asking again with room to think"
+                                # And this provider's later asks go as configured, with that room
+                                # and no switch: a route that thought through it once will again,
+                                # and each cut costs an ask (ADR-0366).
+                                entry = self._refused_overrides.setdefault(
+                                    id(summarizer), (summarizer, set())
+                                )
+                                entry[1].add(_SWITCH_OVERRIDE)
+                                self._note(
+                                    "intervention",
+                                    "the summarizer thought through the thinking switch; "
+                                    "later asks go as configured",
+                                    kind="summarizer_switch_ignored",
+                                )
+                            else:
+                                asked = _shorter_budget(asked)
+                                prompt = body + close.format(words=asked)
+                                again = f"asking again for {asked:,} words"
+                        said = f"the summarizer's response was not a summary ({why}); {again}"
                         logger.warning("compaction: %s", said)
                         sink = self._status_sink
                         if sink is not None:
@@ -3275,9 +3493,12 @@ class AgentLoop:
         async def held_to_budget(summary: str) -> str:
             # ADR-0331: a summary over its budget is condensed once, on its own, a small ask. An
             # answer that is no shorter, or no summary at all, leaves the summary in hand: it is
-            # still a summary, and the compaction does not fail over it.
+            # still a summary, and the compaction does not fail over it. ADR-0369: whichever is
+            # left, it is held to the line. Standing at full size it read 94k characters, and the
+            # next compaction started from it.
+            nonlocal held
             said = len(summary.split())
-            if said <= words * _SUMMARY_OVER_BUDGET:
+            if said <= line:
                 return summary
             note = f"the summary ran {said:,} words against a budget of {words:,}; condensing it"
             logger.info("compaction: %s", note)
@@ -3285,15 +3506,20 @@ class AgentLoop:
             if sink is not None:
                 sink(f"compaction: {note}")
             try:
-                condensed = await ask(_CONDENSE_PROMPT.format(said=said) + summary + condense_close)
+                condensed = await ask(_CONDENSE_PROMPT.format(said=said) + summary, _CONDENSE_CLOSE)
             except Exception:  # noqa: BLE001 — the condensing ask is a model call; it can fail
-                logger.warning("compaction: condensing failed; the summary stands", exc_info=True)
-                return summary
-            return condensed if len(condensed.split()) < said else summary
+                logger.warning("compaction: condensing failed; holding the summary", exc_info=True)
+                condensed = summary
+            shorter = condensed if len(condensed.split()) < said else summary
+            if len(shorter.split()) <= line:
+                return shorter
+            held = True
+            return _held_to_words(shorter, line)
 
         if len(rendered) <= chunk_chars:
-            summary = await ask(_SUMMARY_PROMPT + rendered + close)
-            return self._finish_summary(await held_to_budget(summary), messages)
+            summary = await ask(_SUMMARY_PROMPT + rendered, _SUMMARY_CLOSE)
+            summary = await held_to_budget(summary)
+            return self._finish_summary(summary, messages, held=held)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -3311,7 +3537,7 @@ class AgentLoop:
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(
-                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}{close}"
+                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", _SUMMARY_CLOSE
             )
             parts.append(text.strip())
         for _ in range(_MAX_FOLD_PASSES):
@@ -3319,7 +3545,7 @@ class AgentLoop:
                 break
             folded: list[str] = []
             for group in _pack_parts(parts, chunk_chars):
-                text = await ask(_FOLD_PROMPT + "\n\n".join(group) + fold_close)
+                text = await ask(_FOLD_PROMPT + "\n\n".join(group), _FOLD_CLOSE)
                 folded.append(text.strip())
             parts = folded
         combined = "\n\n".join(parts)
@@ -3332,10 +3558,11 @@ class AgentLoop:
                 chunk_chars,
             )
             text = await ask(
-                _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries") + fold_close
+                _FOLD_PROMPT + _clamp_middle(combined, chunk_chars, "part-summaries"), _FOLD_CLOSE
             )
             combined = text.strip()
-        return self._finish_summary(await held_to_budget(combined), messages)
+        combined = await held_to_budget(combined)
+        return self._finish_summary(combined, messages, held=held)
 
     def _account_summarizer_usage(self, usage: Usage, provider: Provider) -> None:
         """Count one summarizer response like every other side call (ADR-0241), a rejected
@@ -3357,13 +3584,18 @@ class AgentLoop:
         cost["summarizer_cache_read_tokens"] += usage.cache_read_tokens
         cost["summarizer_completion_tokens"] += usage.completion_tokens
 
-    def _finish_summary(self, text: str, summarized: Sequence[Message] = ()) -> str:
+    def _finish_summary(
+        self, text: str, summarized: Sequence[Message] = (), *, held: bool = False
+    ) -> str:
         """A model's summary, made safe to resume from (ADR-0082): its tool-call and
         thinking markup stripped, any position note it copied dropped (ADR-0365), and the
         harness's own position note appended. ``summarized`` is the part of the history the
-        summary replaces (ADR-0238)."""
+        summary replaces (ADR-0238). ``held`` says the summary was cut or held to its line,
+        and the note says so (ADR-0369)."""
         summary = _without_position_notes(_strip_model_markup(text))
         note = self._compaction_position_note(summarized)
+        if held:
+            note = f"{note or _POSITION_NOTE_HEAD}\n{_SUMMARY_HELD_LINE}"
         return "\n\n".join(part for part in (summary, note) if part)
 
     def _compaction_position_note(self, summarized: Sequence[Message] = ()) -> str:
@@ -4378,17 +4610,24 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt:
+        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only:
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
+            # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
+            # and any call to another tool is what ends that run.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
-                        "you have been recording changes with no other work in between. Done "
-                        "when ONE call to a tool other than the plan tool has succeeded on "
+                        (
+                            "you have been sending only plan calls, and the last were not "
+                            "executed. "
+                            if stuck.last_was_plan_only
+                            else "you have been recording changes with no other work in between. "
+                        )
+                        + "Done when ONE call to a tool other than the plan tool has succeeded on "
                         "that step (a read-only probe counts) and you have noted what it showed"
                     ),
                 )
@@ -6801,6 +7040,29 @@ class AgentLoop:
                 blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
         return blocks
 
+    def _refuse_plan_only(
+        self, calls: list[ToolCall], stuck: StuckTracker
+    ) -> list[ToolResultBlock]:
+        """Answer a plan-only completion at the bound unexecuted, naming the step to do (ADR-0364).
+
+        The blocks go on through the iteration like any batch's results, so the stuck ladder
+        sees each refusal and a model that keeps planning still climbs it to a stop.
+        """
+        current = self.session.task_network.current()
+        step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
+        self._note(
+            "intervention",
+            f"response {stuck.plan_only_run + 1} in a row called only the plan tools",
+            kind="plan_only_bound",
+        )
+        output = stuck.plan_only_message(step)
+        return [
+            ToolResultBlock(
+                tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
+            )
+            for call in calls
+        ]
+
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
         """True iff every result was a permission denial, step restriction, hook veto, or
@@ -8182,6 +8444,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -8236,7 +8499,7 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         while True:
@@ -8506,21 +8769,40 @@ class AgentLoop:
             # the transcript (a known-invalid completion re-issued — the same recovery
             # contract as ModelOutputRejected), retry once behind a corrective rail, then
             # end honestly. Scoped to no-tool-call completions: a batch calling tools is
-            # doing work, and its text rides along unjudged.
+            # doing work, and its text rides along unjudged. A completion the output cap
+            # stopped that restates itself (ADR-0368) is the same failure with a long unit,
+            # and it shares this bound: discarded before it is length-continued.
             if not result.has_tool_calls and result.text:
                 degen_unit = repeated_tail(result.text)
-                if degen_unit is not None:
+                restated = (
+                    _capped_restatement(
+                        result.text, result.finish_reason, capped_texts, completion_counts
+                    )
+                    if degen_unit is None
+                    else None
+                )
+                if degen_unit is not None or restated is not None:
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -9499,9 +9781,15 @@ class AgentLoop:
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
-            result_blocks = await self._execute_batch(
-                result.tool_calls, ctx, restrict_to=restrict_now
-            )
+            # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
+            # unexecuted instead; its refusals feed the ladder below like any results.
+            plan_only_refused = stuck.refuses_plan_only(result.tool_calls)
+            if plan_only_refused:
+                result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
+            else:
+                result_blocks = await self._execute_batch(
+                    result.tool_calls, ctx, restrict_to=restrict_now
+                )
             turn_tool_results.extend(result_blocks)
             # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
             # identical resend next iteration reads as progress (not a stall) at the guard.
@@ -9516,7 +9804,8 @@ class AgentLoop:
             # A skill loaded this batch puts its sections in the plan (ADR-0062), and a plan
             # that moved past a delivered section pulls the next page (ADR-0067).
             self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
-            self._turn_skill_pages(result.tool_calls)
+            if not plan_only_refused:  # a refused plan call rewrote nothing: no page is due
+                self._turn_skill_pages(result.tool_calls)
             self._dump_trace()  # checkpoint: a runner's turn may never end, its trace must
             if self._turn_fatal is not None:
                 # A verbatim body that cannot fit the window (ADR-0066): the model has its
@@ -9845,6 +10134,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -9898,7 +10188,7 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         try:
@@ -10479,29 +10769,47 @@ class AgentLoop:
                 # the stream) lands here too; any tool-call fragments from such a stream
                 # are unexecutable and are dropped along with the text. A stream that
                 # ended naturally still gets the full-text check — a short loop can finish
-                # under the probe cadence.
+                # under the probe cadence. A capped stream that restates itself (ADR-0368)
+                # shares this bound, as on the buffered path.
+                restated: str | None = None
                 if degen_unit is None and not tool_calls and assistant_text:
                     degen_unit = repeated_tail(assistant_text)
-                if degen_unit is not None:
+                    if degen_unit is None:
+                        restated = _capped_restatement(
+                            assistant_text, stream_finish_reason, capped_texts, completion_counts
+                        )
+                if degen_unit is not None or restated is not None:
                     self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                            status = "response degenerated into repetition; discarded — retrying"
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                            status = (
+                                "response restated itself at the output limit; discarded — retrying"
+                            )
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(
-                            message="response degenerated into repetition; discarded — retrying"
-                        )
+                        yield AgentStatus(message=status)
                         continue
                     stop_reason = "degenerated"
                     self._note(
@@ -11551,9 +11859,16 @@ class AgentLoop:
                 # streaming path stays sequential to preserve interleaved event order;
                 # the buffered path parallelizes wholly-read-only batches.)
                 result_blocks: list[ToolResultBlock] = []
-                for call in tool_calls:
+                # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
+                # completion in a row is answered unexecuted, and its refusals feed the ladder.
+                plan_only_refused = stuck.refuses_plan_only(tool_calls)
+                refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
+                for index, call in enumerate(tool_calls):
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
-                    block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
+                    if plan_only_refused:
+                        block = refusals[index]
+                    else:
+                        block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
                     result_blocks.append(block)
                     yield AgentToolResult(
                         tool_use_id=block.tool_use_id,
@@ -11577,8 +11892,11 @@ class AgentLoop:
                     tool_calls, result_blocks, skeleton_seeded
                 ):
                     yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
-                for skill_name, page, count, title in self._turn_skill_pages(tool_calls):
+                pages = [] if plan_only_refused else self._turn_skill_pages(tool_calls)
+                for skill_name, page, count, title in pages:
                     yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
+                if plan_only_refused:
+                    yield AgentStatus(message="plan-only bound: the plan calls were not executed")
                 self._dump_trace()  # checkpoint (see the buffered twin)
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.

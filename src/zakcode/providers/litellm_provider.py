@@ -92,10 +92,12 @@ from zakcode.providers.model_entries import register_missing_entries
 from zakcode.providers.registry import _strip_provider_prefix, get_capabilities
 from zakcode.providers.spend_gate import get_gate
 from zakcode.providers.thinking import (
+    THINKING_SWITCH_KEY,
     reasoning_effort_reaches,
     render_reasoning_effort,
     render_thinking_switch,
     rendered_thinking_wire_names,
+    thinking_switch_verbatim,
 )
 from zakcode.secrets import redact_secrets
 from zakcode.usage import Usage
@@ -3104,6 +3106,20 @@ class LiteLLMProvider(Provider):
         # knows of its name: the switch is the only source for an alias it has never heard of.
         if self.prompt_caching and not caps.supports_caching:
             caps = caps.model_copy(update={"supports_caching": True})
+        # ADR-0366: a route the thinking switch reaches as written says so (ADR-0181), and says
+        # whether its own body already carries the switch (a category's ``thinking``, the
+        # operator's ``extra_body``), which is the operator's word. A server that refused the
+        # switch by name has said it takes none.
+        if (
+            thinking_switch_verbatim(self.model, self.api_base)
+            and THINKING_SWITCH_KEY not in self.rejected_request_fields
+        ):
+            caps = caps.model_copy(
+                update={
+                    "thinking_switch": True,
+                    "thinking_configured": THINKING_SWITCH_KEY in self.extra_body,
+                }
+            )
         return caps
 
 

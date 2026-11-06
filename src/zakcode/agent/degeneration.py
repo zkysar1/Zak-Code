@@ -194,3 +194,44 @@ def burst_repetition(text: str) -> tuple[str, int] | None:
                 return unit, repeats
             break  # smallest period found but the run is short — this probe is done
     return None
+
+
+#: Restatement at the output cap (ADR-0368). :func:`repeated_tail` leaves a repeating unit
+#: longer than :data:`_MAX_UNIT_CHARS` alone on purpose, trusting the per-completion output
+#: cap to bound it. A capped final answer is length-continued, though, so the cap bounded
+#: each reply and nothing bounded the run. Field incident 2026-11-05: eleven replies of 15k
+#: to 24k characters in 63 minutes, each stopped at the 8,192-token output cap, four of them
+#: byte-identical, not one tool call; only an operator restart ended it.
+#:
+#: The measure is the share of a text's 64-byte windows that already occurred earlier in the
+#: same text. Every offset is a window (stride 1), so a repeat counts wherever it starts. It
+#: was measured on 2026-11-06 over every text completion of 12,000 or more characters in ten
+#: agents' transcripts since 2026-11-01 (219). The eleven incident replies read 0.44 to 0.79,
+#: and 128 of the 200 others read under 0.25. A capped reply at or above the floor is not
+#: continued.
+RESTATEMENT_FLOOR = 0.40
+#: Below this length the floor was never measured, so no verdict is given.
+RESTATEMENT_MIN_CHARS = 12_000
+_SHINGLE_BYTES = 64
+_RESTATEMENT_SCAN_CAP = 65_536
+
+
+def self_repetition(text: str) -> float:
+    """The share of ``text``'s 64-byte windows already seen earlier in it, from 0.0 to 1.0.
+
+    Scans at most :data:`_RESTATEMENT_SCAN_CAP` bytes of the UTF-8 text, so the cost is
+    bounded however long the text is.
+    """
+    raw = text.encode("utf-8", "replace")[:_RESTATEMENT_SCAN_CAP]
+    windows = len(raw) - _SHINGLE_BYTES + 1
+    if windows <= 0:
+        return 0.0
+    seen: set[bytes] = set()
+    repeated = 0
+    for i in range(windows):
+        window = raw[i : i + _SHINGLE_BYTES]
+        if window in seen:
+            repeated += 1
+        else:
+            seen.add(window)
+    return repeated / windows

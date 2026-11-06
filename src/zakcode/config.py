@@ -277,6 +277,19 @@ class Settings(BaseSettings):
             'For llama.cpp thinking control: {"chat_template_kwargs":{"enable_thinking":false}}.'
         ),
     )
+    # ADR-0366: the compaction summarizer's thinking, on a route the switch reaches as written (a
+    # self-hosted OpenAI-compatible server). Unset (the default), every summarizer ask goes with
+    # thinking off, under a cap its word budget sets, unless the route's body sets the switch (this
+    # ``extra_body``, a zakpick category's ``thinking``) or ``model_roles`` names the summarizer:
+    # those are asked as configured. ``false`` turns thinking off for the summarizer even where
+    # ``extra_body`` turns it on for every other call; ``true`` asks the summarizer as configured.
+    summarizer_thinking: bool | None = Field(
+        default=None,
+        description=(
+            "The compaction summarizer's thinking on a self-hosted route (ADR-0366): unset = off "
+            "unless the route's body or model_roles decides it; false = off; true = as configured."
+        ),
+    )
 
     # Display-only names for provider tokens (ADR-0314). The token of ``openai/<alias>`` is
     # litellm's OpenAI-compatible protocol, not the vendor, so through a gateway "openai" names

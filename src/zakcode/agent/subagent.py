@@ -34,7 +34,7 @@ from zakcode.agent.compact import Compactor
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings
-from zakcode.hooks import HookManager
+from zakcode.hooks import HookManager, SubAgentHookManager
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import Provider
 from zakcode.session.store import Session
@@ -153,6 +153,7 @@ class SubAgentRunner:
         trace_session: str | None = None,
         compactor: Compactor | None = None,
         summarizer_provider: Provider | None = None,
+        summarizer_thinking: bool | None = None,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -201,6 +202,9 @@ class SubAgentRunner:
         # means each loop asks its own provider for the summary, as the parent loop does.
         self.compactor = compactor
         self.summarizer_provider = summarizer_provider
+        # The summarizer's thinking setting (ADR-0366), as the session resolved it: a child asks
+        # its summarizer the way the parent does.
+        self.summarizer_thinking = summarizer_thinking
 
     def child_registry(self, definition: SubAgentDefinition) -> ToolRegistry:
         """The tool registry a child of ``definition`` will see (full, or a subset)."""
@@ -269,16 +273,23 @@ class SubAgentRunner:
             prompt_builder=self.prompt_builder_for(definition),
             settings=self.settings,
             permission_policy=child_policy,
-            # Claude Code runs a sub-agent with ONLY its own (frontmatter) hooks -- it does NOT
-            # inherit the parent's project hooks. So give the child its OWN empty hook set
-            # (hook_manager=None -> a fresh empty HookManager), NOT the parent's. The parent's
-            # per-tool gates (e.g. a framework's eight PreToolUse[Write] hooks) and its SessionStart
-            # boot
-            # then do NOT fire per sub-agent -- avoiding wasted work + delegation contention on
-            # shared resources (daemon/locks). The loop's built-in write-grounding + verify gates
-            # (below) and the child permission policy still apply, so the child stays safe.
-            hook_manager=None,
-            fire_session_start=False,  # redundant with the empty hook set; kept for explicitness
+            # The session's tool hooks gate a child's tool calls too, as Claude Code's do
+            # (ADR-0367): a workspace's PreToolUse gates judge every write and command, a
+            # child's included, and a hook keyed on the session id sees the child's work as
+            # the session's. Only the tool events run (SubAgentHookManager): the session's
+            # SessionStart, turn-end and prompt hooks stay out of the child, as in Claude Code.
+            # A child spawned with no hooks gets a fresh empty set.
+            hook_manager=(
+                SubAgentHookManager(
+                    self.hook_manager,
+                    session_id=self.trace_session or "",
+                    agent_id=session.id,
+                    agent_type=definition.name,
+                )
+                if self.hook_manager is not None
+                else None
+            ),
+            fire_session_start=False,  # SubAgentHookManager holds no SessionStart hook anyway
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent
@@ -294,6 +305,7 @@ class SubAgentRunner:
             # be pointed back at text it no longer has.
             compactor=self.compactor,
             summarizer_provider=self.summarizer_provider,
+            summarizer_thinking=self.summarizer_thinking,
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )
