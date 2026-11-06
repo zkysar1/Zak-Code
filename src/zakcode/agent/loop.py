@@ -490,6 +490,16 @@ def _earlier_summary_body(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
+def _without_position_notes(text: str) -> str:
+    """``text`` without any copy of the harness's position note (ADR-0365). The harness
+    writes its note fresh at every compaction (ADR-0330); a copy a model wrote, echoing the
+    note in its own replies, was carried into the next summary as one more authoritative
+    position, and a stale one."""
+    if _POSITION_NOTE_HEAD not in text:
+        return text
+    return re.sub(r"\n{3,}", "\n\n", _POSITION_NOTE_RE.sub("", text)).strip()
+
+
 def _summary_target_words(window: int, room: int) -> int:
     """The word budget a summarizer call states (ADR-0330): :data:`_SUMMARY_TARGET_FRACTION`
     of ``window``, between :data:`_SUMMARY_TARGET_MIN_TOKENS` and
@@ -3083,6 +3093,8 @@ class AgentLoop:
                 label, text = "earlier summary", _earlier_summary_body(text)
             elif message.role == "user" and _composed_skill_body(text):
                 text = _held_for_summary(text, "this skill's instructions")
+            else:
+                text = _without_position_notes(text)  # ADR-0365: a model's echo of the note
             if text:
                 lines.append(text)
             for use in message.tool_uses:
@@ -3280,11 +3292,12 @@ class AgentLoop:
 
     def _finish_summary(self, text: str, summarized: Sequence[Message] = ()) -> str:
         """A model's summary, made safe to resume from (ADR-0082): its tool-call and
-        thinking markup stripped, and the harness's own position note appended.
-        ``summarized`` is the part of the history the summary replaces (ADR-0238)."""
-        summary = _strip_model_markup(text)
+        thinking markup stripped, any position note it copied dropped (ADR-0365), and the
+        harness's own position note appended. ``summarized`` is the part of the history the
+        summary replaces (ADR-0238)."""
+        summary = _without_position_notes(_strip_model_markup(text))
         note = self._compaction_position_note(summarized)
-        return f"{summary}\n\n{note}" if note else summary
+        return "\n\n".join(part for part in (summary, note) if part)
 
     def _compaction_position_note(self, summarized: Sequence[Message] = ()) -> str:
         """Where the session IS, from the harness's own state — the plan's current step and
