@@ -421,21 +421,21 @@ async def test_subagent_does_not_refire_session_start(tmp_path: Path) -> None:
     assert fired == []  # ... but did NOT fire SESSION_START (the parent's session already started)
 
 
-async def test_subagent_gets_its_own_empty_hooks_not_the_parents(
+async def test_subagent_gets_the_sessions_tool_hooks_and_nothing_else(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # CC-faithful: a sub-agent runs ONLY its own (frontmatter) hooks -- it does NOT inherit the
-    # parent's project hooks. The runner builds the child loop with hook_manager=None (-> a fresh
-    # empty HookManager), NOT the parent's, so the parent's per-tool gates (e.g. a framework's
-    # PreToolUse[Write] hooks) + SessionStart boot do not fire per sub-agent.
+    # As in Claude Code (ADR-0367): a sub-agent's tool calls run the session's PreToolUse and
+    # PostToolUse hooks, and no other hook of the session's (no SessionStart, turn-end, prompt,
+    # context or compaction hook). The child's hook set holds exactly the parent's tool-event
+    # hooks, shell and in-process, under the parent's session id and the sub-agent's own fields.
     import zakcode.agent.subagent as sub
-    from zakcode.hooks import HookManager
+    from zakcode.hooks import HookEvent, HookManager, HookSpec, SubAgentHookManager
 
     captured: dict = {}
 
     class _FakeLoop:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            captured.update(kwargs)
+        def __init__(self, provider: object, registry: object, session, **kwargs: object) -> None:
+            captured.update(kwargs, session=session)
 
         async def aclose(self) -> None:
             pass
@@ -444,17 +444,47 @@ async def test_subagent_gets_its_own_empty_hooks_not_the_parents(
             return TurnResult(stop_reason="completed")
 
     monkeypatch.setattr(sub, "AgentLoop", _FakeLoop)
-    parent_hooks = HookManager()
-    runner = SubAgentRunner(
-        provider=_OneShotProvider("x"),
-        registry=_registry(_RecordingTool("read_file")),
-        settings=Settings(
-            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
-        ),
-        budget=IterationBudget(10),
-        workspace_root=tmp_path,
-        hook_manager=parent_hooks,
+    # A hook of every kind on the parent: a shell spec per event, an in-process hook per event,
+    # and the context, lifecycle, turn-end and observer collections.
+    parent_hooks = HookManager(
+        [HookSpec(event=event, command=["true"]) for event in HookEvent],
+        in_process={event: [lambda p: None] for event in HookEvent},
+        context=[lambda p: None],
     )
-    await runner.run(GENERAL_PURPOSE, "do it")
-    assert captured["hook_manager"] is None  # the child gets its OWN empty hook set ...
-    assert captured["hook_manager"] is not parent_hooks  # ... NOT the parent's
+    parent_hooks.register_lifecycle(HookEvent.SESSION_START, lambda p: None)
+    parent_hooks.register_turn_end(lambda p: None)
+    parent_hooks.register_turn_end_observer(lambda p: None)
+
+    def _runner_with(hooks: HookManager | None) -> SubAgentRunner:
+        return SubAgentRunner(
+            provider=_OneShotProvider("x"),
+            registry=_registry(_RecordingTool("read_file")),
+            settings=Settings(
+                default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+            ),
+            budget=IterationBudget(10),
+            workspace_root=tmp_path,
+            hook_manager=hooks,
+            trace_session="parent-session",
+        )
+
+    await _runner_with(parent_hooks).run(GENERAL_PURPOSE, "do it")
+    child = captured["hook_manager"]
+    assert isinstance(child, SubAgentHookManager)
+    tool_events = {HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE}
+    assert sorted(spec.event for spec in child.shell_hooks) == sorted(tool_events)
+    assert set(child.in_process) == tool_events
+    assert child.context_hooks == []
+    assert child.lifecycle_hooks == {}
+    assert child.turn_end_hooks == [] and child.turn_end_observers == []
+    # The parent's own set is left as it was.
+    assert len(parent_hooks.shell_hooks) == len(HookEvent)
+    # The identity every payload is stamped with: the parent's session, the child's own id.
+    assert child._identity == {
+        "session_id": "parent-session",
+        "agent_id": captured["session"].id,
+        "agent_type": "general-purpose",
+    }
+    # A parent with no hooks gives the child none (a fresh empty set in the loop).
+    await _runner_with(None).run(GENERAL_PURPOSE, "do it")
+    assert captured["hook_manager"] is None
