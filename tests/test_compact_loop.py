@@ -1322,6 +1322,67 @@ def test_an_earlier_summary_loses_every_harness_line_it_carried() -> None:
     )
 
 
+# ── ADR-0365: a position note a model echoed is neither read nor installed ──────────────
+
+_STALE_NOTE = f'{_POSITION_NOTE_HEAD}\n- plan: current step "Old" (0 of 9 steps closed)'
+
+
+def test_a_position_note_a_model_echoed_never_reaches_the_summarizer() -> None:
+    # Measured 2026-11-05 on a worker (a 27B model on the pod): one installed summary held
+    # three exact position notes, two of them stale. In the window it summarized, the model
+    # had echoed the whole note nine times in its own replies, and only the earlier
+    # summary's copies were taken out before the summarizer read the window.
+    reply = Message.assistant_text(f"Resuming.\n\n{_STALE_NOTE}\n\nNext: run the tests.")
+
+    rendered = AgentLoop._render_for_summary([Message.user("go"), reply, Message.user("next")])
+
+    assert rendered == (
+        "[user]\ngo\n\n[assistant]\nResuming.\n\nNext: run the tests.\n\n[user]\nnext"
+    )
+
+
+def test_an_installed_summary_holds_only_the_harness_s_own_position_note(
+    tmp_path: Path,
+) -> None:
+    from zakcode.tasks import skill_skeleton
+
+    copied = f"<summary>A is done.\n\n{_STALE_NOTE}\n\nB is next.\n\n{_STALE_NOTE}</summary>"
+    loop = _loop(_SummarizerProvider([copied], tokens=100), tmp_path)
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n\n## Step 2: Beta\n\nbeta\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+
+    assert text.count(_POSITION_NOTE_HEAD) == 1
+    assert text.startswith(f"A is done.\n\nB is next.\n\n{_POSITION_NOTE_HEAD}\n")
+    assert '"Old"' not in text
+
+
+def test_a_copied_position_note_is_dropped_when_the_harness_has_none_to_write(
+    tmp_path: Path,
+) -> None:
+    copied = f"<summary>A is done.\n\n{_STALE_NOTE}</summary>"
+    loop = _loop(_SummarizerProvider([copied], tokens=100), tmp_path)
+    assert loop._compaction_position_note() == ""  # the premise: nothing for the harness to say
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(2))) == "A is done."
+
+
+def test_a_summary_that_was_only_a_copied_note_installs_the_harness_s_note_alone(
+    tmp_path: Path,
+) -> None:
+    from zakcode.tasks import skill_skeleton
+
+    loop = _loop(_SummarizerProvider([f"<summary>{_STALE_NOTE}</summary>"], tokens=100), tmp_path)
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+
+    assert text == loop._compaction_position_note()
+    assert text.startswith(_POSITION_NOTE_HEAD) and '"Old"' not in text
+
+
 # ── ADR-0331: a summary over its budget, condensed once on its own ───────────────────
 
 
