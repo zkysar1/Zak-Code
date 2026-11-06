@@ -23162,3 +23162,46 @@ Not verified.
 - Below 12,000 characters the floor was never measured, so a configuration with a much lower
   output cap gets the verbatim check only.
 - No bench arm was run.
+
+## ADR-0369: a prompt the provider bills as a cache write and never names is counted as written, for the models measured to be billed that way
+
+Status: accepted. 2026-11-06. Extends ADR-0294 (a cached prompt the backend reports only in its
+total) to a cache write the backend bills and leaves out of the usage altogether.
+
+Context. A budget meter that prices a served run reads the sidecar's `cost_usd` and trusts it. On
+gpt-6-luna the usage names a cached-read count and no creation count, so `_extract_usage` took
+`cache_creation` as 0 and both litellm's `response_cost` and the price-map fallback priced the
+rest of the prompt at the plain input rate. The provider's own billing lines, whole UTC days
+2026-10-31 to 2026-11-05, grouped by line item, read: cache writes $11.5294 on 92.24M tokens at
+$0.125 per million, input $0.0342 on 0.34M tokens at $0.10, cached input $9.6310 on 963.10M
+tokens at $0.01, output $0.9550; $22.1496 in all. The cost the sidecar reported rebuilt $19.84 of
+it (89.6%), so a reseller charging that cost plus a fixed margin charged under cost.
+
+What was measured, before building. The price map prices the model with a write rate
+(`cache_creation_input_token_cost` 1.25e-07, input 1e-07, read 1e-08). `litellm.cost_per_token`
+for 1,000 prompt tokens, 100 read and 900 written, 50 completion, returns 0.0001385 against
+0.000116 with none written (+19.4% on that call). 99.6% of the uncached tokens in the window
+above billed as writes, so counting all of the unread prompt as written errs by about 0.1% of the
+bill, and in the dearer direction. gpt-5.6-luna has a write rate in the map and no provider
+line-item read; gpt-5-mini has no write rate.
+
+Decision.
+- In `_extract_usage`, for a model in `_UNCACHED_BILLED_AS_WRITE`, where the reply names no
+  creation count and no unsplit excess was read (ADR-0294), the prompt that was not read from the
+  cache is counted as written: `cache_creation_tokens` is set to it and the cost is recomputed
+  from the price map, the dearer of that and any backend cost standing, as for ADR-0294.
+- The set is `{"gpt-6-luna"}`, matched by id after any provider prefix, with an optional
+  `-YYYY-MM-DD` snapshot. A longer id that merely starts with it is another model.
+- A model joins the set on its own provider line-item read, never by the shape of the price map.
+  Anthropic names its creation counts and bills the rest at the plain input rate, so a write rate
+  in the map is not evidence that the unread prompt is billed as written.
+- The fix is made here and not in the meter or the billing function: the meter trusts `cost_usd`
+  whenever it is finite and above 0, so correcting the source corrects the spend meter, the
+  budget rows and the reseller's cost line together, as one cost number.
+
+Not covered, and not measured.
+- The meter's own token path, taken when the sidecar gives no cost, still prices the unread prompt
+  at the plain rate. It is the fallback and was not changed.
+- The correction was not read against a bill after the change. That needs whole UTC days of
+  billing on a build that carries it.
+- No model other than gpt-6-luna was read at the provider.
