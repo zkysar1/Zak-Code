@@ -1004,6 +1004,12 @@ class Agent:
             summarizer_provider = self._resolve_task_provider("summarize")[0]
         else:
             summarizer_provider = None
+        # ADR-0366: the summarizer's thinking. The setting decides when it is set; unset, a
+        # summarizer the user named in model_roles is asked as they configured it, and any other
+        # goes with thinking off where its route leaves the switch to the caller.
+        summarizer_thinking = self.settings.summarizer_thinking
+        if summarizer_thinking is None and "summarizer" in self.settings.model_roles:
+            summarizer_thinking = True
 
         spawner = None
         if enable_subagents:
@@ -1060,6 +1066,7 @@ class Agent:
                 # when compaction is off, which leaves delegation as it was.
                 compactor=self.compactor,
                 summarizer_provider=summarizer_provider,
+                summarizer_thinking=summarizer_thinking,
             )
             # general-purpose (full toolset) + plan (read-only planner whose registry
             # subset omits write tools, so Plan Mode is schema-enforced). Apply optional
@@ -1248,6 +1255,7 @@ class Agent:
             spawner=spawner,
             compactor=self.compactor,
             summarizer_provider=summarizer_provider,
+            summarizer_thinking=summarizer_thinking,
             # Runtime model failover (PKG-AUTO): once per turn, on a non-rate-limit
             # provider failure, the loop may swap to a new provider we build here.
             # None when the provider was injected (it can't be rebuilt from settings).
