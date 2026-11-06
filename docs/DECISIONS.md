@@ -23089,3 +23089,73 @@ configured budget. `tests/test_compact_loop.py` pins a route that thought throug
 as configured from its next compaction, and one that thought under the cap still switched. Two
 mutations fail them: rendering off without closing the budget fails 3, and not recording the route
 fails 1.
+
+## ADR-0369: a summary the output limit cut off is kept, its most important parts first, and nothing installed runs past its line
+
+Status: accepted. 2026-11-06. Reverses two calls of earlier decisions: ADR-0275's that a cut summary
+is thrown away, and ADR-0331's that a summary is never truncated. Builds on ADR-0242 (the one
+resample), ADR-0330 (the word budget) and ADR-0366 (thinking off, a lower cap).
+
+Context. A summary the limit cut off installs nothing (ADR-0275), so everything the summarizer wrote
+is paid for and lost. Read 2026-11-06 from the source and from call sizes in the inference router's
+ledger (sizes and counts, no conversation text), on a self-hosted pod serving ten worker sessions
+with a 27B model and a 131k window, two paths end badly:
+
+- The ask is cut, and so is its one resample. `SummaryNotWritten` falls back to eliding tool outputs
+  (ADR-0083) and no summary installs. Seen at the 32,768-token cap (32,765 and 32,766 tokens; 32,770
+  and 32,769), and at ADR-0366's 16,469-token cap (16,471 twice, on two sessions).
+- The ask finishes over the condensing line (ADR-0331), the condensing ask is cut, and so is its
+  resample. The summary then stands at full size, and the next compaction starts from it. One
+  compaction ran 26,869, 6,064, 32,770 and 32,769 tokens, 39.5 engine-minutes, and left a summary of
+  94k characters. Another left 72k. A third installed 36k characters, 4,752 words against a line of
+  3,875, because a condensed answer that is shorter is taken however long it still is.
+
+The two are one failure. ADR-0366's lower cap moves compactions from the second to the first: a
+summary that would have finished long and stood is now cut, and installs nothing. An oversized
+summary then feeds the next: the windows with a long earlier summary are the ones that reach the cap
+(ADR-0366).
+
+ADR-0275 threw a cut summary away because what a cut loses is its end, and the end was the
+unfinished work. ADR-0331 would not truncate for the same reason. Both are true of a summary written
+in the order things happened, and neither asks whether a summary should be written in that order.
+
+Decision.
+- Every close (the whole transcript or a part, a fold, the condensing ask) asks for one order,
+  `_SUMMARY_ORDER`: four headings, Current goal and state, then Unfinished work and next step, then
+  Decisions and key facts, then Older history, and it says a summary can be cut off and only its
+  start is sure to be kept. The closes of a transcript also say an earlier summary goes under Older
+  history. So what a cut loses is the oldest history, not the next step.
+- A reply the limit cut off keeps its whole lines and is not asked for again. It is no summary if it
+  never opened its `<summary>` tag, since a plan or the transcript's next turn (ADR-0242) runs to the
+  limit as easily, or if under `_SUMMARY_FLOOR_CHARS` (500) of whole lines are left, whatever the
+  request's length. Either goes on to ADR-0366's resample, which stays for that case. A cut reply is
+  held to the line by its first words, ending on a whole line: it has no end to keep.
+- Nothing installed runs past the condensing line. The condensing ask stays. Whatever is left over
+  the line, a condensed answer still long, a summary whose condensing ask was cut, gave nothing or
+  failed, is held to it by its first two thirds and its last third, with the number of words left
+  out said between them: the end stays, whether or not the model kept the order.
+- A summary cut or held says so in its position note (`_SUMMARY_HELD_LINE`): a model resuming from it
+  knows part of the older history is missing. The note is stripped before the next compaction, like
+  the rest of the position note (ADR-0330), so it is not carried forward.
+- `summarizer_cut` counts the replies kept, beside `summarizer_rejected`.
+
+What was considered and not done.
+- Keeping ADR-0275 and lowering the word budget again. The budget does not hold a summary that is the
+  last one plus everything since (ADR-0331), and each cut still costs a whole ask.
+- Stopping the stream once the word budget is written. A closed draft tried it: the stop fired late,
+  and it holds the words, not their order.
+- Holding the earlier summary before the ask, which ADR-0366 also left out. The close now says what
+  to do with it; the trial counts whether that is enough.
+- Holding a finished summary by its first words alone. A model that ignored the order would lose its
+  unfinished work, which is ADR-0331's whole point.
+
+Not verified, and the trial measures each by counts alone. Whether the pod's model keeps the order
+(heading positions, the census ADR-0275 used). Whether a cut reply spends its room copying the
+earlier summary (lines over 40 characters copied verbatim, ADR-0331's method). Whether a worker
+resumes as well from a summary that says part of it is missing.
+
+The proof. `tests/test_compact_loop.py` pins a cut reply kept to its whole lines and installed on the
+first ask, held to its line, counted and said; one with too little left, or that never opened its
+tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
+over its line held to it, a failed condensing ask included; the note, and what strips it; and the
+order in all three closes. 23 mutations, one a behaviour, each fail the file.
