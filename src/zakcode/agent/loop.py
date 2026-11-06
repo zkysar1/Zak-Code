@@ -4552,17 +4552,24 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt:
+        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only:
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
+            # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
+            # and any call to another tool is what ends that run.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
-                        "you have been recording changes with no other work in between. Done "
-                        "when ONE call to a tool other than the plan tool has succeeded on "
+                        (
+                            "you have been sending only plan calls, and the last were not "
+                            "executed. "
+                            if stuck.last_was_plan_only
+                            else "you have been recording changes with no other work in between. "
+                        )
+                        + "Done when ONE call to a tool other than the plan tool has succeeded on "
                         "that step (a read-only probe counts) and you have noted what it showed"
                     ),
                 )
@@ -6975,6 +6982,29 @@ class AgentLoop:
                 blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
         return blocks
 
+    def _refuse_plan_only(
+        self, calls: list[ToolCall], stuck: StuckTracker
+    ) -> list[ToolResultBlock]:
+        """Answer a plan-only completion at the bound unexecuted, naming the step to do (ADR-0364).
+
+        The blocks go on through the iteration like any batch's results, so the stuck ladder
+        sees each refusal and a model that keeps planning still climbs it to a stop.
+        """
+        current = self.session.task_network.current()
+        step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
+        self._note(
+            "intervention",
+            f"response {stuck.plan_only_run + 1} in a row called only the plan tools",
+            kind="plan_only_bound",
+        )
+        output = stuck.plan_only_message(step)
+        return [
+            ToolResultBlock(
+                tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
+            )
+            for call in calls
+        ]
+
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
         """True iff every result was a permission denial, step restriction, hook veto, or
@@ -8410,7 +8440,7 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         while True:
@@ -9673,9 +9703,15 @@ class AgentLoop:
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
-            result_blocks = await self._execute_batch(
-                result.tool_calls, ctx, restrict_to=restrict_now
-            )
+            # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
+            # unexecuted instead; its refusals feed the ladder below like any results.
+            plan_only_refused = stuck.refuses_plan_only(result.tool_calls)
+            if plan_only_refused:
+                result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
+            else:
+                result_blocks = await self._execute_batch(
+                    result.tool_calls, ctx, restrict_to=restrict_now
+                )
             turn_tool_results.extend(result_blocks)
             # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
             # identical resend next iteration reads as progress (not a stall) at the guard.
@@ -9690,7 +9726,8 @@ class AgentLoop:
             # A skill loaded this batch puts its sections in the plan (ADR-0062), and a plan
             # that moved past a delivered section pulls the next page (ADR-0067).
             self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
-            self._turn_skill_pages(result.tool_calls)
+            if not plan_only_refused:  # a refused plan call rewrote nothing: no page is due
+                self._turn_skill_pages(result.tool_calls)
             self._dump_trace()  # checkpoint: a runner's turn may never end, its trace must
             if self._turn_fatal is not None:
                 # A verbatim body that cannot fit the window (ADR-0066): the model has its
@@ -10072,7 +10109,7 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         try:
@@ -11725,9 +11762,16 @@ class AgentLoop:
                 # streaming path stays sequential to preserve interleaved event order;
                 # the buffered path parallelizes wholly-read-only batches.)
                 result_blocks: list[ToolResultBlock] = []
-                for call in tool_calls:
+                # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
+                # completion in a row is answered unexecuted, and its refusals feed the ladder.
+                plan_only_refused = stuck.refuses_plan_only(tool_calls)
+                refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
+                for index, call in enumerate(tool_calls):
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
-                    block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
+                    if plan_only_refused:
+                        block = refusals[index]
+                    else:
+                        block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
                     result_blocks.append(block)
                     yield AgentToolResult(
                         tool_use_id=block.tool_use_id,
@@ -11751,8 +11795,11 @@ class AgentLoop:
                     tool_calls, result_blocks, skeleton_seeded
                 ):
                     yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
-                for skill_name, page, count, title in self._turn_skill_pages(tool_calls):
+                pages = [] if plan_only_refused else self._turn_skill_pages(tool_calls)
+                for skill_name, page, count, title in pages:
                     yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
+                if plan_only_refused:
+                    yield AgentStatus(message="plan-only bound: the plan calls were not executed")
                 self._dump_trace()  # checkpoint (see the buffered twin)
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.

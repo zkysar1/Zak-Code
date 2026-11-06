@@ -602,15 +602,54 @@ async def test_a_model_journalling_into_its_plan_between_steps_draws_no_rung(
 async def test_control_rewriting_the_plan_with_nothing_in_between_still_climbs(
     tmp_path: Path, streamed: bool
 ) -> None:
-    """The same seven edits with no work between them: plan churn. The third identical receipt
-    draws the first rung, as it did before ADR-0209."""
+    """The same seven edits with no work between them: plan churn. Since ADR-0364 the plan-only
+    bound answers the third of them unexecuted, before any receipt can come back a third time,
+    and the ladder still climbs: on the bound's refusals, one rung per refusal after the first.
+    (The receipt rung of ADR-0209 is still reached when a non-work call such as a skill load
+    sits between the edits, which ends a plan-only run: the next test.)"""
     provider = _Scripted(_journal(7, work_in_between=False))
     loop = _served(provider, tmp_path, _Hook([]))
     await _run(loop, "carry out the goal", streamed=streamed)
-    assert _stuck_notes(loop)[:1] == [("update_plan", 3)]
+    receipts = _receipts(loop)
+    assert [r.startswith("Plan updated") for r in receipts[:2]] == [True, True]
+    assert receipts[2:] and all(
+        r.startswith("Not executed: this is response") for r in receipts[2:]
+    )
     # ...and it is NAMED for what it is, on the trace and on the wire (the rail is a user
-    # message of the session): a receipt come back with no work in between, not a result
-    # observed again with nothing changed.
+    # message of the session): plan calls the harness refused, not a tool that failed and not
+    # a result observed again with nothing changed.
+    first = next(e.data for e in loop._trace.events if e.data.get("kind") == "stuck")
+    assert first.get("signals") == "plan-only" and first.get("plan_only") == 4
+    rails = [m.text for m in loop.session.messages if m.role == "user"]
+    assert any("sent 4 responses in a row that call only the plan tools" in r for r in rails)
+    assert not any("has failed" in r for r in rails)
+    assert not any("observed the SAME tool result" in r for r in rails)
+
+
+def _journal_with_skill_loads(entries: int) -> list[LLMResult]:
+    """Plan edits with a skill load between each pair: no WORK in between (ADR-0196 does not
+    count a skill load), but a call to another tool, so no plan-only run either."""
+    script = [_plan_noted(0), _judge_ok()]
+    for k in range(1, entries):
+        call = ToolCall(id=f"skill-{k}", name="use_skill", arguments={"name": "other"})
+        script.append(LLMResult(text="", tool_calls=[call], usage=Usage(total_tokens=1)))
+        script.append(_plan_noted(k))
+    return [*script, _say("the goal is carried out: the answer"), _review_ok()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_control_plan_churn_between_skill_loads_still_draws_the_receipt_rung(
+    tmp_path: Path, streamed: bool
+) -> None:
+    """ADR-0209's receipt rung where the plan-only bound does not reach: every edit executes,
+    and the third identical receipt with no work in between draws the first rung, named as a
+    receipt."""
+    provider = _Scripted(_journal_with_skill_loads(4))
+    loop = _served(provider, tmp_path, _Hook([]))
+    await _run(loop, "carry out the goal", streamed=streamed)
+    assert all(r.startswith("Plan updated") for r in _receipts(loop))
+    assert _stuck_notes(loop)[:1] == [("update_plan", 3)]
     first = next(e.data for e in loop._trace.events if e.data.get("kind") == "stuck")
     assert first.get("receipt") is True
     rails = [m.text for m in loop.session.messages if m.role == "user"]

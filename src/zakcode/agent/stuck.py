@@ -126,6 +126,26 @@ SIG_NO_PROGRESS = "no-progress"
 #:   "something new" of the bound above: it would be new after every work call.
 SIG_REPEATED_OUTCOME = "repeated-outcome"
 
+#: The bound on consecutive plan-only completions (ADR-0364), the net ADR-0192 left undone. A
+#: completion whose every call is a plan tool, and that neither closed a step nor drew the
+#: harness's advance (ADR-0168 lever N), cannot move the plan: a step moves on a status the model
+#: sends, an outcome it records, or the work done while it is current, and such a completion
+#: supplies none of them. The receipt rails could not see this run when each call CHANGED the
+#: plan: the unchanged rail answers only a resend, lever N needs evidence, and the doom guard
+#: needs a byte-identical batch. Measured on a served fleet (ten Bodies, one 35B-class local
+#: model, 2026-11-05, 4 h, 2,175 calls): 12.8% of all calls sat in runs of three or more such
+#: completions, at least 14% of Body-time. The completion that would be the ``plan_only_at``-th
+#: in a row is refused unexecuted and told the step to do; any other call ends the run, as does a
+#: plan call that moved the plan. A refused completion is no failure of the plan tool and no look
+#: at the world, so the error and outcome counts never see it (a ladder that called the refusals
+#: "update_plan has failed 3 times" seeded "Investigate: why update_plan keeps failing", which is
+#: false and more plan work); it fires ``SIG_PLAN_ONLY`` alone, which drives the ladder one rung
+#: per refusal after the first (the first is itself the intervention), so a model that keeps
+#: planning is still taken to a stop.
+PLAN_ONLY_AT = 3
+#: A completion the plan-only bound refused unexecuted (ADR-0364). STRONG, like a repeated outcome.
+SIG_PLAN_ONLY = "plan-only"
+
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
 #: style acknowledgements repeat legitimately.
 _OUTCOME_MIN_CHARS = 24
@@ -195,6 +215,8 @@ class StuckTracker:
         repeated_failure_at: int = 2,
         outcome_repeat_at: int = 3,
         uncounted_outcome_tools: frozenset[str] = frozenset(),
+        plan_tools: frozenset[str] = frozenset(),
+        plan_only_at: int = PLAN_ONLY_AT,
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
@@ -204,6 +226,11 @@ class StuckTracker:
         self.repeated_failure_at = repeated_failure_at
         self.outcome_repeat_at = outcome_repeat_at
         self.uncounted_outcome_tools = uncounted_outcome_tools
+        #: The loop's plan tools (ADR-0364). Empty, the plan-only bound never counts anything.
+        self.plan_tools = plan_tools
+        self.plan_only_at = plan_only_at
+        self._plan_only_run = 0  # consecutive plan-only completions that did not move the plan
+        self._plan_finished: int | None = None  # the done count the last plan receipt reported
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
         self._error_counts: Counter[tuple[str, str]] = Counter()  # per-call failures this turn
@@ -242,6 +269,23 @@ class StuckTracker:
         return SIG_REPEATED_OUTCOME in self._last_signals and self._last_outcome_receipt
 
     @property
+    def last_was_plan_only(self) -> bool:
+        """Whether the most recent :meth:`observe` was a completion the plan-only bound refused
+        (ADR-0364). Like a receipt, it has no result to interpret: the remedy is the work."""
+        return SIG_PLAN_ONLY in self._last_signals
+
+    @property
+    def plan_only_run(self) -> int:
+        """How many completions in a row called only the plan tools without moving the plan
+        (ADR-0364); 0 after any other call."""
+        return self._plan_only_run
+
+    def refuses_plan_only(self, calls: Sequence[ToolCall]) -> bool:
+        """Whether ``calls``, not yet executed, are the completion the plan-only bound refuses:
+        plan tools only, after ``plan_only_at - 1`` such completions in a row (ADR-0364)."""
+        return self._is_plan_only(calls) and self._plan_only_run >= self.plan_only_at - 1
+
+    @property
     def actions(self) -> list[str]:
         """The ladder actions taken this turn, in order (e.g. ``["nudge", "narrow"]``)."""
         return list(self._actions)
@@ -263,6 +307,8 @@ class StuckTracker:
         which signal or which tool (2026-09-18); the outputs had been compacted away.
         """
         data: dict[str, object] = {"signals": ",".join(self._last_signals)}
+        if self.last_was_plan_only:
+            data["plan_only"] = self._plan_only_run
         if SIG_REPEATED_OUTCOME in self._last_signals:
             data["tool"] = self._last_outcome_tool
             data["repeats"] = self._last_outcome_repeats
@@ -325,6 +371,18 @@ class StuckTracker:
         """
         sig = batch_signature(calls)
         by_id = {r.tool_use_id: r for r in results}
+        if calls and all(
+            (r := by_id.get(c.id)) is not None and (r.data or {}).get("plan_only_bound")
+            for c in calls
+        ):
+            # ADR-0364: the bound answered this completion unexecuted. Its own signal alone, one
+            # rung per refusal after the first, and nothing else counted (see SIG_PLAN_ONLY).
+            self._plan_only_run += 1
+            refusals = self._plan_only_run - (self.plan_only_at - 1)
+            self._last_signals = [SIG_PLAN_ONLY]
+            self._streak = max(self._streak, self.nudge_at + refusals - 2)
+            self._prev_sig = sig
+            return
 
         errored_now: list[tuple[str, str]] = []
         for call in calls:
@@ -407,6 +465,32 @@ class StuckTracker:
             # consecutive streak never formed while the same result came back fifteen times.
             self._streak = max(self._streak, self.nudge_at + (worst - self.outcome_repeat_at))
         self._prev_sig = sig
+        self._observe_plan_only(calls, by_id)
+
+    def _is_plan_only(self, calls: Sequence[ToolCall]) -> bool:
+        return bool(calls and self.plan_tools) and all(c.name in self.plan_tools for c in calls)
+
+    def _observe_plan_only(
+        self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]
+    ) -> None:
+        """Extend or end the plan-only run (ADR-0364). The plan MOVED when a receipt says the
+        harness advanced it (lever N) or reports more steps done than the last receipt did: a
+        model closing steps on work it already did, or walked by the advance, is not churning."""
+        moved = False
+        for call in calls:
+            result = by_id.get(call.id)
+            if result is None or result.is_error or not isinstance(result.data, dict):
+                continue
+            if result.data.get("autoadvanced"):
+                moved = True
+            finished = result.data.get("finished")
+            if isinstance(finished, int) and not isinstance(finished, bool):
+                if self._plan_finished is not None and finished > self._plan_finished:
+                    moved = True
+                self._plan_finished = finished
+        self._plan_only_run = (
+            self._plan_only_run + 1 if self._is_plan_only(calls) and not moved else 0
+        )
 
     def next_action(self) -> StuckAction:
         """The ladder step implied by the current streak (call once per :meth:`observe`).
@@ -453,8 +537,27 @@ class StuckTracker:
         self._streak = 0
         self._prev_sig = None
         self._error_counts.clear()
+        self._plan_only_run = 0
 
     # ── recovery messages ────────────────────────────────────────────────────
+    def plan_only_message(self, step: str | None) -> str:
+        """The result every call of a refused plan-only completion gets (ADR-0364). ``step``
+        names the plan's current step, or is None when the plan has none to name."""
+        then = (
+            f"The plan in force is unchanged, and its current step is {step}: do that step now "
+            "with a tool call."
+            if step
+            else "The plan in force is unchanged: act on it now with a tool call, or answer if "
+            "the work is done."
+        )
+        return (
+            f"Not executed: this is response {self._plan_only_run + 1} in a row that calls only "
+            "the plan tools, with no other tool call between them. A step moves on a status you "
+            "send, an outcome you record, or the work done while it is current, and these calls "
+            f"supply none of them. {then} The plan tools are accepted again once another tool has "
+            "run."
+        )
+
     def nudge_message(self) -> str:
         """The diagnosis injected on a :attr:`StuckAction.NUDGE` — WHY the model is stuck.
 
@@ -462,6 +565,13 @@ class StuckTracker:
         investigative plan steps (ADR-0057) and says what it added. This stays the symptom,
         in the model's own terms.
         """
+        if self.last_was_plan_only:
+            # True of what was counted (ADR-0198): the calls were refused, not failed.
+            return (
+                f"You have now sent {self._plan_only_run} responses in a row that call only the "
+                "plan tools, and the harness did not execute the last of them. Planning is not "
+                "progress on the task: do the current step with a tool call."
+            )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:
                 # Words that are TRUE of a receipt (ADR-0209, and ADR-0198's rule that a rail
