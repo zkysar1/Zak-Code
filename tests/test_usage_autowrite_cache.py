@@ -1,4 +1,4 @@
-"""A cache write the provider bills and the reply does not name (ADR-0369).
+"""A cache write the provider bills and the reply does not name (ADR-0370).
 
 On a write-billed tier (gpt-6-luna) the provider charges every prompt token that is not a cache
 read at the cache-WRITE rate, and the usage carries no creation count. The provider's own billing
@@ -129,5 +129,5 @@ def test_another_model_keeps_the_plain_rate_even_where_its_map_has_a_write_rate(
 
 
 def test_the_declared_set_is_exactly_the_measured_model() -> None:
-    """A model joins on its own provider line-item read (ADR-0369), never by the map's shape."""
+    """A model joins on its own provider line-item read (ADR-0370), never by the map's shape."""
     assert frozenset({"gpt-6-luna"}) == LiteLLMProvider._UNCACHED_BILLED_AS_WRITE
