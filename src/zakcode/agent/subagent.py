@@ -34,7 +34,7 @@ from zakcode.agent.compact import Compactor
 from zakcode.agent.loop import AgentLoop, TurnResult
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import Settings
-from zakcode.hooks import HookManager
+from zakcode.hooks import HookManager, SubAgentHookManager
 from zakcode.permissions import PermissionPolicy
 from zakcode.providers.base import Provider
 from zakcode.session.store import Session
@@ -273,16 +273,23 @@ class SubAgentRunner:
             prompt_builder=self.prompt_builder_for(definition),
             settings=self.settings,
             permission_policy=child_policy,
-            # Claude Code runs a sub-agent with ONLY its own (frontmatter) hooks -- it does NOT
-            # inherit the parent's project hooks. So give the child its OWN empty hook set
-            # (hook_manager=None -> a fresh empty HookManager), NOT the parent's. The parent's
-            # per-tool gates (e.g. a framework's eight PreToolUse[Write] hooks) and its SessionStart
-            # boot
-            # then do NOT fire per sub-agent -- avoiding wasted work + delegation contention on
-            # shared resources (daemon/locks). The loop's built-in write-grounding + verify gates
-            # (below) and the child permission policy still apply, so the child stays safe.
-            hook_manager=None,
-            fire_session_start=False,  # redundant with the empty hook set; kept for explicitness
+            # The session's tool hooks gate a child's tool calls too, as Claude Code's do
+            # (ADR-0367): a workspace's PreToolUse gates judge every write and command, a
+            # child's included, and a hook keyed on the session id sees the child's work as
+            # the session's. Only the tool events run (SubAgentHookManager): the session's
+            # SessionStart, turn-end and prompt hooks stay out of the child, as in Claude Code.
+            # A child spawned with no hooks gets a fresh empty set.
+            hook_manager=(
+                SubAgentHookManager(
+                    self.hook_manager,
+                    session_id=self.trace_session or "",
+                    agent_id=session.id,
+                    agent_type=definition.name,
+                )
+                if self.hook_manager is not None
+                else None
+            ),
+            fire_session_start=False,  # SubAgentHookManager holds no SessionStart hook anyway
             budget=self.budget,
             workspace_root=self.workspace_root,
             extra_workspace_roots=self.extra_workspace_roots,  # same sandbox as the parent

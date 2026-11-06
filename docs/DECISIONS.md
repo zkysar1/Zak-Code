@@ -23171,6 +23171,169 @@ as configured from its next compaction, and one that thought under the cap still
 mutations fail them: rendering off without closing the budget fails 3, and not recording the route
 fails 1.
 
+## ADR-0367: a sub-agent's tool calls run the session's tool hooks, under the session's id
+
+Status: accepted. 2026-11-05. Reverses the 2026-06-21 change that gave every sub-agent an empty
+hook set. The part of it that #89 started stands: a sub-agent does not rerun the session's
+SessionStart. Corrects the reason ADR-0079's 2026-09-30 amendment gives for wiring its re-read to
+the main loop only.
+
+Context. A sub-agent ran with no hooks at all, on the reading that Claude Code runs a sub-agent
+with only the hooks in its own frontmatter. Claude Code's documentation says otherwise. Its
+sub-agents guide ("Define hooks for subagents"): hooks in `settings.json` "also fire inside
+subagents. Tool events such as `PreToolUse` and `PostToolUse` fire for the subagent's tool calls
+the same way they do in the main conversation", and "a `PreToolUse` hook in `settings.json` also
+runs before every tool a subagent uses." Its hooks reference gives a hook that fires inside a
+sub-agent two more input fields, `agent_id` and `agent_type`, and fires `SubagentStop`, not
+`Stop`, when a sub-agent finishes. What the 2026-06-21 change checked held for SessionStart only.
+
+What the gap cost, measured on self-hosted workers in November 2026. Every `PreToolUse` gate a
+workspace declares, on the paths a write may touch and the commands a session may run, was
+skipped for a sub-agent's writes and commands. And a hook that keys on the session id to keep the
+session's own state never saw a sub-agent's call, so a host framework could not tell a session
+waiting on its sub-agent from one that had stopped. One parent waited inside a single task call
+for 2 h 43 m with no hook firing at all. Four times, on four machines, the host read a waiting
+session as gone while its sub-agent was still working.
+
+Decision.
+- `SubAgentRunner` builds each child loop with a `SubAgentHookManager` over the parent's hooks.
+  It holds the parent's `PreToolUse` and `PostToolUse` hooks, shell and in-process (a plugin's
+  included), and nothing else: no `SessionStart`, no turn-end hook or observer, no
+  `UserPromptSubmit`, no `PreLLMCall` context hook, no `PreCompact`.
+- Every payload it runs carries the parent session's `session_id`, and the sub-agent's
+  `agent_id` (the child loop's own session id) and `agent_type` (its definition's name). A shell
+  hook reads all three on stdin. On a main-thread call `agent_id` and `agent_type` are empty and
+  left off the wire, so the main thread's hook input is byte-for-byte what it was.
+- A parent with no hooks gives the child none, as before.
+
+The child copies the session's tool hooks when it starts. ADR-0079's re-read stays wired to the
+main loop: it replaces the parent's list only at the top of a parent iteration, and the parent is
+inside the task call for as long as its child runs, so the copy and the re-read cannot race. A
+hook that reaches the settings files while a sub-agent runs reaches the sub-agents started after.
+
+Not chosen.
+- The parent's whole hook set in the child, which Zak Code ran before 2026-06-21. A host's
+  turn-end hook would then judge each child's turn end, where Claude Code fires `SubagentStop`;
+  a context hook would inject the session's context into every child call; and a host's session
+  boot would rerun per child.
+- The child's own session id in the payload. A hook keyed on the session would read each
+  sub-agent as a session it never saw start. Claude Code never shows it one.
+- A new event that fires on a timer while a sub-agent runs, for a hook that must see the session
+  is still working. Claude Code has none, and the session's tool hooks firing for the child's own
+  calls already show it.
+
+Cost. The session's tool gates run for every sub-agent tool call: the 2026-06-21 change counted
+about 144 hook runs over a six-task delegation loop. A Claude Code session pays the same for the
+same work. A hook that wants to skip sub-agent calls reads `agent_type`.
+
+Limits. `SubagentStart` and `SubagentStop` are not fired yet. A hook added while a sub-agent runs
+does not reach that sub-agent (above).
+
+New tests.
+- `tests/test_subagent_tool_hooks.py` (3 cases), end to end through `Agent(enable_subagents=True)`
+  with the real shell tool: a child's command runs the session's `PreToolUse` and `PostToolUse`
+  hooks under the parent's session id, with `agent_type` and an `agent_id` of its own, while the
+  session's own calls carry neither; the session's turn-end observer and context hook do not run
+  for the child; and a shell hook reads the three fields from its own stdin, and on the session's
+  own call finds the two sub-agent keys absent.
+- `tests/test_subagent.py`: `test_subagent_gets_the_sessions_tool_hooks_and_nothing_else`
+  replaces `test_subagent_gets_its_own_empty_hooks_not_the_parents`. Given a parent with a hook
+  of every kind, the child's set holds exactly the tool-event hooks and the identity it stamps; a
+  parent with no hooks gives the child none.
+- Each case was checked against the code it guards. Building the child with no hooks again fails
+  the two tool-hook cases. Copying the parent's context, turn-end and lifecycle hooks into the
+  child fails the third, and so does copying its turn-end observers alone.
+
+Not verified.
+- Which `session_id` Claude Code sends for a sub-agent's tool call is not stated in its reference.
+  Its `SubagentStart` and `SubagentStop` examples carry the same `session_id` as the main thread,
+  and on Claude Code 2.1.287 (measured 2026-10-19) a hook that resolves the session from
+  `session_id` resolved a sub-agent's Bash call to the parent session.
+- A served worker's long delegation on this build; the tests run scripted models.
+
+## ADR-0368: a capped reply that restates itself is discarded, not continued
+
+Status: accepted. 2026-11-06. Extends ADR-0018 (the degeneration guard and its one-retry
+bound) to the long repeating unit that guard leaves alone. Builds on parity #5 (the length
+continuation) and ADR-0026 (the broken-record guard).
+
+Context. A final answer stopped by the output cap is continued, up to three times a run, and
+the continuation runs before the broken-record guard. ADR-0018's detector convicts only a
+short repeating unit, 200 characters or less, on the reasoning that a model restating a whole
+paragraph is a quality problem the per-completion cap bounds. The continuation undid that
+bound: each capped reply was continued, then re-prompted by every later rail, and nothing
+compared the replies with each other. On 2026-11-05 a served session wrote eleven replies of
+15,355 to 24,237 characters in 63 minutes. Each stopped at its 8,192-token cap and restated the
+one before, four were byte-identical, none called a tool, and only an operator restart ended
+the turn.
+
+What was measured, before building. Every assistant text block of 12,000 or more characters in
+ten served sessions' transcripts from 2026-11-01 to 2026-11-06: 219 blocks. The transcripts
+carry no stop reason, and the replies capped at 8,192 tokens there ran 13,002 to 45,878
+characters, so this population holds every capped reply and some longer uncapped ones. Each
+block was measured for its zlib ratio, its share of distinct lines, and the share of its 64-byte
+windows, taken at every offset, that already occurred earlier in the same text.
+- The eleven incident replies read 0.44 to 0.79 on that share. Of the 200 others, 128 read under
+  0.25, 23 between 0.25 and 0.40, and 49 at 0.40 or more. Those 49 were in 16 sessions on eight
+  machines, with a median distinct-line share of 0.30.
+- The zlib ratio could not separate them. The incident's highest was 0.254, and blocks that
+  repeat almost nothing read as low as 0.165.
+- A first version of the window measure stepped 16 bytes at a time. It read 0.0 on most incident
+  replies, because a repeat that starts at another offset never lines up. Taking every offset
+  fixed it.
+- Verbatim repeats occurred with no repetition inside the text: one 14k-character block was sent
+  four times, and it read 0.003.
+
+Decision.
+- On both turn paths, inside ADR-0018's guard, a text-only completion the output cap stopped
+  (finish reason `length` or `max_tokens`) is judged before it is continued. It is a
+  restatement in either of two cases. In the first, its text (normalized as the broken-record
+  guard normalizes it) matches an earlier capped reply this turn, or an earlier completion that
+  guard counted. In the second, the text is at least 12,000 characters long and
+  `self_repetition` (in `zakcode.agent.degeneration`) reads 0.40 or more.
+- A restatement shares ADR-0018's bound and recovery. It never reaches the transcript, the turn
+  is marked degraded and latches the struggle flag, and the iteration is refunded. The first is
+  retried behind a rail that asks for a tool call: "Your previous response was discarded: it ran
+  to the output limit restating what it had already written. Do not write it again. Take the
+  next concrete step with a tool call, or state in one sentence what is blocking you." The note
+  is `kind="restatement"`. The second degenerate or restated completion in a turn ends it as
+  `degenerated`.
+- A long capped answer that is neither is continued as before. A completion that calls a tool,
+  or one the cap did not stop, is not judged here.
+- The measure reads at most 64 KiB of the text. There is no setting.
+
+Tests. `tests/test_capped_restatement.py` covers:
+- the measure, on a restated text, a varied one, copies shifted to different offsets, a
+  half-repeated text and a short one;
+- the guard's scope: capped completions only; the length floor; a verbatim repeat caught with no
+  repetition inside; the broken-record counts read but not changed;
+- on both turn paths, a restatement discarded with the rail, the second one ending the turn, and
+  a clean capped answer still continued;
+- on the buffered path, the same capped reply sent twice, and an uncapped restatement left
+  alone.
+
+Two older tests of the continuation bound, in `tests/test_resilience_length.py`, scripted the
+same capped reply on every call. Under this decision the second copy is a restatement and the
+turn ends `degenerated`, so they now script a different capped reply each time. The bound they
+test is unchanged.
+
+Mutation results:
+- Raising the floor out of reach lets the restated reply through to the continuation; a test
+  pins this.
+- Removing the verbatim check fails three tests.
+- Unwiring the buffered or the streaming path fails that path's cases (three and two).
+
+Not verified.
+- Whether the served model acts on the rail, or restates again into the `degenerated` stop.
+  The measurement: runs of four or more capped replies in a row on a build with this decision,
+  against those on the previous build, over 24 h.
+- The 49 blocks above the floor besides the incident's were classified by the measure, not read.
+  A legitimate capped answer at 0.40 or more would be discarded and asked for a tool call.
+  Whether any of the 49 was one was not checked.
+- Below 12,000 characters the floor was never measured, so a configuration with a much lower
+  output cap gets the verbatim check only.
+- No bench arm was run.
+
 ## ADR-0369: a summary the output limit cut off is kept, its most important parts first, and nothing installed runs past its line
 
 Status: accepted. 2026-11-06. Reverses two calls of earlier decisions: ADR-0275's that a cut summary
