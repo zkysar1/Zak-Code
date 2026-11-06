@@ -118,7 +118,14 @@ from zakcode.agent.compact import (
     Compactor,
     is_summary,
 )
-from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
+from zakcode.agent.degeneration import (
+    BURST_MIN_REPEATS,
+    RESTATEMENT_FLOOR,
+    RESTATEMENT_MIN_CHARS,
+    burst_repetition,
+    repeated_tail,
+    self_repetition,
+)
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.pinned_inputs import change_notice
 from zakcode.agent.prompt import SystemPromptBuilder
@@ -945,6 +952,44 @@ _DEGENERATION_NUDGE = (
     "Your previous response was discarded because it repeated the same content over and "
     "over. Start fresh: answer the user's request once, in a few plain sentences, then stop."
 )
+#: The rail behind a discarded restatement (ADR-0368). It asks for a tool call: in the
+#: incident the run of capped replies never reached one, and only work moves such a turn.
+_RESTATEMENT_NUDGE = (
+    "Your previous response was discarded: it ran to the output limit restating what it had "
+    "already written. Do not write it again. Take the next concrete step with a tool call, "
+    "or state in one sentence what is blocking you."
+)
+
+
+def _capped_restatement(
+    text: str,
+    finish_reason: str | None,
+    capped_texts: set[str],
+    completion_counts: dict[str, int],
+) -> str | None:
+    """Why a text-only completion the output cap stopped is a restatement, or ``None``.
+
+    ADR-0368. A capped final answer is length-continued, and the continuation runs before the
+    broken-record guard (ADR-0026), so that guard never saw these texts. Two shapes are
+    caught here: the same capped text again this turn (it is recorded in ``capped_texts``, and
+    an earlier uncapped completion is looked up in ``completion_counts``, which this does not
+    change), or a text at least :data:`RESTATEMENT_MIN_CHARS` long whose
+    :func:`self_repetition` reaches :data:`RESTATEMENT_FLOOR`. A long capped answer that does
+    neither is still continued."""
+    if finish_reason not in _LENGTH_FINISH_REASONS:
+        return None
+    key = " ".join(text.split()).lower()
+    if key in capped_texts or completion_counts.get(key):
+        return "the same text as an earlier reply this turn"
+    capped_texts.add(key)
+    if len(text) < RESTATEMENT_MIN_CHARS:
+        return None
+    share = self_repetition(text)
+    if share >= RESTATEMENT_FLOOR:
+        return f"{share:.0%} of it repeats what it had already written"
+    return None
+
+
 #: False-done guard (ADR-0024): a completion whose tail ANNOUNCES actions is not a
 #: completion. Field incident 2026-08-26: a small model ended its turn on "Now I will use
 #: the `create_file` command … I will then use `mv` …" and the turn completed with none of
@@ -8199,6 +8244,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -8523,21 +8569,40 @@ class AgentLoop:
             # the transcript (a known-invalid completion re-issued — the same recovery
             # contract as ModelOutputRejected), retry once behind a corrective rail, then
             # end honestly. Scoped to no-tool-call completions: a batch calling tools is
-            # doing work, and its text rides along unjudged.
+            # doing work, and its text rides along unjudged. A completion the output cap
+            # stopped that restates itself (ADR-0368) is the same failure with a long unit,
+            # and it shares this bound: discarded before it is length-continued.
             if not result.has_tool_calls and result.text:
                 degen_unit = repeated_tail(result.text)
-                if degen_unit is not None:
+                restated = (
+                    _capped_restatement(
+                        result.text, result.finish_reason, capped_texts, completion_counts
+                    )
+                    if degen_unit is None
+                    else None
+                )
+                if degen_unit is not None or restated is not None:
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -9869,6 +9934,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -10503,29 +10569,47 @@ class AgentLoop:
                 # the stream) lands here too; any tool-call fragments from such a stream
                 # are unexecutable and are dropped along with the text. A stream that
                 # ended naturally still gets the full-text check — a short loop can finish
-                # under the probe cadence.
+                # under the probe cadence. A capped stream that restates itself (ADR-0368)
+                # shares this bound, as on the buffered path.
+                restated: str | None = None
                 if degen_unit is None and not tool_calls and assistant_text:
                     degen_unit = repeated_tail(assistant_text)
-                if degen_unit is not None:
+                    if degen_unit is None:
+                        restated = _capped_restatement(
+                            assistant_text, stream_finish_reason, capped_texts, completion_counts
+                        )
+                if degen_unit is not None or restated is not None:
                     self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                            status = "response degenerated into repetition; discarded — retrying"
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                            status = (
+                                "response restated itself at the output limit; discarded — retrying"
+                            )
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(
-                            message="response degenerated into repetition; discarded — retrying"
-                        )
+                        yield AgentStatus(message=status)
                         continue
                     stop_reason = "degenerated"
                     self._note(
