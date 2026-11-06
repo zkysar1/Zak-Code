@@ -101,7 +101,11 @@ def test_length_truncation_continues_then_completes() -> None:
 
 def test_length_continuation_is_bounded() -> None:
     """After _MAX_LENGTH_CONTINUATIONS, a still-truncated answer is accepted as-is."""
-    provider = ScriptedProvider([_truncated()])  # always truncated
+    # Always truncated, never the same text twice: an identical capped reply is a
+    # restatement, not a continuation (ADR-0368, tests/test_capped_restatement.py).
+    provider = ScriptedProvider(
+        [_truncated(f"partial {i}") for i in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    )
     result = asyncio.run(_loop(provider).arun_turn("go"))
     assert result.stop_reason == "completed"
     assert result.degraded
@@ -183,7 +187,11 @@ def test_streaming_length_truncation_continues() -> None:
 
 def test_streaming_bounded() -> None:
     """After _MAX_LENGTH_CONTINUATIONS, a still-truncated answer is accepted as-is."""
-    provider = ScriptedProvider([_truncated()])  # always truncated
+    # Always truncated, never the same text twice: an identical capped reply is a
+    # restatement, not a continuation (ADR-0368, tests/test_capped_restatement.py).
+    provider = ScriptedProvider(
+        [_truncated(f"partial {i}") for i in range(_MAX_LENGTH_CONTINUATIONS + 1)]
+    )
     loop = _loop(provider)
     events = asyncio.run(_collect(loop, "go"))
     done = events[-1]

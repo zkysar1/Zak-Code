@@ -118,7 +118,14 @@ from zakcode.agent.compact import (
     Compactor,
     is_summary,
 )
-from zakcode.agent.degeneration import BURST_MIN_REPEATS, burst_repetition, repeated_tail
+from zakcode.agent.degeneration import (
+    BURST_MIN_REPEATS,
+    RESTATEMENT_FLOOR,
+    RESTATEMENT_MIN_CHARS,
+    burst_repetition,
+    repeated_tail,
+    self_repetition,
+)
 from zakcode.agent.grounding import build_write_grounding
 from zakcode.agent.pinned_inputs import change_notice
 from zakcode.agent.prompt import SystemPromptBuilder
@@ -945,6 +952,44 @@ _DEGENERATION_NUDGE = (
     "Your previous response was discarded because it repeated the same content over and "
     "over. Start fresh: answer the user's request once, in a few plain sentences, then stop."
 )
+#: The rail behind a discarded restatement (ADR-0368). It asks for a tool call: in the
+#: incident the run of capped replies never reached one, and only work moves such a turn.
+_RESTATEMENT_NUDGE = (
+    "Your previous response was discarded: it ran to the output limit restating what it had "
+    "already written. Do not write it again. Take the next concrete step with a tool call, "
+    "or state in one sentence what is blocking you."
+)
+
+
+def _capped_restatement(
+    text: str,
+    finish_reason: str | None,
+    capped_texts: set[str],
+    completion_counts: dict[str, int],
+) -> str | None:
+    """Why a text-only completion the output cap stopped is a restatement, or ``None``.
+
+    ADR-0368. A capped final answer is length-continued, and the continuation runs before the
+    broken-record guard (ADR-0026), so that guard never saw these texts. Two shapes are
+    caught here: the same capped text again this turn (it is recorded in ``capped_texts``, and
+    an earlier uncapped completion is looked up in ``completion_counts``, which this does not
+    change), or a text at least :data:`RESTATEMENT_MIN_CHARS` long whose
+    :func:`self_repetition` reaches :data:`RESTATEMENT_FLOOR`. A long capped answer that does
+    neither is still continued."""
+    if finish_reason not in _LENGTH_FINISH_REASONS:
+        return None
+    key = " ".join(text.split()).lower()
+    if key in capped_texts or completion_counts.get(key):
+        return "the same text as an earlier reply this turn"
+    capped_texts.add(key)
+    if len(text) < RESTATEMENT_MIN_CHARS:
+        return None
+    share = self_repetition(text)
+    if share >= RESTATEMENT_FLOOR:
+        return f"{share:.0%} of it repeats what it had already written"
+    return None
+
+
 #: False-done guard (ADR-0024): a completion whose tail ANNOUNCES actions is not a
 #: completion. Field incident 2026-08-26: a small model ended its turn on "Now I will use
 #: the `create_file` command … I will then use `mv` …" and the turn completed with none of
@@ -4365,17 +4410,24 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt:
+        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only:
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
+            # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
+            # and any call to another tool is what ends that run.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
-                        "you have been recording changes with no other work in between. Done "
-                        "when ONE call to a tool other than the plan tool has succeeded on "
+                        (
+                            "you have been sending only plan calls, and the last were not "
+                            "executed. "
+                            if stuck.last_was_plan_only
+                            else "you have been recording changes with no other work in between. "
+                        )
+                        + "Done when ONE call to a tool other than the plan tool has succeeded on "
                         "that step (a read-only probe counts) and you have noted what it showed"
                     ),
                 )
@@ -6788,6 +6840,29 @@ class AgentLoop:
                 blocks.append(await self._execute_tool_call(call, ctx, restrict_to=restrict_to))
         return blocks
 
+    def _refuse_plan_only(
+        self, calls: list[ToolCall], stuck: StuckTracker
+    ) -> list[ToolResultBlock]:
+        """Answer a plan-only completion at the bound unexecuted, naming the step to do (ADR-0364).
+
+        The blocks go on through the iteration like any batch's results, so the stuck ladder
+        sees each refusal and a model that keeps planning still climbs it to a stop.
+        """
+        current = self.session.task_network.current()
+        step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
+        self._note(
+            "intervention",
+            f"response {stuck.plan_only_run + 1} in a row called only the plan tools",
+            kind="plan_only_bound",
+        )
+        output = stuck.plan_only_message(step)
+        return [
+            ToolResultBlock(
+                tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
+            )
+            for call in calls
+        ]
+
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
         """True iff every result was a permission denial, step restriction, hook veto, or
@@ -8169,6 +8244,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -8223,7 +8299,7 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         while True:
@@ -8493,21 +8569,40 @@ class AgentLoop:
             # the transcript (a known-invalid completion re-issued — the same recovery
             # contract as ModelOutputRejected), retry once behind a corrective rail, then
             # end honestly. Scoped to no-tool-call completions: a batch calling tools is
-            # doing work, and its text rides along unjudged.
+            # doing work, and its text rides along unjudged. A completion the output cap
+            # stopped that restates itself (ADR-0368) is the same failure with a long unit,
+            # and it shares this bound: discarded before it is length-continued.
             if not result.has_tool_calls and result.text:
                 degen_unit = repeated_tail(result.text)
-                if degen_unit is not None:
+                restated = (
+                    _capped_restatement(
+                        result.text, result.finish_reason, capped_texts, completion_counts
+                    )
+                    if degen_unit is None
+                    else None
+                )
+                if degen_unit is not None or restated is not None:
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -9486,9 +9581,15 @@ class AgentLoop:
             # tool error becomes an error result fed back so the model can recover —
             # it never aborts the turn). A wholly read-only batch runs concurrently.
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
-            result_blocks = await self._execute_batch(
-                result.tool_calls, ctx, restrict_to=restrict_now
-            )
+            # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
+            # unexecuted instead; its refusals feed the ladder below like any results.
+            plan_only_refused = stuck.refuses_plan_only(result.tool_calls)
+            if plan_only_refused:
+                result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
+            else:
+                result_blocks = await self._execute_batch(
+                    result.tool_calls, ctx, restrict_to=restrict_now
+                )
             turn_tool_results.extend(result_blocks)
             # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
             # identical resend next iteration reads as progress (not a stall) at the guard.
@@ -9503,7 +9604,8 @@ class AgentLoop:
             # A skill loaded this batch puts its sections in the plan (ADR-0062), and a plan
             # that moved past a delivered section pulls the next page (ADR-0067).
             self._seed_loaded_skill_skeletons(result.tool_calls, result_blocks, skeleton_seeded)
-            self._turn_skill_pages(result.tool_calls)
+            if not plan_only_refused:  # a refused plan call rewrote nothing: no page is due
+                self._turn_skill_pages(result.tool_calls)
             self._dump_trace()  # checkpoint: a runner's turn may never end, its trace must
             if self._turn_fatal is not None:
                 # A verbatim body that cannot fit the window (ADR-0066): the model has its
@@ -9832,6 +9934,7 @@ class AgentLoop:
         plan_reviews = 0  # fresh-eyes plan reviews spent this turn (ADR-0117, bounded)
         section_nudged: set[tuple[str, int]] = set()  # open-section guard (ADR-0087): once each
         completion_counts: dict[str, int] = {}  # broken-record guard (ADR-0026): per-turn
+        capped_texts: set[str] = set()  # capped replies seen this turn (ADR-0368)
         claim_nudged = False  # claim-vs-action guard (ADR-0033): one nudge per turn
         blocker_nudged = False  # blocker-without-evidence guard (ADR-0036): one per turn
         missing_nudged = False  # missing-conclusion gate (ADR-0040): one per turn
@@ -9885,7 +9988,7 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS)
+        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
         restrict_readonly_next = False
 
         try:
@@ -10466,29 +10569,47 @@ class AgentLoop:
                 # the stream) lands here too; any tool-call fragments from such a stream
                 # are unexecutable and are dropped along with the text. A stream that
                 # ended naturally still gets the full-text check — a short loop can finish
-                # under the probe cadence.
+                # under the probe cadence. A capped stream that restates itself (ADR-0368)
+                # shares this bound, as on the buffered path.
+                restated: str | None = None
                 if degen_unit is None and not tool_calls and assistant_text:
                     degen_unit = repeated_tail(assistant_text)
-                if degen_unit is not None:
+                    if degen_unit is None:
+                        restated = _capped_restatement(
+                            assistant_text, stream_finish_reason, capped_texts, completion_counts
+                        )
+                if degen_unit is not None or restated is not None:
                     self._reply_parts = None  # the reply is thrown away (ADR-0363)
                     turn_degraded = True
                     self._turn_struggle = True  # degeneration latches the deep coder (ADR-0024)
                     self._refund_iteration()  # the discarded completion did no work
                     if degen_retries < _MAX_DEGENERATION_RETRIES:
                         degen_retries += 1
-                        self._note(
-                            "intervention",
-                            "response degenerated into repetition — discarded; retrying",
-                            kind="degeneration",
-                        )
-                        self.session.add_message(Message.user(_control_rail(_DEGENERATION_NUDGE)))
+                        if restated is None:
+                            self._note(
+                                "intervention",
+                                "response degenerated into repetition — discarded; retrying",
+                                kind="degeneration",
+                            )
+                            nudge = _DEGENERATION_NUDGE
+                            status = "response degenerated into repetition; discarded — retrying"
+                        else:
+                            self._note(
+                                "intervention",
+                                f"response ran to the output limit restating itself ({restated})"
+                                " — discarded; retrying",
+                                kind="restatement",
+                            )
+                            nudge = _RESTATEMENT_NUDGE
+                            status = (
+                                "response restated itself at the output limit; discarded — retrying"
+                            )
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
                         stuck.reset()
-                        yield AgentStatus(
-                            message="response degenerated into repetition; discarded — retrying"
-                        )
+                        yield AgentStatus(message=status)
                         continue
                     stop_reason = "degenerated"
                     self._note(
@@ -11538,9 +11659,16 @@ class AgentLoop:
                 # streaming path stays sequential to preserve interleaved event order;
                 # the buffered path parallelizes wholly-read-only batches.)
                 result_blocks: list[ToolResultBlock] = []
-                for call in tool_calls:
+                # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
+                # completion in a row is answered unexecuted, and its refusals feed the ladder.
+                plan_only_refused = stuck.refuses_plan_only(tool_calls)
+                refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
+                for index, call in enumerate(tool_calls):
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
-                    block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
+                    if plan_only_refused:
+                        block = refusals[index]
+                    else:
+                        block = await self._execute_tool_call(call, ctx, restrict_to=restrict_now)
                     result_blocks.append(block)
                     yield AgentToolResult(
                         tool_use_id=block.tool_use_id,
@@ -11564,8 +11692,11 @@ class AgentLoop:
                     tool_calls, result_blocks, skeleton_seeded
                 ):
                     yield AgentStatus(message=f"plan seeded from /{skill_name}: {len(steps)} steps")
-                for skill_name, page, count, title in self._turn_skill_pages(tool_calls):
+                pages = [] if plan_only_refused else self._turn_skill_pages(tool_calls)
+                for skill_name, page, count, title in pages:
                     yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
+                if plan_only_refused:
+                    yield AgentStatus(message="plan-only bound: the plan calls were not executed")
                 self._dump_trace()  # checkpoint (see the buffered twin)
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.

@@ -26,6 +26,7 @@ from zakcode.session.store import Session
 from zakcode.skills.fit import measure_skill_fit
 from zakcode.tasks import SkillPage, skill_pages, skill_skeleton
 from zakcode.tools.base import SkillLoad, ToolRegistry
+from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.update_plan import UpdatePlanTool
 from zakcode.tools.builtins.use_skill import UseSkillTool
 
@@ -814,17 +815,18 @@ def test_a_third_drop_is_the_models_decision(tmp_path: Path) -> None:
             return _use()
         # Three collapses, counted by the plan results the transcript holds — the
         # plan-quality judge shares the provider, so call numbers are not iterations.
-        plans = sum(
-            1
-            for m in messages
-            for b in m.blocks
-            if isinstance(b, ToolResultBlock) and (b.output or "").startswith("Plan updated")
-        )
+        results = [b for m in messages for b in m.blocks if isinstance(b, ToolResultBlock)]
+        plans = sum(1 for b in results if (b.output or "").startswith("Plan updated"))
+        # A look at the workspace before the third collapse: a third plan-only completion in
+        # a row is answered unexecuted by the plan-only bound (ADR-0364).
+        if plans == 2 and not any(b.tool_use_id == "ls1" for b in results):
+            return LLMResult(tool_calls=[ToolCall(id="ls1", name="LS", arguments={"path": "."})])
         if plans < 3:
             return _plan(_keep_first(rewrite=n), call_id=f"p{n}")
         return LLMResult(text="done")
 
     loop = _loop(_ScriptByCall(script), tmp_path)
+    loop.registry.register(ListDirTool())
     asyncio.run(loop.arun_turn("run /demo"))
     assert [n["pages"] for n in _notes(loop, "skill_sections_restored")] == [[2, 3], [2, 3]]
     (dropped,) = _notes(loop, "skill_sections_dropped")
