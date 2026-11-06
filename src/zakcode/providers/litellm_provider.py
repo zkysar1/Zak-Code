@@ -1365,7 +1365,19 @@ class LiteLLMProvider(Provider):
         if isinstance(hidden, dict):
             cost = cls._coerce_cost(hidden.get("response_cost"))
         model = str(_get(response, "model") or "")
-        if (cost == 0.0 and (prompt or completion)) or unsplit:
+
+        # A cache write the backend bills and does not name (ADR-0370). On a write-billed tier the
+        # provider charges every prompt token that is not a cache read at the cache-WRITE rate, yet
+        # the usage carries no creation count, so litellm's own ``response_cost`` and the price-map
+        # fallback below both priced those tokens at the plain input rate and ``cost_usd`` ran about
+        # a tenth under the invoice. Count the unread prompt as written, for the declared models
+        # only, and only where the reply names no creation count of its own.
+        derived_write = 0
+        if not (cache_creation or unsplit) and cls._bills_uncached_as_write(model):
+            derived_write = max(0, prompt - cache_read)
+            cache_creation = derived_write
+
+        if (cost == 0.0 and (prompt or completion)) or unsplit or derived_write:
             # Streaming chunks carry NO response_cost: litellm nulls it on the chunk and computes
             # the cost later in an async callback the consumer never sees, so /cost and the
             # budget ceiling would under-report to $0 on the streaming path. Recompute from
@@ -1400,6 +1412,30 @@ class LiteLLMProvider(Provider):
             cache_unsplit_tokens=unsplit,
             reasoning_tokens=reasoning,
             cost_unpriced=unpriced,
+        )
+
+    #: Models whose provider bills every prompt token that is not a cache read as a cache write
+    #: while naming no creation count (ADR-0370). Measured per model from the provider's own
+    #: billing lines, never inferred from the price map: Anthropic names its creation counts and
+    #: bills the rest at the plain input rate, and a write rate in the map says nothing about
+    #: whether the provider bills the unread prompt as written. Widen only on a model's own
+    #: line-item read.
+    _UNCACHED_BILLED_AS_WRITE: frozenset[str] = frozenset({"gpt-6-luna"})
+
+    @classmethod
+    def _bills_uncached_as_write(cls, model: str) -> bool:
+        """True when ``model`` (any provider prefix, optional ``-YYYY-MM-DD`` snapshot) is declared.
+
+        A longer id that merely starts with a declared one is a different model and is not matched.
+        """
+        stem = model.rsplit("/", 1)[-1].lower()
+        return any(
+            stem == declared
+            or (
+                stem.startswith(declared + "-")
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}", stem[len(declared) + 1 :]) is not None
+            )
+            for declared in cls._UNCACHED_BILLED_AS_WRITE
         )
 
     @classmethod
