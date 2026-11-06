@@ -22999,3 +22999,86 @@ Not verified.
 - The `TodoWrite` alias is not in the loop's plan-tool set, so a run of `TodoWrite`-only
   completions is not bounded. The loop's work count (ADR-0196) already counts that alias as work.
 - No bench arm was run.
+
+## ADR-0368: a capped reply that restates itself is discarded, not continued
+
+Status: accepted. 2026-11-06. Extends ADR-0018 (the degeneration guard and its one-retry
+bound) to the long repeating unit that guard leaves alone. Builds on parity #5 (the length
+continuation) and ADR-0026 (the broken-record guard).
+
+Context. A final answer stopped by the output cap is continued, up to three times a run, and
+the continuation runs before the broken-record guard. ADR-0018's detector convicts only a
+short repeating unit, 200 characters or less, on the reasoning that a model restating a whole
+paragraph is a quality problem the per-completion cap bounds. The continuation undid that
+bound: each capped reply was continued, then re-prompted by every later rail, and nothing
+compared the replies with each other. On 2026-11-05 a served session wrote eleven replies of
+15,355 to 24,237 characters in 63 minutes. Each stopped at its 8,192-token cap and restated the
+one before, four were byte-identical, none called a tool, and only an operator restart ended
+the turn.
+
+What was measured, before building. Every assistant text block of 12,000 or more characters in
+ten served sessions' transcripts from 2026-11-01 to 2026-11-06: 219 blocks. The transcripts
+carry no stop reason, and the replies capped at 8,192 tokens there ran 13,002 to 45,878
+characters, so this population holds every capped reply and some longer uncapped ones. Each
+block was measured for its zlib ratio, its share of distinct lines, and the share of its 64-byte
+windows, taken at every offset, that already occurred earlier in the same text.
+- The eleven incident replies read 0.44 to 0.79 on that share. Of the 200 others, 128 read under
+  0.25, 23 between 0.25 and 0.40, and 49 at 0.40 or more. Those 49 were in 16 sessions on eight
+  machines, with a median distinct-line share of 0.30.
+- The zlib ratio could not separate them. The incident's highest was 0.254, and blocks that
+  repeat almost nothing read as low as 0.165.
+- A first version of the window measure stepped 16 bytes at a time. It read 0.0 on most incident
+  replies, because a repeat that starts at another offset never lines up. Taking every offset
+  fixed it.
+- Verbatim repeats occurred with no repetition inside the text: one 14k-character block was sent
+  four times, and it read 0.003.
+
+Decision.
+- On both turn paths, inside ADR-0018's guard, a text-only completion the output cap stopped
+  (finish reason `length` or `max_tokens`) is judged before it is continued. It is a
+  restatement in either of two cases. In the first, its text (normalized as the broken-record
+  guard normalizes it) matches an earlier capped reply this turn, or an earlier completion that
+  guard counted. In the second, the text is at least 12,000 characters long and
+  `self_repetition` (in `zakcode.agent.degeneration`) reads 0.40 or more.
+- A restatement shares ADR-0018's bound and recovery. It never reaches the transcript, the turn
+  is marked degraded and latches the struggle flag, and the iteration is refunded. The first is
+  retried behind a rail that asks for a tool call: "Your previous response was discarded: it ran
+  to the output limit restating what it had already written. Do not write it again. Take the
+  next concrete step with a tool call, or state in one sentence what is blocking you." The note
+  is `kind="restatement"`. The second degenerate or restated completion in a turn ends it as
+  `degenerated`.
+- A long capped answer that is neither is continued as before. A completion that calls a tool,
+  or one the cap did not stop, is not judged here.
+- The measure reads at most 64 KiB of the text. There is no setting.
+
+Tests. `tests/test_capped_restatement.py` covers:
+- the measure, on a restated text, a varied one, copies shifted to different offsets, a
+  half-repeated text and a short one;
+- the guard's scope: capped completions only; the length floor; a verbatim repeat caught with no
+  repetition inside; the broken-record counts read but not changed;
+- on both turn paths, a restatement discarded with the rail, the second one ending the turn, and
+  a clean capped answer still continued;
+- on the buffered path, the same capped reply sent twice, and an uncapped restatement left
+  alone.
+
+Two older tests of the continuation bound, in `tests/test_resilience_length.py`, scripted the
+same capped reply on every call. Under this decision the second copy is a restatement and the
+turn ends `degenerated`, so they now script a different capped reply each time. The bound they
+test is unchanged.
+
+Mutation results:
+- Raising the floor out of reach lets the restated reply through to the continuation; a test
+  pins this.
+- Removing the verbatim check fails three tests.
+- Unwiring the buffered or the streaming path fails that path's cases (three and two).
+
+Not verified.
+- Whether the served model acts on the rail, or restates again into the `degenerated` stop.
+  The measurement: runs of four or more capped replies in a row on a build with this decision,
+  against those on the previous build, over 24 h.
+- The 49 blocks above the floor besides the incident's were classified by the measure, not read.
+  A legitimate capped answer at 0.40 or more would be discarded and asked for a tool call.
+  Whether any of the 49 was one was not checked.
+- Below 12,000 characters the floor was never measured, so a configuration with a much lower
+  output cap gets the verbatim check only.
+- No bench arm was run.
