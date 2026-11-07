@@ -16,7 +16,14 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import _PLAN_JUST_UPDATED, AgentLoop
+from zakcode.agent.loop import (
+    _MIDTURN_SAY_FRAME,
+    _OBSERVATION_FRAME,
+    _PLAN_JUST_UPDATED,
+    _SESSION_START_FRAME,
+    AgentLoop,
+    _control_rail,
+)
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import PermissionTier, load_settings
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
@@ -248,6 +255,53 @@ def test_the_quality_note_waits_until_there_is_work_to_show(tmp_path: Path) -> N
     # 30 percent.
     assert "Plan quality" in _line(_after(tmp_path, ("bash",)))
     assert "Plan quality" not in _line(_after(tmp_path, ("update_plan",)))
+
+
+def test_the_line_says_the_plan_was_called_and_asks_for_the_step_in_words(tmp_path: Path) -> None:
+    # A third of the calls change nothing, so the line says the tool was called, not that the plan
+    # was updated. The words are read here, not the constant, so a line that loses its instruction
+    # fails this test.
+    text = _line(_after(tmp_path, ("update_plan",)))
+
+    assert text.startswith(
+        "[plan] Harness-tracked plan for the current goal. Your last response called update_plan "
+        "and nothing else. "
+    )
+    assert "updated in your last response" not in text
+    assert (
+        "Do not call update_plan in this response: do the step marked '<- current' now with a "
+        "tool call.\n\n" in text
+    )
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "do x instead",
+        _MIDTURN_SAY_FRAME.format(text="look at y first"),
+        _OBSERVATION_FRAME.format(envelope_id="e1", text="the door opened"),
+        _SESSION_START_FRAME.format(why="a new session is starting", text="goal g in flight"),
+    ],
+    ids=["new turn", "operator note", "perception", "hook"],
+)
+def test_input_after_the_plan_call_keeps_the_plan_current(tmp_path: Path, said: str) -> None:
+    # The model has not answered what spoke after its plan call, and "do the step now" would talk
+    # over it.
+    loop = _after(tmp_path, ("update_plan",))
+    loop.session.messages.append(Message.user(said))
+
+    text = _line(loop)
+
+    assert PLAN_ADVANCE in text and _PLAN_JUST_UPDATED not in text
+
+
+def test_a_harness_rail_after_the_plan_call_still_says_do_the_step(tmp_path: Path) -> None:
+    # The next section of a paged skill arrives as a [harness] rail right after the update that
+    # closed a section. That is the harness, not input, and the step it brings is the one to do.
+    loop = _after(tmp_path, ("update_plan",))
+    loop.session.messages.append(Message.user(_control_rail("Section 2 of 3 of skill 'w'.")))
+
+    assert _line(loop).startswith(_PLAN_JUST_UPDATED)
 
 
 class _Recording(_Scripted):
