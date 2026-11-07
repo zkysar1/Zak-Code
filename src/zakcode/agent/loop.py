@@ -2155,8 +2155,9 @@ _PLAN_JUDGE_SILENCE = 0.8
 #: worker sessions: 2,054 of 2,062 update_plan calls were alone in their response, 57.5 model hours,
 #: a third of them changed nothing, and 50 to 73 percent sat in runs with no other tool between.
 _PLAN_JUST_UPDATED = (
-    "[plan] Harness-tracked plan for the current goal, updated in your last response. Do not call "
-    "update_plan in this response: do the step marked '<- current' now with a tool call.\n\n"
+    "[plan] Harness-tracked plan for the current goal. Your last response called update_plan and "
+    "nothing else. Do not call update_plan in this response: do the step marked '<- current' now "
+    "with a tool call.\n\n"
 )
 
 #: How many times the plan-first gate may withhold a mutating batch to demand a plan before the
@@ -4537,11 +4538,19 @@ class AgentLoop:
         return Message.user(body)
 
     def _last_response_only_planned(self) -> bool:
-        """Whether the model's last response called update_plan and nothing else (ADR-0371)."""
+        """Whether the model's last response called update_plan and nothing else (ADR-0371).
+
+        Only while nothing has spoken since. A new turn, an operator's mid-task note, a
+        perception or a hook after that response is input the model has not answered, and "do
+        the step now" would talk over it. The harness's own ``[harness]`` rails do not count: the
+        next section of a paged skill arrives as one right after the update that closed a section.
+        """
         for message in reversed(self.session.messages):
             if message.role == "assistant":
                 uses = message.tool_uses
                 return bool(uses) and all(use.name == "update_plan" for use in uses)
+            if message.role == "user" and not message.text.startswith("[harness]"):
+                return False
         return False
 
     def _plan_memory_lines(self) -> list[str]:

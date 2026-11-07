@@ -23432,9 +23432,14 @@ that did only that. The receipts say to move on, and the model answers the line.
 
 Decision.
 
-- On the call after a response whose tool calls were all update_plan, the line opens instead: updated
-  in your last response, do not call update_plan in this response, do the step marked `<- current` now
-  with a tool call. The goal, the board, the memory lines and any fold note stay.
+- On the call after a response whose tool calls were all update_plan, the line opens instead: your last
+  response called update_plan and nothing else, do not call update_plan in this response, do the step
+  marked `<- current` now with a tool call. It says called, not updated, because a third of those calls
+  change nothing. The goal, the board, the memory lines and any fold note stay.
+- Only while nothing has spoken since that response. A new turn, an operator's mid-task note, a
+  perception or a hook after it is input the model has not answered, and the line stays as it was. The
+  harness's own `[harness]` rails do not count: the next section of a paged skill arrives as one right
+  after the update that closed a section, and its step is the one to do.
 - The quality note stays off that one line. It asks for a change to the plan the model just sent.
 - The line stays as it was after any other response, a paired one included, with no response yet, on a
   plan with no current step, where it would name a step the board does not mark, and on a plan with an
@@ -23458,5 +23463,9 @@ the model does the step or something else.
 The proof. `tests/test_plan_advance_rides_along.py` pins the line after a plan-only response, on both
 turn paths; the line as it was after work, a paired call in either order, text and no response; that the
 last response decides; a plan with no current step and one with an undecomposed step; and the quality
-note held back. 7 mutations each fail the file.
+note held back. 7 mutations each fail the file. Amended 2026-11-07 after review: the file also pins the
+line's own words (called, the instruction, the blank line before the board), the line as it was after a
+new turn, an operator's note, a perception and a hook, and the line kept after a `[harness]` rail. A
+second table of 5 single-site mutations (the input check removed, rails counted as input, the old
+wording, the instruction deleted, the blank line dropped) kills all 5, one test case for each.
 
