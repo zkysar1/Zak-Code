@@ -4715,25 +4715,28 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only:
+        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only or stuck.last_was_print_only:
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
             # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
-            # and any call to another tool is what ends that run.
+            # and any call to another tool is what ends that run. ADR-0373: so does a run of prints.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
                         (
-                            "you have been sending only plan calls, and the last were not "
+                            "you have been printing fixed strings, and the last were not executed. "
+                            if stuck.last_was_print_only
+                            else "you have been sending only plan calls, and the last were not "
                             "executed. "
                             if stuck.last_was_plan_only
                             else "you have been recording changes with no other work in between. "
                         )
-                        + "Done when ONE call to a tool other than the plan tool has succeeded on "
-                        "that step (a read-only probe counts) and you have noted what it showed"
+                        + "Done when ONE call to a tool other than the plan tool, and more than a "
+                        "print, has succeeded on that step (a read-only probe counts) and you have "
+                        "noted what it showed"
                     ),
                 )
             )
@@ -7148,19 +7151,26 @@ class AgentLoop:
     def _refuse_plan_only(
         self, calls: list[ToolCall], stuck: StuckTracker
     ) -> list[ToolResultBlock]:
-        """Answer a plan-only completion at the bound unexecuted, naming the step to do (ADR-0364).
+        """Answer a completion at the plan-only or the print-only bound unexecuted, naming the
+        step to do (ADR-0364, ADR-0373).
 
         The blocks go on through the iteration like any batch's results, so the stuck ladder
-        sees each refusal and a model that keeps planning still climbs it to a stop.
+        sees each refusal and a model that keeps planning, or printing, still climbs it to a stop.
         """
         current = self.session.task_network.current()
         step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
+        printed = stuck.refuses_print_only(calls)
+        run, did = (
+            (stuck.print_only_run, "only printed a fixed string")
+            if printed
+            else (stuck.plan_only_run, "called only the plan tools")
+        )
         self._note(
             "intervention",
-            f"response {stuck.plan_only_run + 1} in a row called only the plan tools",
+            f"response {run + 1} in a row {did}",
             kind="plan_only_bound",
         )
-        output = stuck.plan_only_message(step)
+        output = stuck.print_only_message(step) if printed else stuck.plan_only_message(step)
         return [
             ToolResultBlock(
                 tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
@@ -8605,7 +8615,11 @@ class AgentLoop:
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Multi-signal stuck detection + recovery ladder (always on; self-paces). When a
         # NARROW step fires, the next iteration is restricted to read-only tools.
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
+        stuck = StuckTracker(
+            uncounted_outcome_tools=_UNOBSERVING_TOOLS,
+            plan_tools=_PLAN_TOOLS,
+            shell_tools=_SHELL_TOOLS,
+        )
         restrict_readonly_next = False
 
         while True:
@@ -9889,7 +9903,9 @@ class AgentLoop:
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
             # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
             # unexecuted instead; its refusals feed the ladder below like any results.
-            plan_only_refused = stuck.refuses_plan_only(result.tool_calls)
+            plan_only_refused = stuck.refuses_plan_only(
+                result.tool_calls
+            ) or stuck.refuses_print_only(result.tool_calls)
             if plan_only_refused:
                 result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
             else:
@@ -10295,7 +10311,11 @@ class AgentLoop:
         # it reads the one the workspace declares (review lever L4).
         verify = VerificationGate(command=self._verify_command(), attempt_cap=self.attempt_cap)
         # Stuck detection + recovery ladder (identical semantics to the buffered path).
-        stuck = StuckTracker(uncounted_outcome_tools=_UNOBSERVING_TOOLS, plan_tools=_PLAN_TOOLS)
+        stuck = StuckTracker(
+            uncounted_outcome_tools=_UNOBSERVING_TOOLS,
+            plan_tools=_PLAN_TOOLS,
+            shell_tools=_SHELL_TOOLS,
+        )
         restrict_readonly_next = False
 
         try:
@@ -11968,7 +11988,9 @@ class AgentLoop:
                 result_blocks: list[ToolResultBlock] = []
                 # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
                 # completion in a row is answered unexecuted, and its refusals feed the ladder.
-                plan_only_refused = stuck.refuses_plan_only(tool_calls)
+                plan_only_refused = stuck.refuses_plan_only(tool_calls) or stuck.refuses_print_only(
+                    tool_calls
+                )
                 refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
                 for index, call in enumerate(tool_calls):
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)
@@ -12003,7 +12025,7 @@ class AgentLoop:
                 for skill_name, page, count, title in pages:
                     yield AgentStatus(message=f"page {page}/{count} of /{skill_name}: {title}")
                 if plan_only_refused:
-                    yield AgentStatus(message="plan-only bound: the plan calls were not executed")
+                    yield AgentStatus(message="idle bound: the calls were not executed")
                 self._dump_trace()  # checkpoint (see the buffered twin)
                 if self._turn_fatal is not None:
                     # A verbatim body that cannot fit the window (ADR-0066): end loudly.
