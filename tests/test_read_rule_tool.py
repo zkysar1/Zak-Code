@@ -170,6 +170,20 @@ def test_a_rule_edited_since_it_was_read_is_delivered_again() -> None:
     assert "Always do the alpha thing." in res.output
 
 
+def test_a_read_after_the_pointer_gets_the_body() -> None:
+    """Once per rule: a session that asks again after the pointer wants the text."""
+    seen = _ctx_seeing(_body("alpha-rule"), ALREADY_READ.format(name="alpha-rule"))
+    res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
+    assert "Always do the alpha thing." in res.output
+    assert res.verbatim
+
+
+def test_another_rules_pointer_does_not_count() -> None:
+    seen = _ctx_seeing(_body("alpha-rule"), ALREADY_READ.format(name="beta-rule"))
+    res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
+    assert res.output == ALREADY_READ.format(name="alpha-rule")
+
+
 class _Scripted(Provider):
     def __init__(self, results: list[LLMResult]) -> None:
         self._results = results
@@ -230,6 +244,29 @@ async def test_the_loop_answers_the_second_read_with_the_pointer(
     first, second = _outputs(loop)
     assert "Always do the alpha thing." in first
     assert second == ALREADY_READ.format(name="alpha-rule")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_the_loop_gives_the_pointer_once_then_the_body(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """The trial's loop: after one body every ask got the pointer, and the session kept asking.
+
+    Four identical reads in a row, as the trial saw them; the doom-loop guard declines one of
+    them, so the assertions count pointers and read the last answer instead of fixing positions.
+    """
+    loop = _loop(tmp_path, "r1", "r2", "r3", "r4")
+    if streaming:
+        async for _event in loop.astream_turn("go"):
+            pass
+    else:
+        await loop.arun_turn("go")
+    outputs = _outputs(loop)
+    pointer = ALREADY_READ.format(name="alpha-rule")
+    assert "Always do the alpha thing." in outputs[0]
+    assert outputs.count(pointer) == 1
+    assert "Always do the alpha thing." in outputs[-1]
 
 
 @pytest.mark.asyncio
