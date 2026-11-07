@@ -182,6 +182,37 @@ def test_a_figure_the_user_gave_is_sourced(tmp_path: Path) -> None:
     assert not any("appear in no tool output" in r for r in _rails(loop))
 
 
+def test_a_figure_pinned_in_a_rule_is_sourced(tmp_path: Path) -> None:
+    provider = _Sequence(_text("Text 741741 or call 12356 to reach a counsellor."))
+    loop = _loop(tmp_path, provider)
+    loop._prompt_input_items = {"rules": {"safety card": "US: text HOME to 741741. Mainland China: call 12356. Elsewhere: findahelpline.com."}}
+    asyncio.run(loop.arun_turn("I want to hurt myself"))
+    assert provider.calls == 1
+    assert not any("appear in no tool output" in r for r in _rails(loop))
+
+
+def test_a_figure_pinned_in_the_identity_is_sourced(tmp_path: Path) -> None:
+    provider = _Sequence(_text("The line is 741741."))
+    loop = _loop(tmp_path, provider)
+    loop._prompt_input_items = {"identity": {"identity": "You run help line 741741."}}
+    asyncio.run(loop.arun_turn("what is the line?"))
+    assert provider.calls == 1
+    assert not any("appear in no tool output" in r for r in _rails(loop))
+
+
+def test_an_invented_figure_is_still_flagged_beside_a_pinned_one(tmp_path: Path) -> None:
+    provider = _Sequence(
+        _text("Text 741741 or call 10892 to reach a counsellor."),
+        _text("10892 was a guess."),
+    )
+    loop = _loop(tmp_path, provider)
+    loop._prompt_input_items = {"rules": {"safety card": "US: text HOME to 741741. Mainland China: call 12356. Elsewhere: findahelpline.com."}}
+    asyncio.run(loop.arun_turn("I want to hurt myself"))
+    assert provider.calls == 2
+    figure_rails = [r for r in _rails(loop) if "appear in no tool output" in r]
+    assert len(figure_rails) == 1 and "10892" in figure_rails[0] and "741741" not in figure_rails[0]
+
+
 # ── use_skill names the skill directory ──────────────────────────────────────
 
 

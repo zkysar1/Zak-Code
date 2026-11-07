@@ -1783,6 +1783,20 @@ def _figures(text: str) -> set[str]:
     return out
 
 
+_PINNED_FIGURE_RE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d{4,})(?!\w)")
+
+
+def _pinned_figures(text: str) -> set[str]:
+    """Figures a pinned prompt text states, digits only.
+
+    Looser than ``_figures`` on purpose: prose ends a sentence on its number ("text HOME to
+    741741. Mainland China: call 12356."), and ``_figures`` refuses a figure followed by a
+    full stop or comma because there it guards against decimals and list fragments. Over-reading
+    a source only sources one more figure; under-reading it re-flags a number the operator wrote.
+    """
+    return {raw.replace(",", "") for raw in _PINNED_FIGURE_RE.findall(text)}
+
+
 def _figure_nudge(figures: list[str]) -> str:
     listed = ", ".join(figures)
     return (
@@ -7090,6 +7104,12 @@ class AgentLoop:
                 raw = getattr(block, "output", None) or getattr(block, "text", None)
                 if isinstance(raw, str) and raw:
                     sourced |= _figures(raw)
+        # Text the operator pinned into the prompt is read every turn: a figure written there
+        # is a given, not a measurement the model failed to take (a pinned crisis
+        # card's hotline numbers drew a "no tool output" hint and a second reply).
+        for kind in ("rules", "identity"):
+            for pinned in self._prompt_input_items.get(kind, {}).values():
+                sourced |= _pinned_figures(pinned)
         return sorted(wanted - sourced)
 
     def _previous_assistant_text(self) -> str:
