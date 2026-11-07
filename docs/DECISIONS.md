@@ -23583,3 +23583,34 @@ turn paths; the line as it was after work, a paired call in either order, text a
 last response decides; a plan with no current step and one with an undecomposed step; and the quality
 note held back. 7 mutations each fail the file.
 
+## ADR-0372: A repeat of a rule still in the conversation is answered with a pointer
+
+**Context.** Measured 2026-11-07 on ten worker sessions over 24 h: 1,142 `read_rule` calls, 3.68M
+chars, 11 percent of all tool output, and 524 of them repeat a rule already read since the last
+compaction. The shortest rule was read most: 206 calls at 564 chars, 160 of them repeats, because the
+index says to read a rule when it looks relevant to the current step, and that rule looks relevant
+after every shell command. Each repeat adds the whole body again and stays until the next compaction.
+On these sessions a thousand tokens of context cost about 0.55 s on every later call.
+
+**Decision.** `read_rule` asks the loop whether a tool result in the conversation still holds the
+exact text it is about to return. If one does, it returns one line naming the rule and saying it is
+already in context. The check reads the conversation itself, so nothing needs resetting: a compaction
+that took the body, or an elision that shortened it, makes the check false and the body is delivered
+again; a read kept in the compacted tail stays true; a rule edited on disk has different text and is
+delivered. Pinned to the case ADR-0080 recorded, a pointer to text a compaction removed.
+
+**Alternatives rejected.** A per-window set of names cleared in `_adopt_compacted`: it would need the
+same reset ADR-0080 had to add, and it would answer "unchanged" for an edited rule. The same pointer
+for `use_skill` across turns: ADR-0048 resets that dedup because a loop's mandated re-entry answered
+with a pointer is a dead loop, and a rule read is never a re-entry. Marking read rules in the index:
+the index sits in the cached prefix, so changing it re-reads the whole conversation (ADR-0260).
+Lowering the compaction threshold instead: at today's compaction cost the same measurements put the
+best threshold at about where it fires now.
+
+Not verified: how far a repeat falls once the model sees the pointer, since the call itself still
+happens. The trial counts that.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the pointer, and the body delivered to a bare
+context, for another rule, for an edited rule, after a compaction and after an elision, and the
+pointer for a body kept in the tail, the last four through the loop. Ten mutations of the check, the
+guard and both loop seams were all killed.
