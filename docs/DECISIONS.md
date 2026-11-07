@@ -23604,11 +23604,14 @@ Decision.
    `null` is the same as no key. Each report is one WARNING line per Agent construction, and the
    server builds an Agent for each turn, so there it repeats every turn. A file that does not parse
    is skipped without a word, because the hook and permission loaders already report it. Four kinds
-   of file are skipped here and survived nowhere else: an integer of thousands of digits, nesting
-   thousands deep, and a `.claude` or a `.zakcode` directory the process cannot enter. The default
-   permission-settings loader (the first three) and the identity loader (the last) raise on them, so
-   an Agent over such a file does not start, with this change or without it; widening those loaders
-   is a separate change.
+   of file are skipped here and stop the Agent starting anyway: an integer of thousands of digits,
+   nesting thousands deep, and a `.claude` or a `.zakcode` directory the process cannot enter. Other
+   loaders raise on them, and which one raises first depends on the file and on whether a permission
+   policy is injected: the permission-settings loader on the first two in a `.claude` file and on an
+   unenterable `.claude`, when none is; the hook loader on the first two otherwise; the status-line
+   loader on an unenterable `.claude`, when one is; and the identity loader on an unenterable
+   `.zakcode`. So an Agent over such a file does not start, with this change or without it and
+   whichever policy it is built with; widening those loaders is a separate change.
 5. Always on: no flag, no prompt, no per-Agent override. Claude Code applies a project
    `.claude/settings.json`'s entries only after its workspace trust dialog is accepted, and never in
    a `claude -p` or SDK session, where it prints a warning instead; a `settings.local.json` that is

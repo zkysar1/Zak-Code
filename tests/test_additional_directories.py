@@ -197,8 +197,9 @@ def test_a_settings_directory_the_process_cannot_enter_is_skipped(
     ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # In a directory the user cannot enter, Path.is_file() raises PermissionError. The hook loader
-    # guards it; this loader must not be the one that raises. (The permission-settings and identity
-    # loaders do not guard it, so an Agent over such a directory does not start either way.)
+    # guards it; this loader must not be the one that raises. (Other loaders do not guard it: the
+    # permission-settings and status-line loaders over .claude, the identity loader over .zakcode.
+    # So an Agent over such a directory does not start either way.)
     ext = _dir(tmp_path, "external")
     _declare(ws, [str(ext)])
     assert load_additional_directories(ws) == ([ext.resolve()], {})  # the file is readable
@@ -226,8 +227,8 @@ def test_a_file_that_cannot_be_decoded_is_skipped_without_an_error_of_its_own(
     # The hook and permission loaders report a file that does not parse; a third report would be
     # noise. json.loads also raises a plain ValueError for an integer of more than 4300 digits and
     # a RecursionError for deep nesting, neither a JSONDecodeError: this loader skips them and does
-    # not raise. (The permission-settings loader raises on those two, so an Agent over such a file
-    # does not start either way.) The entry in the next file still applies.
+    # not raise. (The hook loader raises on those two, so an Agent over such a file does not start
+    # either way.) The entry in the next file still applies.
     ext = _dir(tmp_path, "external")
     (ws / ".claude").mkdir()
     (ws / ".claude" / "settings.json").write_bytes(payload)

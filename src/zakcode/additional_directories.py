@@ -25,10 +25,11 @@ Windows network (UNC) path, which is not looked up at all: looking one up contac
 names and sends that host the user's credentials. That test reads the entry as written, so a ``~``
 that expands to a share and a link or junction into one are not caught.
 
-This loader never raises: a file it cannot take is skipped. Four kinds of file are among them, and
-the permission-settings and identity loaders raise on those four, so an Agent over one does not
-start, with or without this loader: an integer of thousands of digits, nesting thousands deep, and
-a ``.claude`` or a ``.zakcode`` directory the process cannot enter.
+This loader never raises: a file it cannot take is skipped. Four kinds of file are among them: an
+integer of thousands of digits, nesting thousands deep, and a ``.claude`` or a ``.zakcode``
+directory the process cannot enter. Other loaders raise on those four (permission settings, hooks,
+the status line and identity; which one depends on the file and on whether a permission policy was
+injected), so an Agent over one does not start, with or without this loader.
 """
 
 from __future__ import annotations
