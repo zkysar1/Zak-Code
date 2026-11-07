@@ -23433,4 +23433,5 @@ happens. The trial counts that.
 
 **The proof.** `tests/test_read_rule_tool.py` pins the pointer, and the body delivered to a bare
 context, for another rule, for an edited rule, after a compaction and after an elision, and the
-pointer for a body kept in the tail, the last four through the loop.
+pointer for a body kept in the tail, the last four through the loop. Ten mutations of the check, the
+guard and both loop seams were all killed.
