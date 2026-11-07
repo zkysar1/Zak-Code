@@ -1792,6 +1792,28 @@ provides.
   claims phrased without a separator-bearing subject ("it is a python file") are not
   caught; a number smaller than 1,000 and not comma-grouped is not checked.
 
+**Amended 2026-11-07 (text the operator pinned is a source).** A deployment pinned its safety rule,
+hotline numbers included ("text HOME to 741741. Mainland China: call 12356."), and the figure gate
+found those numbers in no tool output and no user message of the session. The model answered the
+hint with a second reply that opened by saying where the numbers came from. A census of the stored
+sessions found ten such firings, all on development test identities; six of the ten second replies
+open with a source sentence (production was not measured). Numbers the operator wrote into the
+prompt are given, not measured, so a third source joins tool output and user messages: the
+identity (`self.md`) and the bodies of `alwaysApply: true` rules (ADR-0105). Those are the texts the
+prompt carries in full under both renders, and the ones a person set apart: `save_rule` cannot set
+the flag, so a rule the model saved is never one. Everything else stays unsourced: a plain rule
+(the lean render carries its one-line index, so the model may never have been shown the body), a
+rule the model saved, a skill's description (`save_skill` writes those) and an output style.
+Assistant text stays excluded, as above. Pinned text is read by `_pinned_figures`, looser than
+`_figures` on purpose: pinned prose ends a sentence on its number ("text HOME to 741741."), and
+`_figures` refuses a figure followed by a full stop or a comma because there it guards against
+decimals and list fragments. Over-reading a source sources one more figure; under-reading it
+flags a number the operator wrote. Unchanged: the hint, the once-per-turn bound and the
+no-tool-call condition. Residual: a card pinned in a plain rule still draws the hint, so mark it
+`alwaysApply: true`; and the identity is trusted as the operator's file, so a deployment whose
+model can rewrite it should pin text that must stay fixed in an `alwaysApply` rule outside the
+workspace.
+
 ## ADR-0045: A composed skill turn keeps its frame and drops its body once the turn ends
 
 **Context.** ADR-0037 made every served door run a leading slash as the CLI does: the

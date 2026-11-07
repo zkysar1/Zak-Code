@@ -7087,11 +7087,11 @@ class AgentLoop:
         )
 
     def _unsourced_figures(self, text: str) -> list[str]:
-        """Figures in ``text`` that appear in no tool output and no user message this session.
+        """Figures in ``text`` that appear in no tool output, no user message and no pinned text.
 
         Evidence gate (ADR-0044): a measurement the model never took. Assistant text is
         deliberately NOT a source — that is exactly how an invented number survives ("as
-        reported earlier").
+        reported earlier"). Text the operator pinned into the prompt is one (below).
         """
         wanted = _figures(text)
         if not wanted:
@@ -7104,12 +7104,21 @@ class AgentLoop:
                 raw = getattr(block, "output", None) or getattr(block, "text", None)
                 if isinstance(raw, str) and raw:
                     sourced |= _figures(raw)
-        # Text the operator pinned into the prompt is read every turn: a figure written there
-        # is a given, not a measurement the model failed to take (a pinned crisis
-        # card's hotline numbers drew a "no tool output" hint and a second reply).
-        for kind in ("rules", "identity"):
-            for pinned in self._prompt_input_items.get(kind, {}).values():
-                sourced |= _pinned_figures(pinned)
+        # Text the operator pinned into the prompt is read in full every turn: a figure written
+        # there is a given, not a measurement the model failed to take (a pinned crisis card's
+        # hotline numbers drew a "no tool output" hint and a second reply). Pinned is what the
+        # prompt carries under either render (ADR-0105): the identity, and the bodies of
+        # ``alwaysApply`` rules. A plain rule is not pinned (the lean render carries only its
+        # one-line index), and a rule the model saved never is (``save_rule`` cannot set the
+        # flag), so neither sources a figure.
+        pinned = list(self._prompt_input_items.get("identity", {}).values())
+        if self._rule_registry is not None:
+            for name in self._rule_registry.names():
+                rule = self._rule_registry.get(name)
+                if rule is not None and rule.always_apply:
+                    pinned.append(rule.content)
+        for body in pinned:
+            sourced |= _pinned_figures(body)
         return sorted(wanted - sourced)
 
     def _previous_assistant_text(self) -> str:

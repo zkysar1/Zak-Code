@@ -15,6 +15,8 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from zakcode import Agent
 from zakcode.agent.loop import (
     _IDENTITY_NUDGE,
@@ -23,8 +25,10 @@ from zakcode.agent.loop import (
     _figures,
 )
 from zakcode.config import PermissionTier
+from zakcode.evals.harness import ScriptedProvider, reply
 from zakcode.messages import Message
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
+from zakcode.rules import RuleRegistry, discover_rule_dir, project_rules_dir, save_rule
 from zakcode.session.store import Session
 from zakcode.tools.base import (
     ConcurrencyClass,
@@ -182,22 +186,77 @@ def test_a_figure_the_user_gave_is_sourced(tmp_path: Path) -> None:
     assert not any("appear in no tool output" in r for r in _rails(loop))
 
 
-def test_a_figure_pinned_in_a_rule_is_sourced(tmp_path: Path) -> None:
+# What the operator pins: a hotline card whose every number ends its sentence, as prose does.
+_SAFETY_CARD = "US: text HOME to 741741. Mainland China: call 12356. Elsewhere: findahelpline.com."
+_RULE_HEAD = "---\nname: safety-card\ndescription: the card\n"
+_PINNED_RULE = f"{_RULE_HEAD}alwaysApply: true\n---\n{_SAFETY_CARD}\n"
+_PLAIN_RULE = f"{_RULE_HEAD}---\n{_SAFETY_CARD}\n"
+
+
+def _rules(loop: AgentLoop, tmp_path: Path, files: dict[str, str]) -> None:
+    """Give ``loop`` the rules ``files`` hold, read by discovery (no home or bundled rules)."""
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir(exist_ok=True)
+    for name, text in files.items():
+        (rules_dir / f"{name}.md").write_text(text, encoding="utf-8")
+    found, errors = discover_rule_dir(rules_dir)
+    assert errors == {}
+    registry = RuleRegistry()
+    for rule in found:
+        registry.add(rule)
+    loop._rule_registry = registry
+
+
+def _figure_hints(loop: AgentLoop) -> list[str]:
+    return [r for r in _rails(loop) if "appear in no tool output" in r]
+
+
+def test_a_figure_pinned_in_an_always_apply_rule_is_sourced(tmp_path: Path) -> None:
     provider = _Sequence(_text("Text 741741 or call 12356 to reach a counsellor."))
     loop = _loop(tmp_path, provider)
-    loop._prompt_input_items = {"rules": {"safety card": "US: text HOME to 741741. Mainland China: call 12356. Elsewhere: findahelpline.com."}}
+    _rules(loop, tmp_path, {"safety-card": _PINNED_RULE})
     asyncio.run(loop.arun_turn("I want to hurt myself"))
     assert provider.calls == 1
-    assert not any("appear in no tool output" in r for r in _rails(loop))
+    assert not _figure_hints(loop)
+
+
+def test_the_same_card_in_a_rule_that_is_not_pinned_is_not_a_source(tmp_path: Path) -> None:
+    # The control for the test above: only the alwaysApply flag differs, and the hint comes back.
+    provider = _Sequence(
+        _text("Text 741741 or call 12356 to reach a counsellor."),
+        _text("Those two numbers were from memory."),
+    )
+    loop = _loop(tmp_path, provider)
+    _rules(loop, tmp_path, {"safety-card": _PLAIN_RULE})
+    asyncio.run(loop.arun_turn("I want to hurt myself"))
+    assert provider.calls == 2
+    hints = _figure_hints(loop)
+    assert len(hints) == 1 and "741741" in hints[0] and "12356" in hints[0]
 
 
 def test_a_figure_pinned_in_the_identity_is_sourced(tmp_path: Path) -> None:
-    provider = _Sequence(_text("The line is 741741."))
-    loop = _loop(tmp_path, provider)
+    said = "The line is 741741 today."  # the figure inside the sentence, not ending it
+    pinned = _Sequence(_text(said))
+    loop = _loop(tmp_path, pinned)
     loop._prompt_input_items = {"identity": {"identity": "You run help line 741741."}}
     asyncio.run(loop.arun_turn("what is the line?"))
+    assert pinned.calls == 1
+    assert not _figure_hints(loop)
+    # The same reply with nothing pinned is flagged, so it is the identity that sourced it.
+    bare = _Sequence(_text(said), _text("That was from memory."))
+    loop = _loop(tmp_path, bare)
+    asyncio.run(loop.arun_turn("what is the line?"))
+    assert bare.calls == 2
+    assert len(_figure_hints(loop)) == 1
+
+
+def test_a_comma_grouped_figure_pinned_in_a_rule_is_sourced(tmp_path: Path) -> None:
+    provider = _Sequence(_text("The cap is 12,356 units today."))
+    loop = _loop(tmp_path, provider)
+    _rules(loop, tmp_path, {"cap": "---\nname: cap\nalwaysApply: true\n---\nThe cap is 12,356.\n"})
+    asyncio.run(loop.arun_turn("what is the cap?"))
     assert provider.calls == 1
-    assert not any("appear in no tool output" in r for r in _rails(loop))
+    assert not _figure_hints(loop)
 
 
 def test_an_invented_figure_is_still_flagged_beside_a_pinned_one(tmp_path: Path) -> None:
@@ -206,11 +265,61 @@ def test_an_invented_figure_is_still_flagged_beside_a_pinned_one(tmp_path: Path)
         _text("10892 was a guess."),
     )
     loop = _loop(tmp_path, provider)
-    loop._prompt_input_items = {"rules": {"safety card": "US: text HOME to 741741. Mainland China: call 12356. Elsewhere: findahelpline.com."}}
+    _rules(loop, tmp_path, {"safety-card": _PINNED_RULE})
     asyncio.run(loop.arun_turn("I want to hurt myself"))
     assert provider.calls == 2
-    figure_rails = [r for r in _rails(loop) if "appear in no tool output" in r]
-    assert len(figure_rails) == 1 and "10892" in figure_rails[0] and "741741" not in figure_rails[0]
+    hints = _figure_hints(loop)
+    assert len(hints) == 1 and "10892" in hints[0] and "741741" not in hints[0]
+
+
+def test_a_figure_in_a_skill_catalog_or_the_output_style_is_still_flagged(tmp_path: Path) -> None:
+    # Only the identity and the alwaysApply rules are pinned. A skill's description can be
+    # written by the model (save_skill), and an output style is a manner, not a fact.
+    provider = _Sequence(_text("Dial 55501 now."), _text("55501 was a guess."))
+    loop = _loop(tmp_path, provider)
+    loop._prompt_input_items = {
+        "extra_instructions": {"skill x": "dial 55501 now"},
+        "output_style": {"output style": "always say 55501"},
+    }
+    asyncio.run(loop.arun_turn("who do I call?"))
+    assert provider.calls == 2
+    hints = _figure_hints(loop)
+    assert len(hints) == 1 and "55501" in hints[0]
+
+
+@pytest.mark.parametrize(
+    ("author", "lean", "in_prompt", "sourced"),
+    [
+        ("model", False, True, False),  # its own saved rule rides the full render: not a given
+        ("model", True, False, False),  # the lean render carries only the index, not the body
+        ("operator", True, True, True),  # a pinned card rides in full ahead of the lean index
+        ("operator", False, True, True),  # and folds first under the full render
+    ],
+)
+def test_only_an_operator_pinned_rule_sources_a_figure_in_a_real_agent(
+    tmp_path: Path, author: str, lean: bool, in_prompt: bool, sourced: bool
+) -> None:
+    body = "The weekly cap is 54321 units."
+    rules_dir = project_rules_dir(tmp_path)
+    if author == "model":
+        save_rule("weekly-cap", "a limit I noted", body, rules_dir=rules_dir)
+    else:
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        (rules_dir / "weekly-cap.md").write_text(
+            f"---\nname: weekly-cap\ndescription: the cap\nalwaysApply: true\n---\n{body}\n",
+            encoding="utf-8",
+        )
+    agent = Agent(
+        provider=ScriptedProvider(script=[reply("ok")]),
+        enable_rules=True,
+        lean_rules=lean,
+        default_model="scripted/test",
+        context_window=32768,
+        workspace_root=str(tmp_path),
+    )
+    assert ("54321" in agent.loop._build_system()) is in_prompt
+    unsourced = agent.loop._unsourced_figures("The weekly cap is 54321 units today.")
+    assert (unsourced == []) is sourced
 
 
 # ── use_skill names the skill directory ──────────────────────────────────────
