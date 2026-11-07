@@ -217,8 +217,8 @@ def test_no_say_starts_a_turn_on_the_build_being_left(
 
 @pytest.mark.parametrize(
     "run",
-    [{"run_max_duration": 3600.0}, {"run_idle_timeout": 3600.0}],
-    ids=["run-cap", "idle-bound"],
+    [{"run_max_duration": 3600.0}, {"run_idle_timeout": 3600.0}, {"run_stop_message": "/stop"}],
+    ids=["run-cap", "idle-bound", "stop-message"],
 )
 def test_a_run_a_host_manages_keeps_its_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: dict[str, Any]

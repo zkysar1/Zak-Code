@@ -10917,6 +10917,8 @@ signature test passes. **Noted, not changed:** the setter's verification reads a
 marker as "the setter failed" and reverts the target mode; a host framework that consumed the ask
 before that read would lose its target mode. No consumer is that fast outside a test double.
 
+**Amended by ADR-0374 (2026-11-07):** the sidecar-signed stop of the title's second half is gone with the agent form it signed; the function-tools half stands.
+
 ## ADR-0189: a served session services its own wake-up, and a stop raised between turns starts the turn that reads it
 
 **Status:** Accepted (2026-09-18)
@@ -10971,6 +10973,8 @@ a sizing decision for the zakpick entries' `context_window`, filed separately), 
 env-server's reading of the sidecar-signed stop as `mind_stopped` (fixed on its side).
 Tests: `tests/test_server_consumer.py` (four wake-up cases) and
 `tests/test_run_stop_awaits_framework_stop.py` (the kick, and the no-re-entry hold).
+
+**Amended by ADR-0374 (2026-11-07):** a raised stop no longer starts the loop's re-entry (`_take_stop_reentry`), because no stop is raised that way any more; the wake-up slot serviced on the consumer beat stands.
 
 ## ADR-0190: the model-visible tool names are Claude Code's; the old names are aliases, and every reader resolves a spelling before it matches one
 
@@ -16049,6 +16053,8 @@ Both paths coexist in the same release. The legacy path is unchanged and works a
 **Amended by ADR-0347 (2026-11-01):** point 3's retry also runs on each watcher tick while a turn is
 in flight, and only inside the window; after the grace nothing retries.
 
+**Amended by ADR-0374 (2026-11-07):** point 5 and the closing paragraph are done: `run_stop_agent` is removed and `run_stop_message` is the only ending. A stale `ZAKCODE_RUN_STOP_AGENT` is ignored, with a warning at start when no message is set.
+
 ## ADR-0265: no fresh-eyes review after an operator-only command arrives mid-turn
 
 Status: accepted. 2026-09-28.
@@ -16405,6 +16411,8 @@ the staged path, the fail-open guard, reading the settings outside that guard, a
 
 **Amended by ADR-0328 (2026-10-27):** point 1's gate is a `change` or a `farewell`. The hook fires for
 both, and `data.kind` says which; a heartbeat, an unstamped envelope and an unknown kind still fire nothing.
+
+**Amended by ADR-0374 (2026-11-07):** the signal-file wake that point 4 says the hook replaces, and that the paragraph after the points says goes when `run_stop_agent` does, is gone. The hook is the only early wake, and a workspace that declares none is `not-attempted`.
 
 ## ADR-0271: mid-turn perception is bounded in wall time, and a turn's first is never held
 
@@ -16839,7 +16847,7 @@ the graceful stop (two made no Bash call, two called Bash from an unbound sessio
 agent so the hook was silent, four read the advisory and ended their turn without acting on it) and
 five whose mind invoked it and was never seen to finish. None of the 31 graceful endings had that
 state; every one of their sessions carries a `loop_skill`. The other three waits held a loop and a
-wake-up (two) or were a worker Body, which the agent-wide stop the sidecar raises never reaches
+wake-up (two) or were a worker session, which the agent-wide stop the sidecar raises never reaches
 (one).
 
 Decision.
@@ -16875,7 +16883,7 @@ later than 126 s after the raise, so no say or frame started a turn in the time 
 saved. The newest wait of this kind is 2026-10-01 and the newest raise (2026-10-04) ended
 gracefully, so the rule bounds the next one and answers no live incident. Not changed here: why
 five minds that invoked the graceful stop were never seen to finish; the two runs whose session
-held a loop and a wake-up keep their grace; and a worker Body keeps it too. Two limits of the rule
+held a loop and a wake-up keep their grace; and a worker session keeps it too. Two limits of the rule
 itself: a turn run through the HTTP route holds the wait while it is in flight but does not move
 the quiet clock (only the say consumer's turns do), and a held wake-up holds the wait whatever its
 due time, so a mind that armed one of its own keeps the whole grace. A reader that takes a run
@@ -16897,6 +16905,8 @@ waited 6.3 s in each of three samples where the rule ends it in 0.79 s. Seven sa
 one test red: the `loop_skill` check dropped, the wake-up check dropped, the background-command
 check dropped, a missing session read as nothing to read, the quiet counted from the raise, the
 pair not retired at the quiet end, and the flag never set so the exit path never retires.
+
+**Amended by ADR-0374 (2026-11-07):** removed with the agent form it bounded. The message ending's wait is bounded by the DONE rule and the window alone.
 
 ## ADR-0279: OpenAI's own API is sent its own spelling of the output cap and is offered the reasoning depth, so a model family litellm's name table has not learned yet still gets the request it needs
 
@@ -20018,6 +20028,8 @@ format --check`, `mypy`, `pytest`) is green: 6,330 passed, 22 skipped. A first f
 `tests/test_host_neutral_names.py` on the ADR's own text (record ids and a host's repository name), which is why the text
 names the unit's repository generically.
 
+**Amended by ADR-0374 (2026-11-07):** the framework-stop window that the decision names is gone, and so is the start-up retire of a signed pair that the stated choices mention, both with `run_stop_agent`. The only ending window is the one `run_stop_message` opens, and the graceful-stop budget no longer counts `run_stop_agent`.
+
 ## ADR-0323: a run with `ZAKCODE_ANTHROPIC_POOL` on keeps each session on one account of a shared credit pool, moves it to the next when the account answers a credit refusal, and writes a ledger row per call
 
 **Status:** Accepted (2026-10-19)
@@ -20515,6 +20527,8 @@ alone saying nothing (1). The full suite on the committed tree (Linux) passed 6,
 live-provider and environment-gated cases, none in the observation files); `ruff check`, `ruff format --check` and `mypy` are
 clean. The Windows cell runs on CI.
 
+**Amended by ADR-0374 (2026-11-07):** the signal-file wake for a workspace that declares no hook is gone; such a workspace reads the staged farewell or change on its own tick.
+
 ## ADR-0329: a completion with neither text nor a tool call stores the empty-completion placeholder even when it carries thinking
 
 **Status:** Accepted (2026-10-28)
@@ -20906,6 +20920,8 @@ install replaced under it while a page was open, the log said "update installed 
 reinstalled) — restarting to apply" and then "restarted into build …", and the page reconnected
 to the same chat. On Windows the exec starts a new process, so there the pid changes.
 `uv run poe check` green.
+
+**Amended by ADR-0374 (2026-11-07):** `run_stop_agent` is no longer in the list of settings that mark a managed run.
 
 ## ADR-0334: a turn that raises past the agent loop tells the page what was raised
 
@@ -23403,3 +23419,114 @@ first ask, held to its line, counted and said; one with too little left, or that
 tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
 over its line held to it, a failed condensing ask included; the note, and what strips it; and the
 order in all three closes. 23 mutations, one a behaviour, each fail the file.
+
+## ADR-0374: the run ends by `run_stop_message` alone; the agent form `run_stop_agent` is removed
+
+Status: accepted. 2026-11-07. Does what ADR-0264 left to "a future release", and removes the parts of
+ADR-0188, ADR-0189, ADR-0270, ADR-0278, ADR-0322, ADR-0328 and ADR-0333 that only that form used.
+
+Context. ADR-0264 added `run_stop_message`, which sends the run's ending through the say inbox, and
+kept the agent form beside it. With `run_stop_agent` naming a resident agent, the server wrote that
+agent's stop request into the host's session directory (a target-mode file, then a request file,
+signed by the sidecar, ADR-0188), read its mode through a script to decide whether a perception frame
+should wake it (ADR-0270), started the loop's re-entry for a raised stop when no turn was in flight
+(ADR-0189), judged the end of the run from the files the host's stop leaves behind, and ended the wait
+early after a quiet minute (ADR-0278). All of it names one host's directory layout, script paths and
+environment variables. The product offers a host Claude Code's surfaces (hooks, skills, settings, the
+served API) and names its host the way Claude Code does, generically: `tests/test_host_neutral_names.py`
+fails when one particular host comes back, and the files of this form were the ten exemptions it
+carried.
+
+The hosting side moved first. The environment server's provisioning switched a vessel's run-stop
+wiring from the agent form to the message form on 2026-10-26 (on its production branch on
+2026-10-28), and rewrites that wiring at every vessel boot, from what is on the vessel then. Read
+2026-11-07, counts only, over the vessels' environment files on the shared mount (no line, value or
+name kept; the reader tested a line for starting with each key, as the provisioning does): 328
+vessel directories, 287 with an environment file, 171 naming the agent form, 55 the message form,
+102 neither (41 of them with no environment file). The newest agent-form file is 12.06 days old and
+the oldest message-form file 11.57 days old, so no file has been written with the agent name since
+the switch. Of the 48 written in the last 7 days, 44 carry the message line, 4 neither, none the
+agent name. Six vessels first provisioned before the seed declared an `ObservationReceived` hook
+booted again in that time; all six have the hook and the message line. The 171 agent-form files
+belong to vessels that have not booted since the switch.
+
+Decision.
+
+1. `run_stop_agent` (`ZAKCODE_RUN_STOP_AGENT`) is removed from `Settings`, with
+   `zakcode.session.framework_stop` (the raise, its signature, the DONE and SEEN reads, the retire
+   of an expired raise) and `zakcode.session.framework_signal` (the signal writer and the mode
+   reader). The run's ending is `run_stop_message` alone (ADR-0264). `/run/stop`, the duration cap
+   and the idle bound begin it. With none configured the run ends as it does with no ending: the cap
+   interrupts a turn in flight at its deadline, and `/run/stop` takes no further turn but lets the
+   turn in flight finish.
+2. The conductor loses what only the agent form used: the quiet window (`_STOP_QUIET_SECONDS`,
+   `_stop_has_no_reader`, ADR-0278); the re-entry for a raised stop (`_take_stop_reentry`,
+   `stop_reentry_pending`, the second half of ADR-0189, whose first half, the wake-up slot serviced on
+   the consumer beat, stays); the retire of an unconsumed raise at the overrun sites, at the loop's exit
+   and at start; and the second window variable. `_begin_graceful_ending` is synchronous and opens one
+   window. `_framework_stop_grace` is now `_ending_grace` and `_any_ending_window_open` is
+   `_ending_window_open`.
+3. `POST /observe` writes no signal file and reads no mode. The workspace's `ObservationReceived` hook
+   (ADR-0270) is the only early wake. With no hook declared the route attempts none and answers
+   `wake: "not-attempted"`; the frame is staged and read on the agent's own tick, and the sticky kind
+   (ADR-0264 point 7, ADR-0328) still keeps an unread change or farewell. The `perception-intake` log
+   line loses its `mode=` field, which only the signal-file wake filled.
+4. A stale `ZAKCODE_RUN_STOP_AGENT` is ignored like any unknown setting (`extra="ignore"`). When it
+   is still set and `run_stop_message` is not, the server logs one warning at start that names the
+   replacement, so a run that now has no ending is not silent about it.
+5. `follows_new_builds` (ADR-0333) and `_graceful_stop_budget` read `run_stop_message` where they
+   read both settings. A server wired with the old name alone is therefore, to both, a server with
+   no ending: it restarts into a newer build once idle, and its stop budget loses the reserve.
+
+What was considered and not done.
+
+- Keeping the agent form until every vessel has booted again. It is the half of the product that
+  cannot be written without naming one host. What the removal costs is bounded to a vessel that
+  starts on this build with the old wiring alone (the sender branch the hosting side still has, or a
+  service restart that skips provisioning): it has no ending, `/run/stop` takes no further turn but
+  does not interrupt the turn in flight (the cap still does), it restarts into a newer build once
+  idle, and its log carries one warning at start. Its next boot rewrites the wiring.
+- Reading `ZAKCODE_RUN_STOP_AGENT` as a trigger for some default message. The message is the host's own
+  stop command; the server cannot know it, and guessing one is the coupling being removed.
+- Refusing to start when only the old name is set. A stale name must not take a paid vessel down.
+- Keeping the start-up retire of a stop an earlier run signed and never consumed
+  (`retire_expired_sidecar_stop`). It ran only when `run_stop_agent` was set, it reads and deletes the
+  host's signal files, and its job ends with the form that raised them. Read 2026-11-07, counts only,
+  over the vessels' agent session directories (whether a file of that name exists, its age, and for the
+  stop request whether its first line is the signature this server wrote): 29 of 328 vessel directories
+  hold a stop signal at rest, 2 of them a stop request that carries the signature, aged 7 to 30 days and
+  over 30 days, both in vessels that have not booted since the switch. A host that keeps a signed stop
+  whatever its age has relied on this step for such a leftover, and a message-form vessel has not had the
+  step since its wiring switched. Expiring the signal belongs to the host that owns it, not to this
+  server.
+- Editing `bench/served_stops.py` and `bench/served_rests.py`. They match the removed module's log line
+  to read past runs, sit outside the lint, type and test gates, and still read those old logs.
+
+Not verified. Which zakcode build each vessel runs: the install is not on the shared mount. That
+every stale vessel's next boot rewrites its wiring: 6 of 6 re-boots seen did, and the 74 stale
+vessels whose workspace lacks the hook script were last booted over 30 days ago, so none of them is
+among those six. Whether any path starts a vessel on this build with the old wiring and without
+re-provisioning it, and so how many runs have no ending in the interval before the next boot. What a
+host's start does in a workspace that holds a leftover signed stop: not run.
+
+The proof. 28 one-line substitutions were made in `src/zakcode/server/app.py`, one at a time, each
+run against the test files that drive the server (`test_run_stop_message`, `test_server_sidecar`,
+`test_lifespan_shutdown_interrupt`, `test_spend_gate`, `test_observe_hook`,
+`test_observe_perception_wake`, `test_server_consumer`, and from the second pass
+`test_webapp_follows_update`), and each substitution was made on the pristine file, which was
+restored at the end of each pass (its sha256 was checked). They cover the watcher's overrun and its
+zero-window guard, the naming of the cap's ending and the guard that keeps an ending already named,
+the cap and the idle bound beginning the ending (mid-turn and between beats), the loop leaving when
+the window closes or the ending is done, `/run/stop` beginning the ending, the window opened once,
+the retraction at both overrun sites and at the loop's exit, the startup warning (both of its
+conditions), the budget the message earns, the stop message marking a managed run, the shutdown
+window check, the `/observe` wake counters, the wake-up slot serviced on the consumer beat, the
+startup drop of a stale line, the grace falling back to the configured reserve, and the watcher
+bounding the turn that follows the one it first watched. The first pass over 26 killed 18 and left 8
+kept behaviours that no test pinned: the cap between beats, the idle bound, the window closing with
+no turn running, the budget the message alone earns, the stop message marking a managed run, the
+startup drop (its test passed whether the line was dropped or taken as a turn), a stop that lands
+before the loop has armed its clocks, and the turn that follows the cap's inside the same window.
+Each now has a test. A second pass over those 8 and two substitutions added after the first (the
+watcher leaving when the turn it watched ends; the watcher renaming an ending already named) killed
+all 10.

@@ -13,11 +13,10 @@ What this module is:
 * ONE reader (:func:`settings_env`) for the same three files, in the same order, that the
   hook loader reads, so "which settings files count" has a single answer.
 * Applied to CHILDREN only. The block is overlaid on the environment each child is given
-  (:func:`zakcode.tools.builtins._proc.child_environment`, :func:`zakcode.hooks._hook_env`,
-  and the framework-script calls in :mod:`zakcode.session.framework_signal`). The product's
-  own process environment is never written, so a repository's settings file cannot reconfigure
-  the harness that is hosting it, and two workspaces served by one process never see each
-  other's variables.
+  (:func:`zakcode.tools.builtins._proc.child_environment` and :func:`zakcode.hooks._hook_env`).
+  The product's own process environment is never written, so a repository's settings file
+  cannot reconfigure the harness that is hosting it, and two workspaces served by one process
+  never see each other's variables.
 * Below the product's own per-child variables and below the credential scrub. Each builder
   overlays the block first and then sets what it owns (``CLAUDE_PROJECT_DIR``, the no-colour
   pair, the egress proxy, ``BASH_ENV``) and removes provider keys LAST, exactly as before, so

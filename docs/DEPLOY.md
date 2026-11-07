@@ -71,8 +71,10 @@ process, so the pid and the unit stay as they were and the journal says
 change does not look for new builds: restart the unit once to bring it onto a build that does.
 The new build reads the workspace `.env` and `~/.zakcode/.env` afresh, but it keeps the unit's
 own environment, so a change to `/etc/zakcode/.env` (read by `EnvironmentFile=`) or to the unit
-still needs `systemctl restart zakcode-webapp`. A run a host manages (any `ZAKCODE_RUN_*`
-ending set) keeps its build until the host restarts it.
+still needs `systemctl restart zakcode-webapp`. A run a host manages (one of
+`ZAKCODE_RUN_MAX_DURATION`, `ZAKCODE_RUN_IDLE_TIMEOUT`, `ZAKCODE_RUN_CONSOLIDATION_MESSAGE`,
+`ZAKCODE_RUN_END_COMMAND` or `ZAKCODE_RUN_STOP_MESSAGE` set) keeps its build until the host
+restarts it.
 
 A local-checkout install is reinstalled with every dependency at the version the checkout's
 `uv.lock` pins, and an editable install stays editable (ADR-0291). On Windows the reinstall

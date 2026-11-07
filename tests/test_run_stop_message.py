@@ -12,7 +12,8 @@ Each test is grouped by the property it pins:
 - **DONE rule.** DONE needs taken + completed + nothing in flight — simultaneously.
   The mutation target is "any completed turn after queueing counts as done."
 - **Taken but not done.** An interrupt fires; the run must not retract the line.
-- **Never taken.** The slot is retracted; an interrupt fires.
+- **Never taken.** The slot is retracted; an interrupt fires, or, with no turn to interrupt,
+  the loop's own exit retracts it.
 - **Abnormal ends.** ``provider_error`` and ``veto_stall`` after the line is taken
   are not DONE.
 - **Slot contention.** A human's say goes first; retraction never deletes a
@@ -21,8 +22,8 @@ Each test is grouped by the property it pins:
   flight (the beat loop is parked awaiting that turn), inside the window and never after it.
 - **Startup drop.** A pending say equal to the configured line is dropped; a
   different one is kept.
-- **Ported cases.** The shared window, zero reserve, ``duration_cap`` naming,
-  and "an ended restart writes no say."
+- **Ported cases.** The shared window, the window bounding every turn in it, zero reserve,
+  ``duration_cap`` and ``idle`` naming, and "an ended restart writes no say."
 - **Loop hold exemption.** An operator-only slash bypasses the ADR-0052 hold.
 - **/observe.** Sticky kind and no-wake semantics.
 """
@@ -169,9 +170,9 @@ def _build(
     tmp_path: Path,
     *,
     stop_message: str | None = STOP_LINE,
-    stop_agent: str | None = None,
     reserve: float = 5.0,
     max_duration: float | None = None,
+    idle_timeout: float | None = None,
     agent_for: Callable[[Session], Any] = _QuietAgent,
 ) -> tuple[Any, list[str]]:
     """An app configured for the message-based ending; returns (app, endings)."""
@@ -181,9 +182,9 @@ def _build(
         context_window=8192,
         workspace_root=tmp_path,
         run_max_duration=max_duration,
+        run_idle_timeout=idle_timeout,
         run_consolidation_reserve=reserve,
         run_stop_message=stop_message,
-        run_stop_agent=stop_agent,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -241,7 +242,7 @@ def test_run_stop_queues_the_configured_line(tmp_path: Path) -> None:
 
 def test_no_say_written_when_message_unset(tmp_path: Path) -> None:
     """Without the setting, no say is written and the run ends the old way."""
-    app, endings = _build(tmp_path, stop_message=None, stop_agent=None)
+    app, endings = _build(tmp_path, stop_message=None)
 
     async def scenario() -> None:
         loop_task = asyncio.create_task(app.state.consume_say_loop())
@@ -336,6 +337,30 @@ def test_never_taken_retracts_the_line(tmp_path: Path) -> None:
     asyncio.run(scenario())
     # The line was retracted, not left on disk.
     assert not say_pending(say_path(tmp_path))
+    assert endings == ["stopped"]
+
+
+def test_a_line_nothing_took_is_retracted_when_the_window_closes_with_no_turn_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window closes with the line still in the inbox and no turn to interrupt.
+
+    Neither overrun branch of the watcher fires without a turn in flight, so the loop's own exit
+    retracts the line.  The beat sleeps past the window (1.5s against a 0.3s window), the way a
+    loop at rest does, so no beat inside the window takes the line.
+    """
+    monkeypatch.setattr("zakcode.server.app._IDLE_BEAT_SECONDS", 1.5)
+    app, endings = _build(tmp_path, reserve=0.3)
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.sleep(0.1)
+        await _post_stop(app)
+        assert say_pending(say_path(tmp_path)), "the ending was never queued"
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    asyncio.run(scenario())
+    assert not say_pending(say_path(tmp_path)), "the line nothing took was left on disk"
     assert endings == ["stopped"]
 
 
@@ -660,16 +685,22 @@ def test_startup_drops_own_stale_line(tmp_path: Path) -> None:
     assert write_say(inbox, STOP_LINE)
     assert say_pending(inbox)
 
-    app, endings = _build(tmp_path, reserve=5.0)
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path,
+        reserve=5.0,
+        agent_for=lambda session: _TimedAgent(session, seen, [], [0.0]),
+    )
 
     async def scenario() -> None:
         # _start_consumer runs the startup drop, then starts the loop.
         await app.state.start_consumer()
-        # Give the loop one beat to prove it does not immediately end.
+        # Give the loop its first beat: a line that survived startup would be taken as a turn.
         await asyncio.sleep(0.3)
         assert not say_pending(inbox), "the stale stop line was not dropped"
 
     asyncio.run(scenario())
+    assert seen == [], f"the stale stop line reached the agent as a turn: {seen}"
 
 
 def test_startup_keeps_a_different_say(tmp_path: Path) -> None:
@@ -739,7 +770,6 @@ def test_zero_reserve_lets_the_turn_finish(tmp_path: Path, monkeypatch: pytest.M
     app, endings = _build(
         tmp_path,
         reserve=0.0,
-        stop_agent=None,
         agent_for=lambda session: _TimedAgent(session, seen, finished, [1.0]),
     )
     assert write_say(say_path(tmp_path), "hello")
@@ -772,7 +802,128 @@ def test_cap_between_beats_is_named_duration_cap(tmp_path: Path) -> None:
         await asyncio.wait_for(loop_task, timeout=10)
 
     asyncio.run(scenario())
+    assert seen == ["hello", STOP_LINE], seen
     assert endings == ["duration_cap"]
+
+
+def test_the_ending_turn_gets_the_whole_window_when_the_cap_turn_ends_inside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap begins the ending inside the boot turn, that turn ends inside the window, and the
+    ending line starts the next one.  That turn is the ending: it runs to the end of the window,
+    not to the end of the turn that was in flight when the cap landed.
+
+    cap 4.0 - reserve 3.0: the cap begins the ending ~1.0s in and its window closes ~4.0s in.
+    The 1.8s boot turn ends inside it; the ending turn (1.0s) ends at ~2.9s, also inside it.
+    A watcher that treats the end of the first turn as the end of the window interrupts the
+    ending turn before it finishes.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    seen: list[str] = []
+    finished: list[str] = []
+    app, endings = _build(
+        tmp_path,
+        reserve=3.0,
+        max_duration=4.0,
+        agent_for=lambda session: _TimedAgent(session, seen, finished, [1.8, 1.0]),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> float:
+        started = time.monotonic()
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(scenario())
+    assert seen == ["hello", STOP_LINE], seen
+    assert finished == ["hello", STOP_LINE], "the ending turn was cut before it finished"
+    assert elapsed < 4.0, (
+        f"run took {elapsed:.2f}s: the ending was done at ~2.9s, inside the window"
+    )
+    assert endings == ["duration_cap"]
+
+
+def test_a_turn_started_inside_the_cap_window_is_still_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE measured shape.  The watcher used to follow only the turn in flight at the cap.
+
+    Live dev vessel: the cap began the ending inside the boot turn, that turn ENDED inside the
+    window, the watcher returned, and a second turn began that nothing watched — still running
+    123s after the window closed, no run end ever reported.  Under this ending the second turn is
+    the ending line's own; it must be bounded by the same window.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    seen: list[str] = []
+    finished: list[str] = []
+    # cap 4.0 - reserve 3.0: the cap begins the ending ~1.0s in and its window closes ~4.0s in, so
+    # the 1.8s boot turn ends inside the window, and the 30s turn that follows outlives it.
+    app, endings = _build(
+        tmp_path,
+        reserve=3.0,
+        max_duration=4.0,
+        agent_for=lambda session: _TimedAgent(session, seen, finished, [1.8, 30.0]),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> float:
+        started = time.monotonic()
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: len(finished) == 1)  # the boot turn ended INSIDE the window
+        await asyncio.wait_for(loop_task, timeout=10)
+        return time.monotonic() - started
+
+    elapsed = asyncio.run(scenario())
+    assert seen == ["hello", STOP_LINE], seen
+    assert finished == ["hello"], "the second turn ran to completion — nothing bounded it"
+    assert elapsed < 7.0, f"run took {elapsed:.2f}s against a 4s cap"
+    assert endings == ["duration_cap"]
+    marker = (tmp_path / ".run-stop-reason").read_text(encoding="utf-8").splitlines()
+    assert marker[1] == "duration_cap", marker  # by position: the boot id rides third
+
+
+def test_a_stop_that_lands_before_the_loop_has_armed_its_clocks_still_gets_a_window(
+    tmp_path: Path,
+) -> None:
+    """``/run/stop`` can land before the consumer loop has armed the run's clocks, which is when
+    the reserve becomes known.  The window falls back to the configured reserve, so the ending
+    line is delivered instead of being retracted by a zero-length window."""
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path,
+        reserve=5.0,
+        agent_for=lambda session: _TimedAgent(session, seen, [], [0.0]),
+    )
+
+    async def scenario() -> None:
+        await _post_stop(app)
+        await asyncio.wait_for(app.state.consume_say_loop(), timeout=10)
+
+    asyncio.run(scenario())
+    assert seen == [STOP_LINE], seen
+    assert endings == ["stopped"]
+
+
+def test_the_idle_bound_begins_the_ending_and_names_it(tmp_path: Path) -> None:
+    """The idle bound is a way to end the run, so it hands the mind its ending line the way the
+    cap and ``/run/stop`` do, and the run is named ``idle``."""
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path,
+        reserve=5.0,
+        idle_timeout=0.3,
+        agent_for=lambda session: _TimedAgent(session, seen, [], [0.0, 0.0]),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    asyncio.run(scenario())
+    assert seen == ["hello", STOP_LINE], seen
+    assert endings == ["idle"]
 
 
 def test_an_ended_restart_writes_no_say(tmp_path: Path) -> None:
@@ -849,9 +1000,9 @@ def test_observe_sticky_kind_preserves_change(tmp_path: Path) -> None:
     assert staged2["kind"] == "change", "a heartbeat hid an unread change"
 
 
-def test_observe_no_wake_with_message_path(tmp_path: Path) -> None:
-    """With ``run_stop_message`` set, /observe does not attempt a wake (no agent
-    address).  ``subprocess.run`` is patched to raise so any invocation fails loudly."""
+def test_observe_with_no_hook_attempts_no_wake_and_runs_no_subprocess(tmp_path: Path) -> None:
+    """With ``run_stop_message`` set and no hook declared, /observe does not attempt a
+    wake.  ``subprocess.run`` is patched to raise so any invocation fails loudly."""
     import subprocess
 
     client = _observe_client(tmp_path)
@@ -871,26 +1022,11 @@ def test_observe_no_wake_with_message_path(tmp_path: Path) -> None:
     assert body.get("wake") == "not-attempted"
 
 
-# ── deprecation warning ───────────────────────────────────────────────────────
+# ── the retired agent setting ─────────────────────────────────────────────────
 
 
-def test_agent_only_logs_deprecation_warning(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """When only ``run_stop_agent`` is set (no ``run_stop_message``), a deprecation
-    warning is logged at startup."""
-    import stat
-
-    from zakcode.session.framework_stop import SIGNAL_SET_SCRIPT
-
-    # Plant the setter script so the legacy path does not fail preflight.
-    # The body is a no-op — the test never exercises the legacy signal write.
-    script = tmp_path / SIGNAL_SET_SCRIPT
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-
-    app, endings = _build(tmp_path, stop_message=None, stop_agent="probe")
+def _start_and_collect_retired_warnings(app: Any, caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Start the consumer and return the startup warnings that name the retired setting."""
 
     async def scenario() -> None:
         await app.state.start_consumer()
@@ -898,46 +1034,62 @@ def test_agent_only_logs_deprecation_warning(
 
     with caplog.at_level("WARNING"):
         asyncio.run(scenario())
+    return [r.getMessage() for r in caplog.records if "ZAKCODE_RUN_STOP_AGENT" in r.getMessage()]
 
-    assert any("deprecated" in r.message.lower() for r in caplog.records), (
-        "no deprecation warning logged when only run_stop_agent is set"
+
+def test_a_run_still_wired_with_the_retired_agent_setting_is_told_at_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``ZAKCODE_RUN_STOP_AGENT`` is no longer read, so a run still wired with it alone has no
+    ending configured.  The serve log says so at startup, naming the replacement, so the run's
+    interrupt-only end is not silent."""
+    monkeypatch.setenv("ZAKCODE_RUN_STOP_AGENT", "probe")
+    app, _ = _build(tmp_path, stop_message=None)
+
+    warnings = _start_and_collect_retired_warnings(app, caplog)
+
+    assert len(warnings) == 1, (
+        f"expected one startup warning naming the retired setting: {warnings}"
     )
+    assert "ZAKCODE_RUN_STOP_MESSAGE" in warnings[0], "the warning must name its replacement"
 
 
-# ── precedence: message wins when both are set ────────────────────────────────
+def test_no_retired_setting_warning_when_the_message_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A vessel carrying both the old name and the new one has an ending: nothing to warn of."""
+    monkeypatch.setenv("ZAKCODE_RUN_STOP_AGENT", "probe")
+    app, _ = _build(tmp_path, stop_message=STOP_LINE)
+
+    assert _start_and_collect_retired_warnings(app, caplog) == []
 
 
-def test_message_wins_over_agent(tmp_path: Path) -> None:
-    """When both settings are present, the message path is used."""
-    import stat
+def test_no_retired_setting_warning_when_it_is_not_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The paired negative: a run with no ending and no old name logs nothing about it."""
+    monkeypatch.delenv("ZAKCODE_RUN_STOP_AGENT", raising=False)
+    app, _ = _build(tmp_path, stop_message=None)
 
-    from zakcode.session.framework_stop import SIGNAL_SET_SCRIPT
+    assert _start_and_collect_retired_warnings(app, caplog) == []
 
-    # Plant the setter script so the legacy path does not fail preflight.
-    # The body is a no-op — the message path wins so the legacy write never fires.
-    script = tmp_path / SIGNAL_SET_SCRIPT
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
 
-    seen: list[str] = []
-    app, endings = _build(
-        tmp_path,
-        stop_message=STOP_LINE,
-        stop_agent="probe",
-        reserve=5.0,
-        agent_for=lambda session: _TimedAgent(session, seen, [], [0.0, 0.0]),
-    )
-    assert write_say(say_path(tmp_path), "hello")
+def test_the_retired_setting_alone_neither_fails_the_start_nor_starts_an_ending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The settings model ignores the unknown name, so a stale variable cannot stop the server
+    from starting, and ``/run/stop`` ends the run as it does with no ending configured."""
+    monkeypatch.setenv("ZAKCODE_RUN_STOP_AGENT", "probe")
+    app, endings = _build(tmp_path, stop_message=None)
 
     async def scenario() -> None:
         loop_task = asyncio.create_task(app.state.consume_say_loop())
-        await _until(lambda: len(seen) >= 1)
+        await asyncio.sleep(0.2)
         await _post_stop(app)
-        await asyncio.wait_for(loop_task, timeout=10)
+        await asyncio.wait_for(loop_task, timeout=5)
 
     asyncio.run(scenario())
-    assert STOP_LINE in seen, "message path was not used when both settings were set"
+    assert not say_pending(say_path(tmp_path)), "an ending line was written for the retired name"
     assert endings == ["stopped"]
 
 
@@ -948,6 +1100,24 @@ def test_budget_includes_message_setting(tmp_path: Path) -> None:
     """The graceful stop budget is nonzero when ``run_stop_message`` is set."""
     app, _ = _build(tmp_path, stop_message=STOP_LINE, reserve=5.0)
     assert app.state.graceful_stop_budget() > 0
+
+
+def test_budget_includes_message_setting_with_no_run_end_hook(tmp_path: Path) -> None:
+    """With no run-end hook and no digest message, the setting alone says there is an ending to
+    wait for, so the budget is the reserve plus one beat."""
+    settings = Settings(
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=tmp_path,
+        run_consolidation_reserve=5.0,
+        run_stop_message=STOP_LINE,
+    )
+    app = create_app(
+        settings=settings,
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda session, model, prompter: _QuietAgent(session),
+    )
+    assert app.state.graceful_stop_budget() > 5.0
 
 
 def test_budget_zero_when_nothing_configured(tmp_path: Path) -> None:

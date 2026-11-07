@@ -101,22 +101,10 @@ PATTERNS = {
 }
 TOKEN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
-# Files that still carry one host's stop and signal behaviour: the code, its documentation, and
-# the tests whose planted scripts read the variables that code sets. They leave this list when
-# that behaviour moves behind a generic hook; the ratchet test below fails once one no longer
-# needs its place here.
-EXEMPT = {
-    "docs/CONFIG.md",
-    "src/zakcode/session/framework_signal.py",
-    "src/zakcode/session/framework_stop.py",
-    "tests/test_framework_stop.py",
-    "tests/test_framework_stop_seen.py",
-    "tests/test_framework_stop_wiring.py",
-    "tests/test_observe_perception_wake.py",
-    "tests/test_run_stop_awaits_framework_stop.py",
-    "tests/test_server_sidecar.py",
-    "tests/test_settings_env_block_reaches_children.py",
-}
+# Files allowed to name the host. None is: the stop and signal behaviour that needed this list
+# now travels through the generic hook and the say inbox. An entry added here is a ratchet, not
+# a home: the test below fails once the file no longer needs its place.
+EXEMPT: set[str] = set()
 
 
 def _digest(token: str) -> str:

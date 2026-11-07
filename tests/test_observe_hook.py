@@ -13,9 +13,7 @@ What these pin:
 * The exit code is the disposition. 0 is ``delivered``; a non-zero exit, a timeout and a hook
   that cannot start are ``dropped``; the frame stays staged either way.
 * Only a change runs it. A heartbeat, an unstamped envelope and an unknown kind run nothing.
-* It runs whichever ending the run uses, the host-neutral ``run_stop_message`` included.
-* A workspace that declares it never also gets the signal-file wake. The control in the same
-  test shows that wake firing before the hook is declared.
+* It runs whichever ending the run uses, ``run_stop_message`` included.
 * The settings files are re-read when they change, both ways.
 
 Hook scripts are small Python files run by this interpreter, so the tests hold on every
@@ -36,7 +34,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.test_observe_perception_wake import AGENT, _marker, _plant_seed
 from zakcode.config import Settings
 from zakcode.hooks import HookEvent, HookManager, LifecyclePayload, settings_loader
 from zakcode.hooks.settings_loader import load_settings_hooks
@@ -56,12 +53,11 @@ def _factory(session: Session, model: str | None, prompter: object = None) -> _F
     return _FakeAgent(session)
 
 
-def _client(workspace: Path, *, agent: str | None = None, message: str | None = None) -> TestClient:
+def _client(workspace: Path, *, message: str | None = None) -> TestClient:
     settings = Settings(
         default_model="scripted/test",
         context_window=8192,
         workspace_root=workspace,
-        run_stop_agent=agent,
         run_stop_message=message,
     )
     store = SessionStore(base_dir=workspace / "sessions")
@@ -306,7 +302,7 @@ def test_every_hook_runs_and_any_failure_drops_the_wake(tmp_path: Path) -> None:
 
 
 def test_the_hook_runs_when_the_run_ends_by_message(tmp_path: Path) -> None:
-    """The host-neutral ending turns the signal-file wake off. It must not turn this off."""
+    """Ending the run by message must not turn the hook off."""
     ws = _workspace(tmp_path)
     _declare(ws, _command(_hook(tmp_path, "seen")))
 
@@ -314,26 +310,6 @@ def test_the_hook_runs_when_the_run_ends_by_message(tmp_path: Path) -> None:
 
     assert body.json()["wake"] == "delivered"
     assert len(_records(tmp_path, "seen")) == 1
-
-
-def test_a_declared_hook_replaces_the_signal_file_wake(tmp_path: Path) -> None:
-    """One wake per change: the host's hook, never the hook plus the signal file."""
-    ws = _workspace(tmp_path)
-    _plant_seed(ws)  # an autonomous agent with a working signal writer
-    client = _client(ws, agent=AGENT)
-
-    # CONTROL, same workspace and same writer: with no hook declared the signal file lands.
-    control = client.post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-    assert control["wake"] == "delivered"
-    assert _marker(ws).exists(), "control: the planted signal-file wake fires"
-    _marker(ws).unlink()
-
-    _declare(ws, _command(_hook(tmp_path, "seen")))
-    body = client.post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-
-    assert body["wake"] == "delivered"
-    assert len(_records(tmp_path, "seen")) == 1, "the hook declared after start was used"
-    assert not _marker(ws).exists(), "the signal file was written beside the hook"
 
 
 def test_the_settings_files_are_re_read_both_ways(tmp_path: Path) -> None:
