@@ -23497,3 +23497,65 @@ history, 16,469 tokens. Amended after review, 13 single-site mutations each fail
 (the cap, the last copy, the copies taken out of the reply and of the history, the heading pattern's
 start, end and line, the join) and one per survivor the review found (the start anchor, the last
 heading of one summary, the two-thirds ask, the floor, the line's wording).
+
+## ADR-0372: A repeat of a rule still in the conversation is answered once with a pointer
+
+**Context.** Measured 2026-11-07 on ten worker sessions over 24 h: 1,142 `read_rule` calls, 3.68M
+chars, 11 percent of all tool output, and 524 of them repeat a rule already read since the last
+compaction. The shortest rule was read most: 206 calls at 564 chars, 160 of them repeats, because the
+index says to read a rule when it looks relevant to the current step, and that rule looks relevant
+after every shell command. Each repeat adds the whole body again and stays until the next compaction.
+On these sessions a thousand tokens of context cost about 0.55 s on every later call.
+
+**Decision.** `read_rule` asks the loop whether a tool result in the conversation still contains,
+character for character, the text it is about to return. If one does, it returns one line naming the rule and saying it is
+already in context. The check reads the conversation itself, so nothing needs resetting: a compaction
+that took the body, or an elision that shortened it, makes the check false and the body is delivered
+again; a read kept in the compacted tail stays true; a rule edited on disk has different text and is
+delivered. Pinned to the case ADR-0080 recorded, a pointer to text a compaction removed.
+
+**Alternatives rejected.** A per-window set of names cleared in `_adopt_compacted`: it would need the
+same reset ADR-0080 had to add, and it would answer "unchanged" for an edited rule. The same pointer
+for `use_skill` across turns: ADR-0048 resets that dedup because a loop's mandated re-entry answered
+with a pointer is a dead loop, and a rule read is never a re-entry. Marking read rules in the index:
+the index sits in the cached prefix, so changing it re-reads the whole conversation (ADR-0260).
+Lowering the compaction threshold instead: at today's compaction cost the same measurements put the
+best threshold at about where it fires now.
+
+Not verified: how far a repeat falls once the model sees the pointer, since the call itself still
+happens. The trial counts that.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the pointer, and the body delivered to a bare
+context, for another rule, for an edited rule, after a compaction and after an elision, and the
+pointer for a body kept in the tail, the last four through the loop. Ten mutations of the check, the
+guard and both loop seams were all killed.
+
+**Amendment: one pointer per rule (2026-11-07).** On a trial build carrying this change, two of ten
+sessions kept asking for a rule after its pointer. One got the pointer eight times in about five
+minutes after a single 3,189-char body, with the doom-loop guard declining every third identical
+ask; the other got it three times in 25 s after a 479-char body. A session that asks again after
+the pointer wants the text, so the pointer is now given at most once per rule while it stays in the
+conversation: `read_rule` also asks whether its own pointer for that rule is still there, and if it
+is, delivers the body. The pointer says so. The check is the same conversation read, so a compaction
+that removes the pointer starts the rule over. `tests/test_read_rule_tool.py` pins the body for a
+read after the pointer, directly and through both turn paths, and that another rule's pointer does
+not count; three mutations, one per case, were all killed.
+
+**Amendment: the text ends where the rule does (2026-11-07, after review).** The check asks whether
+the text is CONTAINED in an earlier result, so a rule whose last lines were deleted on disk was a
+prefix of the text still in context, and `read_rule` answered "unchanged" while the model still held
+the deleted lines. The returned text now closes with a line naming the rule, `[end of rule
+'<name>']`, so a shortened rule no longer fits inside the older text and is delivered again; an
+unchanged rule matches as before, with a hook's note after it too. A history saved before this
+change holds no closing line, so each rule in it is delivered once more. The review also found four
+sabotages of the check that the file did not see: an equality test, a search of text blocks too, the
+first 40 characters only, and a case-insensitive match. `tests/test_read_rule_tool.py` now pins,
+through the loop, a rule read by a new loop over the same conversation after it was edited near its
+end, lost its last line or changed only its letter case, and the pointer when it is unchanged; a body
+with a hook note after it; and a rule quoted only in a summary and a user message, which is still
+delivered. Six mutations were all killed: the review's four, and the closing line removed or
+written without the rule's name.
+
+Not verified: a read after the pointer can be declined. When the earlier asks came back to back, that
+read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
+ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
