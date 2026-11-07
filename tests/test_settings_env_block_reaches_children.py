@@ -4,15 +4,14 @@ Claude Code sets the ``env`` object of a workspace's settings files "for every s
 its subprocesses". A framework written for that harness keeps its own switches there,
 because that block is the one configuration that travels with the repository. Zak Code had
 no reader for it, so on a hosted workspace every such switch was silently OFF in every
-shell command, background task, hook, status line and framework-script call — and nothing
-said so.
+shell command, background task, hook and status line — and nothing said so.
 
 These tests spawn REAL children and read back what the child actually saw. They also pin
 the ORDER, which is the safety half of the change: the block is overlaid on the inherited
 environment, and everything the product sets for a child — the no-colour pair, the egress
-proxy, ``CLAUDE_PROJECT_DIR``, the agent's name — is applied after it, with the provider-key
-scrub last. A workspace's settings file can switch a framework on; it cannot point a child
-around the egress sandbox, redirect it to another project, or hand it a model credential.
+proxy, ``CLAUDE_PROJECT_DIR`` — is applied after it, with the provider-key scrub last. A
+workspace's settings file can switch a framework on; it cannot point a child around the
+egress sandbox, redirect it to another project, or hand it a model credential.
 
 The variable names here are synthesized (``ZC_PROBE`` and friends). Which names a real
 framework keeps in its own settings file is that framework's business, not a fixture's.
@@ -30,7 +29,6 @@ import pytest
 
 from zakcode.background import BackgroundTasks
 from zakcode.hooks import HookEvent, HookManager, HookPayload, HookSpec
-from zakcode.session.framework_signal import MODE_GET_SCRIPT, framework_agent_mode
 from zakcode.session.store import Session
 from zakcode.status_line import StatusLineSpec, build_status_input, render_status_line
 from zakcode.tools.base import ToolContext
@@ -126,17 +124,6 @@ async def _status_line_sees(workspace: Path, name: str) -> str:
     return line or ""
 
 
-def _plant_mode_get(workspace: Path, body: str) -> None:
-    """Plant a stand-in for the framework's ``session-mode-get.sh`` at the real path.
-
-    ``framework_agent_mode`` returns the script's stdout, so a script that echoes one
-    variable turns that call into a reader for the framework-script child's environment.
-    """
-    script = workspace / MODE_GET_SCRIPT
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(f"#!/usr/bin/env bash\nset -eu\n{body}\n", encoding="utf-8")
-
-
 # ── the block reaches every kind of child ─────────────────────────────────────
 
 
@@ -165,12 +152,6 @@ async def test_a_hook_script_sees_the_block(tmp_path: Path) -> None:
 async def test_a_status_line_command_sees_the_block(tmp_path: Path) -> None:
     _settings(tmp_path, {PROBE: "from-the-settings"})
     assert await _status_line_sees(tmp_path, PROBE) == f"{PROBE}[from-the-settings]"
-
-
-def test_a_framework_script_sees_the_block(tmp_path: Path) -> None:
-    _settings(tmp_path, {PROBE: "from-the-settings"})
-    _plant_mode_get(tmp_path, f'printf "%s" "${{{PROBE}:-<unset>}}"')
-    assert framework_agent_mode(tmp_path, "alpha") == "from-the-settings"
 
 
 # ── precedence: the block beats what was inherited, and loses to what we set ───
@@ -233,14 +214,6 @@ async def test_the_block_cannot_hand_a_hook_a_provider_key(tmp_path: Path) -> No
 async def test_the_block_cannot_tell_a_hook_the_project_is_elsewhere(tmp_path: Path) -> None:
     _settings(tmp_path, {"CLAUDE_PROJECT_DIR": "/somewhere/else"})
     assert await _hook_sees(tmp_path, "CLAUDE_PROJECT_DIR") == tmp_path.as_posix()
-
-
-def test_the_agent_name_is_set_after_the_block(tmp_path: Path) -> None:
-    # The framework's scripts resolve the agent from these two names; a settings file does
-    # not get to say which agent is being read or stopped.
-    _settings(tmp_path, {"AYOAI_AGENT": "not-this-one", "MIND_AGENT": "nor-this-one"})
-    _plant_mode_get(tmp_path, 'printf "%s/%s" "${AYOAI_AGENT}" "${MIND_AGENT}"')
-    assert framework_agent_mode(tmp_path, "alpha") == "alpha/alpha"
 
 
 # ── freshness, and what a bad edit does ───────────────────────────────────────

@@ -1,56 +1,30 @@
-"""A CHANGE envelope reaching ``POST /observe`` WAKES a sleeping mind.
+"""What ``POST /observe`` stages for a frame, and what it attempts when no hook is declared.
 
-The mind half of this already existed and was inert. ``perception-received`` was a valid
-signal name (``session.py`` VALID_SIGNALS), was declared in the framework's session
-manifest, and was polled as a BLOCKER-class wake by ``interruptible-sleep.sh`` — with no
-writer anywhere. A vessel could perceive a change while its mind slept through it.
+Waking a host for a CHANGE or a FAREWELL is the workspace's ``ObservationReceived`` hook
+(``test_observe_hook.py``). What these pin is the wire and the no-hook case:
 
-Two defects had to be fixed together, and the first is why nine armed perception rounds
-never revealed the second: Pydantic's default is ``extra="ignore"``, so the ``kind``
-discriminator the vessel stamps on every envelope was SILENTLY DISCARDED by
-``ObserveRequest`` and the frame still returned 200. Nothing was broken in a way anything
-could see.
-
-What these pin, in order of how easy each is to regress:
-
-* ``kind`` and ``changedSlices`` SURVIVE the wire — the silent-drop defect.
-* Only a change wakes. A heartbeat is a timer-driven full picture; an unstamped envelope
-  is not a change either. Waking on either converts every quiescent sleep into a busy-poll.
-* The frame is on disk BEFORE the signal — asserted from inside the fake setter, the only
-  moment the two orders are distinguishable.
-* Only an AUTONOMOUS agent wakes. `reader` and `assistant` run no perpetual loop, so
-  there is no sleeping reader for the marker to reach — and an UNREADABLE mode is not
-  autonomous either, so it does not wake.
-* Fail-open: a non-seed workspace, or one with no resident agent, still stages its frame.
+* ``kind`` and ``changedSlices`` SURVIVE the wire. Pydantic's default is ``extra="ignore"``,
+  so the ``kind`` discriminator the vessel stamps on every envelope was SILENTLY DISCARDED by
+  ``ObserveRequest`` and the frame still returned 200. Nothing was broken in a way anything
+  could see.
+* With no hook declared nothing is attempted, whatever the kind: ``wake`` answers
+  ``not-attempted`` (never ``dropped``) and the frame stays staged. Both wake counters on the
+  health surface are present from the first request, and stay at zero.
 """
 
 from __future__ import annotations
 
 import json
-import stat
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from zakcode.config import Settings
 from zakcode.server.app import create_app
-from zakcode.session.framework_signal import (
-    AUTONOMOUS_MODE,
-    MODE_GET_SCRIPT,
-    SIGNAL_SET_SCRIPT,
-    framework_session_dir,
-    set_framework_signal,
-)
-from zakcode.session.observation_inbox import (
-    KIND_CHANGE,
-    KIND_FAREWELL,
-    KIND_HEARTBEAT,
-    PERCEPTION_RECEIVED_SIGNAL,
-)
+from zakcode.session.observation_inbox import KIND_CHANGE, KIND_FAREWELL, KIND_HEARTBEAT
 from zakcode.session.store import Session, SessionStore
-
-AGENT = "alpha"
 
 
 class _FakeAgent:
@@ -64,99 +38,15 @@ def _factory(session: Session, model: str | None, prompter: object = None) -> _F
     return _FakeAgent(session)
 
 
-def _client(workspace: Path, *, agent: str | None = AGENT) -> TestClient:
+def _client(workspace: Path) -> TestClient:
     settings = Settings(
         default_model="scripted/test",
         context_window=8192,
         workspace_root=workspace,
-        run_stop_agent=agent,
     )
     store = SessionStore(base_dir=workspace / "sessions")
     app: FastAPI = create_app(settings=settings, store=store, agent_factory=_factory)
     return TestClient(app)
-
-
-def _plant_signal_setter(root: Path, body: str) -> Path:
-    """Plant a stand-in for the framework's ``session-signal-set.sh`` at the real path."""
-    script = root / SIGNAL_SET_SCRIPT
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(body, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return script
-
-
-def _real_setter_body() -> str:
-    """A faithful stand-in: touches the marker the real script touches, nothing else."""
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        'dir="agents/${AYOAI_AGENT}/session"\n'
-        'mkdir -p "$dir"\n'
-        'touch "$dir/$1"\n'
-    )
-
-
-def _real_mode_getter_body() -> str:
-    """A faithful stand-in for ``session-mode-get.sh``, including its absent-file default.
-
-    Mirrors the real script rather than echoing a fixed answer, so the tests exercise the
-    contract that matters: mode file present -> its trimmed contents; mode file ABSENT ->
-    ``reader``, which is a real answer and not an error.
-    """
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        'f="agents/${AYOAI_AGENT}/session/agent-mode"\n'
-        'if [ -f "$f" ]; then tr -d "[:space:]" < "$f"; echo; else echo "reader"; fi\n'
-    )
-
-
-def _set_mode(root: Path, mode: str, agent: str = AGENT) -> None:
-    """Write the framework's ``agent-mode`` file the way /start would."""
-    session = framework_session_dir(root, agent)
-    session.mkdir(parents=True, exist_ok=True)
-    (session / "agent-mode").write_text(mode, encoding="utf-8")
-
-
-def _plant_seed(
-    root: Path, *, mode: str | None = AUTONOMOUS_MODE, setter_body: str | None = None
-) -> None:
-    """Plant both framework scripts a wake needs, and put the agent in ``mode``.
-
-    ``mode=None`` plants the scripts but writes no mode file, so the getter returns its
-    ``reader`` default — the shape an un-started agent presents.
-    """
-    _plant_signal_setter(root, setter_body or _real_setter_body())
-    _plant_mode_getter(root, _real_mode_getter_body())
-    if mode is not None:
-        _set_mode(root, mode)
-
-
-def _plant_mode_getter(root: Path, body: str) -> Path:
-    """Plant a stand-in for the framework's ``session-mode-get.sh`` at the real path."""
-    script = root / MODE_GET_SCRIPT
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(body, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    return script
-
-
-def _frame_first_setter_body() -> str:
-    """The ORDER assertion, made where it is decidable — from inside the setter.
-
-    A wake that overtakes its own payload wakes the loop to an empty inbox. At signal time
-    the staged frame must already exist, so the check belongs here rather than in a caller
-    that can only ever observe the end state.
-    """
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        '[ -f ".observation" ] '
-        '|| { echo "frame absent at signal time" >&2; exit 9; }\n'
-        'dir="agents/${AYOAI_AGENT}/session"\n'
-        'mkdir -p "$dir"\n'
-        'touch "$dir/$1"\n'
-    )
 
 
 def _envelope(**over: object) -> dict[str, object]:
@@ -171,12 +61,14 @@ def _envelope(**over: object) -> dict[str, object]:
     return body
 
 
-def _marker(workspace: Path, agent: str = AGENT) -> Path:
-    return framework_session_dir(workspace, agent) / PERCEPTION_RECEIVED_SIGNAL
-
-
 def _staged(workspace: Path) -> dict[str, object]:
     return json.loads((workspace / ".observation").read_text(encoding="utf-8"))
+
+
+def _intake(client: TestClient) -> dict[str, object]:
+    resp = client.get("/sidecar/health")
+    assert resp.status_code == 200, resp.text
+    return resp.json()["observation_intake"]
 
 
 # ── the silent-drop defect ───────────────────────────────────────────────────────────
@@ -184,7 +76,7 @@ def _staged(workspace: Path) -> dict[str, object]:
 
 def test_kind_and_changed_slices_survive_the_wire(tmp_path: Path) -> None:
     """Undeclared fields are DISCARDED by Pydantic, not refused — so pin that they arrive."""
-    resp = _client(tmp_path, agent=None).post(
+    resp = _client(tmp_path).post(
         "/observe",
         json=_envelope(kind=KIND_CHANGE, changedSlices=["nearbyPerception"]),
     )
@@ -196,335 +88,35 @@ def test_kind_and_changed_slices_survive_the_wire(tmp_path: Path) -> None:
 
 def test_an_unstamped_envelope_stages_an_empty_kind(tmp_path: Path) -> None:
     """Absent is distinguishable from "heartbeat": the vessel said nothing, we record that."""
-    resp = _client(tmp_path, agent=None).post("/observe", json=_envelope())
+    resp = _client(tmp_path).post("/observe", json=_envelope())
     assert resp.status_code == 200
     staged = _staged(tmp_path)
     assert staged["kind"] == ""
     assert staged["changedSlices"] == []
 
 
-# ── which envelopes wake ─────────────────────────────────────────────────────────────
+# ── no hook declared: nothing attempted ─────────────────────────────────────────────
 
 
-def test_change_envelope_raises_the_wake(tmp_path: Path) -> None:
-    _plant_seed(tmp_path)
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _marker(tmp_path).exists()
+@pytest.mark.parametrize("kind", [KIND_CHANGE, KIND_FAREWELL, KIND_HEARTBEAT])
+def test_with_no_hook_nothing_is_attempted_and_the_frame_stays(tmp_path: Path, kind: str) -> None:
+    """A failed wake must not read as an UN-ATTEMPTED one, nor the reverse.
 
-
-def test_heartbeat_envelope_does_not_wake(tmp_path: Path) -> None:
-    """A heartbeat arrives on a timer and says nothing new — waking on it is a busy-poll."""
-    _plant_seed(tmp_path)
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_HEARTBEAT))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-    # The frame still staged: not waking is not the same as not perceiving.
-    assert _staged(tmp_path)["kind"] == KIND_HEARTBEAT
-
-
-def test_unstamped_envelope_does_not_wake(tmp_path: Path) -> None:
-    """An older vessel that stamps no kind must not be read as announcing a change."""
-    _plant_seed(tmp_path)
-    resp = _client(tmp_path).post("/observe", json=_envelope())
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-
-
-def test_farewell_envelope_raises_the_wake(tmp_path: Path) -> None:
-    """Nothing follows a farewell: a mind that is not woken for it learns it by accident."""
-    _plant_seed(tmp_path, setter_body=_frame_first_setter_body())
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_FAREWELL))
-    assert resp.status_code == 200
-    assert resp.json()["wake"] == "delivered"
-    assert _marker(tmp_path).exists(), "the frame was staged before the signal went"
-    assert _staged(tmp_path)["kind"] == KIND_FAREWELL
-
-
-def test_farewell_in_reader_mode_is_not_attempted(tmp_path: Path) -> None:
-    """The autonomous-only contract binds a farewell exactly as it binds a change."""
-    _plant_seed(tmp_path, mode="reader")
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_FAREWELL))
-    assert resp.json()["wake"] == "not-attempted"
-    assert not _marker(tmp_path).exists()
-    assert _staged(tmp_path)["kind"] == KIND_FAREWELL, "not waking is not dropping"
-
-
-def test_a_heartbeat_over_an_unread_farewell_does_not_wake_a_second_time(tmp_path: Path) -> None:
-    """The farewell already woke the loop; the timer frame behind it adds no wake of its own."""
-    _plant_seed(tmp_path)
-    client = _client(tmp_path)
-    client.post("/observe", json=_envelope(kind=KIND_FAREWELL))
-    _marker(tmp_path).unlink()  # the sleeping loop took the signal
-    resp = client.post("/observe", json=_envelope(kind=KIND_HEARTBEAT))
-    assert resp.json()["wake"] == "not-attempted"
-    assert not _marker(tmp_path).exists()
-    assert _staged(tmp_path)["kind"] == KIND_FAREWELL, "and the staged frame still says farewell"
-
-
-def test_an_unknown_kind_does_not_wake(tmp_path: Path) -> None:
-    """The gate is membership in the waking kinds, not "not a heartbeat": fail-safe on new kinds."""
-    _plant_seed(tmp_path)
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind="snapshot"))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-
-
-# ── ordering, placement, and the fail-open paths ─────────────────────────────────────
-
-
-def test_the_frame_is_on_disk_before_the_wake(tmp_path: Path) -> None:
-    _plant_seed(tmp_path, setter_body=_frame_first_setter_body())
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _marker(tmp_path).exists(), "setter refused: the wake preceded its own payload"
-
-
-def test_order_assertion_actually_fires(tmp_path: Path) -> None:
-    """The guard above is only worth having if its setter CAN refuse. Prove it does."""
-    _plant_signal_setter(tmp_path, _frame_first_setter_body())
-    # Same setter, invoked with no staged frame beside it — the condition it checks.
-    from zakcode.session.framework_signal import set_framework_signal
-
-    assert set_framework_signal(tmp_path, AGENT, PERCEPTION_RECEIVED_SIGNAL) is False
-    assert not _marker(tmp_path).exists()
-
-
-def test_wake_lands_agent_level_not_per_session(tmp_path: Path) -> None:
-    """``sessions/<SID>/`` holds same-named files the loop reads differently."""
-    _plant_seed(tmp_path)
-    _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert _marker(tmp_path).exists()
-    strays = list((tmp_path / "agents" / AGENT).glob(f"sessions/*/{PERCEPTION_RECEIVED_SIGNAL}"))
-    assert strays == []
-
-
-def test_no_resident_agent_writes_no_signal_and_still_stages(tmp_path: Path) -> None:
-    """No address = no signal. A non-seed workspace is untouched, never degraded.
-
-    Seeded with NO mode file on purpose: the mode is never consulted without an agent (the
-    `and agent` guard short-circuits first), so writing one here would create the very
-    ``agents/`` dir this test asserts the observe path never touches.
+    This is why the field is three states and not a boolean. With no hook there is no
+    hand-over to fail: `dropped` here would report a defect on every round of a healthy
+    workspace and the field would be ignored inside a day.
     """
-    _plant_seed(tmp_path, mode=None)
-    resp = _client(tmp_path, agent=None).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-    assert not (tmp_path / "agents").exists()
-
-
-def test_absent_setter_still_stages_the_frame(tmp_path: Path) -> None:
-    """Fail-open: losing the early wake costs latency; losing the frame costs the event."""
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-    assert not _marker(tmp_path).exists()
-
-
-def test_a_failing_setter_does_not_fail_the_frame(tmp_path: Path) -> None:
-    _plant_seed(tmp_path, setter_body="#!/usr/bin/env bash\nexit 7\n")
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-    assert not _marker(tmp_path).exists()
-
-
-def test_a_second_change_before_the_mind_reads_is_still_one_wake(tmp_path: Path) -> None:
-    """The marker is a LEVEL the loop consumes, not a counter — idempotent by design."""
-    _plant_seed(tmp_path)
-    client = _client(tmp_path)
-    client.post("/observe", json=_envelope(kind=KIND_CHANGE))
-    resp = client.post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert _marker(tmp_path).exists()
-
-
-# ── autonomous-only: which MODES wake (goal outcome 1) ───────────────────────────────
-
-
-def test_assistant_mode_never_writes_the_signal(tmp_path: Path) -> None:
-    """Outcome 1. Assistant mode runs no loop, so there is nothing for a marker to wake."""
-    _plant_seed(tmp_path, mode="assistant")
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-    # Perception itself is unaffected — only the WAKE is gated on mode.
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-
-
-def test_reader_mode_never_writes_the_signal(tmp_path: Path) -> None:
-    _plant_seed(tmp_path, mode="reader")
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-
-
-def test_an_unstarted_agent_does_not_wake(tmp_path: Path) -> None:
-    """No mode file at all: the framework's reader answers ``reader``, so no wake."""
-    _plant_seed(tmp_path, mode=None)
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-
-
-def test_an_unreadable_mode_does_not_wake(tmp_path: Path) -> None:
-    """Mode getter absent entirely — cannot ask, so do not wake (fail-safe direction)."""
-    _plant_signal_setter(tmp_path, _real_setter_body())  # setter present, getter is NOT
-    _set_mode(tmp_path, AUTONOMOUS_MODE)  # and the mode would have said yes
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-
-
-def test_a_failing_mode_getter_does_not_wake_or_fail_the_frame(tmp_path: Path) -> None:
-    _plant_signal_setter(tmp_path, _real_setter_body())
-    _plant_mode_getter(tmp_path, "#!/usr/bin/env bash\nexit 5\n")
-    _set_mode(tmp_path, AUTONOMOUS_MODE)
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists()
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE
-
-
-def test_framework_agent_mode_separates_unreadable_from_reader(tmp_path: Path) -> None:
-    """None and "reader" must never collapse: "cannot ask" is not "the answer is no loop".
-
-    Both currently decline the wake, so nothing downstream distinguishes them today — which
-    is exactly why it is pinned here. A future caller that wants to LOG or ALERT on an
-    unreadable seed needs the distinction to still exist.
-    """
-    from zakcode.session.framework_signal import framework_agent_mode
-
-    assert framework_agent_mode(tmp_path, AGENT) is None  # no getter planted at all
-    _plant_mode_getter(tmp_path, _real_mode_getter_body())
-    assert framework_agent_mode(tmp_path, AGENT) == "reader"  # getter's absent-file default
-    _set_mode(tmp_path, AUTONOMOUS_MODE)
-    assert framework_agent_mode(tmp_path, AGENT) == AUTONOMOUS_MODE
-
-
-# ── wake DISPOSITION reaches the caller ────────────────────────────────────────────────
-#
-# Everything above pins WHETHER the marker lands. None of it pinned whether the CALLER can
-# find out. Fail-open keeps the frame and keeps the 200 — correctly — so a dropped wake had
-# exactly one egress, a log line, and the response said accepted:true either way. Measured
-# on a live vessel: the workspace seed's 8-entry VALID_SIGNALS
-# refused `perception-received`, every POST returned 200 accepted:true, and every wake was
-# lost in silence. Anyone measuring the bridge by watching for 200s reported GREEN.
-
-
-ACCEPTED_NAME = "blocker-cleared"
-
-
-def _name_gating_setter_body(accepted: str) -> str:
-    """A setter that ACCEPTS one signal name and REFUSES every other — the live seed's shape.
-
-    The defect is NOT a dead writer, and that distinction is the whole point of the control
-    below: the seed rejects the NAME while working perfectly for the names it knows.
-    """
-    return (
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        f'if [ "$1" != "{accepted}" ]; then\n'
-        f"  echo \"Invalid signal name '$1'. Must be one of: {accepted}\" >&2\n"
-        "  exit 1\n"
-        "fi\n"
-        'dir="agents/${AYOAI_AGENT}/session"\n'
-        'mkdir -p "$dir"\n'
-        'touch "$dir/$1"\n'
-    )
-
-
-def _intake(client: TestClient) -> dict[str, object]:
-    resp = client.get("/sidecar/health")
-    assert resp.status_code == 200, resp.text
-    return resp.json()["observation_intake"]
-
-
-def test_a_refused_signal_name_reports_a_dropped_wake(tmp_path: Path) -> None:
-    """The caller can tell a DROPPED wake from a delivered one (goal outcome 2)."""
-    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
-    resp = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE))
-    body = resp.json()
-
-    assert resp.status_code == 200
-    assert not _marker(tmp_path).exists(), "precondition: a marker here means nothing dropped"
-    assert body["wake"] == "dropped", (
-        f"the writer refused the signal NAME, so the wake was lost — say so: {body}"
-    )
-    # `accepted` STAYS TRUE, deliberately: it reports the FRAME, which was staged. Flipping
-    # it would tell the vessel its frame was rejected while the frame is on disk.
-    assert body["accepted"] is True, (
-        "the frame was accepted and staged; only the wake was lost. These are two facts and "
-        "the response carries both separately"
-    )
-    assert _staged(tmp_path)["kind"] == KIND_CHANGE, (
-        "fail-open is preserved — losing the wake must never lose the frame"
-    )
-
-
-def test_the_positive_control_runs_against_the_same_writer(tmp_path: Path) -> None:
-    """An absent marker is attributable to the NAME, not to a dead writer (goal outcome 3).
-
-    Without this, the assertion above passes just as well against a writer that refuses
-    everything — which is a different defect with a different fix.
-    """
-    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
-    dropped = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-
-    assert dropped["wake"] == "dropped"
-    assert not _marker(tmp_path).exists()
-
-    # SAME writer, SAME workspace, SAME agent — only the NAME differs. Invoked through the
-    # app's OWN helper rather than a hand-rolled subprocess, so the control exercises the
-    # production path instead of a synthetic one.
-    assert set_framework_signal(tmp_path, AGENT, ACCEPTED_NAME) is True, (
-        "POSITIVE CONTROL — if this fails the writer is simply dead, and the dropped-wake "
-        "assertion above proves nothing about the signal name"
-    )
-    assert (framework_session_dir(tmp_path, AGENT) / ACCEPTED_NAME).exists()
-
-
-def test_a_delivered_wake_says_delivered(tmp_path: Path) -> None:
-    _plant_seed(tmp_path)
-    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-    assert body["wake"] == "delivered"
-    assert _marker(tmp_path).exists(), "precondition: delivered must mean the marker landed"
-
-
-def test_a_heartbeat_reports_not_attempted_never_dropped(tmp_path: Path) -> None:
-    """A failed wake must not read as an UN-ATTEMPTED one.
-
-    This is why the field is three states and not a boolean. A heartbeat wakes nothing and
-    is perfectly healthy; if that collapsed into `dropped`, every quiescent round would
-    report a defect and the field would be ignored inside a day.
-    """
-    _plant_seed(tmp_path)
-    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_HEARTBEAT)).json()
+    body = _client(tmp_path).post("/observe", json=_envelope(kind=kind)).json()
     assert body["wake"] == "not-attempted"
+    assert body["accepted"] is True
+    assert _staged(tmp_path)["kind"] == kind, "not waking is not dropping"
 
 
-def test_a_non_seed_workspace_reports_not_attempted(tmp_path: Path) -> None:
-    body = _client(tmp_path, agent=None).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-    assert body["wake"] == "not-attempted", "no resident agent is not a dropped wake"
-
-
-def test_reader_mode_reports_not_attempted_not_dropped(tmp_path: Path) -> None:
-    _plant_seed(tmp_path, mode="reader")
-    body = _client(tmp_path).post("/observe", json=_envelope(kind=KIND_CHANGE)).json()
-    assert body["wake"] == "not-attempted", (
-        "a reader runs no perpetual loop, so no wake was attempted — not one that failed"
-    )
-
-
-def test_the_health_surface_counts_a_dropped_wake(tmp_path: Path) -> None:
-    """The always-reports-clear class closes only if a MONITOR can see it, not just a caller.
-
-    Both counters read explicit zeros before the first frame, so a bridge that
-    has never been called stays distinguishable from one delivering cleanly.
-    """
-    _plant_seed(tmp_path, setter_body=_name_gating_setter_body(ACCEPTED_NAME))
+def test_both_wake_counters_are_present_from_the_first_request_and_stay_zero(
+    tmp_path: Path,
+) -> None:
+    """Present and zero before the first frame, so a bridge that was never called stays
+    distinguishable from one delivering cleanly; and a frame that attempts no wake moves neither."""
     client = _client(tmp_path)
 
     idle = _intake(client)
@@ -533,23 +125,5 @@ def test_the_health_surface_counts_a_dropped_wake(tmp_path: Path) -> None:
 
     client.post("/observe", json=_envelope(kind=KIND_CHANGE))
     after = _intake(client)
-    assert after["wake_dropped"] == 1
+    assert after["wake_dropped"] == 0
     assert after["wake_delivered"] == 0
-
-    client.post("/observe", json=_envelope(kind=KIND_HEARTBEAT))
-    assert _intake(client)["wake_dropped"] == 1, (
-        "a heartbeat attempts no wake, so it must not increment the drop counter"
-    )
-
-
-def test_the_health_surface_counts_a_delivered_wake(tmp_path: Path) -> None:
-    _plant_seed(tmp_path)
-    client = _client(tmp_path)
-    client.post("/observe", json=_envelope(kind=KIND_CHANGE))
-
-    intake = _intake(client)
-    assert intake["wake_delivered"] == 1
-    assert intake["wake_dropped"] == 0, (
-        "CONTROL — a clean delivery must leave the drop counter at zero, or the drop "
-        "assertions in the sibling test would pass against a counter that always climbs"
-    )

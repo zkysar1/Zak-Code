@@ -117,23 +117,10 @@ from zakcode.server.wire import (
 )
 from zakcode.session.atomic_write import write_text_atomic
 from zakcode.session.framework_agents import start_line, startable_agents
-from zakcode.session.framework_signal import (
-    AUTONOMOUS_MODE,
-    framework_agent_mode,
-    set_framework_signal,
-)
-from zakcode.session.framework_stop import (
-    abandon_framework_stop,
-    framework_stop_complete,
-    framework_stop_seen,
-    request_framework_stop,
-    retire_expired_sidecar_stop,
-)
 from zakcode.session.observation_inbox import (
     EARLIER_FAREWELL_SLICE,
     FAREWELL_SLICE,
     OBSERVATION_STAGE_LOCK,
-    PERCEPTION_RECEIVED_SIGNAL,
     RECEIVER_SLICES,
     SHED_FAREWELL_SLICE,
     WAKING_KINDS,
@@ -179,20 +166,9 @@ _IDLE_BEAT_SECONDS = 0.5
 #: costs at most this much billed time — it is not part of the cap arithmetic.
 _DEADLINE_WATCH_SECONDS = 1.0
 
-#: How long a raised framework stop may sit with NOTHING that could still read it before the
-#: wait for the mind's sign-off ends. "Nothing" is checked on every beat (`_stop_has_no_reader`):
-#: no turn in flight, no say or nudge queued, no loop re-entry on the session (ADR-0189 starts one
-#: only for a session that has a `loop_skill`), no held wake-up, no background command still to
-#: report. Measured over every step-out since 2026-09-26: 13 of the 16 waits that ran
-#: the whole 350 s grace had an empty `loop_skill` and no held wake-up, and the mind's last model
-#: call came within 126 s of the raise; none of the 31 graceful endings had that state. The window
-#: only gives a late say or frame time to start a turn whose first tool call would surface the
-#: stop. It is not a second grace, and it never ends a mind that has a loop to re-enter.
-_STOP_QUIET_SECONDS = 60.0
-
 #: How long the lifespan shutdown waits for the loop to wind down once it had to INTERRUPT a turn
 #: that nothing else would end (`_stop_consumer`, ADR-0322). The supervisor kills a stop that
-#: outlives its timeout (mind-serve@.service TimeoutStopSec=120, then SIGKILL), and what is left
+#: outlives its timeout (120 s, then SIGKILL), and what is left
 #: of that after the ExecStop export and uvicorn's connection drain is the budget for
 #: "Application shutdown complete". 45 s keeps a hard stop inside the 60 s a run grade allows.
 #: It is a ceiling, never a target: the interrupted turn ends within a beat, so only the digest
@@ -2633,12 +2609,11 @@ def create_app(
                 # distinction the wake below turns on, and useless to a reader that has to guess
                 # it.
                 #
-                # STICKY KIND: when the message-based ending path is active, there is no
-                # signal-file wake.  The host reads the frame on its own tick, and a
-                # heartbeat superseding an unread change or farewell must not hide it.  So the
-                # staged `kind` stays `farewell`, else `change`, whenever the pending frame was
-                # one and this one is not; and a farewell landing on an unread change stays a
-                # farewell.
+                # STICKY KIND: a host that declares no ObservationReceived hook reads the frame
+                # on its own tick, and a heartbeat superseding an unread change or farewell
+                # must not hide it.  So the staged `kind` stays `farewell`, else `change`,
+                # whenever the pending frame was one and this one is not; and a farewell
+                # landing on an unread change stays a farewell.
                 "kind": staged_kind(
                     request.kind,
                     (pending or {}).get("kind") if isinstance(pending_observation, dict) else None,
@@ -2661,28 +2636,16 @@ def create_app(
         # fail-safe direction: a missed wake costs latency (the mind perceives this frame on
         # its next round anyway), a spurious one costs the sleep itself.
         #
-        # `run_stop_agent` is the ADDRESS of this workspace's resident agent — the same
-        # role it plays for the run-end stop, and the repo's no-knobs ruling is against a
-        # second setting that answers an identical question. None = not a seed workspace,
-        # which is left entirely untouched.
-        #
-        # When the host-neutral ending (`run_stop_message`) is active there is no agent
-        # address and no signal-file wake. A host that declares an ObservationReceived hook
-        # still hears about each change through it (below). One that declares none reads
+        # THE WORKSPACE'S OWN HOOK DECIDES THE WAKE (ADR-0270). A host that wants to hear
+        # about a change declares an ObservationReceived hook, and the hook decides whether
+        # the host runs a loop worth waking, and how to wake it. The route keeps what belongs
+        # to the envelope (only a change or a farewell is handed over, after it is staged)
+        # and reads the hook's exit code as the disposition. A host that declares none reads
         # the staged frame on its own tick, the sticky kind above ensures a superseding
         # heartbeat cannot hide an unread change, and `wake` answers `not-attempted`, which
         # is the honest truth.
-        agent = None if resolved_settings.run_stop_message else resolved_settings.run_stop_agent
         woke = False
         wake_attempted = False
-        mode: str | None = None
-        # THE WORKSPACE'S OWN HOOK COMES FIRST (ADR-0270). A host that wants to hear about a
-        # change declares an ObservationReceived hook, and the hook decides what this route
-        # otherwise decides for it below: whether the host runs a loop worth waking, and how
-        # to wake it. The route keeps what belongs to the envelope (only a change or a
-        # farewell is handed over, after it is staged) and reads the hook's exit code as the
-        # disposition. It runs whichever ending the run uses, and a workspace that declares
-        # it never also gets the signal-file wake: one wake per frame.
         delivered: bool | None = None
         if request.kind in WAKING_KINDS:
             try:
@@ -2707,43 +2670,19 @@ def create_app(
         if delivered is not None:
             wake_attempted = True
             woke = delivered
-        elif request.kind in WAKING_KINDS and agent:
-            # The signal-file wake, for a workspace that declares no hook but names its
-            # resident agent (run_stop_agent). It goes when that setting does.
-            #
-            # AUTONOMOUS-ONLY, and this is a contract rather than an optimisation: `reader`
-            # and `assistant` run no perpetual loop, so there is no sleeping reader for the
-            # marker to reach and it would simply sit there until a later /start cleared it.
-            # Asked BEFORE the write, so the quiet case pays for one subprocess instead of
-            # two; the reader is marked IRREDUCIBLY LOCAL in the framework and takes no
-            # daemon hop, which is what makes it safe on a vessel running no daemon.
-            #
-            # None means UNREADABLE, which is NOT autonomous — an unreadable mode does not
-            # wake. Same fail-safe direction as the kind gate: a missed wake costs latency
-            # the next perception round repays, a spurious one costs the sleep itself.
-            mode = framework_agent_mode(resolved_settings.workspace_root, agent)
-            if mode == AUTONOMOUS_MODE:
-                # Fail-open by contract: staging has already succeeded. Losing the EARLY
-                # wake is a latency cost; raising here would lose the frame itself.
-                wake_attempted = True
-                woke = set_framework_signal(
-                    resolved_settings.workspace_root, agent, PERCEPTION_RECEIVED_SIGNAL
-                )
         # WAKE DISPOSITION. Fail-open keeps the frame and keeps the 200, which is right --
         # but it left the dropped wake with NO EGRESS: `woke` reached one log line and
         # nothing else, and a caller reading the 200 body saw accepted:true either way.
-        # That is the always-reports-clear class. An armed bridge whose workspace seed
-        # REFUSES the signal NAME posts every round, is accepted every round, and wakes
-        # nothing; measured on a live vessel where the seed's 8-entry VALID_SIGNALS
-        # rejected `perception-received` and the POST still returned accepted:true.
+        # That is the always-reports-clear class. A hook that fails every round is accepted
+        # every round and wakes nothing.
         #
         # THREE STATES, NOT A BOOLEAN, because a FAILED wake must not read as an
         # UN-ATTEMPTED one (a failed measurement is not a measurement of zero).
-        # A heartbeat, a non-seed workspace and a reader-mode agent all legitimately attempt
-        # nothing and are healthy; only `dropped` is a defect, and only now is it nameable.
-        # Through a hook the three states read the same way from its exit code: `delivered`
-        # is every hook exiting 0 (the host took the frame, whatever it then did with it),
-        # `dropped` is any hook failing, and no hook at all attempted nothing.
+        # A heartbeat and a host that declares no hook both legitimately attempt nothing and
+        # are healthy; only `dropped` is a defect, and only now is it nameable.
+        # The three states read from the hooks' exit codes: `delivered` is every hook exiting 0
+        # (the host took the frame, whatever it then did with it), `dropped` is any hook
+        # failing, and no hook at all attempted nothing.
         #
         # `accepted` STAYS TRUE and is deliberately NOT flipped, though the goal's wording
         # suggested it: `accepted` reports the FRAME, which was staged, and the intake
@@ -2769,7 +2708,7 @@ def create_app(
         # envelope shape is visible here instead of silently reading as fresh.
         logger.info(
             "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
-            "slices=%d dropped=%d changed=%d wake=%s mode=%s farewell_carried=%s "
+            "slices=%d dropped=%d changed=%d wake=%s farewell_carried=%s "
             "farewell_shed=%d reports_shed=%d",
             ref,
             request.kind or "-",
@@ -2780,7 +2719,6 @@ def create_app(
             len(request.droppedSlices),
             len(request.changedSlices),
             wake,
-            mode or "-",
             farewell_carried,
             len(shed_slices),
             observation.get(SHED_FAREWELL_SLICE, 0),
@@ -3012,7 +2950,6 @@ def create_app(
         or resolved_settings.run_idle_timeout is not None
         or resolved_settings.run_consolidation_message
         or resolved_settings.run_end_command
-        or resolved_settings.run_stop_agent
         or resolved_settings.run_stop_message
     )
     #: Set once this server is to restart into a newer build: the say consumer then starts no
@@ -3179,10 +3116,6 @@ def create_app(
                     _check_run_ending_seen()
                     _check_run_ending_done(last_turn_stop_reason)
 
-    #: A framework stop was raised and no turn has yet been started to read it
-    #: (ADR-0189). Consumed by the first idle beat after the raise.
-    stop_reentry_pending = False
-
     def _load_current_session() -> Session | None:
         sid = _current_session_id()
         if sid is None:
@@ -3227,28 +3160,6 @@ def create_app(
             resolved_store.save(session)
 
         return BackgroundTasks(session, on_change=_persist).take_notifications()
-
-    def _take_stop_reentry() -> str | None:
-        """The loop sentinel, ONCE, after a framework stop was raised with no turn to read
-        it — else ``None`` (ADR-0189).
-
-        The signal is read at the top of the mind's next loop beat (Phase -1.4); between
-        turns there is no beat, so a stop raised then sat unread until the window closed
-        (same prod run: signed at 02:33:29Z, nothing in flight, retired unconsumed). Only
-        while the window is open, and only when the session knows its hook-named loop
-        re-entry: the turn this starts is the harness's own composed re-entry, never a
-        prompt of ours — the sidecar still decides WHEN, the framework WHAT.
-        """
-        nonlocal stop_reentry_pending
-        if not stop_reentry_pending:
-            return None
-        stop_reentry_pending = False
-        if framework_stop_until is None:
-            return None
-        session = _load_current_session()
-        if session is None or not str(getattr(session, "loop_skill", "") or "").strip():
-            return None
-        return LOOP_SENTINEL
 
     async def _wakeup_turn_text(agent: AgentLike, session: Session, prompt: str) -> str:
         """The turn a fired wake-up runs, composed as the REPL door composes it (ADR-0187):
@@ -3316,9 +3227,9 @@ def create_app(
                 if note is not None:
                     await _run_turn_for_say(note, verbatim=True)
                     return True
-                # ADR-0189: the third trigger. A stop raised with nothing in flight, or
-                # the session's own wake-up coming due, starts the turn that reads it.
-                fired = _take_stop_reentry() or _take_due_wakeup()
+                # ADR-0189: the third trigger. The session's own wake-up coming due
+                # starts the turn that reads it.
+                fired = _take_due_wakeup()
                 if fired is None:
                     return False
                 await _run_turn_for_say(fired, wakeup=True)
@@ -3355,18 +3266,9 @@ def create_app(
     #: a hard cap. Clamped, the digest simply gets the whole remaining window.
     effective_reserve = 0.0
     run_stopping = asyncio.Event()
-    # Monotonic deadline while the mind runs its OWN graceful stop; None when no raise
-    # is in flight. Opened once by `_begin_framework_stop`, read by `_keep_beating`.
-    framework_stop_until: float | None = None
-    # When the stop was raised, on the same monotonic clock; the quiet window counts from it.
-    framework_stop_raised_at: float | None = None
-    # True once `_keep_beating` ended the wait at the quiet window (`_stop_has_no_reader`), so the
-    # exit path retires the pair in the quiet window's words and not the grace's.
-    framework_stop_quiet_ended = False
     run_ended = asyncio.Event()
-    # ── host-neutral ending (run_stop_message) ──────────────────────────────────
+    # ── the ending (run_stop_message) ───────────────────────────────────────────
     # Monotonic deadline for the message-based ending; None until the ending starts.
-    # Parallel to `framework_stop_until` but for the new path.
     run_ending_until: float | None = None
     # Whether OUR line is in (or has passed through) the inbox. The slot may be full
     # when the ending starts, so the write can land beats later; until it does, an
@@ -3559,7 +3461,7 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("on_run_end failed (%s: %s)", type(exc).__name__, exc)
 
-    def _framework_stop_grace() -> float:
+    def _ending_grace() -> float:
         """How long the mind gets to end ITSELF before the interrupt takes over.
 
         The consolidation reserve, repurposed — see `_graceful_stop_budget`. Falls back
@@ -3568,65 +3470,28 @@ def create_app(
         """
         return effective_reserve or resolved_settings.run_consolidation_reserve
 
-    async def _raise_framework_stop() -> bool:
-        """Ask the workspace's framework to run its own graceful stop (ADR-0047).
+    def _begin_graceful_ending() -> None:
+        """Start the configured ending, if the run has one (ADR-0047, ADR-0264).
 
-        False means "not a framework seed, or the raise failed" — the caller then keeps
-        the ending it already had. Off the event loop: the raise shells out to the
-        framework's own signal writer, and a wedged filesystem must not stall the server.
-        """
-        agent = resolved_settings.run_stop_agent
-        if not agent:
-            return False
-        try:
-            return await asyncio.to_thread(
-                request_framework_stop, resolved_settings.workspace_root, agent
-            )
-        except Exception as exc:  # noqa: BLE001 — fail-open to the interrupt backstop
-            logger.warning("framework stop raise failed (%s: %s)", type(exc).__name__, exc)
-            return False
-
-    async def _begin_framework_stop() -> None:
-        """Raise the framework's own stop ONCE and open the window it needs to run it.
-
-        Idempotent across the three callers that can end a run (the human's
-        ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
-        share ONE window rather than each restarting the grace.
-        """
-        nonlocal framework_stop_until, framework_stop_raised_at, stop_reentry_pending
-        if framework_stop_until is not None:
-            return
-        if await _raise_framework_stop():
-            framework_stop_raised_at = time.monotonic()
-            framework_stop_until = framework_stop_raised_at + _framework_stop_grace()
-            # ADR-0189: a raised stop needs a READER. A turn in flight reads it at its
-            # own next beat; with none in flight the next consumer beat starts the
-            # loop's re-entry. Idempotent with the window: set once per raise.
-            stop_reentry_pending = True
-
-    async def _begin_graceful_ending() -> None:
-        """Start the ending through whichever path is configured.
-
-        ``run_stop_message`` wins when both are set.  The legacy
-        ``run_stop_agent`` path is reached only when the message is unset.
-        Idempotent: each underlying function opens one window at most.
+        Idempotent across the callers that can end a run (the human's ``/run/stop``, the
+        mid-turn cap watcher, the between-beats cap and idle checks): they share ONE window
+        rather than each restarting the grace. With no ``run_stop_message`` there is no
+        ending to start and the run ends as it does without one: the cap interrupts a turn
+        in flight at its deadline, and ``/run/stop`` lets that turn finish.
         """
         if resolved_settings.run_stop_message:
             _begin_run_ending()
-        else:
-            await _begin_framework_stop()
 
-    def _any_ending_window_open() -> bool:
-        """True while either ending path has an open window."""
-        return run_ending_until is not None or framework_stop_until is not None
+    def _ending_window_open() -> bool:
+        """True while the ending has an open window."""
+        return run_ending_until is not None
 
     def _begin_run_ending() -> None:
         """Queue the configured line through the say inbox and open the ending window.
 
-        The host-neutral replacement for ``_begin_framework_stop``: the ending travels
-        as operator input so no subprocess, signal file or agent-session layout is
-        assumed.  Idempotent: the window is opened once and every later caller is a
-        no-op, the same rule the legacy path follows.
+        The ending travels as operator input, so no subprocess, signal file or session
+        layout is assumed.  Idempotent: the window is opened once and every later caller
+        is a no-op.
 
         The slot may be full (the operator's say goes first).  A refused write is
         retried on each beat inside the window, and on each watcher tick while a turn is
@@ -3635,7 +3500,7 @@ def create_app(
         nonlocal run_ending_until, run_ending_written
         if run_ending_until is not None:
             return
-        run_ending_until = time.monotonic() + _framework_stop_grace()
+        run_ending_until = time.monotonic() + _ending_grace()
         inbox = say_path(resolved_settings.workspace_root)
         if write_say(inbox, _own_line()):
             run_ending_written = True
@@ -3749,145 +3614,20 @@ def create_app(
         if _retract_own_line():
             logger.info("run ending: retracted the configured line (never taken)")
 
-    def _stop_has_no_reader() -> bool:
-        """Whether the raised framework stop has NOTHING left that could read it.
-
-        The mind reads a stop by two routes only: a tool call that passes the framework's
-        PreToolUse hook (the stop advisory), and a turn the sidecar starts (a say, a nudge, a
-        background command's exit, a due wake-up, or the loop re-entry of ADR-0189). A mind that
-        has not run the framework's loop has no `loop_skill`, so `_take_stop_reentry` starts
-        nothing for it: once its first turn ends, nothing is left to read the stop, and the wait
-        ran the whole grace. Measured since 2026-09-26: 13 of the 16 step-outs that ran the whole
-        350 s grace (of 47 raises) were this case; none of the 31 that ended gracefully was.
-
-        True only when every route is closed AND the mind has been quiet for
-        `_STOP_QUIET_SECONDS`, counted from the later of the raise and the end of the last turn
-        the say consumer ran (`last_say_at`). A session with a `loop_skill`, a held wake-up (of
-        any due time) or a background command still to report is never true: a reader exists, so
-        the whole grace is the mind's. This never consults the stop stamp, which is four-way
-        ambiguous (`framework_stop_seen`); it asks only whether anything COULD read.
-        """
-        if framework_stop_raised_at is None or inflight:
-            return False
-        quiet_since = max(last_say_at, framework_stop_raised_at)
-        if time.monotonic() - quiet_since < _STOP_QUIET_SECONDS:
-            return False  # first, so nothing below is read while the window is still open
-        workspace = resolved_settings.workspace_root
-        if say_pending(say_path(workspace)) or _nudge_pending():
-            return False
-        if busy_elsewhere(busy_path(workspace)):
-            return False
-        session = _load_current_session()
-        if session is None:
-            return False
-        if str(getattr(session, "loop_skill", "") or "").strip():
-            return False
-        if getattr(session, "pending_wakeup", None) is not None:
-            return False
-        return all(task.notified for task in BackgroundTasks(session).records())
-
     def _keep_beating() -> bool:
         """Whether the say consumer gets another beat.
 
-        THE DEFECT THIS EXISTS FOR (measured on two live dev vessels): raising a
-        framework stop writes signals the framework reads at the TOP of its next
-        beat (Phase -1.4). Setting `run_stopping` in the same breath ended the loop
-        before that beat could happen, so the framework NEVER read the signal it had
-        just been sent -- the stop signal landed, but the consolidation artifacts
-        never appeared, and the vessel died at grace expiry with no consolidation.
-        The served process IS the framework's only reader
-        (`zakcode-serve.service` runs one unit), so stopping the beat removes the
-        reader.
-
-        While a raise is in flight we therefore keep beating, bounded BOTH ways: the
-        mind's own sign-off ends the wait early, and the grace ends it at all. A
-        wedged mind can never hold a paid vessel open -- which is why the grace is
-        checked FIRST and the filesystem read only after.
-
-        A THIRD BOUND: the wait also ends when nothing could still read the stop and
-        the mind has been quiet for `_STOP_QUIET_SECONDS` (`_stop_has_no_reader`). The grace
-        stays the outer bound; this only stops a paid vessel waiting out all of it for a mind
-        with no turn, no loop to re-enter and no wake-up.
+        While the ending window is open we keep beating, bounded BOTH ways: the DONE check
+        (the line taken, its turn completed, nothing in flight) ends the wait early, and the
+        window ends it at all. A wedged mind can never hold a paid vessel open, which is why
+        the window is checked FIRST. With no window open the consumer beats until a stop is
+        requested.
         """
-        nonlocal framework_stop_quiet_ended
-        # Host-neutral ending (run_stop_message): the DONE check replaces the
-        # filesystem read the legacy path uses.
         if run_ending_until is not None:
             if time.monotonic() >= run_ending_until:
                 return False
             return not run_ending_done
-        if framework_stop_until is not None:
-            if time.monotonic() >= framework_stop_until:
-                return False
-            if framework_stop_complete(
-                resolved_settings.workspace_root, resolved_settings.run_stop_agent or ""
-            ):
-                return False
-            if _stop_has_no_reader():
-                framework_stop_quiet_ended = True
-                return False
-            return True
         return not run_stopping.is_set()
-
-    def _retire_quiet_framework_stop() -> None:
-        """The wait ended at the quiet window, not at the grace: say so, then retire the pair.
-
-        Not `_retire_unconsumed_framework_stop`: its three verdict lines describe a spent
-        grace ("still working when the grace ran out", "the whole grace was spent"), and
-        neither is true here. SEEN is still reported, as an observation only.
-        """
-        agent = resolved_settings.run_stop_agent or ""
-        logger.warning(
-            "framework stop wait ended early: nothing can read it (no turn in flight, no loop "
-            "re-entry, no wake-up, no background command) and the mind has been quiet for "
-            "%.0fs of a %.0fs grace (SEEN=%s) — the run ends as it does at the grace's end",
-            _STOP_QUIET_SECONDS,
-            _framework_stop_grace(),
-            framework_stop_seen(resolved_settings.workspace_root, agent),
-        )
-        abandon_framework_stop(resolved_settings.workspace_root, agent)
-
-    def _retire_unconsumed_framework_stop() -> None:
-        """Both overrun branches below mean the same thing: the grace is spent and the
-        framework never consumed the stop. Retire the pair here rather than at either
-        call site so the two endings cannot drift.
-
-        REPORT SEEN-vs-DONE BEFORE RETIRING. Until this, every overrun looked identical
-        in serve.log: the reserve was spent and nothing said whether the framework had
-        even been TOLD. `framework_stop_complete` answers DONE and is already the wait's
-        bound; `framework_stop_seen` answers SEEN, so an unacknowledged raise is REPORTED
-        instead of silently consuming the whole reserve.
-
-        REPORT ONLY -- deliberately NOT a new ending or a new number. A never-seen stamp is
-        four-way ambiguous (see `framework_stop_seen`), so acting on it would end paid runs
-        on an ambiguity; and the remedy for an overrun is never a bigger fixed reserve,
-        which is a bet against an unbounded tail and moves the raise earlier into /start's
-        own clear. Logged here, at the one chokepoint all three overrun paths already share.
-        """
-        agent = resolved_settings.run_stop_agent or ""
-        seen = framework_stop_seen(resolved_settings.workspace_root, agent)
-        if seen is True:
-            logger.warning(
-                "framework stop SEEN but NOT COMPLETED: the mind read the raise and was "
-                "still working when the grace ran out — the reserve went to a real ending "
-                "that needed longer, not to silence"
-            )
-        elif seen is False:
-            logger.warning(
-                "framework stop RAISED BUT NEVER SEEN: no stop-surface stamp at or after "
-                "the raise, so the whole grace was spent without the mind being reached. "
-                "ABSENCE IS AMBIGUOUS (no Bash tool call since the raise / a worker Body / "
-                "a reader session / the hook failing open) — this is a REPORT, not a "
-                "verdict that the mind ignored its stop"
-            )
-        else:
-            logger.warning(
-                "framework stop unconsumed and SEEN is UNKNOWABLE (no parseable signed "
-                "raise time for agent %r) — reporting the overrun without a seen-vs-done "
-                "verdict rather than guessing one",
-                agent,
-            )
-        abandon_framework_stop(resolved_settings.workspace_root, agent)
 
     async def _watch_turn_deadline() -> None:
         """Raise the workspace interrupt on a turn still running when the run's time is up.
@@ -3908,7 +3648,7 @@ def create_app(
         slot, so this tick is the only thing awake to put the line back inside the window.
 
         It also NAMES the ending, at the moment the clock raises it. The between-beats
-        check below cannot be the only namer: a framework that signs off INSIDE the
+        check below cannot be the only namer: a mind that signs off INSIDE the
         raising turn leaves `_keep_beating()` False when that turn lands back, so the
         loop leaves through its `while` guard without another beat, and the fall-through
         named the clock's ending `stopped` — a human's stop, which the host does not end
@@ -3918,21 +3658,22 @@ def create_app(
         its own reason when the cap lands inside that window.
 
         ONE STOP WINDOW BOUNDS EVERY TURN IN IT (measured on a live dev vessel).
-        Once a framework stop is raised — by the cap or by ``/run/stop`` — whatever turn
-        is still running when its window closes gets the interrupt. This used to watch
-        only the turn in flight at the cap, and returned when THAT turn ended; but the
-        loop keeps beating inside the window, so the next say started a turn nothing
-        watched. Measured: the cap raised the stop inside the framework's boot turn,
-        that turn ended inside the window, a re-issued ``/start`` began a second turn
-        42s before the window closed, and that turn was still running 123s after it
-        closed; the host tore the vessel down with no run end ever reported. A
-        ``/run/stop`` window on a capless run had no watcher at all.
+        Once the ending begins — by the cap or by ``/run/stop`` — whatever turn is still
+        running when its window closes gets the interrupt. This used to watch only the
+        turn in flight at the cap, and returned when THAT turn ended; but the loop keeps
+        beating inside the window, so the next say started a turn nothing watched.
+        Measured: the cap began the ending inside the boot turn, that turn ended inside
+        the window, a re-issued ``/start`` began a second turn 42s before the window
+        closed, and that turn was still running 123s after it closed; the host tore the
+        vessel down with no run end ever reported. A ``/run/stop`` window on a capless
+        run had no watcher at all.
 
         The window is SHARED, never restarted: a cap landing inside a ``/run/stop``
         window cannot buy the turn a second grace. A ZERO-length window bounds nothing
         by itself — ``/run/stop`` with no reserve leaves the in-flight turn to finish,
-        as a non-seed run does — but the cap is a hard ceiling, so a cap with no window
-        open, or with its window spent, interrupts at once, as it always has.
+        as a run with no configured ending does — but the cap is a hard ceiling, so a cap
+        with no window open, or with its window spent, interrupts at once, as it always
+        has.
         """
         nonlocal run_stop_reason
         while True:
@@ -3945,37 +3686,25 @@ def create_app(
             _retry_run_ending_write()
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
-            # Host-neutral ending: check overrun.
+            # The ending: check overrun.
             if (
                 run_ending_until is not None
-                and _framework_stop_grace() > 0
+                and _ending_grace() > 0
                 and time.monotonic() >= run_ending_until
             ):
                 taken = "taken" if run_ending_taken else "never taken"
                 logger.warning(
                     "run ending ran past its %.0fs window (%s) — interrupting the running turn",
-                    _framework_stop_grace(),
+                    _ending_grace(),
                     taken,
                 )
                 _abandon_run_ending()
                 request_interrupt(interrupt_path(resolved_settings.workspace_root))
                 return
-            if (
-                framework_stop_until is not None
-                and _framework_stop_grace() > 0
-                and time.monotonic() >= framework_stop_until
-            ):
-                logger.warning(
-                    "framework stop overran its %.0fs window — interrupting the running turn",
-                    _framework_stop_grace(),
-                )
-                _retire_unconsumed_framework_stop()
-                request_interrupt(interrupt_path(resolved_settings.workspace_root))
-                return
         if run_stop_reason is None:
             run_stop_reason = "duration_cap"
-        await _begin_graceful_ending()
-        ending_until = run_ending_until or framework_stop_until
+        _begin_graceful_ending()
+        ending_until = run_ending_until
         if ending_until is not None:
             # The mind is now ending itself. Keep watching, but only to BOUND it: the
             # interrupt stops being the ending and becomes the backstop for an overrun.
@@ -3991,13 +3720,9 @@ def create_app(
                     # The cap's own first write can have been refused too, and the beat loop
                     # is parked awaiting this turn just the same (ADR-0347).
                     _retry_run_ending_write()
-            if run_ending_until is not None:
-                taken = "taken" if run_ending_taken else "never taken"
-                logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
-                _abandon_run_ending()
-            else:
-                logger.warning("run cap: framework stop overran its window — interrupting")
-                _retire_unconsumed_framework_stop()
+            taken = "taken" if run_ending_taken else "never taken"
+            logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
+            _abandon_run_ending()
         else:
             logger.info("run cap reached mid-turn: interrupting")
         request_interrupt(interrupt_path(resolved_settings.workspace_root))
@@ -4036,13 +3761,12 @@ def create_app(
                 if turn_deadline is not None and time.monotonic() >= turn_deadline:
                     run_stop_reason = "duration_cap"
                     # The cap can land BETWEEN beats, where the mid-turn watcher never
-                    # fires (it skips whenever nothing is `inflight`), so the raise has
-                    # to happen here too or the cap path ends with no graceful stop at
+                    # fires (it skips whenever nothing is `inflight`), so the ending has
+                    # to begin here too or the cap path ends with no graceful stop at
                     # all. Idempotent when the watcher already opened the window.
-                    await _begin_graceful_ending()
-                    # No window (not a framework seed, or the raise failed) => the
-                    # ending is exactly what it was before this change: break now.
-                    if not _any_ending_window_open() or not _keep_beating():
+                    _begin_graceful_ending()
+                    # No window (no ending configured) => nothing to wait for: break now.
+                    if not _ending_window_open() or not _keep_beating():
                         break
                 # The ABANDONED case, which the cap above cannot bound: a member who
                 # walks away mid-conversation pays the full price they agreed to for a
@@ -4063,8 +3787,8 @@ def create_app(
                         resolved_settings.run_idle_timeout,
                     )
                     run_stop_reason = "idle"
-                    await _begin_graceful_ending()
-                    if not _any_ending_window_open() or not _keep_beating():
+                    _begin_graceful_ending()
+                    if not _ending_window_open() or not _keep_beating():
                         break
                 try:
                     ran = await _consume_one_say()
@@ -4078,7 +3802,7 @@ def create_app(
                     # beat interval already keys on, so the idle window and the beat
                     # cadence can never disagree about what counts as activity.
                     last_say_at = time.monotonic()
-                # Host-neutral ending: retry the say write if the slot was busy, and
+                # The ending: retry the say write if the slot was busy, and
                 # check SEEN/DONE after each beat whether a turn ran or not.
                 if run_ending_until is not None:
                     _retry_run_ending_write()
@@ -4094,17 +3818,11 @@ def create_app(
             # depend on it. `cancel()` alone suffices — the watcher is suspended in its
             # sleep, so it can never reach the fire branch again.
             deadline_watcher.cancel()
-            # The window closed with the pair still on disk and NO turn to interrupt —
-            # the third orphan path: the watcher's two overrun branches retire
-            # the pair only when a turn was running as the grace ran out. Measured on
-            # prod 2026-09-18: loop at rest, stop signed 02:33:29Z, window closed
-            # 02:39:20Z, the signed pair still on EFS after the vessel was torn down.
+            # The window closed with the line still in the inbox and NO turn to interrupt —
+            # the third orphan path: the watcher's overrun branches retract the line
+            # only when a turn was running as the grace ran out.
             if run_ending_until is not None and time.monotonic() >= run_ending_until:
                 _abandon_run_ending()
-            if framework_stop_quiet_ended:
-                _retire_quiet_framework_stop()
-            elif framework_stop_until is not None and time.monotonic() >= framework_stop_until:
-                _retire_unconsumed_framework_stop()
         if run_stop_reason is None:
             # Fell out of the `while` guard rather than the `break`: an explicit stop.
             # A human ending the run is a DIFFERENT story from the clock running out,
@@ -4124,32 +3842,23 @@ def create_app(
         # always precedes the first /sidecar/health poll — the clear cannot race the reader
         # that the incident turned on.
         kept_cap = _clear_run_stop_reason()
-        # Same reasoning one layer down: a SIGNED stop a previous sidecar raised and never
-        # retired must not open this run's /start on a stop nobody asked for — the
-        # framework keeps a signed signal without consulting time, so its lifetime is
-        # ours to end. Only a raise whose grace has already run out qualifies.
-        if resolved_settings.run_stop_agent:
-            retire_expired_sidecar_stop(
-                resolved_settings.workspace_root,
-                resolved_settings.run_stop_agent,
-                grace_s=resolved_settings.run_consolidation_reserve,
-            )
-        # Host-neutral ending: drop a pending say that holds exactly our configured
+        # Same reasoning one layer down: drop a pending say that holds exactly our configured
         # line, so a run never opens on its own ending left by a previous process.
         # A DIFFERENT pending say is kept — it is the operator's, not ours.
         if resolved_settings.run_stop_message and _retract_own_line():
             logger.info("startup: dropped a pending say equal to run_stop_message")
-        # Precedence: when both settings are present, the message wins. The agent
-        # setting alone logs a deprecation warning.
-        if resolved_settings.run_stop_agent and not resolved_settings.run_stop_message:
+        # ZAKCODE_RUN_STOP_AGENT was retired: the settings model ignores the name, so a
+        # vessel still wired with it has no ending configured. Say so rather than end its
+        # runs by the interrupt alone, in silence.
+        if os.environ.get("ZAKCODE_RUN_STOP_AGENT") and not resolved_settings.run_stop_message:
             logger.warning(
-                "run_stop_agent is deprecated and will be removed in a future release; "
-                "set run_stop_message to the host's stop command instead"
+                "ZAKCODE_RUN_STOP_AGENT is no longer read, so this run has no ending "
+                "configured; set ZAKCODE_RUN_STOP_MESSAGE to the host's stop command"
             )
         if kept_cap:
             # That run is over, and this process is its restart, not a new run. So it starts
             # ENDED: no say consumer, hence no fresh run clock, and /run/stop answers
-            # `ended` instead of raising a second framework stop on a framework that has
+            # `ended` instead of beginning a second ending on a mind that has
             # already finished its own. `on_run_end` is not called again, because it would
             # bring the process down into yet another restart.
             run_stop_reason = "duration_cap"
@@ -4235,22 +3944,17 @@ def create_app(
         """
         if (
             not resolved_settings.run_consolidation_message
-            and not resolved_settings.run_stop_agent
             and not resolved_settings.run_stop_message
             and on_run_end is None
         ):
             return 0.0
-        # `run_stop_agent` / `run_stop_message` earns the reserve for the same reason a
-        # digest turn does, and it is the SAME seconds: the reserve was always the budget
-        # for "the ending".  Omitting it here would arm a graceful stop and then cancel
-        # the loop before it could finish — the severed ending, reintroduced one layer down.
+        # `run_stop_message` earns the reserve for the same reason a digest turn does, and it
+        # is the SAME seconds: the reserve was always the budget for "the ending".  Omitting
+        # it here would arm a graceful stop and then cancel the loop before it could finish
+        # — the severed ending, reintroduced one layer down.
         reserve = (
             resolved_settings.run_consolidation_reserve
-            if (
-                resolved_settings.run_consolidation_message
-                or resolved_settings.run_stop_agent
-                or resolved_settings.run_stop_message
-            )
+            if (resolved_settings.run_consolidation_message or resolved_settings.run_stop_message)
             else 0.0
         )
         return _IDLE_BEAT_SECONDS + reserve
@@ -4277,7 +3981,7 @@ def create_app(
         """
         run_stopping.set()
         budget = _graceful_stop_budget()
-        if budget > 0 and inflight and not run_ended.is_set() and not _any_ending_window_open():
+        if budget > 0 and inflight and not run_ended.is_set() and not _ending_window_open():
             logger.warning(
                 "stop with a turn in flight and no ending window open: interrupting it "
                 "(waiting at most %.0fs for the loop to wind down)",
@@ -4319,10 +4023,10 @@ def create_app(
             return {"stopping": False, "ended": True, "reason": run_stop_reason}
         if not run_stopping.is_set():
             run_stop_reason = reason
-            # A human ending the run IS the framework's /stop. Raise it before the loop
+            # A human ending the run IS the host's stop. Begin it before the loop
             # winds down so the mind consolidates and hands off, rather than being
             # cancelled mid-thought; `_graceful_stop_budget` holds the door for it.
-            await _begin_graceful_ending()
+            _begin_graceful_ending()
             run_stopping.set()
         return {"stopping": True, "reason": run_stop_reason}
 

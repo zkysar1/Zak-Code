@@ -665,32 +665,20 @@ class Settings(BaseSettings):
         ),
     )
     # The ending belongs to the host framework, not to us (ADR-0047 / Vinheim ruling): this
-    # conductor decides WHEN a run ends, never WHAT the agent does at the end. When the
-    # workspace is a framework seed, naming its agent here makes the run's ending the
-    # framework's OWN graceful stop — consolidate, handoff, drop to `assistant`, IDLE —
-    # raised through the sanctioned external-caller shape (see
-    # `zakcode.session.framework_stop`). The digest turn is then redundant AND wrong: it
-    # is an injected prompt, which the ruling forbids.
+    # conductor decides WHEN a run ends, never WHAT the agent does at the end. The host's
+    # OWN graceful stop is delivered as input through the say inbox (ADR-0264), so no
+    # subprocess, signal file or session layout is assumed. The digest turn is then
+    # redundant AND wrong: it is an injected prompt, which the ruling forbids.
     #
-    # This is an ADDRESS, not a policy knob: without the agent name there is no session
-    # dir to signal. None = no framework stop is raised and the ending is exactly what it
-    # was before — the interrupt backstop — so a non-seed workspace is untouched.
-    run_stop_agent: str | None = Field(
-        default=None,
-        description=(
-            "Framework agent whose own graceful stop ends the run (a seed workspace's "
-            "agents/<name>/); None = raise no framework stop, interrupt as before."
-        ),
-    )
-    # The host-neutral ending (ADR-0264): delivering the ending as input through the say
-    # inbox so no subprocess, signal file or agent-session layout is assumed.  Replaces
-    # `run_stop_agent` one-for-one.  When BOTH are set, this wins; when only the agent
-    # setting is present a deprecation warning is logged at startup.
+    # None = no line is queued and the run ends as one with no ending does: the cap
+    # interrupts a turn in flight at its deadline, and /run/stop lets that turn finish. The
+    # setting this replaced, ZAKCODE_RUN_STOP_AGENT, is inert via extra="ignore"; the server
+    # logs a warning at startup while it is still set and no line is.
     run_stop_message: str | None = Field(
         default=None,
         description=(
             "Line delivered to the session as operator input when the run starts to end; "
-            "None = raise no message, interrupt as before."
+            "None = queue no line (the cap still interrupts a turn in flight at its deadline)."
         ),
     )
     # There is deliberately NO turn-end veto budget (removed 2026-08-25, no-knobs

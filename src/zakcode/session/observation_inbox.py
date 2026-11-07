@@ -84,13 +84,6 @@ KIND_FAREWELL = "farewell"
 #: next round repays; a spurious one costs the sleep itself.
 WAKING_KINDS = frozenset({KIND_CHANGE, KIND_FAREWELL})
 
-#: The framework session signal a waking envelope (a change or a farewell) raises. The host's
-#: sleep script polls it as a BLOCKER-class wake — a change to the resident's OWN world is the
-#: opposite of partner activity, so it is never demoted during quiescence. The host side
-#: already accepts this name (its session signal registry and the sleep loop's poll); this
-#: module is the WRITER that was missing.
-PERCEPTION_RECEIVED_SIGNAL = "perception-received"
-
 
 def observation_path(workspace_root: str | os.PathLike[str]) -> Path:
     """The observation-inbox file for a workspace."""
