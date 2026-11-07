@@ -23418,10 +23418,12 @@ errors, and an echo succeeds.
 What was measured, before building. Ten served worker sessions, one 35B-class local model, read from
 each session's own transcript (tool names, times, command heads only), 24 h to 2026-11-07. One
 session sent 149 such calls in a row, `echo "NEXT3"`, `echo "NEXT4"` and so on, one every 3 s, for
-7 min 41 s, and stopped only when an operator interrupted it. Nothing else bounded it. The calls
-before the run were ordinary work, then 4 min 35 s with no call, then the first echo, and no plan
-refusal came between them, so why it started is not measured. Across all ten sessions, 7,723
-completions: 164 such calls, and no other run of them longer than 2. Runs that MIX a print with
+7 min 41 s, and stopped only when an operator interrupted it. Nothing else bounded it. Just before
+the run the model ended a reply on text and the host's turn-end hook told it to make its next action
+a tool call. That hook fired 293 times in the 24 h: 249 went on to work and 4 to a bare echo, so it is
+no cause by itself, and why this session had no step to take is not measured. Across all ten sessions,
+7,723 completions: 164 such calls, and no other run of them longer than 2. No turn-end veto sat
+between the calls of the run, so a count that a veto resets would have seen all of it. Runs that MIX a print with
 plan calls do occur in ordinary work: `lpp`, `llp`, `plpp`, `lllllpl`.
 
 Decision.
@@ -23445,9 +23447,8 @@ Decision.
 - Digit-normalizing the doom guard's signature was rejected. Paged reads differ only in digits, so
   three pages in a row would end a turn.
 
-Not done. The cause. The first strings read like narration (`RESUMING_...`, `NEXT_ACTION_TOOL_CALL`),
-which fits a model told never to end a turn on text, but that is inferred, not verified. `printf`,
-`true` and `:` are not counted: none was measured. A model that moves to them walks past this bound.
+Not done. `printf`, `true` and `:` are not counted: none was measured. A model that moves to them
+walks past this bound.
 
 The proof. `tests/test_print_only_bound.py` pins the third print refused though every string differs;
 what counts and what does not, command by command; every shell tool and no other; a print beside
