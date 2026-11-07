@@ -23,6 +23,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from zakcode.additional_directories import load_additional_directories
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import Compactor
 from zakcode.agent.loop import (
@@ -969,6 +970,12 @@ class Agent:
         # world/ INSIDE the repo (measured in the field, 2026-08-25: scripts written
         # to a divergent copy the framework never reads). Structural, no config.
         computed_extra_roots.extend(_mind_external_roots(Path(self.settings.workspace_root)))
+        # Claude Code's permissions.additionalDirectories (ADR-0375): the workspace's own settings
+        # files name directories the file tools may reach, the grant --extra-root makes by flag.
+        _added_dirs, _added_errs = load_additional_directories(Path(self.settings.workspace_root))
+        for _key, _err in _added_errs.items():
+            logger.warning("%s: %s", _key, _err)
+        computed_extra_roots.extend(_added_dirs)
 
         # Build the shared budget when delegation is on (its original reason) OR when an
         # optional cost/token ceiling is configured (parity #4) — so a single non-delegating
