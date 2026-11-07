@@ -23403,3 +23403,55 @@ first ask, held to its line, counted and said; one with too little left, or that
 tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
 over its line held to it, a failed condensing ask included; the note, and what strips it; and the
 order in all three closes. 23 mutations, one a behaviour, each fail the file.
+
+## ADR-0373: a run of completions that only print is bounded, as a run of plan-only ones is
+
+Status: accepted. 2026-11-07. The sibling of ADR-0364, on its path and its ladder, and held to
+ADR-0198 (a rail says only what was counted).
+
+Context. A shell call whose whole command is one `echo` of literal words reads nothing and changes
+nothing. A model that sends them one after another makes no progress and no net sees it. The doom
+guard needs a byte-identical batch, and each string can differ. The outcome signal of ADR-0038
+skips outputs under 24 characters, and a counter never repeats anyway. The other signals key on
+errors, and an echo succeeds.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model, read from
+each session's own transcript (tool names, times, command heads only), 24 h to 2026-11-07. One
+session sent 149 such calls in a row, `echo "NEXT3"`, `echo "NEXT4"` and so on, one every 3 s, for
+7 min 41 s, and stopped only when an operator interrupted it. Nothing else bounded it. The calls
+before the run were ordinary work, then 4 min 35 s with no call, then the first echo, and no plan
+refusal came between them, so why it started is not measured. Across all ten sessions, 7,723
+completions: 164 such calls, and no other run of them longer than 2. Runs that MIX a print with
+plan calls do occur in ordinary work: `lpp`, `llp`, `plpp`, `lllllpl`.
+
+Decision.
+- The stuck tracker counts the print-only completions in a row: every call is one of the loop's shell
+  tools (`_SHELL_TOOLS`), and its whole command is `echo` then literal words. A
+  word holding an expansion, a substitution, an escape, a glob, a pipe, a redirect, a separator or a
+  comment is not literal, so `echo $HOME` and `echo a > f` are work.
+- That count is apart from ADR-0364's. A print ends a plan-only run as any other call does, and a
+  plan call ends a print-only run, so a mixed run is refused by neither. One count over both would
+  refuse the mixed runs above, and each of those ended by itself.
+- The third such completion in a row is answered unexecuted, on both turn paths, by the path ADR-0364
+  built: an error result with `data={"plan_only_bound": True}` and the note `kind="plan_only_bound"`.
+  Its words are its own: "Not executed: this is response 3 in a row that only prints a fixed string
+  ... A print reads nothing and changes nothing. The plan's current step is <id> '<title>': do that
+  step now with a tool call that does the work, or answer in text if the work is done. A print runs
+  again once another tool has run."
+- A refusal fires `SIG_PRINT_ONLY` alone and drives the ladder one rung per refusal after the first,
+  as a plan-only refusal does: a nudge at the 4th such completion, read-only tools at the 5th, the
+  step back at the 6th, a stop at the 7th. The nudge and rung 1's seeded step say what was counted,
+  and that step's note now says a print does not finish it.
+- Digit-normalizing the doom guard's signature was rejected. Paged reads differ only in digits, so
+  three pages in a row would end a turn.
+
+Not done. The cause. The first strings read like narration (`RESUMING_...`, `NEXT_ACTION_TOOL_CALL`),
+which fits a model told never to end a turn on text, but that is inferred, not verified. `printf`,
+`true` and `:` are not counted: none was measured. A model that moves to them walks past this bound.
+
+The proof. `tests/test_print_only_bound.py` pins the third print refused though every string differs;
+what counts and what does not, command by command; every shell tool and no other; a print beside
+real work; a mixed run refused by neither bound; the bound inert without shell tools and cleared by a
+reset; the ladder to a stop; a plan-only refusal still told as one; and the refusal, a run to a stop
+and a print between real steps on both turn paths. 35 mutations of the predicate, the counts, the
+words and both seams each fail the file.
