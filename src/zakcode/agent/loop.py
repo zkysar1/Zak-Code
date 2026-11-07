@@ -2223,6 +2223,17 @@ _MAX_PLAN_IDLE_TURNS = 3
 #: line is part of the rail's meaning, like the gates' one-nudge-per-turn bounds.
 _PLAN_JUDGE_SILENCE = 0.8
 
+#: What the plan line says right after a response that only updated the plan (ADR-0371). It rides
+#: last on every model call, the last thing a model reads before it writes, and "keep it current
+#: with update_plan" there turned one update into a run. Measured 2026-11-06 over 24 hours on ten
+#: worker sessions: 2,054 of 2,062 update_plan calls were alone in their response, 57.5 model hours,
+#: a third of them changed nothing, and 50 to 73 percent sat in runs with no other tool between.
+_PLAN_JUST_UPDATED = (
+    "[plan] Harness-tracked plan for the current goal. Your last response called update_plan and "
+    "nothing else. Do not call update_plan in this response: do the step marked '<- current' now "
+    "with a tool call.\n\n"
+)
+
 #: How many times the plan-first gate may withhold a mutating batch to demand a plan before the
 #: harness anchors the request itself as the plan and lets the action run (ADR-0110). On by
 #: default for DEEP work (the difficulty verdict, else the length heuristic); ``require_plan``
@@ -4578,11 +4589,21 @@ class AgentLoop:
                 f"longer shown.{ask} Answer the user's original request now — lead with the "
                 "conclusion or verdict, then the evidence the steps produced."
             )
+        undecomposed = network.undecomposed()
+        just_updated = (
+            self._last_response_only_planned()
+            and network.current() is not None
+            and not undecomposed
+        )
         body = (
-            "[plan] Harness-tracked plan for the current goal. Keep it current with the "
-            "update_plan tool: as you finish each step, mark it done (with its outcome) and "
-            f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
-            "several actions.\n\n"
+            _PLAN_JUST_UPDATED
+            if just_updated
+            else (
+                "[plan] Harness-tracked plan for the current goal. Keep it current with the "
+                "update_plan tool: as you finish each step, mark it done (with its outcome) and "
+                f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
+                "several actions.\n\n"
+            )
         )
         if request:
             body += f"Goal: {request}\n\n"
@@ -4600,7 +4621,6 @@ class AgentLoop:
         memory = self._plan_memory_lines()
         if memory:
             body += "\n\n" + "\n".join(memory)
-        undecomposed = network.undecomposed()
         if undecomposed:
             titles = ", ".join(f"{t.id} ({t.title})" for t in undecomposed[:3])
             body += (
@@ -4609,10 +4629,26 @@ class AgentLoop:
             )
         quality, deficiencies = network.quality()
         extra = [d for d in deficiencies if "not yet decomposed" not in d]
-        if extra and quality < _PLAN_JUDGE_SILENCE:
+        if extra and quality < _PLAN_JUDGE_SILENCE and not just_updated:
             # Structural quality (ADR-0050), minus the undecomposed item already noted above.
             body += f"\n\nPlan quality {round(quality * 100)}%: " + "; ".join(extra[:2]) + "."
         return Message.user(body)
+
+    def _last_response_only_planned(self) -> bool:
+        """Whether the model's last response called update_plan and nothing else (ADR-0371).
+
+        Only while nothing has spoken since. A new turn, an operator's mid-task note, a
+        perception or a hook after that response is input the model has not answered, and "do
+        the step now" would talk over it. The harness's own ``[harness]`` rails do not count: the
+        next section of a paged skill arrives as one right after the update that closed a section.
+        """
+        for message in reversed(self.session.messages):
+            if message.role == "assistant":
+                uses = message.tool_uses
+                return bool(uses) and all(use.name == "update_plan" for use in uses)
+            if message.role == "user" and not message.text.startswith("[harness]"):
+                return False
+        return False
 
     def _plan_memory_lines(self) -> list[str]:
         """The plan's short-term memory beside the checklist (ADR-0110).
