@@ -329,6 +329,11 @@ class ToolContext(BaseModel):
     #: wires it when ``enable_rules``; ``None`` otherwise, so the tool returns a clean
     #: "rules not enabled" error rather than crashing.
     rule_registry: Any | None = None
+    #: True when a tool result still in the conversation holds exactly this text (ADR-0372). The
+    #: ``read_rule`` tool answers a repeat with a pointer only then, so nothing has to be reset
+    #: when a compaction or an elision takes the body away. ``None`` (a bare context) always
+    #: delivers.
+    in_context: Callable[[str], bool] | None = None
     #: The loop's :class:`ToolRegistry`, so the bash tool can recognise a registered tool
     #: written as a shell command (``ScheduleWakeup(prompt=…)``) and refuse it with the
     #: tool's real name and parameters instead of running it into a syntax error

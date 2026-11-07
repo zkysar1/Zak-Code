@@ -33,6 +33,14 @@ from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, 
 #: turn's context. Truncation is announced in the output rather than silent.
 MAX_RULE_BODY_CHARS = 16000
 
+#: The answer to a repeat of a rule whose text is still in the conversation (ADR-0372), given at
+#: most once per rule while it stays there: a read after it returns the body.
+ALREADY_READ = (
+    "[already read] Rule {name!r} is in your context from an earlier read_rule call, unchanged. "
+    "Apply it from there. If you need the text itself, read it again: a read after this line "
+    "returns it in full."
+)
+
 
 class ReadRuleTool(Tool):
     """Return one rule's full body by name, from the session's discovered rule registry."""
@@ -100,4 +108,11 @@ class ReadRuleTool(Tool):
             )
         if len(body) > MAX_RULE_BODY_CHARS:
             body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
-        return ToolResult.ok(f"# {name}\n{body}", verbatim=True)  # instructions, never clamped
+        text = f"# {name}\n{body}"
+        pointer = ALREADY_READ.format(name=name)
+        in_context = getattr(ctx, "in_context", None)
+        # Once per rule: a session that asks again after the pointer wants the text, and answering
+        # it with the pointer again kept it asking until the doom-loop guard refused (ADR-0372).
+        if in_context is not None and in_context(text) and not in_context(pointer):
+            return ToolResult.ok(pointer)
+        return ToolResult.ok(text, verbatim=True)  # instructions, never clamped
