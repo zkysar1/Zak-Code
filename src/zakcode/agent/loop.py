@@ -11868,9 +11868,9 @@ class AgentLoop:
                 result_blocks: list[ToolResultBlock] = []
                 # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
                 # completion in a row is answered unexecuted, and its refusals feed the ladder.
-                plan_only_refused = stuck.refuses_plan_only(
+                plan_only_refused = stuck.refuses_plan_only(tool_calls) or stuck.refuses_print_only(
                     tool_calls
-                ) or stuck.refuses_print_only(tool_calls)
+                )
                 refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
                 for index, call in enumerate(tool_calls):
                     yield AgentToolCall(id=call.id, name=call.name, arguments=call.arguments)

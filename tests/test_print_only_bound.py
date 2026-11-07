@@ -127,7 +127,10 @@ def test_a_print_beside_real_work_in_one_completion_is_no_print_only_completion(
     tracker = _tracker()
     _print(tracker, 1)
     _print(tracker, 2)
-    mixed = [*_bash('echo "NEXT3"', 3), ToolCall(id="r1", name="read_file", arguments={"path": "x"})]
+    mixed = [
+        *_bash('echo "NEXT3"', 3),
+        ToolCall(id="r1", name="read_file", arguments={"path": "x"}),
+    ]
     assert not tracker.refuses_print_only(mixed)
     _ran(tracker, mixed)
     assert tracker.print_only_run == 0
