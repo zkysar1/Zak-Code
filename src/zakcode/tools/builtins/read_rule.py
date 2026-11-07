@@ -108,7 +108,9 @@ class ReadRuleTool(Tool):
             )
         if len(body) > MAX_RULE_BODY_CHARS:
             body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
-        text = f"# {name}\n{body}"
+        # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
+        # disk is a prefix of the older text, and without it the check below read that as unchanged.
+        text = f"# {name}\n{body}\n[end of rule {name!r}]"
         pointer = ALREADY_READ.format(name=name)
         in_context = getattr(ctx, "in_context", None)
         # Once per rule: a session that asks again after the pointer wants the text, and answering
