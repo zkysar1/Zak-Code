@@ -159,7 +159,8 @@ def _results(agent: Agent) -> list[tuple[bool, str]]:
 
 async def test_a_declared_directory_opens_to_read_write_and_edit(ws: Path, tmp_path: Path) -> None:
     ext = _dir(tmp_path, "external")
-    (ext / "note.md").write_text("one\n", encoding="utf-8")
+    # bytes, not write_text: that writes \r\n on Windows, and Edit keeps the bytes it reads
+    (ext / "note.md").write_bytes(b"one\n")
     _declare(ws, [str(ext)])
     agent = _agent(
         ws,
