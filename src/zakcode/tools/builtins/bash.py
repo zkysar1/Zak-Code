@@ -590,7 +590,7 @@ _ENOENT_RES = (
         r"((?:[A-Za-z]:)?(?:[/\\~.][^\n:'\"]*|[^\s:'\"]+)): No such file or directory"
     ),
     # the same frame with the path QUOTED — newer coreutils (Git Bash on Windows CI, 2026-08-29:
-    # `cat: 'C:/Users/.../forged-skills.yaml': No such file or directory`)
+    # `cat: 'C:/Users/.../notes.yaml': No such file or directory`)
     re.compile(r"(?m)^[\w.\-/]+: '([^']+)': No such file or directory"),
 )
 #: Names that are never a file the model meant: stdin markers and apport's `-c` artefact.
