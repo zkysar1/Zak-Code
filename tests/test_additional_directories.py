@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,33 +94,149 @@ def test_a_malformed_value_is_reported_and_the_rest_still_applies(ws: Path, tmp_
     _declare(ws, [7, "  ", str(ext)])
     roots, errors = load_additional_directories(ws)
     assert roots == [ext.resolve()]
+    bad = "not a path string; skipped"
     assert errors == {
-        "settings.json:permissions.additionalDirectories[0]": "not a path string; skipped",
-        "settings.json:permissions.additionalDirectories[1]": "not a path string; skipped",
+        ".claude/settings.json:permissions.additionalDirectories[0]": bad,
+        ".claude/settings.json:permissions.additionalDirectories[1]": bad,
     }
 
     _declare(ws, "not-a-list", file=".zakcode/settings.json")
     _, errors = load_additional_directories(ws)
-    assert errors["settings.json:permissions.additionalDirectories"] == (
+    assert errors[".zakcode/settings.json:permissions.additionalDirectories"] == (
         "expected a list of paths, got str; skipped"
     )
 
 
-def test_a_file_that_does_not_parse_is_skipped_without_an_error_of_its_own(
-    ws: Path, tmp_path: Path
+def test_two_files_with_a_bad_value_each_are_both_reported(ws: Path) -> None:
+    # .claude/settings.json and .zakcode/settings.json share a file name: the label carries the
+    # directory, so a bad value at the same position in each is two reports and not one
+    _declare(ws, [3], file=".claude/settings.json")
+    _declare(ws, [4], file=".zakcode/settings.json")
+    _, errors = load_additional_directories(ws)
+    bad = "not a path string; skipped"
+    assert errors == {
+        ".claude/settings.json:permissions.additionalDirectories[0]": bad,
+        ".zakcode/settings.json:permissions.additionalDirectories[0]": bad,
+    }
+
+
+@pytest.mark.parametrize("entry", ["a\x00b", "x" * 300], ids=["embedded-NUL", "over-long-name"])
+def test_an_entry_the_platform_rejects_grants_nothing_and_does_not_raise(
+    ws: Path, tmp_path: Path, entry: str
 ) -> None:
-    # the hook and permission loaders report an unreadable file; a third report would be noise
+    # Path.resolve() raises ValueError on an embedded NUL and is_dir() raises OSError on an
+    # over-long name (Python 3.11, 3.12); the Agent is built with this result, so neither may
+    # escape. The valid entry beside it still applies: the loop went on.
+    ext = _dir(tmp_path, "external")
+    _declare(ws, [entry, str(ext)])
+    assert load_additional_directories(ws) == ([ext.resolve()], {})
+
+
+def test_a_network_path_grants_nothing_and_is_never_looked_up(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Looking up a UNC path contacts the host it names and, on Windows, sends that host the user's
+    # credentials, so the loader leaves it out before any filesystem call. Windows is pretended on
+    # every platform and every Path.resolve() is recorded: none may name the host.
+    ext = _dir(tmp_path, "external")
+    _declare(ws, ["\\\\unc-sentinel\\share\\dir", "//unc-sentinel/share/dir", str(ext)])
+    looked_up: list[str] = []
+    real_resolve = Path.resolve
+
+    def resolve(self: Path, strict: bool = False) -> Path:
+        looked_up.append(str(self))
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr("zakcode.additional_directories.sys", SimpleNamespace(platform="win32"))
+    assert load_additional_directories(ws) == ([ext.resolve()], {})
+    assert looked_up, "the valid entry beside the network paths was resolved"
+    assert not [seen for seen in looked_up if "unc-sentinel" in seen]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="two leading slashes are a UNC path there")
+def test_a_double_leading_slash_is_an_ordinary_path_off_windows(ws: Path, tmp_path: Path) -> None:
+    ext = _dir(tmp_path, "external")
+    _declare(ws, ["/" + str(ext)])
+    assert load_additional_directories(ws) == ([ext.resolve()], {})
+
+
+def test_a_parent_the_process_cannot_enter_grants_nothing_and_does_not_raise(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Below a directory the user cannot enter, is_dir() raises PermissionError where a missing
+    # directory says False. Patched, so the case holds as root and on Windows as well.
+    ext, locked = _dir(tmp_path, "external"), _dir(tmp_path, "locked")
+    _declare(ws, [str(locked), str(ext)])
+    real_is_dir = Path.is_dir
+
+    def is_dir(self: Path) -> bool:
+        if self == locked.resolve():
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    assert load_additional_directories(ws) == ([ext.resolve()], {})
+
+
+def test_a_settings_directory_the_process_cannot_enter_is_skipped(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # In a directory the user cannot enter, Path.is_file() raises PermissionError. The hook loader
+    # guards it and the agent still starts; this loader must start it too.
+    ext = _dir(tmp_path, "external")
+    _declare(ws, [str(ext)])
+    assert load_additional_directories(ws) == ([ext.resolve()], {})  # the file is readable
+
+    def denied(self: Path) -> bool:
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "is_file", denied)
+    assert load_additional_directories(ws) == ([], {})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"{not json",
+        b'{"permissions": {"additionalDirectories": ["\xff\xfe"]}}',
+        b'{"permissions": {"additionalDirectories": [' + b"9" * 5000 + b"]}}",
+        b"[" * 100_000,
+    ],
+    ids=["not-json", "not-utf-8", "huge-integer", "deep-nesting"],
+)
+def test_a_file_that_cannot_be_decoded_is_skipped_without_an_error_of_its_own(
+    ws: Path, tmp_path: Path, payload: bytes
+) -> None:
+    # The hook and permission loaders report an unreadable file; a third report would be noise.
+    # json.loads raises a plain ValueError for an integer of more than 4300 digits and a
+    # RecursionError for deep nesting, neither of them a JSONDecodeError; the Agent is built with
+    # this result, so neither may escape. The entry in the next file still applies.
     ext = _dir(tmp_path, "external")
     (ws / ".claude").mkdir()
-    (ws / ".claude" / "settings.json").write_text("{not json", encoding="utf-8")
+    (ws / ".claude" / "settings.json").write_bytes(payload)
     _declare(ws, [str(ext)], file=".zakcode/settings.json")
     assert load_additional_directories(ws) == ([ext.resolve()], {})
 
 
 @pytest.mark.parametrize(
     "document",
-    [{}, {"permissions": {}}, {"permissions": {"allow": ["Bash"]}}, {"permissions": []}, []],
-    ids=["empty", "no-keys", "other-keys", "permissions-not-an-object", "not-an-object"],
+    [
+        {},
+        {"permissions": {}},
+        {"permissions": {"allow": ["Bash"]}},
+        {"permissions": {"additionalDirectories": None}},
+        {"permissions": []},
+        [],
+    ],
+    ids=[
+        "empty",
+        "no-keys",
+        "other-keys",
+        "key-is-null",
+        "permissions-not-an-object",
+        "not-an-object",
+    ],
 )
 def test_a_file_without_the_key_declares_nothing(ws: Path, document: object) -> None:
     (ws / ".claude").mkdir()
@@ -218,7 +336,7 @@ def test_a_malformed_value_is_logged_once_with_its_position(
         _agent(ws, [reply("hi")])
     lines = [r.getMessage() for r in caplog.records if "additionalDirectories" in r.getMessage()]
     assert lines == [
-        "settings.json:permissions.additionalDirectories[0]: not a path string; skipped"
+        ".claude/settings.json:permissions.additionalDirectories[0]: not a path string; skipped"
     ]
 
 
@@ -244,11 +362,23 @@ async def test_the_protected_path_floor_binds_inside_an_added_directory(
 ) -> None:
     ext = _dir(tmp_path, "external")
     (ext / ".env").write_text("TOKEN=hunter2\n", encoding="utf-8")
+    (ext / "note.md").write_text("fine\n", encoding="utf-8")
     _declare(ws, [str(ext)])
-    agent = _agent(ws, [call_tool("Read", {"path": str(ext / ".env")}, id="r"), reply("done")])
+    agent = _agent(
+        ws,
+        [
+            call_tool("Read", {"path": str(ext / "note.md")}, id="ok"),
+            call_tool("Read", {"path": str(ext / ".env")}, id="env"),
+            reply("done"),
+        ],
+    )
     await agent.arun_turn("go")
-    (is_error, output), *_ = _results(agent)
-    assert is_error and "hunter2" not in output
+    (ok_error, ok_output), (env_error, env_output), *_ = _results(agent)
+    # The control: the directory is reachable, so the refusal below is the floor and not the
+    # sandbox. Without it a `.env` outside every root reads the same refusal and the test proves
+    # nothing about the added directory.
+    assert not ok_error and "fine" in ok_output
+    assert env_error and "protected path" in env_output and "hunter2" not in env_output
 
 
 async def test_an_ingested_deny_rule_binds_inside_an_added_directory(

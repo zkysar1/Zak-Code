@@ -2,8 +2,8 @@
 
 Claude Code's ``permissions.additionalDirectories`` is an array of paths in a settings file. Each
 names a directory outside the one a session starts in that the file tools may also read and
-write. A path is taken as written when it is absolute, has a leading ``~`` expanded, and otherwise
-resolves from the directory the session runs in (here: the workspace root).
+write. Here a path is taken as written when it is absolute, has a leading ``~`` expanded, and
+otherwise resolves from the workspace root.
 
 The same grant is made on the command line by ``--extra-root`` and in code by
 ``Agent(extra_workspace_roots=...)``. All three land in one list, and every file tool judges a
@@ -17,8 +17,14 @@ live, with no trust prompt, as hooks (ADR-0025) and permission gestures (ADR-002
 Discovery is the hook loader's: ``<workspace>/.claude/settings.json``, then
 ``.claude/settings.local.json``, then ``.zakcode/settings.json``. The lists from the three are
 joined in that order, and a directory named twice counts once. A file that does not parse is
-skipped without a word here, because the hook and permission loaders already report it. A
-directory that does not exist grants nothing and is left out (logged at DEBUG).
+skipped without a word here, because the hook and permission loaders already report it; so is a
+file the process cannot read and one the JSON decoder refuses outright (an integer of thousands of
+digits, nesting thousands deep). A key that is ``null`` declares nothing, as an absent one does. A
+directory that does not exist, or that the process cannot resolve or enter (an over-long name, an
+embedded NUL, a parent it may not traverse), grants nothing and is left out (logged at DEBUG). So
+does a Windows network (UNC) path, which is not looked up at all: looking one up contacts the host
+it names and sends that host the user's credentials. The agent is constructed with this result, so
+nothing here raises.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from zakcode.hooks.settings_loader import _settings_candidates
@@ -39,18 +46,23 @@ def load_additional_directories(workspace_root: Path) -> tuple[list[Path], dict[
     """The existing directories the workspace's settings files add to the sandbox.
 
     Returns ``(roots, errors)``: ``roots`` are resolved absolute directories in read order with
-    repeats removed; ``errors`` maps ``<file>:<key>`` (or ``<file>:<key>[i]`` for one entry) to
-    the reason a value was skipped. Never raises.
+    repeats removed; ``errors`` maps ``<dir>/<file>:<key>`` (or ``<dir>/<file>:<key>[i]`` for one
+    entry, ``<dir>`` being ``.claude`` or ``.zakcode``) to the reason a value was skipped. Never
+    raises.
     """
     roots: list[Path] = []
     errors: dict[str, str] = {}
     seen: set[Path] = set()
     for settings_path in _settings_candidates(workspace_root):
-        if not settings_path.is_file():
-            continue
+        # is_file() is inside the guard, as in the hook loader: in a directory the process cannot
+        # enter it raises PermissionError, and raised here it would stop the agent starting.
         try:
+            if not settings_path.is_file():
+                continue
             data = json.loads(settings_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        except (ValueError, OSError, RecursionError):
+            # ValueError is a JSONDecodeError, a UnicodeDecodeError, and the plain ValueError json
+            # raises for an integer of more than 4300 digits; RecursionError is nesting too deep.
             continue
         permissions = data.get("permissions") if isinstance(data, dict) else None
         entries = (
@@ -58,7 +70,9 @@ def load_additional_directories(workspace_root: Path) -> tuple[list[Path], dict[
         )
         if entries is None:
             continue
-        where = f"{settings_path.name}:{_KEY}"
+        # The directory is part of the label: .claude/settings.json and .zakcode/settings.json share
+        # a file name, and two bad values at one position must not collapse into one entry.
+        where = f"{settings_path.parent.name}/{settings_path.name}:{_KEY}"
         if not isinstance(entries, list):
             errors[where] = f"expected a list of paths, got {type(entries).__name__}; skipped"
             continue
@@ -66,15 +80,26 @@ def load_additional_directories(workspace_root: Path) -> tuple[list[Path], dict[
             if not isinstance(entry, str) or not entry.strip():
                 errors[f"{where}[{index}]"] = "not a path string; skipped"
                 continue
-            path = Path(os.path.expanduser(entry.strip()))
-            if not path.is_absolute():
-                path = workspace_root / path
+            text = entry.strip()
+            if sys.platform == "win32" and text.replace("/", "\\").startswith("\\\\"):
+                # A network (UNC) path names another machine. Looking it up contacts that host and,
+                # on Windows, hands it the user's credentials, so it is left out unseen; Claude Code
+                # refuses one as a working directory for the same reason.
+                logger.debug("%s: %r is a network path; skipped", where, entry)
+                continue
             try:
+                path = Path(os.path.expanduser(text))
+                if not path.is_absolute():
+                    path = workspace_root / path
                 resolved = path.resolve()
-            except (OSError, RuntimeError):
+                is_dir = resolved.is_dir()
+            except (OSError, RuntimeError, ValueError):
+                # A name the platform rejects (over-long, an embedded NUL), a symlink loop, or a
+                # parent the process may not enter: there is nothing to grant, as for a missing
+                # directory. is_dir() raises on those (Python 3.11, 3.12) rather than say False.
                 logger.debug("%s: %r cannot be resolved; skipped", where, entry)
                 continue
-            if not resolved.is_dir():
+            if not is_dir:
                 logger.debug("%s: %r is not an existing directory; skipped", where, entry)
                 continue
             if resolved not in seen:
