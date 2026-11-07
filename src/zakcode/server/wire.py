@@ -144,8 +144,7 @@ class ObserveRequest(BaseModel):
     (the environment server's ``PerceptionBridgeVerticle``), carrying world state the mind
     could not otherwise learn.
 
-    The vessel-to-mind direction of the border contract
-    (``world/conventions/character-seeding-and-discovery.md``). Distinct from BOTH sibling
+    The vessel-to-mind direction of the border contract. Distinct from BOTH sibling
     inputs: a ``/say`` IS the next turn's message and a ``/nudge`` decorates its preamble —
     both originate with a PERSON and are precious, hence their single-slot 429. An
     observation originates with the WORLD, is continuous, and is worthless once superseded,
