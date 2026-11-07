@@ -3778,6 +3778,18 @@ class AgentLoop:
             forget()
         self._persist()
 
+    def _tool_output_in_context(self, text: str) -> bool:
+        """True if a tool result in the conversation still holds ``text`` (ADR-0372).
+
+        It reads the conversation itself, so a compaction, an elision or a rule edited on disk
+        needs no reset: the body is either there word for word or it is not.
+        """
+        return any(
+            isinstance(block, ToolResultBlock) and text in block.output
+            for message in self.session.messages
+            for block in message.blocks
+        )
+
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
 
@@ -8407,6 +8419,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
@@ -10097,6 +10110,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
