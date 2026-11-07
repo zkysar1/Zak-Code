@@ -23404,6 +23404,162 @@ tags, asked for again; a condensing ask cut and kept; cut parts that fold; every
 over its line held to it, a failed condensing ask included; the note, and what strips it; and the
 order in all three closes. 23 mutations, one a behaviour, each fail the file.
 
+## ADR-0370: on a re-compaction the harness carries a summary's history, and the summarizer writes the state and what this window did
+
+Status: accepted. 2026-11-06. Builds on ADR-0330 (the earlier summary, the word budget), ADR-0331 (the
+condensing ask) and ADR-0369 (the order, the line).
+
+Context. A re-compaction hands the summarizer its earlier summary and the new transcript, and the
+summary it writes is meant to condense both. The model keeps what it was handed instead, as ADR-0331
+measured. Read 2026-11-06 from installed summaries (word counts, heading positions and lines over 40
+characters found verbatim in the summary before, no conversation text), on a self-hosted pod serving
+ten worker sessions at a 3,100-word budget:
+
+- 26 summaries in the hours after the order of ADR-0369 reached the fleet. 17 came from builds that
+  ask for it, and 14 of those opened their history at the start of a line: 9 under `## Older history`,
+  4 under `**Older history:**`, 1 under `Older history:`.
+- In those 14, what stood above the heading ran 574 to 1,747 words. The history was the median
+  summary's 71 percent and as much as 82, up to 3,175 words.
+- The history not copied from the summary before ran a median of 508 words. One worker's three
+  summaries copied 84, 99 and 100 percent of theirs: 3,850-word replies, each one a summarizer call
+  that runs for minutes, and two of them said nothing about the window they closed.
+- The cost lands on the work. One worker on a one-branch fix made 212 tool calls and no edit in 6.9
+  hours and 6 compactions, reading the same file in all 7 windows, under summaries that carried 97, 85,
+  93, 33, 74 and 100 percent of the one before.
+
+So most of the summarizer's output is text the harness already holds, and what that output crowds out
+is the only record of what the last window learned. A stated budget, a named heading and a condensing
+ask have each been tried against it. None takes the old history out of the model's hands.
+
+Decision.
+
+- A summary's history is the part from its first history heading on: a line that is only `Older
+  history` or `Recent history`, under heading, list, number or bold markup, at most three spaces in, or
+  that heading in bold with its text after it. A quoted, indented, table or prose line that names it is
+  not one. On a re-compaction the summarizer reads what stands above that heading as `[earlier
+  summary]`, and the history stays with the harness.
+- That ask states two thirds of the word budget (2,100 words of 3,100) and its own close. The first
+  three headings are to be brought up to date. The last is `Recent history`, only what this transcript
+  did: what was read, found and changed, with file paths and line numbers. The close says the harness
+  keeps the rest, because a model told nothing would try to.
+- What is installed is the reply, then a line the harness writes, then the history verbatim, newest
+  first, the summary's own ahead of what was carried before, then the position note. The whole is held
+  to the line of ADR-0369 by cutting the end of the history, which is its oldest, on a whole line where
+  one fits. The line itself does not move, and neither does the ask's cap: ADR-0366 sizes it from the
+  line, 16,469 tokens at a 3,100-word budget, because the reply is held to the line and not to the
+  2,100 words asked. Every later compaction finds that history after the last copy of that exact
+  line, and a copy a reply quotes is taken out before the install, so finding it does not depend on
+  the model.
+- A summary with no heading, or with under 100 words above it, which is an outline of the headings and
+  not a summary, is read whole and asked for exactly as before. Anything the harness already carried
+  stays carried. Every summary from a build before this one that has a heading starts carrying at once.
+- A first compaction, a cut reply, a condensing ask, a sliced transcript and a fold all work as they
+  did. The history goes on once, after whichever of them produced the summary. A sliced transcript
+  whose part-summaries fit one slice is installed as their join (ADR-0183), a set of headings per
+  part, and its history is the last part's: a history heading after a `Current goal and state`
+  heading takes over from the one before. The summarizer then reads every part's state, and the
+  earlier parts' history as it read all of it before this decision.
+
+Rejected:
+
+- Folding the new summary with the earlier one in a second call, which ADR-0331 rejected and which is
+  still where the model was measured copying. This is one call and no fold: the harness does the join,
+  and a join cannot paraphrase or lose a line.
+- Showing the summarizer the history and only telling it not to copy. The close already says that.
+- Carrying the whole earlier summary. Its goal and next step go stale in a window, and they would fill
+  the carried history with state the reply has already replaced. The history is what stays true.
+- Asking the model to hold a line of its own for older history, or to mark it with tags. The heading
+  is already measured on the fleet, and an unmarked summary falls back to today's path.
+
+Not verified, and the trial measures each by counts alone. Whether the model keeps `Recent history` to
+this transcript when it has nothing older to copy (lines copied verbatim from the summary before).
+Whether the smaller ask shortens a compaction (the inference router's call durations and sizes).
+Whether a worker resumes as well with its history a block the model never rewrote. Whether the 3 of 17
+summaries with no heading, each after an unheaded summary, take a heading in time: those workers stay
+on today's path until they do.
+
+Not decided (review, 2026-11-07). A reply outranks the history: the history keeps what the line leaves
+after the reply, a reply within 18 words of the line drops it all, and no note marks the cut. A heading
+after an emoji is not read as one, and that summary is read whole. Nothing counts the history carried
+or cut yet.
+
+The proof. `tests/test_compact_loop.py` pins every heading shape measured and the lines that only name
+a history: quoted, indented, a prose bullet, a table row and a sentence; a history's first line kept
+with its markup; the 100-word floor; the prompt without the history, the smaller ask and its close; the
+install verbatim, ahead of the position note, and the next compaction reading neither; three
+compactions in a row, newest first; the end cut first and the whole within the line; today's path for
+a first compaction and an unheaded summary; carried history kept across an unheaded one; a cut reply,
+a condensing ask and a sliced transcript each carrying it once; two history sections in one summary
+split at the first, and a join split at its last part's, with every part's state read by the next
+summarizer through two real compactions; one copy of the harness line installed from a reply that
+quotes it, and the last copy found; the line's wording; and the cap of a re-compaction spared its
+history, 16,469 tokens. Amended after review, 13 single-site mutations each fail the file: one per fix
+(the cap, the last copy, the copies taken out of the reply and of the history, the heading pattern's
+start, end and line, the join) and one per survivor the review found (the start anchor, the last
+heading of one summary, the two-thirds ask, the floor, the line's wording).
+
+## ADR-0372: A repeat of a rule still in the conversation is answered once with a pointer
+
+**Context.** Measured 2026-11-07 on ten worker sessions over 24 h: 1,142 `read_rule` calls, 3.68M
+chars, 11 percent of all tool output, and 524 of them repeat a rule already read since the last
+compaction. The shortest rule was read most: 206 calls at 564 chars, 160 of them repeats, because the
+index says to read a rule when it looks relevant to the current step, and that rule looks relevant
+after every shell command. Each repeat adds the whole body again and stays until the next compaction.
+On these sessions a thousand tokens of context cost about 0.55 s on every later call.
+
+**Decision.** `read_rule` asks the loop whether a tool result in the conversation still contains,
+character for character, the text it is about to return. If one does, it returns one line naming the rule and saying it is
+already in context. The check reads the conversation itself, so nothing needs resetting: a compaction
+that took the body, or an elision that shortened it, makes the check false and the body is delivered
+again; a read kept in the compacted tail stays true; a rule edited on disk has different text and is
+delivered. Pinned to the case ADR-0080 recorded, a pointer to text a compaction removed.
+
+**Alternatives rejected.** A per-window set of names cleared in `_adopt_compacted`: it would need the
+same reset ADR-0080 had to add, and it would answer "unchanged" for an edited rule. The same pointer
+for `use_skill` across turns: ADR-0048 resets that dedup because a loop's mandated re-entry answered
+with a pointer is a dead loop, and a rule read is never a re-entry. Marking read rules in the index:
+the index sits in the cached prefix, so changing it re-reads the whole conversation (ADR-0260).
+Lowering the compaction threshold instead: at today's compaction cost the same measurements put the
+best threshold at about where it fires now.
+
+Not verified: how far a repeat falls once the model sees the pointer, since the call itself still
+happens. The trial counts that.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the pointer, and the body delivered to a bare
+context, for another rule, for an edited rule, after a compaction and after an elision, and the
+pointer for a body kept in the tail, the last four through the loop. Ten mutations of the check, the
+guard and both loop seams were all killed.
+
+**Amendment: one pointer per rule (2026-11-07).** On a trial build carrying this change, two of ten
+sessions kept asking for a rule after its pointer. One got the pointer eight times in about five
+minutes after a single 3,189-char body, with the doom-loop guard declining every third identical
+ask; the other got it three times in 25 s after a 479-char body. A session that asks again after
+the pointer wants the text, so the pointer is now given at most once per rule while it stays in the
+conversation: `read_rule` also asks whether its own pointer for that rule is still there, and if it
+is, delivers the body. The pointer says so. The check is the same conversation read, so a compaction
+that removes the pointer starts the rule over. `tests/test_read_rule_tool.py` pins the body for a
+read after the pointer, directly and through both turn paths, and that another rule's pointer does
+not count; three mutations, one per case, were all killed.
+
+**Amendment: the text ends where the rule does (2026-11-07, after review).** The check asks whether
+the text is CONTAINED in an earlier result, so a rule whose last lines were deleted on disk was a
+prefix of the text still in context, and `read_rule` answered "unchanged" while the model still held
+the deleted lines. The returned text now closes with a line naming the rule, `[end of rule
+'<name>']`, so a shortened rule no longer fits inside the older text and is delivered again; an
+unchanged rule matches as before, with a hook's note after it too. A history saved before this
+change holds no closing line, so each rule in it is delivered once more. The review also found four
+sabotages of the check that the file did not see: an equality test, a search of text blocks too, the
+first 40 characters only, and a case-insensitive match. `tests/test_read_rule_tool.py` now pins,
+through the loop, a rule read by a new loop over the same conversation after it was edited near its
+end, lost its last line or changed only its letter case, and the pointer when it is unchanged; a body
+with a hook note after it; and a rule quoted only in a summary and a user message, which is still
+delivered. Six mutations were all killed: the review's four, and the closing line removed or
+written without the rule's name.
+
+Not verified: a read after the pointer can be declined. When the earlier asks came back to back, that
+read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
+ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
+
 ## ADR-0375: the workspace's settings name the directories the file tools may reach, as `--extra-root` does
 
 Date: 2026-11-07. Builds on ADR-0025 (declared settings load unconditionally, no flag), ADR-0029 (the
