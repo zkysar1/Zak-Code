@@ -421,6 +421,18 @@ _SUMMARY_CLOSE = (
     "summary] in it is history to condense with the rest, not text to copy: it goes under Older "
     "history."
 )
+#: What closes a transcript whose earlier history the harness carries (ADR-0370): the summarizer has
+#: only the state to bring up to date and this transcript to write down.
+_CARRIED_CLOSE = (
+    "\n\n[end of transcript]\n\nThe transcript stops here. You are not in it: do not continue "
+    "it, reply to anyone in it, or call a tool. Summarize it now, in the third person and in at "
+    "most {words:,} words, inside <summary></summary>. "
+    + _SUMMARY_ORDER.replace("Older history", "Recent history")
+    + " An [earlier summary] in it is where the first three stood: bring them up to date and drop "
+    "what is done. Recent history is only what this transcript did: what was read, found and "
+    "changed, with file paths and line numbers. The harness keeps the history before this "
+    "transcript and adds it after your summary, so do not write it."
+)
 #: What closes the part-summaries a fold reads (ADR-0242), with the same word budget (ADR-0330).
 _FOLD_CLOSE = (
     "\n\n[end of part-summaries]\n\nFold them now into one summary, in the third person and in "
@@ -512,6 +524,27 @@ _POSITION_NOTE_RE = re.compile(re.escape(_POSITION_NOTE_HEAD) + r".*?(?=\n[ \t]*
 #: read it as the whole history (ADR-0275), and the note is written fresh at every compaction, so
 #: the line is not carried into the next summary.
 _SUMMARY_HELD_LINE = "- summary: cut to its length limit, so part of the older history is missing"
+#: The line the harness writes above the history it carries past a compaction (ADR-0370), and where
+#: the next compaction finds that history. Exact, so finding it does not depend on a model.
+_CARRIED_HEAD = (
+    "[Older history, kept by the harness, newest first; the oldest goes when the summary reaches "
+    "its length limit]"
+)
+#: Where a summary's history opens (ADR-0370): the heading it was asked for, at the start of a line,
+#: however it was marked up. Measured 2026-11-06 on the 14 summaries since 19:00Z that had one: 9
+#: ``## Older history``, 4 ``**Older history:**`` (2 with text after it on the line), 1 ``Older
+#: history:``. A list of the four headings on one line is not a match.
+_HISTORY_HEADING_RE = re.compile(
+    r"^[^\w\n]*(?:\d+[.)]\s*)?(?:older|recent) history\b[*_:#\s]*", re.I | re.M
+)
+#: A summary with less than this above its history heading is not split there (ADR-0370): the
+#: summarizer would lose the state it has to bring up to date. The least of the 14 measured was 574
+#: words, and a heading this high up is an outline of the four headings, not the summary's own.
+_CARRY_MIN_HEAD_WORDS = 100
+#: The share of the word budget a summarizer is asked for when the harness carries the history
+#: (ADR-0370). What stood above the heading measured 574 to 1,747 words, and the history not copied
+#: from the summary before ran a median of 508.
+_CARRIED_ASK = 2 / 3
 #: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
 #: call, or thinking tags — which must never survive into a compaction summary.
 _MODEL_MARKUP_RE = re.compile(
@@ -552,6 +585,30 @@ def _without_position_notes(text: str) -> str:
     if _POSITION_NOTE_HEAD not in text:
         return text
     return re.sub(r"\n{3,}", "\n\n", _POSITION_NOTE_RE.sub("", text)).strip()
+
+
+def _carried_parts(body: str) -> tuple[str, str, str]:
+    """An earlier summary's body (:func:`_earlier_summary_body`) split for the next compaction
+    (ADR-0370): what the summarizer reads, the summary's own history that it is spared, and the
+    history the harness already carried.
+
+    With no history heading, or under :data:`_CARRY_MIN_HEAD_WORDS` above it, the summary has no
+    history to spare and the summarizer reads the whole of it, as it always has.
+    """
+    current, _, carried = body.partition(_CARRIED_HEAD)
+    current, carried = current.rstrip(), carried.strip()
+    heading = _HISTORY_HEADING_RE.search(current)
+    if heading is None or len(current[: heading.start()].split()) < _CARRY_MIN_HEAD_WORDS:
+        return current, "", carried
+    return current[: heading.start()].rstrip(), current[heading.end() :].strip(), carried
+
+
+def _with_carried(summary: str, carried: str, line: int) -> str:
+    """``summary`` with the history the harness carries after it (ADR-0370), the whole held to
+    ``line`` words by cutting the end of that history, which is its oldest."""
+    room = line - len(summary.split()) - len(_CARRIED_HEAD.split())
+    kept = _first_words(carried, room) if room > 0 else ""
+    return f"{summary}\n\n{_CARRIED_HEAD}\n{kept}" if kept else summary
 
 
 def _summary_target_words(window: int, room: int) -> int:
@@ -3291,7 +3348,7 @@ class AgentLoop:
             label: str = message.role
             text = message.text.strip()
             if is_summary(message):
-                label, text = "earlier summary", _earlier_summary_body(text)
+                label, text = "earlier summary", _carried_parts(_earlier_summary_body(text))[0]
             elif message.role == "user" and _composed_skill_body(text):
                 text = _held_for_summary(text, "this skill's instructions")
             else:
@@ -3343,6 +3400,15 @@ class AgentLoop:
         # ADR-0331's condensing line. ADR-0369: nothing installed runs past it.
         line = int(words * _SUMMARY_OVER_BUDGET)
         held = False  # this summary was cut or held to the line, so its note says so (ADR-0369)
+        # ADR-0370: the history the harness keeps past this compaction. Where the earlier summary's
+        # own history is spared, the summarizer is asked for less, and the close says why. The line
+        # stays where it was.
+        earlier = next((_earlier_summary_body(m.text) for m in messages if is_summary(m)), "")
+        _, spared, carried = _carried_parts(earlier)
+        carried = "\n\n".join(part for part in (spared, carried) if part)
+        summary_close = _CARRIED_CLOSE if spared else _SUMMARY_CLOSE
+        if spared:
+            words = max(100, round(words * _CARRIED_ASK / 100) * 100)
         # ADR-0366: where the switch reaches the model as written, every ask goes with thinking off
         # and a cap its budget sets, unless the route's own body sets the switch and the setting
         # leaves it to the route, or the setting asks for the summarizer as configured.
@@ -3517,9 +3583,9 @@ class AgentLoop:
             return _held_to_words(shorter, line)
 
         if len(rendered) <= chunk_chars:
-            summary = await ask(_SUMMARY_PROMPT + rendered, _SUMMARY_CLOSE)
+            summary = await ask(_SUMMARY_PROMPT + rendered, summary_close)
             summary = await held_to_budget(summary)
-            return self._finish_summary(summary, messages, held=held)
+            return self._finish_summary(_with_carried(summary, carried, line), messages, held=held)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -3537,7 +3603,7 @@ class AgentLoop:
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(
-                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", _SUMMARY_CLOSE
+                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", summary_close
             )
             parts.append(text.strip())
         for _ in range(_MAX_FOLD_PASSES):
@@ -3562,7 +3628,7 @@ class AgentLoop:
             )
             combined = text.strip()
         combined = await held_to_budget(combined)
-        return self._finish_summary(combined, messages, held=held)
+        return self._finish_summary(_with_carried(combined, carried, line), messages, held=held)
 
     def _account_summarizer_usage(self, usage: Usage, provider: Provider) -> None:
         """Count one summarizer response like every other side call (ADR-0241), a rejected
