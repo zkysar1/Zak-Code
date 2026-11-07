@@ -23587,10 +23587,14 @@ Decision.
    absolute one is taken as written, and the result is resolved through symlinks. The lists of the
    three files join in that order and a directory named twice counts once. An entry whose directory
    does not exist, or that the process cannot resolve or enter (an over-long name, an embedded NUL, a
-   parent it may not traverse), grants nothing, and is logged at DEBUG. So does a Windows network
-   (UNC) path, which is not looked up at all: looking one up contacts the host it names and sends
-   that host the user's credentials. A settings file the JSON decoder refuses outright (an integer
-   of thousands of digits, nesting thousands deep) is skipped like one that does not parse.
+   symlink loop, a parent it may not traverse), grants nothing, and is logged at DEBUG. So does a path
+   spelled as a Windows network (UNC) path, which is not looked up at all: looking one up contacts the
+   host it names and sends that host the user's credentials. That test reads the entry as written. It
+   refuses every entry that starts with two separators, so `\\wsl$\...` and `\\?\...`, which Claude
+   Code does not count as network paths, grant nothing here; and it does not see a `~` that expands
+   to a share, or a link or junction into one, which are looked up (the last bullet of "What was
+   considered and not done"). A settings file the JSON decoder refuses outright (an integer of
+   thousands of digits, nesting thousands deep) is skipped like one that does not parse.
 3. The result is appended to the list `Agent` already builds (the explicit `extra_workspace_roots`
    first), and that one list goes where it already went: every file tool through the loop, and the
    runner of a delegated child. A sub-agent has the reach its parent has, and no tool learns anything
@@ -23599,12 +23603,18 @@ Decision.
    entry that is not a non-blank string. The valid entries beside it still apply. A key that is
    `null` is the same as no key. Each report is one WARNING line per Agent construction, and the
    server builds an Agent for each turn, so there it repeats every turn. A file that does not parse
-   is skipped without a word, because the hook and permission loaders already report it.
+   is skipped without a word, because the hook and permission loaders already report it. Four kinds
+   of file are skipped here and survived nowhere else: an integer of thousands of digits, nesting
+   thousands deep, and a `.claude` or a `.zakcode` directory the process cannot enter. The default
+   permission-settings loader (the first three) and the identity loader (the last) raise on them, so
+   an Agent over such a file does not start, with this change or without it; widening those loaders
+   is a separate change.
 5. Always on: no flag, no prompt, no per-Agent override. Claude Code applies a project
    `.claude/settings.json`'s entries only after its workspace trust dialog is accepted, and never in
-   a `claude -p` or SDK session, where it prints a warning instead; a tracked or symlinked
-   `settings.local.json` is held until the folder is trusted too. Zak Code has no such dialog, and the
-   hooks and the permission rules in the same files are live already (ADR-0025, ADR-0029).
+   a `claude -p` or SDK session, where it prints a warning instead; a `settings.local.json` that is
+   tracked in git, or in a `.claude` that is a symlink, is held until the folder is trusted too. Zak
+   Code has no such dialog, and the hooks and the permission rules in the same files are live
+   already (ADR-0025, ADR-0029).
 
 Reach, not authority. The permission policy never sees the roots, so the key cannot loosen anything.
 A path inside an added directory is judged like a workspace path: the `..` and symlink check applies to
@@ -23632,6 +23642,10 @@ What was considered and not done.
 - The `/net` automount form of a network path on macOS and Linux. Claude Code's documentation counts
   it as one too; this change refuses the Windows form, where the lookup hands the host the user's
   credentials, and leaves `/net` as an ordinary entry.
+- Refusing a path by where it resolves to. Claude Code also refuses a local path that reaches a
+  network location through a symbolic link or junction. Here the test is on the entry as written,
+  because following a link is itself a lookup, so a link or junction into a share, and a `~` that
+  expands to one, are looked up. None of this was run on Windows.
 - The user scope (`~/.claude/settings.json`), where Claude Code also reads the key. The hook loader,
   the permission gestures and `env` read the workspace's own files only, and this key follows them; a
   user-scope reader would be one change for all four.
@@ -23648,12 +23662,12 @@ The proof. `tests/test_additional_directories.py` pins the loader: an absolute, 
 entry; the three files joined in order with a repeat counted once; a missing directory and a plain
 file granting nothing; a malformed value reported with its file and position while the valid entries
 beside it apply, and a bad value at the same position in two files reported twice; an entry the
-platform rejects (an embedded NUL, an over-long name), a parent the process cannot enter and a
-settings directory it cannot enter each granting nothing without raising; a Windows network path
-granting nothing without being looked up, and a double leading slash staying an ordinary path
-elsewhere; a file that is not JSON, is not UTF-8, holds an integer of thousands of digits or nests
-thousands deep skipped while the next file still applies; a `permissions` block without the key, the
-key as `null`, and a workspace without settings each declaring nothing. It pins
+platform rejects (an embedded NUL, an over-long name), a symlink loop, a parent the process cannot
+enter and a settings directory it cannot enter each granting nothing without raising; a Windows
+network path granting nothing without being looked up, and a double leading slash staying an
+ordinary path elsewhere; a file that is not JSON, is not UTF-8, holds an integer of thousands of
+digits or nests thousands deep skipped while the next file still applies; a `permissions` block
+without the key, the key as `null`, and a workspace without settings each declaring nothing. It pins
 the Agent: a declared directory opens to `Read`, `Write` and `Edit` where the same read without the
 declaration is refused; the declared list joins `extra_workspace_roots`; a delegated child gets it; a
 malformed value is logged once. And it pins reach, not authority: a `..` out of an added directory is

@@ -132,6 +132,20 @@ def test_an_entry_the_platform_rejects_grants_nothing_and_does_not_raise(
     assert load_additional_directories(ws) == ([ext.resolve()], {})
 
 
+def test_a_symlink_loop_grants_nothing_and_does_not_raise(ws: Path, tmp_path: Path) -> None:
+    # Path.resolve() raises RuntimeError on a symlink loop (Python 3.11, 3.12; 3.13 does not raise
+    # there). The entry grants nothing and the valid one beside it still applies.
+    first, second = ws / "loop-a", ws / "loop-b"
+    try:
+        first.symlink_to(second)
+        second.symlink_to(first)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot create symlinks")
+    ext = _dir(tmp_path, "external")
+    _declare(ws, [str(first), str(ext)])
+    assert load_additional_directories(ws) == ([ext.resolve()], {})
+
+
 def test_a_network_path_grants_nothing_and_is_never_looked_up(
     ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,7 +197,8 @@ def test_a_settings_directory_the_process_cannot_enter_is_skipped(
     ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # In a directory the user cannot enter, Path.is_file() raises PermissionError. The hook loader
-    # guards it and the agent still starts; this loader must start it too.
+    # guards it; this loader must not be the one that raises. (The permission-settings and identity
+    # loaders do not guard it, so an Agent over such a directory does not start either way.)
     ext = _dir(tmp_path, "external")
     _declare(ws, [str(ext)])
     assert load_additional_directories(ws) == ([ext.resolve()], {})  # the file is readable
@@ -208,10 +223,11 @@ def test_a_settings_directory_the_process_cannot_enter_is_skipped(
 def test_a_file_that_cannot_be_decoded_is_skipped_without_an_error_of_its_own(
     ws: Path, tmp_path: Path, payload: bytes
 ) -> None:
-    # The hook and permission loaders report an unreadable file; a third report would be noise.
-    # json.loads raises a plain ValueError for an integer of more than 4300 digits and a
-    # RecursionError for deep nesting, neither of them a JSONDecodeError; the Agent is built with
-    # this result, so neither may escape. The entry in the next file still applies.
+    # The hook and permission loaders report a file that does not parse; a third report would be
+    # noise. json.loads also raises a plain ValueError for an integer of more than 4300 digits and
+    # a RecursionError for deep nesting, neither a JSONDecodeError: this loader skips them and does
+    # not raise. (The permission-settings loader raises on those two, so an Agent over such a file
+    # does not start either way.) The entry in the next file still applies.
     ext = _dir(tmp_path, "external")
     (ws / ".claude").mkdir()
     (ws / ".claude" / "settings.json").write_bytes(payload)

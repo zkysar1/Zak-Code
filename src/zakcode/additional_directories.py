@@ -17,14 +17,18 @@ live, with no trust prompt, as hooks (ADR-0025) and permission gestures (ADR-002
 Discovery is the hook loader's: ``<workspace>/.claude/settings.json``, then
 ``.claude/settings.local.json``, then ``.zakcode/settings.json``. The lists from the three are
 joined in that order, and a directory named twice counts once. A file that does not parse is
-skipped without a word here, because the hook and permission loaders already report it; so is a
-file the process cannot read and one the JSON decoder refuses outright (an integer of thousands of
-digits, nesting thousands deep). A key that is ``null`` declares nothing, as an absent one does. A
-directory that does not exist, or that the process cannot resolve or enter (an over-long name, an
-embedded NUL, a parent it may not traverse), grants nothing and is left out (logged at DEBUG). So
-does a Windows network (UNC) path, which is not looked up at all: looking one up contacts the host
-it names and sends that host the user's credentials. The agent is constructed with this result, so
-nothing here raises.
+skipped without a word here, because the hook and permission loaders already report it. A key that
+is ``null`` declares nothing, as an absent one does. A directory that does not exist, or that the
+process cannot resolve or enter (an over-long name, an embedded NUL, a symlink loop, a parent it
+may not traverse), grants nothing and is left out (logged at DEBUG). So does a path spelled as a
+Windows network (UNC) path, which is not looked up at all: looking one up contacts the host it
+names and sends that host the user's credentials. That test reads the entry as written, so a ``~``
+that expands to a share and a link or junction into one are not caught.
+
+This loader never raises: a file it cannot take is skipped. Four kinds of file are among them, and
+the permission-settings and identity loaders raise on those four, so an Agent over one does not
+start, with or without this loader: an integer of thousands of digits, nesting thousands deep, and
+a ``.claude`` or a ``.zakcode`` directory the process cannot enter.
 """
 
 from __future__ import annotations
@@ -84,7 +88,8 @@ def load_additional_directories(workspace_root: Path) -> tuple[list[Path], dict[
             if sys.platform == "win32" and text.replace("/", "\\").startswith("\\\\"):
                 # A network (UNC) path names another machine. Looking it up contacts that host and,
                 # on Windows, hands it the user's credentials, so it is left out unseen; Claude Code
-                # refuses one as a working directory for the same reason.
+                # refuses one as a working directory for the same reason. This reads the entry as
+                # written, so a ``~`` that expands to a share, or a link into one, is not caught.
                 logger.debug("%s: %r is a network path; skipped", where, entry)
                 continue
             try:
