@@ -23403,3 +23403,76 @@ first ask, held to its line, counted and said; one with too little left, or that
 tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
 over its line held to it, a failed condensing ask included; the note, and what strips it; and the
 order in all three closes. 23 mutations, one a behaviour, each fail the file.
+
+## ADR-0370: on a re-compaction the harness carries a summary's history, and the summarizer writes the state and what this window did
+
+Status: accepted. 2026-11-06. Builds on ADR-0330 (the earlier summary, the word budget), ADR-0331 (the
+condensing ask) and ADR-0369 (the order, the line).
+
+Context. A re-compaction hands the summarizer its earlier summary and the new transcript, and the
+summary it writes is meant to condense both. The model keeps what it was handed instead, as ADR-0331
+measured. Read 2026-11-06 from installed summaries (word counts, heading positions and lines over 40
+characters found verbatim in the summary before, no conversation text), on a self-hosted pod serving
+ten worker sessions at a 3,100-word budget:
+
+- 26 summaries in the hours after the order of ADR-0369 reached the fleet. 17 came from builds that
+  ask for it, and 14 of those opened their history at the start of a line: 9 under `## Older history`,
+  4 under `**Older history:**`, 1 under `Older history:`.
+- In those 14, what stood above the heading ran 574 to 1,747 words. The history was the median
+  summary's 71 percent and as much as 82, up to 3,175 words.
+- The history not copied from the summary before ran a median of 508 words. One worker's three
+  summaries copied 84, 99 and 100 percent of theirs: 3,850-word replies, each one a summarizer call
+  that runs for minutes, and two of them said nothing about the window they closed.
+- The cost lands on the work. One worker on a one-branch fix made 212 tool calls and no edit in 6.9
+  hours and 6 compactions, reading the same file in all 7 windows, under summaries that carried 97, 85,
+  93, 33, 74 and 100 percent of the one before.
+
+So most of the summarizer's output is text the harness already holds, and what that output crowds out
+is the only record of what the last window learned. A stated budget, a named heading and a condensing
+ask have each been tried against it. None takes the old history out of the model's hands.
+
+Decision.
+
+- A summary's history is the part from its first history heading on, at the start of a line under any
+  markup, `Older history` or `Recent history`. On a re-compaction the summarizer reads what stands above
+  that heading as `[earlier summary]`, and the history stays with the harness.
+- That ask states two thirds of the word budget (2,100 words of 3,100) and its own close. The first
+  three headings are to be brought up to date. The last is `Recent history`, only what this transcript
+  did: what was read, found and changed, with file paths and line numbers. The close says the harness
+  keeps the rest, because a model told nothing would try to.
+- What is installed is the reply, then a line the harness writes, then the history verbatim, newest
+  first, the summary's own ahead of what was carried before, then the position note. The whole is held
+  to the line of ADR-0369 by cutting the end of the history, on a whole line, which is its oldest. The
+  line itself does not move. Every later compaction finds that history at that exact line, so finding
+  it does not depend on the model.
+- A summary with no heading, or with under 100 words above it, which is an outline of the headings and
+  not a summary, is read whole and asked for exactly as before. Anything the harness already carried
+  stays carried. Every summary from a build before this one that has a heading starts carrying at once.
+- A first compaction, a cut reply, a condensing ask, a sliced transcript and a fold all work as they
+  did. The history goes on once, after whichever of them produced the summary.
+
+Rejected:
+
+- Folding the new summary with the earlier one in a second call, which ADR-0331 rejected and which is
+  still where the model was measured copying. This is one call and no fold: the harness does the join,
+  and a join cannot paraphrase or lose a line.
+- Showing the summarizer the history and only telling it not to copy. The close already says that.
+- Carrying the whole earlier summary. Its goal and next step go stale in a window, and they would fill
+  the carried history with state the reply has already replaced. The history is what stays true.
+- Asking the model to hold a line of its own for older history, or to mark it with tags. The heading
+  is already measured on the fleet, and an unmarked summary falls back to today's path.
+
+Not verified, and the trial measures each by counts alone. Whether the model keeps `Recent history` to
+this transcript when it has nothing older to copy (lines copied verbatim from the summary before).
+Whether the smaller ask shortens a compaction (the inference router's call durations and sizes).
+Whether a worker resumes as well with its history a block the model never rewrote. Whether the 3 of 17
+summaries with no heading, each after an unheaded summary, take a heading in time: those workers stay
+on today's path until they do.
+
+The proof. `tests/test_compact_loop.py` pins every heading shape measured and every shape that is not
+one; the prompt without the history, the smaller ask and its close; the install verbatim, ahead of the
+position note, and the next compaction reading neither; three compactions in a row, newest first; the
+end cut first and the whole within the line; today's path for a first compaction and an unheaded
+summary; carried history kept across an unheaded one; and a cut reply, a condensing ask and a sliced
+transcript each carrying it once. 18 mutations each fail the file.
+
