@@ -3886,10 +3886,12 @@ class AgentLoop:
         self._persist()
 
     def _tool_output_in_context(self, text: str) -> bool:
-        """True if a tool result in the conversation still holds ``text`` (ADR-0372).
+        """True if a tool result in the conversation still contains ``text``, character for
+        character (ADR-0372).
 
         It reads the conversation itself, so a compaction, an elision or a rule edited on disk
-        needs no reset: the body is either there word for word or it is not.
+        needs no reset. ``read_rule`` closes its text with a line naming the rule, so a contained
+        copy is the rule as it reads now, with or without a note after it.
         """
         return any(
             isinstance(block, ToolResultBlock) and text in block.output

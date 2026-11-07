@@ -170,6 +170,32 @@ def test_a_rule_edited_since_it_was_read_is_delivered_again() -> None:
     assert "Always do the alpha thing." in res.output
 
 
+def _read_after_edit(content: str) -> str:
+    """Read alpha-rule as ``content`` while its full text from an earlier read is in context."""
+    held = _body("alpha-rule")
+    edited = RuleRegistry()
+    edited.add(Rule("alpha-rule", content, Path("/x/alpha-rule.md")))
+    ctx = ToolContext(
+        workspace_root=Path("/tmp"), rule_registry=edited, in_context=lambda text: text in held
+    )
+    return asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, ctx)).output
+
+
+def test_a_rule_whose_last_lines_were_deleted_is_delivered_again() -> None:
+    """The shorter text was a prefix of the older one, so the check read it as unchanged while the
+    model still held the deleted lines. The closing line makes the text end where the rule does."""
+    assert _read_after_edit("# Alpha") == "# alpha-rule\n# Alpha\n[end of rule 'alpha-rule']"
+
+
+def test_a_rule_whose_first_lines_were_deleted_is_delivered_again() -> None:
+    text = "# alpha-rule\nAlways do the alpha thing.\n[end of rule 'alpha-rule']"
+    assert _read_after_edit("Always do the alpha thing.") == text
+
+
+def test_a_body_ends_with_its_closing_line() -> None:
+    assert _body("alpha-rule").endswith("\nAlways do the alpha thing.\n[end of rule 'alpha-rule']")
+
+
 def test_a_read_after_the_pointer_gets_the_body() -> None:
     """Once per rule: a session that asks again after the pointer wants the text."""
     seen = _ctx_seeing(_body("alpha-rule"), ALREADY_READ.format(name="alpha-rule"))
@@ -307,3 +333,79 @@ async def test_a_body_kept_in_the_tail_still_counts(tmp_path: Path) -> None:
     loop.provider.calls = 0
     await loop.arun_turn("again")
     assert _outputs(loop)[-1] == ALREADY_READ.format(name="alpha-rule")
+
+
+_LONG = "\n".join(f"Step {i}: do the alpha thing." for i in range(20))
+
+
+def _loop_reading(
+    tmp_path: Path, content: str, *ids: str, session: Session | None = None
+) -> AgentLoop:
+    """A loop whose alpha-rule reads ``content``. Given ``session``, a new loop over that
+    conversation, as a restart, a resume or a served turn builds one after a rule was edited."""
+    rules = RuleRegistry()
+    rules.add(Rule("alpha-rule", content, Path("/x/alpha-rule.md")))
+    tools = ToolRegistry()
+    tools.register(ReadRuleTool())
+    results = [_read(i) for i in ids] + [LLMResult(text="done", usage=Usage(total_tokens=1))]
+    return AgentLoop(
+        _Scripted(results),
+        tools,
+        session or Session(cwd=str(tmp_path), model="t"),
+        rule_registry=rules,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "edited",
+    [
+        _LONG.replace("Step 19: do the alpha", "Step 19: do the beta"),
+        _LONG.rsplit("\n", 1)[0],
+        _LONG.replace("Step 3:", "step 3:"),
+    ],
+    ids=["edited near its end", "last line deleted", "letter case only"],
+)
+async def test_a_rule_edited_between_two_loops_is_delivered_again(
+    tmp_path: Path, edited: str
+) -> None:
+    first = _loop_reading(tmp_path, _LONG, "r1")
+    await first.arun_turn("go")
+    again = _loop_reading(tmp_path, edited, "r2", session=first.session)
+    await again.arun_turn("again")
+    assert _outputs(again)[-1] == f"# alpha-rule\n{edited}\n[end of rule 'alpha-rule']"
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_rule_in_a_new_loop_is_a_pointer(tmp_path: Path) -> None:
+    first = _loop_reading(tmp_path, _LONG, "r1")
+    await first.arun_turn("go")
+    again = _loop_reading(tmp_path, _LONG, "r2", session=first.session)
+    await again.arun_turn("again")
+    assert _outputs(again)[-1] == ALREADY_READ.format(name="alpha-rule")
+
+
+@pytest.mark.asyncio
+async def test_a_body_with_a_hook_note_after_it_still_counts(tmp_path: Path) -> None:
+    """A PostToolUse hook's message rides after the result as a ``[hook]`` line, so the stored
+    output holds the rule's text and more."""
+    loop = _loop(tmp_path, "r1")
+    await loop.arun_turn("go")
+    for message in loop.session.messages:
+        for block in message.blocks:
+            if isinstance(block, ToolResultBlock):
+                block.output += "\n[hook] checked by the workspace's PostToolUse hook"
+    loop.provider._results = [_read("r2"), LLMResult(text="done", usage=Usage(total_tokens=1))]
+    loop.provider.calls = 0
+    await loop.arun_turn("again")
+    assert _outputs(loop)[-1] == ALREADY_READ.format(name="alpha-rule")
+
+
+@pytest.mark.asyncio
+async def test_a_rule_quoted_outside_a_tool_result_is_still_delivered(tmp_path: Path) -> None:
+    """A summary or a message that quotes a rule is not a read of it; only a tool result is."""
+    loop = _loop(tmp_path, "r1")
+    text = (await ReadRuleTool().execute({"name": "alpha-rule"}, _ctx(_registry()))).output
+    loop.session.messages.extend([Message.system(f"Summary.\n{text}"), Message.user(text)])
+    await loop.arun_turn("go")
+    assert "Always do the alpha thing." in _outputs(loop)[-1]

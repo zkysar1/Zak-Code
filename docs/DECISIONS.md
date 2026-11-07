@@ -23614,7 +23614,7 @@ new turn, an operator's note, a perception and a hook, and the line kept after a
 second table of 5 single-site mutations (the input check removed, rails counted as input, the old
 wording, the instruction deleted, the blank line dropped) kills all 5, one test case for each.
 
-## ADR-0372: A repeat of a rule still in the conversation is answered with a pointer
+## ADR-0372: A repeat of a rule still in the conversation is answered once with a pointer
 
 **Context.** Measured 2026-11-07 on ten worker sessions over 24 h: 1,142 `read_rule` calls, 3.68M
 chars, 11 percent of all tool output, and 524 of them repeat a rule already read since the last
@@ -23623,8 +23623,8 @@ index says to read a rule when it looks relevant to the current step, and that r
 after every shell command. Each repeat adds the whole body again and stays until the next compaction.
 On these sessions a thousand tokens of context cost about 0.55 s on every later call.
 
-**Decision.** `read_rule` asks the loop whether a tool result in the conversation still holds the
-exact text it is about to return. If one does, it returns one line naming the rule and saying it is
+**Decision.** `read_rule` asks the loop whether a tool result in the conversation still contains,
+character for character, the text it is about to return. If one does, it returns one line naming the rule and saying it is
 already in context. The check reads the conversation itself, so nothing needs resetting: a compaction
 that took the body, or an elision that shortened it, makes the check false and the body is delivered
 again; a read kept in the compacted tail stays true; a rule edited on disk has different text and is
@@ -23656,6 +23656,25 @@ is, delivers the body. The pointer says so. The check is the same conversation r
 that removes the pointer starts the rule over. `tests/test_read_rule_tool.py` pins the body for a
 read after the pointer, directly and through both turn paths, and that another rule's pointer does
 not count; three mutations, one per case, were all killed.
+
+**Amendment: the text ends where the rule does (2026-11-07, after review).** The check asks whether
+the text is CONTAINED in an earlier result, so a rule whose last lines were deleted on disk was a
+prefix of the text still in context, and `read_rule` answered "unchanged" while the model still held
+the deleted lines. The returned text now closes with a line naming the rule, `[end of rule
+'<name>']`, so a shortened rule no longer fits inside the older text and is delivered again; an
+unchanged rule matches as before, with a hook's note after it too. A history saved before this
+change holds no closing line, so each rule in it is delivered once more. The review also found four
+sabotages of the check that the file did not see: an equality test, a search of text blocks too, the
+first 40 characters only, and a case-insensitive match. `tests/test_read_rule_tool.py` now pins,
+through the loop, a rule read by a new loop over the same conversation after it was edited near its
+end, lost its last line or changed only its letter case, and the pointer when it is unchanged; a body
+with a hook note after it; and a rule quoted only in a summary and a user message, which is still
+delivered. Six mutations were all killed: the review's four, and the closing line removed or
+written without the rule's name.
+
+Not verified: a read after the pointer can be declined. When the earlier asks came back to back, that
+read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
+ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
 
 ## ADR-0373: a run of completions that only print is bounded, as a run of plan-only ones is
 
