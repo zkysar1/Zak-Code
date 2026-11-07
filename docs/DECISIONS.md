@@ -23403,3 +23403,60 @@ first ask, held to its line, counted and said; one with too little left, or that
 tags, asked for again; a condensing ask cut and kept; cut parts that fold; every way a summary can stay
 over its line held to it, a failed condensing ask included; the note, and what strips it; and the
 order in all three closes. 23 mutations, one a behaviour, each fail the file.
+
+## ADR-0371: right after a response that only updated the plan, the plan line says do the step
+
+Status: accepted. 2026-11-06. Narrows ADR-0237's sentence on one surface. Builds on ADR-0168 (the
+unchanged receipt) and ADR-0184 (the plan line).
+
+Context. ADR-0237 measured a response that only updates the plan as the most expensive kind on a slow
+backend, 17.8 and 22.3 percent of two sessions' model time, and asked the model to send the update
+with the next step's first call, in one sentence on every surface. Read 2026-11-06 from ten worker
+sessions' transcripts on the same kind of pod over 24 hours (tool names, times, sizes and the harness's
+own receipt strings, no conversation text):
+
+- 2,062 update_plan calls, 2,054 alone in their response, though 8 to 23 percent of responses carried
+  two or more tools. The sentence did not take.
+- They took 57.5 model hours, on sessions that log 18 to 20 each in a day. On the three sessions read
+  for it that was 33, 47 and 32 percent of model time, a median of 58 to 71 seconds a call against 22
+  to 24 for Bash. A call resends the whole plan, about 2,000 characters.
+- 679 calls, a third, changed nothing. 50 to 73 percent of them sat in runs of two or more with no
+  other tool between. In the samples read, the identical plan went out five times running, each 25 to
+  35 seconds, past `Plan unchanged` and `Do not resend the same plan` in the receipts.
+- The next call was update_plan again after 30 percent of clean receipts, and after 56 percent of those
+  naming a missing done-condition.
+
+The plan line is an ephemeral message that rides last on every model call, the last thing the model
+reads before it writes. It opens `Keep it current with the update_plan tool`, right after a response
+that did only that. The receipts say to move on, and the model answers the line.
+
+Decision.
+
+- On the call after a response whose tool calls were all update_plan, the line opens instead: updated
+  in your last response, do not call update_plan in this response, do the step marked `<- current` now
+  with a tool call. The goal, the board, the memory lines and any fold note stay.
+- The quality note stays off that one line. It asks for a change to the plan the model just sent.
+- The line stays as it was after any other response, a paired one included, with no response yet, on a
+  plan with no current step, where it would name a step the board does not mark, and on a plan with an
+  undecomposed step, where a plan update is the next thing to do. A finished plan's line is untouched.
+- The sentence of ADR-0237 stays on every other surface and on the line after work.
+
+The line is ephemeral and last, so changing it costs no prompt cache.
+
+Rejected:
+
+- Withholding update_plan from the tool list for the next call. It cannot be repeated then, but tools
+  sit at the head of the prompt, and a changed head reprocesses the whole prompt on a self-hosted engine.
+- A receipt that refuses. The receipts already say this, and it is the line that rides after them.
+- A one-field form of the call that marks the current step done. It may still be worth having: it
+  shrinks a call and does not remove one. This goes first because it removes the call.
+
+Not verified, and the trial measures each by counts alone. How many runs end. Whether a step goes
+unmarked for longer as a result, which would show as a plan left stale at the end of a goal. Whether
+the model does the step or something else.
+
+The proof. `tests/test_plan_advance_rides_along.py` pins the line after a plan-only response, on both
+turn paths; the line as it was after work, a paired call in either order, text and no response; that the
+last response decides; a plan with no current step and one with an undecomposed step; and the quality
+note held back. 7 mutations each fail the file.
+
