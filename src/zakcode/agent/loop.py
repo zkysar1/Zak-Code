@@ -535,8 +535,14 @@ _CARRIED_HEAD = (
 #: ``## Older history``, 4 ``**Older history:**`` (2 with text after it on the line), 1 ``Older
 #: history:``. A list of the four headings on one line is not a match.
 _HISTORY_HEADING_RE = re.compile(
-    r"^[^\w\n]*(?:\d+[.)]\s*)?(?:older|recent) history\b[*_:#\s]*", re.I | re.M
+    r"^[ \t]{0,3}(?:#{1,6}[ \t]+)?(?:[-*+][ \t]+)?(?:\d+[.)][ \t]+)?[*_]{0,3}"
+    r"(?:older|recent)[ \t]+history(?![^\W_])"
+    r"(?:[ \t]*:?[*_]{0,3}[ \t]*#*[ \t]*\r?$|:?[*_]{1,3}:?(?=[ \t]+\S))",
+    re.I | re.M,
 )
+#: The first heading of a summary, which a history heading is followed by only in a join of
+#: part-summaries (a sliced transcript whose parts fit one slice is joined, not folded).
+_STATE_HEADING_RE = re.compile(r"^[^\w\n]*(?:\d+[.)]\s*)?current goal and state\b", re.I | re.M)
 #: A summary with less than this above its history heading is not split there (ADR-0370): the
 #: summarizer would lose the state it has to bring up to date. The least of the 14 measured was 574
 #: words, and a heading this high up is an outline of the four headings, not the summary's own.
@@ -595,10 +601,19 @@ def _carried_parts(body: str) -> tuple[str, str, str]:
     With no history heading, or under :data:`_CARRY_MIN_HEAD_WORDS` above it, the summary has no
     history to spare and the summarizer reads the whole of it, as it always has.
     """
-    current, _, carried = body.partition(_CARRIED_HEAD)
+    # the harness writes its line last, so the last one is the harness's, whatever a reply echoed
+    at = body.rfind(_CARRIED_HEAD)
+    current, carried = (body, "") if at < 0 else (body[:at], body[at + len(_CARRIED_HEAD) :])
     current, carried = current.rstrip(), carried.strip()
-    heading = _HISTORY_HEADING_RE.search(current)
-    if heading is None or len(current[: heading.start()].split()) < _CARRY_MIN_HEAD_WORDS:
+    headings = list(_HISTORY_HEADING_RE.finditer(current))
+    if not headings:
+        return current, "", carried
+    heading = headings[0]
+    for later in headings[1:]:
+        # a join of part-summaries holds a set of headings per part: its history is the last set's
+        if _STATE_HEADING_RE.search(current, heading.end(), later.start()):
+            heading = later
+    if len(current[: heading.start()].split()) < _CARRY_MIN_HEAD_WORDS:
         return current, "", carried
     return current[: heading.start()].rstrip(), current[heading.end() :].strip(), carried
 
@@ -606,6 +621,8 @@ def _carried_parts(body: str) -> tuple[str, str, str]:
 def _with_carried(summary: str, carried: str, line: int) -> str:
     """``summary`` with the history the harness carries after it (ADR-0370), the whole held to
     ``line`` words by cutting the end of that history, which is its oldest."""
+    summary = summary.replace(_CARRIED_HEAD, "").strip()
+    carried = carried.replace(_CARRIED_HEAD, "").strip()
     room = line - len(summary.split()) - len(_CARRIED_HEAD.split())
     kept = _first_words(carried, room) if room > 0 else ""
     return f"{summary}\n\n{_CARRIED_HEAD}\n{kept}" if kept else summary
@@ -3426,7 +3443,7 @@ class AgentLoop:
         thinking_off = caps.thinking_switch and (
             setting is False or (setting is None and not caps.thinking_configured)
         )
-        switched_room = _summary_switched_room(words, room)
+        switched_room = _summary_switched_room(int(line / _SUMMARY_OVER_BUDGET), room)
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured

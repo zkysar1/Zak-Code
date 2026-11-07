@@ -23484,23 +23484,32 @@ ask have each been tried against it. None takes the old history out of the model
 
 Decision.
 
-- A summary's history is the part from its first history heading on, at the start of a line under any
-  markup, `Older history` or `Recent history`. On a re-compaction the summarizer reads what stands above
-  that heading as `[earlier summary]`, and the history stays with the harness.
+- A summary's history is the part from its first history heading on: a line that is only `Older
+  history` or `Recent history`, under heading, list, number or bold markup, at most three spaces in, or
+  that heading in bold with its text after it. A quoted, indented, table or prose line that names it is
+  not one. On a re-compaction the summarizer reads what stands above that heading as `[earlier
+  summary]`, and the history stays with the harness.
 - That ask states two thirds of the word budget (2,100 words of 3,100) and its own close. The first
   three headings are to be brought up to date. The last is `Recent history`, only what this transcript
   did: what was read, found and changed, with file paths and line numbers. The close says the harness
   keeps the rest, because a model told nothing would try to.
 - What is installed is the reply, then a line the harness writes, then the history verbatim, newest
   first, the summary's own ahead of what was carried before, then the position note. The whole is held
-  to the line of ADR-0369 by cutting the end of the history, on a whole line, which is its oldest. The
-  line itself does not move. Every later compaction finds that history at that exact line, so finding
-  it does not depend on the model.
+  to the line of ADR-0369 by cutting the end of the history, which is its oldest, on a whole line where
+  one fits. The line itself does not move, and neither does the ask's cap: ADR-0366 sizes it from the
+  line, 16,469 tokens at a 3,100-word budget, because the reply is held to the line and not to the
+  2,100 words asked. Every later compaction finds that history after the last copy of that exact
+  line, and a copy a reply quotes is taken out before the install, so finding it does not depend on
+  the model.
 - A summary with no heading, or with under 100 words above it, which is an outline of the headings and
   not a summary, is read whole and asked for exactly as before. Anything the harness already carried
   stays carried. Every summary from a build before this one that has a heading starts carrying at once.
 - A first compaction, a cut reply, a condensing ask, a sliced transcript and a fold all work as they
-  did. The history goes on once, after whichever of them produced the summary.
+  did. The history goes on once, after whichever of them produced the summary. A sliced transcript
+  whose part-summaries fit one slice is installed as their join (ADR-0183), a set of headings per
+  part, and its history is the last part's: a history heading after a `Current goal and state`
+  heading takes over from the one before. The summarizer then reads every part's state, and the
+  earlier parts' history as it read all of it before this decision.
 
 Rejected:
 
@@ -23520,12 +23529,25 @@ Whether a worker resumes as well with its history a block the model never rewrot
 summaries with no heading, each after an unheaded summary, take a heading in time: those workers stay
 on today's path until they do.
 
-The proof. `tests/test_compact_loop.py` pins every heading shape measured and every shape that is not
-one; the prompt without the history, the smaller ask and its close; the install verbatim, ahead of the
-position note, and the next compaction reading neither; three compactions in a row, newest first; the
-end cut first and the whole within the line; today's path for a first compaction and an unheaded
-summary; carried history kept across an unheaded one; and a cut reply, a condensing ask and a sliced
-transcript each carrying it once. 18 mutations each fail the file.
+Not decided (review, 2026-11-07). A reply outranks the history: the history keeps what the line leaves
+after the reply, a reply within 18 words of the line drops it all, and no note marks the cut. A heading
+after an emoji is not read as one, and that summary is read whole. Nothing counts the history carried
+or cut yet.
+
+The proof. `tests/test_compact_loop.py` pins every heading shape measured and the lines that only name
+a history: quoted, indented, a prose bullet, a table row and a sentence; a history's first line kept
+with its markup; the 100-word floor; the prompt without the history, the smaller ask and its close; the
+install verbatim, ahead of the position note, and the next compaction reading neither; three
+compactions in a row, newest first; the end cut first and the whole within the line; today's path for
+a first compaction and an unheaded summary; carried history kept across an unheaded one; a cut reply,
+a condensing ask and a sliced transcript each carrying it once; two history sections in one summary
+split at the first, and a join split at its last part's, with every part's state read by the next
+summarizer through two real compactions; one copy of the harness line installed from a reply that
+quotes it, and the last copy found; the line's wording; and the cap of a re-compaction spared its
+history, 16,469 tokens. Amended after review, 13 single-site mutations each fail the file: one per fix
+(the cap, the last copy, the copies taken out of the reply and of the history, the heading pattern's
+start, end and line, the join) and one per survivor the review found (the start anchor, the last
+heading of one summary, the two-thirds ask, the floor, the line's wording).
 
 ## ADR-0371: right after a response that only updated the plan, the plan line says do the step
 
