@@ -23615,6 +23615,17 @@ context, for another rule, for an edited rule, after a compaction and after an e
 pointer for a body kept in the tail, the last four through the loop. Ten mutations of the check, the
 guard and both loop seams were all killed.
 
+**Amendment: one pointer per rule (2026-11-07).** On a trial build carrying this change, two of ten
+sessions kept asking for a rule after its pointer. One got the pointer eight times in about five
+minutes after a single 3,189-char body, with the doom-loop guard declining every third identical
+ask; the other got it three times in 25 s after a 479-char body. A session that asks again after
+the pointer wants the text, so the pointer is now given at most once per rule while it stays in the
+conversation: `read_rule` also asks whether its own pointer for that rule is still there, and if it
+is, delivers the body. The pointer says so. The check is the same conversation read, so a compaction
+that removes the pointer starts the rule over. `tests/test_read_rule_tool.py` pins the body for a
+read after the pointer, directly and through both turn paths, and that another rule's pointer does
+not count; three mutations, one per case, were all killed.
+
 ## ADR-0373: a run of completions that only print is bounded, as a run of plan-only ones is
 
 Status: accepted. 2026-11-07. The sibling of ADR-0364, on its path and its ladder, and held to
