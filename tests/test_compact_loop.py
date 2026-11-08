@@ -1921,12 +1921,13 @@ def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> No
 
 def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
     # A route that thinks on purpose must not be cut while it thinks (ADR-0366).
-    # Here the thinking is very long but the visible text is short and contains the tag.
+    # Here the thinking is twice the grace, and a short visible note comes before the tag, so
+    # the first visible chunk holds no tag: counted with the thinking, it would pass the grace.
     long_thinking = "Let me reason about this summary. " * (
         2 * _SUMMARY_TAG_GRACE_CHARS // 34
     )  # twice the grace, all thinking
     provider = _TagWatchStreamProvider(
-        [_WHOLE],
+        ["A short note before it.\n" * 4 + _WHOLE],
         ["stop"],
         thinkings=[long_thinking],
     )
@@ -1966,15 +1967,17 @@ def test_a_tagged_cut_reply_is_still_kept_under_the_watcher(tmp_path: Path) -> N
     # the tag was found.
     # The text must contain newlines and >500 chars of whole lines after the tag,
     # because _summary_of strips the unfinished last line of a cut reply and rejects
-    # anything under _SUMMARY_FLOOR_CHARS.
+    # anything under _SUMMARY_FLOOR_CHARS. It runs past the grace, so a watcher that missed
+    # the tag would have cut it.
     cut_tagged = (
         "<summary>\n"
         + "\n".join(
             f"The session made progress on the parser, fixing issue {i} in the grammar"
-            for i in range(12)
+            for i in range(_SUMMARY_TAG_GRACE_CHARS // 60 + 10)
         )
         + "\nand then the session"
     )
+    assert len(cut_tagged) > _SUMMARY_TAG_GRACE_CHARS
     provider = _TagWatchStreamProvider(
         [cut_tagged],
         ["length"],
@@ -2010,11 +2013,15 @@ def test_the_stream_is_closed_when_the_watcher_cuts() -> None:
             closed = True
 
     async def run() -> None:
+        events = _events()
         with pytest.raises(_SummaryTagNotOpened):
-            await _collect_stream_watching_tag(_events())
+            await _collect_stream_watching_tag(events)
+        # Read inside the loop and while the generator is still referenced: asyncio.run closes
+        # any async generator left open when its loop shuts down, which would set the flag
+        # whether or not the watcher closed the stream itself.
+        assert closed is True
 
     asyncio.run(run())
-    assert closed is True
 
 
 # ── ADR-0369: a cut reply is kept, and nothing installed runs past the line ─────────────
