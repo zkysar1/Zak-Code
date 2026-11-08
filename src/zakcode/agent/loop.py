@@ -583,6 +583,16 @@ def _earlier_summary_body(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
+def _without_position_notes(text: str) -> str:
+    """``text`` without any copy of the harness's position note (ADR-0365). The harness
+    writes its note fresh at every compaction (ADR-0330); a copy a model wrote, echoing the
+    note in its own replies, was carried into the next summary as one more authoritative
+    position, and a stale one."""
+    if _POSITION_NOTE_HEAD not in text:
+        return text
+    return re.sub(r"\n{3,}", "\n\n", _POSITION_NOTE_RE.sub("", text)).strip()
+
+
 def _carried_parts(body: str) -> tuple[str, str, str]:
     """An earlier summary's body (:func:`_earlier_summary_body`) split for the next compaction
     (ADR-0370): what the summarizer reads, the summary's own history that it is spared, and the
@@ -3369,6 +3379,8 @@ class AgentLoop:
                 label, text = "earlier summary", _carried_parts(_earlier_summary_body(text))[0]
             elif message.role == "user" and _composed_skill_body(text):
                 text = _held_for_summary(text, "this skill's instructions")
+            else:
+                text = _without_position_notes(text)  # ADR-0365: a model's echo of the note
             if text:
                 lines.append(text)
             for use in message.tool_uses:
@@ -3670,14 +3682,15 @@ class AgentLoop:
         self, text: str, summarized: Sequence[Message] = (), *, held: bool = False
     ) -> str:
         """A model's summary, made safe to resume from (ADR-0082): its tool-call and
-        thinking markup stripped, and the harness's own position note appended.
-        ``summarized`` is the part of the history the summary replaces (ADR-0238). ``held``
-        says the summary was cut or held to its line, and the note says so (ADR-0369)."""
-        summary = _strip_model_markup(text)
+        thinking markup stripped, any position note it copied dropped (ADR-0365), and the
+        harness's own position note appended. ``summarized`` is the part of the history the
+        summary replaces (ADR-0238). ``held`` says the summary was cut or held to its line,
+        and the note says so (ADR-0369)."""
+        summary = _without_position_notes(_strip_model_markup(text))
         note = self._compaction_position_note(summarized)
         if held:
             note = f"{note or _POSITION_NOTE_HEAD}\n{_SUMMARY_HELD_LINE}"
-        return f"{summary}\n\n{note}" if note else summary
+        return "\n\n".join(part for part in (summary, note) if part)
 
     def _compaction_position_note(self, summarized: Sequence[Message] = ()) -> str:
         """Where the session IS, from the harness's own state — the plan's current step and
