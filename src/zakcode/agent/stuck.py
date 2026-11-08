@@ -149,8 +149,8 @@ SIG_PLAN_ONLY = "plan-only"
 #: The same bound on completions that only PRINT (ADR-0373). A shell call whose whole command is
 #: one ``echo`` of literal words reads nothing and changes nothing, and each string can differ,
 #: which the doom guard's byte-identical test cannot see and the outcome signal skips as too
-#: short. Measured on a served fleet (ten Bodies, one 35B-class local model, 2026-11-07, 24 h,
-#: 7,723 completions): one Body ran 149 such completions in a row, one every 3 s, until an
+#: short. Measured on a served fleet (ten sessions, one 35B-class local model, 2026-11-07, 24 h,
+#: 7,723 completions): one session ran 149 such completions in a row, one every 3 s, until an
 #: operator interrupted it, and no other run passed 2. Runs that MIX a print with plan calls
 #: occur in ordinary work, so a run here is prints alone, counted apart: ADR-0364's count is
 #: untouched and a print ends a plan-only run as any other call does. The completion that would
@@ -158,9 +158,10 @@ SIG_PLAN_ONLY = "plan-only"
 #: refusal does, on ``SIG_PRINT_ONLY``, so what the rails say is true of what was counted.
 SIG_PRINT_ONLY = "print-only"
 #: A whole shell command that only prints literal words: ``echo``, then words with no expansion,
-#: substitution, escape, glob, pipe, redirect, separator or comment in them.
+#: substitution, escape, glob, pipe, redirect, separator or comment in them. The words are
+#: joined by spaces and tabs only: a newline ends the ``echo``, and whatever follows it runs.
 _PRINT_ONLY_RE = re.compile(
-    r"""\s*echo(?:\s+(?:"[^"`$\\]*"|'[^']*'|[^\s"'`$\\|;&<>()#*?\[\]~{}]+))+\s*"""
+    r"""\s*echo(?:[ \t]+(?:"[^"`$\\]*"|'[^']*'|[^\s"'`$\\|;&<>()#*?\[\]~{}]+))+\s*"""
 )
 
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``

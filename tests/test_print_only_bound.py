@@ -53,6 +53,7 @@ PRINTS = [
     "echo -n done",
     "echo several bare words",
     'echo "a line\nand another"',
+    "echo hi\n",
 ]
 NOT_PRINTS = [
     'echo "$HOME"',
@@ -78,6 +79,9 @@ NOT_PRINTS = [
     "echoes a",
     "ls",
     'printf "x"',
+    'echo "step 1"\nmake test1',
+    "echo a\nls",
+    "echo\nhi",
 ]
 
 
@@ -358,3 +362,19 @@ async def test_a_print_between_real_steps_is_never_refused(streamed: bool) -> No
     assert len(shell.runs) == 10
     assert probe.runs == 5
     assert not [e for e in loop._trace.events if e.data.get("kind") == "plan_only_bound"]
+
+
+def _call(n: int, command: str) -> LLMResult:
+    call = ToolCall(id=f"print-{n}", name="powershell", arguments={"command": command})
+    return LLMResult(text="", tool_calls=[call], usage=Usage(total_tokens=1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_banner_echo_then_real_command_runs_every_time(streamed: bool) -> None:
+    cmds = [f'echo "step {n}"\nmake test{n}' for n in range(1, 4)]
+    script = [_plan_call(_steps("a", "b")), _judge_ok()]
+    script += [_call(n, c) for n, c in enumerate(cmds, 1)]
+    script += [_done(), _review_ok()]
+    _session, _loop, shell, _probe, _stop = await _turn(script, streamed)
+    assert shell.runs == cmds

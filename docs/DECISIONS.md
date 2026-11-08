@@ -23651,7 +23651,9 @@ Decision.
 - The stuck tracker counts the print-only completions in a row: every call is one of the loop's shell
   tools (`_SHELL_TOOLS`), and its whole command is `echo` then literal words. A
   word holding an expansion, a substitution, an escape, a glob, a pipe, a redirect, a separator or a
-  comment is not literal, so `echo $HOME` and `echo a > f` are work.
+  comment is not literal, so `echo $HOME` and `echo a > f` are work. The words are joined by spaces
+  and tabs only: a newline ends the `echo` and the next line runs, so `echo "step 1"` with `make` on
+  the line after it is work too.
 - That count is apart from ADR-0364's. A print ends a plan-only run as any other call does, and a
   plan call ends a print-only run, so a mixed run is refused by neither. One count over both would
   refuse the mixed runs above, and each of those ended by itself.
