@@ -1800,19 +1800,28 @@ sessions found ten such firings, all on development test identities; six of the 
 open with a source sentence (production was not measured). Numbers the operator wrote into the
 prompt are given, not measured, so a third source joins tool output and user messages: the
 identity (`self.md`) and the bodies of `alwaysApply: true` rules (ADR-0105). Those are the texts the
-prompt carries in full under both renders, and the ones a person set apart: `save_rule` cannot set
-the flag, so a rule the model saved is never one. Everything else stays unsourced: a plain rule
-(the lean render carries its one-line index, so the model may never have been shown the body), a
-rule the model saved, a skill's description (`save_skill` writes those) and an output style.
+prompt carries under both renders (a rule's body up to its per-rule cap), and the ones a person set
+apart: `save_rule` has no parameter for the flag and refuses a description with any line break, so a
+rule it saves is never one. Everything else stays unsourced: a plain rule (the lean render carries
+its one-line index, so the model may never have been shown the body), a rule saved with
+`save_rule`, a skill's description (`save_skill` writes those) and an output style.
 Assistant text stays excluded, as above. Pinned text is read by `_pinned_figures`, looser than
 `_figures` on purpose: pinned prose ends a sentence on its number ("text HOME to 741741."), and
 `_figures` refuses a figure followed by a full stop or a comma because there it guards against
 decimals and list fragments. Over-reading a source sources one more figure; under-reading it
 flags a number the operator wrote. Unchanged: the hint, the once-per-turn bound and the
 no-tool-call condition. Residual: a card pinned in a plain rule still draws the hint, so mark it
-`alwaysApply: true`; and the identity is trusted as the operator's file, so a deployment whose
-model can rewrite it should pin text that must stay fixed in an `alwaysApply` rule outside the
-workspace.
+`alwaysApply: true`. Pinned means set apart by whoever wrote the file, not out of the model's reach:
+the model's file tools can write `alwaysApply: true` into a rule file inside the workspace
+(`.zakcode/rules/` or `.claude/rules/`), and from the next session that rule is pinned and sources
+its figures. The identity is trusted as the operator's file, so a deployment whose model can
+rewrite it is in the same position. A deployment that must keep the model from pinning
+text, or from replacing text it pinned, keeps that text in an `alwaysApply` rule in the user rules
+directory (`~/.config/zakcode/rules/`), outside the workspace, where the file tools do not write. A
+workspace rule of the same name shadows it, so that deployment also moves any same-named workspace
+file aside at each start. Two limits of the source set: a figure past a rule's per-rule cap, or in
+a rule the total rules budget drops, counts as sourced though the prompt cut it off, and a number
+written against CJK text with no space is not read.
 
 ## ADR-0045: A composed skill turn keeps its frame and drops its body once the turn ends
 

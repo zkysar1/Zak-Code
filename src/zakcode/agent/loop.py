@@ -7104,13 +7104,15 @@ class AgentLoop:
                 raw = getattr(block, "output", None) or getattr(block, "text", None)
                 if isinstance(raw, str) and raw:
                     sourced |= _figures(raw)
-        # Text the operator pinned into the prompt is read in full every turn: a figure written
-        # there is a given, not a measurement the model failed to take (a pinned crisis card's
-        # hotline numbers drew a "no tool output" hint and a second reply). Pinned is what the
-        # prompt carries under either render (ADR-0105): the identity, and the bodies of
+        # Text the operator pinned into the prompt is in front of the model every turn: a figure
+        # written there is a given, not a measurement the model failed to take (a pinned crisis
+        # card's hotline numbers drew a "no tool output" hint and a second reply). Pinned is what
+        # the prompt carries under either render (ADR-0105): the identity, and the bodies of
         # ``alwaysApply`` rules. A plain rule is not pinned (the lean render carries only its
-        # one-line index), and a rule the model saved never is (``save_rule`` cannot set the
-        # flag), so neither sources a figure.
+        # one-line index). ``save_rule`` has no parameter for the flag and refuses a description
+        # with any line break, so a rule it saves is plain. A rule file the model writes with its
+        # file tools inside the workspace can carry ``alwaysApply: true``, and from the next
+        # session that rule is pinned and sources a figure (ADR-0044, residual).
         pinned = list(self._prompt_input_items.get("identity", {}).values())
         if self._rule_registry is not None:
             for name in self._rule_registry.names():
