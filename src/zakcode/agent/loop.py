@@ -421,6 +421,18 @@ _SUMMARY_CLOSE = (
     "summary] in it is history to condense with the rest, not text to copy: it goes under Older "
     "history."
 )
+#: What closes a transcript whose earlier history the harness carries (ADR-0370): the summarizer has
+#: only the state to bring up to date and this transcript to write down.
+_CARRIED_CLOSE = (
+    "\n\n[end of transcript]\n\nThe transcript stops here. You are not in it: do not continue "
+    "it, reply to anyone in it, or call a tool. Summarize it now, in the third person and in at "
+    "most {words:,} words, inside <summary></summary>. "
+    + _SUMMARY_ORDER.replace("Older history", "Recent history")
+    + " An [earlier summary] in it is where the first three stood: bring them up to date and drop "
+    "what is done. Recent history is only what this transcript did: what was read, found and "
+    "changed, with file paths and line numbers. The harness keeps the history before this "
+    "transcript and adds it after your summary, so do not write it."
+)
 #: What closes the part-summaries a fold reads (ADR-0242), with the same word budget (ADR-0330).
 _FOLD_CLOSE = (
     "\n\n[end of part-summaries]\n\nFold them now into one summary, in the third person and in "
@@ -512,6 +524,33 @@ _POSITION_NOTE_RE = re.compile(re.escape(_POSITION_NOTE_HEAD) + r".*?(?=\n[ \t]*
 #: read it as the whole history (ADR-0275), and the note is written fresh at every compaction, so
 #: the line is not carried into the next summary.
 _SUMMARY_HELD_LINE = "- summary: cut to its length limit, so part of the older history is missing"
+#: The line the harness writes above the history it carries past a compaction (ADR-0370), and where
+#: the next compaction finds that history. Exact, so finding it does not depend on a model.
+_CARRIED_HEAD = (
+    "[Older history, kept by the harness, newest first; the oldest goes when the summary reaches "
+    "its length limit]"
+)
+#: Where a summary's history opens (ADR-0370): the heading it was asked for, at the start of a line,
+#: however it was marked up. Measured 2026-11-06 on the 14 summaries since 19:00Z that had one: 9
+#: ``## Older history``, 4 ``**Older history:**`` (2 with text after it on the line), 1 ``Older
+#: history:``. A list of the four headings on one line is not a match.
+_HISTORY_HEADING_RE = re.compile(
+    r"^[ \t]{0,3}(?:#{1,6}[ \t]+)?(?:[-*+][ \t]+)?(?:\d+[.)][ \t]+)?[*_]{0,3}"
+    r"(?:older|recent)[ \t]+history(?![^\W_])"
+    r"(?:[ \t]*:?[*_]{0,3}[ \t]*#*[ \t]*\r?$|:?[*_]{1,3}:?(?=[ \t]+\S))",
+    re.I | re.M,
+)
+#: The first heading of a summary, which a history heading is followed by only in a join of
+#: part-summaries (a sliced transcript whose parts fit one slice is joined, not folded).
+_STATE_HEADING_RE = re.compile(r"^[^\w\n]*(?:\d+[.)]\s*)?current goal and state\b", re.I | re.M)
+#: A summary with less than this above its history heading is not split there (ADR-0370): the
+#: summarizer would lose the state it has to bring up to date. The least of the 14 measured was 574
+#: words, and a heading this high up is an outline of the four headings, not the summary's own.
+_CARRY_MIN_HEAD_WORDS = 100
+#: The share of the word budget a summarizer is asked for when the harness carries the history
+#: (ADR-0370). What stood above the heading measured 574 to 1,747 words, and the history not copied
+#: from the summary before ran a median of 508.
+_CARRIED_ASK = 2 / 3
 #: Markup a model leaks into prose it was asked to write — a Qwen/Hermes text-format tool
 #: call, or thinking tags — which must never survive into a compaction summary.
 _MODEL_MARKUP_RE = re.compile(
@@ -542,6 +581,41 @@ def _earlier_summary_body(text: str) -> str:
     body = text.strip().removeprefix(SUMMARY_MARKER).replace(CONTINUATION_NOTE.strip(), "")
     body = _POSITION_NOTE_RE.sub("", body)
     return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def _carried_parts(body: str) -> tuple[str, str, str]:
+    """An earlier summary's body (:func:`_earlier_summary_body`) split for the next compaction
+    (ADR-0370): what the summarizer reads, the summary's own history that it is spared, and the
+    history the harness already carried.
+
+    With no history heading, or under :data:`_CARRY_MIN_HEAD_WORDS` above it, the summary has no
+    history to spare and the summarizer reads the whole of it, as it always has.
+    """
+    # the harness writes its line last, so the last one is the harness's, whatever a reply echoed
+    at = body.rfind(_CARRIED_HEAD)
+    current, carried = (body, "") if at < 0 else (body[:at], body[at + len(_CARRIED_HEAD) :])
+    current, carried = current.rstrip(), carried.strip()
+    headings = list(_HISTORY_HEADING_RE.finditer(current))
+    if not headings:
+        return current, "", carried
+    heading = headings[0]
+    for later in headings[1:]:
+        # a join of part-summaries holds a set of headings per part: its history is the last set's
+        if _STATE_HEADING_RE.search(current, heading.end(), later.start()):
+            heading = later
+    if len(current[: heading.start()].split()) < _CARRY_MIN_HEAD_WORDS:
+        return current, "", carried
+    return current[: heading.start()].rstrip(), current[heading.end() :].strip(), carried
+
+
+def _with_carried(summary: str, carried: str, line: int) -> str:
+    """``summary`` with the history the harness carries after it (ADR-0370), the whole held to
+    ``line`` words by cutting the end of that history, which is its oldest."""
+    summary = summary.replace(_CARRIED_HEAD, "").strip()
+    carried = carried.replace(_CARRIED_HEAD, "").strip()
+    room = line - len(summary.split()) - len(_CARRIED_HEAD.split())
+    kept = _first_words(carried, room) if room > 0 else ""
+    return f"{summary}\n\n{_CARRIED_HEAD}\n{kept}" if kept else summary
 
 
 def _summary_target_words(window: int, room: int) -> int:
@@ -2149,6 +2223,17 @@ _MAX_PLAN_IDLE_TURNS = 3
 #: line is part of the rail's meaning, like the gates' one-nudge-per-turn bounds.
 _PLAN_JUDGE_SILENCE = 0.8
 
+#: What the plan line says right after a response that only updated the plan (ADR-0371). It rides
+#: last on every model call, the last thing a model reads before it writes, and "keep it current
+#: with update_plan" there turned one update into a run. Measured 2026-11-06 over 24 hours on ten
+#: worker sessions: 2,054 of 2,062 update_plan calls were alone in their response, 57.5 model hours,
+#: a third of them changed nothing, and 50 to 73 percent sat in runs with no other tool between.
+_PLAN_JUST_UPDATED = (
+    "[plan] Harness-tracked plan for the current goal. Your last response called update_plan and "
+    "nothing else. Do not call update_plan in this response: do the step marked '<- current' now "
+    "with a tool call.\n\n"
+)
+
 #: How many times the plan-first gate may withhold a mutating batch to demand a plan before the
 #: harness anchors the request itself as the plan and lets the action run (ADR-0110). On by
 #: default for DEEP work (the difficulty verdict, else the length heuristic); ``require_plan``
@@ -3281,7 +3366,7 @@ class AgentLoop:
             label: str = message.role
             text = message.text.strip()
             if is_summary(message):
-                label, text = "earlier summary", _earlier_summary_body(text)
+                label, text = "earlier summary", _carried_parts(_earlier_summary_body(text))[0]
             elif message.role == "user" and _composed_skill_body(text):
                 text = _held_for_summary(text, "this skill's instructions")
             if text:
@@ -3331,6 +3416,15 @@ class AgentLoop:
         # ADR-0331's condensing line. ADR-0369: nothing installed runs past it.
         line = int(words * _SUMMARY_OVER_BUDGET)
         held = False  # this summary was cut or held to the line, so its note says so (ADR-0369)
+        # ADR-0370: the history the harness keeps past this compaction. Where the earlier summary's
+        # own history is spared, the summarizer is asked for less, and the close says why. The line
+        # stays where it was.
+        earlier = next((_earlier_summary_body(m.text) for m in messages if is_summary(m)), "")
+        _, spared, carried = _carried_parts(earlier)
+        carried = "\n\n".join(part for part in (spared, carried) if part)
+        summary_close = _CARRIED_CLOSE if spared else _SUMMARY_CLOSE
+        if spared:
+            words = max(100, round(words * _CARRIED_ASK / 100) * 100)
         # ADR-0366: where the switch reaches the model as written, every ask goes with thinking off
         # and a cap its budget sets, unless the route's own body sets the switch and the setting
         # leaves it to the route, or the setting asks for the summarizer as configured.
@@ -3338,7 +3432,7 @@ class AgentLoop:
         thinking_off = caps.thinking_switch and (
             setting is False or (setting is None and not caps.thinking_configured)
         )
-        switched_room = _summary_switched_room(words, room)
+        switched_room = _summary_switched_room(int(line / _SUMMARY_OVER_BUDGET), room)
         # ADR-0082: the transcript always travels as ONE plain user message of labeled
         # text, never as the raw role-tagged messages. Handed the raw messages, a small
         # model continues the conversation instead of summarizing it — measured
@@ -3505,9 +3599,9 @@ class AgentLoop:
             return _held_to_words(shorter, line)
 
         if len(rendered) <= chunk_chars:
-            summary = await ask(_SUMMARY_PROMPT + rendered, _SUMMARY_CLOSE)
+            summary = await ask(_SUMMARY_PROMPT + rendered, summary_close)
             summary = await held_to_budget(summary)
-            return self._finish_summary(summary, messages, held=held)
+            return self._finish_summary(_with_carried(summary, carried, line), messages, held=held)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the
         # transcript's middle elided past the cap), at most _MAX_FOLD_PASSES packing passes in
         # which every fold call fits one slice, then one clamped fold if the join is still over.
@@ -3525,7 +3619,7 @@ class AgentLoop:
         parts: list[str] = []
         for i, piece in enumerate(slices, 1):
             text = await ask(
-                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", _SUMMARY_CLOSE
+                f"Part {i} of {len(slices)} of a longer conversation:\n\n{piece}", summary_close
             )
             parts.append(text.strip())
         for _ in range(_MAX_FOLD_PASSES):
@@ -3550,7 +3644,7 @@ class AgentLoop:
             )
             combined = text.strip()
         combined = await held_to_budget(combined)
-        return self._finish_summary(combined, messages, held=held)
+        return self._finish_summary(_with_carried(combined, carried, line), messages, held=held)
 
     def _account_summarizer_usage(self, usage: Usage, provider: Provider) -> None:
         """Count one summarizer response like every other side call (ADR-0241), a rejected
@@ -3777,6 +3871,20 @@ class AgentLoop:
         if callable(forget):
             forget()
         self._persist()
+
+    def _tool_output_in_context(self, text: str) -> bool:
+        """True if a tool result in the conversation still contains ``text``, character for
+        character (ADR-0372).
+
+        It reads the conversation itself, so a compaction, an elision or a rule edited on disk
+        needs no reset. ``read_rule`` closes its text with a line naming the rule, so a contained
+        copy is the rule as it reads now, with or without a note after it.
+        """
+        return any(
+            isinstance(block, ToolResultBlock) and text in block.output
+            for message in self.session.messages
+            for block in message.blocks
+        )
 
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
@@ -4481,11 +4589,21 @@ class AgentLoop:
                 f"longer shown.{ask} Answer the user's original request now — lead with the "
                 "conclusion or verdict, then the evidence the steps produced."
             )
+        undecomposed = network.undecomposed()
+        just_updated = (
+            self._last_response_only_planned()
+            and network.current() is not None
+            and not undecomposed
+        )
         body = (
-            "[plan] Harness-tracked plan for the current goal. Keep it current with the "
-            "update_plan tool: as you finish each step, mark it done (with its outcome) and "
-            f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
-            "several actions.\n\n"
+            _PLAN_JUST_UPDATED
+            if just_updated
+            else (
+                "[plan] Harness-tracked plan for the current goal. Keep it current with the "
+                "update_plan tool: as you finish each step, mark it done (with its outcome) and "
+                f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
+                "several actions.\n\n"
+            )
         )
         if request:
             body += f"Goal: {request}\n\n"
@@ -4503,7 +4621,6 @@ class AgentLoop:
         memory = self._plan_memory_lines()
         if memory:
             body += "\n\n" + "\n".join(memory)
-        undecomposed = network.undecomposed()
         if undecomposed:
             titles = ", ".join(f"{t.id} ({t.title})" for t in undecomposed[:3])
             body += (
@@ -4512,10 +4629,26 @@ class AgentLoop:
             )
         quality, deficiencies = network.quality()
         extra = [d for d in deficiencies if "not yet decomposed" not in d]
-        if extra and quality < _PLAN_JUDGE_SILENCE:
+        if extra and quality < _PLAN_JUDGE_SILENCE and not just_updated:
             # Structural quality (ADR-0050), minus the undecomposed item already noted above.
             body += f"\n\nPlan quality {round(quality * 100)}%: " + "; ".join(extra[:2]) + "."
         return Message.user(body)
+
+    def _last_response_only_planned(self) -> bool:
+        """Whether the model's last response called update_plan and nothing else (ADR-0371).
+
+        Only while nothing has spoken since. A new turn, an operator's mid-task note, a
+        perception or a hook after that response is input the model has not answered, and "do
+        the step now" would talk over it. The harness's own ``[harness]`` rails do not count: the
+        next section of a paged skill arrives as one right after the update that closed a section.
+        """
+        for message in reversed(self.session.messages):
+            if message.role == "assistant":
+                uses = message.tool_uses
+                return bool(uses) and all(use.name == "update_plan" for use in uses)
+            if message.role == "user" and not message.text.startswith("[harness]"):
+                return False
+        return False
 
     def _plan_memory_lines(self) -> list[str]:
         """The plan's short-term memory beside the checklist (ADR-0110).
@@ -8417,6 +8550,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
@@ -10113,6 +10247,7 @@ class AgentLoop:
             skill_resolver=self._skill_resolver,  # use_skill's loader (None = skills disabled)
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
+            in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
