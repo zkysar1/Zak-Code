@@ -23676,22 +23676,78 @@ Not verified: a read after the pointer can be declined. When the earlier asks ca
 read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
 ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
 
-## ADR-0373: a summarizer ask that does not open its summary tag is cut early and retried cheaply
+## ADR-0373: a run of completions that only print is bounded, as a run of plan-only ones is
+
+Status: accepted. 2026-11-07. The sibling of ADR-0364, on its path and its ladder, and held to
+ADR-0198 (a rail says only what was counted).
+
+Context. A shell call whose whole command is one `echo` of literal words reads nothing and changes
+nothing. A model that sends them one after another makes no progress and no net sees it. The doom
+guard needs a byte-identical batch, and each string can differ. The outcome signal of ADR-0038
+skips outputs under 24 characters, and a counter never repeats anyway. The other signals key on
+errors, and an echo succeeds.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model, read from
+each session's own transcript (tool names, times, command heads only), 24 h to 2026-11-07. One
+session sent 149 such calls in a row, `echo "NEXT3"`, `echo "NEXT4"` and so on, one every 3 s, for
+7 min 41 s, and stopped only when an operator interrupted it. Nothing else bounded it. Just before
+the run the model ended a reply on text and the host's turn-end hook told it to make its next action
+a tool call. That hook fired 293 times in the 24 h: 249 went on to work and 4 to a bare echo, so it is
+no cause by itself, and why this session had no step to take is not measured. Across all ten sessions,
+7,723 completions: 164 such calls, and no other run of them longer than 2. No turn-end veto sat
+between the calls of the run, so a count that a veto resets would have seen all of it. Runs that MIX a print with
+plan calls do occur in ordinary work: `lpp`, `llp`, `plpp`, `lllllpl`.
+
+Decision.
+- The stuck tracker counts the print-only completions in a row: every call is one of the loop's shell
+  tools (`_SHELL_TOOLS`), and its whole command is `echo` then literal words. A
+  word holding an expansion, a substitution, an escape, a glob, a pipe, a redirect, a separator or a
+  comment is not literal, so `echo $HOME` and `echo a > f` are work. The words are joined by spaces
+  and tabs only: a newline ends the `echo` and the next line runs, so `echo "step 1"` with `make` on
+  the line after it is work too.
+- That count is apart from ADR-0364's. A print ends a plan-only run as any other call does, and a
+  plan call ends a print-only run, so a mixed run is refused by neither. One count over both would
+  refuse the mixed runs above, and each of those ended by itself.
+- The third such completion in a row is answered unexecuted, on both turn paths, by the path ADR-0364
+  built: an error result with `data={"plan_only_bound": True}` and the note `kind="plan_only_bound"`.
+  Its words are its own: "Not executed: this is response 3 in a row that only prints a fixed string
+  ... A print reads nothing and changes nothing. The plan's current step is <id> '<title>': do that
+  step now with a tool call that does the work, or answer in text if the work is done. A print runs
+  again once another tool has run."
+- A refusal fires `SIG_PRINT_ONLY` alone and drives the ladder one rung per refusal after the first,
+  as a plan-only refusal does: a nudge at the 4th such completion, read-only tools at the 5th, the
+  step back at the 6th, a stop at the 7th. The nudge and rung 1's seeded step say what was counted,
+  and that step's note now says a print does not finish it.
+- Digit-normalizing the doom guard's signature was rejected. Paged reads differ only in digits, so
+  three pages in a row would end a turn.
+
+Not done. `printf`, `true` and `:` are not counted: none was measured. A model that moves to them
+walks past this bound.
+
+The proof. `tests/test_print_only_bound.py` pins the third print refused though every string differs;
+what counts and what does not, command by command; every shell tool and no other; a print beside
+real work; a mixed run refused by neither bound; the bound inert without shell tools and cleared by a
+reset; the ladder to a stop; a plan-only refusal still told as one; and the refusal, a run to a stop
+and a print between real steps on both turn paths. 35 mutations of the predicate, the counts, the
+words and both seams each fail the file.
+
+## ADR-0376: a summarizer ask that does not open its summary tag is cut early and retried cheaply
 
 Status: accepted. 2026-11-08. Builds on ADR-0242 (the one resample), ADR-0251 (streamed and
 collected), ADR-0366 (thinking off, a lower cap) and ADR-0369 (a cut reply is kept).
 
-Context. Measured over ~212 session-hours on an inference server: 6 of 37 compactions that reached
-the output cap lost their first ask because the summarizer's response never opened its `<summary>`
-tag (ADR-0242). Each streamed to exactly 16,471 tokens over ~10 minutes before being rejected at
-`_summary_of`. Two compactions lost both their first ask and their one resample this way, spending
-~20 engine-minutes each and installing no summary. The instruction asks for "only the summary, inside
-`<summary></summary>`", so a well-formed reply opens the tag in its first few dozen characters; a
-reply that has written 300 characters of visible text without opening it is not going to.
+Context. Measured over ~212 session-hours on an inference server: of 37 compactions whose summarizer
+reached the output cap, 6 lost their first ask. Each such ask streamed to the cap of a thinking-off
+ask (16,471 tokens, 592 to 667 s) before `_summary_of` rejected it, and two compactions lost their
+one resample the same way, spending about 20 engine-minutes each and installing no summary. A cut
+reply that opened its `<summary>` tag is kept (ADR-0369), so each rejected reply either never opened
+the tag or opened it too late to hold the floor; the replies themselves were not read. The
+instruction asks for "only the summary, inside `<summary></summary>`", so a well-formed reply opens
+the tag at or near its start.
 
 Decision.
 - The summarizer's streamed ask watches visible text (not a separate thinking channel) for a
-  case-insensitive `<summary` opening. When visible text passes `_SUMMARY_TAG_GRACE_CHARS` (300)
+  case-insensitive `<summary` opening. When visible text passes `_SUMMARY_TAG_GRACE_CHARS` (2,000)
   without one, the stream is closed early so the server is freed within about a second (PR #862's
   close fires) and the ask is treated as rejected.
 - A fast-failed ask costs about a minute, not ten, so up to `_SUMMARY_FAST_FAIL_RESAMPLES` (3)
@@ -23712,12 +23768,13 @@ Decision.
 What was considered and not done.
 - Watching the condensing ask. The condensing ask is small and cheap, and its input already contains a
   valid summary, so cutting it early saves nothing measurable.
-- A lower grace (50 characters). A model that echoes part of the instruction or adds a short preamble
-  before the tag would be cut too early. 300 characters is generous for any realistic preamble while
-  still cutting 10-minute fills after about a minute.
+- A lower grace (300 characters or fewer). A model that echoes part of the instruction, or writes a
+  short preamble before the tag, would be cut, and how long the preambles of accepted replies run was
+  not measured. 2,000 characters of visible text stream in well under a minute on the same server
+  (its 16,471-token asks took 592 to 667 s), so the wider grace costs little next to a 10-minute fill.
 
 The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
 cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
 a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; a
-thinking route is not cut while it thinks; a tagged cut reply is still kept; the stream is closed
+thinking route is not cut while it thinks, nor a reply whose preamble stays under the grace; a tagged cut reply is still kept; the stream is closed
 (`aclose`) when the watcher cuts.

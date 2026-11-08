@@ -47,7 +47,6 @@ from zakcode.agent.loop import (
     _SUMMARY_OVER_BUDGET,
     _SUMMARY_TAG_GRACE_CHARS,
     _SWITCH_OVERRIDE,
-    _SummaryTagNotOpened,
     AgentLoop,
     _carried_parts,
     _clamp_middle,
@@ -61,6 +60,7 @@ from zakcode.agent.loop import (
     _summary_output_room,
     _summary_switched_room,
     _summary_target_words,
+    _SummaryTagNotOpened,
     _with_carried,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -1776,7 +1776,7 @@ def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Pat
     assert any("refused the thinking switch" in line for line in said)
 
 
-# ── ADR-0373: a tag that does not open is cut early and retried cheaply ────────────────
+# ── ADR-0376: a tag that does not open is cut early and retried cheaply ────────────────
 
 
 class _TagWatchStreamProvider(_ScriptedSummarizer):
@@ -1854,8 +1854,10 @@ class _TagWatchStreamProvider(_ScriptedSummarizer):
 
 
 def test_a_tag_that_never_opens_is_cut_early_and_the_resample_installs(tmp_path: Path) -> None:
-    # ADR-0373: 300+ characters of visible text without <summary> is cut early.
-    no_tag = "Here is my plan for summarizing the conversation. " * 20  # 1000 chars, no tag
+    # ADR-0376: visible text past the grace without <summary> is cut early.
+    no_tag = "Here is my plan for summarizing the conversation. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 50 + 20
+    )  # past the grace, no tag
     provider = _TagWatchStreamProvider(
         [no_tag, _WHOLE],
         ["stop", "stop"],
@@ -1878,7 +1880,7 @@ def test_a_tag_that_never_opens_is_cut_early_and_the_resample_installs(tmp_path:
 
 def test_three_fast_fails_then_a_success_installs(tmp_path: Path) -> None:
     # Up to _SUMMARY_FAST_FAIL_RESAMPLES resamples for fast-fail rejections.
-    no_tag = "No summary here. " * 50  # 900 chars, no tag
+    no_tag = "No summary here. " * (_SUMMARY_TAG_GRACE_CHARS // 17 + 20)  # past the grace, no tag
     provider = _TagWatchStreamProvider(
         [no_tag, no_tag, no_tag, _WHOLE],
         ["stop", "stop", "stop", "stop"],
@@ -1899,7 +1901,7 @@ def test_three_fast_fails_then_a_success_installs(tmp_path: Path) -> None:
 def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> None:
     # _SUMMARY_FAST_FAIL_RESAMPLES is 3, so four fast-fails exhaust the budget:
     # 1 original ask + 3 resamples = 4 asks total, all fast-fail.
-    no_tag = "I will now plan. " * 50
+    no_tag = "I will now plan. " * (_SUMMARY_TAG_GRACE_CHARS // 17 + 20)  # past the grace, no tag
     provider = _TagWatchStreamProvider(
         [no_tag],  # same answer every time
         ["stop"],
@@ -1920,7 +1922,9 @@ def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> No
 def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
     # A route that thinks on purpose must not be cut while it thinks (ADR-0366).
     # Here the thinking is very long but the visible text is short and contains the tag.
-    long_thinking = "Let me reason about this summary. " * 50  # 1700 chars of thinking
+    long_thinking = "Let me reason about this summary. " * (
+        2 * _SUMMARY_TAG_GRACE_CHARS // 34
+    )  # twice the grace, all thinking
     provider = _TagWatchStreamProvider(
         [_WHOLE],
         ["stop"],
@@ -1934,6 +1938,27 @@ def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
     assert len(provider.seen) == 1  # no retry, the first ask succeeded
     summary = loop.session.messages[0].text
     assert "The session fixed the parser." in summary
+
+
+def test_a_preamble_under_the_grace_is_not_cut(tmp_path: Path) -> None:
+    # ADR-0376: the grace is wide because the preambles of accepted replies were not measured. A
+    # reply that writes a long preamble, still under the grace, then opens its tag installs on the
+    # first ask.
+    preamble = "Reading the conversation before writing it up. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 48 // 2
+    )
+    assert 300 < len(preamble) < _SUMMARY_TAG_GRACE_CHARS
+    provider = _TagWatchStreamProvider([preamble + "\n" + _WHOLE], ["stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_fast_fail"] == 0
 
 
 def test_a_tagged_cut_reply_is_still_kept_under_the_watcher(tmp_path: Path) -> None:
