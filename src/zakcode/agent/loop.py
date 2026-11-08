@@ -463,7 +463,8 @@ _SUMMARY_RESAMPLES = 1
 #: ``<summary></summary>``", so a well-formed reply opens the tag at or near its start. How
 #: long the preamble of an accepted reply runs was not measured, so the grace is wide: 2,000
 #: characters stream in well under a minute, against the ~10 minutes of an ask that fills its
-#: output limit (16,471-token asks took 592 to 667 s on an inference server).
+#: output limit (on an inference server, the four such calls of the two compactions that
+#: installed nothing ran to the 16,469-token cap in 576 to 667 s each).
 _SUMMARY_TAG_GRACE_CHARS = 2_000
 #: How many resamples a fast-failed ask (stream cut early because the tag did not open) gets
 #: before the compaction falls back.  A fast-failed ask costs about a minute, not ten, so it

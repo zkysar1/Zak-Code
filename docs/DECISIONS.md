@@ -23737,9 +23737,10 @@ Status: accepted. 2026-11-08. Builds on ADR-0242 (the one resample), ADR-0251 (s
 collected), ADR-0366 (thinking off, a lower cap) and ADR-0369 (a cut reply is kept).
 
 Context. Measured over ~212 session-hours on an inference server: of 37 compactions whose summarizer
-reached the output cap, 6 lost their first ask. Each such ask streamed to the cap of a thinking-off
-ask (16,471 tokens, 592 to 667 s) before `_summary_of` rejected it, and two compactions lost their
-one resample the same way, spending about 20 engine-minutes each and installing no summary. A cut
+reached the output cap, 6 lost their first ask. Each such ask streamed to the 16,469-token cap of a
+thinking-off ask before `_summary_of` rejected it, and two compactions lost their one resample the
+same way: their four calls took 576 to 667 s each, about 20 engine-minutes per compaction, and
+installed no summary. A cut
 reply that opened its `<summary>` tag is kept (ADR-0369), so each rejected reply either never opened
 the tag or opened it too late to hold the floor; the replies themselves were not read. The
 instruction asks for "only the summary, inside `<summary></summary>`", so a well-formed reply opens
@@ -23771,7 +23772,8 @@ What was considered and not done.
 - A lower grace (300 characters or fewer). A model that echoes part of the instruction, or writes a
   short preamble before the tag, would be cut, and how long the preambles of accepted replies run was
   not measured. 2,000 characters of visible text stream in well under a minute on the same server
-  (its 16,471-token asks took 592 to 667 s), so the wider grace costs little next to a 10-minute fill.
+  (the four calls of the two compactions that installed nothing took 576 to 667 s each), so the wider
+  grace costs little next to a 10-minute fill.
 
 The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
 cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
