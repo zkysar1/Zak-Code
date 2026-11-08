@@ -146,6 +146,24 @@ PLAN_ONLY_AT = 3
 #: A completion the plan-only bound refused unexecuted (ADR-0364). STRONG, like a repeated outcome.
 SIG_PLAN_ONLY = "plan-only"
 
+#: The same bound on completions that only PRINT (ADR-0373). A shell call whose whole command is
+#: one ``echo`` of literal words reads nothing and changes nothing, and each string can differ,
+#: which the doom guard's byte-identical test cannot see and the outcome signal skips as too
+#: short. Measured on a served fleet (ten sessions, one 35B-class local model, 2026-11-07, 24 h,
+#: 7,723 completions): one session ran 149 such completions in a row, one every 3 s, until an
+#: operator interrupted it, and no other run passed 2. Runs that MIX a print with plan calls
+#: occur in ordinary work, so a run here is prints alone, counted apart: ADR-0364's count is
+#: untouched and a print ends a plan-only run as any other call does. The completion that would
+#: be the ``plan_only_at``-th in a row is refused unexecuted and climbs the ladder as a plan-only
+#: refusal does, on ``SIG_PRINT_ONLY``, so what the rails say is true of what was counted.
+SIG_PRINT_ONLY = "print-only"
+#: A whole shell command that only prints literal words: ``echo``, then words with no expansion,
+#: substitution, escape, glob, pipe, redirect, separator or comment in them. The words are
+#: joined by spaces and tabs only: a newline ends the ``echo``, and whatever follows it runs.
+_PRINT_ONLY_RE = re.compile(
+    r"""\s*echo(?:[ \t]+(?:"[^"`$\\]*"|'[^']*'|[^\s"'`$\\|;&<>()#*?\[\]~{}]+))+\s*"""
+)
+
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
 #: style acknowledgements repeat legitimately.
 _OUTCOME_MIN_CHARS = 24
@@ -217,6 +235,7 @@ class StuckTracker:
         uncounted_outcome_tools: frozenset[str] = frozenset(),
         plan_tools: frozenset[str] = frozenset(),
         plan_only_at: int = PLAN_ONLY_AT,
+        shell_tools: frozenset[str] = frozenset(),
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
@@ -229,7 +248,10 @@ class StuckTracker:
         #: The loop's plan tools (ADR-0364). Empty, the plan-only bound never counts anything.
         self.plan_tools = plan_tools
         self.plan_only_at = plan_only_at
+        #: The loop's shell tools (ADR-0373). Empty, the print-only bound never counts anything.
+        self.shell_tools = shell_tools
         self._plan_only_run = 0  # consecutive plan-only completions that did not move the plan
+        self._print_only_run = 0  # consecutive completions that only printed literal words
         self._plan_finished: int | None = None  # the done count the last plan receipt reported
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
@@ -275,6 +297,18 @@ class StuckTracker:
         return SIG_PLAN_ONLY in self._last_signals
 
     @property
+    def last_was_print_only(self) -> bool:
+        """Whether the most recent :meth:`observe` was a completion the print-only bound refused
+        (ADR-0373). There is no result to interpret here either: the remedy is the work."""
+        return SIG_PRINT_ONLY in self._last_signals
+
+    @property
+    def print_only_run(self) -> int:
+        """How many completions in a row only printed literal words (ADR-0373); 0 after any
+        other call."""
+        return self._print_only_run
+
+    @property
     def plan_only_run(self) -> int:
         """How many completions in a row called only the plan tools without moving the plan
         (ADR-0364); 0 after any other call."""
@@ -284,6 +318,11 @@ class StuckTracker:
         """Whether ``calls``, not yet executed, are the completion the plan-only bound refuses:
         plan tools only, after ``plan_only_at - 1`` such completions in a row (ADR-0364)."""
         return self._is_plan_only(calls) and self._plan_only_run >= self.plan_only_at - 1
+
+    def refuses_print_only(self, calls: Sequence[ToolCall]) -> bool:
+        """Whether ``calls``, not yet executed, are the completion the print-only bound refuses:
+        prints alone, after ``plan_only_at - 1`` such completions in a row (ADR-0373)."""
+        return self._is_print_only(calls) and self._print_only_run >= self.plan_only_at - 1
 
     @property
     def actions(self) -> list[str]:
@@ -309,6 +348,8 @@ class StuckTracker:
         data: dict[str, object] = {"signals": ",".join(self._last_signals)}
         if self.last_was_plan_only:
             data["plan_only"] = self._plan_only_run
+        if self.last_was_print_only:
+            data["print_only"] = self._print_only_run
         if SIG_REPEATED_OUTCOME in self._last_signals:
             data["tool"] = self._last_outcome_tool
             data["repeats"] = self._last_outcome_repeats
@@ -377,9 +418,15 @@ class StuckTracker:
         ):
             # ADR-0364: the bound answered this completion unexecuted. Its own signal alone, one
             # rung per refusal after the first, and nothing else counted (see SIG_PLAN_ONLY).
-            self._plan_only_run += 1
-            refusals = self._plan_only_run - (self.plan_only_at - 1)
-            self._last_signals = [SIG_PLAN_ONLY]
+            # ADR-0373 refuses prints the same way, on their own count and signal.
+            if self._is_print_only(calls):
+                self._print_only_run += 1
+                run, signal = self._print_only_run, SIG_PRINT_ONLY
+            else:
+                self._plan_only_run += 1
+                run, signal = self._plan_only_run, SIG_PLAN_ONLY
+            refusals = run - (self.plan_only_at - 1)
+            self._last_signals = [signal]
             self._streak = max(self._streak, self.nudge_at + refusals - 2)
             self._prev_sig = sig
             return
@@ -466,9 +513,18 @@ class StuckTracker:
             self._streak = max(self._streak, self.nudge_at + (worst - self.outcome_repeat_at))
         self._prev_sig = sig
         self._observe_plan_only(calls, by_id)
+        self._print_only_run = self._print_only_run + 1 if self._is_print_only(calls) else 0
 
     def _is_plan_only(self, calls: Sequence[ToolCall]) -> bool:
         return bool(calls and self.plan_tools) and all(c.name in self.plan_tools for c in calls)
+
+    def _is_print_only(self, calls: Sequence[ToolCall]) -> bool:
+        return bool(calls) and all(
+            c.name in self.shell_tools
+            and isinstance(command := c.arguments.get("command"), str)
+            and _PRINT_ONLY_RE.fullmatch(command) is not None
+            for c in calls
+        )
 
     def _observe_plan_only(
         self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]
@@ -538,6 +594,7 @@ class StuckTracker:
         self._prev_sig = None
         self._error_counts.clear()
         self._plan_only_run = 0
+        self._print_only_run = 0
 
     # ── recovery messages ────────────────────────────────────────────────────
     def plan_only_message(self, step: str | None) -> str:
@@ -558,6 +615,22 @@ class StuckTracker:
             "run."
         )
 
+    def print_only_message(self, step: str | None) -> str:
+        """The result every call of a refused print-only completion gets (ADR-0373). ``step``
+        names the plan's current step, or is None when the plan has none to name."""
+        then = (
+            f"The plan's current step is {step}: do that step now with a tool call that does the "
+            "work, or answer in text if the work is done."
+            if step
+            else "Do the next piece of actual work with a tool call, or answer in text if the "
+            "work is done."
+        )
+        return (
+            f"Not executed: this is response {self._print_only_run + 1} in a row that only prints "
+            "a fixed string, with no other tool call between them. A print reads nothing and "
+            f"changes nothing. {then} A print runs again once another tool has run."
+        )
+
     def nudge_message(self) -> str:
         """The diagnosis injected on a :attr:`StuckAction.NUDGE` — WHY the model is stuck.
 
@@ -571,6 +644,13 @@ class StuckTracker:
                 f"You have now sent {self._plan_only_run} responses in a row that call only the "
                 "plan tools, and the harness did not execute the last of them. Planning is not "
                 "progress on the task: do the current step with a tool call."
+            )
+        if self.last_was_print_only:
+            return (
+                f"You have now sent {self._print_only_run} responses in a row that only print a "
+                "fixed string, and the harness did not execute the last of them. Printing is not "
+                "progress on the task: do the current step with a tool call, or answer in text "
+                "if the work is done."
             )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:
