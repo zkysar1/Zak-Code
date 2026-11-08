@@ -3572,6 +3572,7 @@ class AgentLoop:
             try:
                 why = ""
                 resample = 0
+                refused_switch = False  # ADR-0366: the ask is going again without the switch
                 # ADR-0376: a fast-failed ask (stream closed early because the tag did not
                 # open within the grace) is cheap enough to retry more than the single
                 # resample a full-length rejection gets.  ``remaining`` tracks how many more
@@ -3619,13 +3620,18 @@ class AgentLoop:
                         sink = self._status_sink
                         if sink is not None:
                             sink(f"compaction: {said}")
-                        result = await self._complete_with_retry(
-                            request, on_withheld=account_withheld
-                        )
+                        # ADR-0376: it goes again through the try above, so the ask without the
+                        # switch is watched, and its fast-fail is resampled like any other ask's.
+                        refused_switch = True
+                        continue
+                    if refused_switch:
+                        # The ask without the switch was answered: the switch stays off this
+                        # provider's later asks (ADR-0315).
                         entry = self._refused_overrides.setdefault(
                             id(summarizer), (summarizer, set())
                         )
                         entry[1].add(_SWITCH_OVERRIDE)
+                        refused_switch = False
                     if not fast_failed:
                         self._account_summarizer_usage(result.usage, summarizer)
                         summary, why = _summary_of(result.text, len(prompt), result.finish_reason)

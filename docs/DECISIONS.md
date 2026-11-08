@@ -23755,7 +23755,9 @@ Decision.
   resamples are allowed for fast-fail rejections, where a full-length rejection keeps today's single
   resample (`_SUMMARY_RESAMPLES`). The temperature step and the halved-budget rules apply as before.
 - The watcher covers only the single-chunk main transcript ask (the one whose measured failures
-  motivated the fix). Slice and fold asks are not watched: their inputs are already bounded by
+  motivated the fix), its resamples, and the same ask sent again without a thinking switch the
+  route refused (ADR-0366). That ask goes back through the same handler, so its fast-fail is
+  resampled like any other instead of leaving the summarizer. Slice and fold asks are not watched: their inputs are already bounded by
   `chunk_chars`, their responses are reassembled rather than parsed for a tag, and existing test fakes
   for the multi-chunk path do not produce tagged output. The condensing ask (`held_to_budget`) is
   likewise not watched: it is handed an already-valid summary and asked to shorten it.
@@ -23777,6 +23779,7 @@ What was considered and not done.
 
 The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
 cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
-a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; a
+a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; an
+ask sent again without a refused switch that fast-fails is resampled and installs; a
 thinking route is not cut while it thinks, nor a reply whose preamble stays under the grace; a tagged cut reply is still kept; the stream is closed
 (`aclose`) when the watcher cuts.

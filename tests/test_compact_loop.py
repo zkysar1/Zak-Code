@@ -1781,7 +1781,8 @@ def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Pat
 
 class _TagWatchStreamProvider(_ScriptedSummarizer):
     """Yields visible text in small incremental chunks so the tag watcher can fire
-    mid-stream; records whether ``aclose`` was called on the stream iterator.
+    mid-stream. Whether the watcher closes the stream it cuts is pinned on its own, by
+    test_the_stream_is_closed_when_the_watcher_cuts.
 
     Each response's text is yielded in chunks of ``chunk`` characters.  The provider
     alternates between producing responses from ``texts`` with optional ``thinking``
@@ -1800,7 +1801,6 @@ class _TagWatchStreamProvider(_ScriptedSummarizer):
         self._finish_reasons = finish_reasons or ["stop"] * len(texts)
         self._thinkings = thinkings or [""] * len(texts)
         self._chunk = chunk
-        self.aclose_called: list[bool] = []
 
     async def astream(
         self,
@@ -1816,41 +1816,15 @@ class _TagWatchStreamProvider(_ScriptedSummarizer):
         text = self._texts[idx]
         thinking = self._thinkings[idx]
         reason = self._finish_reasons[idx]
-        closed = [False]
-
-        async def _gen() -> AsyncIterator[ProviderStreamEvent]:
-            # Thinking first, if any.
-            if thinking:
-                for i in range(0, len(thinking), self._chunk):
-                    yield StreamThinkingDelta(text=thinking[i : i + self._chunk])
-            # Then visible text.
-            for i in range(0, len(text), self._chunk):
-                yield StreamTextDelta(text=text[i : i + self._chunk])
-            yield StreamUsage(usage=_SUMMARY_USAGE)
-            yield StreamDone(finish_reason=reason)
-
-        gen = _gen()
-
-        class _Closeable:
-            """Wraps the generator so ``aclose`` is observable."""
-
-            def __aiter__(self) -> AsyncIterator[ProviderStreamEvent]:
-                return self
-
-            async def __anext__(self) -> ProviderStreamEvent:
-                return await gen.__anext__()
-
-            async def aclose(self_inner) -> None:  # noqa: N805
-                closed[0] = True
-                await gen.aclose()
-
-        yield_from = _Closeable()
-        # The caller iterates this; when done, record whether aclose was called.
-        try:
-            async for event in yield_from:
-                yield event
-        finally:
-            self.aclose_called.append(closed[0])
+        # Thinking first, if any.
+        if thinking:
+            for i in range(0, len(thinking), self._chunk):
+                yield StreamThinkingDelta(text=thinking[i : i + self._chunk])
+        # Then visible text.
+        for i in range(0, len(text), self._chunk):
+            yield StreamTextDelta(text=text[i : i + self._chunk])
+        yield StreamUsage(usage=_SUMMARY_USAGE)
+        yield StreamDone(finish_reason=reason)
 
 
 def test_a_tag_that_never_opens_is_cut_early_and_the_resample_installs(tmp_path: Path) -> None:
@@ -1917,6 +1891,50 @@ def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> No
     (row,) = _compaction_rows(loop)
     assert row["summarizer_rejected"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
     assert row["summarizer_fast_fail"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
+
+
+class _TagWatchRefusesTheSwitch(_TagWatchStreamProvider):
+    """A streaming route that leaves the thinking switch to the caller and refuses a request
+    carrying it, naming nothing (ADR-0307), so the ask goes again without the switch."""
+
+    def capabilities(self) -> Capabilities:
+        return super().capabilities().model_copy(update={"thinking_switch": True})
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        if "extra_body" in kwargs:
+            self.kwargs.append(kwargs)
+            raise RequestFailed("The model returned the following errors: Validation Error")
+        async for event in super().astream(messages, system=system, tools=tools, **kwargs):
+            yield event
+
+
+def test_a_fast_fail_of_the_ask_sent_without_a_refused_switch_is_resampled(
+    tmp_path: Path,
+) -> None:
+    # ADR-0366 sends an ask again without the thinking switch when the route refuses it. That
+    # ask is watched too, and its fast-fail is resampled like any other: it does not leave the
+    # summarizer for the fallback to eliding.
+    no_tag = "Here is my plan for summarizing the conversation. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 50 + 20
+    )  # past the grace, no tag
+    provider = _TagWatchRefusesTheSwitch([no_tag, _WHOLE], ["stop", "stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2  # the ask without the switch, then its resample
+    assert "The session fixed the parser." in loop.session.messages[0].text
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_fast_fail"] == 1
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
 
 
 def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
