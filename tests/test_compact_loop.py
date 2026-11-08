@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -39,14 +40,18 @@ from zakcode.agent.loop import (
     _MAX_SUMMARY_SLICES,
     _POSITION_NOTE_HEAD,
     _SUMMARY_CLOSE,
+    _SUMMARY_FAST_FAIL_RESAMPLES,
     _SUMMARY_HELD_LINE,
     _SUMMARY_ORDER,
     _SUMMARY_OUTPUT_CHARS,
     _SUMMARY_OVER_BUDGET,
+    _SUMMARY_TAG_GRACE_CHARS,
     _SWITCH_OVERRIDE,
+    _SummaryTagNotOpened,
     AgentLoop,
     _carried_parts,
     _clamp_middle,
+    _collect_stream_watching_tag,
     _earlier_summary_body,
     _first_words,
     _held_to_words,
@@ -65,8 +70,13 @@ from zakcode.providers.base import (
     ContextWindowExceeded,
     LLMResult,
     Provider,
+    ProviderStreamEvent,
     RateLimited,
     RequestFailed,
+    StreamDone,
+    StreamTextDelta,
+    StreamThinkingDelta,
+    StreamUsage,
 )
 from zakcode.providers.routing import thinking_extra_body
 from zakcode.session.status_file import StatusFileWriter
@@ -1764,6 +1774,222 @@ def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Pat
     ]
     assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
     assert any("refused the thinking switch" in line for line in said)
+
+
+# ── ADR-0373: a tag that does not open is cut early and retried cheaply ────────────────
+
+
+class _TagWatchStreamProvider(_ScriptedSummarizer):
+    """Yields visible text in small incremental chunks so the tag watcher can fire
+    mid-stream; records whether ``aclose`` was called on the stream iterator.
+
+    Each response's text is yielded in chunks of ``chunk`` characters.  The provider
+    alternates between producing responses from ``texts`` with optional ``thinking``
+    prefixes and ``finish_reasons``."""
+
+    def __init__(
+        self,
+        texts: list[str],
+        finish_reasons: list[str] | None = None,
+        *,
+        thinkings: list[str] | None = None,
+        chunk: int = 20,
+        window: int = 8192,
+    ) -> None:
+        super().__init__(texts, tokens=100_000, window=window)
+        self._finish_reasons = finish_reasons or ["stop"] * len(texts)
+        self._thinkings = thinkings or [""] * len(texts)
+        self._chunk = chunk
+        self.aclose_called: list[bool] = []
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.seen.append(list(messages))
+        self.kwargs.append(kwargs)
+        idx = min(len(self.seen), len(self._texts)) - 1
+        text = self._texts[idx]
+        thinking = self._thinkings[idx]
+        reason = self._finish_reasons[idx]
+        closed = [False]
+
+        async def _gen() -> AsyncIterator[ProviderStreamEvent]:
+            # Thinking first, if any.
+            if thinking:
+                for i in range(0, len(thinking), self._chunk):
+                    yield StreamThinkingDelta(text=thinking[i : i + self._chunk])
+            # Then visible text.
+            for i in range(0, len(text), self._chunk):
+                yield StreamTextDelta(text=text[i : i + self._chunk])
+            yield StreamUsage(usage=_SUMMARY_USAGE)
+            yield StreamDone(finish_reason=reason)
+
+        gen = _gen()
+
+        class _Closeable:
+            """Wraps the generator so ``aclose`` is observable."""
+
+            def __aiter__(self) -> AsyncIterator[ProviderStreamEvent]:
+                return self
+
+            async def __anext__(self) -> ProviderStreamEvent:
+                return await gen.__anext__()
+
+            async def aclose(self_inner) -> None:  # noqa: N805
+                closed[0] = True
+                await gen.aclose()
+
+        yield_from = _Closeable()
+        # The caller iterates this; when done, record whether aclose was called.
+        try:
+            async for event in yield_from:
+                yield event
+        finally:
+            self.aclose_called.append(closed[0])
+
+
+def test_a_tag_that_never_opens_is_cut_early_and_the_resample_installs(tmp_path: Path) -> None:
+    # ADR-0373: 300+ characters of visible text without <summary> is cut early.
+    no_tag = "Here is my plan for summarizing the conversation. " * 20  # 1000 chars, no tag
+    provider = _TagWatchStreamProvider(
+        [no_tag, _WHOLE],
+        ["stop", "stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 1
+    assert row["summarizer_fast_fail"] == 1
+    assert any("had not opened its summary" in line for line in said)
+
+
+def test_three_fast_fails_then_a_success_installs(tmp_path: Path) -> None:
+    # Up to _SUMMARY_FAST_FAIL_RESAMPLES resamples for fast-fail rejections.
+    no_tag = "No summary here. " * 50  # 900 chars, no tag
+    provider = _TagWatchStreamProvider(
+        [no_tag, no_tag, no_tag, _WHOLE],
+        ["stop", "stop", "stop", "stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 4  # 1 original + 3 resamples
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 3
+    assert row["summarizer_fast_fail"] == 3
+
+
+def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> None:
+    # _SUMMARY_FAST_FAIL_RESAMPLES is 3, so four fast-fails exhaust the budget:
+    # 1 original ask + 3 resamples = 4 asks total, all fast-fail.
+    no_tag = "I will now plan. " * 50
+    provider = _TagWatchStreamProvider(
+        [no_tag],  # same answer every time
+        ["stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend([*_history(2), *_tool_pair("t1", "x" * 6000), *_history(4)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == _SUMMARY_FAST_FAIL_RESAMPLES + 1  # 4
+    assert "SummaryNotWritten" in loop.last_compaction
+    assert "had not opened its summary" in loop.last_compaction
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
+    assert row["summarizer_fast_fail"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
+
+
+def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
+    # A route that thinks on purpose must not be cut while it thinks (ADR-0366).
+    # Here the thinking is very long but the visible text is short and contains the tag.
+    long_thinking = "Let me reason about this summary. " * 50  # 1700 chars of thinking
+    provider = _TagWatchStreamProvider(
+        [_WHOLE],
+        ["stop"],
+        thinkings=[long_thinking],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1  # no retry, the first ask succeeded
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+
+
+def test_a_tagged_cut_reply_is_still_kept_under_the_watcher(tmp_path: Path) -> None:
+    # ADR-0369: a cut reply that opened its tag is kept. The watcher does not fire because
+    # the tag was found.
+    # The text must contain newlines and >500 chars of whole lines after the tag,
+    # because _summary_of strips the unfinished last line of a cut reply and rejects
+    # anything under _SUMMARY_FLOOR_CHARS.
+    cut_tagged = (
+        "<summary>\n"
+        + "\n".join(
+            f"The session made progress on the parser, fixing issue {i} in the grammar"
+            for i in range(12)
+        )
+        + "\nand then the session"
+    )
+    provider = _TagWatchStreamProvider(
+        [cut_tagged],
+        ["length"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    summary = loop.session.messages[0].text
+    assert "parser" in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 0
+    assert row["summarizer_fast_fail"] == 0
+    assert row["summarizer_cut"] == 1
+
+
+def test_the_stream_is_closed_when_the_watcher_cuts() -> None:
+    # The watcher must aclose the stream so #862's HTTP-response close fires.
+    closed = False
+
+    async def _events() -> AsyncIterator[ProviderStreamEvent]:
+        nonlocal closed
+        try:
+            # Visible text past the grace, no tag.
+            yield StreamTextDelta(text="x" * (_SUMMARY_TAG_GRACE_CHARS + 100))
+            yield StreamUsage(usage=Usage())
+            yield StreamDone(finish_reason="stop")
+        finally:
+            # The generator's cleanup: if aclose was called, GeneratorExit is raised
+            # and we land here.
+            closed = True
+
+    async def run() -> None:
+        with pytest.raises(_SummaryTagNotOpened):
+            await _collect_stream_watching_tag(_events())
+
+    asyncio.run(run())
+    assert closed is True
 
 
 # ── ADR-0369: a cut reply is kept, and nothing installed runs past the line ─────────────

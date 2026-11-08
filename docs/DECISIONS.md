@@ -23675,3 +23675,49 @@ written without the rule's name.
 Not verified: a read after the pointer can be declined. When the earlier asks came back to back, that
 read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
 ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
+
+## ADR-0373: a summarizer ask that does not open its summary tag is cut early and retried cheaply
+
+Status: accepted. 2026-11-08. Builds on ADR-0242 (the one resample), ADR-0251 (streamed and
+collected), ADR-0366 (thinking off, a lower cap) and ADR-0369 (a cut reply is kept).
+
+Context. Measured over ~212 session-hours on an inference server: 6 of 37 compactions that reached
+the output cap lost their first ask because the summarizer's response never opened its `<summary>`
+tag (ADR-0242). Each streamed to exactly 16,471 tokens over ~10 minutes before being rejected at
+`_summary_of`. Two compactions lost both their first ask and their one resample this way, spending
+~20 engine-minutes each and installing no summary. The instruction asks for "only the summary, inside
+`<summary></summary>`", so a well-formed reply opens the tag in its first few dozen characters; a
+reply that has written 300 characters of visible text without opening it is not going to.
+
+Decision.
+- The summarizer's streamed ask watches visible text (not a separate thinking channel) for a
+  case-insensitive `<summary` opening. When visible text passes `_SUMMARY_TAG_GRACE_CHARS` (300)
+  without one, the stream is closed early so the server is freed within about a second (PR #862's
+  close fires) and the ask is treated as rejected.
+- A fast-failed ask costs about a minute, not ten, so up to `_SUMMARY_FAST_FAIL_RESAMPLES` (3)
+  resamples are allowed for fast-fail rejections, where a full-length rejection keeps today's single
+  resample (`_SUMMARY_RESAMPLES`). The temperature step and the halved-budget rules apply as before.
+- The watcher covers only the single-chunk main transcript ask (the one whose measured failures
+  motivated the fix). Slice and fold asks are not watched: their inputs are already bounded by
+  `chunk_chars`, their responses are reassembled rather than parsed for a tag, and existing test fakes
+  for the multi-chunk path do not produce tagged output. The condensing ask (`held_to_budget`) is
+  likewise not watched: it is handed an already-valid summary and asked to shorten it.
+- A thinking route is not cut while it thinks: only `StreamTextDelta` events (visible text) count
+  toward the grace; `StreamThinkingDelta` events are ignored, keeping ADR-0366's "asking again with
+  room to think" path working.
+- A cut reply that opened the tag is still kept (ADR-0369), since the watcher does not fire once the
+  tag is found.
+- `summarizer_fast_fail` counts the stream-closed rejections, beside `summarizer_rejected`.
+
+What was considered and not done.
+- Watching the condensing ask. The condensing ask is small and cheap, and its input already contains a
+  valid summary, so cutting it early saves nothing measurable.
+- A lower grace (50 characters). A model that echoes part of the instruction or adds a short preamble
+  before the tag would be cut too early. 300 characters is generous for any realistic preamble while
+  still cutting 10-minute fills after about a minute.
+
+The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
+cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
+a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; a
+thinking route is not cut while it thinks; a tagged cut reply is still kept; the stream is closed
+(`aclose`) when the watcher cuts.
