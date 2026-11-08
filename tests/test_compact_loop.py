@@ -28,6 +28,9 @@ from zakcode.agent.compact import (
     Compactor,
 )
 from zakcode.agent.loop import (
+    _CARRIED_CLOSE,
+    _CARRIED_HEAD,
+    _CARRY_MIN_HEAD_WORDS,
     _CONDENSE_CLOSE,
     _CONDENSE_PROMPT,
     _FOLD_CLOSE,
@@ -42,6 +45,7 @@ from zakcode.agent.loop import (
     _SUMMARY_OVER_BUDGET,
     _SWITCH_OVERRIDE,
     AgentLoop,
+    _carried_parts,
     _clamp_middle,
     _earlier_summary_body,
     _first_words,
@@ -52,6 +56,7 @@ from zakcode.agent.loop import (
     _summary_output_room,
     _summary_switched_room,
     _summary_target_words,
+    _with_carried,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
 from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
@@ -1924,3 +1929,366 @@ def test_a_held_summary_keeps_its_start_and_its_end_and_says_what_it_left_out() 
     assert held.endswith(" ".join(f"w{i}" for i in range(500, 600)))
     assert "[... 300 words of this summary left out ...]" in held
     assert len(held.split()) == 300 + _HELD_NOTE_WORDS
+
+
+# ── ADR-0370: the harness carries a summary's history past the next compaction ─────────
+
+_HEAD = " ".join(f"s{i}" for i in range(_CARRY_MIN_HEAD_WORDS))
+
+
+def _headed(history: str, *, heading: str = "## Older history", head: str = _HEAD) -> str:
+    return f"<summary>## Current goal and state\n{head}\n\n{heading}\n{history}</summary>"
+
+
+def _carrying(body: str, *, turns: int = 3) -> list[Message]:
+    """A transcript that opens with an installed summary of ``body``."""
+    return [Message.system(f"{SUMMARY_MARKER}\n{body}{CONTINUATION_NOTE}"), *_history(turns)]
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## Older history\n",  # the shape of 9 of the 14 measured
+        "**Older history:**\n",
+        "**Older history:** ",  # with its text on the same line
+        "Older history:\n",
+        "### Recent history\n",
+        "4. Older history\n",
+        "- **Older history**\n",
+        "__Older history__\n",
+    ],
+)
+def test_a_summary_splits_at_its_history_heading_however_it_is_marked_up(heading: str) -> None:
+    body = f"{_HEAD}\n\n{heading}read a.py at line 3\nfound b"
+
+    assert _carried_parts(body) == (_HEAD, "read a.py at line 3\nfound b", "")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _HEAD,  # no heading: 3 of the 17 measured on builds that asked for one
+        f"Older history\n{_HEAD}",  # nothing above it
+        f"Current goal; Older history\n{_HEAD}",  # the headings listed on one line
+        f"{_words(_CARRY_MIN_HEAD_WORDS - 1)}\nOlder history\n{_HEAD}",  # an outline, not a summary
+    ],
+)
+def test_a_summary_with_no_usable_heading_is_read_whole(body: str) -> None:
+    assert _carried_parts(body) == (body, "", "")
+
+
+def test_a_summary_with_enough_above_its_heading_splits() -> None:
+    head = _words(_CARRY_MIN_HEAD_WORDS)
+
+    assert _carried_parts(f"{head}\nOlder history\nx") == (head, "x", "")
+
+
+def test_what_the_harness_carried_is_never_the_summarizer_s() -> None:
+    assert _carried_parts(f"{_HEAD}\n\n{_CARRIED_HEAD}\nolder") == (_HEAD, "", "older")
+    assert _carried_parts(f"{_HEAD}\n\nOlder history\nnew\n\n{_CARRIED_HEAD}\nolder") == (
+        _HEAD,
+        "new",
+        "older",
+    )
+
+
+def test_the_carried_close_asks_for_the_order_with_recent_history_last() -> None:
+    assert _SUMMARY_ORDER.replace("Older history", "Recent history") in _CARRIED_CLOSE
+    assert "Older history" not in _CARRIED_CLOSE
+
+
+def test_carried_history_goes_after_the_summary_and_loses_its_oldest_end() -> None:
+    carried = "\n".join(f"line{i} a b c d" for i in range(40))  # 200 words, newest first
+
+    whole = _with_carried(_words(100), carried, 150)
+
+    assert whole.startswith(f"{_words(100)}\n\n{_CARRIED_HEAD}\nline0 a b c d\n")
+    assert len(whole.split()) <= 150
+    assert "line30" not in whole
+    assert whole.endswith(" d")  # on a whole line
+
+
+def test_carried_history_with_room_to_spare_stands_whole() -> None:
+    assert _with_carried("state", "history", 100) == f"state\n\n{_CARRIED_HEAD}\nhistory"
+
+
+@pytest.mark.parametrize(("carried", "line"), [("", 100), ("history", 1)])
+def test_a_summary_with_nothing_to_carry_or_no_room_stands_alone(carried: str, line: int) -> None:
+    assert _with_carried("state", carried, line) == "state"
+
+
+def test_a_re_compaction_is_spared_the_history_and_the_harness_keeps_it_verbatim(
+    tmp_path: Path,
+) -> None:
+    # Measured 2026-11-06 on a self-hosted pod: Older history ran to 89 percent of a summary, up to
+    # 100 percent copied from the summary before, so a 10-minute summarizer call wrote back what it
+    # had been handed and two of them added nothing about their window.
+    from zakcode.tasks import skill_skeleton
+
+    second = (
+        "<summary>## Current goal and state\nnew state\n\n## Recent history\nread b.py</summary>"
+    )
+    provider = _SummarizerProvider([_headed("read a.py at line 3"), second], tokens=100)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n\n## Step 2: Beta\n\nbeta\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+    loop.session.messages.extend(_history(5))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+    loop.session.messages.extend(_history(4))
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    prompt = provider.seen[1][0].text
+    assert f"[earlier summary]\n## Current goal and state\n{_HEAD}\n\n[user]\n" in prompt
+    assert "read a.py" not in prompt
+    assert prompt.endswith(_CARRIED_CLOSE.format(words=300))  # 2/3 of the budget of 400
+    installed = loop.session.messages[0].text
+    assert (
+        f"## Recent history\nread b.py\n\n{_CARRIED_HEAD}\nread a.py at line 3\n\n"
+        f"{_POSITION_NOTE_HEAD}"
+    ) in installed
+    assert installed.count(_POSITION_NOTE_HEAD) == 1
+
+
+def test_each_compaction_s_history_goes_ahead_of_the_one_before(tmp_path: Path) -> None:
+    replies = [
+        _headed("first window"),
+        _headed("second window", heading="## Recent history"),
+        _headed("third window", heading="## Recent history"),
+    ]
+    provider = _SummarizerProvider(replies, tokens=100)
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    for _ in range(3):
+        loop.session.messages.extend(_history(5))
+        assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    installed = loop.session.messages[0].text
+    assert f"third window\n\n{_CARRIED_HEAD}\nsecond window\n\nfirst window" in installed
+    third = provider.seen[2][0].text
+    assert "first window" not in third and "second window" not in third
+    assert _CARRIED_HEAD not in third
+
+
+def test_a_first_compaction_is_asked_as_it_always_was(tmp_path: Path) -> None:
+    provider = _SummarizerProvider([_headed("read a.py")], tokens=100)
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(_history(3)))
+
+    assert provider.seen[0][0].text.endswith(_SUMMARY_CLOSE.format(words=400))
+    assert _CARRIED_HEAD not in text
+
+
+def test_an_earlier_summary_with_no_heading_is_read_whole_and_asked_as_it_always_was(
+    tmp_path: Path,
+) -> None:
+    provider = _SummarizerProvider([f"<summary>{_words(40)}</summary>"], tokens=100)
+    messages = _carrying("The user asked for A; B is done.")
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    prompt = provider.seen[0][0].text
+    assert "[earlier summary]\nThe user asked for A; B is done.\n\n[user]\n" in prompt
+    assert prompt.endswith(_SUMMARY_CLOSE.format(words=400))
+    assert _CARRIED_HEAD not in text
+
+
+def test_an_unheaded_summary_still_keeps_what_the_harness_carried(tmp_path: Path) -> None:
+    # The model is not asked to leave out a history it can see, so the budget and the close stay.
+    provider = _SummarizerProvider([f"<summary>{_words(40)}</summary>"], tokens=100)
+    messages = _carrying(f"No heading here.\n\n{_CARRIED_HEAD}\nread a.py")
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    prompt = provider.seen[0][0].text
+    assert "No heading here." in prompt and "read a.py" not in prompt
+    assert prompt.endswith(_SUMMARY_CLOSE.format(words=400))
+    assert _body(text) == f"{_words(40)}\n\n{_CARRIED_HEAD}\nread a.py"
+
+
+def test_a_cut_reply_keeps_the_carried_history_and_says_it_was_cut(tmp_path: Path) -> None:
+    provider = _CutSummarizer([_cut_reply(30)], ["length"])
+    messages = _carrying(f"{_HEAD}\n\n## Older history\nread a.py")
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    assert _body(text) == f"{_lines(30)}\n\n{_CARRIED_HEAD}\nread a.py"
+    assert text.endswith(_SUMMARY_HELD_LINE)
+
+
+def test_a_summary_over_the_line_is_condensed_and_the_history_fits_what_is_left(
+    tmp_path: Path,
+) -> None:
+    # The condensing line is the budget's own, not the smaller ask's, and the whole stays under it.
+    provider = _CondensesOnRequest(
+        f"<summary>{_words(600)}</summary>", f"<summary>{_words(450)}</summary>"
+    )
+    history = "\n".join(f"line{i} a b c d" for i in range(40))
+    messages = _carrying(f"{_HEAD}\n\n## Older history\n{history}")
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    asks = [call[0].text for call in provider.seen]
+    assert asks[1].startswith(_CONDENSE_PROMPT.format(said=600))
+    assert asks[1].endswith(_CONDENSE_CLOSE.format(words=300))
+    body = _body(text)
+    assert body.startswith(f"{_words(450)}\n\n{_CARRIED_HEAD}\nline0 a b c d")
+    assert "line7 " not in body
+    assert len(body.split()) <= 500
+
+
+def test_part_summaries_get_the_carried_history_once_after_the_join(tmp_path: Path) -> None:
+    provider = _SummarizerProvider([f"<summary>{_words(20)}</summary>"], tokens=100)
+    messages = _carrying(f"{_HEAD}\n\n## Older history\nread a.py", turns=40)
+
+    text = asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    parts = [call[0].text for call in provider.seen]
+    assert len(parts) >= 2 and all(ask.startswith("Part ") for ask in parts)
+    assert all(ask.endswith(_CARRIED_CLOSE.format(words=300)) for ask in parts)
+    assert "read a.py" not in "".join(parts)
+    assert text.count(_CARRIED_HEAD) == 1
+    assert _body(text).endswith(f"{_CARRIED_HEAD}\nread a.py")
+
+
+# ── ADR-0370 after review: which line is the heading, which copy is the harness's, and the cap ──
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Older history",  # a blockquote
+        "    Older history",  # indented four spaces: code, not a heading
+        "- Recent history of the repo shows 3 failed runs",  # a bullet in prose
+        "| Older history | 3 runs |",  # a table row
+        "Older history was short this time.",  # a sentence
+    ],
+)
+def test_a_line_that_only_mentions_history_is_not_its_heading(line: str) -> None:
+    # Split there, the sections under it would be carried and never brought up to date.
+    body = f"{_HEAD}\n{line}\n\n## Unfinished work\nfix c.py"
+
+    assert _carried_parts(body) == (body, "", "")
+
+
+@pytest.mark.parametrize(
+    "first", ["* read a.py at line 3", "**a.py** read", "_a.py_ read", "# a.py", ": a.py read"]
+)
+def test_a_history_s_first_line_keeps_its_markup(first: str) -> None:
+    body = f"{_HEAD}\n\n## Older history\n{first}\nfound b"
+
+    assert _carried_parts(body) == (_HEAD, f"{first}\nfound b", "")
+
+
+@pytest.mark.parametrize(("above", "splits"), [(99, False), (100, True)])
+def test_a_history_heading_needs_a_hundred_words_above_it(above: int, splits: bool) -> None:
+    body = f"{_words(above)}\n\n## Older history\nread a.py"
+
+    assert _carried_parts(body)[1] == ("read a.py" if splits else "")
+
+
+def test_a_summary_with_two_history_sections_splits_at_the_first() -> None:
+    body = f"{_HEAD}\n\n## Recent history\nread b.py\n\n## Older history\nread a.py"
+
+    assert _carried_parts(body) == (_HEAD, "read b.py\n\n## Older history\nread a.py", "")
+
+
+def test_a_join_of_part_summaries_splits_at_its_last_part_s_history() -> None:
+    first = f"## Current goal and state\n{_HEAD}\n\n## Older history\nread a.py"
+    last = "## Current goal and state\nnext: fix c.py\n\n## Older history\nread b.py"
+
+    assert _carried_parts(f"{first}\n\n{last}") == (
+        f"{first}\n\n## Current goal and state\nnext: fix c.py",
+        "read b.py",
+        "",
+    )
+
+
+class _PartSummaries(_SummarizerProvider):
+    """Answers each slice of a transcript with a headed summary of that part, and every other ask
+    with ``texts``."""
+
+    async def acomplete(
+        self, messages: list[Message], *, system: str | None = None, tools: Any = None, **kw: Any
+    ) -> LLMResult:
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        ask = messages[0].text
+        if not ask.startswith("Part "):
+            return result
+        part = ask.removeprefix("Part ").split(" ", 1)[0]
+        return LLMResult(text=_headed(f"read part{part}.py", head=f"{_HEAD} next: part {part}"))
+
+
+def test_the_next_summarizer_reads_every_part_s_state_from_a_join(tmp_path: Path) -> None:
+    # A sliced transcript whose part-summaries fit one slice is installed as their join (ADR-0183),
+    # one set of headings per part. Split at the first part's history, the later parts' state and
+    # next step went into the carried history, which nothing brings up to date.
+    provider = _PartSummaries([f"<summary>{_words(20)}</summary>"], tokens=100)
+    loop = _loop(provider, tmp_path)
+
+    joined = asyncio.run(loop._summarize_for_compaction(_history(16)))
+    parts = len(provider.seen)
+    assert all(call[0].text.startswith("Part ") for call in provider.seen)  # no fold, no condensing
+    assert parts >= 2 and joined.count("## Current goal and state") == parts
+    asyncio.run(loop._summarize_for_compaction(_carrying(_body(joined))))
+
+    prompt = provider.seen[-1][0].text
+    assert all(f"next: part {i}\n" in prompt for i in range(1, parts + 1))
+    assert f"read part{parts}.py" not in prompt
+    assert prompt.endswith(_CARRIED_CLOSE.format(words=300))
+
+
+def test_a_reply_that_quotes_the_harness_line_installs_one_copy_of_it(tmp_path: Path) -> None:
+    # Models quote the harness's notes. With a second copy installed, the next compaction split at
+    # the quote: the state after it was carried as history and never brought up to date.
+    quoted = (
+        f"<summary>## Current goal and state\n{_HEAD}\n\n{_CARRIED_HEAD}\nmore state\n\n"
+        "## Recent history\nread b.py</summary>"
+    )
+    provider = _SummarizerProvider([quoted], tokens=100)
+    messages = _carrying(f"{_HEAD}\n\n## Older history\nread a.py")
+
+    text = _body(asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages)))
+
+    assert text.count(_CARRIED_HEAD) == 1
+    assert text.endswith(f"read b.py\n\n{_CARRIED_HEAD}\nread a.py")
+    current, spared, carried = _carried_parts(text)
+    assert "more state" in current and (spared, carried) == ("read b.py", "read a.py")
+
+
+def test_the_harness_line_is_found_by_its_last_copy() -> None:
+    # A summary installed by a build that kept a quoted copy holds two; the harness wrote the last.
+    body = (
+        f"{_HEAD}\n\n{_CARRIED_HEAD}\nmore state\n\n## Older history\nnew\n\n{_CARRIED_HEAD}\nold"
+    )
+
+    assert _carried_parts(body) == (f"{_HEAD}\n\n{_CARRIED_HEAD}\nmore state", "new", "old")
+
+
+def test_the_harness_line_says_what_the_harness_does_with_the_history() -> None:
+    # What a resumed model reads about the block under it: the order and the cut pinned above.
+    assert _CARRIED_HEAD == (
+        "[Older history, kept by the harness, newest first; the oldest goes when the summary "
+        "reaches its length limit]"
+    )
+
+
+def test_a_re_compaction_spared_its_history_keeps_the_condensing_line_s_cap(
+    tmp_path: Path,
+) -> None:
+    # The reply is held to the budget's line (ADR-0369), not to the smaller ask's, so its cap is
+    # the line's (ADR-0366). Sized from the 2,100-word ask, it was 11,156 tokens, under the
+    # 13,175 the 3,875-word line takes at 3.4 tokens a word.
+    provider = _SwitchableSummarizer([_WHOLE], ["stop"], window=131_072)
+    messages = _carrying(f"{_HEAD}\n\n## Older history\nread a.py")
+
+    asyncio.run(_loop(provider, tmp_path)._summarize_for_compaction(messages))
+
+    assert _asked_words(provider, 0) == "2,100"
+    assert [_sent(kw) for kw in provider.kwargs] == [{"max_tokens": 16_469, "extra_body": OFF}]
+
+
+def test_carried_history_never_holds_a_second_copy_of_the_harness_line() -> None:
+    # A copy quoted inside a summary's own history is spared with it and carried on.
+    whole = _with_carried("state", f"new\n\n{_CARRIED_HEAD}\nold", 100)
+
+    assert whole.count(_CARRIED_HEAD) == 1
+    assert whole.startswith(f"state\n\n{_CARRIED_HEAD}\nnew")
