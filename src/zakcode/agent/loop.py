@@ -457,6 +457,20 @@ _SUMMARY_FLOOR_SOURCE = 20_000
 #: temperature, before the compaction falls back to eliding tool outputs (ADR-0242). Every ask
 #: costs minutes on a local pod.
 _SUMMARY_RESAMPLES = 1
+#: How many visible-text characters (not thinking) a summarizer response may write before its
+#: ``<summary>`` tag opens, past which the stream is closed early and the ask treated as
+#: rejected (ADR-0376).  The instruction asks for "only the summary, inside
+#: ``<summary></summary>``", so a well-formed reply opens the tag at or near its start. How
+#: long the preamble of an accepted reply runs was not measured, so the grace is wide: 2,000
+#: characters stream in well under a minute, against the ~10 minutes of an ask that fills its
+#: output limit (on an inference server, the four such calls of the two compactions that
+#: installed nothing ran to the 16,469-token cap in 576 to 667 s each).
+_SUMMARY_TAG_GRACE_CHARS = 2_000
+#: How many resamples a fast-failed ask (stream cut early because the tag did not open) gets
+#: before the compaction falls back.  A fast-failed ask costs about a minute, not ten, so it
+#: is cheap enough to retry more than the single resample a full-length rejection gets
+#: (ADR-0376).
+_SUMMARY_FAST_FAIL_RESAMPLES = 3
 #: The output cap one summarizer call asks for, its thinking included (ADR-0275). A reasoning
 #: model's thinking is billed against the cap, and it is most of what the summarizer writes.
 #: Measured 2026-10-02 on the pod's 27B model: of 266 one-call compactions since 2026-09-24, 31
@@ -695,6 +709,7 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_completion_tokens": 0,
         "summarizer_s": 0.0,
         "summarizer_rejected": 0,
+        "summarizer_fast_fail": 0,
         "summarizer_cut": 0,
         "summary_chars": 0,
         "summary_tokens_estimate": 0,
@@ -834,6 +849,62 @@ async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResu
             elif isinstance(event, StreamDone):
                 finish_reason = event.finish_reason
     finally:
+        aclose = getattr(events, "aclose", None)
+        if aclose is not None:
+            await aclose()
+    return LLMResult(
+        text="".join(text), thinking="".join(thinking), usage=usage, finish_reason=finish_reason
+    )
+
+
+class _SummaryTagNotOpened(Exception):
+    """The summarizer's visible text passed the grace threshold without opening a ``<summary>``
+    tag (ADR-0376).  The stream was closed early so the server is freed within about a second
+    (#862), and the ask is treated as rejected with a distinct reason and a higher resample
+    allowance, since the cost of retrying a fast-failed ask is far lower than one that streamed
+    to the output limit."""
+
+
+async def _collect_stream_watching_tag(
+    events: AsyncIterator[ProviderStreamEvent],
+    grace: int = _SUMMARY_TAG_GRACE_CHARS,
+) -> LLMResult:
+    """Like :func:`_collect_stream`, but close the stream early when the visible text passes
+    ``grace`` characters without a case-insensitive ``<summary>`` opening (ADR-0376).
+
+    Only VISIBLE text (:class:`StreamTextDelta`) counts toward the grace; thinking deltas are
+    ignored so a route that reasons on purpose is not cut while it thinks (ADR-0366).  When the
+    grace is exceeded the stream is closed (so #862's HTTP-response close fires) and
+    :class:`_SummaryTagNotOpened` is raised with whatever text had accumulated.
+    """
+    text: list[str] = []
+    thinking: list[str] = []
+    usage = Usage()
+    finish_reason: str | None = None
+    visible_chars = 0
+    tag_found = False
+    _TAG_OPEN_RE = re.compile(r"<summary(?:\s|>)", re.I)
+    try:
+        async for event in events:
+            if isinstance(event, StreamTextDelta):
+                text.append(event.text)
+                if not tag_found:
+                    visible_chars += len(event.text)
+                    if _TAG_OPEN_RE.search("".join(text)):
+                        tag_found = True
+                    elif visible_chars > grace:
+                        raise _SummaryTagNotOpened(
+                            f"it had not opened its summary within {visible_chars} characters"
+                        )
+            elif isinstance(event, StreamThinkingDelta):
+                thinking.append(event.text)
+            elif isinstance(event, StreamUsage):
+                usage = event.usage
+            elif isinstance(event, StreamDone):
+                finish_reason = event.finish_reason
+    finally:
+        # Close the stream (freeing the HTTP response per #862) whether the iteration
+        # completed normally or _SummaryTagNotOpened cut it short.
         aclose = getattr(events, "aclose", None)
         if aclose is not None:
             await aclose()
@@ -3454,8 +3525,9 @@ class AgentLoop:
         rendered = self._render_for_summary(messages)
         chunk_chars = max(4096, int(window * _SUMMARY_CHUNK_FRACTION) * _SUMMARY_CHARS_PER_TOKEN)
 
-        async def ask(body: str, close: str) -> str:
+        async def ask(body: str, close: str, *, tag_watch: bool = False) -> str:
             # ``close`` is the template that ends the prompt; its ``{words}`` is the budget asked.
+            # ADR-0376: ``tag_watch`` enables the tag watcher for this ask and its resamples.
             nonlocal held
             asked = words
             prompt = body + close.format(words=asked)
@@ -3465,20 +3537,30 @@ class AgentLoop:
             if thinking_off and (entry is None or _SWITCH_OVERRIDE not in entry[1]):
                 switched = {"extra_body": thinking_extra_body(False), "max_tokens": switched_room}
 
+            # ADR-0376: whether the tag watcher is active for this ask.  Controlled by
+            # the ``tag_watch`` parameter; the watcher covers the main ask and its
+            # resamples, not slices, folds or the condensing ask (whose inputs are already
+            # summaries, or whose size is bounded by the character budget).
+            watch_tag = tag_watch
+
             def request(call_kw: dict[str, Any]) -> Awaitable[LLMResult]:
                 # ADR-0251: streamed and collected, never buffered. A buffered answer can
                 # be lost between the proxy's 200 and this client, and the loss costs the
                 # whole request timeout before a retry; every lost answer measured on the
                 # pod ledger was a summarizer-sized buffered call, and no streamed call in
                 # the same windows was lost. Streamed, this rides the per-gap stall bound.
-                return _collect_stream(
-                    summarizer.astream(
-                        [Message.user(prompt)],
-                        system=instruction,
-                        prompt_cache_key=self._prompt_cache_key(),
-                        **{"max_tokens": room, **switched, **raised, **call_kw},
-                    )
+                stream = summarizer.astream(
+                    [Message.user(prompt)],
+                    system=instruction,
+                    prompt_cache_key=self._prompt_cache_key(),
+                    **{"max_tokens": room, **switched, **raised, **call_kw},
                 )
+                # ADR-0376: the tag watcher closes the stream early when visible text
+                # passes the grace without a <summary> opening, so a miss costs about a
+                # minute instead of ten.
+                if watch_tag:
+                    return _collect_stream_watching_tag(stream)
+                return _collect_stream(stream)
 
             def account_withheld(usage: Usage | None) -> None:
                 # A summarizer call a content filter withheld was billed too (ADR-0290), and
@@ -3489,16 +3571,38 @@ class AgentLoop:
             started = time.monotonic()
             try:
                 why = ""
-                for resample in range(_SUMMARY_RESAMPLES + 1):
+                resample = 0
+                refused_switch = False  # ADR-0366: the ask is going again without the switch
+                # ADR-0376: a fast-failed ask (stream closed early because the tag did not
+                # open within the grace) is cheap enough to retry more than the single
+                # resample a full-length rejection gets.  ``remaining`` tracks how many more
+                # asks the loop may send; a fast-fail rejection raises it.
+                remaining = _SUMMARY_RESAMPLES
+                while True:
                     # ADR-0242: a response that is not a summary is asked for again at the
                     # rejection-retry temperature, so a deterministic model does not re-emit it.
                     if resample:
                         raised = {"temperature": self._rejection_retry_temperature(resample)}
                     # The loop's one retry policy (ADR-0083): a busy pod's 429 is waited out
                     # here exactly as it is on the main call, instead of failing the compaction.
+                    fast_failed = False
                     try:
                         result = await self._complete_with_retry(
                             request, on_withheld=account_withheld
+                        )
+                    except _SummaryTagNotOpened as tag_exc:
+                        # ADR-0376: the stream was closed early — the visible text passed the
+                        # grace without a <summary> opening.  Treat as a rejection with a
+                        # higher resample allowance since the cost was low.
+                        fast_failed = True
+                        why = str(tag_exc)
+                        self._compaction_cost["summarizer_rejected"] += 1
+                        self._compaction_cost["summarizer_fast_fail"] += 1
+                        # Grant up to _SUMMARY_FAST_FAIL_RESAMPLES from the FIRST fast-fail,
+                        # net of any resamples already spent.
+                        remaining = max(
+                            remaining,
+                            _SUMMARY_FAST_FAIL_RESAMPLES - resample,
                         )
                     except RequestFailed as exc:
                         # ADR-0366: a refusal that names nothing, of an ask that switched thinking
@@ -3516,35 +3620,43 @@ class AgentLoop:
                         sink = self._status_sink
                         if sink is not None:
                             sink(f"compaction: {said}")
-                        result = await self._complete_with_retry(
-                            request, on_withheld=account_withheld
-                        )
+                        # ADR-0376: it goes again through the try above, so the ask without the
+                        # switch is watched, and its fast-fail is resampled like any other ask's.
+                        refused_switch = True
+                        continue
+                    if refused_switch:
+                        # The ask without the switch was answered: the switch stays off this
+                        # provider's later asks (ADR-0315).
                         entry = self._refused_overrides.setdefault(
                             id(summarizer), (summarizer, set())
                         )
                         entry[1].add(_SWITCH_OVERRIDE)
-                    self._account_summarizer_usage(result.usage, summarizer)
-                    summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
-                    if summary:
-                        if result.finish_reason in _LENGTH_FINISH_REASONS:
-                            # ADR-0369: what a cut reply wrote is kept, not asked for again. Both
-                            # asks cut used to install nothing, each at the cost of a whole ask.
-                            summary = _first_words(summary, line)
-                            held = True
-                            self._compaction_cost["summarizer_cut"] += 1
-                            said = (
-                                "the summarizer's response was cut off at the output limit; "
-                                f"keeping {len(summary.split()):,} words of it"
-                            )
-                            logger.warning("compaction: %s", said)
-                            sink = self._status_sink
-                            if sink is not None:
-                                sink(f"compaction: {said}")
-                        return summary
-                    self._compaction_cost["summarizer_rejected"] += 1
-                    if resample < _SUMMARY_RESAMPLES:
+                        refused_switch = False
+                    if not fast_failed:
+                        self._account_summarizer_usage(result.usage, summarizer)
+                        summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
+                        if summary:
+                            if result.finish_reason in _LENGTH_FINISH_REASONS:
+                                # ADR-0369: what a cut reply wrote is kept, not asked for again.
+                                # Both asks cut used to install nothing, each at the cost of a
+                                # whole ask.
+                                summary = _first_words(summary, line)
+                                held = True
+                                self._compaction_cost["summarizer_cut"] += 1
+                                said = (
+                                    "the summarizer's response was cut off at the output limit; "
+                                    f"keeping {len(summary.split()):,} words of it"
+                                )
+                                logger.warning("compaction: %s", said)
+                                sink = self._status_sink
+                                if sink is not None:
+                                    sink(f"compaction: {said}")
+                            return summary
+                        self._compaction_cost["summarizer_rejected"] += 1
+                    if remaining > 0:
+                        remaining -= 1
                         again = "asking again"
-                        if result.finish_reason in _LENGTH_FINISH_REASONS:
+                        if not fast_failed and result.finish_reason in _LENGTH_FINISH_REASONS:
                             # ADR-0366: a summary the output limit cut off is not asked for the
                             # same way twice. Where the route took the switch and thought anyway,
                             # again with the room the ask had with thinking on (ADR-0275).
@@ -3575,7 +3687,9 @@ class AgentLoop:
                         sink = self._status_sink
                         if sink is not None:
                             sink(f"compaction: {said}")
-                raise SummaryNotWritten(f"the summarizer's response was not a summary ({why})")
+                        resample += 1
+                        continue
+                    raise SummaryNotWritten(f"the summarizer's response was not a summary ({why})")
             finally:
                 # ADR-0241: every ask counts, with its seconds (its retries and resamples
                 # included), a failed one too: a timed-out summarizer is the costliest
@@ -3611,7 +3725,7 @@ class AgentLoop:
             return _held_to_words(shorter, line)
 
         if len(rendered) <= chunk_chars:
-            summary = await ask(_SUMMARY_PROMPT + rendered, summary_close)
+            summary = await ask(_SUMMARY_PROMPT + rendered, summary_close, tag_watch=True)
             summary = await held_to_budget(summary)
             return self._finish_summary(_with_carried(summary, carried, line), messages, held=held)
         # ADR-0183: bounded by construction — at most _MAX_SUMMARY_SLICES slice calls (the

@@ -23730,3 +23730,56 @@ real work; a mixed run refused by neither bound; the bound inert without shell t
 reset; the ladder to a stop; a plan-only refusal still told as one; and the refusal, a run to a stop
 and a print between real steps on both turn paths. 35 mutations of the predicate, the counts, the
 words and both seams each fail the file.
+
+## ADR-0376: a summarizer ask that does not open its summary tag is cut early and retried cheaply
+
+Status: accepted. 2026-11-08. Builds on ADR-0242 (the one resample), ADR-0251 (streamed and
+collected), ADR-0366 (thinking off, a lower cap) and ADR-0369 (a cut reply is kept).
+
+Context. Measured over ~212 session-hours on an inference server: of 37 compactions whose summarizer
+reached the output cap, 6 lost their first ask. Each such ask streamed to the 16,469-token cap of a
+thinking-off ask before `_summary_of` rejected it, and two compactions lost their one resample the
+same way: their four calls took 576 to 667 s each, about 20 engine-minutes per compaction, and
+installed no summary. A cut
+reply that opened its `<summary>` tag is kept (ADR-0369), so each rejected reply either never opened
+the tag or opened it too late to hold the floor; the replies themselves were not read. The
+instruction asks for "only the summary, inside `<summary></summary>`", so a well-formed reply opens
+the tag at or near its start.
+
+Decision.
+- The summarizer's streamed ask watches visible text (not a separate thinking channel) for a
+  case-insensitive `<summary` opening. When visible text passes `_SUMMARY_TAG_GRACE_CHARS` (2,000)
+  without one, the stream is closed early so the server is freed within about a second (PR #862's
+  close fires) and the ask is treated as rejected.
+- A fast-failed ask costs about a minute, not ten, so up to `_SUMMARY_FAST_FAIL_RESAMPLES` (3)
+  resamples are allowed for fast-fail rejections, where a full-length rejection keeps today's single
+  resample (`_SUMMARY_RESAMPLES`). The temperature step and the halved-budget rules apply as before.
+- The watcher covers only the single-chunk main transcript ask (the one whose measured failures
+  motivated the fix), its resamples, and the same ask sent again without a thinking switch the
+  route refused (ADR-0366). That ask goes back through the same handler, so its fast-fail is
+  resampled like any other instead of leaving the summarizer. Slice and fold asks are not watched: their inputs are already bounded by
+  `chunk_chars`, their responses are reassembled rather than parsed for a tag, and existing test fakes
+  for the multi-chunk path do not produce tagged output. The condensing ask (`held_to_budget`) is
+  likewise not watched: it is handed an already-valid summary and asked to shorten it.
+- A thinking route is not cut while it thinks: only `StreamTextDelta` events (visible text) count
+  toward the grace; `StreamThinkingDelta` events are ignored, keeping ADR-0366's "asking again with
+  room to think" path working.
+- A cut reply that opened the tag is still kept (ADR-0369), since the watcher does not fire once the
+  tag is found.
+- `summarizer_fast_fail` counts the stream-closed rejections, beside `summarizer_rejected`.
+
+What was considered and not done.
+- Watching the condensing ask. The condensing ask is small and cheap, and its input already contains a
+  valid summary, so cutting it early saves nothing measurable.
+- A lower grace (300 characters or fewer). A model that echoes part of the instruction, or writes a
+  short preamble before the tag, would be cut, and how long the preambles of accepted replies run was
+  not measured. 2,000 characters of visible text stream in well under a minute on the same server
+  (the four calls of the two compactions that installed nothing took 576 to 667 s each), so the wider
+  grace costs little next to a 10-minute fill.
+
+The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
+cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
+a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; an
+ask sent again without a refused switch that fast-fails is resampled and installs; a
+thinking route is not cut while it thinks, nor a reply whose preamble stays under the grace; a tagged cut reply is still kept; the stream is closed
+(`aclose`) when the watcher cuts.
