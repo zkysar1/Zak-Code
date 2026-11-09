@@ -1938,6 +1938,20 @@ def _figures(text: str) -> set[str]:
     return out
 
 
+_PINNED_FIGURE_RE = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d{4,})(?!\w)")
+
+
+def _pinned_figures(text: str) -> set[str]:
+    """Figures a pinned prompt text states, digits only.
+
+    Looser than ``_figures`` on purpose: prose ends a sentence on its number ("text HOME to
+    741741. Mainland China: call 12356."), and ``_figures`` refuses a figure followed by a
+    full stop or comma because there it guards against decimals and list fragments. Over-reading
+    a source only sources one more figure; under-reading it re-flags a number the operator wrote.
+    """
+    return {raw.replace(",", "") for raw in _PINNED_FIGURE_RE.findall(text)}
+
+
 def _figure_nudge(figures: list[str]) -> str:
     listed = ", ".join(figures)
     return (
@@ -7343,11 +7357,11 @@ class AgentLoop:
         )
 
     def _unsourced_figures(self, text: str) -> list[str]:
-        """Figures in ``text`` that appear in no tool output and no user message this session.
+        """Figures in ``text`` that appear in no tool output, no user message and no pinned text.
 
         Evidence gate (ADR-0044): a measurement the model never took. Assistant text is
         deliberately NOT a source — that is exactly how an invented number survives ("as
-        reported earlier").
+        reported earlier"). Text the operator pinned into the prompt is one (below).
         """
         wanted = _figures(text)
         if not wanted:
@@ -7360,6 +7374,23 @@ class AgentLoop:
                 raw = getattr(block, "output", None) or getattr(block, "text", None)
                 if isinstance(raw, str) and raw:
                     sourced |= _figures(raw)
+        # Text the operator pinned into the prompt is in front of the model every turn: a figure
+        # written there is a given, not a measurement the model failed to take (a pinned crisis
+        # card's hotline numbers drew a "no tool output" hint and a second reply). Pinned is what
+        # the prompt carries under either render (ADR-0105): the identity, and the bodies of
+        # ``alwaysApply`` rules. A plain rule is not pinned (the lean render carries only its
+        # one-line index). ``save_rule`` has no parameter for the flag and refuses a description
+        # with any line break, so a rule it saves is plain. A rule file the model writes with its
+        # file tools inside the workspace can carry ``alwaysApply: true``, and from the next
+        # session that rule is pinned and sources a figure (ADR-0044, residual).
+        pinned = list(self._prompt_input_items.get("identity", {}).values())
+        if self._rule_registry is not None:
+            for name in self._rule_registry.names():
+                rule = self._rule_registry.get(name)
+                if rule is not None and rule.always_apply:
+                    pinned.append(rule.content)
+        for body in pinned:
+            sourced |= _pinned_figures(body)
         return sorted(wanted - sourced)
 
     def _previous_assistant_text(self) -> str:
