@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zakcode.tools.base import ToolContext
+from zakcode.tools.base import SkillLoad, ToolContext
 from zakcode.tools.builtins.bash import (
     _FIND_MAX_DIRS,
     BashTool,
@@ -89,7 +89,7 @@ class _Skills:
     def body(self, name: str) -> str | None:
         return None
 
-    async def load(self, name: str, *, query: str = "", args: str = "") -> object:
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
         raise NotImplementedError  # pragma: no cover — not exercised by this path
 
 
