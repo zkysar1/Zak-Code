@@ -132,9 +132,9 @@ SIG_REPEATED_OUTCOME = "repeated-outcome"
 #: sends, an outcome it records, or the work done while it is current, and such a completion
 #: supplies none of them. The receipt rails could not see this run when each call CHANGED the
 #: plan: the unchanged rail answers only a resend, lever N needs evidence, and the doom guard
-#: needs a byte-identical batch. Measured on a served fleet (ten Bodies, one 35B-class local
+#: needs a byte-identical batch. Measured on a served fleet (ten agents, one 35B-class local
 #: model, 2026-11-05, 4 h, 2,175 calls): 12.8% of all calls sat in runs of three or more such
-#: completions, at least 14% of Body-time. The completion that would be the ``plan_only_at``-th
+#: completions, at least 14% of agent time. The completion that would be the ``plan_only_at``-th
 #: in a row is refused unexecuted and told the step to do; any other call ends the run, as does a
 #: plan call that moved the plan. A refused completion is no failure of the plan tool and no look
 #: at the world, so the error and outcome counts never see it (a ladder that called the refusals

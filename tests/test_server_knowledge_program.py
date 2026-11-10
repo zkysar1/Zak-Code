@@ -12,11 +12,12 @@ reader is most likely to break by accident:
 
     THIS MATTERS MORE HERE THAN IT DID FOR ``self``. ``project_program`` fails
     CLOSED — it publishes only the region between the literal
-    ``<!-- public:begin -->`` / ``<!-- public:end -->`` markers in
-    ``world/program.md``, and ``{}`` when no marker is present. self.md has an
-    enforced section structure that makes a structural cut safe; program.md does
-    not. So ``{}`` is the EXPECTED steady state for an unmarked world, not a
-    failure, and a 404 here would misreport the normal case as a broken route.
+    ``<!-- public:begin -->`` / ``<!-- public:end -->`` markers in the
+    shared-purpose document, and ``{}`` when no marker is present. The identity
+    document has an enforced section structure that makes a structural cut safe;
+    the shared-purpose document does not. So ``{}`` is the EXPECTED steady state
+    for an unmarked world, not a failure, and a 404 here would misreport the
+    normal case as a broken route.
 
   * ``program`` IS AN OBJECT, AND THE COERCION THAT KEEPS IT ONE IS
     ORDER-DEPENDENT. ``_KNOWLEDGE_SECTIONS`` drives a loop coercing every member

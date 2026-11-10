@@ -2903,9 +2903,10 @@ def create_app(
         Like every route here it serves the already-filtered bundle verbatim and
         holds NO projection logic: the cut is made at the source by the
         framework's KnowledgeProjection. For `program` that cut is a
-        marker pair in world/program.md rather than self.md's structural
-        first-'##' rule — program.md has no enforced section structure, so the
-        projection fails CLOSED and publishes {} when no marker is present.
+        marker pair in the shared-purpose document rather than the identity
+        document's structural first-'##' rule — the shared-purpose document has
+        no enforced section structure, so the projection fails CLOSED and
+        publishes {} when no marker is present.
         Re-deriving any of that here would be a second, divergent redactor.
 
         NOTE the empty steady state is EXPECTED, not a defect: at the time this
