@@ -23932,3 +23932,35 @@ malformed value is logged once. And it pins reach, not authority: a `..` out of 
 refused, a `.env` in one is refused while a sibling file there reads, an ingested
 `deny Edit(**/locked/**)` stops a write under the added directory while a sibling's lands, and a write
 there is allowed under `acceptEdits` and asked about under `ask`.
+
+## ADR-0377: Glob, Grep and LS open the `world/` and `meta/` prefixes too
+
+**Status:** Accepted (2026-11-10)
+
+**Context.** ADR-0282 made `Read`, `Edit` and `Write` rewrite a leading `world/` or `meta/` to the directory the
+workspace's `agents/*/local-paths.conf` declares for it, and listed `Glob`, `Grep` and `LS` under "Not covered".
+They are the tools a model reaches for next: the framework's retrieval script answers with
+`world/knowledge/tree/…`, and a search of that directory or a listing of `world/` met the `File not found` the
+first `Read` had. On the served layout (`WORLD_PATH=<workspace>/knowledge`) with no roots handed to them, `Glob` of
+`**/*.md` under `world/knowledge/tree` answered `Base path is not a directory: world/knowledge/tree`, `Grep` of
+`softmax` there answered `Path not found: world/knowledge/tree`, and `LS` of `world/` answered
+`Directory not found: world/`.
+
+**Decision.** `GlobTool`, `GrepTool` and `ListDirTool` pass `ctx.virtual_roots` to `resolve_path` as its fourth
+argument, the same call `Read`, `Edit` and `Write` make; nothing else changes. The rewrite, the slash it requires,
+the ambiguity rule, the confinement check and the not-found hints (ADR-0040) are ADR-0282's. The image, PDF and
+office tools still call `resolve_path` without the roots (eight call sites) and are left as they were until a
+session needs them.
+
+**Consequences.** A workspace that declares no world or meta is unchanged, and so is every path that does not open
+with a declared prefix: a relative path, an absolute one and the bare words `world` and `meta` (by ADR-0282's
+contract) pass through untouched. ADR-0282's "Not covered" sentence about these three tools no longer holds; the
+rest of that section stands.
+
+Measured on the two layouts ADR-0282 used. On the served layout `Glob`, `Grep` and `LS` open `world/knowledge/tree`
+and `world/`; on a framework repo whose meta lives outside it (ADR-0229) `meta/` opens for all three, where a plain
+relative `meta/` would not. Each tool is pinned with the call that hands it no roots (the field failure, kept as a
+positive control) and with a workspace path that must not move (`test_virtual_prefix_resolution.py`). A mutation
+run proved the pins: with each tool in turn dropping `ctx.virtual_roots`, exactly that tool's two pins went red and
+the other 61 of the file's 63 tests stayed green; with the rewrite applied to every path instead of the two
+prefixes, the three pass-through pins went red.
