@@ -23,6 +23,7 @@ the tool degrades to a clean error rather than raising.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from zakcode.config import PermissionTier
@@ -33,13 +34,41 @@ from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, 
 #: turn's context. Truncation is announced in the output rather than silent.
 MAX_RULE_BODY_CHARS = 16000
 
-#: The answer to a repeat of a rule whose text is still in the conversation (ADR-0372), given at
-#: most once per rule while it stays there: a read after it returns the body.
+#: The answer to EVERY repeat of a rule whose text is still in the conversation (ADR-0372,
+#: ADR-0379). Numbered, so the model sees how often it has asked for the same text; it names the
+#: plan's current step and restates the rule's summary, and only ``refresh=true`` returns the text
+#: again. ADR-0372 gave this line once and then the body, and the body was asked for again within
+#: minutes: measured 2026-11-10 on ten worker sessions, one read three rules nine times each in 21
+#: minutes with one plan update and no other tool between them.
 ALREADY_READ = (
-    "[already read] Rule {name!r} is in your context from an earlier read_rule call, unchanged. "
-    "Apply it from there. If you need the text itself, read it again: a read after this line "
-    "returns it in full."
+    "[already read; ask {n}] Rule {name!r} is in your context from an earlier read_rule call, "
+    "unchanged; this is ask {n} for it. Apply the text you have{step}. Reading it again changes "
+    "nothing; call read_rule with refresh=true only if you need its exact wording.{summary}"
 )
+
+#: How far back the ask count is read (ADR-0379); past it, the pointer keeps this number.
+_MAX_COUNTED_ASKS = 99
+
+
+def _pointer_head(name: str, n: int) -> str:
+    """How ask ``n``'s pointer for rule ``name`` begins: the count reads these back."""
+    return f"[already read; ask {n}] Rule {name!r} "
+
+
+def _pointer(rule: Any, name: str, ctx: ToolContext, in_context: Callable[[str], bool]) -> str:
+    """The answer to a repeat: ask N, where N - 1 of this rule's pointers are still in the
+    conversation. A conversation read, as ADR-0372's check is, so a compaction or an elision
+    that takes the pointers away starts the count over with nothing to reset."""
+    n = 1
+    while n <= _MAX_COUNTED_ASKS and in_context(_pointer_head(name, n)):
+        n += 1
+    network = getattr(ctx, "task_network", None)
+    current = network.current() if network is not None else None
+    step = f" to your current step, {current.title!r}" if current is not None else ""
+    summary = rule.summary()
+    return ALREADY_READ.format(
+        n=n, name=name, step=step, summary=f" Its summary: {summary}" if summary else ""
+    )
 
 
 class ReadRuleTool(Tool):
@@ -50,7 +79,9 @@ class ReadRuleTool(Tool):
         description=(
             "Read one project rule's full text by name. Your context lists the available rules "
             "as an index (name + one-line summary); call this when a rule's summary looks "
-            "relevant to the current step, then apply the rule you get back. Use the name "
+            "relevant to the current step, then apply the rule you get back. A rule's text "
+            "stays in your context and does not change: read each rule once, and when its "
+            "summary looks relevant again, apply the text you already have. Use the name "
             "exactly as it appears in that index."
         ),
         parameters={
@@ -60,6 +91,14 @@ class ReadRuleTool(Tool):
                     "type": "string",
                     "description": (
                         "The rule name to read, exactly as it appears in the rules index."
+                    ),
+                },
+                "refresh": {
+                    "type": "boolean",
+                    "description": (
+                        "true returns the full text again although it is still in your "
+                        "context. Only for when you need its exact wording: the text does not "
+                        "change between reads."
                     ),
                 },
             },
@@ -111,10 +150,10 @@ class ReadRuleTool(Tool):
         # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
         # disk is a prefix of the older text, and without it the check below read that as unchanged.
         text = f"# {name}\n{body}\n[end of rule {name!r}]"
-        pointer = ALREADY_READ.format(name=name)
         in_context = getattr(ctx, "in_context", None)
-        # Once per rule: a session that asks again after the pointer wants the text, and answering
-        # it with the pointer again kept it asking until the doom-loop guard refused (ADR-0372).
-        if in_context is not None and in_context(text) and not in_context(pointer):
-            return ToolResult.ok(pointer)
+        # Every repeat while the text is in the conversation gets the numbered pointer; the body
+        # comes back only when asked for on purpose (ADR-0379; ADR-0372 gave it once, then the
+        # body, and the body was asked for again and again).
+        if in_context is not None and args.get("refresh") is not True and in_context(text):
+            return ToolResult.ok(_pointer(rule, name, ctx, in_context))
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped
