@@ -401,9 +401,11 @@ def save_rule(
       ``lines[0].strip() == "---"``, so anything above it — a blank line, a comment — makes
       the parser return *no metadata* and treat the whole file as the body. The rule would
       still load, silently, under its filename stem with its description lost.
-    * ``name`` and ``description`` must be single-line. The frontmatter parser is line-based,
-      so an embedded newline either invents a bogus key or (if the line is ``---``) closes
-      the block early.
+    * ``name`` and ``description`` must be single-line, and a line is what the reader splits
+      on: :func:`_split_frontmatter` uses ``str.splitlines()``, which breaks on more than LF
+      and CR (also U+000B, U+000C, U+001C to U+001E, U+0085, U+2028 and U+2029). The
+      frontmatter parser is line-based, so an embedded break either invents a bogus key
+      (``alwaysApply: true`` among them) or (if the line is ``---``) closes the block early.
     * ``body`` is capped at :data:`MAX_RULE_FILE_CHARS`, because that is the bound
       :meth:`RuleRegistry._body_block` truncates at when rendering. Refusing here is better
       than authoring a rule that is silently cut in half every turn it is read.
@@ -427,7 +429,9 @@ def save_rule(
             f"rule body is {len(body)} chars, over the {MAX_RULE_FILE_CHARS}-char per-rule "
             "budget; the render would truncate it silently. Split it or shorten it."
         )
-    if "\n" in description or "\r" in description:
+    # The reader splits with str.splitlines(), so refuse every break it honors, not only LF and
+    # CR (an empty description has no lines, hence the first operand).
+    if description and description.splitlines() != [description]:
         raise RuleError("rule description must be a single line (the frontmatter is line-based)")
     root = Path(rules_dir)
     path = root / f"{name}.md"

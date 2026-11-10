@@ -590,7 +590,7 @@ _ENOENT_RES = (
         r"((?:[A-Za-z]:)?(?:[/\\~.][^\n:'\"]*|[^\s:'\"]+)): No such file or directory"
     ),
     # the same frame with the path QUOTED — newer coreutils (Git Bash on Windows CI, 2026-08-29:
-    # `cat: 'C:/Users/.../forged-skills.yaml': No such file or directory`)
+    # `cat: 'C:/Users/.../notes.yaml': No such file or directory`)
     re.compile(r"(?m)^[\w.\-/]+: '([^']+)': No such file or directory"),
 )
 #: Names that are never a file the model meant: stdin markers and apport's `-c` artefact.
@@ -663,9 +663,9 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
             )
         return None
     # The guessed DIRECTORY does not exist. Name the first component that is missing and
-    # where a directory of that name really is: `.data/agents/<name>/sessions/<sid>/x`
-    # fails at `.data/agents`, and `agents/` lives at the workspace root (measured
-    # 2026-08-29: touch/grep/ls on that invented prefix, four times in one hour,
+    # where a directory of that name really is: `.data/groups/<name>/runs/<id>/x`
+    # fails at `.data/groups`, and `groups/` lives at the workspace root (measured
+    # 2026-08-29: touch/grep/ls on an invented prefix of this shape, four times in one hour,
     # none of them a name the file search could lead on — the file was about to be created).
     # A same-named FILE elsewhere is the more specific lead and keeps the first word; the
     # prefix diagnosis rides beside it, and stands alone only when there is no file lead.

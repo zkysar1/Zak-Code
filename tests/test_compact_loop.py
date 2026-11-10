@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -39,14 +40,17 @@ from zakcode.agent.loop import (
     _MAX_SUMMARY_SLICES,
     _POSITION_NOTE_HEAD,
     _SUMMARY_CLOSE,
+    _SUMMARY_FAST_FAIL_RESAMPLES,
     _SUMMARY_HELD_LINE,
     _SUMMARY_ORDER,
     _SUMMARY_OUTPUT_CHARS,
     _SUMMARY_OVER_BUDGET,
+    _SUMMARY_TAG_GRACE_CHARS,
     _SWITCH_OVERRIDE,
     AgentLoop,
     _carried_parts,
     _clamp_middle,
+    _collect_stream_watching_tag,
     _earlier_summary_body,
     _first_words,
     _held_to_words,
@@ -56,6 +60,7 @@ from zakcode.agent.loop import (
     _summary_output_room,
     _summary_switched_room,
     _summary_target_words,
+    _SummaryTagNotOpened,
     _with_carried,
 )
 from zakcode.hooks import HookEvent, LifecyclePayload
@@ -65,8 +70,13 @@ from zakcode.providers.base import (
     ContextWindowExceeded,
     LLMResult,
     Provider,
+    ProviderStreamEvent,
     RateLimited,
     RequestFailed,
+    StreamDone,
+    StreamTextDelta,
+    StreamThinkingDelta,
+    StreamUsage,
 )
 from zakcode.providers.routing import thinking_extra_body
 from zakcode.session.status_file import StatusFileWriter
@@ -1327,6 +1337,67 @@ def test_an_earlier_summary_loses_every_harness_line_it_carried() -> None:
     )
 
 
+# ── ADR-0365: a position note a model echoed is neither read nor installed ──────────────
+
+_STALE_NOTE = f'{_POSITION_NOTE_HEAD}\n- plan: current step "Old" (0 of 9 steps closed)'
+
+
+def test_a_position_note_a_model_echoed_never_reaches_the_summarizer() -> None:
+    # Measured 2026-11-05 on a worker (a 27B model on the pod): one installed summary held
+    # three exact position notes, two of them stale. In the window it summarized, the model
+    # had echoed the whole note nine times in its own replies, and only the earlier
+    # summary's copies were taken out before the summarizer read the window.
+    reply = Message.assistant_text(f"Resuming.\n\n{_STALE_NOTE}\n\nNext: run the tests.")
+
+    rendered = AgentLoop._render_for_summary([Message.user("go"), reply, Message.user("next")])
+
+    assert rendered == (
+        "[user]\ngo\n\n[assistant]\nResuming.\n\nNext: run the tests.\n\n[user]\nnext"
+    )
+
+
+def test_an_installed_summary_holds_only_the_harness_s_own_position_note(
+    tmp_path: Path,
+) -> None:
+    from zakcode.tasks import skill_skeleton
+
+    copied = f"<summary>A is done.\n\n{_STALE_NOTE}\n\nB is next.\n\n{_STALE_NOTE}</summary>"
+    loop = _loop(_SummarizerProvider([copied], tokens=100), tmp_path)
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n\n## Step 2: Beta\n\nbeta\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+
+    assert text.count(_POSITION_NOTE_HEAD) == 1
+    assert text.startswith(f"A is done.\n\nB is next.\n\n{_POSITION_NOTE_HEAD}\n")
+    assert '"Old"' not in text
+
+
+def test_a_copied_position_note_is_dropped_when_the_harness_has_none_to_write(
+    tmp_path: Path,
+) -> None:
+    copied = f"<summary>A is done.\n\n{_STALE_NOTE}</summary>"
+    loop = _loop(_SummarizerProvider([copied], tokens=100), tmp_path)
+    assert loop._compaction_position_note() == ""  # the premise: nothing for the harness to say
+
+    assert asyncio.run(loop._summarize_for_compaction(_history(2))) == "A is done."
+
+
+def test_a_summary_that_was_only_a_copied_note_installs_the_harness_s_note_alone(
+    tmp_path: Path,
+) -> None:
+    from zakcode.tasks import skill_skeleton
+
+    loop = _loop(_SummarizerProvider([f"<summary>{_STALE_NOTE}</summary>"], tokens=100), tmp_path)
+    body = "# Boot\n\nintro\n\n## Step 1: Alpha\n\nalpha\n"
+    loop.session.task_network.insert_before(None, skill_skeleton(body, skill="boot"))
+
+    text = asyncio.run(loop._summarize_for_compaction(_history(2)))
+
+    assert text == loop._compaction_position_note()
+    assert text.startswith(_POSITION_NOTE_HEAD) and '"Old"' not in text
+
+
 # ── ADR-0331: a summary over its budget, condensed once on its own ───────────────────
 
 
@@ -1703,6 +1774,272 @@ def test_a_refused_switch_is_asked_without_and_left_off_later_asks(tmp_path: Pat
     ]
     assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
     assert any("refused the thinking switch" in line for line in said)
+
+
+# ── ADR-0376: a tag that does not open is cut early and retried cheaply ────────────────
+
+
+class _TagWatchStreamProvider(_ScriptedSummarizer):
+    """Yields visible text in small incremental chunks so the tag watcher can fire
+    mid-stream. Whether the watcher closes the stream it cuts is pinned on its own, by
+    test_the_stream_is_closed_when_the_watcher_cuts.
+
+    Each response's text is yielded in chunks of ``chunk`` characters.  The provider
+    alternates between producing responses from ``texts`` with optional ``thinking``
+    prefixes and ``finish_reasons``."""
+
+    def __init__(
+        self,
+        texts: list[str],
+        finish_reasons: list[str] | None = None,
+        *,
+        thinkings: list[str] | None = None,
+        chunk: int = 20,
+        window: int = 8192,
+    ) -> None:
+        super().__init__(texts, tokens=100_000, window=window)
+        self._finish_reasons = finish_reasons or ["stop"] * len(texts)
+        self._thinkings = thinkings or [""] * len(texts)
+        self._chunk = chunk
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.seen.append(list(messages))
+        self.kwargs.append(kwargs)
+        idx = min(len(self.seen), len(self._texts)) - 1
+        text = self._texts[idx]
+        thinking = self._thinkings[idx]
+        reason = self._finish_reasons[idx]
+        # Thinking first, if any.
+        if thinking:
+            for i in range(0, len(thinking), self._chunk):
+                yield StreamThinkingDelta(text=thinking[i : i + self._chunk])
+        # Then visible text.
+        for i in range(0, len(text), self._chunk):
+            yield StreamTextDelta(text=text[i : i + self._chunk])
+        yield StreamUsage(usage=_SUMMARY_USAGE)
+        yield StreamDone(finish_reason=reason)
+
+
+def test_a_tag_that_never_opens_is_cut_early_and_the_resample_installs(tmp_path: Path) -> None:
+    # ADR-0376: visible text past the grace without <summary> is cut early.
+    no_tag = "Here is my plan for summarizing the conversation. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 50 + 20
+    )  # past the grace, no tag
+    provider = _TagWatchStreamProvider(
+        [no_tag, _WHOLE],
+        ["stop", "stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 1
+    assert row["summarizer_fast_fail"] == 1
+    assert any("had not opened its summary" in line for line in said)
+
+
+def test_three_fast_fails_then_a_success_installs(tmp_path: Path) -> None:
+    # Up to _SUMMARY_FAST_FAIL_RESAMPLES resamples for fast-fail rejections.
+    no_tag = "No summary here. " * (_SUMMARY_TAG_GRACE_CHARS // 17 + 20)  # past the grace, no tag
+    provider = _TagWatchStreamProvider(
+        [no_tag, no_tag, no_tag, _WHOLE],
+        ["stop", "stop", "stop", "stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 4  # 1 original + 3 resamples
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 3
+    assert row["summarizer_fast_fail"] == 3
+
+
+def test_four_fast_fails_fall_back_to_eliding_tool_outputs(tmp_path: Path) -> None:
+    # _SUMMARY_FAST_FAIL_RESAMPLES is 3, so four fast-fails exhaust the budget:
+    # 1 original ask + 3 resamples = 4 asks total, all fast-fail.
+    no_tag = "I will now plan. " * (_SUMMARY_TAG_GRACE_CHARS // 17 + 20)  # past the grace, no tag
+    provider = _TagWatchStreamProvider(
+        [no_tag],  # same answer every time
+        ["stop"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend([*_history(2), *_tool_pair("t1", "x" * 6000), *_history(4)])
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == _SUMMARY_FAST_FAIL_RESAMPLES + 1  # 4
+    assert "SummaryNotWritten" in loop.last_compaction
+    assert "had not opened its summary" in loop.last_compaction
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
+    assert row["summarizer_fast_fail"] == _SUMMARY_FAST_FAIL_RESAMPLES + 1
+
+
+class _TagWatchRefusesTheSwitch(_TagWatchStreamProvider):
+    """A streaming route that leaves the thinking switch to the caller and refuses a request
+    carrying it, naming nothing (ADR-0307), so the ask goes again without the switch."""
+
+    def capabilities(self) -> Capabilities:
+        return super().capabilities().model_copy(update={"thinking_switch": True})
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        if "extra_body" in kwargs:
+            self.kwargs.append(kwargs)
+            raise RequestFailed("The model returned the following errors: Validation Error")
+        async for event in super().astream(messages, system=system, tools=tools, **kwargs):
+            yield event
+
+
+def test_a_fast_fail_of_the_ask_sent_without_a_refused_switch_is_resampled(
+    tmp_path: Path,
+) -> None:
+    # ADR-0366 sends an ask again without the thinking switch when the route refuses it. That
+    # ask is watched too, and its fast-fail is resampled like any other: it does not leave the
+    # summarizer for the fallback to eliding.
+    no_tag = "Here is my plan for summarizing the conversation. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 50 + 20
+    )  # past the grace, no tag
+    provider = _TagWatchRefusesTheSwitch([no_tag, _WHOLE], ["stop", "stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2  # the ask without the switch, then its resample
+    assert "The session fixed the parser." in loop.session.messages[0].text
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_fast_fail"] == 1
+    assert loop._refused_overrides[id(provider)][1] == {_SWITCH_OVERRIDE}
+
+
+def test_thinking_is_not_counted_toward_the_grace(tmp_path: Path) -> None:
+    # A route that thinks on purpose must not be cut while it thinks (ADR-0366).
+    # Here the thinking is twice the grace, and a short visible note comes before the tag, so
+    # the first visible chunk holds no tag: counted with the thinking, it would pass the grace.
+    long_thinking = "Let me reason about this summary. " * (
+        2 * _SUMMARY_TAG_GRACE_CHARS // 34
+    )  # twice the grace, all thinking
+    provider = _TagWatchStreamProvider(
+        ["A short note before it.\n" * 4 + _WHOLE],
+        ["stop"],
+        thinkings=[long_thinking],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1  # no retry, the first ask succeeded
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+
+
+def test_a_preamble_under_the_grace_is_not_cut(tmp_path: Path) -> None:
+    # ADR-0376: the grace is wide because the preambles of accepted replies were not measured. A
+    # reply that writes a long preamble, still under the grace, then opens its tag installs on the
+    # first ask.
+    preamble = "Reading the conversation before writing it up. " * (
+        _SUMMARY_TAG_GRACE_CHARS // 48 // 2
+    )
+    assert 300 < len(preamble) < _SUMMARY_TAG_GRACE_CHARS
+    provider = _TagWatchStreamProvider([preamble + "\n" + _WHOLE], ["stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    summary = loop.session.messages[0].text
+    assert "The session fixed the parser." in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_fast_fail"] == 0
+
+
+def test_a_tagged_cut_reply_is_still_kept_under_the_watcher(tmp_path: Path) -> None:
+    # ADR-0369: a cut reply that opened its tag is kept. The watcher does not fire because
+    # the tag was found.
+    # The text must contain newlines and >500 chars of whole lines after the tag,
+    # because _summary_of strips the unfinished last line of a cut reply and rejects
+    # anything under _SUMMARY_FLOOR_CHARS. It runs past the grace, so a watcher that missed
+    # the tag would have cut it.
+    cut_tagged = (
+        "<summary>\n"
+        + "\n".join(
+            f"The session made progress on the parser, fixing issue {i} in the grammar"
+            for i in range(_SUMMARY_TAG_GRACE_CHARS // 60 + 10)
+        )
+        + "\nand then the session"
+    )
+    assert len(cut_tagged) > _SUMMARY_TAG_GRACE_CHARS
+    provider = _TagWatchStreamProvider(
+        [cut_tagged],
+        ["length"],
+    )
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    summary = loop.session.messages[0].text
+    assert "parser" in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_rejected"] == 0
+    assert row["summarizer_fast_fail"] == 0
+    assert row["summarizer_cut"] == 1
+
+
+def test_the_stream_is_closed_when_the_watcher_cuts() -> None:
+    # The watcher must aclose the stream so #862's HTTP-response close fires.
+    closed = False
+
+    async def _events() -> AsyncIterator[ProviderStreamEvent]:
+        nonlocal closed
+        try:
+            # Visible text past the grace, no tag.
+            yield StreamTextDelta(text="x" * (_SUMMARY_TAG_GRACE_CHARS + 100))
+            yield StreamUsage(usage=Usage())
+            yield StreamDone(finish_reason="stop")
+        finally:
+            # The generator's cleanup: if aclose was called, GeneratorExit is raised
+            # and we land here.
+            closed = True
+
+    async def run() -> None:
+        events = _events()
+        with pytest.raises(_SummaryTagNotOpened):
+            await _collect_stream_watching_tag(events)
+        # Read inside the loop and while the generator is still referenced: asyncio.run closes
+        # any async generator left open when its loop shuts down, which would set the flag
+        # whether or not the watcher closed the stream itself.
+        assert closed is True
+
+    asyncio.run(run())
 
 
 # ── ADR-0369: a cut reply is kept, and nothing installed runs past the line ─────────────

@@ -1792,6 +1792,37 @@ provides.
   claims phrased without a separator-bearing subject ("it is a python file") are not
   caught; a number smaller than 1,000 and not comma-grouped is not checked.
 
+**Amended 2026-11-07 (text the operator pinned is a source).** A deployment pinned its safety rule,
+hotline numbers included ("text HOME to 741741. Mainland China: call 12356."), and the figure gate
+found those numbers in no tool output and no user message of the session. The model answered the
+hint with a second reply that opened by saying where the numbers came from. A census of the stored
+sessions found ten such firings, all on development test identities; six of the ten second replies
+open with a source sentence (production was not measured). Numbers the operator wrote into the
+prompt are given, not measured, so a third source joins tool output and user messages: the
+identity (`self.md`) and the bodies of `alwaysApply: true` rules (ADR-0105). Those are the texts the
+prompt carries under both renders (a rule's body up to its per-rule cap), and the ones a person set
+apart: `save_rule` has no parameter for the flag and refuses a description with any line break, so a
+rule it saves is never one. Everything else stays unsourced: a plain rule (the lean render carries
+its one-line index, so the model may never have been shown the body), a rule saved with
+`save_rule`, a skill's description (`save_skill` writes those) and an output style.
+Assistant text stays excluded, as above. Pinned text is read by `_pinned_figures`, looser than
+`_figures` on purpose: pinned prose ends a sentence on its number ("text HOME to 741741."), and
+`_figures` refuses a figure followed by a full stop or a comma because there it guards against
+decimals and list fragments. Over-reading a source sources one more figure; under-reading it
+flags a number the operator wrote. Unchanged: the hint, the once-per-turn bound and the
+no-tool-call condition. Residual: a card pinned in a plain rule still draws the hint, so mark it
+`alwaysApply: true`. Pinned means set apart by whoever wrote the file, not out of the model's reach:
+the model's file tools can write `alwaysApply: true` into a rule file inside the workspace
+(`.zakcode/rules/` or `.claude/rules/`), and from the next session that rule is pinned and sources
+its figures. The identity is trusted as the operator's file, so a deployment whose model can
+rewrite it is in the same position. A deployment that must keep the model from pinning
+text, or from replacing text it pinned, keeps that text in an `alwaysApply` rule in the user rules
+directory (`~/.config/zakcode/rules/`), outside the workspace, where the file tools do not write. A
+workspace rule of the same name shadows it, so that deployment also moves any same-named workspace
+file aside at each start. Two limits of the source set: a figure past a rule's per-rule cap, or in
+a rule the total rules budget drops, counts as sourced though the prompt cut it off, and a number
+written against CJK text with no space is not read.
+
 ## ADR-0045: A composed skill turn keeps its frame and drops its body once the turn ends
 
 **Context.** ADR-0037 made every served door run a leading slash as the CLI does: the
@@ -23000,6 +23031,57 @@ Not verified.
   completions is not bounded. The loop's work count (ADR-0196) already counts that alias as work.
 - No bench arm was run.
 
+## ADR-0365: a compaction drops every copy of the harness's position note, a model's echoes included
+
+Status: accepted. 2026-11-05. Builds on ADR-0082 (the harness writes the position note; the
+summarizer never does) and ADR-0330 (an earlier summary reaches the summarizer without the notes
+the harness writes fresh).
+
+Context. ADR-0330 took the position notes out of the earlier summary before the summarizer reads
+it. A model can also write the note: one that restates where it is after a compaction copies the
+note, head line and all, into its own reply. Those copies reached the summarizer as ordinary
+assistant text, the summarizer carried them into the new summary, and the harness then appended
+its own note after them. Measured 2026-11-05 on a worker running a 27B model on the pod: one
+installed summary (22,825 characters) held three exact position notes, two of them stale (their
+lines matched older notes) and the harness's last. In the window it summarized, the model had
+echoed the whole note nine times in its own replies, and never in a tool result or a user message.
+The twelve other installs counted that day, from windows with no echoes, held one note each. A
+resumed model reads every note as authoritative, so two of the three positions it was handed were
+wrong.
+
+Decision.
+- The summarizer's copy of a message loses any position note it holds, from the head line to the
+  end of its block, as the earlier summary's copy already did. That covers every message except an
+  earlier summary (ADR-0330) and a skill body (ADR-0238). The conversation keeps every reply whole;
+  only the summarizer's copy changes.
+- The summary a model writes loses any position note in it before the harness appends its own
+  (`_finish_summary`). An installed summary then holds the harness's note and no other, wherever a
+  copy came from: a tool output the summarizer read, or the model writing one from memory.
+- A summary that held nothing but copied notes installs the harness's note alone, with no blank
+  lines before it.
+
+Not chosen.
+- Telling the model not to echo the note. The echo is the model keeping its place, which the note
+  is for, and an instruction a small model ignores leaves every copy in.
+- Keeping the newest copy. A reader of the text cannot tell a copy from the harness's own note, and
+  the harness writes a fresh one at every compaction anyway.
+
+Limits. A note's block ends at a blank line, as in ADR-0330, so prose a model wrote straight on
+under a copied note, with no blank line between them, leaves the summarizer's copy with it. Tool
+outputs reach the summarizer with any note they hold, since a file or a log can show the head line
+as data; the summary side drops what the summarizer copies from them.
+
+New tests. `tests/test_compact_loop.py` (+4): a reply that echoed the note reaches the summarizer
+without it; a summary whose model copied the note twice installs with the harness's note once and
+none of the stale lines; a copied note is dropped when the harness has no note to write; a summary
+that was only a copied note installs the harness's note alone. Mutations: the summarizer-side
+strip, the summary-side strip and the join each turned a named test red (1, 3 and 1 tests).
+
+Not verified.
+- On a live worker, that a window with echoes now installs one note. The 2026-11-05 counts were
+  read from installed summaries and from the window's records, as numbers; the summarizer's input
+  itself was not captured.
+
 ## ADR-0366: the compaction summarizer asks with thinking off where the switch reaches its model, under a cap its measured length sets, and asks a cut summary for half the words
 
 Status: accepted. 2026-11-03, amended 2026-11-05 (below). Builds on ADR-0275 (the summarizer's
@@ -23498,6 +23580,71 @@ history, 16,469 tokens. Amended after review, 13 single-site mutations each fail
 start, end and line, the join) and one per survivor the review found (the start anchor, the last
 heading of one summary, the two-thirds ask, the floor, the line's wording).
 
+## ADR-0371: right after a response that only updated the plan, the plan line says do the step
+
+Status: accepted. 2026-11-06. Narrows ADR-0237's sentence on one surface. Builds on ADR-0168 (the
+unchanged receipt) and ADR-0184 (the plan line).
+
+Context. ADR-0237 measured a response that only updates the plan as the most expensive kind on a slow
+backend, 17.8 and 22.3 percent of two sessions' model time, and asked the model to send the update
+with the next step's first call, in one sentence on every surface. Read 2026-11-06 from ten worker
+sessions' transcripts on the same kind of pod over 24 hours (tool names, times, sizes and the harness's
+own receipt strings, no conversation text):
+
+- 2,062 update_plan calls, 2,054 alone in their response, though 8 to 23 percent of responses carried
+  two or more tools. The sentence did not take.
+- They took 57.5 model hours, on sessions that log 18 to 20 each in a day. On the three sessions read
+  for it that was 33, 47 and 32 percent of model time, a median of 58 to 71 seconds a call against 22
+  to 24 for Bash. A call resends the whole plan, about 2,000 characters.
+- 679 calls, a third, changed nothing. 50 to 73 percent of them sat in runs of two or more with no
+  other tool between. In the samples read, the identical plan went out five times running, each 25 to
+  35 seconds, past `Plan unchanged` and `Do not resend the same plan` in the receipts.
+- The next call was update_plan again after 30 percent of clean receipts, and after 56 percent of those
+  naming a missing done-condition.
+
+The plan line is an ephemeral message that rides last on every model call, the last thing the model
+reads before it writes. It opens `Keep it current with the update_plan tool`, right after a response
+that did only that. The receipts say to move on, and the model answers the line.
+
+Decision.
+
+- On the call after a response whose tool calls were all update_plan, the line opens instead: your last
+  response called update_plan and nothing else, do not call update_plan in this response, do the step
+  marked `<- current` now with a tool call. It says called, not updated, because a third of those calls
+  change nothing. The goal, the board, the memory lines and any fold note stay.
+- Only while nothing has spoken since that response. A new turn, an operator's mid-task note, a
+  perception or a hook after it is input the model has not answered, and the line stays as it was. The
+  harness's own `[harness]` rails do not count: the next section of a paged skill arrives as one right
+  after the update that closed a section, and its step is the one to do.
+- The quality note stays off that one line. It asks for a change to the plan the model just sent.
+- The line stays as it was after any other response, a paired one included, with no response yet, on a
+  plan with no current step, where it would name a step the board does not mark, and on a plan with an
+  undecomposed step, where a plan update is the next thing to do. A finished plan's line is untouched.
+- The sentence of ADR-0237 stays on every other surface and on the line after work.
+
+The line is ephemeral and last, so changing it costs no prompt cache.
+
+Rejected:
+
+- Withholding update_plan from the tool list for the next call. It cannot be repeated then, but tools
+  sit at the head of the prompt, and a changed head reprocesses the whole prompt on a self-hosted engine.
+- A receipt that refuses. The receipts already say this, and it is the line that rides after them.
+- A one-field form of the call that marks the current step done. It may still be worth having: it
+  shrinks a call and does not remove one. This goes first because it removes the call.
+
+Not verified, and the trial measures each by counts alone. How many runs end. Whether a step goes
+unmarked for longer as a result, which would show as a plan left stale at the end of a goal. Whether
+the model does the step or something else.
+
+The proof. `tests/test_plan_advance_rides_along.py` pins the line after a plan-only response, on both
+turn paths; the line as it was after work, a paired call in either order, text and no response; that the
+last response decides; a plan with no current step and one with an undecomposed step; and the quality
+note held back. 7 mutations each fail the file. Amended 2026-11-07 after review: the file also pins the
+line's own words (called, the instruction, the blank line before the board), the line as it was after a
+new turn, an operator's note, a perception and a hook, and the line kept after a `[harness]` rail. A
+second table of 5 single-site mutations (the input check removed, rails counted as input, the old
+wording, the instruction deleted, the blank line dropped) kills all 5, one test case for each.
+
 ## ADR-0372: A repeat of a rule still in the conversation is answered once with a pointer
 
 **Context.** Measured 2026-11-07 on ten worker sessions over 24 h: 1,142 `read_rule` calls, 3.68M
@@ -23559,6 +23706,114 @@ written without the rule's name.
 Not verified: a read after the pointer can be declined. When the earlier asks came back to back, that
 read is the third identical batch and the doom-loop guard declines it, so the body comes at the fourth
 ask, not the second (12 scripted asks in review: body, pointer, declined, body, body, declined).
+
+## ADR-0373: a run of completions that only print is bounded, as a run of plan-only ones is
+
+Status: accepted. 2026-11-07. The sibling of ADR-0364, on its path and its ladder, and held to
+ADR-0198 (a rail says only what was counted).
+
+Context. A shell call whose whole command is one `echo` of literal words reads nothing and changes
+nothing. A model that sends them one after another makes no progress and no net sees it. The doom
+guard needs a byte-identical batch, and each string can differ. The outcome signal of ADR-0038
+skips outputs under 24 characters, and a counter never repeats anyway. The other signals key on
+errors, and an echo succeeds.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model, read from
+each session's own transcript (tool names, times, command heads only), 24 h to 2026-11-07. One
+session sent 149 such calls in a row, `echo "NEXT3"`, `echo "NEXT4"` and so on, one every 3 s, for
+7 min 41 s, and stopped only when an operator interrupted it. Nothing else bounded it. Just before
+the run the model ended a reply on text and the host's turn-end hook told it to make its next action
+a tool call. That hook fired 293 times in the 24 h: 249 went on to work and 4 to a bare echo, so it is
+no cause by itself, and why this session had no step to take is not measured. Across all ten sessions,
+7,723 completions: 164 such calls, and no other run of them longer than 2. No turn-end veto sat
+between the calls of the run, so a count that a veto resets would have seen all of it. Runs that MIX a print with
+plan calls do occur in ordinary work: `lpp`, `llp`, `plpp`, `lllllpl`.
+
+Decision.
+- The stuck tracker counts the print-only completions in a row: every call is one of the loop's shell
+  tools (`_SHELL_TOOLS`), and its whole command is `echo` then literal words. A
+  word holding an expansion, a substitution, an escape, a glob, a pipe, a redirect, a separator or a
+  comment is not literal, so `echo $HOME` and `echo a > f` are work. The words are joined by spaces
+  and tabs only: a newline ends the `echo` and the next line runs, so `echo "step 1"` with `make` on
+  the line after it is work too.
+- That count is apart from ADR-0364's. A print ends a plan-only run as any other call does, and a
+  plan call ends a print-only run, so a mixed run is refused by neither. One count over both would
+  refuse the mixed runs above, and each of those ended by itself.
+- The third such completion in a row is answered unexecuted, on both turn paths, by the path ADR-0364
+  built: an error result with `data={"plan_only_bound": True}` and the note `kind="plan_only_bound"`.
+  Its words are its own: "Not executed: this is response 3 in a row that only prints a fixed string
+  ... A print reads nothing and changes nothing. The plan's current step is <id> '<title>': do that
+  step now with a tool call that does the work, or answer in text if the work is done. A print runs
+  again once another tool has run."
+- A refusal fires `SIG_PRINT_ONLY` alone and drives the ladder one rung per refusal after the first,
+  as a plan-only refusal does: a nudge at the 4th such completion, read-only tools at the 5th, the
+  step back at the 6th, a stop at the 7th. The nudge and rung 1's seeded step say what was counted,
+  and that step's note now says a print does not finish it.
+- Digit-normalizing the doom guard's signature was rejected. Paged reads differ only in digits, so
+  three pages in a row would end a turn.
+
+Not done. `printf`, `true` and `:` are not counted: none was measured. A model that moves to them
+walks past this bound.
+
+The proof. `tests/test_print_only_bound.py` pins the third print refused though every string differs;
+what counts and what does not, command by command; every shell tool and no other; a print beside
+real work; a mixed run refused by neither bound; the bound inert without shell tools and cleared by a
+reset; the ladder to a stop; a plan-only refusal still told as one; and the refusal, a run to a stop
+and a print between real steps on both turn paths. 35 mutations of the predicate, the counts, the
+words and both seams each fail the file.
+
+## ADR-0376: a summarizer ask that does not open its summary tag is cut early and retried cheaply
+
+Status: accepted. 2026-11-08. Builds on ADR-0242 (the one resample), ADR-0251 (streamed and
+collected), ADR-0366 (thinking off, a lower cap) and ADR-0369 (a cut reply is kept).
+
+Context. Measured over ~212 session-hours on an inference server: of 37 compactions whose summarizer
+reached the output cap, 6 lost their first ask. Each such ask streamed to the 16,469-token cap of a
+thinking-off ask before `_summary_of` rejected it, and two compactions lost their one resample the
+same way: their four calls took 576 to 667 s each, about 20 engine-minutes per compaction, and
+installed no summary. A cut
+reply that opened its `<summary>` tag is kept (ADR-0369), so each rejected reply either never opened
+the tag or opened it too late to hold the floor; the replies themselves were not read. The
+instruction asks for "only the summary, inside `<summary></summary>`", so a well-formed reply opens
+the tag at or near its start.
+
+Decision.
+- The summarizer's streamed ask watches visible text (not a separate thinking channel) for a
+  case-insensitive `<summary` opening. When visible text passes `_SUMMARY_TAG_GRACE_CHARS` (2,000)
+  without one, the stream is closed early so the server is freed within about a second (PR #862's
+  close fires) and the ask is treated as rejected.
+- A fast-failed ask costs about a minute, not ten, so up to `_SUMMARY_FAST_FAIL_RESAMPLES` (3)
+  resamples are allowed for fast-fail rejections, where a full-length rejection keeps today's single
+  resample (`_SUMMARY_RESAMPLES`). The temperature step and the halved-budget rules apply as before.
+- The watcher covers only the single-chunk main transcript ask (the one whose measured failures
+  motivated the fix), its resamples, and the same ask sent again without a thinking switch the
+  route refused (ADR-0366). That ask goes back through the same handler, so its fast-fail is
+  resampled like any other instead of leaving the summarizer. Slice and fold asks are not watched: their inputs are already bounded by
+  `chunk_chars`, their responses are reassembled rather than parsed for a tag, and existing test fakes
+  for the multi-chunk path do not produce tagged output. The condensing ask (`held_to_budget`) is
+  likewise not watched: it is handed an already-valid summary and asked to shorten it.
+- A thinking route is not cut while it thinks: only `StreamTextDelta` events (visible text) count
+  toward the grace; `StreamThinkingDelta` events are ignored, keeping ADR-0366's "asking again with
+  room to think" path working.
+- A cut reply that opened the tag is still kept (ADR-0369), since the watcher does not fire once the
+  tag is found.
+- `summarizer_fast_fail` counts the stream-closed rejections, beside `summarizer_rejected`.
+
+What was considered and not done.
+- Watching the condensing ask. The condensing ask is small and cheap, and its input already contains a
+  valid summary, so cutting it early saves nothing measurable.
+- A lower grace (300 characters or fewer). A model that echoes part of the instruction, or writes a
+  short preamble before the tag, would be cut, and how long the preambles of accepted replies run was
+  not measured. 2,000 characters of visible text stream in well under a minute on the same server
+  (the four calls of the two compactions that installed nothing took 576 to 667 s each), so the wider
+  grace costs little next to a 10-minute fill.
+
+The proof. `tests/test_compact_loop.py` pins: a fake summarizer stream that never opens the tag is
+cut early and resampled, and a resample that opens it installs; three fast-fail rejections followed by
+a fourth that opens the tag installs; four fast-fail rejections in a row end in the elide fallback; an
+ask sent again without a refused switch that fast-fails is resampled and installs; a
+thinking route is not cut while it thinks, nor a reply whose preamble stays under the grace; a tagged cut reply is still kept; the stream is closed
+(`aclose`) when the watcher cuts.
 
 ## ADR-0375: the workspace's settings name the directories the file tools may reach, as `--extra-root` does
 
