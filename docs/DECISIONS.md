@@ -23814,3 +23814,121 @@ a fourth that opens the tag installs; four fast-fail rejections in a row end in 
 ask sent again without a refused switch that fast-fails is resampled and installs; a
 thinking route is not cut while it thinks, nor a reply whose preamble stays under the grace; a tagged cut reply is still kept; the stream is closed
 (`aclose`) when the watcher cuts.
+
+## ADR-0375: the workspace's settings name the directories the file tools may reach, as `--extra-root` does
+
+Date: 2026-11-07. Builds on ADR-0025 (declared settings load unconditionally, no flag), ADR-0029 (the
+permission gestures always ingest) and the multi-root sandbox (`--extra-root`,
+`Agent(extra_workspace_roots=...)`, GUARDRAILS §4). One behaviour, no setting.
+
+Context. The file tools judge a path against a list of roots: the workspace root and whatever the
+operator added with `--extra-root` or `Agent(extra_workspace_roots=...)`. Both are said by whoever
+starts the process. Claude Code says the same thing in a settings file, as
+`permissions.additionalDirectories`, an array of directory paths whose lists across its settings
+files join instead of overriding one another. A workspace written for it carries the need in a file
+that travels with the repository, and a clone lands with it. Zak Code read those three files for
+hooks (ADR-0025), the permission gestures (ADR-0029) and `env` (ADR-0212), and read past this key. A
+directory outside the root could then be reached in two ways: an operator flag, which does not travel
+with the workspace, or the engine learning one host's layout (the path prefixes of ADR-0282), which
+puts a framework's vocabulary into an engine that is meant to stay at Claude Code's abstraction.
+
+Decision.
+
+1. ONE reader, `zakcode.additional_directories.load_additional_directories(workspace_root)`, over the
+   same three files in the same order the hook loader reads them (`.claude/settings.json`,
+   `.claude/settings.local.json`, `.zakcode/settings.json`), through the loader's own candidate list,
+   so "which settings files count" keeps one answer.
+2. An entry is a string. A leading `~` expands, a relative path resolves from the workspace root, an
+   absolute one is taken as written, and the result is resolved through symlinks. The lists of the
+   three files join in that order and a directory named twice counts once. An entry whose directory
+   does not exist, or that the process cannot resolve or enter (an over-long name, an embedded NUL, a
+   symlink loop, a parent it may not traverse), grants nothing, and is logged at DEBUG. So does a path
+   spelled as a Windows network (UNC) path, which is not looked up at all: looking one up contacts the
+   host it names and sends that host the user's credentials. That test reads the entry as written. It
+   refuses every entry that starts with two separators, so `\\wsl$\...` and `\\?\...`, which Claude
+   Code does not count as network paths, grant nothing here; and it does not see a `~` that expands
+   to a share, or a link or junction into one, which are looked up (the last bullet of "What was
+   considered and not done"). A settings file the JSON decoder refuses outright (an integer of
+   thousands of digits, nesting thousands deep) is skipped like one that does not parse.
+3. The result is appended to the list `Agent` already builds (the explicit `extra_workspace_roots`
+   first), and that one list goes where it already went: every file tool through the loop, and the
+   runner of a delegated child. A sub-agent has the reach its parent has, and no tool learns anything
+   new.
+4. A malformed value is skipped and named, with its file and position: a value that is not a list, an
+   entry that is not a non-blank string. The valid entries beside it still apply. A key that is
+   `null` is the same as no key. Each report is one WARNING line per Agent construction, and the
+   server builds an Agent for each turn, so there it repeats every turn. A file that does not parse
+   is skipped without a word, because the hook and permission loaders already report it. Four kinds
+   of file are skipped here and stop the Agent starting anyway: an integer of thousands of digits,
+   nesting thousands deep, and a `.claude` or a `.zakcode` directory the process cannot enter. Other
+   loaders raise on them, and which one raises first depends on the file and on whether a permission
+   policy is injected: the permission-settings loader on the first two in a `.claude` file and on an
+   unenterable `.claude`, when none is; the hook loader on the first two otherwise; the status-line
+   loader on an unenterable `.claude`, when one is; and the identity loader on an unenterable
+   `.zakcode`. So an Agent over such a file does not start, with this change or without it and
+   whichever policy it is built with; widening those loaders is a separate change.
+5. Always on: no flag, no prompt, no per-Agent override. Claude Code applies a project
+   `.claude/settings.json`'s entries only after its workspace trust dialog is accepted, and never in
+   a `claude -p` or SDK session, where it prints a warning instead; a `settings.local.json` that is
+   tracked in git, or in a `.claude` that is a symlink, is held until the folder is trusted too. Zak
+   Code has no such dialog, and the hooks and the permission rules in the same files are live
+   already (ADR-0025, ADR-0029).
+
+Reach, not authority. The permission policy never sees the roots, so the key cannot loosen anything.
+A path inside an added directory is judged like a workspace path: the `..` and symlink check applies to
+each root, the protected-path floor (`.env`, `.git/`, the venv) and an ingested `deny` rule match the
+path where it is, and the tool's tier and the permission mode decide allow, ask or deny, so
+`acceptEdits` allows a write there as it does in the workspace and `ask` still asks. Claude Code says
+the same: an added directory follows the working directory's permission rules, and the key grants file
+access and no configuration.
+
+What was considered and not done.
+
+- An environment variable (`ZAKCODE_EXTRA_ROOTS`) as a second spelling of the flag. Nothing else reads
+  it, a workspace written for Claude Code would need it set on every box, and the settings key is the
+  spelling that file already has.
+- Gating the entries on a trust dialog, as Claude Code does for the shared file: item 5.
+- Removing the path prefixes of ADR-0282 in the same change. They stay until a workspace that relies
+  on them names its roots here; this change adds the surface and leaves a workspace that does not use
+  it as it was.
+- A `/add-dir` command. The key is the persistent form of that grant; the command, which changes the
+  roots of a running session, is still planned (PARITY.md).
+- Re-reading the key at the turn boundary, as hooks are (ADR-0079). The roots are fixed when the
+  Agent is built, as the permission gestures are; an edit to the key takes effect when the next Agent
+  is built: at the CLI's next start, `/clear` or `/resume`, and on the server's next turn, since the
+  server builds one for each turn.
+- The `/net` automount form of a network path on macOS and Linux. Claude Code's documentation counts
+  it as one too; this change refuses the Windows form, where the lookup hands the host the user's
+  credentials, and leaves `/net` as an ordinary entry.
+- Refusing a path by where it resolves to. Claude Code also refuses a local path that reaches a
+  network location through a symbolic link or junction. Here the test is on the entry as written,
+  because following a link is itself a lookup, so a link or junction into a share, and a `~` that
+  expands to one, are looked up. None of this was run on Windows.
+- The user scope (`~/.claude/settings.json`), where Claude Code also reads the key. The hook loader,
+  the permission gestures and `env` read the workspace's own files only, and this key follows them; a
+  user-scope reader would be one change for all four.
+
+Not verified. How Claude Code resolves an entry: its documentation's example is `../docs/`, and it
+says neither what a relative path is relative to nor whether a leading `~` expands. Here a relative
+path resolves from the workspace root and `~` expands (Decision 2). How it treats an entry whose
+directory does not exist: its documentation says the `--add-dir` flag validates that each path is a
+directory and says nothing about this key, and here the entry grants nothing. The order in which
+Claude Code joins its files: its documentation says the lists merge and names no order, and the order
+here is the hook loader's.
+
+The proof. `tests/test_additional_directories.py` pins the loader: an absolute, a relative and a `~`
+entry; the three files joined in order with a repeat counted once; a missing directory and a plain
+file granting nothing; a malformed value reported with its file and position while the valid entries
+beside it apply, and a bad value at the same position in two files reported twice; an entry the
+platform rejects (an embedded NUL, an over-long name), a symlink loop, a parent the process cannot
+enter and a settings directory it cannot enter each granting nothing without raising; a Windows
+network path granting nothing without being looked up, and a double leading slash staying an
+ordinary path elsewhere; a file that is not JSON, is not UTF-8, holds an integer of thousands of
+digits or nests thousands deep skipped while the next file still applies; a `permissions` block
+without the key, the key as `null`, and a workspace without settings each declaring nothing. It pins
+the Agent: a declared directory opens to `Read`, `Write` and `Edit` where the same read without the
+declaration is refused; the declared list joins `extra_workspace_roots`; a delegated child gets it; a
+malformed value is logged once. And it pins reach, not authority: a `..` out of an added directory is
+refused, a `.env` in one is refused while a sibling file there reads, an ingested
+`deny Edit(**/locked/**)` stops a write under the added directory while a sibling's lands, and a write
+there is allowed under `acceptEdits` and asked about under `ask`.

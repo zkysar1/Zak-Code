@@ -174,7 +174,7 @@ steps, plugin sub-views, and `index/*` duplicates folded into their parent comma
 | `/rename` | Rename the session (auto-generated names) | yes | Planned | P1 | M2 | |
 | `/export` | Export the conversation/session | yes | Planned | P1 | M2 | |
 | `/doctor` | Diagnose installation/environment health | yes | Planned | P1 | M2 | |
-| `/add-dir` | Add another working directory to the session | yes | Planned | P1 | M2 | |
+| `/add-dir` | Add another working directory to the session | yes | Planned | P1 | M2 | The persistent form shipped: `permissions.additionalDirectories` in a settings file (ADR-0375). The in-session command is still planned. |
 | `/keybindings` | View/edit keyboard shortcuts | yes | Planned | P1 | M2 | |
 | `/theme` | Choose UI theme | yes | Planned | P1 | M2 | |
 | `/output-style` | Choose output style | yes | Planned | P1 | M2 | |
