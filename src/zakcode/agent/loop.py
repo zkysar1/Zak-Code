@@ -8163,6 +8163,10 @@ class AgentLoop:
             return None
         skill = str(getattr(result, "name", name) or name)
         text = harness_skill_turn_text(str(turn_text), _VETO_SKILL_NOTE.format(reason=reason))
+        # ADR-0045: run the ended-skill-body sweep BEFORE the delivered message is added, so
+        # it stubs the previous copy and leaves the body just delivered live for this turn
+        # (the sweep is idempotent and only matches ended turns' composed skill bodies).
+        self._elide_ended_skill_bodies()
         self.session.add_message(Message.user(text))
         self._persist()
         # The skill's sections become plan steps (ADR-0062) and page 1 counts as delivered
