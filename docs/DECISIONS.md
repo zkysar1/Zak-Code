@@ -23964,3 +23964,48 @@ positive control) and with a workspace path that must not move (`test_virtual_pr
 run proved the pins: with each tool in turn dropping `ctx.virtual_roots`, exactly that tool's two pins went red and
 the other 61 of the file's 63 tests stayed green; with the rewrite applied to every path instead of the two
 prefixes, the three pass-through pins went red.
+
+## ADR-0378: the shell's not-found answer names the script the model meant
+
+**Context.** Measured 2026-11-10 on ten worker sessions of a host framework over a week: about 150
+commands named a script or command that does not exist, in five shapes. (1) A name spelled almost
+like the real one: `bash <scripts>/retrieval.sh` three times, by two sessions, for `retrieve.sh`. The
+hint answered with four other scripts whose names start `retrieval` and "use one of those instead of
+inventing a name", and never named the one a letter away. (2) A real script by its bare name, not on
+PATH (5 calls): the exit-127 hint (ADR-0093) looks the name up by a bounded walk, and on the
+framework's checkout (1,340 directories to depth 4) the depth-first walk in sorted order spent its
+800 visits under three trees that sort first and never listed the scripts directory one level
+down: no hint on 5 of 5. (3) A skill's name typed into the shell (one skill 10 times on six sessions,
+two others 5 times and twice), each a bare "command not found", though the tool registry already
+answers a skill called as a tool. (4) A virtual prefix in a command (`bash world/scripts/<x>.sh`, 80
+times on one session, 5 with a lead): the file tools rewrite `world/` (ADR-0282), the shell does not.
+(5) Wholly invented names.
+
+**Decision.** Four leads, each where its failure is decided. The bounded walk is breadth-first: every
+directory at one depth is listed before any below it, under the same depth and visit caps, so the
+budget is spent near the root, where a guessed script lives; on the same checkout the scripts
+directory is the 27th listed. In a real directory, a sibling spelled almost the same (difflib ratio
+of the names at 0.85 or more) leads the hint as a pasteable path, and the first-word family becomes
+an aside; a sibling that differs from the guess in one whole word that is another word (`start` for
+`status`: the two words' ratio under 0.8, the extension exempt) is not offered. Over the week's 22
+made-up script names the spelling lead offers a name for five, each plausibly the script meant (a
+dropped letter, a misremembered ending, a missing leading word, `.py` for a guessed `.sh`,
+underscores for dashes); the ratio alone also offered a `...-start.sh` for a guessed
+`...-status.sh`, which the word check drops. A 127 whose name is a workspace skill says so, with the
+Skill call. A path that opens with a virtual prefix the workspace declares is expanded the way the
+file tools expand it, both in the script-path preflight (ADR-0106) and after a run: the real path
+when it exists, else a name spelled almost the same there, else where the prefix points.
+
+**Alternatives rejected.** A wider visit cap: the cost grows with every failed command, and a
+depth-first walk still reaches the shallow scripts directory last. A lower ratio: at 0.8, even with
+the word check, it offered `s3-stock-check.sh` for a guessed `stop-check.sh`. Running the command
+with the prefix expanded: the shell's input is the model's, and a hint keeps it so.
+
+Not verified: how often the model takes the offered name on its next call. The same census, re-run
+over the week after the roll, counts it.
+
+**The proof.** `tests/test_bash_notfound_near_names.py` pins the spelling lead through the preflight
+and after a run, the word check and the extension exemption, a bare script name found past a wide
+hidden tree, a skill name typed as a command (and an unknown command that is not one), and a virtual
+prefix whose directory sits outside the workspace, its misspelling, and no lead without a declared
+directory.
