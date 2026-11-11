@@ -503,14 +503,14 @@ async def test_the_fence_is_per_turn(tmp_path: Path) -> None:
     assert second.iterations == 2
 
 
-# ── the ADR-0045 in-turn sweep (g-374-1282) ──────────────────────────────────
+# ── the ADR-0045 in-turn sweep ──────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_three_consecutive_veto_deliveries_in_one_turn_leave_one_live_body(
     tmp_path: Path,
 ) -> None:
-    """The fix for g-374-1282: the ended-skill-body sweep runs BEFORE the delivered veto
+    """The fix: the ended-skill-body sweep runs BEFORE the delivered veto
     message is added, so each delivery stubs the previous lap's body and leaves the body just
     delivered live for the turn it opens.
 
