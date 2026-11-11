@@ -76,7 +76,9 @@ class GlobTool(Tool):
         base = path if path else "."
 
         try:
-            resolved_base = resolve_path(base, ctx.workspace_root, ctx.extra_workspace_roots)
+            resolved_base = resolve_path(
+                base, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
+            )
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise
