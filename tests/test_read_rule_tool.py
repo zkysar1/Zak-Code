@@ -17,6 +17,7 @@ from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import Rule, RuleRegistry, discover_rules
 from zakcode.session.store import Session
+from zakcode.tasks import Task, TaskNetwork
 from zakcode.tools.base import ToolContext, ToolRegistry
 from zakcode.tools.builtins.read_rule import ALREADY_READ, MAX_RULE_BODY_CHARS, ReadRuleTool
 from zakcode.usage import Usage
@@ -121,18 +122,31 @@ def test_index_points_at_the_tool_on_a_real_rules_tree(tmp_path: Path) -> None:
     assert not res.is_error and "BODY-MARKER" in res.output
 
 
-# --- ADR-0372: a repeat of a rule still in the conversation is answered with a pointer ---------
+def test_the_index_and_the_tool_say_to_read_each_rule_once() -> None:
+    """ADR-0379: both told the model to read a rule when it looks relevant to the current step,
+    and a rule summarised as a trigger looks relevant after every step."""
+    assert "read each rule once" in ReadRuleTool.spec.description
+    assert "read each rule once" in _registry().render_index()
 
 
-def _ctx_seeing(*outputs: str) -> ToolContext:
+# --- ADR-0372, ADR-0379: every repeat of a rule still in the conversation gets a pointer ---------
+
+
+def _ctx_seeing(*outputs: str, plan: TaskNetwork | None = None) -> ToolContext:
     def held(text: str) -> bool:
         return any(text in output for output in outputs)
 
-    return ToolContext(workspace_root=Path("/tmp"), rule_registry=_registry(), in_context=held)
+    return ToolContext(
+        workspace_root=Path("/tmp"), rule_registry=_registry(), in_context=held, task_network=plan
+    )
 
 
 def _body(name: str) -> str:
     return asyncio.run(ReadRuleTool().execute({"name": name}, _ctx(_registry()))).output
+
+
+def _pointer(name: str = "alpha-rule", n: int = 1, summary: str = "Alpha", step: str = "") -> str:
+    return ALREADY_READ.format(n=n, name=name, step=step, summary=f" Its summary: {summary}")
 
 
 def test_a_repeat_of_a_rule_still_in_context_is_a_pointer() -> None:
@@ -140,7 +154,8 @@ def test_a_repeat_of_a_rule_still_in_context_is_a_pointer() -> None:
         ReadRuleTool().execute({"name": "alpha-rule"}, _ctx_seeing(_body("alpha-rule")))
     )
     assert not res.is_error
-    assert res.output == ALREADY_READ.format(name="alpha-rule")
+    assert res.output == _pointer()
+    assert res.output.startswith("[already read; ask 1] Rule 'alpha-rule' ")
     assert "Always do the alpha thing." not in res.output
 
 
@@ -196,18 +211,36 @@ def test_a_body_ends_with_its_closing_line() -> None:
     assert _body("alpha-rule").endswith("\nAlways do the alpha thing.\n[end of rule 'alpha-rule']")
 
 
-def test_a_read_after_the_pointer_gets_the_body() -> None:
-    """Once per rule: a session that asks again after the pointer wants the text."""
-    seen = _ctx_seeing(_body("alpha-rule"), ALREADY_READ.format(name="alpha-rule"))
+def test_a_read_after_the_pointer_gets_the_next_pointer_not_the_body() -> None:
+    """ADR-0372 answered the ask after its pointer with the body, and the body was asked for
+    again and again (one session: three rules nine times each in 21 minutes). Each ask now gets
+    the next number, read back from the pointers still in the conversation."""
+    seen = _ctx_seeing(_body("alpha-rule"), _pointer(n=1), _pointer(n=2))
     res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
-    assert "Always do the alpha thing." in res.output
+    assert res.output == _pointer(n=3)
+    assert "Always do the alpha thing." not in res.output
+    assert not res.verbatim
+
+
+def test_refresh_returns_the_body_while_it_is_in_context() -> None:
+    """The deliberate way back to the text: refresh=true, never a plain repeat."""
+    seen = _ctx_seeing(_body("alpha-rule"), _pointer(n=1))
+    res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule", "refresh": True}, seen))
+    assert res.output == _body("alpha-rule")
     assert res.verbatim
 
 
-def test_another_rules_pointer_does_not_count() -> None:
-    seen = _ctx_seeing(_body("alpha-rule"), ALREADY_READ.format(name="beta-rule"))
+def test_the_pointer_names_the_plan_step_to_go_on_with() -> None:
+    plan = TaskNetwork(tasks=[Task(title="Write the tests")])
+    seen = _ctx_seeing(_body("alpha-rule"), plan=plan)
     res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
-    assert res.output == ALREADY_READ.format(name="alpha-rule")
+    assert res.output == _pointer(step=" to your current step, 'Write the tests'")
+
+
+def test_another_rules_pointer_does_not_count() -> None:
+    seen = _ctx_seeing(_body("alpha-rule"), _pointer("beta-rule", summary="Beta"))
+    res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
+    assert res.output == _pointer()
 
 
 class _Scripted(Provider):
@@ -269,19 +302,18 @@ async def test_the_loop_answers_the_second_read_with_the_pointer(
         await loop.arun_turn("go")
     first, second = _outputs(loop)
     assert "Always do the alpha thing." in first
-    assert second == ALREADY_READ.format(name="alpha-rule")
+    assert second == _pointer()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_the_loop_gives_the_pointer_once_then_the_body(
+async def test_the_loop_numbers_every_repeat_and_sends_the_body_once(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """The trial's loop: after one body every ask got the pointer, and the session kept asking.
-
-    Four identical reads in a row, as the trial saw them; the doom-loop guard declines one of
-    them, so the assertions count pointers and read the last answer instead of fixing positions.
-    """
+    """Four identical reads in a row. ADR-0372 sent the pointer once and the body again after it;
+    every repeat now gets the next number, and the body is sent once. The doom-loop guard
+    declines one of the reads, so the assertions count bodies and read the last answer instead of
+    fixing positions."""
     loop = _loop(tmp_path, "r1", "r2", "r3", "r4")
     if streaming:
         async for _event in loop.astream_turn("go"):
@@ -289,10 +321,10 @@ async def test_the_loop_gives_the_pointer_once_then_the_body(
     else:
         await loop.arun_turn("go")
     outputs = _outputs(loop)
-    pointer = ALREADY_READ.format(name="alpha-rule")
     assert "Always do the alpha thing." in outputs[0]
-    assert outputs.count(pointer) == 1
-    assert "Always do the alpha thing." in outputs[-1]
+    assert sum("Always do the alpha thing." in output for output in outputs) == 1
+    assert _pointer(n=1) in outputs
+    assert outputs[-1] == _pointer(n=2)
 
 
 @pytest.mark.asyncio
@@ -332,7 +364,7 @@ async def test_a_body_kept_in_the_tail_still_counts(tmp_path: Path) -> None:
     loop.provider._results = [_read("r2"), LLMResult(text="done", usage=Usage(total_tokens=1))]
     loop.provider.calls = 0
     await loop.arun_turn("again")
-    assert _outputs(loop)[-1] == ALREADY_READ.format(name="alpha-rule")
+    assert _outputs(loop)[-1] == _pointer()
 
 
 _LONG = "\n".join(f"Step {i}: do the alpha thing." for i in range(20))
@@ -382,7 +414,7 @@ async def test_an_unchanged_rule_in_a_new_loop_is_a_pointer(tmp_path: Path) -> N
     await first.arun_turn("go")
     again = _loop_reading(tmp_path, _LONG, "r2", session=first.session)
     await again.arun_turn("again")
-    assert _outputs(again)[-1] == ALREADY_READ.format(name="alpha-rule")
+    assert _outputs(again)[-1] == _pointer(summary="Step 0: do the alpha thing.")
 
 
 @pytest.mark.asyncio
@@ -398,7 +430,7 @@ async def test_a_body_with_a_hook_note_after_it_still_counts(tmp_path: Path) -> 
     loop.provider._results = [_read("r2"), LLMResult(text="done", usage=Usage(total_tokens=1))]
     loop.provider.calls = 0
     await loop.arun_turn("again")
-    assert _outputs(loop)[-1] == ALREADY_READ.format(name="alpha-rule")
+    assert _outputs(loop)[-1] == _pointer()
 
 
 @pytest.mark.asyncio

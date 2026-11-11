@@ -116,6 +116,22 @@ class Rule:
         self.description = description
         self.always_apply = always_apply
 
+    def summary(self) -> str:
+        """The rule's one-line summary: its frontmatter ``description``, else its first non-empty
+        body line without a leading Markdown heading marker, capped at
+        :data:`_INDEX_SUMMARY_CHARS`; ``""`` when the rule has neither.
+
+        The index lists a rule by it, and ``read_rule`` restates it when a rule is asked for again
+        while its text is still in the conversation (ADR-0379), so both say the same thing.
+        """
+        summary = (self.description or "").strip()
+        if not summary:
+            first = next((ln.strip() for ln in self.content.splitlines() if ln.strip()), "")
+            summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
+        if len(summary) > _INDEX_SUMMARY_CHARS:
+            summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
+        return summary
+
 
 class RuleRegistry:
     """A name-keyed collection of rules with a bounded, cache-stable render."""
@@ -220,7 +236,9 @@ class RuleRegistry:
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
             "name with a one-line summary; when a rule looks relevant to the current step, "
-            "call read_rule with its name to get the full text, then apply it. (The file "
+            "call read_rule with its name to get the full text, then apply it. A rule's text "
+            "stays in your context and does not change: read each rule once, and when its "
+            "summary looks relevant again, apply the text you already have. (The file "
             "path is shown too, so your file-read tool also works if read_rule is "
             "unavailable.):"
         )
@@ -252,12 +270,7 @@ class RuleRegistry:
         for rule in self._ordered():
             if rule.always_apply:
                 continue
-            summary = (rule.description or "").strip()
-            if not summary:
-                first = next((ln.strip() for ln in rule.content.splitlines() if ln.strip()), "")
-                summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
-            if len(summary) > _INDEX_SUMMARY_CHARS:
-                summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
+            summary = rule.summary()
             line = (
                 f"- {rule.name}: {summary} [{rule.path}]"
                 if summary

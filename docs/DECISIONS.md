@@ -24009,3 +24009,41 @@ and after a run, the word check and the extension exemption, a bare script name 
 hidden tree, a skill name typed as a command (and an unknown command that is not one), and a virtual
 prefix whose directory sits outside the workspace, its misspelling, and no lead without a declared
 directory.
+
+## ADR-0379: every repeat of a rule still in the conversation gets a numbered pointer
+
+**Context.** ADR-0372's first amendment answered the ask after its pointer with the body, on the
+reading that a session asking again wants the text. Measured 2026-11-10 on ten worker sessions of a
+host framework, over the 41 to 46 hours since each began on a build carrying it: 7,132 tool calls,
+908 of them `read_rule`, 136 pointers, and 239 bodies delivered after a pointer, up to 56 on one
+session. The body did not end the asks. One session read three rules nine times each in 21 minutes,
+three per response, with one plan update and no other tool between them and no compaction; another
+read the same two rules five times each in the five minutes after a compaction. The
+index and the tool description both say to read a rule when its summary looks relevant to the
+current step, and a summary worded as a trigger ("After any infrastructure interaction check error
+alerts", one of the three that session read) looks relevant after every step.
+
+**Decision.** Two changes. The index header and the tool description now say that a rule's text
+stays in context and does not change: read each rule once, and when its summary looks relevant
+again, apply the text already there. And EVERY repeat while the text is still in the conversation
+gets the pointer, numbered: `[already read; ask N] Rule '<name>' ...`, where N - 1 of that rule's
+pointers are still in the conversation. The count is the same conversation read as ADR-0372's check,
+so a compaction or an elision that takes the pointers away starts it over with nothing to reset. The
+line names the plan's current step ("Apply the text you have to your current step, '<title>'") and
+restates the rule's one-line summary, the same `Rule.summary()` the index prints. A new optional
+parameter, `refresh=true`, returns the text again; a plain repeat never does.
+
+**Alternatives rejected.** ADR-0372's pointer once, then the body: measured above. A bare pointer
+every time: the amendment saw a session ask eight times in five minutes against it; what differs
+here is the count, the step to go on with, and a deliberate way back to the text. A stop from the
+stuck ladder: a worker's whole session is one turn, so a stop ends its work unit.
+
+Not verified: how far the repeats fall. To measure after the roll: `read_rule` calls and repeats per
+session-hour, `refresh=true` calls, the longest run on one rule, and restarts for rule loops. A
+running session keeps the index text it pinned (ADR-0260) until its next compaction; the tool
+description and the new parameter reach it at the roll.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the numbered pointer directly and through both
+turn paths (four identical reads deliver the body once and end on ask 2), the next number after
+pointers already in context, `refresh=true` returning the body, the plan step in the line, and that
+another rule's pointer does not count.
