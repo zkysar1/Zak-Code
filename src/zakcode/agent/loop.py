@@ -10234,7 +10234,12 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
-        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
+        # ADR-0045: this turn's own skill body is now ended — except when the ADR-0187 fence
+        # ended the turn on a refused re-entry: the newest delivery's body is the lap the armed
+        # wake-up re-resolves, so it stays live (the pre-delivery sweep already stubbed the laps
+        # before it). g-374-1282.
+        if not self._veto_stall:
+            self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
         left_open = len(self.session.task_network.actionable_remaining())
@@ -12362,7 +12367,12 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
-        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
+        # ADR-0045: this turn's own skill body is now ended — except when the ADR-0187 fence
+        # ended the turn on a refused re-entry: the newest delivery's body is the lap the armed
+        # wake-up re-resolves, so it stays live (the pre-delivery sweep already stubbed the laps
+        # before it). g-374-1282.
+        if not self._veto_stall:
+            self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
         left_open = len(self.session.task_network.actionable_remaining())
