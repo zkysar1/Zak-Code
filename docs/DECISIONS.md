@@ -23932,3 +23932,118 @@ malformed value is logged once. And it pins reach, not authority: a `..` out of 
 refused, a `.env` in one is refused while a sibling file there reads, an ingested
 `deny Edit(**/locked/**)` stops a write under the added directory while a sibling's lands, and a write
 there is allowed under `acceptEdits` and asked about under `ask`.
+
+## ADR-0377: Glob, Grep and LS open the `world/` and `meta/` prefixes too
+
+**Status:** Accepted (2026-11-10)
+
+**Context.** ADR-0282 made `Read`, `Edit` and `Write` rewrite a leading `world/` or `meta/` to the directory the
+workspace's `agents/*/local-paths.conf` declares for it, and listed `Glob`, `Grep` and `LS` under "Not covered".
+They are the tools a model reaches for next: the framework's retrieval script answers with
+`world/knowledge/tree/…`, and a search of that directory or a listing of `world/` met the `File not found` the
+first `Read` had. On the served layout (`WORLD_PATH=<workspace>/knowledge`) with no roots handed to them, `Glob` of
+`**/*.md` under `world/knowledge/tree` answered `Base path is not a directory: world/knowledge/tree`, `Grep` of
+`softmax` there answered `Path not found: world/knowledge/tree`, and `LS` of `world/` answered
+`Directory not found: world/`.
+
+**Decision.** `GlobTool`, `GrepTool` and `ListDirTool` pass `ctx.virtual_roots` to `resolve_path` as its fourth
+argument, the same call `Read`, `Edit` and `Write` make; nothing else changes. The rewrite, the slash it requires,
+the ambiguity rule, the confinement check and the not-found hints (ADR-0040) are ADR-0282's. The image, PDF and
+office tools still call `resolve_path` without the roots (eight call sites) and are left as they were until a
+session needs them.
+
+**Consequences.** A workspace that declares no world or meta is unchanged, and so is every path that does not open
+with a declared prefix: a relative path, an absolute one and the bare words `world` and `meta` (by ADR-0282's
+contract) pass through untouched. ADR-0282's "Not covered" sentence about these three tools no longer holds; the
+rest of that section stands.
+
+Measured on the two layouts ADR-0282 used. On the served layout `Glob`, `Grep` and `LS` open `world/knowledge/tree`
+and `world/`; on a framework repo whose meta lives outside it (ADR-0229) `meta/` opens for all three, where a plain
+relative `meta/` would not. Each tool is pinned with the call that hands it no roots (the field failure, kept as a
+positive control) and with a workspace path that must not move (`test_virtual_prefix_resolution.py`). A mutation
+run proved the pins: with each tool in turn dropping `ctx.virtual_roots`, exactly that tool's two pins went red and
+the other 61 of the file's 63 tests stayed green; with the rewrite applied to every path instead of the two
+prefixes, the three pass-through pins went red.
+
+## ADR-0378: the shell's not-found answer names the script the model meant
+
+**Context.** Measured 2026-11-10 on ten worker sessions of a host framework over a week: about 150
+commands named a script or command that does not exist, in five shapes. (1) A name spelled almost
+like the real one: `bash <scripts>/retrieval.sh` three times, by two sessions, for `retrieve.sh`. The
+hint answered with four other scripts whose names start `retrieval` and "use one of those instead of
+inventing a name", and never named the one a letter away. (2) A real script by its bare name, not on
+PATH (5 calls): the exit-127 hint (ADR-0093) looks the name up by a bounded walk, and on the
+framework's checkout (1,340 directories to depth 4) the depth-first walk in sorted order spent its
+800 visits under three trees that sort first and never listed the scripts directory one level
+down: no hint on 5 of 5. (3) A skill's name typed into the shell (one skill 10 times on six sessions,
+two others 5 times and twice), each a bare "command not found", though the tool registry already
+answers a skill called as a tool. (4) A virtual prefix in a command (`bash world/scripts/<x>.sh`, 80
+times on one session, 5 with a lead): the file tools rewrite `world/` (ADR-0282), the shell does not.
+(5) Wholly invented names.
+
+**Decision.** Four leads, each where its failure is decided. The bounded walk is breadth-first: every
+directory at one depth is listed before any below it, under the same depth and visit caps, so the
+budget is spent near the root, where a guessed script lives; on the same checkout the scripts
+directory is the 27th listed. In a real directory, a sibling spelled almost the same (difflib ratio
+of the names at 0.85 or more) leads the hint as a pasteable path, and the first-word family becomes
+an aside; a sibling that differs from the guess in one whole word that is another word (`start` for
+`status`: the two words' ratio under 0.8, the extension exempt) is not offered. Over the week's 22
+made-up script names the spelling lead offers a name for five, each plausibly the script meant (a
+dropped letter, a misremembered ending, a missing leading word, `.py` for a guessed `.sh`,
+underscores for dashes); the ratio alone also offered a `...-start.sh` for a guessed
+`...-status.sh`, which the word check drops. A 127 whose name is a workspace skill says so, with the
+Skill call. A path that opens with a virtual prefix the workspace declares is expanded the way the
+file tools expand it, both in the script-path preflight (ADR-0106) and after a run: the real path
+when it exists, else a name spelled almost the same there, else where the prefix points.
+
+**Alternatives rejected.** A wider visit cap: the cost grows with every failed command, and a
+depth-first walk still reaches the shallow scripts directory last. A lower ratio: at 0.8, even with
+the word check, it offered `s3-stock-check.sh` for a guessed `stop-check.sh`. Running the command
+with the prefix expanded: the shell's input is the model's, and a hint keeps it so.
+
+Not verified: how often the model takes the offered name on its next call. The same census, re-run
+over the week after the roll, counts it.
+
+**The proof.** `tests/test_bash_notfound_near_names.py` pins the spelling lead through the preflight
+and after a run, the word check and the extension exemption, a bare script name found past a wide
+hidden tree, a skill name typed as a command (and an unknown command that is not one), and a virtual
+prefix whose directory sits outside the workspace, its misspelling, and no lead without a declared
+directory.
+
+## ADR-0379: every repeat of a rule still in the conversation gets a numbered pointer
+
+**Context.** ADR-0372's first amendment answered the ask after its pointer with the body, on the
+reading that a session asking again wants the text. Measured 2026-11-10 on ten worker sessions of a
+host framework, over the 41 to 46 hours since each began on a build carrying it: 7,132 tool calls,
+908 of them `read_rule`, 136 pointers, and 239 bodies delivered after a pointer, up to 56 on one
+session. The body did not end the asks. One session read three rules nine times each in 21 minutes,
+three per response, with one plan update and no other tool between them and no compaction; another
+read the same two rules five times each in the five minutes after a compaction. The
+index and the tool description both say to read a rule when its summary looks relevant to the
+current step, and a summary worded as a trigger ("After any infrastructure interaction check error
+alerts", one of the three that session read) looks relevant after every step.
+
+**Decision.** Two changes. The index header and the tool description now say that a rule's text
+stays in context and does not change: read each rule once, and when its summary looks relevant
+again, apply the text already there. And EVERY repeat while the text is still in the conversation
+gets the pointer, numbered: `[already read; ask N] Rule '<name>' ...`, where N - 1 of that rule's
+pointers are still in the conversation. The count is the same conversation read as ADR-0372's check,
+so a compaction or an elision that takes the pointers away starts it over with nothing to reset. The
+line names the plan's current step ("Apply the text you have to your current step, '<title>'") and
+restates the rule's one-line summary, the same `Rule.summary()` the index prints. A new optional
+parameter, `refresh=true`, returns the text again; a plain repeat never does.
+
+**Alternatives rejected.** ADR-0372's pointer once, then the body: measured above. A bare pointer
+every time: the amendment saw a session ask eight times in five minutes against it; what differs
+here is the count, the step to go on with, and a deliberate way back to the text. A stop from the
+stuck ladder: a worker's whole session is one turn, so a stop ends its work unit.
+
+Not verified: how far the repeats fall. To measure after the roll: `read_rule` calls and repeats per
+session-hour, `refresh=true` calls, the longest run on one rule, and restarts for rule loops. A
+running session keeps the index text it pinned (ADR-0260) until its next compaction; the tool
+description and the new parameter reach it at the roll.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the numbered pointer directly and through both
+turn paths (four identical reads deliver the body once and end on ask 2), the next number after
+pointers already in context, `refresh=true` returning the body, the plan step in the line, and that
+another rule's pointer does not count.
