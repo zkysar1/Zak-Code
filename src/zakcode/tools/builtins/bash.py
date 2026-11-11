@@ -18,9 +18,11 @@ from zakcode.tools.base import (
     ToolContext,
     ToolResult,
     ToolSpec,
+    _match_skill_name,
 )
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 from zakcode.tools.builtins._suggest import suggest
+from zakcode.virtual_paths import expand_virtual_prefix
 
 # Default and hard-cap timeouts, in seconds. The cap is generous so a real build/test suite
 # can finish with an explicit ``timeout`` instead of always failing -- the prior 60s hard cap
@@ -106,21 +108,52 @@ def _locate_all(root: Path, name: str, limit: int = 3, *, dirs: bool = False) ->
     VCS/dependency/cache trees are pruned, depth and visited-dir count are capped, so
     the search stays cheap even in a large repo — this only runs on a failed command.
     With ``dirs=True`` it matches directories instead (never a pruned one).
+
+    Breadth-first: every directory at one depth is listed before any below it, so the
+    visit cap is spent near the root, where a guessed script lives. Measured 2026-11-10
+    on a host-framework checkout (1,340 directories to depth 4): the depth-first walk in
+    sorted order spent its 800 visits under three trees that sort first (two of them hidden
+    dot-dirs) and never reached the scripts directory one level down, so a real script run
+    by its bare name (exit 127) got no hint on 5 of 5 calls in a week of ten worker
+    sessions; breadth-first, that directory is the 27th listed, and the hidden data dir's
+    scripts directory the 213th.
+    Symlinked directories are matched but never entered, as before.
     """
     if not name or "/" in name or "\\" in name:
         return []
     root = root.resolve()
     hits: list[str] = []
-    for visited, (dirpath, dirnames, filenames) in enumerate(os.walk(root), start=1):
-        rel_depth = len(Path(dirpath).relative_to(root).parts)
-        if visited > _FIND_MAX_DIRS or rel_depth >= _FIND_MAX_DEPTH:
-            dirnames[:] = []
-        else:
-            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
-        if name in (dirnames if dirs else filenames):
-            hits.append((Path(dirpath) / name).relative_to(root).as_posix())
-            if len(hits) >= limit:
-                break
+    level = [root]
+    visited = 0
+    depth = 0
+    while level:
+        below: list[Path] = []
+        for directory in level:
+            visited += 1
+            if visited > _FIND_MAX_DIRS:
+                return hits
+            try:
+                entries = sorted(os.scandir(directory), key=lambda e: e.name)
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    continue
+                if entry.name == name and is_dir == dirs:
+                    hits.append((directory / name).relative_to(root).as_posix())
+                    if len(hits) >= limit:
+                        return hits
+                if (
+                    is_dir
+                    and depth < _FIND_MAX_DEPTH
+                    and entry.name not in _SKIP_DIRS
+                    and not entry.is_symlink()
+                ):
+                    below.append(directory / entry.name)
+        level = below
+        depth += 1
     return hits
 
 
@@ -597,6 +630,70 @@ _ENOENT_RES = (
 _NOT_A_FILE = frozenset({"-", "-c", "<stdin>", "<string>"})
 
 
+def _enoent_path(output: str) -> str | None:
+    """The path of the first "No such file" line in ``output``, else None."""
+    best: re.Match[str] | None = None
+    for rx in _ENOENT_RES:
+        m = rx.search(output)
+        if m and (best is None or m.start() < best.start()):
+            best = m
+    return best.group(1).rstrip(".,;:") if best is not None else None
+
+
+def _skill_as_command_fix(output: str, exit_code: int, resolver: Any) -> str | None:
+    """The fix for a workspace skill's name run as a shell command (exit 127), else None.
+
+    The tool registry already answers a skill name called as a TOOL with the Skill call; a
+    skill name typed into the shell got a bare "command not found". Measured 2026-11-10 (ten
+    worker sessions, a week): one skill's name run as a command 10 times on six sessions, two
+    others 5 times and twice, none with a hint.
+    """
+    if exit_code != 127 or resolver is None:
+        return None
+    m = _NOT_FOUND_RE.search(output)
+    if not m:
+        return None
+    try:
+        match = _match_skill_name(m.group(1), list(resolver.names()))
+    except Exception:  # noqa: BLE001 — a hint must never break the tool
+        return None
+    if match is None:
+        return None
+    return (
+        f"'{m.group(1)}' is not a command on this machine, but it is the name of a skill: run "
+        f'it with Skill(skill="{match}") if that is what you meant.'
+    )
+
+
+def _virtual_prefix_lead(path: str, virtual_roots: dict[str, Path]) -> str | None:
+    """Where a host-framework virtual path really is, for a shell command (ADR-0282), else None.
+
+    Read/Edit/Write rewrite a leading ``world/`` or ``meta/`` to the directory the workspace
+    declares for it; a shell command reaches bash as written, so `bash world/scripts/x.sh`
+    opens a path relative to the cwd, where no `world/` exists. Measured 2026-11-10 (ten worker
+    sessions, a week): one session ran one `world/scripts/` script that way 80 times, and 5 of
+    them got a lead.
+    """
+    if not virtual_roots:
+        return None
+    rel = path[2:] if path.startswith("./") else path
+    real = expand_virtual_prefix(rel, virtual_roots)
+    if real == rel:
+        return None
+    prefix = rel.split("/", 1)[0]
+    target = Path(real)
+    said = f"'{prefix}/' is a virtual prefix: the file tools rewrite it, the shell does not"
+    where = target.as_posix()
+    if _exists(target):
+        return f"{said}. In a command, write the directory it stands for: {where} exists."
+    near = _near_siblings(target.parent, target.name) if target.parent.is_dir() else []
+    if near:
+        paths = ", ".join((target.parent / n).as_posix() for n in near[:3])
+        return f"{said}, and {where} does not exist either; spelled almost the same: {paths}."
+    stands = Path(virtual_roots[prefix]).as_posix()
+    return f"{said}; it stands for {stands}, and {where} does not exist."
+
+
 def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     """Name where a missing file actually is, or its nearest names — else None.
 
@@ -608,14 +705,9 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
     shell command deserves the same answer. No lead, no hint: a genuinely absent file
     stays a plain error.
     """
-    best: re.Match[str] | None = None
-    for rx in _ENOENT_RES:
-        m = rx.search(output)
-        if m and (best is None or m.start() < best.start()):
-            best = m
-    if best is None:
+    path = _enoent_path(output)
+    if path is None:
         return None
-    path = best.group(1).rstrip(".,;:")
     name = Path(path).name
     if not name or name in _NOT_A_FILE or name.startswith("<"):
         return None
@@ -649,6 +741,20 @@ def _enoent_fix(output: str, root: Path, extra_roots: list[Path]) -> str | None:
             return (
                 f"'{path}' does not exist, but the same words in another order do: "
                 f"{', '.join(paths[:3])} — use that exactly as written{kin_note}."
+            )
+        near = _near_siblings(parent, name)
+        if near:
+            # Spelled almost the same: the likeliest meaning of a typo or a misremembered
+            # name, so it leads, as a path the model can paste; the first-word family, which
+            # shares a word and not the spelling, stays an aside.
+            rel_parent = _guess_relative(str(parent), roots)
+            paths = [f"{rel_parent}/{s}" if rel_parent not in ("", ".") else s for s in near]
+            others = [k for k in kin if k not in near]
+            kin_note = f" (other names there: {', '.join(others[:4])})" if others else ""
+            return (
+                f"'{path}' does not exist, but a name spelled almost the same does: "
+                f"{', '.join(paths[:3])} — use that exactly as written if it is the one you "
+                f"meant{kin_note}."
             )
         if kin:
             return (
@@ -819,6 +925,64 @@ def _reordered_siblings(directory: Path, name: str) -> list[str]:
     ]
 
 
+#: How alike two file names must be (difflib ratio of the lowercased names) for a sibling to
+#: be offered as the name the model meant. `retrieval.sh` / `retrieve.sh` is 0.87 and
+#: `net-sh.sh` / `net-ssh.sh` 0.95; `retrieval.sh` / `retrieval-gate.sh`, a different script
+#: that shares the first word, is 0.83, and `stop-check.sh` / `s3-stock-check.sh`, unrelated,
+#: 0.80.
+_NEAR_NAME_RATIO = 0.85
+#: Below this, the one word two same-length names differ in is another word, not a
+#: misspelling of it: `status` / `start` is 0.73, `read` / `save` 0.25, `retrieval` /
+#: `retrieve` 0.82, `sh` / `ssh` 0.8.
+_SAME_WORD_RATIO = 0.8
+
+
+def _another_word(name: str, other: str) -> bool:
+    """True when ``other`` is ``name`` with one word replaced by a different word.
+
+    `api-start.sh` is spelled within 0.88 of `api-status.sh` and does something else; a typo
+    changes letters inside a word, not the word. The extension is exempt: the same name in
+    another language (`x.py` for a guessed `x.sh`) is the script.
+    """
+    a = [t for t in _TOKEN_SPLIT_RE.split(name.lower()) if t]
+    b = [t for t in _TOKEN_SPLIT_RE.split(other.lower()) if t]
+    if len(a) != len(b):
+        return False
+    differ = [i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y]
+    if len(differ) != 1 or differ[0] == len(a) - 1:
+        return False
+    i = differ[0]
+    return difflib.SequenceMatcher(None, a[i], b[i]).ratio() < _SAME_WORD_RATIO
+
+
+def _near_siblings(directory: Path, name: str) -> list[str]:
+    """Files in ``directory`` spelled almost like ``name``, closest first (`retrieve.sh` for
+    a guessed `retrieval.sh`).
+
+    Measured 2026-11-10 (ten worker sessions, a week): `bash <scripts>/retrieval.sh` was run
+    three times, by two sessions, for `<scripts>/retrieve.sh`. The leading-word family
+    answered each one with four other scripts whose names start `retrieval` and "use one of
+    those", and never named the one a letter away, because `retrieve` is not `retrieval`.
+    Over that week's 22 made-up script names, the ratio at :data:`_NEAR_NAME_RATIO` offers a
+    name for six: five plausibly the script meant (a dropped letter, a misremembered
+    ending, a missing leading word, `.py` for a guessed `.sh`, underscores for dashes) and
+    one that does something else (`...-start.sh` for a guessed `...-status.sh`), which
+    :func:`_another_word` drops.
+    """
+    try:
+        entries = sorted(e.name for e in directory.iterdir() if e.is_file())
+    except OSError:
+        return []
+    wanted = name.lower()
+    scored = [
+        (difflib.SequenceMatcher(None, wanted, e.lower()).ratio(), e)
+        for e in entries
+        if e != name and not _another_word(name, e)
+    ]
+    ranked = sorted(scored, key=lambda s: (-s[0], s[1]))
+    return [e for ratio, e in ranked if ratio >= _NEAR_NAME_RATIO]
+
+
 #: ``Name(arg…`` at the very start of a command: a tool CALL written as shell. A shell
 #: function definition (``name() {``) has nothing between the parens and does not match.
 _CALL_SYNTAX_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[^)\s]")
@@ -888,7 +1052,12 @@ def _cwd_before(prefix: str, root: Path) -> Path | None:
     return p if p.is_absolute() else root / p
 
 
-def _script_path_missing(command: str, root: Path, extra_roots: list[Path]) -> str | None:
+def _script_path_missing(
+    command: str,
+    root: Path,
+    extra_roots: list[Path],
+    virtual_roots: dict[str, Path] | None = None,
+) -> str | None:
     """The refusal for a script invocation naming a file that does not exist, else None.
 
     Measured 2026-08-29 (eight worker sessions, 24 h): 13 of 340 `bash|python3 <path>`
@@ -915,7 +1084,9 @@ def _script_path_missing(command: str, root: Path, extra_roots: list[Path]) -> s
         if any(_exists(c) for c in candidates):
             continue
         where = f"'{path}' does not exist" + ("" if base == root else f" under {base}")
-        lead = _enoent_fix(f"bash: {path}: No such file or directory", base, list(extra_roots))
+        lead = _virtual_prefix_lead(path, virtual_roots or {}) or _enoent_fix(
+            f"bash: {path}: No such file or directory", base, list(extra_roots)
+        )
         return f"{where}, so `{interp} {path}` was not run — nothing in this command ran. " + (
             lead or "`ls` the directory before guessing another name."
         )
@@ -987,7 +1158,10 @@ class BashTool(Tool):
                 typed, data={"command": command, "tool_typed_as_command": True}, fix=typed
             )
         missing = _script_path_missing(
-            command, Path(str(ctx.workspace_root)), list(ctx.extra_workspace_roots)
+            command,
+            Path(str(ctx.workspace_root)),
+            list(ctx.extra_workspace_roots),
+            ctx.virtual_roots,
         )
         if missing is not None:
             return ToolResult.error(
@@ -1110,6 +1284,8 @@ class BashTool(Tool):
             fix = (
                 _interpreter_mismatch_fix(command)
                 or _posix_exit_fix(command, output, exit_code, Path(str(ctx.workspace_root)))
+                or _skill_as_command_fix(output, exit_code, ctx.skill_resolver)
+                or _virtual_prefix_lead(_enoent_path(output) or "", ctx.virtual_roots)
                 or _enoent_fix(output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots)
                 or _module_not_found_fix(
                     command, output, Path(str(ctx.workspace_root)), ctx.extra_workspace_roots
