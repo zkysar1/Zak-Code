@@ -13,16 +13,47 @@ recoverable error rather than raising, so the model can adapt.
 Delegation itself requires only :data:`READ_ONLY` permission: the *child's* tool
 calls are gated by the same permission policy as the parent, so spawning cannot be
 used to escape the gate.
+
+A batch identical to one that already ran to its end in this turn is not run again while
+that result is still in the conversation (ADR-0382): the answer is a pointer to it, the
+same shape as ``read_rule``'s answer to a repeat (ADR-0372). The loop's exact-repeat guard
+sees only CONSECUTIVE identical calls, and one other call between two dispatches of the same
+batch resets it; a sub-agent batch runs for minutes to an hour, so each missed repeat costs
+the whole run again.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from datetime import UTC, datetime
 from typing import Any
 
 from zakcode.agent.subagent import SubAgentResult
 from zakcode.config import PermissionTier
 from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
+
+#: The answer to a batch identical to one that already ran to its end in this turn, while that
+#: result is still in the conversation (ADR-0382). It names when the earlier run returned and
+#: how long its result is, so the model can find it, and it names the two ways to run on purpose.
+ALREADY_RUN = (
+    "[already run this turn] This exact task batch ran to its end at {at} and its result "
+    "({chars:,} characters) is in your context above, unchanged. Use that result: running the "
+    "same batch again repeats the same work. If something it depends on has changed since, "
+    "call task again with rerun=true, or change the batch to say what is different."
+)
+
+#: How much of an earlier result's opening is kept to ask whether that result is still in the
+#: conversation. A clamp keeps a result's head and tail and a compaction or an elision takes the
+#: whole result, so the head answers for the result; the whole text would not fit a clamped one.
+_PROBE_CHARS = 400
+
+
+def _batch_key(prepared: list[tuple[str, str]]) -> str:
+    """A digest of what a batch runs: each subtask's resolved type and prompt, in order. The
+    resolved type, so a batch that names the default type and one that omits it are one batch."""
+    return hashlib.sha256(json.dumps(prepared, ensure_ascii=False).encode()).hexdigest()
 
 
 class TaskTool(Tool):
@@ -58,7 +89,14 @@ class TaskTool(Tool):
                         },
                         "required": ["prompt"],
                     },
-                }
+                },
+                "rerun": {
+                    "type": "boolean",
+                    "description": (
+                        "true runs the batch again although an identical batch already ran to "
+                        "its end in this turn. Only when something it depends on has changed."
+                    ),
+                },
             },
             "required": ["tasks"],
         },
@@ -116,6 +154,20 @@ class TaskTool(Tool):
                     )
             prepared.append((type_name, prompt))
 
+        # A batch identical to one that ran to its end in this turn gets a pointer to that result
+        # while the result is still in the conversation (ADR-0382); rerun=true runs it anyway.
+        key = _batch_key(prepared)
+        runs = getattr(ctx, "task_runs", None)
+        in_context = getattr(ctx, "in_context", None)
+        earlier = runs.get(key) if runs is not None else None
+        if (
+            earlier is not None
+            and args.get("rerun") is not True
+            and in_context is not None
+            and in_context(earlier[1])
+        ):
+            return ToolResult.ok(ALREADY_RUN.format(at=earlier[0], chars=earlier[2]))
+
         # Run every subtask concurrently. return_exceptions=True so one child's
         # failure (e.g. the budget's child cap) is reported, not propagated as a
         # crash that would lose the other children's results.
@@ -139,10 +191,22 @@ class TaskTool(Tool):
                 total_tokens += res.usage.total_tokens
                 total_cost += res.usage.cost_usd
 
+        output = "\n\n".join(lines)
+        # Only a batch whose every subtask completed is one a later identical ask may lean on; an
+        # error or a stopped subtask leaves the batch to run again (ADR-0382).
+        if runs is not None:
+            if all(
+                isinstance(r, SubAgentResult) and r.stop_reason == "completed" for r in results
+            ):
+                at = datetime.now(UTC).strftime("%H:%M:%SZ")
+                runs[key] = (at, output[:_PROBE_CHARS], len(output))
+            else:
+                runs.pop(key, None)
+
         # Surface child token/cost spend in the structured result so it is visible to
         # the parent (the children's usage is otherwise invisible to the parent turn).
         return ToolResult(
-            output="\n\n".join(lines),
+            output=output,
             is_error=errors == len(results),
             data={
                 "count": len(results),
