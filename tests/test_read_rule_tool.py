@@ -61,6 +61,58 @@ def test_unknown_rule_lists_the_available_names() -> None:
     assert "alpha-rule" in (res.fix or "") and "beta-rule" in (res.fix or "")
 
 
+def _named_registry(*names: str) -> RuleRegistry:
+    reg = RuleRegistry()
+    for rule_name in names:
+        reg.add(Rule(rule_name, f"# {rule_name}\nBody of {rule_name}.", Path(f"/x/{rule_name}.md")))
+    return reg
+
+
+_NAMES = ("commit-style", "review-before-merge", "test-first")
+
+
+def test_near_miss_name_leads_with_the_closest_rule() -> None:
+    """A name a few letters off a real rule is answered with that rule first (ADR-0380), and the
+    full list still follows, so a wrong lead costs nothing."""
+    res = _run({"name": "reviewed-before-merging"}, _named_registry(*_NAMES))
+    assert res.is_error
+    assert "no rule named 'reviewed-before-merging'" in res.output
+    fix = res.fix or ""
+    assert fix.startswith("Did you mean 'review-before-merge'? Use one of the available rules:")
+    assert all(rule_name in fix for rule_name in _NAMES)
+
+
+def test_far_name_gets_no_suggestion() -> None:
+    res = _run({"name": "database-migrations"}, _named_registry(*_NAMES))
+    assert res.is_error
+    assert (res.fix or "").startswith("Use one of the available rules:")
+    assert "Did you mean" not in (res.fix or "")
+
+
+def test_shared_connective_words_alone_are_not_a_suggestion() -> None:
+    """'read-before-edit' scores 0.63 against 'review-before-merge' only through the shared
+    '-before-': a neighbour at the tool registry's 0.6, noise at the rule line (ADR-0380)."""
+    res = _run({"name": "read-before-edit"}, _named_registry(*_NAMES))
+    assert "Did you mean" not in (res.fix or "")
+
+
+def test_two_close_rules_are_both_named_closest_first() -> None:
+    reg = _named_registry("release-checklist", "release-checklists", "commit-style")
+    res = _run({"name": "release-check-list"}, reg)
+    assert (res.fix or "").startswith("Did you mean 'release-checklist' or 'release-checklists'?")
+
+
+def test_closest_rule_ignores_case_and_answers_the_registered_spelling() -> None:
+    """Both sides are compared lowercased: a shouted guess still finds the rule, and a rule
+    registered in capitals is offered in its own spelling."""
+    res = _run({"name": "REVIEWED-BEFORE-MERGE"}, _named_registry(*_NAMES))
+    assert (res.fix or "").startswith("Did you mean 'review-before-merge'?")
+    res = _run(
+        {"name": "reviewed-before-merge"}, _named_registry("REVIEW-BEFORE-MERGE", "test-first")
+    )
+    assert (res.fix or "").startswith("Did you mean 'REVIEW-BEFORE-MERGE'?")
+
+
 def test_missing_registry_is_a_clean_error_not_a_crash() -> None:
     res = _run({"name": "alpha-rule"}, None)
     assert res.is_error
