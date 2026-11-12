@@ -23,6 +23,7 @@ the tool degrades to a clean error rather than raising.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Callable
 from typing import Any
@@ -50,6 +51,12 @@ ALREADY_READ = (
 
 #: How far back the ask count is read (ADR-0379); past it, the pointer keeps this number.
 _MAX_COUNTED_ASKS = 99
+
+#: How alike (difflib ratio of the lowercased names) a rule name must be to a name that matches no
+#: rule to be offered first in the not-found answer (ADR-0380). The skill catalog's suggest line
+#: (ADR-0040): rule names are hyphenated phrases that share connective words, so at the tool
+#: registry's 0.6 unrelated names already score as neighbours.
+_CLOSEST_RULE_RATIO = 0.72
 
 #: The lead on the text sent again for an ask that comes right after that rule's own pointer, with
 #: no other tool result between (ADR-0381): the pointer did not land. ADR-0379 answered it with the
@@ -152,10 +159,20 @@ class ReadRuleTool(Tool):
                     break
 
         if rule is None:
-            available = ", ".join(registry.names()) or "(none discovered)"
+            names = registry.names()
+            available = ", ".join(names) or "(none discovered)"
+            # The closest one or two names lead (ADR-0380): with only the full list, a session asked
+            # again and again for a name a few letters off a rule the list held.
+            by_lower = {candidate.lower(): candidate for candidate in names}
+            close = difflib.get_close_matches(
+                name.lower(), list(by_lower), n=2, cutoff=_CLOSEST_RULE_RATIO
+            )
+            lead = (
+                f"Did you mean {' or '.join(repr(by_lower[c]) for c in close)}? " if close else ""
+            )
             return ToolResult.error(
                 f"no rule named {name!r}.",
-                fix=f"Use one of the available rules: {available}.",
+                fix=f"{lead}Use one of the available rules: {available}.",
             )
 
         body = (rule.content or "").strip()

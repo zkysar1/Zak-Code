@@ -24048,6 +24048,38 @@ turn paths (four identical reads deliver the body once and end on ask 2), the ne
 pointers already in context, `refresh=true` returning the body, the plan step in the line, and that
 another rule's pointer does not count.
 
+## ADR-0380: read_rule's not-found answer names the closest rule first
+
+**Context.** Measured 2026-11-11 on worker sessions of a host framework: one session asked
+`read_rule` six times in 18 minutes for a name whose first word ended differently from a real
+rule's. All six answers were "no rule named X" with every rule name in one comma-joined list, and
+between the third and the fourth ask the session listed the rules directory, which showed the right
+name. Another session asked for a rule that does not exist. The not-found answer names no closest
+rule; ADR-0378 gave that lead to the shell's not-found answer, not to this tool's.
+
+**Decision.** When no rule matches after the exact and the case-insensitive passes, the one or two
+rule names closest to the asked name lead the fix text as "Did you mean 'X'?", and the full list
+follows as before, so a wrong lead costs nothing. Closest is the difflib ratio of the lowercased
+names, at 0.72 or more; below that line there is no lead. The line is the skill catalog's suggest
+ratio (ADR-0040): rule names are hyphenated phrases that share connective words, and at the tool
+registry's 0.6 a name that shares only those words is offered (`read-before-edit` scores 0.63
+against `review-before-merge`). The measured near miss scores 0.94.
+
+**Alternatives rejected.** The tool registry's 0.6, for the noise above. Answering with the closest
+rule's text: the name asked for does not exist and the answer should say so; the model can read the
+offered name on its next call. A shared-prefix match: a prefix alone offers every rule whose name
+starts with the same word, and difflib already scores a changed word ending high.
+
+Not verified: how often the model reads the offered name on its next call. To measure after the
+roll: for each not-found answer, whether the session's next two `read_rule` calls repeat the same
+name or read the offered one, and not-found answers per session-hour.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the lead for a near miss with the full list after
+it, no lead for a far name, no lead for a name that shares only connective words, two close names
+named closest first, and both sides compared lowercased with the rule's own spelling in the answer.
+A six-mutation table (the line at 0.6, the lead removed, one name instead of two, each side's
+lowercasing removed, and a line at zero) is killed by those tests.
+
 ## ADR-0381: an ask right after a rule's own pointer gets the text, and a read belongs to the first time
 
 **Context.** ADR-0379 answered every repeat of a rule still in the conversation with a numbered
