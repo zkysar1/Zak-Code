@@ -501,3 +501,47 @@ async def test_the_fence_is_per_turn(tmp_path: Path) -> None:
     second = await loop.arun_turn("again")
     assert second.stop_reason == "completed"  # its one veto honoured: the count was fresh
     assert second.iterations == 2
+
+
+# ── the ADR-0045 in-turn sweep ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_three_consecutive_veto_deliveries_in_one_turn_leave_one_live_body(
+    tmp_path: Path,
+) -> None:
+    """The fix: the ended-skill-body sweep runs BEFORE the delivered veto
+    message is added, so each delivery stubs the previous lap's body and leaves the body just
+    delivered live for the turn it opens.
+
+    Three consecutive vetoes in one turn (the measured spiral shape) must therefore leave
+    exactly one live body — the newest delivery — and the two earlier ones as ``chars=`` stubs.
+    Without the sweep before ``add_message`` the older copies stay live until the turn ends.
+    """
+    vetoes = _VETO_STALL_THRESHOLD + 1  # three honoured deliveries, then the 4th veto refused
+    hook = RecordingHook([_veto(ORCHESTRATE_REASON)] * vetoes)
+    provider = ScriptedProvider(_texts(vetoes + 1))
+    calls: list[tuple[str, str, str]] = []
+    loop = _loop(provider, tmp_path, _composer(calls, turn_text=FLAT_TURN))
+    loop.hook_manager.register_turn_end(hook)
+
+    result = await loop.arun_turn("start the loop")
+
+    # The fence ran: three deliveries honoured, the fourth veto refused.
+    assert result.stop_reason == "veto_stall"
+    assert len(calls) == _VETO_STALL_THRESHOLD  # delivered three times, never a fourth
+    delivered = _delivered(loop)
+    assert len(delivered) == _VETO_STALL_THRESHOLD
+
+    # ADR-0045: the ended-skill-body sweep ran BEFORE each delivered message was added, so
+    # only the NEWEST delivery's body is live; the two earlier ones are chars= stubs.
+    live = [m for m in delivered if "<command-body elided=" not in m.text]
+    stubs = [m for m in delivered if "<command-body elided=" in m.text]
+    assert len(live) == 1  # the newest delivery's body is live for the turn it opens
+    assert len(stubs) == _VETO_STALL_THRESHOLD - 1  # the two earlier laps are stubs
+    # The stub carries the chars= marker naming the dropped body length.
+    for stub in stubs:
+        assert 'chars="' in stub.text
+        assert "</command-body>" in stub.text
+    # The live body is the newest delivery: its frame is the live one, not a stub.
+    assert live[0].text.startswith("<command-message>")

@@ -8163,6 +8163,10 @@ class AgentLoop:
             return None
         skill = str(getattr(result, "name", name) or name)
         text = harness_skill_turn_text(str(turn_text), _VETO_SKILL_NOTE.format(reason=reason))
+        # ADR-0045: run the ended-skill-body sweep BEFORE the delivered message is added, so
+        # it stubs the previous copy and leaves the body just delivered live for this turn
+        # (the sweep is idempotent and only matches ended turns' composed skill bodies).
+        self._elide_ended_skill_bodies()
         self.session.add_message(Message.user(text))
         self._persist()
         # The skill's sections become plan steps (ADR-0062) and page 1 counts as delivered
@@ -10230,7 +10234,12 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
-        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
+        # ADR-0045: this turn's own skill body is now ended — except when the ADR-0187 fence
+        # ended the turn on a refused re-entry: the newest delivery's body is the lap the armed
+        # wake-up re-resolves, so it stays live (the pre-delivery sweep already stubbed the laps
+        # before it).
+        if not self._veto_stall:
+            self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
         left_open = len(self.session.task_network.actionable_remaining())
@@ -12358,7 +12367,12 @@ class AgentLoop:
             iterations=iterations,
             escalated=routed_escalated,
         )
-        self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
+        # ADR-0045: this turn's own skill body is now ended — except when the ADR-0187 fence
+        # ended the turn on a refused re-entry: the newest delivery's body is the lap the armed
+        # wake-up re-resolves, so it stays live (the pre-delivery sweep already stubbed the laps
+        # before it).
+        if not self._veto_stall:
+            self._elide_ended_skill_bodies()  # this turn's own skill body, now ended (ADR-0045)
         self.session.last_stop_reason = stop_reason  # resume safety (ADR-0033)
         degraded = turn_degraded or stuck.took_action or stop_reason in _DEGRADED_STOP_REASONS
         left_open = len(self.session.task_network.actionable_remaining())
