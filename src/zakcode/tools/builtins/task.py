@@ -195,9 +195,7 @@ class TaskTool(Tool):
         # Only a batch whose every subtask completed is one a later identical ask may lean on; an
         # error or a stopped subtask leaves the batch to run again (ADR-0382).
         if runs is not None:
-            if all(
-                isinstance(r, SubAgentResult) and r.stop_reason == "completed" for r in results
-            ):
+            if all(isinstance(r, SubAgentResult) and r.stop_reason == "completed" for r in results):
                 at = datetime.now(UTC).strftime("%H:%M:%SZ")
                 runs[key] = (at, output[:_PROBE_CHARS], len(output))
             else:
