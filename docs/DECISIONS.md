@@ -24047,3 +24047,50 @@ description and the new parameter reach it at the roll.
 turn paths (four identical reads deliver the body once and end on ask 2), the next number after
 pointers already in context, `refresh=true` returning the body, the plan step in the line, and that
 another rule's pointer does not count.
+
+## ADR-0381: an ask right after a rule's own pointer gets the text, and a read belongs to the first time
+
+**Context.** ADR-0379 answered every repeat of a rule still in the conversation with a numbered
+pointer. In a trial on five worker sessions of a host framework (2026-11-11, about 2.4 hours, each
+read against its own three hours on the ADR-0372 build just before), the bodies sent after a
+pointer fell on all five, but two sessions asked more, not less. One made 14 `read_rule` calls of
+its 15, all for one rule (10 pointers, no body; 78% of its calls before); the other 95 of 168 (29%
+before), two rules 18 times each in 13 minutes. Their repeats came back to back, and the
+exact-repeat guard refused them: 6.9 refused calls an hour on the first (3.7 before), and on the
+second 10 errored `read_rule` results in 2.4 hours, nine of them the guard's (none before). One of
+those refusals ended the second session's turn, which for a worker is its whole unit of work. The
+ADR-0372 build answered the ask right after a pointer with the text, and on it the guard refused
+both sessions less. Separately, the index header and the tool description still opened with "when
+a rule looks relevant to the current step", and in worker sessions a read came 4 s to 2 min after
+each plan update, with real work between.
+
+**Decision.** Two changes. (1) An ask that comes right after that rule's own pointer, with no
+other tool result between, gets the full text again after a one-line lead (`[asked again right
+after its pointer] ...`); every other repeat keeps ADR-0379's numbered pointer, and
+`refresh=true` still returns the plain text. The tool reads the conversation's most recent tool
+result through a new `ToolContext.last_tool_output`, wired by the loop beside `in_context`
+(ADR-0372), and a pointer counts only where that result begins, so a pointer quoted inside a log
+line is not one. (2) The index header and the tool description now say to read a rule the first
+time it looks relevant and, when it looks relevant again, "at a new plan step too", to apply the
+text already there.
+
+**Alternatives rejected.** Back to ADR-0372, the pointer once and then the text: it gives up the
+cut ADR-0379 measured on repeats with other work between. Exempting `read_rule` from the
+exact-repeat guard: a rule asked for forever would then run until the iteration cap, which a
+worker's turn does not have. Pinning the rules a host's sessions re-read most: that is the host's
+choice, made in each rule's front matter (`alwaysApply`, ADR-0105), and it is being made there for
+the most re-read one.
+
+Not verified: that the text at the second ask makes a third ask rarer. It is inferred from each
+session's three hours on each build, read in different hours on different work; the wording's
+effect on reads after a plan update is inferred too. A running session keeps the index text it
+pinned (ADR-0260) until its next compaction; the tool description and the new answer reach it at
+the roll. To read after the roll, per session against its own hours before: refused `read_rule`
+calls and turns the guard ended, bodies sent after a pointer, the `read_rule` share of calls, and
+reads within two minutes of a plan update.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the text for an ask right after the rule's own
+pointer (any ask number, any spelling), a pointer for an ask right after the text, after other
+work, after another rule's pointer and after the text sent again, a pointer quoted inside a log
+line not counting, `refresh=true` staying plain, the lead and the text through both turn paths,
+and the new wording in both the index header and the tool description.

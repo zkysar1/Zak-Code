@@ -235,10 +235,11 @@ class RuleRegistry:
             return ""
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
-            "name with a one-line summary; when a rule looks relevant to the current step, "
-            "call read_rule with its name to get the full text, then apply it. A rule's text "
+            "name with a one-line summary; the first time a rule looks relevant, call "
+            "read_rule with its name to get the full text, then apply it. A rule's text "
             "stays in your context and does not change: read each rule once, and when its "
-            "summary looks relevant again, apply the text you already have. (The file "
+            "summary looks relevant again, at a new plan step too, apply the text you "
+            "already have. (The file "
             "path is shown too, so your file-read tool also works if read_rule is "
             "unavailable.):"
         )

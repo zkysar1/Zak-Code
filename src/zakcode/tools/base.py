@@ -334,6 +334,10 @@ class ToolContext(BaseModel):
     #: nothing has to be reset when a compaction or an elision takes the body away. ``None`` (a
     #: bare context) always delivers.
     in_context: Callable[[str], bool] | None = None
+    #: The output of the conversation's most recent tool result, or ``None`` (ADR-0381). The
+    #: ``read_rule`` tool answers a repeat that comes right after its own pointer with the text:
+    #: that pointer did not land. ``None`` (a bare context) never treats a repeat as one.
+    last_tool_output: Callable[[], str | None] | None = None
     #: The loop's :class:`ToolRegistry`, so the bash tool can recognise a registered tool
     #: written as a shell command (``ScheduleWakeup(prompt=…)``) and refuse it with the
     #: tool's real name and parameters instead of running it into a syntax error

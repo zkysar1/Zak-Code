@@ -4027,6 +4027,19 @@ class AgentLoop:
             for block in message.blocks
         )
 
+    def _last_tool_output(self) -> str | None:
+        """The output of the conversation's most recent tool result, or ``None`` (ADR-0381).
+
+        Read when a tool runs, from the conversation itself, so a compaction needs no reset.
+        ``read_rule`` reads it to tell a repeat right after its own pointer from one after other
+        work.
+        """
+        for message in reversed(self.session.messages):
+            for block in reversed(message.blocks):
+                if isinstance(block, ToolResultBlock):
+                    return block.output
+        return None
+
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
 
@@ -8713,6 +8726,7 @@ class AgentLoop:
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
+            last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
@@ -10415,6 +10429,7 @@ class AgentLoop:
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
+            last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
