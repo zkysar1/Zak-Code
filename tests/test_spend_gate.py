@@ -264,6 +264,32 @@ def test_an_unreadable_ledger_fails_closed_until_a_push_rearms(tmp_path: Path) -
     assert gate.snapshot()["ledger_ok"] is True
 
 
+def test_an_armed_ledger_at_an_old_cap_takes_a_push_that_raises_it(tmp_path: Path) -> None:
+    """A Mind's ledger from an earlier run is armed at that run's cap, and the row was raised since.
+
+    The gate boots armed, refuses at the old cap, and says ``armed`` in ``/sidecar/health``, so a
+    vessel that pushes only a gate that says unarmed never reaches it. This pins the contract such
+    a vessel relies on: a push to an armed gate is accepted, the vessel's push of the row's cap and
+    floor is what admits it again, and the new cap is in the ledger for the next process.
+    """
+    ledger = tmp_path / "run" / "spend-ledger.json"
+    earlier = SpendGate(ledger)
+    earlier.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=15.95)  # accrued past its cap
+
+    gate = SpendGate(ledger)  # a new process: it boots from what the earlier run left
+    snap = gate.snapshot()
+    assert snap["armed"] is True and snap["ledger_ok"] is True
+    assert snap["cap_usd"] == 15.0 and snap["tripped"] is True
+    with pytest.raises(SpendCapReached):
+        gate.admit()  # refused at the old cap, whatever the row says now
+
+    pushed = gate.set_budget(cap_usd=21.0, reserve_usd=4.32, floor_usd=15.95)  # the row, as raised
+    assert pushed["cap_usd"] == 21.0 and pushed["tripped"] is False
+    assert pushed["spent_usd"] == pytest.approx(15.95)
+    gate.admit()  # room again
+    assert SpendGate(ledger).snapshot()["cap_usd"] == 21.0
+
+
 def test_no_ledger_file_means_an_unarmed_gate(tmp_path: Path) -> None:
     gate = SpendGate(tmp_path / "absent.json")
     gate.admit()
