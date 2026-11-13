@@ -24126,3 +24126,53 @@ pointer (any ask number, any spelling), a pointer for an ask right after the tex
 work, after another rule's pointer and after the text sent again, a pointer quoted inside a log
 line not counting, `refresh=true` staying plain, the lead and the text through both turn paths,
 and the new wording in both the index header and the tool description.
+
+## ADR-0382: a task batch that already ran to its end in this turn gets a pointer, not a second run
+
+**Context.** Measured 2026-11-12 over 24 hours of ten worker sessions of a host framework, from
+transcript metadata only (tool names, times, input digests and result lengths). There were 27
+`task` calls. 13 of them dispatched a batch identical to one the same session had already
+dispatched. 7 of those 13 came right after the earlier call, with no other tool between. One came
+after an earlier result that was an error (the exact-repeat guard's refusal). An earlier read on
+2026-11-07 found a session that dispatched one batch ten times in under eight hours. Eight of the
+ten ran, for 22 to 79 minutes each and 440 minutes in all, and none returned an error; the
+exact-repeat guard refused the other two. That guard counts identical batches only while they are
+consecutive, and any other call between two dispatches (a read, a plan check, a shell command)
+starts its count over. A worker's whole session is one turn, so a record the turn keeps of what it
+has already run can see what the guard cannot.
+
+**Decision.** The `task` tool records, for the turn, each batch that ran to its end
+(`ToolContext.task_runs`). The loop builds one context per turn, so every turn starts with an empty
+record. The key is a digest of what the batch runs: each subtask's resolved type and its prompt, in
+order. A batch that names the default type, one that omits it, and the single-delegation shape are
+therefore one batch. When a batch matches the record and the head of the earlier result (its first
+400 characters) is still in the conversation, read through ADR-0372's in-context check, the batch
+gets a one-line pointer instead of a run: `[already run this turn] This exact task batch ran to its
+end at HH:MM:SSZ and its result (N characters) is in your context above, unchanged. ...`. Only a
+batch whose every subtask completed is recorded. A batch with an error or a stopped subtask runs
+again when asked, and a failed re-run removes the record. A new optional parameter, `rerun=true`,
+runs the batch again on purpose. The exact-repeat guard is unchanged.
+
+**Alternatives rejected.** Counting repeats by input in the exact-repeat guard instead of by
+position: the guard refuses rather than answers, and a refusal is a dead end for a worker, while a
+pointer hands back what the model asked for and names the way to run again. Sending the whole earlier
+result instead of the pointer: the turn would hold up to a hundred thousand characters per batch
+only to send text the conversation already holds. A key on the raw input: the default type's alias
+and the single-delegation shape would each run the same work again.
+
+Not verified: whether a model reads the pointer and moves on, or asks again. To measure after the
+roll: `task` calls that repeat an earlier batch in the same session, pointers, `rerun=true` calls,
+and the minutes spent in repeated batches. A result that a compaction or an elision took away runs
+again, by design.
+
+**The proof.** `tests/test_task_tool.py` pins:
+- the pointer's exact text and the time format;
+- that the head of the earlier result (400 characters) is what the in-context check asks about;
+- that a batch runs again when its result has left the conversation, or when the context is bare;
+- that `rerun=true` runs again and the next repeat points at that run;
+- the key: the default type's alias, an omitted type and the single-delegation shape are one batch,
+  and another type or another task list is another batch;
+- that a batch with a failed or a stopped subtask runs again, and that a failed re-run removes the
+  record;
+- through both turn paths, a repeat in the turn answered by the pointer and the next turn running
+  the batch.

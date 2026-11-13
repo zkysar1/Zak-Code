@@ -292,6 +292,12 @@ class ToolContext(BaseModel):
     #: path that opens with one before confining it. Empty for a workspace that declares none.
     virtual_roots: dict[str, Path] = Field(default_factory=dict)
     spawner: SubAgentSpawner | None = None
+    #: The task batches that ran to their end in this turn (ADR-0382), by a digest of what each
+    #: one runs: the time it returned, the head of its output and the output's length. The loop
+    #: builds one context per turn, so the record is the turn's and every turn starts empty. The
+    #: ``task`` tool answers an identical batch with a pointer while that head is still in the
+    #: conversation, instead of running it again.
+    task_runs: dict[str, tuple[str, str, int]] = Field(default_factory=dict)
     #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
     #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
     egress_env: dict[str, str] = Field(default_factory=dict)
