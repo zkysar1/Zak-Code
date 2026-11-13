@@ -23,6 +23,8 @@ the tool degrades to a clean error rather than raising.
 
 from __future__ import annotations
 
+import difflib
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -36,10 +38,11 @@ MAX_RULE_BODY_CHARS = 16000
 
 #: The answer to EVERY repeat of a rule whose text is still in the conversation (ADR-0372,
 #: ADR-0379). Numbered, so the model sees how often it has asked for the same text; it names the
-#: plan's current step and restates the rule's summary, and only ``refresh=true`` returns the text
-#: again. ADR-0372 gave this line once and then the body, and the body was asked for again within
-#: minutes: measured 2026-11-10 on ten worker sessions, one read three rules nine times each in 21
-#: minutes with one plan update and no other tool between them.
+#: plan's current step and restates the rule's summary. The text comes back with ``refresh=true``,
+#: or for an ask right after this line (ADR-0381). ADR-0372 gave this line once and then the body,
+#: and the body was asked for again within minutes: measured 2026-11-10 on ten worker sessions,
+#: one read three rules nine times each in 21 minutes with one plan update and no other tool
+#: between them.
 ALREADY_READ = (
     "[already read; ask {n}] Rule {name!r} is in your context from an earlier read_rule call, "
     "unchanged; this is ask {n} for it. Apply the text you have{step}. Reading it again changes "
@@ -48,6 +51,29 @@ ALREADY_READ = (
 
 #: How far back the ask count is read (ADR-0379); past it, the pointer keeps this number.
 _MAX_COUNTED_ASKS = 99
+
+#: How alike (difflib ratio of the lowercased names) a rule name must be to a name that matches no
+#: rule to be offered first in the not-found answer (ADR-0380). The skill catalog's suggest line
+#: (ADR-0040): rule names are hyphenated phrases that share connective words, so at the tool
+#: registry's 0.6 unrelated names already score as neighbours.
+_CLOSEST_RULE_RATIO = 0.72
+
+#: The lead on the text sent again for an ask that comes right after that rule's own pointer, with
+#: no other tool result between (ADR-0381): the pointer did not land. ADR-0379 answered it with the
+#: next pointer, and in a trial two sessions asked again and again until the exact-repeat guard
+#: refused them; ADR-0372's text at that ask is the measured baseline that the guard refused less.
+ASKED_AGAIN = (
+    "[asked again right after its pointer] The full text of rule {name!r} follows, unchanged. "
+    "Apply it to your current step; the next ask for it gets a pointer."
+)
+
+
+def _right_after_its_pointer(ctx: ToolContext, name: str) -> bool:
+    """True when the conversation's most recent tool result is a pointer for rule ``name``."""
+    last = getattr(ctx, "last_tool_output", None)
+    previous = last() if last is not None else None
+    head = r"\[already read; ask [0-9]+\] Rule " + re.escape(repr(name)) + " "
+    return previous is not None and re.match(head, previous) is not None
 
 
 def _pointer_head(name: str, n: int) -> str:
@@ -78,11 +104,11 @@ class ReadRuleTool(Tool):
         name="read_rule",
         description=(
             "Read one project rule's full text by name. Your context lists the available rules "
-            "as an index (name + one-line summary); call this when a rule's summary looks "
-            "relevant to the current step, then apply the rule you get back. A rule's text "
-            "stays in your context and does not change: read each rule once, and when its "
-            "summary looks relevant again, apply the text you already have. Use the name "
-            "exactly as it appears in that index."
+            "as an index (name + one-line summary); call this the first time a rule's summary "
+            "looks relevant, then apply the rule you get back. A rule's text stays in your "
+            "context and does not change: read each rule once, and when its summary looks "
+            "relevant again, at a new plan step too, apply the text you already have. Use the "
+            "name exactly as it appears in that index."
         ),
         parameters={
             "type": "object",
@@ -133,10 +159,20 @@ class ReadRuleTool(Tool):
                     break
 
         if rule is None:
-            available = ", ".join(registry.names()) or "(none discovered)"
+            names = registry.names()
+            available = ", ".join(names) or "(none discovered)"
+            # The closest one or two names lead (ADR-0380): with only the full list, a session asked
+            # again and again for a name a few letters off a rule the list held.
+            by_lower = {candidate.lower(): candidate for candidate in names}
+            close = difflib.get_close_matches(
+                name.lower(), list(by_lower), n=2, cutoff=_CLOSEST_RULE_RATIO
+            )
+            lead = (
+                f"Did you mean {' or '.join(repr(by_lower[c]) for c in close)}? " if close else ""
+            )
             return ToolResult.error(
                 f"no rule named {name!r}.",
-                fix=f"Use one of the available rules: {available}.",
+                fix=f"{lead}Use one of the available rules: {available}.",
             )
 
         body = (rule.content or "").strip()
@@ -151,9 +187,11 @@ class ReadRuleTool(Tool):
         # disk is a prefix of the older text, and without it the check below read that as unchanged.
         text = f"# {name}\n{body}\n[end of rule {name!r}]"
         in_context = getattr(ctx, "in_context", None)
-        # Every repeat while the text is in the conversation gets the numbered pointer; the body
-        # comes back only when asked for on purpose (ADR-0379; ADR-0372 gave it once, then the
-        # body, and the body was asked for again and again).
+        # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); the
+        # body comes back when asked for on purpose, or for an ask right after this rule's own
+        # pointer, which did not land (ADR-0381).
         if in_context is not None and args.get("refresh") is not True and in_context(text):
+            if _right_after_its_pointer(ctx, name):
+                return ToolResult.ok(f"{ASKED_AGAIN.format(name=name)}\n{text}", verbatim=True)
             return ToolResult.ok(_pointer(rule, name, ctx, in_context))
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped

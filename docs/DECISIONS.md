@@ -24048,6 +24048,85 @@ turn paths (four identical reads deliver the body once and end on ask 2), the ne
 pointers already in context, `refresh=true` returning the body, the plan step in the line, and that
 another rule's pointer does not count.
 
+## ADR-0380: read_rule's not-found answer names the closest rule first
+
+**Context.** Measured 2026-11-11 on worker sessions of a host framework: one session asked
+`read_rule` six times in 18 minutes for a name whose first word ended differently from a real
+rule's. All six answers were "no rule named X" with every rule name in one comma-joined list, and
+between the third and the fourth ask the session listed the rules directory, which showed the right
+name. Another session asked for a rule that does not exist. The not-found answer names no closest
+rule; ADR-0378 gave that lead to the shell's not-found answer, not to this tool's.
+
+**Decision.** When no rule matches after the exact and the case-insensitive passes, the one or two
+rule names closest to the asked name lead the fix text as "Did you mean 'X'?", and the full list
+follows as before, so a wrong lead costs nothing. Closest is the difflib ratio of the lowercased
+names, at 0.72 or more; below that line there is no lead. The line is the skill catalog's suggest
+ratio (ADR-0040): rule names are hyphenated phrases that share connective words, and at the tool
+registry's 0.6 a name that shares only those words is offered (`read-before-edit` scores 0.63
+against `review-before-merge`). The measured near miss scores 0.94.
+
+**Alternatives rejected.** The tool registry's 0.6, for the noise above. Answering with the closest
+rule's text: the name asked for does not exist and the answer should say so; the model can read the
+offered name on its next call. A shared-prefix match: a prefix alone offers every rule whose name
+starts with the same word, and difflib already scores a changed word ending high.
+
+Not verified: how often the model reads the offered name on its next call. To measure after the
+roll: for each not-found answer, whether the session's next two `read_rule` calls repeat the same
+name or read the offered one, and not-found answers per session-hour.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the lead for a near miss with the full list after
+it, no lead for a far name, no lead for a name that shares only connective words, two close names
+named closest first, and both sides compared lowercased with the rule's own spelling in the answer.
+A six-mutation table (the line at 0.6, the lead removed, one name instead of two, each side's
+lowercasing removed, and a line at zero) is killed by those tests.
+
+## ADR-0381: an ask right after a rule's own pointer gets the text, and a read belongs to the first time
+
+**Context.** ADR-0379 answered every repeat of a rule still in the conversation with a numbered
+pointer. In a trial on five worker sessions of a host framework (2026-11-11, about 2.4 hours, each
+read against its own three hours on the ADR-0372 build just before), the bodies sent after a
+pointer fell on all five, but two sessions asked more, not less. One made 14 `read_rule` calls of
+its 15, all for one rule (10 pointers, no body; 78% of its calls before); the other 95 of 168 (29%
+before), two rules 18 times each in 13 minutes. Their repeats came back to back, and the
+exact-repeat guard refused them: 6.9 refused calls an hour on the first (3.7 before), and on the
+second 10 errored `read_rule` results in 2.4 hours, nine of them the guard's (none before). One of
+those refusals ended the second session's turn, which for a worker is its whole unit of work. The
+ADR-0372 build answered the ask right after a pointer with the text, and on it the guard refused
+both sessions less. Separately, the index header and the tool description still opened with "when
+a rule looks relevant to the current step", and in worker sessions a read came 4 s to 2 min after
+each plan update, with real work between.
+
+**Decision.** Two changes. (1) An ask that comes right after that rule's own pointer, with no
+other tool result between, gets the full text again after a one-line lead (`[asked again right
+after its pointer] ...`); every other repeat keeps ADR-0379's numbered pointer, and
+`refresh=true` still returns the plain text. The tool reads the conversation's most recent tool
+result through a new `ToolContext.last_tool_output`, wired by the loop beside `in_context`
+(ADR-0372), and a pointer counts only where that result begins, so a pointer quoted inside a log
+line is not one. (2) The index header and the tool description now say to read a rule the first
+time it looks relevant and, when it looks relevant again, "at a new plan step too", to apply the
+text already there.
+
+**Alternatives rejected.** Back to ADR-0372, the pointer once and then the text: it gives up the
+cut ADR-0379 measured on repeats with other work between. Exempting `read_rule` from the
+exact-repeat guard: a rule asked for forever would then run until the iteration cap, which a
+worker's turn does not have. Pinning the rules a host's sessions re-read most: that is the host's
+choice, made in each rule's front matter (`alwaysApply`, ADR-0105), and it is being made there for
+the most re-read one.
+
+Not verified: that the text at the second ask makes a third ask rarer. It is inferred from each
+session's three hours on each build, read in different hours on different work; the wording's
+effect on reads after a plan update is inferred too. A running session keeps the index text it
+pinned (ADR-0260) until its next compaction; the tool description and the new answer reach it at
+the roll. To read after the roll, per session against its own hours before: refused `read_rule`
+calls and turns the guard ended, bodies sent after a pointer, the `read_rule` share of calls, and
+reads within two minutes of a plan update.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the text for an ask right after the rule's own
+pointer (any ask number, any spelling), a pointer for an ask right after the text, after other
+work, after another rule's pointer and after the text sent again, a pointer quoted inside a log
+line not counting, `refresh=true` staying plain, the lead and the text through both turn paths,
+and the new wording in both the index header and the tool description.
+
 ## ADR-0382: a task batch that already ran to its end in this turn gets a pointer, not a second run
 
 **Context.** Measured 2026-11-12 over 24 hours of ten worker sessions of a host framework, from
