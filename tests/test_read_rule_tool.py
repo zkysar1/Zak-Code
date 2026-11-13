@@ -19,7 +19,12 @@ from zakcode.rules import Rule, RuleRegistry, discover_rules
 from zakcode.session.store import Session
 from zakcode.tasks import Task, TaskNetwork
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.read_rule import ALREADY_READ, MAX_RULE_BODY_CHARS, ReadRuleTool
+from zakcode.tools.builtins.read_rule import (
+    ALREADY_READ,
+    ASKED_AGAIN,
+    MAX_RULE_BODY_CHARS,
+    ReadRuleTool,
+)
 from zakcode.usage import Usage
 
 
@@ -181,6 +186,15 @@ def test_the_index_and_the_tool_say_to_read_each_rule_once() -> None:
     assert "read each rule once" in _registry().render_index()
 
 
+def test_the_index_and_the_tool_tie_a_read_to_the_first_time_not_to_each_step() -> None:
+    """ADR-0381: both still opened with "relevant to the current step", and in worker sessions a
+    read came 4 s to 2 min after each plan update, with real work between."""
+    for text in (ReadRuleTool.spec.description, _registry().render_index()):
+        assert "the first time a rule" in text
+        assert "at a new plan step too" in text
+        assert "relevant to the current step" not in text
+
+
 # --- ADR-0372, ADR-0379: every repeat of a rule still in the conversation gets a pointer ---------
 
 
@@ -295,6 +309,80 @@ def test_another_rules_pointer_does_not_count() -> None:
     assert res.output == _pointer()
 
 
+# --- ADR-0381: an ask right after the rule's own pointer gets the text --------------------------
+
+
+def _ctx_after(last: str, *outputs: str) -> ToolContext:
+    """A context holding ``outputs`` and, as its most recent tool result, ``last``."""
+    held = (*outputs, last)
+
+    def seen(text: str) -> bool:
+        return any(text in output for output in held)
+
+    return ToolContext(
+        workspace_root=Path("/tmp"),
+        rule_registry=_registry(),
+        in_context=seen,
+        last_tool_output=lambda: last,
+    )
+
+
+def _again(name: str = "alpha-rule") -> str:
+    return ASKED_AGAIN.format(name=name) + "\n" + _body(name)
+
+
+def _ask(ctx: ToolContext, name: str = "alpha-rule", **args: object):
+    return asyncio.run(ReadRuleTool().execute({"name": name, **args}, ctx))
+
+
+def test_an_ask_right_after_its_pointer_gets_the_text() -> None:
+    """ADR-0379 answered it with the next pointer, and in a trial two sessions asked on until the
+    exact-repeat guard refused them."""
+    res = _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")))
+    assert res.output == _again()
+    assert res.verbatim
+    assert not res.is_error
+
+
+def test_an_ask_right_after_a_later_pointer_gets_the_text_too() -> None:
+    res = _ask(_ctx_after(_pointer(n=3), _body("alpha-rule"), _pointer(n=1), _pointer(n=2)))
+    assert res.output == _again()
+
+
+def test_an_ask_by_another_spelling_right_after_its_pointer_gets_the_text() -> None:
+    assert _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")), "ALPHA-RULE").output == _again()
+
+
+def test_an_ask_right_after_the_text_gets_a_pointer() -> None:
+    assert _ask(_ctx_after(_body("alpha-rule"))).output == _pointer()
+
+
+def test_an_ask_after_other_work_gets_the_next_pointer() -> None:
+    seen = _ctx_after("3 matches in 2 files", _body("alpha-rule"), _pointer(n=1))
+    assert _ask(seen).output == _pointer(n=2)
+
+
+def test_an_ask_right_after_another_rules_pointer_gets_a_pointer() -> None:
+    last = _pointer("beta-rule", summary="Beta")
+    assert _ask(_ctx_after(last, _body("alpha-rule"), _body("beta-rule"))).output == _pointer()
+
+
+def test_the_ask_after_the_text_sent_again_gets_the_next_pointer() -> None:
+    seen = _ctx_after(_again(), _body("alpha-rule"), _pointer(n=1))
+    assert _ask(seen).output == _pointer(n=2)
+
+
+def test_a_pointer_quoted_inside_another_result_does_not_count() -> None:
+    """The check reads where the last result BEGINS: a pointer quoted in a log line is not one."""
+    seen = _ctx_after("log: " + _pointer(n=1), _body("alpha-rule"), _pointer(n=1))
+    assert _ask(seen).output == _pointer(n=2)
+
+
+def test_refresh_right_after_its_pointer_is_the_plain_text() -> None:
+    res = _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")), refresh=True)
+    assert res.output == _body("alpha-rule")
+
+
 class _Scripted(Provider):
     def __init__(self, results: list[LLMResult]) -> None:
         self._results = results
@@ -377,6 +465,36 @@ async def test_the_loop_numbers_every_repeat_and_sends_the_body_once(
     assert sum("Always do the alpha thing." in output for output in outputs) == 1
     assert _pointer(n=1) in outputs
     assert outputs[-1] == _pointer(n=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_the_loop_sends_the_text_for_an_ask_right_after_its_pointer(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """ADR-0381 through both turn paths: alpha, beta, alpha (a pointer: beta's text came between),
+    then alpha again at once (its pointer did not land: the text, with the lead)."""
+    registry = ToolRegistry()
+    registry.register(ReadRuleTool())
+    asks = [("r1", "alpha-rule"), ("r2", "beta-rule"), ("r3", "alpha-rule"), ("r4", "alpha-rule")]
+    loop = AgentLoop(
+        _Scripted(
+            [_read(i, n) for i, n in asks] + [LLMResult(text="done", usage=Usage(total_tokens=1))]
+        ),
+        registry,
+        Session(cwd=str(tmp_path), model="t"),
+        rule_registry=_registry(),
+    )
+    if streaming:
+        async for _event in loop.astream_turn("go"):
+            pass
+    else:
+        await loop.arun_turn("go")
+    outputs = _outputs(loop)
+    assert len(outputs) == 4
+    assert outputs[2] == _pointer()
+    body = (await ReadRuleTool().execute({"name": "alpha-rule"}, _ctx(_registry()))).output
+    assert outputs[3] == ASKED_AGAIN.format(name="alpha-rule") + "\n" + body
 
 
 @pytest.mark.asyncio
