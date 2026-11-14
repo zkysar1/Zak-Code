@@ -339,6 +339,170 @@ def test_never_taken_retracts_the_line(tmp_path: Path) -> None:
     assert endings == ["stopped"]
 
 
+# ── what the ending's log lines say ────────────────────────────────────────────
+
+
+def _lines(caplog: pytest.LogCaptureFixture, head: str) -> list[str]:
+    """The captured log messages that open with ``head``."""
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith(head)]
+
+
+def test_a_line_the_agent_read_mid_turn_reads_taken_at_the_overrun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The agent reads the slot at its own boundary INSIDE a turn that never ends.
+
+    A long-running agent loop's whole run can be one turn and it takes the line mid-turn
+    (ADR-0051), so a check made only when a turn ends never saw the slot empty, and the overrun
+    line called a line the agent had read and was acting on "never taken" (a served run whose line
+    was delivered mid-turn 53 s after it was queued read "never taken" at the overrun). The mutant:
+    no check on the watcher's tick. The overrun then reads "never taken", the "taken" line is never
+    written, and the ending cannot be told from one nobody read.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()
+    app, endings = _build(
+        tmp_path,
+        reserve=1.0,
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got
+        ),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])  # the long turn is in flight, at its gate
+        await _post_stop(app)  # the line is queued; the turn has not read the slot yet
+        gate.set()  # the turn's first boundary: it takes the line and works on, never ending
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    with caplog.at_level("INFO", logger="zakcode.server"):
+        asyncio.run(scenario())
+    assert got == [STOP_LINE], f"the turn did not read the line mid-turn: {got}"
+    overruns = _lines(caplog, "run ending ran past its")
+    assert len(overruns) == 1 and "(taken)" in overruns[0], overruns
+    assert len(_lines(caplog, "run ending: taken after")) == 1
+    assert not _lines(caplog, "run ending: retracted"), "the slot was empty: nothing to retract"
+    assert not _lines(caplog, "run ending: completed"), "a run cut at the window did not complete"
+    assert endings == ["stopped"]
+
+
+def test_a_line_nobody_read_still_reads_never_taken_and_is_retracted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The paired negative of the test above: a turn that never reaches a boundary leaves the line
+    in the slot, and the overrun says so. The mutant: a watcher that reports "taken" without
+    reading the slot, which would make every overrun look like an agent that read its stop. It also
+    pins that our own retraction is never read back as the agent taking the line."""
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()  # never opened: the turn does not read the slot while it runs
+    app, endings = _build(
+        tmp_path,
+        reserve=0.8,
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got
+        ),
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    with caplog.at_level("INFO", logger="zakcode.server"):
+        asyncio.run(scenario())
+    assert got == [], f"the turn must not have read the slot: {got}"
+    overruns = _lines(caplog, "run ending ran past its")
+    assert len(overruns) == 1 and "(never taken)" in overruns[0], overruns
+    assert len(_lines(caplog, "run ending: retracted")) == 1
+    assert not _lines(caplog, "run ending: taken after")
+    assert not say_pending(say_path(tmp_path))
+    assert endings == ["stopped"]
+
+
+def test_a_line_the_agent_read_mid_turn_reads_taken_when_the_cap_lands_mid_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same defect by the other way into the ending: the duration cap lands while a turn runs.
+
+    The watcher that raised the ending goes on watching, in a second wait that only bounds it, and
+    the agent reads the line inside the turn after that. The mutant: no check in that second wait.
+    The line the agent read then reads "never taken" at the window's close, and the ``taken`` line
+    waits for a turn end that the interrupt never lets the turn reach.
+    """
+    monkeypatch.setattr("zakcode.server.app._DEADLINE_WATCH_SECONDS", 0.1)
+    reserve = 1.0
+    seen: list[str] = []
+    got: list[str] = []
+    gate = asyncio.Event()
+    app, endings = _build(
+        tmp_path,
+        reserve=reserve,
+        max_duration=reserve + 0.5,  # the cap lands 0.5 s into the run, inside the long turn
+        agent_for=lambda session: _InboxReadingAgent(
+            session, tmp_path, gate=gate, seen=seen, got=got
+        ),
+    )
+    inbox = say_path(tmp_path)
+    assert write_say(inbox, "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: seen == ["hello"])  # the long turn is in flight, at its gate
+        await _until(lambda: say_pending(inbox))  # the cap landed and queued its line
+        gate.set()  # the turn's first boundary: it takes the line and works on, never ending
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    with caplog.at_level("INFO", logger="zakcode.server"):
+        asyncio.run(scenario())
+    assert got == [STOP_LINE], f"the turn did not read the line mid-turn: {got}"
+    overruns = _lines(caplog, "run cap: run ending ran past its window")
+    assert len(overruns) == 1 and "(taken)" in overruns[0], overruns
+    assert len(_lines(caplog, "run ending: taken after")) == 1
+    assert not _lines(caplog, "run ending: retracted"), "the slot was empty: nothing to retract"
+    assert endings == ["duration_cap"]
+
+
+def test_a_completed_ending_leaves_exactly_one_completion_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A completed ending was countable only by subtracting the overruns from the endings that
+    began. It now writes ``run ending: completed after <s>``, once, after the ``taken`` line.
+    The mutants: no line (a count falls back to subtraction), or one per beat."""
+    seen: list[str] = []
+    app, endings = _build(
+        tmp_path, reserve=10.0, agent_for=lambda session: _TimedAgent(session, seen, [], [0.0, 0.0])
+    )
+    assert write_say(say_path(tmp_path), "hello")
+
+    async def scenario() -> None:
+        loop_task = asyncio.create_task(app.state.consume_say_loop())
+        await _until(lambda: len(seen) >= 1)
+        await _post_stop(app)
+        await asyncio.wait_for(loop_task, timeout=10)
+
+    with caplog.at_level("INFO", logger="zakcode.server"):
+        asyncio.run(scenario())
+    assert STOP_LINE in seen, f"the line was never delivered: {seen}"
+    done = _lines(caplog, "run ending: completed after")
+    assert len(done) == 1, done
+    assert len(_lines(caplog, "run ending: taken after")) == 1
+    order = [r.getMessage() for r in caplog.records if r.getMessage().startswith("run ending: ")]
+    assert [m.split(" after ")[0] for m in order if " after " in m] == [
+        "run ending: taken",
+        "run ending: completed",
+    ], order
+    assert not _lines(caplog, "run ending ran past its")
+    assert endings == ["stopped"]
+
+
 # ── abnormal ends ──────────────────────────────────────────────────────────────
 
 

@@ -3378,6 +3378,11 @@ def create_app(
     # Whether a DONE condition has been observed: taken + completed stop_reason +
     # nothing in flight.
     run_ending_done = False
+    # Whether THIS process removed its own line from the slot at an overrun. An empty slot after
+    # that is our doing, never evidence that the agent read the line.
+    run_ending_retracted = False
+    # When the ending opened (monotonic): what the ``taken`` and ``completed`` log lines count from.
+    run_ending_opened_at: float | None = None
 
     def _arm_run_deadlines() -> None:
         nonlocal run_deadline, turn_deadline, effective_reserve, last_say_at
@@ -3633,10 +3638,11 @@ def create_app(
         retried on each beat inside the window, and on each watcher tick while a turn is
         in flight — see ``_retry_run_ending_write``.
         """
-        nonlocal run_ending_until, run_ending_written
+        nonlocal run_ending_until, run_ending_written, run_ending_opened_at
         if run_ending_until is not None:
             return
-        run_ending_until = time.monotonic() + _framework_stop_grace()
+        run_ending_opened_at = time.monotonic()
+        run_ending_until = run_ending_opened_at + _framework_stop_grace()
         inbox = say_path(resolved_settings.workspace_root)
         if write_say(inbox, _own_line()):
             run_ending_written = True
@@ -3679,30 +3685,43 @@ def create_app(
             run_ending_written = True
             logger.info("run ending: queued the configured line (retry)")
 
+    def _run_ending_age() -> float:
+        """Seconds since the ending opened; 0 before it has."""
+        if run_ending_opened_at is None:
+            return 0.0
+        return time.monotonic() - run_ending_opened_at
+
     def _check_run_ending_seen() -> None:
         """Record TAKEN when the inbox no longer holds our line.
 
-        Called at every boundary where the inbox could have been read.  The line
-        could have been consumed by a turn (between-turn poll or mid-turn delivery);
-        either way, the inbox is now empty or holds someone else's text.  Only once the
-        line was WRITTEN: before that, an empty slot or a different say is the operator's
-        traffic, not evidence that our line was read.
+        Called at every boundary where the inbox could have been read, and on every
+        watcher tick while a turn is in flight: a long-running agent loop's whole run can be
+        ONE turn and it reads the slot mid-turn (ADR-0051), so a check made only when a turn
+        ends never saw the line go, and the overrun lines said "never taken" about a line the
+        agent had read and was acting on (a served run whose line was delivered mid-turn 53 s
+        after it was queued still read "never taken" at the overrun). The line could have been
+        consumed by a turn (between-turn poll or mid-turn delivery); either way, the inbox is
+        now empty or holds someone else's text.  Only once the line was WRITTEN: before that,
+        an empty slot or a different say is the operator's traffic, not evidence that our line
+        was read.
         """
         nonlocal run_ending_taken
-        if run_ending_taken or run_ending_until is None or not run_ending_written:
+        if run_ending_taken or run_ending_retracted:
+            return
+        if run_ending_until is None or not run_ending_written:
             return
         inbox = say_path(resolved_settings.workspace_root)
-        if not say_pending(inbox):
-            run_ending_taken = True
-            return
-        # The slot holds something — check whether it is still ours.
-        try:
-            text = inbox.read_text(encoding="utf-8").strip()
-        except OSError:
-            return
-        if text != _own_line():
+        if say_pending(inbox):
+            # The slot holds something — check whether it is still ours.
+            try:
+                text = inbox.read_text(encoding="utf-8").strip()
+            except OSError:
+                return
+            if text == _own_line():
+                return
             # Someone else wrote a say; ours was taken.
-            run_ending_taken = True
+        run_ending_taken = True
+        logger.info("run ending: taken after %.1fs", _run_ending_age())
 
     def _check_run_ending_done(last_stop_reason: str | None) -> None:
         """Record DONE when the host's stop has finished.
@@ -3720,6 +3739,9 @@ def create_app(
         if inflight:
             return
         run_ending_done = True
+        # The only trace a completed ending leaves. Without it a count of completed endings was
+        # the endings that began minus the overruns, which a restart or a torn-down host corrupts.
+        logger.info("run ending: completed after %.1fs", _run_ending_age())
 
     def _retract_own_line() -> bool:
         """Delete the pending say only when it holds exactly our line; True when it did.
@@ -3727,7 +3749,11 @@ def create_app(
         A PEEK, never a consume: reading the say (which deletes it) and writing a
         different one back would open a window in which the operator's say is lost.
         NEVER deletes a different pending say.
+
+        Remembers that it did: an empty slot after our own retraction is our doing, so the
+        boundary check that follows must not read it as the agent having taken the line.
         """
+        nonlocal run_ending_retracted
         inbox = say_path(resolved_settings.workspace_root)
         if not say_pending(inbox):
             return False
@@ -3739,6 +3765,7 @@ def create_app(
             return False
         with contextlib.suppress(OSError):
             inbox.unlink()
+        run_ending_retracted = True
         return True
 
     def _abandon_run_ending() -> None:
@@ -3944,6 +3971,9 @@ def create_app(
             # beat loop is parked awaiting it, and that turn empties the slot itself, so this
             # tick is the only thing awake to put the line back inside the window (ADR-0347).
             _retry_run_ending_write()
+            # The agent reads the slot at its own iteration boundaries, inside this turn: only a
+            # check made HERE sees the line go, and the overrun below reports what this finds.
+            _check_run_ending_seen()
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
             # Host-neutral ending: check overrun.
@@ -3992,6 +4022,7 @@ def create_app(
                     # The cap's own first write can have been refused too, and the beat loop
                     # is parked awaiting this turn just the same (ADR-0347).
                     _retry_run_ending_write()
+                    _check_run_ending_seen()  # the line goes mid-turn; see the watcher loop above
             if run_ending_until is not None:
                 taken = "taken" if run_ending_taken else "never taken"
                 logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
