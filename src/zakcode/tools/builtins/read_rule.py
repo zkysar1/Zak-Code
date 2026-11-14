@@ -48,10 +48,11 @@ class ReadRuleTool(Tool):
     spec = ToolSpec(
         name="read_rule",
         description=(
-            "Read one project rule's full text by name. Your context lists the available rules "
-            "as an index (name + one-line summary); call this when a rule's summary looks "
-            "relevant to the current step, then apply the rule you get back. Use the name "
-            "exactly as it appears in that index."
+            "Read one project rule's full text by name, for detail its one-line summary in "
+            "the rules index does not give. Apply a rule's summary directly; call this only "
+            "when you need that detail, and at most once per rule: the text then stays in "
+            "your context. Pinned rules are already in your prompt in full. Use the name "
+            "exactly as it appears in the index."
         ),
         parameters={
             "type": "object",

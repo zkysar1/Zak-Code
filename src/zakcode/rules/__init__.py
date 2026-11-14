@@ -201,10 +201,12 @@ class RuleRegistry:
         The lean alternative to :meth:`render`. Where :meth:`render` folds every rule's
         full body into the cached prefix on *every* turn — fine for a handful of rules, a
         per-turn cost multiplier for a rules-heavy workspace carrying dozens — this emits one
-        line per rule (``- name: summary [path]``) and tells the model to READ the full
-        rule file on demand (via its file-read tool) when a rule looks relevant to the
-        current step. This is exactly the on-demand model this module's docstring
-        recommends for a learning framework that keeps many rules.
+        line per rule (``- name: summary [path]``) and tells the model to apply each
+        summary as written and to read a full rule (``read_rule``) only for detail its
+        summary does not give, at most once: a host writes each summary as the rule's
+        imperative, and an order to read whenever a rule looks relevant was carried out
+        at every step. This is the on-demand model this module's docstring recommends for
+        a learning framework that keeps many rules.
 
         The summary is the rule's frontmatter ``description`` when present, else the first
         non-empty body line (with any leading Markdown heading marker stripped), capped at
@@ -219,10 +221,11 @@ class RuleRegistry:
             return ""
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
-            "name with a one-line summary; when a rule looks relevant to the current step, "
-            "call read_rule with its name to get the full text, then apply it. (The file "
-            "path is shown too, so your file-read tool also works if read_rule is "
-            "unavailable.):"
+            "name with a one-line summary of what it requires: apply that summary as "
+            "written, and call read_rule with its name only when you need detail the "
+            "summary does not give. Read each rule at most once; its text then stays in "
+            "your context. (The file path is shown too, so your file-read tool also works "
+            "if read_rule is unavailable.):"
         )
         lines: list[str] = []
         note_slack = 80
@@ -233,7 +236,9 @@ class RuleRegistry:
         # model measured over an hour of fleet turns never did (0 read_rule calls), so the
         # rules an operator cannot afford to lose ride in full, ahead of the index, within
         # the same budget. Every other rule stays one line.
-        pinned_header = "Pinned rules (full text — always apply these):"
+        pinned_header = (
+            "Pinned rules (full text, already in your prompt: apply these, no read_rule needed):"
+        )
         pinned_blocks: list[str] = []
         if any(rule.always_apply for rule in self._rules.values()):
             total += len(pinned_header) + 2 + 2  # its heading + "\n\n", and the join to the index
