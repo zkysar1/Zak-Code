@@ -24176,3 +24176,78 @@ again, by design.
   record;
 - through both turn paths, a repeat in the turn answered by the pointer and the next turn running
   the batch.
+
+## ADR-0383: a run ending's log lines say whether its line was taken and whether the ending completed
+
+**Context.** Measured 2026-11-14 over every persisted server log of one operator: 274 logs, 2026-10-15
+to 2026-11-14, read by a pass that counts log lines and keeps no text. 98 endings through the say slot
+(ADR-0264) began, 85 by queueing the line and 13 by finding the slot occupied. 96 reached a verdict; two
+logs stopped before theirs did. 63 completed (no overrun line, and the last turn ended `completed`), 27
+ran past the window and had their turn interrupted (ADR-0347's watcher), and 6 ended on a provider error
+with no turn completing. Two defects show in that count.
+
+The overrun line says "never taken" about a line the agent had read. All 27 overruns carry that word. In
+24 of the 27 the log holds the line's mid-turn delivery, 0.2 s to 116 s after it was queued (median
+3.3 s): the agent had the line and went on working. `run_ending_taken`, which the word reads, was set by
+`_check_run_ending_seen`, and that ran only where a turn ends. A long-running agent loop's whole run can
+be one turn, and the loop reads the slot at its own iteration boundaries inside it (ADR-0051), so no
+check ever saw the slot empty. Two of the 27 were what the word says: the line still in the slot at the
+overrun, retracted unread. One had a slot that was empty and no delivery line.
+
+A completed ending leaves no line. A count of completed endings was the endings that began minus the
+overruns, so an ending whose log stops early, because of a restart or a torn-down host, fell into
+"completed" or out of the count with no trace.
+
+**Decision.**
+1. The deadline watcher checks the slot on each tick while a turn is in flight, in both of its loops
+   (the one that waits for the cap or for a stop window to close, and the one that bounds an ending the
+   cap began mid-turn): the cadence ADR-0347 gave the retry. The first time the slot no longer holds the
+   line after the line was written, `run_ending_taken` is set and the server logs
+   `run ending: taken after <s>`, once.
+2. The server remembers its own retraction. An empty slot after the retraction is the server's doing, so
+   it is never read as the agent taking the line.
+3. When the DONE check holds (taken, the last turn `completed`, nothing in flight) the server logs
+   `run ending: completed after <s>`, once.
+
+The window, the DONE rule, the retraction and the overrun line's two words are unchanged. The line now
+reads "taken" when the agent took it and "never taken" when the slot still held it.
+
+**Checked, not changed.**
+- The window. Of the 63 completed endings every one finished within 280 s of its line being queued
+  (median 98 s, 90th percentile 168 s, 95th 197 s), so 350 s holds every ending that completed. The 27
+  overruns are all cut at 350 s to 352 s, so how long they needed is not measured. Of the 30 endings
+  still unfinished at 200 s, 3 finished by 350 s. A longer window alone would convert few overruns.
+- The agent's own wind-down. In 20 of the 27 overruns the log shows it never ran, and those runs were
+  busy: a median 74 model calls inside the window (37 to 113). That is not changed here.
+- The `run_stop_agent` form keeps the lines it had and gets none of these. No run in the window used it
+  after 2026-10-27.
+
+**Alternatives rejected.** Reading the agent's transcript to decide taken: the server does not own its
+format, and the slot is the contract (ADR-0264). Reading an empty slot at the overrun as taken: the
+server's own retraction empties it, and every unread line would read taken. A completion line on the
+consolidation turn (ADR-0046): that turn also runs after an overrun, so one ending would carry a
+"completed" line beside its overrun line. Counting completions by exclusion at read time: the census this
+replaces.
+
+Not verified: a real agent reading the line mid-turn on a live served run. The tests' agent stays in
+flight and reads the slot at its boundaries (`_InboxReadingAgent`, ADR-0347). To measure after the roll,
+per window: the `completed` lines, the overrun lines that read "taken" and "never taken", and the
+`taken after` lines, against the endings that began.
+
+**The proof.** `tests/test_run_stop_message.py` gains four tests:
+- a turn that stays in flight and reads the slot at its boundary after `/run/stop`: the overrun line
+  reads (taken), there is one `taken after` line, nothing is retracted and no completion line is written;
+- the same turn when the duration cap lands inside it, which is the watcher's second wait: the cap's
+  overrun line reads (taken) and there is one `taken after` line;
+- a turn that never reads the slot: the overrun reads (never taken), the line is retracted and no
+  `taken after` line is written;
+- a completed ending: one `taken after`, then one `completed after`, and no overrun line.
+
+On origin/main 52a8d79 the two mid-turn tests fail on the overrun line reading "(never taken)" and the
+completed-ending test on no completion line (`assert 0 == 1`); the never-taken test passes there, as the
+paired negative. With the change the file runs 31 passed. Seven mutants of `app.py`, one site each, are
+each run against the one test named for them by a harness that checks the file is restored byte for byte:
+no slot check on the tick in the first wait, none in the second wait, `taken` reported without reading the
+slot, the own retraction not remembered, no `taken after` line, no completion line, and a completion line on
+every check. All seven turn their test red, and every one of the six cases is proven by at least one
+mutant. The second-wait mutant fails on `run cap: run ending ran past its window (never taken)`.
