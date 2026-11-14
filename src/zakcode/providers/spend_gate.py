@@ -28,6 +28,12 @@ is what this process charged since, and ``floor`` is the newest value the vessel
 row lags and under-reads, so a push can raise ``spent`` and never lowers it. The one
 exception is a floor BELOW ``base``: the row started a new period, so the gate re-bases.
 
+THE SOFT TRIP is a fact about the cap the gate holds now. The ledger keeps it set across a
+restart, so a trip an earlier cap left would keep a raised cap from ever starting its ending.
+A push that leaves ``spent`` short of the new ``cap - reserve`` clears it, and the hook fires
+once more at the new line. A push that leaves ``spent`` at or past the line leaves it set, so a
+repeated push never fires it twice.
+
 THE LEDGER (``ZAKCODE_SPEND_LEDGER``, a JSON file outside the mind workspace) carries the
 state across a process restart inside one run. A ledger that exists but cannot be read fails
 CLOSED: the gate is armed with nothing it can trust and refuses until a push re-arms it.
@@ -110,7 +116,11 @@ class SpendGate:
         self._on_soft_trip = hook
 
     def set_budget(self, cap_usd: Any, reserve_usd: Any, floor_usd: Any) -> dict[str, Any]:
-        """Arm, or update, the gate from the vessel's push. Raises ValueError on bad values."""
+        """Arm, or update, the gate from the vessel's push. Raises ValueError on bad values.
+
+        A push that leaves ``spent`` short of the new ``cap - reserve`` clears a soft trip an
+        earlier cap left, so the ending starts at the new line.
+        """
         cap, reserve, floor = _money(cap_usd), _money(reserve_usd), _money(floor_usd)
         if cap is None or reserve is None or floor is None:
             raise ValueError("cap_usd, reserve_usd and floor_usd must be finite and >= 0")
@@ -127,6 +137,8 @@ class SpendGate:
             self._cap = cap
             self._reserve = reserve
             self._floor = floor
+            if self._soft_fired and not self._at_soft_line():
+                self._soft_fired = False
             self._save()
             fire = self._soft_due()
             snapshot = self._snapshot()
@@ -167,9 +179,13 @@ class SpendGate:
         if fire:
             self._fire_soft_trip()
 
+    def _at_soft_line(self) -> bool:
+        """True when spend has reached ``cap - reserve``. Lock held."""
+        return self._spent() >= self._cap - self._reserve
+
     def _soft_due(self) -> bool:
-        """True exactly once: the first time spend reaches ``cap - reserve``. Lock held."""
-        if self._soft_fired or self._spent() < self._cap - self._reserve:
+        """True once each time spend reaches ``cap - reserve``; a set trip stays set. Lock held."""
+        if self._soft_fired or not self._at_soft_line():
             return False
         self._soft_fired = True
         self._save()

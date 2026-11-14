@@ -290,6 +290,58 @@ def test_an_armed_ledger_at_an_old_cap_takes_a_push_that_raises_it(tmp_path: Pat
     assert SpendGate(ledger).snapshot()["cap_usd"] == 21.0
 
 
+def test_a_push_that_raises_the_cap_past_spend_starts_the_ending_at_the_new_line(
+    tmp_path: Path,
+) -> None:
+    """The soft trip an earlier cap left in the ledger must not silence the new cap's.
+
+    The earlier run ended past its cap, so its ledger holds a set soft trip. The row is raised
+    and pushed to the gate that booted from that ledger. Spend is now short of the new
+    ``cap - reserve``, so the trip is cleared (and the clear is written to the ledger), and the
+    ending starts once, at the new line.
+    """
+    ledger = tmp_path / "run" / "spend-ledger.json"
+    earlier = SpendGate(ledger)
+    earlier.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=15.95)
+    assert earlier.snapshot()["soft_tripped"] is True
+
+    gate = SpendGate(ledger)  # a new process: it boots holding the earlier cap's trip
+    fired: list[int] = []
+    gate.set_soft_trip_hook(lambda: fired.append(1))
+    assert gate.snapshot()["soft_tripped"] is True
+
+    pushed = gate.set_budget(cap_usd=22.0, reserve_usd=4.32, floor_usd=15.95)  # the row, as raised
+    assert pushed["soft_tripped"] is False and pushed["tripped"] is False
+    assert fired == [], "a push that raises the cap past spend starts no ending"
+    assert SpendGate(ledger).snapshot()["soft_tripped"] is False, "the clear is in the ledger"
+
+    gate.charge(Usage(cost_usd=1.0))  # 16.95: short of the new line, 22 - 4.32 = 17.68
+    assert fired == []
+    gate.charge(Usage(cost_usd=0.75))  # 17.70: past it
+    assert fired == [1] and gate.snapshot()["soft_tripped"] is True
+    gate.charge(Usage(cost_usd=0.1))
+    assert fired == [1], "the ending starts once"
+
+
+def test_a_push_that_leaves_spend_past_the_soft_line_keeps_the_trip() -> None:
+    """The clear is by value: a push that does not put spend back under the line changes nothing.
+
+    The vessel pushes the row on every flush, and a raise of the cap can be smaller than the spend
+    past the line. Neither is a new trip, and neither clears the one that fired.
+    """
+    gate = SpendGate()
+    fired: list[int] = []
+    gate.set_soft_trip_hook(lambda: fired.append(1))
+    gate.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=15.95)  # past the line: it fires
+    assert fired == [1]
+
+    gate.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=15.95)  # the same row, pushed again
+    pushed = gate.set_budget(cap_usd=20.0, reserve_usd=4.32, floor_usd=15.95)  # line 15.68 < 15.95
+    assert pushed["soft_tripped"] is True
+    gate.charge(Usage(cost_usd=1.0))
+    assert fired == [1], "spend is still past the line, so the trip stays set and fires once"
+
+
 def test_no_ledger_file_means_an_unarmed_gate(tmp_path: Path) -> None:
     gate = SpendGate(tmp_path / "absent.json")
     gate.admit()
