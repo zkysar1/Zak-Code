@@ -36,7 +36,28 @@ repeated push never fires it twice.
 
 THE LEDGER (``ZAKCODE_SPEND_LEDGER``, a JSON file outside the mind workspace) carries the
 state across a process restart inside one run. A ledger that exists but cannot be read fails
-CLOSED: the gate is armed with nothing it can trust and refuses until a push re-arms it.
+CLOSED: the gate is armed with nothing it can trust and refuses until a push re-arms it. A
+ledger that can be read restores the cap it last held, and the row may have been raised since,
+so until the vessel's first push lands in this process that cap may be stale: a refusal decided
+against it waits for that push (THE FIRST PUSH, below).
+
+THE FIRST PUSH lands about 70 s after the sidecar starts serving, and the first turn starts about
+8 s after it (measured 2026-11-14, when four calls were refused in the 45 s before the push,
+against a cap the row had already raised). So the provider's async dispatch asks
+:meth:`SpendGate.admit_async`, not :meth:`SpendGate.admit`. A call that would be refused against a
+cap restored ONLY from the ledger, with no push yet in this process, is held for the first push.
+The bound, ``FIRST_PUSH_WAIT_S`` (the first-contact bound), is ONE window per process: the first
+call held opens it and later calls share what is left of it, so a vessel that never pushes costs
+one window, not one per call, and a call that would be refused after the window has closed is
+refused at once. When the push lands, or the bound is reached, the call is decided against the cap
+the gate holds: admitted if the pushed cap allows it, refused exactly as :meth:`SpendGate.admit`
+refuses if it does not or if no push came. The wait polls a ``threading.Event`` in
+``asyncio.sleep`` slices instead of parking in an executor thread, because a thread cannot be
+cancelled: it would outlive a cancelled call and hold a process exit open for the rest of the
+bound. A poll also yields to the event loop, which is the loop that serves ``POST /budget``, so
+the push is never starved. Only a refusal waits: a call under the restored cap, an unarmed gate, a
+gate this process has taken a push on and an unreadable ledger all decide at once, and
+:meth:`SpendGate.admit` itself never waits.
 
 AN UNPRICED CALL (``Usage.cost_unpriced``, or a stream that reported no usage) is counted, not
 refused, the same rule as :class:`~zakcode.agent.budget.IterationBudget`: the price is never
@@ -49,11 +70,13 @@ overshoot is at most the calls already in flight when the cap is reached.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
 import os
 import threading
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -67,6 +90,16 @@ LEDGER_ENV = "ZAKCODE_SPEND_LEDGER"
 
 #: The run stop reason the soft trip ends the run with (matches the vessel's own stop).
 STOP_REASON = "mind_budget_cap"
+
+#: The first-contact bound, in seconds: ONE window per process, opened by the first refusal that
+#: waits and shared by the later ones, in which a refusal decided against a cap the gate holds
+#: only from its ledger waits for the vessel's first push. That push lands about 70 s after the
+#: sidecar starts serving (measured 2026-11-14), so 150 s covers it with margin.
+FIRST_PUSH_WAIT_S = 150.0
+
+#: How often a waiting call looks for the push. A look is a yield to the event loop, so the wait
+#: holds neither the loop nor a thread; 0.1 s is nothing against a push that takes about 70 s.
+_FIRST_PUSH_POLL_S = 0.1
 
 _LEDGER_VERSION = 1
 
@@ -103,6 +136,8 @@ class SpendGate:
         self._soft_fired = False
         self._load_failed = False
         self._write_failed = False
+        self._first_push = threading.Event()  # set by the first push this process takes
+        self._first_contact_ends: float | None = None  # monotonic end of the first-contact window
         self._on_soft_trip: Callable[[], None] | None = None
         self._load()
 
@@ -119,7 +154,8 @@ class SpendGate:
         """Arm, or update, the gate from the vessel's push. Raises ValueError on bad values.
 
         A push that leaves ``spent`` short of the new ``cap - reserve`` clears a soft trip an
-        earlier cap left, so the ending starts at the new line.
+        earlier cap left, so the ending starts at the new line. The first push this process takes
+        also releases the calls :meth:`admit_async` is holding for it.
         """
         cap, reserve, floor = _money(cap_usd), _money(reserve_usd), _money(floor_usd)
         if cap is None or reserve is None or floor is None:
@@ -137,6 +173,7 @@ class SpendGate:
             self._cap = cap
             self._reserve = reserve
             self._floor = floor
+            self._first_push.set()  # the vessel has spoken: no call waits for it any more
             if self._soft_fired and not self._at_soft_line():
                 self._soft_fired = False
             self._save()
@@ -164,6 +201,67 @@ class SpendGate:
                     f"This Mind has spent ${spent:.2f} of its ${self._cap:.2f} cap, so the "
                     "model call was refused before it was sent."
                 )
+
+    async def admit_async(self) -> None:
+        """:meth:`admit` for the async dispatch: a refusal against a ledger-only cap waits first.
+
+        A call this gate would refuse, against a cap restored only from its ledger with no push
+        yet in this process, waits for the vessel's first push (THE FIRST PUSH, in the module
+        docstring) and is then decided by :meth:`admit` against the cap the gate holds. Every
+        other call is decided at once, exactly as :meth:`admit` decides it.
+        """
+        bound_s = self._first_push_bound()
+        if bound_s > 0.0:
+            await self._wait_for_first_push(bound_s)
+        self.admit()
+
+    def _first_push_bound(self) -> float:
+        """Seconds a refusal may still wait for the vessel's first push; 0.0 decides now.
+
+        The first refusal it sees opens the first-contact window; later ones get what is left.
+        """
+        with self._lock:
+            if not self._armed or self._load_failed or self._first_push.is_set():
+                return 0.0  # nothing armed, nothing to trust, or the vessel has already spoken
+            if self._spent() < self._cap:
+                return 0.0  # admit() admits it: only a refusal waits
+            now = time.monotonic()
+            if self._first_contact_ends is None:
+                self._first_contact_ends = now + FIRST_PUSH_WAIT_S
+            return max(0.0, self._first_contact_ends - now)
+
+    async def _wait_for_first_push(self, bound_s: float) -> None:
+        """Wait up to ``bound_s`` for the first push, yielding to the event loop between looks."""
+        started = time.monotonic()
+        held = self.snapshot()
+        logger.info(
+            "spend gate: holding a model call up to %.0f s for the vessel's first push: this Mind "
+            "has spent $%.2f of the $%.2f cap its ledger holds, and no push has reached this "
+            "process yet",
+            bound_s,
+            held["spent_usd"],
+            held["cap_usd"],
+        )
+        deadline = started + bound_s
+        while not self._first_push.is_set():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            await asyncio.sleep(min(_FIRST_PUSH_POLL_S, left))
+        waited = time.monotonic() - started
+        if self._first_push.is_set():
+            logger.info(
+                "spend gate: the vessel's first push arrived after %.1f s; deciding the call "
+                "against the cap the gate holds now",
+                waited,
+            )
+        else:
+            logger.warning(
+                "spend gate: no first push from the vessel in %.1f s (bound %.0f s); deciding the "
+                "call against the cap its ledger holds",
+                waited,
+                FIRST_PUSH_WAIT_S,
+            )
 
     def charge(self, usage: Any) -> None:
         """Count one answered call. ``usage`` is a :class:`~zakcode.usage.Usage` or None."""
