@@ -59,6 +59,14 @@ the push is never starved. Only a refusal waits: a call under the restored cap, 
 gate this process has taken a push on and an unreadable ledger all decide at once, and
 :meth:`SpendGate.admit` itself never waits.
 
+Two more cases decide at once, because a hold there has nothing to wait for or does harm. A process
+holds only if it can receive the push: the sidecar's app marks its gate
+(:meth:`SpendGate.expect_push`) because it serves ``POST /budget``, and any other process that
+boots the gate from its ledger (the synchronous entry points that wrap one turn in ``asyncio.run``,
+a helper process that inherits ``ZAKCODE_SPEND_LEDGER``) refuses at once, as it did before the hold,
+instead of waiting out a bound nothing can end. And a request/response caller, ``POST /complete``,
+runs inside :func:`decide_at_once`. A turn (the agent loop, over SSE or a WebSocket) keeps the hold.
+
 AN UNPRICED CALL (``Usage.cost_unpriced``, or a stream that reported no usage) is counted, not
 refused, the same rule as :class:`~zakcode.agent.budget.IterationBudget`: the price is never
 guessed. The health snapshot reports ``unpriced_calls`` so a reader can tell a cap it cannot
@@ -71,13 +79,15 @@ overshoot is at most the calls already in flight when the cap is reached.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import math
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +118,35 @@ class SpendCapReached(QuotaExhausted):
     """This Mind has spent its cap, so the model call was refused before it was sent."""
 
 
+#: Whether a refusal may be held for the vessel's first push in this context. True unless a
+#: caller is inside :func:`decide_at_once`.
+_HOLD_FOR_FIRST_PUSH: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "zakcode_spend_gate_hold_for_first_push", default=True
+)
+
+
+@contextlib.contextmanager
+def decide_at_once() -> Iterator[None]:
+    """Inside the block a model call is decided at once, never held for the first push.
+
+    For a request/response caller, such as ``POST /complete``, that answers one client. A hold
+    costs it twice. The client may give up while its request is held, and the request is not
+    cancelled with it, so when the push lands the call still goes out and is billed for an answer
+    nobody reads. And an open request keeps the server from stopping: uvicorn drains its open
+    connections before the run's ending, the supervisor allows a stop 120 s before it kills the
+    server, and a hold lasts up to ``FIRST_PUSH_WAIT_S``, 150 s. A turn is one run's own work and a
+    stop reaches it, so a turn does not use this and keeps the hold.
+
+    It is a context variable, so it belongs to the calling task and the tasks that task starts,
+    never to another request's, and it is put back on the way out.
+    """
+    token = _HOLD_FOR_FIRST_PUSH.set(False)
+    try:
+        yield
+    finally:
+        _HOLD_FOR_FIRST_PUSH.reset(token)  # a plain sync reset: nothing awaits in this finally
+
+
 def _money(value: Any) -> float | None:
     """A finite, non-negative dollar amount, or None. ``bool`` is not money."""
     if isinstance(value, bool):
@@ -136,6 +175,7 @@ class SpendGate:
         self._soft_fired = False
         self._load_failed = False
         self._write_failed = False
+        self._push_expected = False  # set by expect_push(): a push can reach this process
         self._first_push = threading.Event()  # set by the first push this process takes
         self._first_contact_ends: float | None = None  # monotonic end of the first-contact window
         self._on_soft_trip: Callable[[], None] | None = None
@@ -149,6 +189,15 @@ class SpendGate:
     def set_soft_trip_hook(self, hook: Callable[[], None] | None) -> None:
         """What to call, once, when spend first reaches ``cap - reserve``."""
         self._on_soft_trip = hook
+
+    def expect_push(self) -> None:
+        """Mark this gate's process as one the vessel's push can reach: it serves ``POST /budget``.
+
+        Only such a process holds a refusal for the first push (THE FIRST PUSH, in the module
+        docstring). In any other the push can never come, so a refusal is decided at once.
+        """
+        with self._lock:
+            self._push_expected = True
 
     def set_budget(self, cap_usd: Any, reserve_usd: Any, floor_usd: Any) -> dict[str, Any]:
         """Arm, or update, the gate from the vessel's push. Raises ValueError on bad values.
@@ -208,7 +257,9 @@ class SpendGate:
         A call this gate would refuse, against a cap restored only from its ledger with no push
         yet in this process, waits for the vessel's first push (THE FIRST PUSH, in the module
         docstring) and is then decided by :meth:`admit` against the cap the gate holds. Every
-        other call is decided at once, exactly as :meth:`admit` decides it.
+        other call is decided at once, exactly as :meth:`admit` decides it: so is every call in a
+        process no push can reach (:meth:`expect_push`) and every call inside
+        :func:`decide_at_once`.
         """
         bound_s = self._first_push_bound()
         if bound_s > 0.0:
@@ -218,9 +269,15 @@ class SpendGate:
     def _first_push_bound(self) -> float:
         """Seconds a refusal may still wait for the vessel's first push; 0.0 decides now.
 
-        The first refusal it sees opens the first-contact window; later ones get what is left.
+        Nothing waits inside :func:`decide_at_once`, or in a process no push can reach
+        (:meth:`expect_push`). The first refusal that does wait opens the first-contact window;
+        later ones get what is left.
         """
+        if not _HOLD_FOR_FIRST_PUSH.get():
+            return 0.0  # a request/response caller decides at once
         with self._lock:
+            if not self._push_expected:
+                return 0.0  # no push can reach this process: nothing would end the wait
             if not self._armed or self._load_failed or self._first_push.is_set():
                 return 0.0  # nothing armed, nothing to trust, or the vessel has already spoken
             if self._spent() < self._cap:

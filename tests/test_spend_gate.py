@@ -12,7 +12,10 @@ What is pinned here, each with its positive control:
 * a refusal against a cap only the ledger holds waits, off the event loop and under one bound,
   for the vessel's first push and is then decided against the cap the gate holds, on both
   dispatch paths; every other call (unarmed, under the cap, already pushed to, unreadable ledger)
-  is decided at once;
+  is decided at once, and so is every call in a process no push can reach (the sidecar's app marks
+  its gate, nothing else does) and every call a request/response caller makes (``POST /complete``);
+* the bound is pinned as it ships and every wait on it is itself bounded, so a bound that stops
+  holding fails a test instead of hanging the run;
 * ``POST /budget`` is bearer-gated, refuses bad values, arms the gate, shows in
   ``/sidecar/health``, and a soft trip starts the run's ending with ``mind_budget_cap``.
 """
@@ -23,10 +26,10 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
@@ -39,6 +42,7 @@ from zakcode.providers.spend_gate import (
     STOP_REASON,
     SpendCapReached,
     SpendGate,
+    decide_at_once,
     get_gate,
     reset_gate_for_tests,
 )
@@ -49,6 +53,9 @@ GATEWAY = "https://gateway.invalid/v1"
 _MSGS = [Message.user("hello")]
 TOKEN = "spend-gate-test-token"
 
+#: The first-push bound as the module ships it, read at import, before any fixture patches it.
+_SHIPPED_FIRST_PUSH_WAIT_S = sg.FIRST_PUSH_WAIT_S
+
 
 @pytest.fixture(autouse=True)
 def _fresh_gate(monkeypatch: pytest.MonkeyPatch) -> Any:
@@ -57,6 +64,15 @@ def _fresh_gate(monkeypatch: pytest.MonkeyPatch) -> Any:
     reset_gate_for_tests(SpendGate())
     yield
     reset_gate_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def _short_first_push_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A few seconds, not the shipped 150: a hold that outlives its bound ends a test soon.
+
+    A test that needs a longer or shorter window sets its own, after this, and keeps it.
+    """
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 5.0)
 
 
 def _provider() -> LiteLLMProvider:
@@ -364,15 +380,20 @@ _RAISED = {"cap_usd": 22.0, "reserve_usd": 4.32, "floor_usd": 15.95}
 _SPEND_LOG = sg.__name__
 
 
-def _ledger_gate(tmp_path: Path, *, floor: float = 15.95) -> SpendGate:
+def _ledger_gate(tmp_path: Path, *, floor: float = 15.95, expect_push: bool = True) -> SpendGate:
     """A gate a new process booted from the ledger an earlier run left: armed at a $15.00 cap.
 
     With the default floor spend is past the cap, so ``admit`` would refuse; with a lower one
     there is room. No push has reached this gate yet, which is what makes its cap possibly stale.
+    It is marked as one a push can reach, as the sidecar's is; ``expect_push=False`` leaves it as
+    any other process that boots the gate from its ledger has it.
     """
     ledger = tmp_path / "run" / "spend-ledger.json"
     SpendGate(ledger).set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=floor)
-    return SpendGate(ledger)
+    gate = SpendGate(ledger)
+    if expect_push:
+        gate.expect_push()
+    return gate
 
 
 def _spy_on_the_wait(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -392,6 +413,19 @@ def _spy_on_the_wait(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 def _spend_log(caplog: pytest.LogCaptureFixture) -> list[str]:
     return [r.getMessage() for r in caplog.records if r.name == _SPEND_LOG]
+
+
+_T = TypeVar("_T")
+
+
+async def _bounded(awaitable: Awaitable[_T]) -> _T:
+    """Await it for no longer than the first-push bound plus two seconds.
+
+    Every await in this file that the bound is meant to end goes through here, so a bound that
+    stops holding fails the test with a TimeoutError instead of hanging the run until the
+    per-test thread timeout ends the whole pytest process with no per-test result.
+    """
+    return await asyncio.wait_for(awaitable, timeout=sg.FIRST_PUSH_WAIT_S + 2.0)
 
 
 @pytest.mark.parametrize("route", ["on the loop", "from another thread"])
@@ -444,7 +478,7 @@ async def test_no_push_within_the_bound_refuses_as_before_and_counts_it(
 
     started = time.monotonic()
     with pytest.raises(SpendCapReached) as refused:
-        await gate.admit_async()
+        await _bounded(gate.admit_async())
     waited = time.monotonic() - started
 
     assert 0.3 <= waited < 5.0, "it waited out the bound, and no longer, before it refused"
@@ -496,9 +530,13 @@ async def test_an_unarmed_gate_admits_at_once_without_waiting(
 ) -> None:
     monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
     entered = _spy_on_the_wait(monkeypatch)
+    # Both are marked as ones a push can reach, so being unarmed is all that decides them.
+    no_budget, no_ledger_file = SpendGate(), SpendGate(tmp_path / "absent.json")
+    no_budget.expect_push()
+    no_ledger_file.expect_push()
 
-    await asyncio.wait_for(SpendGate().admit_async(), timeout=1.0)
-    await asyncio.wait_for(SpendGate(tmp_path / "absent.json").admit_async(), timeout=1.0)
+    await asyncio.wait_for(no_budget.admit_async(), timeout=1.0)
+    await asyncio.wait_for(no_ledger_file.admit_async(), timeout=1.0)
 
     assert entered == []
 
@@ -516,6 +554,40 @@ async def test_a_call_under_the_restored_cap_is_not_held(
     assert gate.snapshot()["refused_calls"] == 0
 
 
+async def test_a_gate_at_exactly_its_cap_is_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``admit`` refuses at ``spent >= cap``, so a row clamped at the cap is a refusal, and held."""
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    gate = _ledger_gate(tmp_path, floor=15.0)  # spent is exactly the $15.00 cap
+
+    call = asyncio.create_task(gate.admit_async())
+    await asyncio.sleep(0.3)
+    assert not call.done(), "a gate at exactly its cap is refused by admit, so it is held"
+
+    gate.set_budget(**_RAISED)
+    await asyncio.wait_for(call, timeout=2.0)  # admitted: the pushed cap leaves room
+
+
+async def test_an_admitted_call_does_not_open_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the first HELD call opens the one window: a call that is admitted opens nothing."""
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 0.4)
+    gate = _ledger_gate(tmp_path, floor=5.0)  # room under the $15.00 cap
+
+    await _bounded(gate.admit_async())  # admitted: no window opens
+    await asyncio.sleep(0.5)  # longer than a whole window, and no push comes
+    gate.charge(Usage(cost_usd=11.0))  # $16.00 spent: past the cap
+
+    started = time.monotonic()
+    with pytest.raises(SpendCapReached):
+        await _bounded(gate.admit_async())
+    waited = time.monotonic() - started
+
+    assert waited >= 0.3, f"the first held call opens the window, but it waited only {waited:.2f} s"
+
+
 async def test_an_unreadable_ledger_refuses_at_once_without_waiting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -524,12 +596,63 @@ async def test_an_unreadable_ledger_refuses_at_once_without_waiting(
     ledger = tmp_path / "spend-ledger.json"
     ledger.write_text("{not json", encoding="utf-8")
     gate = SpendGate(ledger)
+    gate.expect_push()  # one a push can reach, so the unreadable ledger is all that decides it
 
     with pytest.raises(SpendCapReached):
         await asyncio.wait_for(gate.admit_async(), timeout=1.0)
 
     assert entered == [], "a ledger that cannot be read refuses as before, with no wait"
     assert gate.snapshot()["refused_calls"] == 1
+
+
+async def test_a_gate_no_push_can_reach_refuses_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process no push can reach has nothing to wait for, so it refuses as before the hold.
+
+    The gate booted from its ledger past its cap, as the held ones above did, but nothing marked
+    it with ``expect_push``. The synchronous entry points that wrap one turn in ``asyncio.run``,
+    and a helper process that inherits the ledger variable, hold a gate like this one. The marked
+    gates above are the control: the same ledger and the same call, held.
+    """
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    entered = _spy_on_the_wait(monkeypatch)
+    gate = _ledger_gate(tmp_path, expect_push=False)
+
+    with pytest.raises(SpendCapReached) as refused:
+        await asyncio.wait_for(gate.admit_async(), timeout=1.0)
+
+    assert entered == [], "a gate no push can reach does not wait"
+    assert "spent $15.95 of its $15.00 cap" in str(refused.value), "the refusal is admit()'s own"
+    assert gate.snapshot()["refused_calls"] == 1
+
+
+async def test_inside_decide_at_once_a_refusal_is_not_held_and_the_block_does_not_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request/response caller decides at once, and the caller after it still holds.
+
+    The same gate is asked twice. Inside the block the refusal comes at once. Once the block is
+    over, a refusal is held for the push again, so the setting is put back and does not leak.
+    """
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    gate = _ledger_gate(tmp_path)
+
+    with decide_at_once(), pytest.raises(SpendCapReached) as refused:
+        await asyncio.wait_for(gate.admit_async(), timeout=1.0)
+    assert "spent $15.95 of its $15.00 cap" in str(refused.value), "the refusal is admit()'s own"
+    assert gate.snapshot()["refused_calls"] == 1
+
+    call = asyncio.create_task(gate.admit_async())
+    await asyncio.sleep(0.3)
+    assert not call.done(), "outside the block a refusal is held for the push again"
+    gate.set_budget(**_RAISED)
+    await asyncio.wait_for(call, timeout=2.0)  # admitted: the pushed cap leaves room
+
+
+def test_the_shipped_bound_is_a_bound() -> None:
+    """Every other test here patches ``FIRST_PUSH_WAIT_S``, so only this one reads what ships."""
+    assert 0 < _SHIPPED_FIRST_PUSH_WAIT_S <= 300
 
 
 async def test_the_bound_is_one_window_so_a_later_call_is_refused_at_once(
@@ -539,11 +662,11 @@ async def test_the_bound_is_one_window_so_a_later_call_is_refused_at_once(
     monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 0.3)
     gate = _ledger_gate(tmp_path)
     with pytest.raises(SpendCapReached):
-        await gate.admit_async()  # opens the window and waits it out
+        await _bounded(gate.admit_async())  # opens the window and waits it out
 
     entered = _spy_on_the_wait(monkeypatch)
     with pytest.raises(SpendCapReached):
-        await gate.admit_async()  # the window is closed: it does not open another
+        await _bounded(gate.admit_async())  # the window is closed: it does not open another
 
     assert entered == []
     assert gate.snapshot()["refused_calls"] == 2
@@ -559,12 +682,12 @@ async def test_a_call_that_joins_an_open_window_waits_only_what_is_left_of_it(
 
     started = time.monotonic()
     with pytest.raises(SpendCapReached):
-        await gate.admit_async()  # joins it
+        await _bounded(gate.admit_async())  # joins it
     joined_for = time.monotonic() - started
 
     assert joined_for < 0.7, f"a call that joined waited {joined_for:.2f} s of a 0.8 s window"
     with pytest.raises(SpendCapReached):
-        await first
+        await _bounded(first)
 
 
 async def test_the_event_loop_keeps_running_while_a_call_waits(
@@ -585,7 +708,7 @@ async def test_the_event_loop_keeps_running_while_a_call_waits(
     other_work = asyncio.create_task(ticker())
     try:
         with pytest.raises(SpendCapReached):
-            await gate.admit_async()
+            await _bounded(gate.admit_async())
     finally:
         other_work.cancel()
         await asyncio.gather(other_work, return_exceptions=True)
@@ -608,7 +731,7 @@ async def test_a_cancelled_wait_ends_at_once_and_holds_no_thread(
     call = asyncio.create_task(gate.admit_async())
     await asyncio.sleep(0.3)
     call.cancel()
-    await asyncio.gather(call, return_exceptions=True)
+    await _bounded(asyncio.gather(call, return_exceptions=True))
 
     assert call.cancelled()
     assert len(pool_threads()) <= len(before), f"the cancelled wait left a thread: {pool_threads()}"
@@ -663,7 +786,31 @@ async def test_both_dispatch_paths_refuse_before_the_wire_when_no_push_comes(
     reset_gate_for_tests(gate)
 
     with pytest.raises(SpendCapReached):
-        await _dispatch(kind)
+        await _bounded(_dispatch(kind))
+
+    assert wire.calls == 0
+    assert gate.snapshot()["refused_calls"] == 1
+
+
+@pytest.mark.parametrize("kind", ["acomplete", "astream"])
+async def test_a_confirming_push_sends_nothing_down_the_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A push ends the hold; it does not admit the call. The row still says $15.00 and is spent
+    past it, so the held call is refused and the wire is never reached, on both dispatch paths."""
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    wire = _wire_for(kind)
+    monkeypatch.setattr(lp.litellm, "acompletion", wire)
+    gate = _ledger_gate(tmp_path)
+    reset_gate_for_tests(gate)
+
+    call = asyncio.create_task(_dispatch(kind))
+    await asyncio.sleep(0.3)
+    assert not call.done(), "the call is held, not refused"
+
+    gate.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=15.95)  # the row still says $15.00
+    with pytest.raises(SpendCapReached):
+        await asyncio.wait_for(call, timeout=2.0)
 
     assert wire.calls == 0
     assert gate.snapshot()["refused_calls"] == 1
@@ -801,3 +948,77 @@ async def test_post_budget_on_the_servers_own_loop_releases_a_waiting_model_call
 
     assert wire.calls == 1
     assert get_gate().snapshot()["cap_usd"] == 22.0
+
+
+async def test_building_the_sidecar_app_marks_its_gate_so_it_holds_for_the_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidecar serves ``POST /budget``, so its app is what marks the process gate as one a
+    push can reach. Without the mark the refusal below would be decided at once."""
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    entered = _spy_on_the_wait(monkeypatch)
+    gate = _ledger_gate(tmp_path, expect_push=False)
+    reset_gate_for_tests(gate)
+    _app(tmp_path)  # the real app, built over the process gate it serves
+
+    with pytest.raises(SpendCapReached):
+        await asyncio.wait_for(gate.admit_async(), timeout=1.0)
+
+    assert len(entered) == 1, "the sidecar's own gate holds a refusal for the first push"
+
+
+async def test_post_complete_is_refused_at_once_and_is_not_held_for_the_first_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request/response caller decides at once, so its client never waits out a hold.
+
+    Held like a turn, a ``POST /complete`` whose client had gone was still billed when the push
+    landed, and an open request kept the server from stopping. The gate here booted from its
+    ledger past its cap and is marked as one a push can reach, so a turn on it is held (the tests
+    above); the request is refused with the provider-error 502 at once and the wire is never
+    reached. The control is the same app and wire once a push has raised the cap: it is answered.
+    """
+    pytest.importorskip("fastapi")
+    import httpx
+
+    from zakcode.config import Settings
+    from zakcode.server.app import create_app
+    from zakcode.session.store import SessionStore
+
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 10.0)
+    wire = _Wire(_response(0.25))
+    monkeypatch.setattr(lp.litellm, "acompletion", wire)
+    gate = _ledger_gate(tmp_path)
+    reset_gate_for_tests(gate)
+    app = create_app(
+        settings=Settings(
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            auth_token=TOKEN,
+        ),
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        provider_factory=lambda _model: _provider(),
+        agent_factory=lambda s, m, p: None,
+    )
+    body = {"prompt": "hello"}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar.test") as client:
+        started = time.monotonic()
+        refused = await _bounded(client.post("/complete", json=body, headers=_auth()))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < sg.FIRST_PUSH_WAIT_S / 2, f"POST /complete was held for {elapsed:.1f} s"
+        assert refused.status_code == 502
+        detail = refused.json()["detail"]
+        assert detail["error"] == "provider_error"
+        assert "spent $15.95 of its $15.00 cap" in detail["detail"], "the refusal is admit()'s own"
+        assert wire.calls == 0
+        assert gate.snapshot()["refused_calls"] == 1
+
+        pushed = await client.post("/budget", json=_RAISED, headers=_auth())
+        assert pushed.status_code == 200
+        answered = await _bounded(client.post("/complete", json=body, headers=_auth()))
+        assert answered.status_code == 200, answered.text
+        assert wire.calls == 1, "the control: with room under the pushed cap the request is sent"
