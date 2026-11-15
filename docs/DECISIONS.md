@@ -24251,3 +24251,114 @@ no slot check on the tick in the first wait, none in the second wait, `taken` re
 slot, the own retraction not remembered, no `taken after` line, no completion line, and a completion line on
 every check. All seven turn their test red, and every one of the six cases is proven by at least one
 mutant. The second-wait mutant fails on `run cap: run ending ran past its window (never taken)`.
+
+## ADR-0384: an urgent frame is a queued event, never a replaced reading, and the loop takes it whole
+
+**Context.** A producer that keeps its own log of what happens to a body can push the few entries that
+want an answer (a body spoken to, a body down) as frames of a kind of their own, `urgent`, each carrying
+one event: `urgentEvent` = `{urgentKind, logId, seq, entry?}`. The intake was built for readings, and for
+a reading latest-wins is right: the newest one is the world. An event is not a reading. One that a later
+event pushed out was never perceived.
+
+Measured 2026-11-15 on origin/main 66be267d10b1 with a scripted client against `POST /observe`, a
+workspace with no resident agent. An `urgent` frame is accepted (200) and staged in the single slot. A
+second one replaces it: the slot held seq 1, then seq 2. The next heartbeat replaces that, and the slot
+then held no urgent event. Two events were sent and neither reached the loop. `urgent` is not in
+`WAKING_KINDS` (`change`, `farewell`), so a loop asleep would not have been woken for either.
+
+**Decision.**
+1. `urgent` is a third kind that wakes (`WAKING_KINDS`), through the same hook or signal-file path as a
+   change or a farewell, after the event is queued. The receiver checks the SHAPE of the event and holds
+   no vocabulary of kinds: `urgentKind` is a token of 1 to 64 characters from `[A-Za-z0-9._:-]`, `logId`
+   one of 1 to 128 from the same set, `seq` an integer of at least 1. Any well-formed kind is queued and
+   delivered as it came, `entry` and all. Which kinds exist, and what to do with one, is for the producer
+   and the reader to agree on. A frame with no readable event is refused with 400 and a log line
+   `reason=bad_urgent_event`, so the producer sees it.
+2. The event joins a queue of its own, `<workspace>/.observation-urgent`, and never the single slot:
+   it replaces nothing and nothing replaces it. The file is shaped like a staged frame (`kind` `urgent`,
+   `observation` = `{urgentEvents: [...], urgentEventsDropped?: n}`), so the same reader consumes it
+   (read, then delete, under the lock the slot uses) and the same renderer frames it as untrusted data.
+   `urgentEvents` and `urgentEventsDropped` are slice names the receiver mints (`RECEIVER_SLICES`): a
+   producer cannot supply them, and the route strips them. Any other slice beside `urgentEvent` is not
+   kept and is counted in the log line.
+3. The queue holds at most 32 events and the 16,384-character floor the intake holds a frame to (the
+   compact JSON of its `observation` map), whichever binds first. The OLDEST event is dropped and counted
+   in `urgentEventsDropped`, across calls. The newest is never the one dropped, because it cleared the
+   floor on its way in. An event whose `(logId, seq)` is already waiting is accepted and not queued twice.
+   That identity rides in every delivered perception, so a reader that also reads the producer's log
+   joins on it. The receiver keeps no ledger of what it already delivered: the producer's log is that
+   ledger.
+4. The loop takes the queue at an iteration boundary, before it takes a reading, in both of its bodies.
+   It drains the whole queue into ONE perception, oldest first, with the frame and `envelope=<id>` every
+   perception carries (the id becomes `session.last_envelope`). Main loop only, and held at a command
+   turn's start (ADR-0273). It is exempt from the 30 s reading bound (ADR-0271) and has a bound of its
+   own, 10 s, that WAITS: a delivery inside it sleeps out the rest and then drains whatever has queued
+   by then. Skipping would leave an event queued behind a wake already spent on the frame that is
+   waiting. The bound runs across turns and is not reset by a new one, so the ceiling is six turns a
+   minute started by urgent events, whatever arrives.
+5. The narration names kinds and counts only, never an `entry`. A lone event reads `an urgent event
+   reached you: <kind> (entry <seq> of log <logId>)`. Several read `N urgent events reached you, oldest
+   first: <kind> (count), ...`. A loss reads `N earlier urgent events did not fit and could not be
+   kept`. The `entry` is free text the producer attached and reaches the model only inside the framed
+   slice.
+6. The intake log line of an urgent frame gains ` urgent_kind=<kind> log_id=<id> seq=<n> queued=<bool>
+   depth=<n> urgent_shed=<n>`, and the line of any other frame is unchanged. `/sidecar/health`
+   `observation_intake` gains no key. An `ObservationReceived` hook hears `{kind: "urgent",
+   observation_path: <the queue file>}`.
+
+**Checked, not changed.**
+- The single slot: its change list (ADR-0270), a farewell's report (ADR-0328), the sticky kind and the
+  floor. An urgent frame leaves the route at its first branch and never reaches that code, so a frame of
+  any other kind takes the same path it took.
+- The 30 s reading bound, the hook's exit-code contract (0 is `delivered`, anything else `dropped`), and
+  the size floor: an urgent frame over 16,384 characters is refused 413 like any frame.
+- A frame of any other kind, a heartbeat or one with no kind, is staged and not woken for, as before.
+
+**Alternatives rejected.** Carrying urgent events in the slot the way a farewell's report rides
+(ADR-0328): a body ends once, so that carry holds one report, and urgent events come in bursts of several
+kinds that each want an answer. A ledger of delivered `(logId, seq)` in the receiver: a second store to
+keep true across restarts, for a producer that already keeps the log it points into. Delaying the wake in
+the route to enforce the 10 s bound: the route would hold a request or start a timer the loop does not
+own, and the loop already owns the boundary the wait belongs at. Skipping a delivery inside the bound:
+the event would sit until some later frame woke the loop. A list of known urgent kinds in the receiver:
+the producer owns that vocabulary, and a receiver that refused a word it was not told about would lose
+exactly the event nobody expected.
+
+Not verified: a live producer pushing at its contract rates (one push per kind per 2 s) into a served
+run; a real host's wake on an urgent frame (the tests use a stand-in setter script and a recording hook);
+the 10 s bound on a real host under load. To measure after the roll, per window: the intake lines with
+`kind=urgent` against the producer's own count of pushes, the `queued=False` lines (the producer's
+repeats), any `urgent_shed` above 0 (the queue overflowing), and the interventions noted with kind
+`urgent` against the events queued.
+
+**The proof.** `tests/test_urgent_events.py` holds 70 tests in three layers, and
+`tests/test_observation_inbox.py` changes one (the waking kinds are now three).
+- The queue: oldest first and consumed whole exactly once; de-duplicated on `(logId, seq)`; 32 events and
+  the floor each binding first, the oldest dropped with a count and the newest kept; a corrupt file
+  replaced and not wedged; the queue and the slot never touching; concurrent stagers losing no event;
+  the narration never quoting an `entry`.
+- The route: a frame queued apart from the slot, which stays byte for byte as it was; a later frame never
+  replacing an event and an event never replacing a reading; a duplicate accepted and not queued twice;
+  any well-formed kind queued and named in the log; six malformed frames refused with 400; an oversize
+  frame refused with 413; a producer unable to supply the queue's own slices; no new health key; the
+  ordinary line unchanged; the wake after the queue is on disk, not attempted in reader mode; a hook
+  hearing the queue's path.
+- The loop, buffered and streaming: delivery framed, whole and oldest first; `last_envelope` set; exempt
+  from the reading bound and ahead of the reading; a second delivery waiting out the bound and not
+  skipping it; what lands during the wait drained with it; the bound running across turns; a command turn
+  holding the queue until it has done work; a sub-agent never consuming it; a corrupt queue consumed
+  without starting the bound.
+
+On origin/main 66be267d10b1 the scripted client above reads: slot holding seq 1, then seq 2, then no
+urgent event after a heartbeat, and no queue file. With the change both frames leave the slot as it
+was, both events wait in the queue file, and the heartbeat does not touch it.
+
+Eighteen mutants of `observation_inbox.py`, `app.py` and `loop.py`, one site each except one that removes
+two names, are each run against the tests named for them by a harness that checks the file is restored
+byte for byte: no dedupe, the newest dropped, no count, no lock, no 32 bound, no floor, the entry quoted
+in the narration, no wake, the queue's slice names open to a producer, a vocabulary gate on kinds, the
+route using the slot, the loop skipping in place of waiting, no wait, the bound reset per turn, urgent
+under the reading bound, no command-turn hold, a sub-agent consuming, and urgent after the reading. All
+eighteen turn their tests red, and every one of the eighteen cases is proven by at least one mutant. The
+first run covered seventeen: the skip mutant's replacement text already occurs in `loop.py`, which the
+harness refuses, so it was run on its own with a replacement that does not, and went red.

@@ -25,6 +25,17 @@ Semantics:
   FIFO (perception-module.md §5.1) is still the v2 answer. And a farewell's ``bodyReport``:
   :func:`carry_farewell` keeps an unread report on disk through every later frame, because
   the vessel keeps nothing a body learned and nothing follows a farewell to repeat it.
+- **Urgent events are a queue, not a frame.** A frame stamped ``urgent`` carries ONE event the
+  producer wants answered rather than merely seen, and it is the one thing latest-wins must
+  never do to a reading: a later frame replaces a reading because the newest one IS the world,
+  but an event that a later event pushed out was never perceived. So an urgent event is not
+  staged in the single slot and neither replaces nor is replaced by what is there. It joins a
+  small queue of its own (:func:`stage_urgent`, ``<workspace>/.observation-urgent``), is
+  de-duplicated on its ``(logId, seq)`` identity, and is bounded: at most
+  :data:`URGENT_QUEUE_MAX_EVENTS` events inside the same floor as a frame, the OLDEST dropped
+  and COUNTED when either is passed (a count is a loss the reader is at least told about).
+  The queue is consumed as a whole, exactly as the slot is, and rendered as ONE perception. How
+  often a delivery may start a turn is the delivering loop's bound, not this module's.
 - **Exactly-once delivery.** Reading consumes (read then delete), so a stale frame is never
   perceived twice. Staging and reading take one lock (:data:`OBSERVATION_STAGE_LOCK`), so a
   frame staged while another is being read is neither deleted unread nor carried back out to
@@ -45,9 +56,12 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import threading
 from pathlib import Path
-from typing import Any, TypeGuard
+from typing import Any, NamedTuple, TypeGuard
+
+from zakcode.session.atomic_write import write_text_atomic
 
 #: The inbox filename under the workspace root.
 OBSERVATION_FILENAME = ".observation"
@@ -78,17 +92,23 @@ KIND_HEARTBEAT = "heartbeat"
 KIND_CHANGE = "change"
 KIND_FAREWELL = "farewell"
 
+#: An URGENT frame: one event the producer wants answered, not merely seen (its own kind, its
+#: own queue: see the module docstring). It wakes like a change does, because an event nobody
+#: wakes for waits out a whole sleep, but it is not a reading of the world and never occupies
+#: the single slot.
+KIND_URGENT = "urgent"
+
 #: The kinds that may wake a sleeping mind. The test is MEMBERSHIP, never "not a heartbeat": an
 #: unstamped envelope (``kind == ""``) and an unknown kind are deliberately absent, so a vessel
 #: older or newer than this mind cannot wake it by accident. A missed wake costs latency the
 #: next round repays; a spurious one costs the sleep itself.
-WAKING_KINDS = frozenset({KIND_CHANGE, KIND_FAREWELL})
+WAKING_KINDS = frozenset({KIND_CHANGE, KIND_FAREWELL, KIND_URGENT})
 
-#: The framework session signal a waking envelope (a change or a farewell) raises. The host's
-#: sleep script polls it as a BLOCKER-class wake — a change to the resident's OWN world is the
-#: opposite of partner activity, so it is never demoted during quiescence. The host side
-#: already accepts this name (its session signal registry and the sleep loop's poll); this
-#: module is the WRITER that was missing.
+#: The framework session signal a waking envelope (a change, a farewell or an urgent event)
+#: raises. The host's sleep script polls it as a BLOCKER-class wake — a change to the
+#: resident's OWN world is the opposite of partner activity, so it is never demoted during
+#: quiescence. The host side already accepts this name (its session signal registry and the
+#: sleep loop's poll); this module is the WRITER that was missing.
 PERCEPTION_RECEIVED_SIGNAL = "perception-received"
 
 
@@ -214,9 +234,41 @@ EARLIER_FAREWELL_SLICE = "earlierBodyReports"
 #: loss the receiver cannot undo is at least told.
 SHED_FAREWELL_SLICE = "earlierBodyReportsShed"
 
+#: The file an urgent frame's event is queued in: beside the single slot, never in it.
+URGENT_FILENAME = ".observation-urgent"
+
+#: The slice an urgent frame carries: ONE event, ``{urgentKind, logId, seq, entry?, suppressed?}``.
+#: ``logId`` and ``seq`` name the producer's own record of the event and are its identity: the
+#: producer keeps the same event in its log, so the same one can reach a reader twice.
+URGENT_SLICE = "urgentEvent"
+
+#: The queued events as the receiver stores them (oldest first), and how many it had to drop to
+#: stay inside the bounds. Receiver-minted, like the farewell roster above.
+URGENT_EVENTS_SLICE = "urgentEvents"
+URGENT_DROPPED_SLICE = "urgentEventsDropped"
+
 #: The slice names the receiver mints. A producer cannot supply them: the route strips them from
-#: every incoming frame, so a roster of bodies found on disk was put there by a carry.
-RECEIVER_SLICES = (EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
+#: every incoming frame, so a roster of bodies or a queue of urgent events found on disk was put
+#: there by the receiver and not by a vessel.
+RECEIVER_SLICES = (
+    EARLIER_FAREWELL_SLICE,
+    SHED_FAREWELL_SLICE,
+    URGENT_EVENTS_SLICE,
+    URGENT_DROPPED_SLICE,
+)
+
+#: How many urgent events the queue holds. The producer bounds its own rate (one push per kind per
+#: two seconds), and the loop drains the whole queue into one perception, so a queue this size
+#: fills only when a turn outlasts a burst by more than ten seconds. What a full queue drops, it
+#: counts, and the producer's own log still holds every event. The intake floor
+#: (``max_chars`` of :func:`stage_urgent`) can bind first when the events are large.
+URGENT_QUEUE_MAX_EVENTS = 32
+
+#: What a producer-chosen word in a queued event may look like. These words are shown to the
+#: model in a narration line, so they are checked rather than trusted: the characters a log id
+#: uses and nothing else, at most 64 (a kind) or 128 (a log id).
+_URGENT_KIND = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+_URGENT_LOG_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 #: How much of the vessel's stated reason a narration line repeats.
 FAREWELL_REASON_MAX_CHARS = 120
@@ -453,6 +505,112 @@ def carry_forward(
     return incoming, False, False
 
 
+def urgent_path(workspace_root: str | os.PathLike[str]) -> Path:
+    """The urgent-event queue file for a workspace."""
+    return Path(workspace_root) / URGENT_FILENAME
+
+
+def parse_urgent_event(observation: Any) -> dict[str, Any] | None:
+    """The one event an urgent frame carries, or ``None`` when it carries no readable one.
+
+    The test is SHAPE, never vocabulary. ``urgentKind`` is a token of 1 to 64 characters from
+    ``[A-Za-z0-9._:-]``, ``logId`` is one of 1 to 128 from the same set, and ``seq`` is an
+    integer of at least 1. Which kinds exist is for the producer and the reader to agree on,
+    not for this transport to enforce, so any well-formed kind is queued and delivered as it
+    came, ``entry`` and all. The tokens are checked because the narration shows them to the
+    model; the ``entry`` is never narrated and reaches the model only inside the framed slice.
+    """
+    event = observation.get(URGENT_SLICE) if isinstance(observation, dict) else None
+    if not isinstance(event, dict):
+        return None
+    kind, log_id, seq = event.get("urgentKind"), event.get("logId"), event.get("seq")
+    if not (isinstance(kind, str) and _URGENT_KIND.fullmatch(kind)):
+        return None
+    if not (isinstance(log_id, str) and _URGENT_LOG_ID.fullmatch(log_id)):
+        return None
+    if not _is_count(seq) or seq < 1:
+        return None
+    return event
+
+
+class UrgentStaged(NamedTuple):
+    """What :func:`stage_urgent` did with one event."""
+
+    #: False when the event's ``(logId, seq)`` was already waiting, so nothing was written.
+    queued: bool
+    #: How many events wait in the queue after the call.
+    depth: int
+    #: How many events the queue has dropped so far, across calls, for want of room.
+    shed: int
+
+
+def _queued_urgent(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """The events waiting in the queue file, oldest first, and how many it has shed so far.
+
+    Called with :data:`OBSERVATION_STAGE_LOCK` held. A queue that cannot be read, or is not the
+    shape :func:`stage_urgent` writes, counts as empty: the same self-clearing as a corrupt
+    frame, because a queue that were merely skipped would wedge the one channel that exists to
+    get past a wedge.
+    """
+    envelope = peek_observation(path)
+    observation = envelope.get("observation") if envelope else None
+    if not isinstance(observation, dict):
+        return [], 0
+    rows = observation.get(URGENT_EVENTS_SLICE)
+    events = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    shed = observation.get(URGENT_DROPPED_SLICE)
+    return events, shed if _is_count(shed) and shed > 0 else 0
+
+
+def _urgent_observation(events: list[dict[str, Any]], shed: int) -> dict[str, Any]:
+    """The ``observation`` map of a queue file: the events, and the count shed once there is one."""
+    observation: dict[str, Any] = {URGENT_EVENTS_SLICE: events}
+    if shed:
+        observation[URGENT_DROPPED_SLICE] = shed
+    return observation
+
+
+def stage_urgent(path: Path, frame: str, event: dict[str, Any], max_chars: int) -> UrgentStaged:
+    """Queue one urgent event behind the ones already waiting, under the one floor.
+
+    ``event`` is what :func:`parse_urgent_event` returned and ``frame`` the P1 frame the queue
+    travels with. An event whose ``(logId, seq)`` is already waiting is not queued twice, and the
+    file is not rewritten. Any other joins at the END, so the queue stays oldest first, and the
+    queue is then fitted to :data:`URGENT_QUEUE_MAX_EVENTS` events and to ``max_chars`` (the
+    compact JSON of its ``observation`` map, the measure the route's floor takes of a frame).
+    What the fit drops is the OLDEST event, and each is COUNTED in ``urgentEventsDropped``, across
+    calls: an event the receiver cannot give back is one the reader should at least be told is
+    missing. The newest event is never dropped, because it cleared the floor on its way in.
+
+    The file is shaped like a staged frame, so :func:`read_observation` consumes it and
+    :func:`render_observation` renders it. A failed write raises ``OSError``, as it does for a
+    frame, and queues nothing.
+    """
+    identity = (event["logId"], event["seq"])
+    with OBSERVATION_STAGE_LOCK:
+        events, shed = _queued_urgent(path)
+        if any((row.get("logId"), row.get("seq")) == identity for row in events):
+            return UrgentStaged(False, len(events), shed)
+        events.append(event)
+        while len(events) > 1 and (
+            len(events) > URGENT_QUEUE_MAX_EVENTS
+            or _compact_chars(_urgent_observation(events, shed)) > max_chars
+        ):
+            events.pop(0)
+            shed += 1
+        staged = {
+            "envelopeVersion": OBSERVATION_ENVELOPE_VERSION,
+            "kind": KIND_URGENT,
+            "observation": _urgent_observation(events, shed),
+            "droppedSlices": [],
+            "changedSlices": [URGENT_EVENTS_SLICE],
+            "frame": frame,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(path, json.dumps(staged, ensure_ascii=False) + "\n")
+        return UrgentStaged(True, len(events), shed)
+
+
 def _not_collected(what: str, section: dict[str, Any]) -> str | None:
     """``<what> was not collected (<reason>)`` when the vessel says so, else ``None``.
 
@@ -467,6 +625,38 @@ def _not_collected(what: str, section: dict[str, Any]) -> str | None:
     if isinstance(reason, str) and reason.strip():
         gap += f" ({reason.strip()[:FAREWELL_REASON_MAX_CHARS]})"
     return gap
+
+
+def _narrate_urgent(observation: dict[str, Any]) -> list[str]:
+    """What the producer wants answered — ``an urgent event reached you: spoken-to``.
+
+    Reads the queue :func:`stage_urgent` writes (``urgentEvents``, oldest first). KINDS AND
+    COUNTS ONLY, never an event's ``entry``: that is free text the producer attached, and the raw
+    slice carries it in full. A lone event is named with its identity, so the reader can find the
+    producer's own record of it; several are counted by kind. Events the queue could not keep are
+    a loss, and the line says so rather than leaving the count short in silence.
+    """
+    rows = observation.get(URGENT_EVENTS_SLICE)
+    events = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    lines: list[str] = []
+    if len(events) == 1:
+        lone = events[0]
+        lines.append(
+            f"an urgent event reached you: {lone.get('urgentKind')} "
+            f"(entry {lone.get('seq')} of log {lone.get('logId')})"
+        )
+    elif events:
+        counts: dict[str, int] = {}
+        for event in events:
+            kind = str(event.get("urgentKind"))
+            counts[kind] = counts.get(kind, 0) + 1
+        named = [f"{kind} ({count})" if count > 1 else kind for kind, count in counts.items()]
+        lines.append(f"{len(events)} urgent events reached you, oldest first: {_name_some(named)}")
+    shed = observation.get(URGENT_DROPPED_SLICE)
+    if _is_count(shed) and shed > 0:
+        noun = "event" if shed == 1 else "events"
+        lines.append(f"{shed} earlier urgent {noun} did not fit and could not be kept")
+    return lines
 
 
 def _narrate_farewell(observation: dict[str, Any]) -> list[str]:
@@ -614,12 +804,13 @@ def _narrate_company(observation: dict[str, Any]) -> list[str]:
 def narrate_observation(envelope: dict[str, Any] | None) -> list[str]:
     """Second-person lines describing what just happened, in the order a mind needs them.
 
-    Pure and side-effect-free: no LLM, no I/O, no clock. Ordered a body's FAREWELL first (its
-    end outranks anything the world did, and the report is the one part nothing will say
-    again), then CHANGES (what moved is the only part a mind cannot re-derive by looking
-    again), then place, then company, then what the vessel could not fit. Returns ``[]`` —
-    never raises — for an envelope carrying none of the narrated slices, which is every
-    envelope today.
+    Pure and side-effect-free: no LLM, no I/O, no clock. Ordered an URGENT event first (one the
+    producer wants answered outranks anything the world did, and an event is the part nothing
+    will say again), then a body's FAREWELL (its end outranks anything the world did, and the
+    report is likewise said once), then CHANGES (what moved is the only part a mind cannot
+    re-derive by looking again), then place, then company, then what the vessel could not fit.
+    Returns ``[]`` — never raises — for an envelope carrying none of the narrated slices, which
+    is every envelope today.
     """
     if not isinstance(envelope, dict):
         return []
@@ -627,7 +818,8 @@ def narrate_observation(envelope: dict[str, Any] | None) -> list[str]:
     if not isinstance(observation, dict):
         return []
     lines = (
-        _narrate_farewell(observation)
+        _narrate_urgent(observation)
+        + _narrate_farewell(observation)
         + _narrate_changes(observation)
         + _narrate_place(observation)
         + _narrate_company(observation)

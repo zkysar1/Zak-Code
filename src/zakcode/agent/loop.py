@@ -205,8 +205,10 @@ from zakcode.session.discovery_ledger import discovery_path, fold_observation
 from zakcode.session.observation_inbox import (
     envelope_id,
     observation_path,
+    observation_pending,
     read_observation,
     render_observation,
+    urgent_path,
 )
 from zakcode.session.say_inbox import (
     BusyLease,
@@ -1794,6 +1796,16 @@ _OBSERVATION_FRAME = (
 #: (a turn opened by a slash command holds it until the turn has done work: ADR-0273). No knob.
 _OBSERVATION_INTERVAL_S = 30.0
 
+#: Urgent events (frames stamped ``urgent``, queued apart from the readings above) are exempt from
+#: that bound and have one of their own: a delivery of them reaches the conversation no sooner
+#: than this long after the previous one. It is a WAIT, not a skip. A delivery is what starts a
+#: turn for a mind that was woken for one, so this bound is what caps the turns urgent frames can
+#: start, at six a minute whatever the producer sends. A frame that lands inside it stays queued,
+#: and the delivery that follows drains the whole queue into one perception. A skip would strand
+#: an event behind a sleep that nothing wakes again. Not reset per turn either: turns that each
+#: start from a delivery are exactly what it counts. No knob.
+_URGENT_INTERVAL_S = 10.0
+
 #: What a SessionStart hook said, handed to the model ONCE, where the hook fired (ADR-0211).
 #: ``[hook]``-tagged: it arrives as a user-role message that no person wrote, and the system
 #: prompt already defines that tag as automated output to act on (ADR-0021). It is deliberately
@@ -2945,6 +2957,9 @@ class AgentLoop:
         # Monotonic moment the last perception reached THIS turn (ADR-0271); the mid-turn bound
         # measures from it. Reset per turn, so a turn's first perception is never held.
         self._observation_delivered_at: float | None = None
+        # Monotonic moment urgent events last reached the conversation. NOT reset per turn: the
+        # bound measures the turns a delivery starts, and those are the ones that cross turns.
+        self._urgent_delivered_at: float | None = None
         # Whether THIS turn has made a tool call other than plan bookkeeping (ADR-0273). A turn
         # opened by a slash command takes no perception before it has, so its command, not a
         # frame staged behind it, is the newest thing the model reads. Reset per turn.
@@ -8496,6 +8511,53 @@ class AgentLoop:
         logger.info("observation inbox: delivered perception %s (%d chars)", eid, len(rendered))
         return True
 
+    async def _deliver_urgent(self) -> bool:
+        """Fold the urgent events the vessel queued into the conversation at an iteration boundary.
+
+        Returns True when something was perceived. Main loop only, like
+        :meth:`_deliver_observation`, and held at a command turn's start the same way
+        (ADR-0273): the queue stays queued until the turn has done work.
+
+        An EVENT is not a reading, and delivery differs in the three ways that follows from.
+        The queue is drained WHOLE into ONE perception, oldest first, because nothing a later
+        event did makes an earlier one stale. It is exempt from ``_OBSERVATION_INTERVAL_S``,
+        which bounds a reading's repeats, so a frame is not made to wait 30 s to be told that
+        something happened. And it has the bound of its own, ``_URGENT_INTERVAL_S``, which WAITS
+        rather than skips: a delivery that lands inside it sleeps out the rest and then drains
+        whatever has queued by then. Skipping would leave an event queued behind a sleep that
+        nothing wakes again, since its one wake was spent on the frame that is waiting.
+        """
+        if not self._consume_observation_inbox:
+            return False
+        # A command turn's start (ADR-0273), before the read, so the queue is not consumed.
+        if self._turn_skill is not None and not self._turn_did_work:
+            return False
+        path = urgent_path(self.workspace_root)
+        if not observation_pending(path):
+            return False
+        if self._urgent_delivered_at is not None:
+            wait = _URGENT_INTERVAL_S - (time.monotonic() - self._urgent_delivered_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+        # The queue is shaped like a staged frame, so the same reader consumes it (exactly
+        # once: read then delete) and the same renderer frames it as untrusted DATA (P1).
+        envelope = read_observation(path)
+        rendered = render_observation(envelope)
+        if rendered is None:
+            return False
+        eid = envelope_id(envelope)
+        self.session.last_envelope = eid or ""
+        self.session.add_message(
+            Message.user(_OBSERVATION_FRAME.format(envelope_id=eid, text=rendered))
+        )
+        self._urgent_delivered_at = time.monotonic()
+        self._persist()
+        self._note("intervention", f"urgent perception {eid} delivered mid-turn", kind="urgent")
+        logger.info(
+            "observation inbox: delivered urgent perception %s (%d chars)", eid, len(rendered)
+        )
+        return True
+
     def inject_user_line(self, text: str) -> None:
         """Queue a line the operator typed into THIS process's REPL while its turn runs.
 
@@ -8829,7 +8891,9 @@ class AgentLoop:
             # (consume_say_inbox=False) on sub-agents and bare loops.
             await self._deliver_midturn_say()
             # Perception delivery (Portability P4): after the say, so a person's message
-            # keeps its place in the conversation ahead of the world's report.
+            # keeps its place in the conversation ahead of the world's report. Urgent events
+            # go first: they are the part of the report the producer wants answered.
+            await self._deliver_urgent()
             await self._deliver_observation()
             # Recompute exposed tools each iteration so a tool activated mid-turn
             # (e.g. via tool_search) is offered in the same turn. A stuck-recovery NARROW
@@ -10537,7 +10601,9 @@ class AgentLoop:
                     # say so where the operator is looking (ADR-0255).
                     yield AgentStatus(message=_SAY_HELD_STATUS)
                 # Perception delivery (Portability P4, streaming twin): announced so a
-                # watching client can see the world reaching the turn.
+                # watching client can see the world reaching the turn. Urgent events first.
+                if await self._deliver_urgent():
+                    yield AgentStatus(message="urgent perception delivered mid-turn")
                 if await self._deliver_observation():
                     yield AgentStatus(message="perception delivered mid-turn")
                 # Recompute exposed tools each iteration (see _run_turn) so mid-turn tool
