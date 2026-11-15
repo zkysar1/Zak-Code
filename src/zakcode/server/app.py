@@ -132,14 +132,19 @@ from zakcode.session.framework_stop import (
 from zakcode.session.observation_inbox import (
     EARLIER_FAREWELL_SLICE,
     FAREWELL_SLICE,
+    KIND_URGENT,
     OBSERVATION_STAGE_LOCK,
     PERCEPTION_RECEIVED_SIGNAL,
     RECEIVER_SLICES,
     SHED_FAREWELL_SLICE,
+    URGENT_SLICE,
     WAKING_KINDS,
     carry_forward,
+    parse_urgent_event,
     peek_observation,
+    stage_urgent,
     staged_kind,
+    urgent_path,
 )
 from zakcode.session.say_inbox import (
     BusyLease,
@@ -2521,6 +2526,16 @@ def create_app(
         farewell's ``bodyReport`` is the last word of a body that is gone: an unread one rides
         forward through every later frame. Every other slice still takes the newest value.
 
+        An ``urgent`` frame is the third case, and it does not use the slot at all. It carries
+        ONE event the producer wants answered rather than merely seen (``urgentEvent``:
+        ``urgentKind``, ``logId``, ``seq`` and an optional ``entry``), and an event that a
+        later one pushed out was never perceived, so it joins a queue of its own
+        (``<workspace>/.observation-urgent``) and neither replaces nor is replaced by the slot.
+        The queue is de-duplicated on ``(logId, seq)``, holds at most 32 events inside the
+        same floor as a frame, and drops the OLDEST with a count when it is passed. The route
+        checks the SHAPE of the event and never its ``urgentKind``: which kinds exist is for the
+        producer and the reader to agree on. It wakes a sleeping mind like a change does.
+
         This route NEVER writes the knowledge tree (P2 — the mind is the only writer of its
         own tree). It stages a frame; the mind decides what, if anything, to encode.
         """
@@ -2574,90 +2589,133 @@ def create_app(
 
         root = Path(resolved_settings.workspace_root)
         target = root / ".observation"
-        # The receiver mints two slice names of its own, for the reports it carries
-        # (RECEIVER_SLICES). A producer cannot supply them: they are dropped here, so whatever a
-        # staged frame holds under those names was put there by a carry and not by a vessel.
+        # The receiver mints slice names of its own, for the reports it carries and the urgent
+        # events it queues (RECEIVER_SLICES). A producer cannot supply them: they are dropped
+        # here, so whatever a staged file holds under those names was put there by the receiver
+        # and not by a vessel.
         incoming: dict[str, Any] = {
             name: value
             for name, value in request.observation.items()
             if name not in RECEIVER_SLICES
         }
-        # ONE lock around look, carry and write, shared with the reader (OBSERVATION_STAGE_LOCK).
-        with OBSERVATION_STAGE_LOCK:
-            superseded = target.exists()
-            root.mkdir(parents=True, exist_ok=True)
-            observation = incoming
+        urgent_log = ""
+        if request.kind == KIND_URGENT:
+            # AN URGENT FRAME IS AN EVENT, NOT A READING, so it never takes the single slot below
+            # and never replaces what is in it. Latest-wins is right for a reading because the
+            # newest one IS the world; an event that a later event pushed out was never perceived.
+            # It joins a queue of its own (stage_urgent): de-duplicated on (logId, seq), bounded
+            # to URGENT_QUEUE_MAX_EVENTS events inside the same floor as a frame, the oldest
+            # dropped and counted. Only the event is kept; a slice beside it is counted as shed
+            # in the log line. A frame with no readable event is refused: there is nothing to
+            # queue, and a 200 would tell the producer it was.
+            event = parse_urgent_event(incoming)
+            if event is None:
+                logger.warning("perception-intake REFUSED ref=%s reason=bad_urgent_event", ref)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "an urgent frame carries no readable urgentEvent (urgentKind, logId, seq)"
+                    ),
+                )
+            target = urgent_path(root)
+            queued = stage_urgent(
+                target,
+                OBSERVATION_FRAME.format(observed_at=request.observedAt),
+                event,
+                OBSERVATION_MAX_CHARS,
+            )
+            superseded = False
             merged_changes = False
             farewell_carried = False
-            # PEEK the pending frame once: the carry and the sticky-kind logic below both need
-            # it, and only when superseding.
-            pending: dict[str, Any] | None = None
-            pending_observation: Any = None
-            if superseded:
-                # Two EVENTS are not readings of current state, and plain latest-wins would lose
-                # them: the change list (two envelopes can land inside one ReAct iteration) and a
-                # farewell's report (a body's last word, which nothing follows and the vessel
-                # will not repeat). Both ride forward under the receiver's floor, which governs
-                # what it WRITES and not only what it accepts: a long supersession streak must
-                # not grow the staged file past the cap the intake check applies to a payload.
-                # Every OTHER slice stays latest-wins, because the newest reading of the world IS
-                # the world. What the fit sheds, and in what order, is documented on
-                # carry_forward and carry_farewell, and counted in the log line below. PEEK, never
-                # read: consuming here would deliver that envelope to nobody, turning
-                # exactly-once into exactly-never.
-                pending = peek_observation(target)
-                pending_observation = (pending or {}).get("observation")
-                observation, merged_changes, farewell_carried = carry_forward(
-                    pending_observation, incoming, OBSERVATION_MAX_CHARS
-                )
-            # The incoming slices the floor cost this frame. The frame names which of its slices
-            # moved, and a name the fit shed must not still be listed as one.
-            shed_slices = [name for name in incoming if name not in observation]
-            changed_slices = [name for name in request.changedSlices if name not in shed_slices]
-            if farewell_carried:
-                # The carried report is part of what this frame holds; naming it keeps
-                # changedSlices true to the observation it describes.
-                changed_slices += [
-                    name
-                    for name in (FAREWELL_SLICE, EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
-                    if name in observation and name not in changed_slices
-                ]
-            staged = {
-                "envelopeVersion": request.envelopeVersion,
-                "externalClientRef": ref,
-                "observedAt": request.observedAt,
-                "observation": observation,
-                "droppedSlices": list(request.droppedSlices),
-                # Staged alongside the payload so whatever reads this file can tell a narrowed
-                # CHANGE, or a body's FAREWELL, from a periodic full picture — the same
-                # distinction the wake below turns on, and useless to a reader that has to guess
-                # it.
-                #
-                # STICKY KIND: when the message-based ending path is active, there is no
-                # signal-file wake.  The host reads the frame on its own tick, and a
-                # heartbeat superseding an unread change or farewell must not hide it.  So the
-                # staged `kind` stays `farewell`, else `change`, whenever the pending frame was
-                # one and this one is not; and a farewell landing on an unread change stays a
-                # farewell.
-                "kind": staged_kind(
-                    request.kind,
-                    (pending or {}).get("kind") if isinstance(pending_observation, dict) else None,
-                ),
-                "changedSlices": changed_slices,
-                # The frame travels WITH the payload so whatever reads this file cannot
-                # present untrusted world text to the model unframed (P1).
-                "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
-            }
-            write_text_atomic(target, json.dumps(staged, ensure_ascii=False) + "\n")
+            observation: dict[str, Any] = {URGENT_SLICE: event}
+            shed_slices = [name for name in incoming if name != URGENT_SLICE]
+            urgent_log = (
+                f" urgent_kind={event['urgentKind']} log_id={event['logId']} seq={event['seq']}"
+                f" queued={queued.queued} depth={queued.depth} urgent_shed={queued.shed}"
+            )
+        else:
+            # ONE lock around look, carry and write, shared with the reader
+            # (OBSERVATION_STAGE_LOCK).
+            with OBSERVATION_STAGE_LOCK:
+                superseded = target.exists()
+                root.mkdir(parents=True, exist_ok=True)
+                observation = incoming
+                merged_changes = False
+                farewell_carried = False
+                # PEEK the pending frame once: the carry and the sticky-kind logic below both need
+                # it, and only when superseding.
+                pending: dict[str, Any] | None = None
+                pending_observation: Any = None
+                if superseded:
+                    # Two EVENTS are not readings of current state, and plain latest-wins would lose
+                    # them: the change list (two envelopes can land inside one ReAct iteration) and
+                    # a farewell's report (a body's last word, which nothing follows and the vessel
+                    # will not repeat). Both ride forward under the receiver's floor, which governs
+                    # what it WRITES and not only what it accepts: a long supersession streak must
+                    # not grow the staged file past the cap the intake check applies to a payload.
+                    # Every OTHER slice stays latest-wins, because the newest reading of the world
+                    # IS the world. What the fit sheds, and in what order, is documented on
+                    # carry_forward and carry_farewell, and counted in the log line below. PEEK,
+                    # never read: consuming here would deliver that envelope to nobody, turning
+                    # exactly-once into exactly-never.
+                    pending = peek_observation(target)
+                    pending_observation = (pending or {}).get("observation")
+                    observation, merged_changes, farewell_carried = carry_forward(
+                        pending_observation, incoming, OBSERVATION_MAX_CHARS
+                    )
+                # The incoming slices the floor cost this frame. The frame names which of its slices
+                # moved, and a name the fit shed must not still be listed as one.
+                shed_slices = [name for name in incoming if name not in observation]
+                changed_slices = [name for name in request.changedSlices if name not in shed_slices]
+                if farewell_carried:
+                    # The carried report is part of what this frame holds; naming it keeps
+                    # changedSlices true to the observation it describes.
+                    changed_slices += [
+                        name
+                        for name in (FAREWELL_SLICE, EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
+                        if name in observation and name not in changed_slices
+                    ]
+                staged = {
+                    "envelopeVersion": request.envelopeVersion,
+                    "externalClientRef": ref,
+                    "observedAt": request.observedAt,
+                    "observation": observation,
+                    "droppedSlices": list(request.droppedSlices),
+                    # Staged alongside the payload so whatever reads this file can tell a narrowed
+                    # CHANGE, or a body's FAREWELL, from a periodic full picture — the same
+                    # distinction the wake below turns on, and useless to a reader that has to guess
+                    # it.
+                    #
+                    # STICKY KIND: when the message-based ending path is active, there is no
+                    # signal-file wake.  The host reads the frame on its own tick, and a
+                    # heartbeat superseding an unread change or farewell must not hide it.  So the
+                    # staged `kind` stays `farewell`, else `change`, whenever the pending frame was
+                    # one and this one is not; and a farewell landing on an unread change stays a
+                    # farewell.
+                    "kind": staged_kind(
+                        request.kind,
+                        (pending or {}).get("kind")
+                        if isinstance(pending_observation, dict)
+                        else None,
+                    ),
+                    "changedSlices": changed_slices,
+                    # The frame travels WITH the payload so whatever reads this file cannot
+                    # present untrusted world text to the model unframed (P1).
+                    "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
+                }
+                write_text_atomic(target, json.dumps(staged, ensure_ascii=False) + "\n")
         # THE FRAME IS ON DISK BEFORE THE AGENT IS TOLD TO LOOK. A wake that overtakes its
         # own payload wakes a loop to an empty inbox, which is worse than not waking it.
         #
-        # ONLY A CHANGE OR A FAREWELL WAKES (WAKING_KINDS). A heartbeat is timer-driven and
-        # says nothing new, so waking on one would convert every quiescent sleep into a
-        # busy-poll — and an unstamped envelope (kind == "") is deliberately NOT waking, so
+        # ONLY A CHANGE, A FAREWELL OR AN URGENT EVENT WAKES (WAKING_KINDS). A heartbeat is
+        # timer-driven and says nothing new, so waking on one would convert every quiescent sleep
+        # into a busy-poll — and an unstamped envelope (kind == "") is deliberately NOT waking, so
         # an older vessel cannot wake this loop by accident. A farewell wakes because nothing
         # follows it: the mind's next round perceives a world its body has left, and this
-        # frame is the only place the body's account of it exists. Membership is the
+        # frame is the only place the body's account of it exists. An urgent event wakes because
+        # it is the one frame its producer wants ANSWERED: left to wait out a sleep it is a
+        # late answer to an event that has already happened. How often one may start a turn is
+        # the delivering loop's bound, not this route's. Membership is the
         # fail-safe direction: a missed wake costs latency (the mind perceives this frame on
         # its next round anyway), a spurious one costs the sleep itself.
         #
@@ -2679,8 +2737,9 @@ def create_app(
         # THE WORKSPACE'S OWN HOOK COMES FIRST (ADR-0270). A host that wants to hear about a
         # change declares an ObservationReceived hook, and the hook decides what this route
         # otherwise decides for it below: whether the host runs a loop worth waking, and how
-        # to wake it. The route keeps what belongs to the envelope (only a change or a
-        # farewell is handed over, after it is staged) and reads the hook's exit code as the
+        # to wake it. The route keeps what belongs to the envelope (only a change, a
+        # farewell or an urgent event is handed over, after it is staged; `observation_path`
+        # names the file it was staged in) and reads the hook's exit code as the
         # disposition. It runs whichever ending the run uses, and a workspace that declares
         # it never also gets the signal-file wake: one wake per frame.
         delivered: bool | None = None
@@ -2766,11 +2825,12 @@ def create_app(
         # One line per accepted frame. `perception-intake` is the marker a log filter
         # anchors on and no sibling line emits it; an unparseable observedAt logs
         # age=None rather than a fabricated number, so a broken clock or a changed
-        # envelope shape is visible here instead of silently reading as fresh.
+        # envelope shape is visible here instead of silently reading as fresh. An urgent frame's
+        # line ends with the identity of its event and what the queue did with it.
         logger.info(
             "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
             "slices=%d dropped=%d changed=%d wake=%s mode=%s farewell_carried=%s "
-            "farewell_shed=%d reports_shed=%d",
+            "farewell_shed=%d reports_shed=%d%s",
             ref,
             request.kind or "-",
             age,
@@ -2784,6 +2844,7 @@ def create_app(
             farewell_carried,
             len(shed_slices),
             observation.get(SHED_FAREWELL_SLICE, 0),
+            urgent_log,
         )
         return {
             "accepted": True,
