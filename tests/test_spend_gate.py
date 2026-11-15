@@ -13,7 +13,8 @@ What is pinned here, each with its positive control:
   for the vessel's first push and is then decided against the cap the gate holds, on both
   dispatch paths; every other call (unarmed, under the cap, already pushed to, unreadable ledger)
   is decided at once, and so is every call in a process no push can reach (the sidecar's app marks
-  its gate, nothing else does) and every call a request/response caller makes (``POST /complete``);
+  its gate, nothing else does) and every call a request/response caller makes (``POST /complete``
+  and ``POST /chat``), which belongs to that caller's task and opens no window;
 * the bound is pinned as it ships and every wait on it is itself bounded, so a bound that stops
   holding fails a test instead of hanging the run;
 * ``POST /budget`` is bearer-gated, refuses bad values, arms the gate, shows in
@@ -650,9 +651,65 @@ async def test_inside_decide_at_once_a_refusal_is_not_held_and_the_block_does_no
     await asyncio.wait_for(call, timeout=2.0)  # admitted: the pushed cap leaves room
 
 
+async def test_a_turn_is_still_held_while_a_request_response_caller_is_inside_decide_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The setting belongs to the calling task, never to the process.
+
+    A turn already held when a request/response call comes in stays held, and a turn that arrives
+    while that call is in flight is held too. A process-wide flag in place of the context variable
+    would decide the second one at once and bring back the refusals before the first push.
+    """
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 60.0)
+    gate = _ledger_gate(tmp_path)
+    before = asyncio.create_task(gate.admit_async())  # a turn held before the request comes
+    inside, leave = asyncio.Event(), asyncio.Event()
+
+    async def request_response() -> None:
+        with decide_at_once():
+            inside.set()
+            await leave.wait()
+
+    request = asyncio.create_task(request_response())
+    await asyncio.wait_for(inside.wait(), timeout=1.0)
+    during = asyncio.create_task(gate.admit_async())  # a turn that arrives while it is in flight
+    await asyncio.sleep(0.3)
+    assert not before.done() and not during.done(), "a turn was decided at once"
+
+    leave.set()
+    await asyncio.wait_for(request, timeout=1.0)
+    gate.set_budget(**_RAISED)
+    await asyncio.wait_for(asyncio.gather(before, during), timeout=2.0)  # both admitted
+
+
+async def test_a_refusal_decided_at_once_does_not_open_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a call that is held opens the one window; a refusal decided at once opens nothing.
+
+    Otherwise a request/response call refused just after a restart would use up the window the
+    turns need, and the first turn after it would be refused at once.
+    """
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 0.4)
+    gate = _ledger_gate(tmp_path)
+    with decide_at_once(), pytest.raises(SpendCapReached):
+        await _bounded(gate.admit_async())
+    await asyncio.sleep(0.5)  # longer than a whole window, and no push comes
+
+    started = time.monotonic()
+    with pytest.raises(SpendCapReached):
+        await _bounded(gate.admit_async())
+    waited = time.monotonic() - started
+    assert waited >= 0.3, f"the first held call opens the window, but it waited only {waited:.2f} s"
+
+
 def test_the_shipped_bound_is_a_bound() -> None:
-    """Every other test here patches ``FIRST_PUSH_WAIT_S``, so only this one reads what ships."""
-    assert 0 < _SHIPPED_FIRST_PUSH_WAIT_S <= 300
+    """Every other test here patches ``FIRST_PUSH_WAIT_S``, so only this one reads what ships.
+
+    The floor is the push: it lands about 70 s after the sidecar starts serving, so a bound under
+    90 s would refuse before it lands, which is the incident this hold exists for.
+    """
+    assert 90 <= _SHIPPED_FIRST_PUSH_WAIT_S <= 300
 
 
 async def test_the_bound_is_one_window_so_a_later_call_is_refused_at_once(
@@ -1022,3 +1079,76 @@ async def test_post_complete_is_refused_at_once_and_is_not_held_for_the_first_pu
         answered = await _bounded(client.post("/complete", json=body, headers=_auth()))
         assert answered.status_code == 200, answered.text
         assert wire.calls == 1, "the control: with room under the pushed cap the request is sent"
+
+
+class _OneCallAgent:
+    """A stand-in agent whose turn makes one model call through the provider's own dispatch."""
+
+    def __init__(self, session: Any) -> None:
+        self.session = session
+
+    async def arun_turn(self, text: str) -> Any:
+        from zakcode.agent.loop import TurnResult
+
+        self.session.add_message(Message.user(text))
+        await _provider().acomplete(_MSGS)
+        return TurnResult(
+            assistant_messages=[],
+            tool_results=[],
+            iterations=1,
+            usage=Usage(),
+            stop_reason="completed",
+        )
+
+
+async def test_post_chat_is_refused_at_once_and_is_not_held_for_the_first_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``POST /chat`` answers one client, as ``POST /complete`` does, so its turn decides at once.
+
+    The turn runs in a task of its own, and the task copies the context it is created in, so that
+    is where the request steps out of the hold. Held, a client that had gone still had its call sent
+    when the push landed, and the open request kept the server from stopping. The turn's refusal is
+    not caught by the route, so it answers 500, at once, with the wire never reached. The control
+    is the same app and wire once a push has raised the cap: the turn's call is sent.
+    """
+    pytest.importorskip("fastapi")
+    import httpx
+
+    from zakcode.config import Settings
+    from zakcode.server.app import create_app
+    from zakcode.session.store import SessionStore
+
+    monkeypatch.setattr(sg, "FIRST_PUSH_WAIT_S", 10.0)
+    wire = _Wire(_response(0.25))
+    monkeypatch.setattr(lp.litellm, "acompletion", wire)
+    gate = _ledger_gate(tmp_path)
+    reset_gate_for_tests(gate)
+    app = create_app(
+        settings=Settings(
+            default_model="scripted/test",
+            context_window=8192,
+            workspace_root=tmp_path,
+            auth_token=TOKEN,
+        ),
+        store=SessionStore(base_dir=tmp_path / "sessions"),
+        agent_factory=lambda s, m, p: _OneCallAgent(s),
+    )
+    body = {"message": "hello"}
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://sidecar.test") as client:
+        started = time.monotonic()
+        refused = await _bounded(client.post("/chat", json=body, headers=_auth()))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < sg.FIRST_PUSH_WAIT_S / 2, f"POST /chat was held for {elapsed:.1f} s"
+        assert refused.status_code == 500
+        assert wire.calls == 0
+        assert gate.snapshot()["refused_calls"] == 1
+
+        pushed = await client.post("/budget", json=_RAISED, headers=_auth())
+        assert pushed.status_code == 200
+        answered = await _bounded(client.post("/chat", json=body, headers=_auth()))
+        assert answered.status_code == 200, answered.text
+        assert wire.calls == 1, "the control: under the pushed cap the turn's call is sent"

@@ -1578,8 +1578,11 @@ def create_app(
                     status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
                 )
             # The turn runs in a task of its own so that Stop can cancel it where it waits, as
-            # the say consumer's Stop cancels a say turn (ADR-0327).
-            turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
+            # the say consumer's Stop cancels a say turn (ADR-0327). This request answers one
+            # client, as /complete does, so the turn's model calls are decided at once and never
+            # held for the vessel's first push: the task copies the context it is created in.
+            with decide_at_once():
+                turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
             stopped = asyncio.ensure_future(stop.wait())
             try:
                 await asyncio.wait({turn, stopped}, return_when=asyncio.FIRST_COMPLETED)

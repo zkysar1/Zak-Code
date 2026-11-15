@@ -64,8 +64,9 @@ holds only if it can receive the push: the sidecar's app marks its gate
 (:meth:`SpendGate.expect_push`) because it serves ``POST /budget``, and any other process that
 boots the gate from its ledger (the synchronous entry points that wrap one turn in ``asyncio.run``,
 a helper process that inherits ``ZAKCODE_SPEND_LEDGER``) refuses at once, as it did before the hold,
-instead of waiting out a bound nothing can end. And a request/response caller, ``POST /complete``,
-runs inside :func:`decide_at_once`. A turn (the agent loop, over SSE or a WebSocket) keeps the hold.
+instead of waiting out a bound nothing can end. And the request/response callers, ``POST /complete``
+and ``POST /chat``, run inside :func:`decide_at_once`. A streamed turn, over ``POST /chat/stream``
+or a say, keeps the hold.
 
 AN UNPRICED CALL (``Usage.cost_unpriced``, or a stream that reported no usage) is counted, not
 refused, the same rule as :class:`~zakcode.agent.budget.IterationBudget`: the price is never
@@ -129,13 +130,14 @@ _HOLD_FOR_FIRST_PUSH: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def decide_at_once() -> Iterator[None]:
     """Inside the block a model call is decided at once, never held for the first push.
 
-    For a request/response caller, such as ``POST /complete``, that answers one client. A hold
-    costs it twice. The client may give up while its request is held, and the request is not
+    For a request/response caller, ``POST /complete`` or ``POST /chat``, that answers one client. A
+    hold costs it twice. The client may give up while its request is held, and the request is not
     cancelled with it, so when the push lands the call still goes out and is billed for an answer
     nobody reads. And an open request keeps the server from stopping: uvicorn drains its open
     connections before the run's ending, the supervisor allows a stop 120 s before it kills the
-    server, and a hold lasts up to ``FIRST_PUSH_WAIT_S``, 150 s. A turn is one run's own work and a
-    stop reaches it, so a turn does not use this and keeps the hold.
+    server, and a hold lasts up to ``FIRST_PUSH_WAIT_S``, 150 s. A streamed turn
+    (``POST /chat/stream``, a say) is the run's own work and a stop reaches it, so it does not use
+    this and keeps the hold.
 
     It is a context variable, so it belongs to the calling task and the tasks that task starts,
     never to another request's, and it is put back on the way out.
