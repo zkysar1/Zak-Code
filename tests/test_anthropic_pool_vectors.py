@@ -96,7 +96,7 @@ def test_vector(vector: dict[str, Any]) -> None:
 def test_every_vector_is_run() -> None:
     """The count is the file's, not a number remembered here: a vector added upstream is run
     by the parametrisation above with no edit, and this pins that none is silently dropped."""
-    assert len(_VECTORS) == _SOURCE["vector_count"] == 22
+    assert len(_VECTORS) == _SOURCE["vector_count"] == 31
     assert len({v["name"] for v in _VECTORS}) == len(_VECTORS)
 
 

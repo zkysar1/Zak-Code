@@ -19,6 +19,9 @@ What is pinned:
 * two concurrent calls refused by the same account move the session once and both succeed;
 * each successful call writes one ledger row whose token split matches the wire's usage, and a
   new session is seated off an account whose month total is at the steer-off line;
+* a card-billed account serves only a ``prod`` run, and only under its monthly cap: a call booked
+  past the cap keeps its session there, and a new session, in the same process or in a fresh one
+  reading the same ledger, is refused before any request;
 * the pool is off unless asked for, and never under ``hipaa_mode``, behind a gateway, or for a
   model the registry does not name.
 """
@@ -245,7 +248,7 @@ def _fresh_runtimes(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 @pytest.fixture
 def accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Three accounts hold keys and workspaces; no other slot does."""
-    for slot in range(11):
+    for slot in range(12):
         for kind in ("API_KEY", "WORKSPACE_ID", "ORG_ID"):
             monkeypatch.delenv(f"ANTHROPIC_ACCT_{slot:02d}_{kind}", raising=False)
     for slot in ("02", "03", "04"):
@@ -498,7 +501,7 @@ async def test_a_new_session_is_seated_off_an_account_at_the_steer_off_line(
 async def test_no_key_at_all_ends_the_turn_before_any_request(
     tmp_path: Path, anthropic: _Anthropic, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for slot in range(11):
+    for slot in range(12):
         monkeypatch.delenv(f"ANTHROPIC_ACCT_{slot:02d}_API_KEY", raising=False)
     provider = _provider(tmp_path, anthropic)
 
@@ -513,13 +516,114 @@ async def test_a_prod_run_finds_no_account_until_the_card_account_has_a_cap(
     tmp_path: Path, anthropic: _Anthropic, accounts: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
-    provider = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    uncapped = json.loads(_registry(tmp_path, anthropic.base_url).read_text(encoding="utf-8"))
+    for member in uncapped["members"]:
+        if member["id"] == "acct-00":
+            member["monthly_cap_usd"] = None
+    uncapped_path = tmp_path / "uncapped-registry.json"
+    uncapped_path.write_text(json.dumps(uncapped), encoding="utf-8")
+    provider = _provider(
+        tmp_path, anthropic, anthropic_pool_use="prod", anthropic_pool_registry=uncapped_path
+    )
 
     with pytest.raises(QuotaExhausted) as raised:
         await _text(provider, "buffered")
 
     assert anthropic.seen == []
     assert "acct-00 (slot 00): card billing with no monthly cap set" in str(raised.value)
+
+    # The shared registry gives the card account a monthly cap, so the same prod run now
+    # reaches it (no prod promo member holds a key here).
+    reset_runtimes()
+    anthropic.answers = {"key-00": "ok"}
+    capped = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    assert await _text(capped, "buffered") == "ok"
+    assert anthropic.keys_seen() == ["key-00"]
+
+
+async def test_a_prod_run_is_not_seated_on_the_card_account_at_its_monthly_cap(
+    tmp_path: Path, anthropic: _Anthropic, accounts: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The month's spend the cap is checked against is read from the ledger, which any run sharing
+    the directory may have written: one dollar under the cap a prod run reaches the card account,
+    at the cap the run is refused before any request."""
+    monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
+    anthropic.answers = {"key-00": "ok"}
+    cap = next(
+        member["monthly_cap_usd"]
+        for member in json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))["members"]
+        if member["id"] == "acct-00"
+    )
+    assert isinstance(cap, (int, float))
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    month = ledger / f"anthropic-pool-ledger-{datetime.now(UTC):%Y-%m}.jsonl"
+
+    just_under = json.dumps({"member": "acct-00", "est_usd": cap - 1}) + "\n"
+    month.write_text(just_under, encoding="utf-8")
+    under = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    assert await _text(under, "buffered") == "ok"
+    assert anthropic.keys_seen() == ["key-00"]
+
+    reset_runtimes()
+    anthropic.seen.clear()
+    month.write_text(json.dumps({"member": "acct-00", "est_usd": cap}) + "\n", encoding="utf-8")
+    at_cap = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    with pytest.raises(QuotaExhausted) as raised:
+        await _text(at_cap, "buffered")
+
+    assert anthropic.seen == []
+    assert "acct-00 (slot 00): card billing at its monthly cap" in str(raised.value)
+
+
+@MODES
+async def test_a_call_booked_past_the_cap_keeps_its_session_and_refuses_new_ones(
+    tmp_path: Path,
+    anthropic: _Anthropic,
+    accounts: None,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """The cap binds on what the pool books after a call is answered, not only on a row a test
+    wrote: the session that made the call keeps the card account past the cap, and a new session
+    is refused before any request, in this process and in a fresh one that knows only what the
+    ledger holds."""
+    monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
+    anthropic.answers = {"key-00": "ok"}
+    # Priced far past the cap at any plausible rate; the ledger row below proves it was.
+    anthropic.usage = {"key-00": {"output_tokens": 1_000_000_000}}
+    cap = next(
+        member["monthly_cap_usd"]
+        for member in json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))["members"]
+        if member["id"] == "acct-00"
+    )
+    assert isinstance(cap, (int, float))
+
+    seated = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    assert await _text(seated, mode) == "ok"
+    rows = _ledger_rows(tmp_path / "ledger")
+    assert [row["member"] for row in rows] == ["acct-00"]
+    booked = rows[0]["est_usd"]
+    assert isinstance(booked, float)
+    assert booked >= cap
+
+    # The seat is not checked again, so the session that carried the spend past the cap stays.
+    assert await _text(seated, mode) == "ok"
+    assert anthropic.keys_seen() == ["key-00", "key-00"]
+
+    # A new session in this process is refused...
+    in_process = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    with pytest.raises(QuotaExhausted) as raised:
+        await _text(in_process, mode)
+    assert "acct-00 (slot 00): card billing at its monthly cap" in str(raised.value)
+
+    # ...and so is one in a fresh process, which knows only what the ledger holds.
+    reset_runtimes()
+    fresh = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    with pytest.raises(QuotaExhausted) as raised:
+        await _text(fresh, mode)
+    assert "acct-00 (slot 00): card billing at its monthly cap" in str(raised.value)
+    assert anthropic.keys_seen() == ["key-00", "key-00"]
 
 
 def test_the_pool_is_off_unless_asked_for(tmp_path: Path, anthropic: _Anthropic) -> None:

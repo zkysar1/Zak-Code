@@ -41,12 +41,12 @@
     {"id": "acct-03", "slot": "03", "rank": 2,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
     {"id": "acct-04", "slot": "04", "rank": 3,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
     {"id": "acct-05", "slot": "05", "rank": 4,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
-    {"id": "acct-06", "slot": "06", "rank": 5,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
-    {"id": "acct-07", "slot": "07", "rank": 6,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-06", "slot": "06", "rank": 5,  "billing": "promo",       "credit_usd": 200, "use": ["prod"], "status": "active"},
+    {"id": "acct-07", "slot": "07", "rank": 6,  "billing": "promo",       "credit_usd": 200, "use": ["prod"], "status": "active"},
     {"id": "acct-08", "slot": "08", "rank": 7,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
-    {"id": "acct-01", "slot": "01", "rank": 10,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
-    {"id": "acct-09", "slot": "09", "rank": 8,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "empty"},
-    {"id": "acct-10", "slot": "10", "rank": 9, "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "empty"},
-    {"id": "acct-00", "slot": "00", "rank": 99, "billing": "card-refill", "monthly_cap_usd": null, "use": ["prod", "dev", "test", "demo"], "status": "active"}
+    {"id": "acct-09", "slot": "09", "rank": 8,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-10", "slot": "10", "rank": 9,  "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-11", "slot": "11", "rank": 10, "billing": "promo",       "credit_usd": 200, "use": ["dev", "test", "demo"], "status": "active"},
+    {"id": "acct-00", "slot": "00", "rank": 99, "billing": "card-refill", "monthly_cap_usd": 95, "use": ["prod"], "status": "active"}
   ]
 }
