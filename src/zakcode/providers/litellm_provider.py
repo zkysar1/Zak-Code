@@ -2417,9 +2417,12 @@ class LiteLLMProvider(Provider):
         system block carries the breakpoint takes one more, on the message
         :func:`_conversation_breakpoint` names: each call then reads the conversation the call
         before it wrote, and writes only what was added since. It is stamped on every build of
-        the same messages and lands on the same message each time. An opted-in gateway route
-        (ADR-0298) is left as it was: no gateway was measured with a second marker, and one
-        that refused it by name would be served the plain request, losing the first.
+        the same messages and lands on the same message each time. The name is the whole rule:
+        a bare ``claude`` name behind an API base takes it where it already took the first, and
+        opting in changes nothing on a by-name route. A route that carries its marker ONLY
+        because it opted in (ADR-0298) is left as it was: no gateway was measured with a second
+        marker, and one that refused it by name would be served the plain request, losing the
+        first.
         """
         if not _supports_cache_control(self.model, opted_in=self.prompt_caching):
             return

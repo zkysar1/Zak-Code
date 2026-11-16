@@ -33,6 +33,8 @@ from zakcode.messages import Message, TextBlock, ThinkingBlock, ToolResultBlock,
 from zakcode.providers.litellm_provider import LiteLLMProvider, _conversation_breakpoint
 
 ANTHROPIC = "anthropic/claude-sonnet-4-6"
+#: A bare name the locked litellm routes as Anthropic's by itself, prefix or no prefix.
+BARE = "claude-sonnet-4-6"
 GATEWAY = "https://gateway.invalid/v1"
 SYSTEM = f"stable identity and tool guidance\n\n{DYNAMIC_BOUNDARY}\n\nsession context"
 PLAIN_SYSTEM = "a side call's own instruction, with no boundary marker"
@@ -269,6 +271,34 @@ def test_a_route_that_is_anthropic_by_name_takes_it(model: str) -> None:
     assert _marked(_request(_provider(model), _second_call())) == [4]
 
 
+def test_a_claude_name_behind_an_api_base_takes_it_too() -> None:
+    """The name is the whole rule, wherever the request goes. A bare ``claude…`` model with an
+    API base is sent to that base, and it carried the system block's marker there on the name
+    alone before ADR-0385, so the conversation's marker follows the first."""
+    provider = _provider(BARE, api_base=GATEWAY)
+    kwargs = provider._build_kwargs(provider._translate_messages(_second_call(), SYSTEM), None)
+
+    assert kwargs["api_base"] == GATEWAY
+    assert _system_marks(kwargs["messages"]) == 1
+    assert _marked(kwargs["messages"]) == [4]
+
+
+@pytest.mark.parametrize("model", ["anthropic/claude-sonnet-4-6", "claude-opus-4-8"])
+def test_opting_in_changes_nothing_on_a_route_the_name_vouches_for(model: str) -> None:
+    """``prompt_caching`` is the operator's word for a route whose name says nothing. Set on a
+    route that is Anthropic by name it is redundant: the request is the by-name request, both
+    breakpoints on the messages and no copy of them in ``extra_body``."""
+    messages = [*_third_call(), Message.user(TAIL)]
+    opted = _provider(model, prompt_caching=True)
+    request = _request(opted, messages)
+
+    assert request == _request(_provider(model), messages)
+    assert _system_marks(request) == 1
+    assert _marked(request) == [6]
+    kwargs = opted._build_kwargs(opted._translate_messages(messages, SYSTEM), None)
+    assert "messages" not in kwargs.get("extra_body", {})
+
+
 @pytest.mark.parametrize(
     "model", ["openai/gpt-4o", "groq/llama-3.3-70b-versatile", "ollama_chat/llama3.1"]
 )
@@ -289,9 +319,10 @@ def test_a_route_that_takes_no_breakpoint_is_sent_what_it_was(model: str) -> Non
     ],
 )
 def test_an_opted_in_route_keeps_the_one_breakpoint_it_had(model: str) -> None:
-    """ADR-0298's switch is the operator's word that a route takes the marker on the system
-    block. No gateway was measured with a second one, and a gateway that refused it by name
-    would be served the plain request, losing the first."""
+    """A route whose name says nothing carries its breakpoint only because it opted in:
+    ADR-0298's switch is the operator's word that it takes the marker on the system block. No
+    gateway was measured with a second one, and a gateway that refused it by name would be
+    served the plain request, losing the first."""
     provider = _provider(model, api_base=GATEWAY, prompt_caching=True)
     request = _request(provider, [*_third_call(), Message.user(TAIL)])
 
@@ -334,6 +365,7 @@ class Wire:
 
     def __init__(self) -> None:
         self.bodies: list[dict[str, Any]] = []
+        self.urls: list[str] = []
 
 
 @pytest.fixture
@@ -342,6 +374,7 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> Wire:
 
     async def send(self: httpx.AsyncClient, request: httpx.Request, **kw: Any) -> httpx.Response:
         seen.bodies.append(json.loads(request.content.decode("utf-8")))
+        seen.urls.append(str(request.url))
         refusal = {"type": "error", "error": {"type": "invalid_request_error", "message": "x"}}
         return httpx.Response(400, json=refusal, request=request)
 
@@ -355,6 +388,7 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> Wire:
 async def _sent(wire: Wire, provider: LiteLLMProvider, messages: list[Message]) -> dict[str, Any]:
     """The Anthropic-shaped body of the one request ``messages`` produce."""
     wire.bodies.clear()
+    wire.urls.clear()
     with contextlib.suppress(Exception):  # the canned answer is a refusal; the request is real
         await provider.acomplete(messages, system=SYSTEM)
     return wire.bodies[0]
@@ -443,6 +477,35 @@ async def test_with_the_switch_off_the_wire_carries_the_system_blocks_marker_alo
     )
 
     assert _breakpoints(body) == [0]
+
+
+async def test_on_the_wire_a_claude_name_behind_an_api_base_is_an_anthropic_request_to_it(
+    wire: Wire,
+) -> None:
+    """Measured on litellm 1.86.2: a bare ``claude…`` model with an API base is posted to that
+    base in Anthropic's own shape, so both markers reach whatever answers there. A server that
+    took the first and refused the second would fail every call until the switch is off."""
+    provider = _provider(BARE, api_base=GATEWAY)
+    body = await _sent(wire, provider, [*_second_call(), Message.user(TAIL)])
+
+    assert httpx.URL(wire.urls[0]).host == "gateway.invalid"
+    assert body["system"][0]["cache_control"] == MARKER
+    assert body["messages"][-1]["content"][1]["cache_control"] == MARKER
+    assert len(_breakpoints(body)) == 2
+
+
+async def test_on_the_wire_a_request_that_asks_for_thinking_carries_both_breakpoints(
+    wire: Wire,
+) -> None:
+    """A Claude 5 route sends ``thinking`` and replays its earlier thinking blocks. What the
+    API does with a replayed block is the API's and cannot be pinned here. That the request
+    carries both breakpoints beside ``thinking`` can."""
+    provider = _provider("anthropic/claude-sonnet-5-5")
+    body = await _sent(wire, provider, [*_second_call(), Message.user(TAIL)])
+
+    assert "thinking" in body
+    assert body["messages"][-1]["content"][1]["cache_control"] == MARKER
+    assert len(_breakpoints(body)) == 2
 
 
 # ── the premise: where litellm puts a message's marker ──────────────────────────────────────

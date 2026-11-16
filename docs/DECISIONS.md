@@ -24427,9 +24427,17 @@ text block after them. litellm leaves the caller's own messages as they were on 
 4. A message with no text is passed over, because the marker needs a block to sit on: an empty tool result, and an
    assistant message that only calls tools.
 5. It is stamped on every build of the same messages, not only the first, and lands on the same message each time.
-6. An opted-in route (ADR-0298) is sent what it was sent before. No gateway has been measured with a second marker, and
-   ADR-0298's repair makes a wrong guess expensive: a gateway that refused the new marker by naming it would be served
-   the plain request for the rest of the session and lose the breakpoint it has.
+6. The name is the whole rule, and two corners follow from it. A bare `claude` name with an API base set is sent to
+   that base as an Anthropic request (measured on litellm 1.86.2: posted to `<base>/v1/messages` in Anthropic's own
+   shape). It carried the system block's marker there on the name alone before this ADR, and the conversation's marker
+   follows the first. A route that is Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
+   sent the by-name request, both markers on the messages and nothing in `extra_body`. What is sent as it was before is
+   a route that carries a marker ONLY because it opted in (ADR-0298), one whose name says nothing, such as
+   `openai/Claude4.5`. No gateway has been measured with a second marker, and ADR-0298's repair makes a wrong guess
+   expensive there: a gateway that refused the new marker by naming it would be served the plain request for the rest of
+   the session and lose the breakpoint it has. A server behind an API base that takes the first marker and refuses the
+   second has no repair at all. Every call to it would fail until the switch of point 7 is off. None has been seen, and
+   the first marker has gone to such a server for as long as the name test has stood.
 7. `Settings.cache_conversation: bool = True` (`ZAKCODE_CACHE_CONVERSATION`) turns it off for the process, and the
    request is then the one sent before this ADR. It is on by default because the uncached conversation was most of what a
    long session cost. The switch is the way back that waits for no build, and the way to run one build both ways.
@@ -24449,8 +24457,11 @@ four. The one-hour lifetime: it doubles the write, and it pays only for a conver
 minutes and an hour apart. The usage rows carry no time, so which sessions those are is not known, and it waits for
 measured gaps. Telling this layer which messages are the tail, through the provider interface or a flag on a message:
 it would cache the turn's new user message one call sooner, and it changes the loop, the interface, every provider and
-every test double to do it. A measured gateway that takes a second marker would change point 6, and measured gaps the
-lifetime.
+every test double to do it. Keeping each call's reminder in the history instead of dropping it, which is the form
+Anthropic's reference recommends because a reminder that is removed is an edit to the history: it would let the
+reminder be cached and a replayed thinking block stay valid, and it undoes ADR-0193's ephemeral tail for every model,
+so it is a decision about the loop for a measured served run to inform. A measured gateway that takes a second marker
+would change point 6, and measured gaps the lifetime.
 
 **Not verified.** The hit rate. Nothing here was sent to Anthropic: the request shape is proved against litellm's own
 client over canned answers, and the saving is an estimate from usage rows. Whether a served session's later calls read
@@ -24462,28 +24473,46 @@ every later request, so the prefix should hold, but that is reasoning and not a 
 (ADR-0228) changes the tool list, which is ahead of everything, and costs one full write. A compaction rewrites the
 history and costs one full write, as it does for any cache.
 
+Three more things each cost one full write of the conversation by the reference's rules, and none was run here. The
+body of an ended skill turn is cut from an earlier user message at the next turn's start
+(`_elide_ended_skill_bodies`, ADR-0045), and a change inside the prefix un-caches everything after it. A
+reasoning-overflow retry goes out with thinking off (ADR-0056), and a changed thinking setting invalidates the cached
+messages for that request. A credit-pool move to another account (`_pool_failover`) lands where a different
+organization or workspace keeps its cache, which holds nothing of this conversation.
+
+The estimate rests on a filtered sample: sessions with at least ten main calls after their first eight, and one run of
+39 calls. How often a real conversation wakes for a single call, the case that costs more, was not counted. And nothing
+in the runtime trips on a session that writes on every call and never reads. The loop's flat-read probe (ADR-0193)
+asks a different question, whether the tail defeats a cache that reuses a whole earlier prompt, and it stops after two
+misses (`_CACHE_PROBE_LIMIT`). Until something watches for it, a served session's usage rows are the only detector.
+
 **Consequences.** On a route that is Anthropic by name a session's usage rows change shape: a cache write on most calls
 where there was one a session, and a cache read that grows with the prompt where there was a flat one. Cache writes stop
 being a rounding error. On the measured run they go from 29,100 tokens ($0.07, under 2% of the cost) to about 108,000
 ($0.27, about 35% of a much smaller cost), so anything that prices a run from these rows needs a cache-write rate for the
 model. A call that begins a turn sends that turn's new user message uncached once. Every other route, every side call
-and every opted-in gateway route sends the request it sent before. To check a route, run a few tool calls and read the
+and every route that carries a marker only because it opted in sends the request it sent before. To check a route, run a few tool calls and read the
 rows as described above; to go back, set `ZAKCODE_CACHE_CONVERSATION=false`.
 
-The proof. `tests/test_prompt_cache_history.py` (35 tests). Where it sits: on the last tool result; unmoved by one, two
+The proof. `tests/test_prompt_cache_history.py` (40 tests). Where it sits: on the last tool result; unmoved by one, two
 or three tail messages; on the answer before a turn's new user message; moving forward with the conversation; absent on
 a first call, on a side call and under a system prompt with no boundary; passing over an empty tool result and an
 assistant message with no text; on the text and not on a thinking block; at most two breakpoints in a request; the same
 message on a second build, and put back on a build that follows a strip. Which routes: two that are Anthropic by name
-take it; three that take no breakpoint are sent what they were; four opted-in routes (`openai/`, `hosted_vllm/`,
-`bedrock/`, `vertex_ai/`) keep their one, and nothing rides `extra_body` for the conversation. The switch: on in the
+take it, and so does a bare `claude` name behind an API base; a by-name route that has also set `prompt_caching` is sent
+the by-name request, with nothing in `extra_body` (two names); three that take no breakpoint are sent what they were;
+four routes that opted in and whose name says nothing (`openai/`, `hosted_vllm/`, `bedrock/`, `vertex_ai/`) keep their
+one, and nothing rides `extra_body` for the conversation. The switch: on in the
 settings and in a provider built without them, read from the environment, and with it off the request is the old one,
 on the builders and on the wire. On the wire, read from litellm's own client: the marker on the second `tool_result`
 with the tail's text block after it, two breakpoints in the body, the same on a streamed call, and an answer's marker
-on its text block after the thinking block. The property the read rests on is tested directly: everything up to the
+on its text block after the thinking block. A bare `claude` name behind an API base is read going to that base as an
+Anthropic request with both breakpoints, and a request that asks for thinking (`anthropic/claude-sonnet-5-5`) is read
+carrying both. What the API then does with a replayed thinking block is the API's and no test here reaches it. The property the read rests on is tested directly: everything up to the
 block one call marks reappears unchanged, markers aside, at the head of the next call's body, whose tail is different
 text and whose own breakpoint is further on. One premise test pins where litellm puts a message's marker and that it
-leaves the caller's list alone, so an upgrade that changes either says so.
+leaves the caller's list alone, so an upgrade that changes either says so. It is known at the locked 1.86.2. The
+project's own floor is lower (`litellm>=1.66`), and on a version between the two nothing here has been run.
 
 Fourteen mutants of `litellm_provider.py` and `config.py`, one site each, were each run against that file by a harness
 that restores the source byte for byte and refuses a site that does not occur exactly once: a user message allowed to
@@ -24492,7 +24521,10 @@ ignored (2), a request with no marked system block marked anyway (1), the first 
 (14), the system slot nameable (1), the setting defaulting to off (16), a provider built without settings having it off
 (1), the one-hour lifetime (4), the old early return on a rebuild (1), only tool messages eligible (4), only assistant
 messages eligible (11), and the system block's own marker dropped (22). All fourteen turned tests red, and the file was
-green before the first and after the last.
+green before the first and after the last. The harness is not in the repository: it edits the source in place and was
+run from outside the checkout, so this paragraph is its only record. Those counts are from the file as it stood at 35
+tests. Run again at 40 tests, the same fourteen and two more turned tests red: a `claude` name behind an API base
+refused the conversation's marker (2 tests), and a by-name route that had also opted in refused it (2).
 
 The repository's checks are green with the change: `ruff check` and `ruff format --check` clean, `mypy` clean over
-171 source files, and 7,416 tests passed with 33 skipped.
+171 source files, and 7,421 tests passed with 33 skipped.
