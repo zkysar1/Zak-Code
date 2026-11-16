@@ -24393,9 +24393,14 @@ capture.
 The rules a breakpoint has to follow are Anthropic's, read on 2026-11-16 from its prompt-caching reference as bundled
 with the `claude-api` skill. A request may carry at most four breakpoints. A cache write costs 1.25 times the input
 price at the default five-minute lifetime and 2 times at the one-hour lifetime. A read costs 0.05 times input on Sonnet
-5.5 and renews the lifetime. A prefix under 512 tokens on that model is not cached, and that is not an error. A
-breakpoint looks back at most 20 positions for an earlier entry, a run of tool calls or of tool results counting as one.
-A read can land only where an earlier request put a breakpoint.
+5.5 and renews the lifetime: $0.10 against $2.00 per million tokens, the figures that reproduce the second
+measurement's `cost_usd`. (An earlier bundled copy of the reference named the 0.05 rate for Opus 5.5 only.) The
+published pricing page (`platform.claude.com/docs/en/about-claude/pricing`), read the same day, lists Claude Sonnet 5.5
+at $2 input, $2.50 for a five-minute write, $4 for a one-hour write, $0.10 for a cache hit and $10 output per million
+tokens, which is 1.25, 2 and 0.05 times input. A prefix
+under 512 tokens on that model is not cached, and that is not an error. A breakpoint looks back at most 20 positions
+for an earlier entry, a run of tool calls or of tool results counting as one. A read can land only where an earlier
+request put a breakpoint.
 
 What decides where a breakpoint can sit is this runtime's own per-call tail. `_messages_for_call` appends it (context
 from hooks, the turn's prompt context, the plan reminder) as user messages after the persisted history, and the next
@@ -24430,14 +24435,16 @@ text block after them. litellm leaves the caller's own messages as they were on 
 6. The name is the whole rule, and two corners follow from it. A bare `claude` name with an API base set is sent to
    that base as an Anthropic request (measured on litellm 1.86.2: posted to `<base>/v1/messages` in Anthropic's own
    shape). It carried the system block's marker there on the name alone before this ADR, and the conversation's marker
-   follows the first. A route that is Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
+   follows the first. An `anthropic/` route with an API base set takes both markers the same way, because
+   `_supports_cache_control` does not read the base; no test builds that request through the provider. A route that is
+   Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
    sent the by-name request, both markers on the messages and nothing in `extra_body`. What is sent as it was before is
-   a route that carries a marker ONLY because it opted in (ADR-0298), one whose name says nothing, such as
+   a route that carries a marker ONLY because it opted in (ADR-0298), one that is not Anthropic by name, such as
    `openai/Claude4.5`. No gateway has been measured with a second marker, and ADR-0298's repair makes a wrong guess
    expensive there: a gateway that refused the new marker by naming it would be served the plain request for the rest of
    the session and lose the breakpoint it has. A server behind an API base that takes the first marker and refuses the
-   second has no repair at all. Every call to it would fail until the switch of point 7 is off. None has been seen, and
-   the first marker has gone to such a server for as long as the name test has stood.
+   second has no repair at all. Every call to it after a conversation's first would fail until the switch of point 7
+   is off. None has been seen, and the first marker has gone to such a server for as long as the name test has stood.
 7. `Settings.cache_conversation: bool = True` (`ZAKCODE_CACHE_CONVERSATION`) turns it off for the process, and the
    request is then the one sent before this ADR. It is on by default because the uncached conversation was most of what a
    long session cost. The switch is the way back that waits for no build, and the way to run one build both ways.
@@ -24473,12 +24480,18 @@ every later request, so the prefix should hold, but that is reasoning and not a 
 (ADR-0228) changes the tool list, which is ahead of everything, and costs one full write. A compaction rewrites the
 history and costs one full write, as it does for any cache.
 
-Three more things each cost one full write of the conversation by the reference's rules, and none was run here. The
+Two more things each cost one full write of the conversation by the reference's rules, and neither was run here. The
 body of an ended skill turn is cut from an earlier user message at the next turn's start
-(`_elide_ended_skill_bodies`, ADR-0045), and a change inside the prefix un-caches everything after it. A
-reasoning-overflow retry goes out with thinking off (ADR-0056), and a changed thinking setting invalidates the cached
-messages for that request. A credit-pool move to another account (`_pool_failover`) lands where a different
-organization or workspace keeps its cache, which holds nothing of this conversation.
+(`_elide_ended_skill_bodies`, ADR-0045), and a change inside the prefix un-caches everything after it. A credit-pool
+move to another account (`_pool_failover`) lands where a different organization or workspace keeps its cache, which
+holds nothing of this conversation.
+
+A reasoning-overflow retry is not a third by default. The loop asks for thinking off on that retry (ADR-0056), but on
+a route that reaches Anthropic's API `render_thinking_switch` drops the switch and sends nothing in its place, so the
+request's thinking setting is the one the call before it had. What the retry does leave out is a configured
+`reasoning_effort` (`render_reasoning_effort`), which is unset by default. Where one is configured, that one request
+goes out at a different effort, and by the reference a changed effort invalidates the cached messages for it: one
+write, on a retry that is itself rare.
 
 The estimate rests on a filtered sample: sessions with at least ten main calls after their first eight, and one run of
 39 calls. How often a real conversation wakes for a single call, the case that costs more, was not counted. And nothing
@@ -24501,7 +24514,7 @@ assistant message with no text; on the text and not on a thinking block; at most
 message on a second build, and put back on a build that follows a strip. Which routes: two that are Anthropic by name
 take it, and so does a bare `claude` name behind an API base; a by-name route that has also set `prompt_caching` is sent
 the by-name request, with nothing in `extra_body` (two names); three that take no breakpoint are sent what they were;
-four routes that opted in and whose name says nothing (`openai/`, `hosted_vllm/`, `bedrock/`, `vertex_ai/`) keep their
+four routes that opted in and are not Anthropic by name (`openai/`, `hosted_vllm/`, `bedrock/`, `vertex_ai/`) keep their
 one, and nothing rides `extra_body` for the conversation. The switch: on in the
 settings and in a provider built without them, read from the environment, and with it off the request is the old one,
 on the builders and on the wire. On the wire, read from litellm's own client: the marker on the second `tool_result`
