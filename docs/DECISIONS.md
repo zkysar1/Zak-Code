@@ -20178,6 +20178,17 @@ request. The other books a call priced past the cap, buffered and streamed: the 
 and a new session is refused before any request, in the same process and in a fresh one that knows only what the
 ledger holds.
 
+**Addendum (2026-11-16, from the reviews of the refresh).** The paragraph above understates two limits. The cap is
+also checked when a credit refusal or a refused key moves a live session to another account, and that check does not
+read the ledger again. A seat lasts the session's life, so a `prod` session seated on the card-billed account while
+`acct-06` and `acct-07` briefly cannot serve (no key on the machine, a rate-limit cooldown, out of credit, or at the
+steer-off line) stays on the card after they recover. The ledger can also stop the cap binding: a ledger that cannot
+be written never shows a run's spend to the other runs sharing it, a month file that cannot be opened leaves a run
+only what it counted itself, and a month file that is not UTF-8 fails the seating. So set a spend limit on the
+card-billed account at the provider before a `prod` run uses the pool. `tests/test_anthropic_pool_ring.py` also
+gains a test that a `dev`, `test` or `demo` run with only the card-billed account's key is refused before any
+request, by the account's use.
+
 ## ADR-0324: look-alike tools confuse small models, so the readers also load on request, confusable descriptions say when NOT to use them, and recovery names the tool to switch to
 
 Status: accepted. 2026-10-22. Supersedes in part ADR-0228 (the document readers no longer stay unconditionally exposed).

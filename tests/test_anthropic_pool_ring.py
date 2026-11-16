@@ -512,6 +512,25 @@ async def test_no_key_at_all_ends_the_turn_before_any_request(
     assert "no key in the environment (slot 02)" in str(raised.value)
 
 
+@pytest.mark.parametrize("use", ["dev", "test", "demo"])
+async def test_a_run_that_is_not_prod_is_never_seated_on_the_card_account(
+    tmp_path: Path, anthropic: _Anthropic, monkeypatch: pytest.MonkeyPatch, use: str
+) -> None:
+    """With the card-billed account's key the only key present, a run of any other use is refused
+    before any request, and the refusal names the account's use, not its cap."""
+    for slot in range(12):
+        monkeypatch.delenv(f"ANTHROPIC_ACCT_{slot:02d}_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
+    anthropic.answers = {"key-00": "ok"}
+    provider = _provider(tmp_path, anthropic, anthropic_pool_use=use)
+
+    with pytest.raises(QuotaExhausted) as raised:
+        await _text(provider, "buffered")
+
+    assert anthropic.seen == []
+    assert f"acct-00 (slot 00): not for use '{use}'" in str(raised.value)
+
+
 async def test_a_prod_run_finds_no_account_until_the_card_account_has_a_cap(
     tmp_path: Path, anthropic: _Anthropic, accounts: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
