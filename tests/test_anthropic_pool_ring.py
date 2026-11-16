@@ -245,7 +245,7 @@ def _fresh_runtimes(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 @pytest.fixture
 def accounts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Three accounts hold keys and workspaces; no other slot does."""
-    for slot in range(11):
+    for slot in range(12):
         for kind in ("API_KEY", "WORKSPACE_ID", "ORG_ID"):
             monkeypatch.delenv(f"ANTHROPIC_ACCT_{slot:02d}_{kind}", raising=False)
     for slot in ("02", "03", "04"):
@@ -498,7 +498,7 @@ async def test_a_new_session_is_seated_off_an_account_at_the_steer_off_line(
 async def test_no_key_at_all_ends_the_turn_before_any_request(
     tmp_path: Path, anthropic: _Anthropic, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for slot in range(11):
+    for slot in range(12):
         monkeypatch.delenv(f"ANTHROPIC_ACCT_{slot:02d}_API_KEY", raising=False)
     provider = _provider(tmp_path, anthropic)
 
@@ -513,13 +513,29 @@ async def test_a_prod_run_finds_no_account_until_the_card_account_has_a_cap(
     tmp_path: Path, anthropic: _Anthropic, accounts: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
-    provider = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    uncapped = json.loads(_registry(tmp_path, anthropic.base_url).read_text(encoding="utf-8"))
+    for member in uncapped["members"]:
+        if member["id"] == "acct-00":
+            member["monthly_cap_usd"] = None
+    uncapped_path = tmp_path / "uncapped-registry.json"
+    uncapped_path.write_text(json.dumps(uncapped), encoding="utf-8")
+    provider = _provider(
+        tmp_path, anthropic, anthropic_pool_use="prod", anthropic_pool_registry=uncapped_path
+    )
 
     with pytest.raises(QuotaExhausted) as raised:
         await _text(provider, "buffered")
 
     assert anthropic.seen == []
     assert "acct-00 (slot 00): card billing with no monthly cap set" in str(raised.value)
+
+    # The shared registry gives the card account a monthly cap, so the same prod run now
+    # reaches it (no prod promo member holds a key here).
+    reset_runtimes()
+    anthropic.answers = {"key-00": "ok"}
+    capped = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    assert await _text(capped, "buffered") == "ok"
+    assert anthropic.keys_seen() == ["key-00"]
 
 
 def test_the_pool_is_off_unless_asked_for(tmp_path: Path, anthropic: _Anthropic) -> None:
