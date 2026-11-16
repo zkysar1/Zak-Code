@@ -20160,6 +20160,18 @@ provider with a key for account 01 alone: a buffered and a streamed Haiku 5.5 ca
 4 completion tokens, $0.0000038 priced), the session was seated on `acct-01` and the ledger took one row per call. The
 project's check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,387 passed, 23 skipped.
 
+**Addendum (2026-11-16, the copies refreshed from the source's dev branch at d3bd1f2b).** The vectors number 31.
+`acct-01` is gone from the registry: its slot held the key of the card-billed account, `acct-00`, so the live calls in
+the proof above, seated on `acct-01`, were billed to that card and not to promo credit. `acct-00` now serves `prod`
+only and carries a monthly cap of 95 dollars, so a `prod` run reaches it once `acct-06` and `acct-07` cannot serve;
+before, it had no cap and no run was seated on it. `acct-09` and `acct-10` are active and `acct-11` joins, all three
+for `dev`, `test` and `demo`. The cap is read from this runtime's own ledger directory when a session is seated: runs
+that share a directory share the count, a run with another directory starts the month at zero, and a seated session
+keeps its account past the cap, because each call is counted after it is answered. The cap stops new sessions; the hard
+bound is the spend limit on the card-billed account at the provider. `tests/test_anthropic_pool_ring.py` gains a test
+that seeds the month's ledger just under the cap and then at it: under it a `prod` run reaches the card-billed account,
+at it the run is refused before any request.
+
 ## ADR-0324: look-alike tools confuse small models, so the readers also load on request, confusable descriptions say when NOT to use them, and recovery names the tool to switch to
 
 Status: accepted. 2026-10-22. Supersedes in part ADR-0228 (the document readers no longer stay unconditionally exposed).

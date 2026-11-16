@@ -385,8 +385,9 @@ class Settings(BaseSettings):
         default="dev",
         description=(
             "What this run is, for choosing accounts (ZAKCODE_ANTHROPIC_POOL_USE): dev, test, "
-            "demo or prod. A card-billed account serves a run only under a monthly cap, so a "
-            "prod run finds no account until the registry carries one."
+            "demo or prod. An account serves only the uses its registry entry lists; a "
+            "card-billed one also needs a monthly cap there, checked against the month's ledger "
+            "when a session is seated."
         ),
     )
     anthropic_pool_registry: Path | None = Field(

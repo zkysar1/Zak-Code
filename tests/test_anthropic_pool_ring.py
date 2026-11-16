@@ -538,6 +538,41 @@ async def test_a_prod_run_finds_no_account_until_the_card_account_has_a_cap(
     assert anthropic.keys_seen() == ["key-00"]
 
 
+async def test_a_prod_run_is_not_seated_on_the_card_account_at_its_monthly_cap(
+    tmp_path: Path, anthropic: _Anthropic, accounts: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap is read from the month's ledger, which any run sharing the directory may have
+    written: just under it a prod run reaches the card account, at it the run is refused before
+    any request."""
+    monkeypatch.setenv("ANTHROPIC_ACCT_00_API_KEY", "key-00")
+    anthropic.answers = {"key-00": "ok"}
+    cap = next(
+        member["monthly_cap_usd"]
+        for member in json.loads(DEFAULT_REGISTRY_PATH.read_text(encoding="utf-8"))["members"]
+        if member["id"] == "acct-00"
+    )
+    assert isinstance(cap, (int, float))
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    month = ledger / f"anthropic-pool-ledger-{datetime.now(UTC):%Y-%m}.jsonl"
+
+    just_under = json.dumps({"member": "acct-00", "est_usd": cap - 1}) + "\n"
+    month.write_text(just_under, encoding="utf-8")
+    under = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    assert await _text(under, "buffered") == "ok"
+    assert anthropic.keys_seen() == ["key-00"]
+
+    reset_runtimes()
+    anthropic.seen.clear()
+    month.write_text(json.dumps({"member": "acct-00", "est_usd": cap}) + "\n", encoding="utf-8")
+    at_cap = _provider(tmp_path, anthropic, anthropic_pool_use="prod")
+    with pytest.raises(QuotaExhausted) as raised:
+        await _text(at_cap, "buffered")
+
+    assert anthropic.seen == []
+    assert "acct-00 (slot 00): card billing at its monthly cap" in str(raised.value)
+
+
 def test_the_pool_is_off_unless_asked_for(tmp_path: Path, anthropic: _Anthropic) -> None:
     provider = _provider(tmp_path, anthropic, pool=False)
     assert provider._ring is None
