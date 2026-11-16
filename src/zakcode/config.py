@@ -377,8 +377,8 @@ class Settings(BaseSettings):
         description=(
             "Route claude-sonnet-5-5 and claude-haiku-5-5 through the Anthropic credit pool "
             "(ZAKCODE_ANTHROPIC_POOL=true): each session takes the lowest-ranked account that "
-            "has a key in ANTHROPIC_ACCT_<slot>_API_KEY and keeps it, and a credit refusal moves "
-            "it to the next account once. Off by default."
+            "serves this run's use and has a key in ANTHROPIC_ACCT_<slot>_API_KEY, keeps it, "
+            "and a credit refusal moves it to the next account once. Off by default."
         ),
     )
     anthropic_pool_use: str = Field(
@@ -386,7 +386,7 @@ class Settings(BaseSettings):
         description=(
             "What this run is, for choosing accounts (ZAKCODE_ANTHROPIC_POOL_USE): dev, test, "
             "demo or prod. An account serves only the uses its registry entry lists; a "
-            "card-billed one also needs a monthly cap there, checked against the month's ledger "
+            "card-billed one also needs a monthly cap there, checked against the month's spend "
             "when a session is seated."
         ),
     )

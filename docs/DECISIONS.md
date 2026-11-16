@@ -20161,16 +20161,22 @@ provider with a key for account 01 alone: a buffered and a streamed Haiku 5.5 ca
 project's check (`ruff check`, `ruff format --check`, `mypy`, `pytest`) is green: 6,387 passed, 23 skipped.
 
 **Addendum (2026-11-16, the copies refreshed from the source's dev branch at d3bd1f2b).** The vectors number 31.
-`acct-01` is gone from the registry: its slot held the key of the card-billed account, `acct-00`, so the live calls in
-the proof above, seated on `acct-01`, were billed to that card and not to promo credit. `acct-00` now serves `prod`
-only and carries a monthly cap of 95 dollars, so a `prod` run reaches it once `acct-06` and `acct-07` cannot serve;
-before, it had no cap and no run was seated on it. `acct-09` and `acct-10` are active and `acct-11` joins, all three
-for `dev`, `test` and `demo`. The cap is read from this runtime's own ledger directory when a session is seated: runs
-that share a directory share the count, a run with another directory starts the month at zero, and a seated session
-keeps its account past the cap, because each call is counted after it is answered. The cap stops new sessions; the hard
-bound is the spend limit on the card-billed account at the provider. `tests/test_anthropic_pool_ring.py` gains a test
-that seeds the month's ledger just under the cap and then at it: under it a `prod` run reaches the card-billed account,
-at it the run is refused before any request.
+`acct-01` is gone from the registry: its slot held the key of the card-billed account, `acct-00` (the account owner's
+statement, and the two slots' keys compared by hash, both on 2026-11-16), so the live calls in the proof above, seated
+on `acct-01`, were billed to that card and not to promo credit. `acct-00` now serves `prod` only and carries a monthly
+cap of 95 dollars, so a `prod` run reaches it once `acct-06` and `acct-07` cannot serve; before, it had no cap and no
+run was seated on it. `acct-06` and `acct-07` now serve `prod` only (before, `dev`, `test` and `demo`), so a `dev` run
+no longer reaches them. `acct-09` and `acct-10` are active and `acct-11` joins, all three for `dev`, `test` and `demo`.
+The spend the cap is checked against is the larger of what the process has counted and what this runtime's own ledger
+directory holds: runs that share a directory share the count, and a run with another directory sees only what that
+directory holds. The cap is checked only when a session is seated, so a seated session keeps its account past it; each
+call is counted after it is answered, so calls, and sessions running together, can carry the spend past it. The cap
+stops new sessions. The hard bound is a spend limit on the card-billed account at the provider, which nothing in this
+repository sets or checks. `tests/test_anthropic_pool_ring.py` gains two tests. One seeds the month's ledger just under
+the cap and then at it: under it a `prod` run reaches the card-billed account, at it the run is refused before any
+request. The other books a call priced past the cap, buffered and streamed: the session that made it keeps the account,
+and a new session is refused before any request, in the same process and in a fresh one that knows only what the
+ledger holds.
 
 ## ADR-0324: look-alike tools confuse small models, so the readers also load on request, confusable descriptions say when NOT to use them, and recovery names the tool to switch to
 
