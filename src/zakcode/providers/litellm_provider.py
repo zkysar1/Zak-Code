@@ -830,6 +830,33 @@ def _carries_cache_breakpoint(call_kwargs: dict[str, Any]) -> bool:
     return False
 
 
+#: The roles whose message can take the conversation's cache breakpoint (ADR-0385).
+_CONVERSATION_BREAKPOINT_ROLES = frozenset({"assistant", "tool"})
+
+
+def _conversation_breakpoint(wire_messages: list[dict[str, Any]]) -> int | None:
+    """Which message takes the conversation's cache breakpoint, or ``None`` (ADR-0385).
+
+    The last assistant or tool message that has text. Every user message after it stays outside
+    the cached prefix, because the loop's per-call tail (ADR-0193) is user messages appended
+    after the persisted history and gone from the next request: a breakpoint behind the tail
+    would write a prefix no later request can read. This layer cannot tell a tail from the
+    turn's own new user message, so that message waits one call too, and the next request,
+    whose breakpoint has moved past it, caches it. ``None`` on a conversation's first call and
+    on a side call, which send no assistant or tool message, so neither pays for a write that
+    nothing reads. A message with no text (an empty tool result, an assistant message that only
+    calls tools) is passed over: the marker needs a block to sit on.
+    """
+    for index in range(len(wire_messages) - 1, 0, -1):
+        message = wire_messages[index]
+        if message.get("role") not in _CONVERSATION_BREAKPOINT_ROLES:
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return index
+    return None
+
+
 def _max_stop_sequences(model: str) -> int | None:
     """The backend's max number of ``stop`` sequences, when known.
 
@@ -1063,6 +1090,10 @@ class LiteLLMProvider(Provider):
         #: settings behaves exactly as before. A routed model's own settings copy carries
         #: its own value (Agent._build_provider), so it describes this route and no other.
         self.prompt_caching: bool = bool(getattr(settings, "prompt_caching", False))
+        #: Settings.cache_conversation (ADR-0385): whether the conversation takes a cache
+        #: breakpoint of its own on a route that is Anthropic by name. Read from settings only,
+        #: and on when there are none, like send_prompt_cache_key.
+        self.cache_conversation: bool = bool(getattr(settings, "cache_conversation", True))
         #: Extra JSON merged into every request body (see _build_kwargs). Copied so a
         #: later mutation of the Settings dict cannot retroactively change live requests.
         self.extra_body: dict[str, Any] = dict(resolved_extra_body or {})
@@ -1996,8 +2027,9 @@ class LiteLLMProvider(Provider):
                     f"for a home that handles no patient data."
                 )
         # Prompt caching (parity #2): stamp cache_control on the stable system prefix for
-        # caching-capable Anthropic models. Mutates wire_messages[0] in place; a no-op for
-        # every other backend and for a system prompt with no DYNAMIC_BOUNDARY.
+        # caching-capable Anthropic models, and on the conversation behind it (ADR-0385).
+        # Mutates wire_messages in place; a no-op for every other backend and for a system
+        # prompt with no DYNAMIC_BOUNDARY.
         self._apply_prompt_cache(wire_messages)
         call_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -2371,7 +2403,7 @@ class LiteLLMProvider(Provider):
         return call_kwargs
 
     def _apply_prompt_cache(self, wire_messages: list[dict[str, Any]]) -> None:
-        """Rewrite the leading system message into cached + uncached content blocks.
+        """Stamp the request's cache breakpoints: the stable system block, then the conversation.
 
         When the model supports cache_control (Anthropic) or the route opted in (ADR-0298), and
         the system content is a plain string carrying :data:`_CACHE_BOUNDARY`, split it there:
@@ -2380,22 +2412,36 @@ class LiteLLMProvider(Provider):
         memory — changes per turn) a plain block, so the cache breakpoint is stable across
         turns. A no-op (leaves the plain string) for any other backend or a system prompt with
         no boundary. Mutates in place.
+
+        The conversation (ADR-0385). On a route that is Anthropic by name, a request whose
+        system block carries the breakpoint takes one more, on the message
+        :func:`_conversation_breakpoint` names: each call then reads the conversation the call
+        before it wrote, and writes only what was added since. It is stamped on every build of
+        the same messages and lands on the same message each time. An opted-in gateway route
+        (ADR-0298) is left as it was: no gateway was measured with a second marker, and one
+        that refused it by name would be served the plain request, losing the first.
         """
         if not _supports_cache_control(self.model, opted_in=self.prompt_caching):
             return
         if not wire_messages or wire_messages[0].get("role") != "system":
             return
         content = wire_messages[0].get("content")
-        if not isinstance(content, str) or _CACHE_BOUNDARY not in content:
+        if isinstance(content, str) and _CACHE_BOUNDARY in content:
+            cut = content.find(_CACHE_BOUNDARY) + len(_CACHE_BOUNDARY)
+            stable, dynamic = content[:cut], content[cut:]
+            blocks: list[dict[str, Any]] = [
+                {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}
+            ]
+            if dynamic.strip():
+                blocks.append({"type": "text", "text": dynamic})
+            wire_messages[0] = {**wire_messages[0], "content": blocks}
+        if not (self.cache_conversation and _supports_cache_control(self.model)):
             return
-        cut = content.find(_CACHE_BOUNDARY) + len(_CACHE_BOUNDARY)
-        stable, dynamic = content[:cut], content[cut:]
-        blocks: list[dict[str, Any]] = [
-            {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}}
-        ]
-        if dynamic.strip():
-            blocks.append({"type": "text", "text": dynamic})
-        wire_messages[0] = {**wire_messages[0], "content": blocks}
+        if not _carries_cache_breakpoint({"messages": wire_messages[:1]}):
+            return
+        index = _conversation_breakpoint(wire_messages)
+        if index is not None:
+            wire_messages[index] = {**wire_messages[index], "cache_control": {"type": "ephemeral"}}
 
     async def _pace(self) -> None:
         """Sleep just enough to keep request STARTS >= ``_MIN_REQUEST_INTERVAL_S`` apart.

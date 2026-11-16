@@ -368,6 +368,22 @@ class Settings(BaseSettings):
         ),
     )
 
+    # The conversation's cache breakpoint (ADR-0385). A route that is Anthropic by name caches
+    # only what a request marks, and until ADR-0385 the one mark was on the system prompt's
+    # stable block: every call re-sent the whole conversation at the full input price. One more
+    # mark now rides the last assistant or tool message, so a call reads what the call before
+    # it wrote. On by default, because the uncached conversation was most of the cost of a
+    # long session; this is the way back to the request as it was, with no build to wait for.
+    cache_conversation: bool = Field(
+        default=True,
+        description=(
+            "On a route that is Anthropic by name, mark the conversation for the prompt cache "
+            "as well as the system prompt's stable block, so each call reads what the call "
+            "before it wrote (ZAKCODE_CACHE_CONVERSATION=false to stop). No effect on any "
+            "other route."
+        ),
+    )
+
     # The Anthropic credit pool (ADR-0323): several accounts, drained in rank order, one per
     # session, for a run with nothing in front of it that holds the keys (a fleet box, a local
     # run, CI). Off unless set, and never inferred from the model name or from a key being
