@@ -265,6 +265,19 @@ def _from_todos(todos: list[Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def _all_finished(tasks: list[Task]) -> bool:
+    """Whether every primitive step in ``tasks`` is done or cancelled (ADR-0390)."""
+    return bool(tasks) and all(
+        _all_finished(t.children) if t.children else t.status in ("done", "cancelled")
+        for t in tasks
+    )
+
+
+def _leaf_count(tasks: list[Task]) -> int:
+    """How many primitive steps ``tasks`` holds."""
+    return sum(_leaf_count(t.children) if t.children else 1 for t in tasks)
+
+
 def plan_steps(args: dict[str, Any]) -> list[Any] | None:
     """The step list a call's arguments carry: ``tasks``, else the ``TodoWrite`` alias's
     ``todos`` (ADR-0190). ``None`` when neither is a list."""
@@ -400,6 +413,12 @@ class UpdatePlanTool(Tool):
         # the next identical resend read as an edit.
         fields = author_fields(built, sent)
         prior_author = network.last_author_signature
+        if network.is_empty() and submitted == prior_author and _all_finished(built):
+            # ADR-0390: the plan the model last sent finished, and the turn-start reset took it off
+            # the board (ADR-0110). Sent back unchanged it would go up again, and with it the
+            # "answer now" line on every call of a turn that has nothing to do with it. (An
+            # advance never gets here with the board empty: it is refused first, ADR-0388.)
+            return self._finished_resend(built)
         events = network.log_folded + len(network.log)
         advisories = ignored + network.replace_from_author(built)
         network.last_author_signature = submitted
@@ -583,6 +602,17 @@ class UpdatePlanTool(Tool):
             f"{clip(new_current.title, 80)}."
         )
         return ToolResult.ok(output, data=data, hint=_ADVANCED_HINT.format(id=new_current.id))
+
+    @staticmethod
+    def _finished_resend(built: list[Task]) -> ToolResult:
+        """The receipt for a finished plan sent back after the board was cleared (ADR-0390)."""
+        total = _leaf_count(built)
+        return ToolResult.ok(
+            f"Not reopened: this plan already finished ({total}/{total} steps done) and was "
+            "closed, so nothing was updated. Send update_plan again only for new work; otherwise "
+            "go on with your next action.",
+            data={"task_count": 0, "unchanged": True, "reopened": False},
+        )
 
     @staticmethod
     def _unchanged(network: TaskNetwork, finished: int, total: int) -> ToolResult:

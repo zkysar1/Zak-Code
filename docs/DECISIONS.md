@@ -24472,3 +24472,54 @@ done, call update_plan with ..."), and the receipt after a plan update says it b
 which is kept for adding, splitting, dropping or reordering steps. A test sends the shown call as
 written and checks that it closes the step. Two mutants (the plan line and the receipt back to the
 whole-plan wording first) each turn their test red.
+
+## ADR-0390: a finished plan sent back after the turn-start reset stays closed
+
+**Context.** A finished plan leaves the board when the next turn starts (ADR-0110), so a finished goal's
+checklist does not ride into a turn about something else. Measured 2026-11-17 on ten worker sessions of the
+27B model over 2.2 hours, each response joined to the pod's request ledger: 101 responses only updated the
+plan and took 248 model-minutes. 20 of them sent a plan whose every step was finished (66 minutes), and 9
+of those were byte for byte the plan the model had last sent (33 minutes). One session sent its finished
+12-step plan (6,498 characters) back four times in 17 minutes, about 20 model-minutes. The tool put such a
+plan back on the board and answered "Plan unchanged ... complete" with the verdict rail (ADR-0168,
+ADR-0108), and from then on every call of the turn carried the plan line "Plan complete ... Answer the
+user's original request now" for a turn that was already over.
+
+**Decision.** When the board is empty, the model sends exactly the plan it last sent (the submission
+signature, ADR-0168), and every primitive step of that plan is done or cancelled, `update_plan` leaves the
+board empty. Its receipt says so ("Not reopened: this plan already finished (N/N steps done) and was
+closed, so nothing was updated. Send update_plan again only for new work; otherwise go on with your next
+action.") with no hint, and its data is `{"task_count": 0, "unchanged": true, "reopened": false}`, so the
+loop counts it with the other unchanged resends.
+
+**Checked, not changed.**
+- A finished plan resent in the turn it finished in is still on the board and keeps the verdict rail: that
+  is the call the "answer now" line exists for (ADR-0108).
+- A changed plan, an unfinished plan (including one the turn start dropped as abandoned), an `advance`, and
+  a plan sent after the model cleared the board itself (which resets the signature) go up as before.
+- The fresh-eyes review (ADR-0117) reads the plan on the board at a finish. With the board left empty, a
+  later turn's finish does not review an earlier turn's plan again.
+
+**Alternatives rejected.** Announcing the reset when the turn starts: a line on every turn after a finished
+plan, including the turns that never send it back. Clearing a finished plan resent within its own turn:
+that takes the fresh-eyes review and the verdict rail from the one call they are for.
+
+Not verified: that the model sends the plan back less often. To measure after the roll, per session and
+window, against the figures above: plan calls identical to a finished plan and their model-minutes, the
+plan-only share of model time, and closing replies that follow a finished plan.
+
+**The proof.** `tests/test_plan_finished_resend.py`: the resend after the reset is not reopened and leaves
+the board and the record as they were; the same resend within its own turn keeps the verdict rail; a
+changed finished plan, an unfinished plan and a plan sent after the model cleared the board go up; and in
+the loop, a turn that opens by sending back the last turn's finished plan ends with an empty board and no
+plan line on the call after it. `tests/test_plan_review_operator_command.py`'s next-turn test sent turn
+one's finished plan back byte for byte; it now sends a finished plan of its own, which is what it checks
+(the next turn is reviewed again).
+
+Eleven mutants of `update_plan.py`, one site each, are each run against the test named for them, with a
+control test that must stay green, by a harness that checks the file is restored byte for byte: no
+empty-board condition, no finished condition, no same-submission condition (against the changed-plan test
+and the cleared-board test), the early return removed (against the receipt test and the loop test), the
+receipt reworded, `unchanged` dropped from the data, steps counted at the top level only, sub-steps not
+walked, and `cancelled` not read as finished. All eleven turn their test red, every control stays green,
+and each of the six cases is proven by at least one mutant.
