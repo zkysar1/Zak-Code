@@ -24548,3 +24548,64 @@ host's mutation partition harness, were all killed; each of the fourteen cases w
 least one, a control test stayed green under every mutant, and every file was restored byte for
 byte. Among them: the text sent again after the pointer, as ADR-0381 had it; a pinned rule's line
 for a rule cut at the cap; either loop path left without `in_prompt`.
+
+## ADR-0391: the exact-repeat guard sees a loop of rule lookups, and its recovery names the rules
+
+**Context.** ADR-0387 shortened the answers to a rule asked again; it left the exact-repeat guard
+as it was, and noted that a burst still ends at the third identical call at most. Measured
+2026-11-17 on ten worker sessions of a host framework, from transcript metadata only (times, tool
+names, rule names, record sizes):
+- 18:30 to 22:41: 1,720 model calls carried tool calls, and 139 of them (8.1 percent) were a
+  `read_rule` batch byte for byte the same as the batch just before it. The guard tripped 39
+  times, 36 of them on batches of `read_rule` alone.
+- The guard compares whole batches byte for byte, so a pair of rules asked again in the other
+  order, or one rule of the pair alone, reads to it as a new batch. One session asked the same
+  two rules in nine batches over 18 minutes, in both orders; only the ninth was the third
+  identical batch in a row, where the guard trips.
+- Over 24 hours, 36 recovery nudges followed a batch of `read_rule` alone. The next batch was the
+  same batch 15 times, other `read_rule` asks 8 times, and other work 13 times: after 23 of 36,
+  the model read rules again. The general nudge says to READ again to check the real state, which
+  fits an edit loop; in a lookup loop it names the action that repeats.
+- What a lookup loop costs past the guard: one session asked one pinned rule in 60 of its 64
+  batches over 59 minutes; each guard turn end was refused by the host's turn-end hook, which
+  delivered its loop skill again, 13 times (405,122 characters), until the fence ended the turn
+  as `veto_stall` and a wake opened the next one in the same context.
+
+**Decision.** Two changes in the exact-repeat guard, on both turn paths.
+- A batch of plain `read_rule` lookups (no `refresh=true`) counts as a repeat when every rule in
+  it was asked by the batch the guard compares against: the same rules in another order, or some
+  of them. Read from the signatures the guard already keeps (`lookup_rules`, `is_lookup_repeat` in
+  `stuck.py`), so no new state and none of the guard's resets change. Any other batch counts as
+  before.
+- When the repeated batch is such a lookup, the batch the guard does not run is answered "Not
+  answered: you asked read_rule for <rules> again right after its answer, and the text has not
+  changed", and the recovery nudge names every rule of the loop and the current plan step: the
+  texts are already in context (a pinned rule in the system prompt), reading a rule again does not
+  apply it, apply it to that step and take the step's next action now; where a rule leaves a
+  choice, decide it and go on. Any other batch keeps the general answer and nudge.
+
+**Alternatives rejected.** ADR-0387 rejected refusing `read_rule` repeats sooner because a guard
+refusal can end a worker's turn. This change refuses a reordered or partial lookup repeat at the
+same count as an identical one: it is the same loop, the recovery comes first, and a turn ends
+only if the loop goes on past it. Exempting
+`read_rule` from the guard: the loops above are the cost. A larger recovery budget for lookups,
+or taking `read_rule` off the next call: changing the tool definitions for one call makes a local
+engine read the whole context again (ADR-0268), and a second recovery is a second change to
+measure; first this one.
+
+**Not verified.** That the model takes the step's next action more often after this nudge than
+after the general one. To read after the roll, per session against its own hours before: of the
+recovery nudges after a lookup batch, how often the next batch reads rules again (23 of 36
+before); `read_rule` batches in repeat runs an hour; guard turn ends an hour.
+
+**The proof.** `tests/test_lookup_loop_recovery.py`: the repeat test (another order, a subset, a
+superset that is not one, `refresh`, a mixed batch, no batch before), the recovery texts (the
+rules and the current step, no step without a plan, and the general pair kept for any other
+batch), and through both turn paths a reordered and a partial loop refused at the third batch with
+the rules named, beside a positive control whose lookups move on and are all answered. Each test
+was checked against a mutation table: eight single-site mutants of `loop.py` and `stuck.py` (the
+new repeat test off in each guard copy, the lookup texts never chosen, no step named, the nudge
+naming only the refused batch's rules, only an equal set counted as a repeat, `refresh` read as
+a plain lookup, a batch with another tool read as a lookup), each run against its named tests by
+the host's mutation partition harness; all eight were killed, and every file was restored byte for
+byte.
