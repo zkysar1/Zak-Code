@@ -15,7 +15,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from zakcode.agent.degeneration import repeated_tail
+from zakcode.agent.degeneration import RestatedLines, repeated_tail
 from zakcode.agent.loop import _DEGENERATION_NUDGE, AgentLoop
 from zakcode.events import AgentDone, AgentEvent, AgentStatus
 from zakcode.messages import Message
@@ -373,3 +373,64 @@ def test_per_call_max_tokens_override_wins() -> None:
     kwargs = p._build_kwargs([{"role": "user", "content": "hi"}], None, max_tokens=64)
     assert kwargs["max_completion_tokens"] == 64  # renamed for OpenAI's own API (ADR-0279)
     assert "max_tokens" not in kwargs
+
+
+# ── ADR-0389: a summary that writes its own lines again ─────────────────────────────
+
+
+def _item(i: int) -> str:
+    return f"- item {i}: the session changed module_{i}.py and ran its tests\n"
+
+
+_OPENING = "<summary>\n## Goals\n"
+
+
+def _restating(lines: int = 20, block: int = 9, times: int = 4) -> tuple[str, int]:
+    """``lines`` distinct lines, then the first ``block`` of them again, ``times`` times; and the
+    offset of the first line written again."""
+    head = _OPENING + "".join(_item(i) for i in range(lines))
+    return head + "".join(_item(i) for i in range(block)) * times, len(head)
+
+
+def test_a_restated_block_is_caught_where_it_began() -> None:
+    text, start = _restating()
+    assert RestatedLines().feed(text) == start
+
+
+def test_the_verdict_does_not_depend_on_how_the_text_is_split() -> None:
+    text, start = _restating()
+    for size in (1, 7, 64):
+        watch = RestatedLines()
+        found = [watch.feed(text[i : i + size]) for i in range(0, len(text), size)]
+        assert next(at for at in found if at is not None) == start
+
+
+def test_a_line_is_judged_when_it_ends() -> None:
+    # Twenty lines, then ten of them again: the tenth convicts once its line ends, not before.
+    text, start = _restating(20, 10, 1)
+    watch = RestatedLines()
+    assert watch.feed(text[:-1]) is None
+    assert watch.feed("\n") == start
+
+
+def test_two_new_lines_in_twelve_still_convict() -> None:
+    # A restated block mutates now and then; two new lines in the window do not acquit it.
+    head = _OPENING + "".join(_item(i) for i in range(20))
+    again = [_item(i) for i in range(12)]
+    again[3] = "- a new line the model wrote while it restated the goals\n"
+    again[7] = "- another new line, written in the middle of the same run\n"
+    assert RestatedLines().feed(head + "".join(again)) == len(head)
+
+
+def test_a_healthy_summary_with_a_few_repeated_lines_is_not_convicted() -> None:
+    # A line that recurs now and then, and headings, are what a healthy summary repeats.
+    parts = [_OPENING]
+    for i in range(48):
+        parts.append(_item(i))
+        if i % 8 == 7:
+            parts.append("## Next\n- verified: the full test suite passed on the branch\n")
+    assert RestatedLines().feed("".join(parts)) is None
+
+
+def test_short_lines_never_count() -> None:
+    assert RestatedLines().feed("- done.\n---\n## Next\n" * 40) is None

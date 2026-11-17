@@ -24548,3 +24548,56 @@ host's mutation partition harness, were all killed; each of the fourteen cases w
 least one, a control test stayed green under every mutant, and every file was restored byte for
 byte. Among them: the text sent again after the pointer, as ADR-0381 had it; a pinned rule's line
 for a rule cut at the cap; either loop path left without `in_prompt`.
+
+## ADR-0389: a summarizer reply that begins writing its own lines again is closed there
+
+**Context.** Asked with thinking off (ADR-0366), the summarizer on the pod's 27B model often writes
+its summary and then writes it again: a block of lines copied from earlier in the same reply, over
+and over, until it closes its tag or reaches the 16,469-token cap. Measured 2026-11-17 on ten worker
+sessions of a host framework, from transcript metadata only (line counts, never text), over the 86
+summaries they installed since 2026-11-16T12:00: 41 repeated five or more of their own lines, 11
+ended in a run where at least 10 of the last 15 lines stood earlier in the reply, the repeated
+blocks ran 9 to 54 lines, and the worst summary repeated 281 of its 357 lines. The repeats are
+installed, held to the line (ADR-0369), so they take the room the older history the harness carries
+after a summary would have had (ADR-0370). On the pod's ledger, 59 summarizer calls ran to the cap
+in the 24 hours to 2026-11-17T16:40Z, 622 engine-minutes. Nothing judged a summarizer reply while it
+streamed but ADR-0376's tag watcher: `repeated_tail` convicts one short line repeated, not a block,
+and `self_repetition` is read only on a final answer that stopped at the cap.
+
+**Decision.** `RestatedLines` in `zakcode.agent.degeneration` watches a streaming text a line at a
+time. A line counts once its spacing is collapsed and it is at least 20 characters long (headings
+and short list items repeat in a healthy summary). When 10 of the last 12 counted lines stood
+earlier in the text, it returns where that run began. Both summarizer collectors feed it every
+visible delta; on a verdict they close the stream, so the server stops writing as it does on
+ADR-0376's cut, and return the text up to the run with the finish reason `restated`. `_summary_of`
+keeps every line of such a reply, since it stops where a line starts, under the same tag and floor
+as a cut reply. A summary that passes is held to the line and noted as cut (ADR-0369); one that
+does not is a rejection, asked again at the rejection-retry temperature (ADR-0242). Slices, folds
+and the condensing ask go through the same collectors. The compaction record counts
+`summarizer_restated`, kept or not.
+
+**Alternatives rejected.** Dropping repeated lines once the reply ends: it keeps the new lines a run
+carries, but not the minutes a run to the cap costs. A repetition or DRY penalty sent with the ask:
+it changes every summary, the healthy ones too, and a summary rightly repeats paths and ids. A lower
+cap: a reply with no run would be cut as well. A longer unit for `repeated_tail`'s line branch: it
+judges the tail of a final answer, and a block is not a tail.
+
+**Not verified.** The minutes saved. The ledger shows which calls ran to the cap but not what they
+wrote past the line, so how many were runs is not known. Replayed through `RestatedLines` in
+40-character deltas, the 86 installed summaries gave 34 verdicts, each on a summary with 11 or more
+repeated lines, and none on the other 52, which held 0 to 12 (one held 20, spread, never 10 in 12);
+each verdict was the same fed whole. The cut removed 1,526 of the 1,563 repeated lines of the 34 and
+kept 575 to 3,574 words of each. It also dropped 12,014 words of lines after the run that neither
+repeated nor shared 60 percent of their words with a line before it, about 350 words a summary: what
+the summarizer wrote between restated blocks. To read after the roll, per session against its own
+hours before: summarizer calls at the cap an hour and their engine-minutes, repeated lines per
+installed summary, and the carried history the installed summaries hold.
+
+**The proof.** `tests/test_degeneration.py`, six cases: a restated block caught where it began, the
+same verdict at three delta sizes, a line judged when it ends, two new lines in twelve still
+convicting, a healthy summary with a recurring line and headings acquitted, and short lines never
+counted. `tests/test_compact_loop.py`, six: a restating reply closed before its end and installed
+once through its last line before the run, noted as held; one with too little before the run asked
+again and the resample installed; each collector closing the stream where the run began; and
+`_summary_of` keeping every line of a restated reply and refusing one with no tag or under the
+floor.
