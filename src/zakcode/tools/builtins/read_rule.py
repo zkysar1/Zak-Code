@@ -38,11 +38,11 @@ MAX_RULE_BODY_CHARS = 16000
 
 #: The answer to EVERY repeat of a rule whose text is still in the conversation (ADR-0372,
 #: ADR-0379). Numbered, so the model sees how often it has asked for the same text; it names the
-#: plan's current step and restates the rule's summary. The text comes back with ``refresh=true``,
-#: or for an ask right after this line (ADR-0381). ADR-0372 gave this line once and then the body,
-#: and the body was asked for again within minutes: measured 2026-11-10 on ten worker sessions,
-#: one read three rules nine times each in 21 minutes with one plan update and no other tool
-#: between them.
+#: plan's current step and restates the rule's summary. The text comes back with ``refresh=true``;
+#: an ask right after this line gets :data:`JUST_ASKED` (ADR-0387). ADR-0372 gave this line once
+#: and then the body, and the body was asked for again within minutes: measured 2026-11-10 on ten
+#: worker sessions, one read three rules nine times each in 21 minutes with one plan update and no
+#: other tool between them.
 ALREADY_READ = (
     "[already read; ask {n}] Rule {name!r} is in your context from an earlier read_rule call, "
     "unchanged; this is ask {n} for it. Apply the text you have{step}. Reading it again changes "
@@ -58,18 +58,34 @@ _MAX_COUNTED_ASKS = 99
 #: registry's 0.6 unrelated names already score as neighbours.
 _CLOSEST_RULE_RATIO = 0.72
 
-#: The lead on the text sent again for an ask that comes right after that rule's own pointer, with
-#: no other tool result between (ADR-0381): the pointer did not land. ADR-0379 answered it with the
-#: next pointer, and in a trial two sessions asked again and again until the exact-repeat guard
-#: refused them; ADR-0372's text at that ask is the measured baseline that the guard refused less.
-ASKED_AGAIN = (
-    "[asked again right after its pointer] The full text of rule {name!r} follows, unchanged. "
-    "Apply it to your current step; the next ask for it gets a pointer."
+#: The answer to an ask that comes right after that rule's own pointer line, with no other tool
+#: result between (ADR-0387). ADR-0381 sent the text again here. Measured 2026-11-17 on two worker
+#: sessions: the same rule was asked again at once after 4 of the 7 texts sent again, against 8 of
+#: 17 pointers and 1 of 4 exact-repeat refusals, and those 7 texts were 25,877 of the 39,711
+#: characters of rule text sent while the model already held it. So this line says where the text
+#: is and that the ask changed nothing; it opens like the pointer, so the count goes on.
+JUST_ASKED = (
+    "[already read; ask {n}] Rule {name!r} was answered by the tool result just before this call, "
+    'and its text has not changed: it is in your context, from "# {name}" to '
+    '"[end of rule {name!r}]". This ask changed nothing. Apply that text{step} and go on with '
+    "your work; refresh=true returns it again only if you need its exact wording."
+)
+
+#: The answer to a plain ask for a rule pinned whole in the system prompt (``alwaysApply``,
+#: ADR-0105, ADR-0387). Before, the first ask in each window sent the text the prompt already
+#: held, and later ones alternated pointer and text: measured 2026-11-17 on one worker session,
+#: three pinned rules sent 13,834 such characters, and the rule its host pinned for being read
+#: most was asked seven times in three minutes. Opens like the pointer, so the count goes on.
+PINNED = (
+    "[already read; ask {n}] Rule {name!r} is pinned: its full text is in your system prompt, "
+    'under the heading "## {name}", and it is always in force. Apply it{step}; refresh=true '
+    "returns it here only if you need it as a tool result."
 )
 
 
 def _right_after_its_pointer(ctx: ToolContext, name: str) -> bool:
-    """True when the conversation's most recent tool result is a pointer for rule ``name``."""
+    """True when the conversation's most recent tool result is a pointer line for rule ``name``:
+    the plain one, :data:`JUST_ASKED` or :data:`PINNED`, which all open the same way."""
     last = getattr(ctx, "last_tool_output", None)
     previous = last() if last is not None else None
     head = r"\[already read; ask [0-9]+\] Rule " + re.escape(repr(name)) + " "
@@ -81,20 +97,52 @@ def _pointer_head(name: str, n: int) -> str:
     return f"[already read; ask {n}] Rule {name!r} "
 
 
-def _pointer(rule: Any, name: str, ctx: ToolContext, in_context: Callable[[str], bool]) -> str:
+def rule_text(name: str, rule: Any) -> str | None:
+    """The text ``read_rule`` returns for ``rule`` under ``name``, or ``None`` for an empty body.
+
+    One function renders it for the tool and for the rules a compaction carries (ADR-0386), so a
+    carried text is the very string the pointer's check (ADR-0372) looks for."""
+    body = (rule.content or "").strip()
+    if not body:
+        return None
+    if len(body) > MAX_RULE_BODY_CHARS:
+        body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
+    # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
+    # disk is a prefix of the older text, and without it the check below read that as unchanged.
+    return f"# {name}\n{body}\n[end of rule {name!r}]"
+
+
+def _pointer(
+    rule: Any,
+    name: str,
+    ctx: ToolContext,
+    in_context: Callable[[str], bool] | None,
+    template: str = ALREADY_READ,
+) -> str:
     """The answer to a repeat: ask N, where N - 1 of this rule's pointers are still in the
     conversation. A conversation read, as ADR-0372's check is, so a compaction or an elision
-    that takes the pointers away starts the count over with nothing to reset."""
+    that takes the pointers away starts the count over with nothing to reset. ``template`` is
+    the plain pointer, :data:`JUST_ASKED` or :data:`PINNED` (ADR-0387)."""
     n = 1
-    while n <= _MAX_COUNTED_ASKS and in_context(_pointer_head(name, n)):
+    while n <= _MAX_COUNTED_ASKS and in_context is not None and in_context(_pointer_head(name, n)):
         n += 1
     network = getattr(ctx, "task_network", None)
     current = network.current() if network is not None else None
     step = f" to your current step, {current.title!r}" if current is not None else ""
     summary = rule.summary()
-    return ALREADY_READ.format(
+    return template.format(
         n=n, name=name, step=step, summary=f" Its summary: {summary}" if summary else ""
     )
+
+
+def _pinned_in_prompt(ctx: ToolContext, rule: Any) -> bool:
+    """True when the system prompt holds this rule's whole text: pinned (ADR-0105), and its block
+    in the prompt's rules uncut, so neither the per-rule cap nor the rules budget took any of it."""
+    in_prompt = getattr(ctx, "in_prompt", None)
+    body = (rule.content or "").strip()
+    if not getattr(rule, "always_apply", False) or not body or in_prompt is None:
+        return False
+    return bool(in_prompt(f"## {rule.name}\n{body}"))
 
 
 class ReadRuleTool(Tool):
@@ -175,23 +223,28 @@ class ReadRuleTool(Tool):
                 fix=f"{lead}Use one of the available rules: {available}.",
             )
 
-        body = (rule.content or "").strip()
-        if not body:
+        text = rule_text(name, rule)
+        if text is None:
             return ToolResult.error(
                 f"rule {name!r} exists but its body is empty.",
                 fix="The rule file may be a stub; proceed without it.",
             )
-        if len(body) > MAX_RULE_BODY_CHARS:
-            body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
-        # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
-        # disk is a prefix of the older text, and without it the check below read that as unchanged.
-        text = f"# {name}\n{body}\n[end of rule {name!r}]"
+        # Every ask for a rule that exists is counted, pointers included: a compaction carries
+        # the most-asked texts across it (ADR-0386).
+        note = getattr(ctx, "note_rule_read", None)
+        if note is not None:
+            note(name)
         in_context = getattr(ctx, "in_context", None)
-        # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); the
-        # body comes back when asked for on purpose, or for an ask right after this rule's own
-        # pointer, which did not land (ADR-0381).
-        if in_context is not None and args.get("refresh") is not True and in_context(text):
+        refresh = args.get("refresh") is True
+        # A rule pinned whole in the system prompt is already there: say where, never send it again
+        # unless asked for on purpose (ADR-0387).
+        if not refresh and _pinned_in_prompt(ctx, rule):
+            return ToolResult.ok(_pointer(rule, name, ctx, in_context, PINNED))
+        # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); one
+        # right after this rule's own pointer gets the firmer line that says where the text is, not
+        # the text again (ADR-0387). The body comes back only when asked for on purpose.
+        if in_context is not None and not refresh and in_context(text):
             if _right_after_its_pointer(ctx, name):
-                return ToolResult.ok(f"{ASKED_AGAIN.format(name=name)}\n{text}", verbatim=True)
+                return ToolResult.ok(_pointer(rule, name, ctx, in_context, JUST_ASKED))
             return ToolResult.ok(_pointer(rule, name, ctx, in_context))
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped
