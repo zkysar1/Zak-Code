@@ -204,6 +204,8 @@ def render_compaction_rows(
     session_id: str = "",
     cwd: str = "",
     timestamp: datetime | None = None,
+    carried_rules: int = 0,
+    carried_rules_chars: int = 0,
 ) -> str:
     """The two lines a compaction adds to the transcript file, newline-terminated (ADR-0206).
 
@@ -225,7 +227,9 @@ def render_compaction_rows(
     ``compactMetadata`` carries only what was measured: ``trigger`` (``auto`` / ``manual`` /
     ``resume``), the live message counts on each side, and ``preTokens`` — the provider's
     last REPORTED prompt size (ADR-0077) — only when there is one. No estimate is written
-    under a measured name. Never raises; ``summary`` is written as given.
+    under a measured name. ``carriedRules`` and ``carriedRulesChars`` say how many rule texts
+    the loop carried after the summary and how long that message is (ADR-0386), only when it
+    carried any. Never raises; ``summary`` is written as given.
     """
     ts = _iso_z(timestamp if timestamp is not None else datetime.now(UTC))
     envelope: dict[str, Any] = {
@@ -242,6 +246,9 @@ def render_compaction_rows(
     }
     if pre_tokens > 0:
         metadata["preTokens"] = int(pre_tokens)
+    if carried_rules > 0:
+        metadata["carriedRules"] = int(carried_rules)
+        metadata["carriedRulesChars"] = int(carried_rules_chars)
     boundary = {
         "type": "system",
         "subtype": "compact_boundary",

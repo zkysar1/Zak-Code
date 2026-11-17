@@ -24391,3 +24391,160 @@ under the reading bound, no command-turn hold, a sub-agent consuming, and urgent
 eighteen turn their tests red, and every one of the eighteen cases is proven by at least one mutant. The
 first run covered seventeen: the skip mutant's replacement text already occurs in `loop.py`, which the
 harness refuses, so it was run on its own with a replacement that does not, and went red.
+
+## ADR-0386: a compaction carries the rule texts the session read, right after the summary
+
+**Context.** Under `lean_rules` the prompt carries a rules index and `read_rule` fetches a body; a
+repeat while the text is in the conversation gets a numbered pointer (ADR-0379), and an ask right
+after its own pointer gets the text (ADR-0381). The pointer's check reads the conversation
+(ADR-0372), so a compaction, which summarizes the region holding the fetched texts, sends every rule
+back to the model one call at a time, though the index tells the model that a text it read stays in
+its context. Measured 2026-11-17 on a host framework's worker sessions, from transcript metadata
+only: 51 of one session's 68 tool calls after its 10:36Z compaction were `read_rule`; of the 30
+calls after each of another session's six compactions, 19, 12 and 10 were `read_rule` after three
+of them; two other sessions counted the same way made 0 of 44 and 4 of 124. Those sessions compact
+at 109,826 to 117,845 reported prompt tokens of a 131,072 window. The host's 37 rules run 515 to
+16,108 characters as `read_rule` returns them; the seven the first session read in one batch before
+a compaction total 17,982.
+
+**Decision.** The session counts every `read_rule` ask for a rule that exists, pointers included:
+`Session.rule_reads` holds `[asks, latest]` per rule name, written through a new
+`ToolContext.note_rule_read` that the loop wires beside `in_context`. When a compaction installs a
+summary, the loop puts ONE system message right after it, opening with
+`[rules carried across the compaction]` and a line saying the texts are in force and need not be
+read again, then the text of each rule the session asked for, exactly as `read_rule` returns it
+(`rule_text`, the one function that renders both). Most-asked first, then most recently asked. Not
+carried: a rule no longer in the registry, a rule pinned in the prompt (`alwaysApply`, ADR-0105),
+and a rule whose text a tool result in the kept tail still holds. The message is held to 8 percent
+of the context window, counted like the kept tail (the provider's estimate, at least 3 characters
+a token, ADR-0132); a rule that does not fit is skipped and a smaller one after it can still go.
+The pointer's check now also reads that message, so an ask for a carried rule gets the pointer,
+and an ask right after it still gets the text. The summarizer never reads the message: at the next
+compaction it is in the old region, skipped, and carried again from the count, so there is one at
+most; a summary followed only by it is still nothing to compact. A session that asked for no rule
+compacts exactly as before. The boundary row in the transcript says `carriedRules` and
+`carriedRulesChars` when something was carried, the compaction's cost record always carries
+`carried_rules` and `carried_rules_chars`, and a turn end that falls before the kept tail goes as it
+did before the summary had company (ADR-0361).
+
+**Alternatives rejected.** Putting the most-read rules back in the prompt in full (`alwaysApply`,
+ADR-0105): every session pays for them from its first call, whether it needs them or not, the choice
+is the host's rule by rule, and the pinned render cuts each body at 8,192 characters without a note,
+inside the index's 32,768. Writing the texts into the system prompt at the compaction: an engine's
+prefix cache keys on the prompt head, and a message after the summary reaches the model the same way
+without moving anything earlier. Re-sending them as a synthetic `read_rule` call and result: the
+transcript would show calls the model never made, and the host counts `read_rule` calls from it.
+Carrying every text the window read with no cap: the host's twenty longest unpinned rules are
+115,467 characters, 29k to 38k tokens, carried into a context the next compaction must fit.
+Counting from the conversation at compaction time instead of on the session: the previous window's
+asks are in the summary by then, so the order would forget the rules read most.
+
+**The budget.** 8 percent of 131,072 is 10,485 tokens, about 31,000 characters at 3 a token.
+Compaction fires at no more than 90 percent of the window (ADR-0240). A rebuilt context is the
+system prompt, the summary (asked for in 1/32 of the window, 4,096 tokens here, and condensed once
+past 1.25 times that, ADR-0330 and ADR-0331), the carry, and a kept tail held to a quarter of the
+window (ADR-0132): about 37 percent plus the system prompt, so the carry cannot bring it to the
+threshold unless the system prompt and tool schemas alone took more than half the window. The
+window loses what the carry holds until the next compaction; a session that fetched the same texts
+again would hold them anyway, plus the calls. The first session's batch, replayed offline through
+this change with the host's rules, carries six of its seven (the seventh is pinned) in one message
+of 17,630 characters: 4,407 tokens at 4 characters a token, 5,876 at 3.
+
+Not verified: that a session given the texts stops asking for them. A carried rule asked for gets
+the pointer, and the text at a second ask right after it, as within any window. Nor that the
+system-message shape renders on every chat template: it is the summary's shape, a second system
+message after it. To read after the roll, per session against its own hours before: `read_rule`
+calls among the 30 after each compaction (the bar: under 10 percent), `carriedRules` on each
+boundary row, compactions per hour (the carry takes window room), and summaries installing as
+before. A `read_rule` ask for a pinned rule still returns its text, as before; that is outside this
+change.
+
+**The proof.** `tests/test_carry_rules.py`, nineteen cases:
+- The carry: the texts after the summary and before the kept tail through both turn paths; a
+  carried rule's pointer and then its text through both paths; no rule read, the same compacted
+  list as before and no count on the row; the row's `carriedRules`, `carriedRulesChars` and
+  `postMessages`; a second compaction whose summarizer never sees the texts and that leaves one
+  carried message; a summary with only the carry after it is nothing to compact.
+- The order and the budget: most-asked first, then most recent; the budget keeping the most-asked of
+  two and dropping the other, and the other when the counts swap; a rule over the budget skipped
+  and a smaller one after it carried; pinned rules and rules still in the tail not carried; a rule
+  gone from the registry passed over.
+- The count: every ask and the latest counted through both turn paths; the tool noting found rules
+  by their own name, a pointer included, a missing or empty rule not; the count kept with the
+  session.
+- Turn ends: the unit shift with the carry at the head, and the same through the loop.
+
+On 78d01663608d a compaction keeps the summary and the kept tail alone, and a rule read before the
+boundary comes back only through another `read_rule` call. Twenty single-purpose mutants of
+`loop.py`, `compact.py`, `read_rule.py`, `store.py` and `transcript.py`, one site each except one
+that removes two guards together, were each run against the test named for them by the host's
+mutation partition harness, which restores every file byte for byte: all twenty killed, each of the
+fifteen cases killed by at least one, a control test green under every mutant, and every restore
+clean. The two-guard mutant is reported as broad: it proves its test, not which guard.
+
+## ADR-0387: read_rule no longer sends again a text the model already holds
+
+**Context.** ADR-0386 carries the texts a session read across a compaction, which answers the first
+fetch of each rule after one. Most `read_rule` volume is the same rule asked again inside one
+window. Measured 2026-11-17 on two worker sessions of a host framework, from transcript metadata
+only (times, rule names, result sizes), each since its last compaction:
+- One session: 13 of its 41 tool calls were `read_rule`, all one rule, in bursts. By size: the text
+  (6,293 characters), then per burst its pointer (505), the text again with ADR-0381's lead (6,467),
+  and a third identical call refused by the exact-repeat guard (104, the doom-loop turn end): three
+  refusals in 12 minutes.
+- The other: 27 of 125 calls, over nine names, one of them not a rule. One rule was asked 11 times:
+  its text once, its pointer eight times and the text again twice; its last six asks came 2 to 22
+  calls apart and each got the pointer. The rule its host pinned for being read most (ADR-0381) was
+  asked seven times in three minutes and answered text, pointer, text again, pointer, pointer, text
+  again, refusal. Two other pinned rules sent 6,459 and 6,760 characters the prompt already held: a
+  pinned rule's prompt copy opens `## name`, which ADR-0372's check, looking for the tool's own
+  form, never matches.
+
+Across both, the same rule was asked again at once after 8 of 17 pointers, after 4 of 7 texts sent
+again, and after 1 of 4 refusals. Of the 39,711 characters of rule text sent while the model already
+held it, the texts sent again were 25,877 and the pinned texts 13,834.
+
+**Decision.** Two changes in `read_rule`. A rule the model does not hold still gets its text, every
+other repeat ADR-0379's numbered pointer, and `refresh=true` the text.
+- A plain ask for a rule pinned whole in the system prompt gets a numbered line: it is pinned, its
+  text is in the system prompt under the heading `## name`, it is always in force. Whole means the
+  rule is `alwaysApply` and its block, `## name` and the body, is in the prompt's rules text uncut,
+  asked through a new `ToolContext.in_prompt` that the loop answers from its own prompt builder.
+  So a pinned rule the per-rule cap cut or the rules budget dropped still gets its text, and so
+  does a bare context.
+- An ask right after the rule's own pointer line, with no other tool result between (ADR-0381's
+  moment), gets a firmer line in place of the text again: the tool result just before answered it,
+  the text has not changed and is in context from `# name` to `[end of rule 'name']`, the ask
+  changed nothing; apply it and go on, and `refresh=true` returns it if the exact wording is needed.
+
+Both lines open like the pointer, so the ask count goes on and the moment is found as before.
+
+**Alternatives rejected.** A firmer line right after a full text instead: in these windows that
+position reached the tool twice in 40 asks; the guard refused the other repeats after a text before
+the tool ran. ADR-0381's text again, kept once per window: the first text sent again in a window
+was followed at once by another ask no less often than the later ones. Exempting `read_rule` from
+the exact-repeat guard (ADR-0381 rejected it) or refusing its repeats sooner: a guard refusal can
+end a worker's turn. Rewording the index or the rules whose summaries name a recurring moment, the
+asks between other work: that text is the host's.
+
+**Not verified.** That the asks fall. The guard counts identical calls, not answers, so a burst
+still ends at the third identical call at most. What changes is that its second answer is short and
+names where the text is, and that no pinned text is sent again. Replayed through this change with
+the host's rules and the same asks, each step title as long as in the pointer measured beside it:
+the first session's 29,036 characters of `read_rule` answers come to 11,021, its three texts sent
+again (6,467 each) becoming lines of 462, and the second's 40,918 to 23,066. To read after the
+roll, per session against its own hours before: the `read_rule` share of calls, the same rule asked
+again at once after the firmer line (against 4 of 7 after the text again), guard refusals of
+`read_rule` calls an hour, and characters of rule text sent an hour.
+
+**The proof.** `tests/test_rule_reask.py`, eleven cases: the pinned line and its count, `refresh`
+on a pinned rule, a pinned rule cut at the cap and one the budget dropped, a rule not pinned whose
+block the full render holds, a bare context, the firmer line naming the text's first and last lines,
+and the loop answering from its own prompt through both turn paths and a loop whose prompt has no
+rules. ADR-0381's cases in `tests/test_read_rule_tool.py` and the carried-rule case in
+`tests/test_carry_rules.py` now expect the firmer line, and the text sent once. Seventeen
+single-site mutants of `read_rule.py` and `loop.py`, each run against the test named for it by the
+host's mutation partition harness, were all killed; each of the fourteen cases was killed by at
+least one, a control test stayed green under every mutant, and every file was restored byte for
+byte. Among them: the text sent again after the pointer, as ADR-0381 had it; a pinned rule's line
+for a rule cut at the cap; either loop path left without `in_prompt`.

@@ -112,10 +112,12 @@ from pydantic import BaseModel, Field
 from zakcode.agent._stream import ToolCallAccumulator
 from zakcode.agent.budget import IterationBudget
 from zakcode.agent.compact import (
+    CARRIED_RULES_MARKER,
     CONTINUATION_NOTE,
     ESTIMATE_MARGIN_FRACTION,
     SUMMARY_MARKER,
     Compactor,
+    is_carried_rules,
     is_summary,
 )
 from zakcode.agent.degeneration import (
@@ -250,6 +252,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
+from zakcode.tools.builtins.read_rule import rule_text
 from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
@@ -715,7 +718,14 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_cut": 0,
         "summary_chars": 0,
         "summary_tokens_estimate": 0,
+        "carried_rules": 0,  # ADR-0386: rule texts carried after the summary, and their message
+        "carried_rules_chars": 0,
     }
+
+
+def _carried_count(message: Message) -> int:
+    """How many rule texts a carried-rules message holds: each closes with its own line."""
+    return message.text.count("\n[end of rule ")
 
 
 def _strip_model_markup(text: str) -> str:
@@ -924,6 +934,21 @@ async def _collect_stream_watching_tag(
 #: code-heavy text; head-heavy head+tail keep with an elision note between.
 _CLAMP_WINDOW_FRACTION = 0.25
 _CLAMP_CHARS_PER_TOKEN = 3
+
+#: ADR-0386: the share of the context window the rule texts carried across a compaction may
+#: take, counted like the kept tail (the provider's estimate, floored at
+#: ``_CLAMP_CHARS_PER_TOKEN``). 10,485 tokens of a 131,072 window, about 31,000 characters:
+#: the five rules a worker session re-read in batches after its compaction measured 16,523
+#: (2026-11-17). With the tail held to a quarter of the window (ADR-0132) and compaction at
+#: about 89 percent of it (ADR-0240), the carry alone cannot bring a rebuilt context to the
+#: threshold unless the system prompt were over 47 percent of the window.
+_CARRY_RULES_FRACTION = 0.08
+#: ADR-0386: the head line of the carried rules message. It opens with ``CARRIED_RULES_MARKER``.
+_CARRIED_RULES_HEAD = (
+    f"{CARRIED_RULES_MARKER} You read these rules with read_rule before the compaction. Their "
+    "full text follows, unchanged and still in force: apply it, and do not read them again. "
+    "Any other rule in the index is still one read_rule call away."
+)
 #: There is NO assumed window when a provider declares none: the loop refuses to run on an
 #: unknown window (ADR-0066, ``_window``). A stand-in here once sized this clamp at 6 KB for
 #: a 131k pod and cut every skill body to head+tail.
@@ -3472,6 +3497,8 @@ class AgentLoop:
         """
         parts: list[str] = []
         for message in messages:
+            if is_carried_rules(message):
+                continue  # rule texts the harness carries again from its count (ADR-0386)
             lines: list[str] = []
             label: str = message.role
             text = message.text.strip()
@@ -4013,7 +4040,9 @@ class AgentLoop:
         before = len(self.session.messages)
         pre_tokens = self.session.prompt_anchor_tokens  # measured, and about to be forgotten
         self.session.messages[:] = messages
-        self.session.shift_turn_ends(before, summarized=summary is not None)  # ADR-0361
+        # ADR-0361; the rules carried after the summary lead the kept tail too (ADR-0386).
+        head = 2 if len(messages) > 1 and is_carried_rules(messages[1]) else 1
+        self.session.shift_turn_ends(before, summarized=summary is not None, head=head)
         self._mark_transcript_compacted(
             summary, trigger=trigger, before=before, pre_tokens=pre_tokens
         )
@@ -4030,7 +4059,7 @@ class AgentLoop:
 
     def _tool_output_in_context(self, text: str) -> bool:
         """True if a tool result in the conversation still contains ``text``, character for
-        character (ADR-0372).
+        character (ADR-0372), or the rules a compaction carried do (ADR-0386).
 
         It reads the conversation itself, so a compaction, an elision or a rule edited on disk
         needs no reset. ``read_rule`` closes its text with a line naming the rule, so a contained
@@ -4040,7 +4069,71 @@ class AgentLoop:
             isinstance(block, ToolResultBlock) and text in block.output
             for message in self.session.messages
             for block in message.blocks
+        ) or any(
+            is_carried_rules(message) and text in message.text for message in self.session.messages
         )
+
+    def _note_rule_read(self, name: str) -> None:
+        """Count one ``read_rule`` ask for ``name``, pointers included (ADR-0386): its asks so far
+        and the session-wide number of this ask, the order a compaction carries texts in."""
+        reads = self.session.rule_reads
+        number = sum(entry[0] for entry in reads.values()) + 1
+        asks = reads[name][0] if name in reads else 0
+        reads[name] = [asks + 1, number]
+
+    def _carried_rules_message(self, messages: list[Message]) -> Message | None:
+        """The rule texts to carry across a compaction, as one system message, or ``None``
+        (ADR-0386).
+
+        ``messages`` is the compacted list about to be installed. A rule goes when this session
+        asked ``read_rule`` for it, it is still in the registry, it is not pinned in the prompt
+        (``alwaysApply``, ADR-0105), and no tool result in ``messages`` still holds its text.
+        Most-asked first, then most recently asked, within :data:`_CARRY_RULES_FRACTION` of the
+        window counted like the kept tail; a rule that does not fit is skipped and a smaller one
+        after it can still go. The text is :func:`rule_text`'s, the one ``read_rule`` returns, so
+        the pointer's check finds it. A courtesy: never raises into a compaction.
+        """
+        registry = self._rule_registry
+        if registry is None or not self.session.rule_reads:
+            return None
+        try:
+            window = self.provider.capabilities().context_window
+            if not window or window <= 0:
+                return None
+            budget = int(window * _CARRY_RULES_FRACTION)
+
+            def cost(text: str) -> int:
+                estimate = self.provider.count_tokens([Message.system(text)])
+                return max(estimate, len(text) // _CLAMP_CHARS_PER_TOKEN)
+
+            ranked = sorted(
+                self.session.rule_reads.items(),
+                key=lambda item: (-item[1][0], -item[1][1], item[0]),
+            )
+            texts: list[str] = []
+            used = cost(_CARRIED_RULES_HEAD)
+            for name, _ in ranked:
+                rule = registry.get(name)
+                if rule is None or rule.always_apply:
+                    continue
+                text = rule_text(name, rule)
+                if text is None or any(
+                    isinstance(block, ToolResultBlock) and text in block.output
+                    for message in messages
+                    for block in message.blocks
+                ):
+                    continue
+                need = cost(text)
+                if used + need > budget:
+                    continue
+                texts.append(text)
+                used += need
+        except Exception:  # noqa: BLE001 — the carry is a courtesy; compaction must not fail on it
+            logger.warning("could not carry the rule texts across the compaction", exc_info=True)
+            return None
+        if not texts:
+            return None
+        return Message.system("\n\n".join([_CARRIED_RULES_HEAD, *texts]))
 
     def _last_tool_output(self) -> str | None:
         """The output of the conversation's most recent tool result, or ``None`` (ADR-0381).
@@ -4054,6 +4147,14 @@ class AgentLoop:
                 if isinstance(block, ToolResultBlock):
                     return block.output
         return None
+
+    def _rules_in_prompt(self, text: str) -> bool:
+        """True if the rules text this loop's system prompt carries holds ``text`` (ADR-0387).
+
+        ``read_rule`` asks it whether a pinned rule's whole block is there, so a plain ask for that
+        rule gets where it is in the prompt, not the text a second time.
+        """
+        return text in (getattr(self.prompt_builder, "rules", None) or "")
 
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
@@ -4262,7 +4363,17 @@ class AgentLoop:
             )
             self._record_compaction(outcome, compacted=False)
             return False, outcome
-        outcome = f"compacted {before} → {len(result.messages)} messages"
+        summary = getattr(result, "summary", None)  # a bare test double has none
+        messages = list(result.messages)
+        if summary is not None:
+            # ADR-0386: the rule texts the session read go back in right after the summary, so
+            # the next window has nothing to fetch again.
+            carried = self._carried_rules_message(messages)
+            if carried is not None:
+                messages.insert(1 if messages and is_summary(messages[0]) else 0, carried)
+                self._compaction_cost["carried_rules"] = _carried_count(carried)
+                self._compaction_cost["carried_rules_chars"] = len(carried.text)
+        outcome = f"compacted {before} → {len(messages)} messages"
         tail_elided = getattr(result, "tail_elided", 0)  # a bare test double has none
         if tail_elided:
             outcome += (
@@ -4275,12 +4386,7 @@ class AgentLoop:
             )
         # ``summary`` is None when the summarizer failed and only tool outputs were elided:
         # nothing was summarized, so the transcript gets no compaction rows (ADR-0206).
-        await self._install_compaction(
-            result.messages,
-            outcome,
-            summary=getattr(result, "summary", None),  # a bare test double has none
-            trigger=trigger,
-        )
+        await self._install_compaction(messages, outcome, summary=summary, trigger=trigger)
         return True, outcome
 
     async def _fire_pre_compact(self, trigger: str) -> None:
@@ -7801,6 +7907,7 @@ class AgentLoop:
             if path is not None:
                 head = messages[0] if messages else None
                 said = head.text if head is not None and is_summary(head) else summary
+                carried = next((m for m in messages[:2] if is_carried_rules(m)), None)
                 self._append_transcript(
                     path,
                     render_compaction_rows(
@@ -7811,6 +7918,8 @@ class AgentLoop:
                         pre_tokens=pre_tokens,
                         session_id=self.session.id,
                         cwd=self.session.cwd,
+                        carried_rules=_carried_count(carried) if carried is not None else 0,
+                        carried_rules_chars=len(carried.text) if carried is not None else 0,
                     ),
                 )
         except Exception:  # noqa: BLE001 — the record must never break a compaction
@@ -8789,6 +8898,8 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
+            in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
+            note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
@@ -10494,6 +10605,8 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
+            in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
+            note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
