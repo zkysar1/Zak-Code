@@ -65,7 +65,8 @@ PLAN_ADVANCE = (
 #: their first 35 and 45 minutes on the short form, 5 responses only updated the plan and none
 #: used it, every one resending the whole plan (median 833 and 5,036 chars). Every place that
 #: named the short form named the whole-plan update first and the short form after it, in
-#: words. A cue lands where the model already acts (rb-10927): the call it writes.
+#: words. A cue moves a small model where it lands on what the model already does: the call it
+#: writes.
 PLAN_ADVANCE_CALL = '{"advance": {"outcome": "<what the step produced>"}}'
 PLAN_SHORT_FORM = (
     f"To close the current step and start the next, call update_plan with {PLAN_ADVANCE_CALL} "
