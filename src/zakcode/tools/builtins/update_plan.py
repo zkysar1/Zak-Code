@@ -52,10 +52,24 @@ PLAN_ADVANCE = (
     "only updates the plan costs a whole model call"
 )
 
+#: The short form (ADR-0388): close the current step and start the next without resending the
+#: plan. Measured 2026-11-17 on ten 27B worker sessions behind one pod: the
+#: responses that only updated the plan were 19 to 28 percent of each session's model time, a
+#: median 44 s and 668 streamed tokens each, about 450 of them the resent plan (median 1,551
+#: chars). Of 201 on four sessions, 70 resent the plan unchanged (lever N advanced most) and
+#: 22 only closed a step and started the next, 45 percent of that time between them; an
+#: ``advance`` says the same in a few dozen tokens. Said wherever the advance itself is
+#: (:data:`PLAN_ADVANCE`).
+PLAN_SHORT_FORM = (
+    "To close the current step and start the next, call update_plan with 'advance' (its "
+    "'outcome' says what the step produced) instead of the whole plan."
+)
+
 #: Next-step rail: after planning, the model should act on the current step, not re-plan.
 _PLANNED_HINT = (
     "Plan updated. Now do the step marked '<- current'. When it is done, mark it done and the "
-    f"next in_progress {PLAN_ADVANCE}; refine the plan that way too as you learn more."
+    f"next in_progress {PLAN_ADVANCE}; refine the plan that way too as you learn more. "
+    f"{PLAN_SHORT_FORM}"
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
@@ -86,17 +100,16 @@ _CHALLENGED_HINT = (
 #: names the two ways forward in the step's own terms; it fires on the FIRST resend, an
 #: iteration before the loop's generic exact-repeat guard.
 _UNCHANGED_HINT = (
-    "Do not resend the same plan. If step {id} is finished, resend the plan with its status "
-    "'done' (and its result in 'outcome') and the next step 'in_progress'; if it is not, do it "
-    "now with a tool call."
+    "Do not resend the same plan. If step {id} is finished, call update_plan with 'advance' (its "
+    "'outcome' says what it produced); if it is not, do it now with a tool call."
 )
 
 #: Advance rail (ADR-0168 lever N): the harness just marked a worked-on step done because the model
 #: resent the plan unchanged and would not close it. Point at the step now current — do it, do not
 #: resend the plan unchanged again.
 _ADVANCED_HINT = (
-    "Do step {id} now with a tool call. When a step is genuinely done, resend the plan with its "
-    "status 'done' and its result in 'outcome'; do not resend the plan unchanged."
+    "Do step {id} now with a tool call. When a step is genuinely done, call update_plan with "
+    "'advance' (its 'outcome' says what it produced); do not resend the plan unchanged."
 )
 
 
@@ -272,8 +285,9 @@ class UpdatePlanTool(Tool):
             "'figure out how' (a step whose approach you have not worked out is not primitive: "
             "break it into 'subtasks' or make working out the how its own step, and use "
             "'blocked_by' when a step depends on earlier ones). Then, as "
-            f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}. Always "
-            "send the WHOLE plan each time: every step's title and status. A step keeps the note "
+            f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}. "
+            f"{PLAN_SHORT_FORM} Otherwise send the WHOLE plan each time: every step's title and "
+            "status. A step keeps the note "
             "and outcome you already gave it, so send those only when they are new or changed. "
             "When you mark a step done, record what it produced in its 'outcome'. Skip it only "
             "for a request for one straightforward thing you can do in a single action."
@@ -285,9 +299,24 @@ class UpdatePlanTool(Tool):
                     "type": "array",
                     "description": "The full, ordered plan — every step, with current statuses.",
                     "items": _task_schema(_MAX_DEPTH),
-                }
+                },
+                "advance": {
+                    "type": "object",
+                    "description": (
+                        "The short form, sent INSTEAD of 'tasks' when the only change is that the "
+                        "current step is finished: it closes that step and starts the next, "
+                        'e.g. {"advance": {"outcome": "route added in app/users.py"}}.'
+                    ),
+                    "properties": {
+                        "outcome": {
+                            "type": "string",
+                            "description": "What the step produced or found, one line.",
+                        }
+                    },
+                },
             },
-            "required": ["tasks"],
+            # No ``required``: a call carries 'tasks' or 'advance' (ADR-0388), and a backend that
+            # builds its tool-call grammar from the schema would otherwise force 'tasks' out.
         },
         # Planning never touches the workspace or system, so it is always available (READ_ONLY) —
         # the model should never be gated out of thinking. NEVER_PARALLEL: it mutates shared plan
@@ -303,10 +332,26 @@ class UpdatePlanTool(Tool):
                 "planning is not available here (no task network on the context)"
             )
         tasks = plan_steps(args)
+        advance = args.get("advance")
+        advancing = advance is not None and advance is not False
+        ignored: list[str] = []
+        closing: Task | None = None
+        if advancing and tasks is not None:
+            ignored.append(
+                "'advance' was ignored: this call also sent 'tasks', and the whole plan wins. "
+                "Send 'advance' on its own to close the current step and start the next."
+            )
+        elif advancing:
+            short = self._advance_steps(network, advance)
+            if isinstance(short, ToolResult):
+                return short
+            tasks, closing = short
         if tasks is None:
             return ToolResult.error(
-                "'tasks' must be an array of step objects ({title, status?, note?, subtasks?})",
-                fix='Pass the full plan as an array, e.g. [{"title": "...", "status": "pending"}].',
+                "'tasks' must be an array of step objects ({title, status?, note?, subtasks?}), "
+                "or 'advance' must close the current step",
+                fix='Pass the full plan as an array, e.g. [{"title": "...", "status": "pending"}], '
+                'or close the current step with {"advance": {"outcome": "what it produced"}}.',
             )
         if not tasks:
             # An empty plan clears the board (the goal is a single action, or work is abandoned).
@@ -347,7 +392,7 @@ class UpdatePlanTool(Tool):
         fields = author_fields(built, sent)
         prior_author = network.last_author_signature
         events = network.log_folded + len(network.log)
-        advisories = network.replace_from_author(built)
+        advisories = ignored + network.replace_from_author(built)
         network.last_author_signature = submitted
         network.last_author_fields = fields
 
@@ -405,6 +450,12 @@ class UpdatePlanTool(Tool):
             )
         else:
             output = f"Plan updated: {finished}/{total} steps done."
+        closed = network.get(closing.id) if closing is not None else None
+        if closed is not None and closed.status == "done":
+            # ADR-0388: the short form names the step it closed. The model never sent the plan,
+            # so this line is how it learns WHICH step the advance closed — the one the plan
+            # marked current, which need not be the one the model had in mind.
+            output = f"Step {closed.id} done ({clip(closed.title, 60)!r}). {output}"
         if advisories:
             output += "\n\nNotes:\n" + "\n".join(f"- {a}" for a in advisories)
         if deficiencies:
@@ -423,6 +474,9 @@ class UpdatePlanTool(Tool):
                 # ADR-0254: how many steps this call read as done on their outcome alone. The
                 # loop notes it so the census can count the shape (as it counts lever N).
                 "closed_on_outcome": len(closed_on_outcome),
+                # ADR-0388: the step this call closed through the short form ("" when the call
+                # sent the plan), so a census can count how often a model advances that way.
+                "short_form": closing.id if closing is not None else "",
                 # ADR-0209: this receipt acknowledges an edit that CHANGED the plan, and it
                 # reads the same whenever the done count and the current step do. Measured
                 # in a served loop: 14 of 47 stuck rungs, two of them STOPs, fell on it while
@@ -433,6 +487,64 @@ class UpdatePlanTool(Tool):
             },
             hint=self._hint(network),
         )
+
+    @staticmethod
+    def _advance_steps(
+        network: TaskNetwork, advance: Any
+    ) -> tuple[list[dict[str, Any]], Task] | ToolResult:
+        """The short form (ADR-0388) as the whole plan it stands for, and the step it closes.
+
+        Every step as it stands, the current one ``done`` with the outcome given, and the step
+        that is current once it is done ``in_progress``: the full-replace the model would have
+        sent, so the path that installs it runs unchanged — the carry-over, the null-close
+        challenge (ADR-0116), the log, the receipt and the record of what the model last sent.
+        Notes and outcomes are left out, so every step keeps its own (ADR-0235); only the closed
+        step's outcome is new. ``advance`` is ``{"outcome": "..."}``, a bare outcome string, or
+        anything else for a close with no outcome (the harness then fills it from the step's
+        last evidence line, as it does for a full-replace).
+        """
+        if network.is_anchor_only():
+            return ToolResult.error(
+                "there is no plan of yours to advance yet",
+                fix="Lay out the plan first: send update_plan with 'tasks', the ordered steps.",
+            )
+        step = network.current()
+        if step is None:
+            why = (
+                "every step is already finished"
+                if network.is_complete()
+                else "every open step is blocked"
+            )
+            return ToolResult.error(
+                f"there is no current step to advance: {why}",
+                fix="Send the whole plan with 'tasks' to add, reopen or unblock a step.",
+            )
+        outcome = advance.get("outcome") if isinstance(advance, dict) else advance
+        nodes: dict[str, dict[str, Any]] = {}
+
+        def node(task: Task) -> dict[str, Any]:
+            raw: dict[str, Any] = {
+                "title": task.title,
+                "status": task.status,
+                "blocked_by": list(task.blocked_by),
+            }
+            if task.children:
+                raw["subtasks"] = [node(child) for child in task.children]
+            nodes[task.id] = raw
+            return raw
+
+        steps = [node(task) for task in network.tasks]
+        nodes[step.id]["status"] = "done"
+        if isinstance(outcome, str) and outcome.strip():
+            nodes[step.id]["outcome"] = outcome.strip()
+        # The next step is the one current once this one is done, dependencies and derived
+        # parent statuses included: read it from the plan as it will stand, ids and all.
+        after = TaskNetwork(tasks=[_build_task(raw, _MAX_DEPTH) for raw in steps])
+        after.normalize()
+        following = after.current()
+        if following is not None and following.status == "pending" and following.id in nodes:
+            nodes[following.id]["status"] = "in_progress"
+        return steps, step
 
     @staticmethod
     def _autoadvance(network: TaskNetwork, step: Task) -> ToolResult:
