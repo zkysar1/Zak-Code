@@ -387,7 +387,9 @@ class Settings(BaseSettings):
             "What this run is, for choosing accounts (ZAKCODE_ANTHROPIC_POOL_USE): dev, test, "
             "demo or prod. An account serves only the uses its registry entry lists; a "
             "card-billed one also needs a monthly cap there, checked against the month's spend "
-            "when a session is seated."
+            "when a session is seated. A ledger that cannot be written or read weakens that "
+            "check (docs/CONFIG.md). The hard bound is a spend limit on that account at the "
+            "provider, which nothing here sets: set one before a prod run uses the pool."
         ),
     )
     anthropic_pool_registry: Path | None = Field(
