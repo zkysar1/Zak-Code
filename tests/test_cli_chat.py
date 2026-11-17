@@ -24,6 +24,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 import zakcode
+from zakcode.build_info import running_build
 from zakcode.cli import ConsolePermissionPrompter, _parse_permission_answer, app
 from zakcode.cli._theme import ZAK_THEME
 from zakcode.config import load_settings
@@ -72,7 +73,10 @@ class FakeAgent:
         # The CLI now constructs the Agent with prompter=... ; accept and ignore it.
         self.overrides = overrides
         self.settings = load_settings()
-        self.session = Session(cwd=".", model=self.settings.default_model)
+        # Stamped as the loop stamps a document it saves (ADR-0034): this stand-in ignores
+        # ``session_id``, so on a resume its session stands for one this build wrote. An
+        # unstamped one reads as another build's and is compacted first (ADR-0033).
+        self.session = Session(cwd=".", model=self.settings.default_model, build=running_build())
         self.turns: list[str] = []
         # Minimal stand-ins so /permissions and /hooks have something to render.
         self.permission_policy = PermissionPolicy(self.settings.permission_mode)
@@ -1162,7 +1166,7 @@ def test_chat_resume_replays_transcript(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     store = _seed_session_store(tmp_path, monkeypatch)
-    sess = Session(id="cafe0001", cwd=".", model="test-model")
+    sess = Session(id="cafe0001", cwd=".", model="test-model", build=running_build())
     sess.add_message(Message.user("what is our draft strategy?"))
     sess.add_message(Message.assistant_text("Zero-RB: load WR early, backs in rounds 5+."))
     store.save(sess)
@@ -1199,7 +1203,7 @@ def test_chat_resume_draws_the_hook_note_and_the_typed_command(tmp_path, monkeyp
 
     monkeypatch.setattr(zakcode, "Agent", FakeAgent)
     store = _seed_session_store(tmp_path, monkeypatch)
-    sess = Session(id="cafe0002", cwd=".", model="test-model")
+    sess = Session(id="cafe0002", cwd=".", model="test-model", build=running_build())
     sess.add_message(Message.user(SkillAgent.invocation.turn_text))
     said = "the release check is in flight\ncall /status first"
     why = _SESSION_START_WHY["startup"]
