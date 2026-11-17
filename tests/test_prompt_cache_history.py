@@ -285,9 +285,9 @@ def test_a_claude_name_behind_an_api_base_takes_it_too() -> None:
 
 @pytest.mark.parametrize("model", ["anthropic/claude-sonnet-4-6", "claude-opus-4-8"])
 def test_opting_in_changes_nothing_on_a_route_the_name_vouches_for(model: str) -> None:
-    """``prompt_caching`` is the operator's word for a route whose name says nothing. Set on a
-    route that is Anthropic by name it is redundant: the request is the by-name request, both
-    breakpoints on the messages and no copy of them in ``extra_body``."""
+    """``prompt_caching`` is the operator's word for a route that is not Anthropic by name. Set
+    on a route that is Anthropic by name it is redundant: the request is the by-name request,
+    both breakpoints on the messages and no copy of them in ``extra_body``."""
     messages = [*_third_call(), Message.user(TAIL)]
     opted = _provider(model, prompt_caching=True)
     request = _request(opted, messages)
@@ -319,7 +319,7 @@ def test_a_route_that_takes_no_breakpoint_is_sent_what_it_was(model: str) -> Non
     ],
 )
 def test_an_opted_in_route_keeps_the_one_breakpoint_it_had(model: str) -> None:
-    """A route whose name says nothing carries its breakpoint only because it opted in:
+    """A route that is not Anthropic by name carries its breakpoint only because it opted in:
     ADR-0298's switch is the operator's word that it takes the marker on the system block. No
     gateway was measured with a second one, and a gateway that refused it by name would be
     served the plain request, losing the first."""

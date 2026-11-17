@@ -24453,9 +24453,11 @@ text block after them. litellm leaves the caller's own messages as they were on 
 6. The name is the whole rule, and two corners follow from it. A bare `claude` name with an API base set is sent to
    that base as an Anthropic request (measured on litellm 1.86.2: posted to `<base>/v1/messages` in Anthropic's own
    shape). It carried the system block's marker there on the name alone before this ADR, and the conversation's marker
-   follows the first. An `anthropic/` route with an API base set takes both markers the same way, because
-   `_supports_cache_control` does not read the base; no test builds that request through the provider. A route that is
-   Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
+   follows the first. An `anthropic/` route is not a corner of this kind, because no API base reaches it: the provider
+   forwards `api_base` only to a model on the generic OpenAI-compatible path (a bare name, or an `openai`,
+   `openai_like`, `hosted_vllm` or `text-completion-openai` prefix), never to a named provider
+   (`model_uses_generic_endpoint`, pinned for `anthropic/claude-sonnet-4-6` in `tests/test_endpoint_config.py`). A route
+   that is Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
    sent the by-name request, both markers on the messages and nothing in `extra_body`. What is sent as it was before is
    a route that carries a marker ONLY because it opted in (ADR-0298), one that is not Anthropic by name, such as
    `openai/Claude4.5`. No gateway has been measured with a second marker, and ADR-0298's repair makes a wrong guess
@@ -24504,12 +24506,14 @@ body of an ended skill turn is cut from an earlier user message at the next turn
 move to another account (`_pool_failover`) lands where a different organization or workspace keeps its cache, which
 holds nothing of this conversation.
 
-A reasoning-overflow retry is not a third by default. The loop asks for thinking off on that retry (ADR-0056), but on
-a route that reaches Anthropic's API `render_thinking_switch` drops the switch and sends nothing in its place, so the
-request's thinking setting is the one the call before it had. What the retry does leave out is a configured
-`reasoning_effort` (`render_reasoning_effort`), which is unset by default. Where one is configured, that one request
-goes out at a different effort, and by the reference a changed effort invalidates the cached messages for it: one
-write, on a retry that is itself rare.
+On a route that reaches Anthropic's API, a reasoning-overflow retry is not a third by default. The loop asks for
+thinking off on that retry (ADR-0056), but `render_thinking_switch` drops the switch there and sends nothing in its
+place, so the request's thinking setting is the one the call before it had. What the retry does leave out is a
+configured `reasoning_effort` (`render_reasoning_effort`), which is unset by default. Where one is configured and
+differs from the model's own default effort, that one request goes out at the default, and by the reference a changed
+effort invalidates the cached messages for it: one write, on a retry that is itself rare. A bare `claude` name behind
+an API base is outside this reading: `render_thinking_switch` keeps the switch there, and what the server behind the
+base does with it was not measured.
 
 The estimate rests on a filtered sample: sessions with at least ten main calls after their first eight, and one run of
 39 calls. How often a real conversation wakes for a single call, the case that costs more, was not counted. And nothing
