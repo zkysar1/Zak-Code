@@ -250,7 +250,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_SHORT_FORM, authors_a_plan
+from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
@@ -4764,14 +4764,18 @@ class AgentLoop:
             and network.current() is not None
             and not undecomposed
         )
+        # ADR-0388 amendment: the line leads with the short form as the call, for the step that is
+        # current, because the whole-plan sentence named first was the one the model followed.
+        current = network.current()
+        step = f"step {current.id}" if current is not None else "the current step"
         body = (
             _PLAN_JUST_UPDATED
             if just_updated
             else (
-                "[plan] Harness-tracked plan for the current goal. Keep it current with the "
-                "update_plan tool: as you finish each step, mark it done (with its outcome) and "
-                f"the next in_progress {PLAN_ADVANCE}; decompose any step that turns out to be "
-                f"several actions. {PLAN_SHORT_FORM}\n\n"
+                f"[plan] Harness-tracked plan for the current goal. When {step} is done, call "
+                f"update_plan with {PLAN_ADVANCE_CALL}: it marks that step done and starts the "
+                f"next. Send it {PLAN_ADVANCE}. Send the whole plan only to add, split, drop or "
+                "reorder steps; decompose any step that turns out to be several actions.\n\n"
             )
         )
         if request:

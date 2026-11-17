@@ -13,6 +13,7 @@ the unchanged rail, the paged skill's next section, the plan-first gate's questi
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from zakcode.tools.builtins.update_plan import (
     _COMPLETE_HINT,
     _PLANNED_HINT,
     _UNCHANGED_HINT,
+    PLAN_ADVANCE_CALL,
     PLAN_SHORT_FORM,
     UpdatePlanTool,
     authors_a_plan,
@@ -293,15 +295,34 @@ def test_an_advance_is_not_a_plan_of_the_models_for_the_plan_first_gate() -> Non
 def test_the_short_form_is_said_where_the_advance_is(tmp_path: Path) -> None:
     assert PLAN_SHORT_FORM in UpdatePlanTool.spec.description
     assert PLAN_SHORT_FORM in SystemPromptBuilder().build(load_settings(workspace_root=tmp_path))
-    assert PLAN_SHORT_FORM in _PLANNED_HINT
+    assert PLAN_ADVANCE_CALL in PLAN_SHORT_FORM
     for hint in (_UNCHANGED_HINT, _ADVANCED_HINT):
         assert "'advance'" in hint.format(id="2")
 
+    # ADR-0388 amendment: the receipt and the plan line lead with the short form as the call
+    # itself, before the whole-plan form, and the plan line names the step it would close.
+    assert _PLANNED_HINT.index(PLAN_ADVANCE_CALL) < _PLANNED_HINT.index("whole plan")
     loop = AgentLoop(_Scripted([_done()]), ToolRegistry(), Session(cwd=str(tmp_path), model="t"))
     loop.session.task_network.tasks = [Task(title="a", status="in_progress"), Task(title="b")]
     loop.session.task_network.normalize()
+    current = loop.session.task_network.current()
+    assert current is not None
     reminder = loop._plan_reminder()
-    assert reminder is not None and PLAN_SHORT_FORM in reminder.text
+    assert reminder is not None
+    lead = f"When step {current.id} is done, call update_plan with {PLAN_ADVANCE_CALL}"
+    assert lead in reminder.text
+    assert reminder.text.index(lead) < reminder.text.index("whole plan")
+
+
+async def test_the_call_the_model_is_shown_is_one_the_tool_takes() -> None:
+    # The literal in every hint is a working call: sent as written, it closes the current step.
+    network = await _laid_out(THREE)
+
+    res = await _send(network, json.loads(PLAN_ADVANCE_CALL))
+
+    assert not res.is_error, res.output
+    assert _data(res)["short_form"] == "1"
+    assert _statuses(network)["change the port"] == "in_progress"
 
 
 # ── in the loop: the advance rides along like the full form ───────────────────────────

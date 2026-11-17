@@ -24459,3 +24459,16 @@ string, the receipt naming a close the challenge undid, no anchor-only refusal, 
 the sentence gone from the system prompt, the sentence gone from the plan line, notes not carried, and
 the no-close mutant against the paging and ride-along tests. All eighteen turn their test red, every
 control stays green, and every one of the fourteen cases is proven by at least one mutant.
+
+**Amendment: the short form is shown as the call, first.** On two worker sessions of the 27B model,
+in their first 35 and 45 minutes on the build above, 5 responses only updated the plan and none used
+`advance`: every one resent the whole plan, median 833 and 5,036 characters. Every place that named
+the short form named the whole-plan update first and the short form after it, in words, and the model
+followed the first. A cue moves a small model where it lands on what the model is already doing, and
+here that is the call it writes. So `PLAN_ADVANCE_CALL` is the call as written,
+`{"advance": {"outcome": "<what the step produced>"}}`, and the short-form sentence carries it. The
+plan line the loop shows on every call opens with it for the step that is current ("When step 2 is
+done, call update_plan with ..."), and the receipt after a plan update says it before the whole plan,
+which is kept for adding, splitting, dropping or reordering steps. A test sends the shown call as
+written and checks that it closes the step. Two mutants (the plan line and the receipt back to the
+whole-plan wording first) each turn their test red.

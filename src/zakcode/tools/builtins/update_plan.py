@@ -60,16 +60,24 @@ PLAN_ADVANCE = (
 #: 22 only closed a step and started the next, 45 percent of that time between them; an
 #: ``advance`` says the same in a few dozen tokens. Said wherever the advance itself is
 #: (:data:`PLAN_ADVANCE`).
+#:
+#: As the call itself (ADR-0388 amendment). Measured 2026-11-17 on the two trial sessions: in
+#: their first 35 and 45 minutes on the short form, 5 responses only updated the plan and none
+#: used it, every one resending the whole plan (median 833 and 5,036 chars). Every place that
+#: named the short form named the whole-plan update first and the short form after it, in
+#: words. A cue lands where the model already acts (rb-10927): the call it writes.
+PLAN_ADVANCE_CALL = '{"advance": {"outcome": "<what the step produced>"}}'
 PLAN_SHORT_FORM = (
-    "To close the current step and start the next, call update_plan with 'advance' (its "
-    "'outcome' says what the step produced) instead of the whole plan."
+    f"To close the current step and start the next, call update_plan with {PLAN_ADVANCE_CALL} "
+    "instead of the whole plan."
 )
 
-#: Next-step rail: after planning, the model should act on the current step, not re-plan.
+#: Next-step rail: after planning, the model should act on the current step, not re-plan. The
+#: short form leads (ADR-0388 amendment); the whole plan is for changing the steps.
 _PLANNED_HINT = (
-    "Plan updated. Now do the step marked '<- current'. When it is done, mark it done and the "
-    f"next in_progress {PLAN_ADVANCE}; refine the plan that way too as you learn more. "
-    f"{PLAN_SHORT_FORM}"
+    "Plan updated. Now do the step marked '<- current'. When it is done, close it with "
+    f"update_plan {PLAN_ADVANCE_CALL} {PLAN_ADVANCE}. Send the whole plan only to add, split, "
+    "drop or reorder steps."
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
