@@ -81,6 +81,21 @@ def _pointer_head(name: str, n: int) -> str:
     return f"[already read; ask {n}] Rule {name!r} "
 
 
+def rule_text(name: str, rule: Any) -> str | None:
+    """The text ``read_rule`` returns for ``rule`` under ``name``, or ``None`` for an empty body.
+
+    One function renders it for the tool and for the rules a compaction carries (ADR-0386), so a
+    carried text is the very string the pointer's check (ADR-0372) looks for."""
+    body = (rule.content or "").strip()
+    if not body:
+        return None
+    if len(body) > MAX_RULE_BODY_CHARS:
+        body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
+    # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
+    # disk is a prefix of the older text, and without it the check below read that as unchanged.
+    return f"# {name}\n{body}\n[end of rule {name!r}]"
+
+
 def _pointer(rule: Any, name: str, ctx: ToolContext, in_context: Callable[[str], bool]) -> str:
     """The answer to a repeat: ask N, where N - 1 of this rule's pointers are still in the
     conversation. A conversation read, as ADR-0372's check is, so a compaction or an elision
@@ -175,17 +190,17 @@ class ReadRuleTool(Tool):
                 fix=f"{lead}Use one of the available rules: {available}.",
             )
 
-        body = (rule.content or "").strip()
-        if not body:
+        text = rule_text(name, rule)
+        if text is None:
             return ToolResult.error(
                 f"rule {name!r} exists but its body is empty.",
                 fix="The rule file may be a stub; proceed without it.",
             )
-        if len(body) > MAX_RULE_BODY_CHARS:
-            body = body[:MAX_RULE_BODY_CHARS] + f"\n\n[truncated at {MAX_RULE_BODY_CHARS} chars]"
-        # The closing line makes the text self-delimiting: a rule whose last lines were deleted on
-        # disk is a prefix of the older text, and without it the check below read that as unchanged.
-        text = f"# {name}\n{body}\n[end of rule {name!r}]"
+        # Every ask for a rule that exists is counted, pointers included: a compaction carries
+        # the most-asked texts across it (ADR-0386).
+        note = getattr(ctx, "note_rule_read", None)
+        if note is not None:
+            note(name)
         in_context = getattr(ctx, "in_context", None)
         # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); the
         # body comes back when asked for on purpose, or for an ask right after this rule's own

@@ -251,6 +251,13 @@ class Session(BaseModel):
     #: append-only: an OLDER build drops the field and only forgets the closures (fails
     #: SAFE — at worst a dropped section comes back, the ADR-0075 behavior).
     skill_pages_settled: dict[str, list[int]] = Field(default_factory=dict)
+    #: ADR-0386: per rule name, ``[asks, latest]`` — how many times this session asked
+    #: ``read_rule`` for the rule (pointers included) and the session-wide number of its latest
+    #: ask. A compaction removes every rule text the window fetched, and the loop carries the
+    #: most-asked ones across it, so the count must outlive the compaction it orders and the
+    #: ADR-0034 restart. Schema v1 stays append-only: an OLDER build drops the field and carries
+    #: nothing (fails SAFE — the pre-ADR-0386 behavior, a re-fetch after the compaction).
+    rule_reads: dict[str, list[int]] = Field(default_factory=dict)
     #: Resume safety (ADR-0033): the build (``build_info.build_commit()``) that last SAVED this
     #: document, and how its last turn ended (the ``stop_reason``). A resume reads both: a
     #: transcript written by another build — or one whose last turn collapsed (gave_up /
@@ -363,15 +370,17 @@ class Session(BaseModel):
         )
         self.turn_ends = [*self.turn_ends, end][-TURN_ENDS_KEPT:]
 
-    def shift_turn_ends(self, before: int, *, summarized: bool) -> None:
+    def shift_turn_ends(self, before: int, *, summarized: bool, head: int = 1) -> None:
         """Put each turn end back in its place after ``messages`` was compacted from ``before``.
 
         A compaction that summarizes puts one summary in place of the old region and keeps the
         tail; one that only elides keeps every message where it was. An end that falls at or
-        before the summary belongs to a turn now told only in it, and goes (ADR-0361).
+        before the summary belongs to a turn now told only in it, and goes (ADR-0361). ``head``
+        is how many harness messages lead the kept tail: the summary, and the rules carried
+        after it when there are any (ADR-0386).
         """
         shift = len(self.messages) - before
-        floor = 2 if summarized else 0  # 0 is before the summary and 1 just after it
+        floor = head + 1 if summarized else 0  # 0 is before the summary, 1 just after it
         self.turn_ends = [
             end.model_copy(update={"after": end.after + shift})
             for end in self.turn_ends

@@ -24380,3 +24380,93 @@ under the reading bound, no command-turn hold, a sub-agent consuming, and urgent
 eighteen turn their tests red, and every one of the eighteen cases is proven by at least one mutant. The
 first run covered seventeen: the skip mutant's replacement text already occurs in `loop.py`, which the
 harness refuses, so it was run on its own with a replacement that does not, and went red.
+
+## ADR-0386: a compaction carries the rule texts the session read, right after the summary
+
+**Context.** Under `lean_rules` the prompt carries a rules index and `read_rule` fetches a body; a
+repeat while the text is in the conversation gets a numbered pointer (ADR-0379), and an ask right
+after its own pointer gets the text (ADR-0381). The pointer's check reads the conversation
+(ADR-0372), so a compaction, which summarizes the region holding the fetched texts, sends every rule
+back to the model one call at a time, though the index tells the model that a text it read stays in
+its context. Measured 2026-11-17 on a host framework's worker sessions, from transcript metadata
+only: 51 of one session's 68 tool calls after its 10:36Z compaction were `read_rule`; of the 30
+calls after each of another session's six compactions, 19, 12 and 10 were `read_rule` after three
+of them; two other sessions counted the same way made 0 of 44 and 4 of 124. Those sessions compact
+at 109,826 to 117,845 reported prompt tokens of a 131,072 window. The host's 37 rules run 515 to
+16,108 characters as `read_rule` returns them; the seven the first session read in one batch before
+a compaction total 17,982.
+
+**Decision.** The session counts every `read_rule` ask for a rule that exists, pointers included:
+`Session.rule_reads` holds `[asks, latest]` per rule name, written through a new
+`ToolContext.note_rule_read` that the loop wires beside `in_context`. When a compaction installs a
+summary, the loop puts ONE system message right after it, opening with
+`[rules carried across the compaction]` and a line saying the texts are in force and need not be
+read again, then the text of each rule the session asked for, exactly as `read_rule` returns it
+(`rule_text`, the one function that renders both). Most-asked first, then most recently asked. Not
+carried: a rule no longer in the registry, a rule pinned in the prompt (`alwaysApply`, ADR-0105),
+and a rule whose text a tool result in the kept tail still holds. The message is held to 8 percent
+of the context window, counted like the kept tail (the provider's estimate, at least 3 characters
+a token, ADR-0132); a rule that does not fit is skipped and a smaller one after it can still go.
+The pointer's check now also reads that message, so an ask for a carried rule gets the pointer,
+and an ask right after it still gets the text. The summarizer never reads the message: at the next
+compaction it is in the old region, skipped, and carried again from the count, so there is one at
+most; a summary followed only by it is still nothing to compact. A session that asked for no rule
+compacts exactly as before. The boundary row in the transcript says `carriedRules` and
+`carriedRulesChars` when something was carried, the compaction's cost record always carries
+`carried_rules` and `carried_rules_chars`, and a turn end that falls before the kept tail goes as it
+did before the summary had company (ADR-0361).
+
+**Alternatives rejected.** Putting the most-read rules back in the prompt in full (`alwaysApply`,
+ADR-0105): every session pays for them from its first call, whether it needs them or not, the choice
+is the host's rule by rule, and the pinned render cuts each body at 8,192 characters without a note,
+inside the index's 32,768. Writing the texts into the system prompt at the compaction: an engine's
+prefix cache keys on the prompt head, and a message after the summary reaches the model the same way
+without moving anything earlier. Re-sending them as a synthetic `read_rule` call and result: the
+transcript would show calls the model never made, and the host counts `read_rule` calls from it.
+Carrying every text the window read with no cap: the host's twenty longest unpinned rules are
+115,467 characters, 29k to 38k tokens, carried into a context the next compaction must fit.
+Counting from the conversation at compaction time instead of on the session: the previous window's
+asks are in the summary by then, so the order would forget the rules read most.
+
+**The budget.** 8 percent of 131,072 is 10,485 tokens, about 31,000 characters at 3 a token.
+Compaction fires at no more than 90 percent of the window (ADR-0240). A rebuilt context is the
+system prompt, the summary (asked for in 1/32 of the window, 4,096 tokens here, and condensed once
+past 1.25 times that, ADR-0330 and ADR-0331), the carry, and a kept tail held to a quarter of the
+window (ADR-0132): about 37 percent plus the system prompt, so the carry cannot bring it to the
+threshold unless the system prompt and tool schemas alone took more than half the window. The
+window loses what the carry holds until the next compaction; a session that fetched the same texts
+again would hold them anyway, plus the calls. The first session's batch, replayed offline through
+this change with the host's rules, carries six of its seven (the seventh is pinned) in one message
+of 17,630 characters: 4,407 tokens at 4 characters a token, 5,876 at 3.
+
+Not verified: that a session given the texts stops asking for them. A carried rule asked for gets
+the pointer, and the text at a second ask right after it, as within any window. Nor that the
+system-message shape renders on every chat template: it is the summary's shape, a second system
+message after it. To read after the roll, per session against its own hours before: `read_rule`
+calls among the 30 after each compaction (the bar: under 10 percent), `carriedRules` on each
+boundary row, compactions per hour (the carry takes window room), and summaries installing as
+before. A `read_rule` ask for a pinned rule still returns its text, as before; that is outside this
+change.
+
+**The proof.** `tests/test_carry_rules.py`, nineteen cases:
+- The carry: the texts after the summary and before the kept tail through both turn paths; a
+  carried rule's pointer and then its text through both paths; no rule read, the same compacted
+  list as before and no count on the row; the row's `carriedRules`, `carriedRulesChars` and
+  `postMessages`; a second compaction whose summarizer never sees the texts and that leaves one
+  carried message; a summary with only the carry after it is nothing to compact.
+- The order and the budget: most-asked first, then most recent; the budget keeping the most-asked of
+  two and dropping the other, and the other when the counts swap; a rule over the budget skipped
+  and a smaller one after it carried; pinned rules and rules still in the tail not carried; a rule
+  gone from the registry passed over.
+- The count: every ask and the latest counted through both turn paths; the tool noting found rules
+  by their own name, a pointer included, a missing or empty rule not; the count kept with the
+  session.
+- Turn ends: the unit shift with the carry at the head, and the same through the loop.
+
+On 78d01663608d a compaction keeps the summary and the kept tail alone, and a rule read before the
+boundary comes back only through another `read_rule` call. Twenty single-purpose mutants of
+`loop.py`, `compact.py`, `read_rule.py`, `store.py` and `transcript.py`, one site each except one
+that removes two guards together, were each run against the test named for them by the host's
+mutation partition harness, which restores every file byte for byte: all twenty killed, each of the
+fifteen cases killed by at least one, a control test green under every mutant, and every restore
+clean. The two-guard mutant is reported as broad: it proves its test, not which guard.

@@ -344,6 +344,10 @@ class ToolContext(BaseModel):
     #: ``read_rule`` tool answers a repeat that comes right after its own pointer with the text:
     #: that pointer did not land. ``None`` (a bare context) never treats a repeat as one.
     last_tool_output: Callable[[], str | None] | None = None
+    #: Counts one ``read_rule`` ask by the rule's own name (ADR-0386). The loop keeps how often the
+    #: session asked for each rule, and a compaction carries the most-asked texts across it.
+    #: ``None`` (a bare context) counts nothing.
+    note_rule_read: Callable[[str], None] | None = None
     #: The loop's :class:`ToolRegistry`, so the bash tool can recognise a registered tool
     #: written as a shell command (``ScheduleWakeup(prompt=…)``) and refuse it with the
     #: tool's real name and parameters instead of running it into a syntax error
