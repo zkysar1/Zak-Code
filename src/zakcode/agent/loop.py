@@ -4148,6 +4148,14 @@ class AgentLoop:
                     return block.output
         return None
 
+    def _rules_in_prompt(self, text: str) -> bool:
+        """True if the rules text this loop's system prompt carries holds ``text`` (ADR-0387).
+
+        ``read_rule`` asks it whether a pinned rule's whole block is there, so a plain ask for that
+        rule gets where it is in the prompt, not the text a second time.
+        """
+        return text in (getattr(self.prompt_builder, "rules", None) or "")
+
     def _anchor_prompt(self, prompt_tokens: int) -> None:
         """Remember the provider's REPORTED size of the prompt just sent (ADR-0077).
 
@@ -8890,6 +8898,7 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
+            in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
@@ -10596,6 +10605,7 @@ class AgentLoop:
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
+            in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it

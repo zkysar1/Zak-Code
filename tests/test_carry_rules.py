@@ -30,7 +30,7 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import Rule, RuleRegistry
 from zakcode.session.store import Session, TurnEnd
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.read_rule import ASKED_AGAIN, ReadRuleTool, rule_text
+from zakcode.tools.builtins.read_rule import JUST_ASKED, ReadRuleTool, rule_text
 from zakcode.usage import Usage
 
 
@@ -172,11 +172,11 @@ async def test_a_compaction_carries_the_rules_the_session_read(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_an_ask_for_a_carried_rule_gets_the_pointer_then_the_text(
+async def test_an_ask_for_a_carried_rule_gets_the_pointer_then_the_firmer_line(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """The text is in the conversation, so ADR-0379's pointer answers; an ask right after it still
-    gets the text (ADR-0381)."""
+    """The text is in the conversation, so ADR-0379's pointer answers; an ask right after it gets
+    the line that says where the text is (ADR-0387)."""
     loop = await _read_then_compact(tmp_path, "alpha-rule")
     provider = loop.provider
     assert isinstance(provider, _Scripted)
@@ -185,7 +185,7 @@ async def test_an_ask_for_a_carried_rule_gets_the_pointer_then_the_text(
     await _turn(loop, "again", streaming=streaming)
     pointer, again = _outputs(loop)
     assert pointer.startswith("[already read; ask 1] Rule 'alpha-rule' ")
-    assert again == ASKED_AGAIN.format(name="alpha-rule") + "\n" + _text("alpha-rule")
+    assert again == JUST_ASKED.format(n=2, name="alpha-rule", step="")
 
 
 @pytest.mark.asyncio

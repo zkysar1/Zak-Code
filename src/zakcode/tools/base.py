@@ -341,9 +341,14 @@ class ToolContext(BaseModel):
     #: bare context) always delivers.
     in_context: Callable[[str], bool] | None = None
     #: The output of the conversation's most recent tool result, or ``None`` (ADR-0381). The
-    #: ``read_rule`` tool answers a repeat that comes right after its own pointer with the text:
-    #: that pointer did not land. ``None`` (a bare context) never treats a repeat as one.
+    #: ``read_rule`` tool answers a repeat that comes right after its own pointer with a firmer
+    #: line that says where the text is (ADR-0387). ``None`` (a bare context) never treats a
+    #: repeat as one.
     last_tool_output: Callable[[], str | None] | None = None
+    #: True when the rules text in the system prompt holds this text, character for character
+    #: (ADR-0387). The ``read_rule`` tool answers a plain ask for a rule pinned there whole with
+    #: where it is instead of the text again. ``None`` (a bare context) always delivers.
+    in_prompt: Callable[[str], bool] | None = None
     #: Counts one ``read_rule`` ask by the rule's own name (ADR-0386). The loop keeps how often the
     #: session asked for each rule, and a compaction carries the most-asked texts across it.
     #: ``None`` (a bare context) counts nothing.
