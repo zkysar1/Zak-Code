@@ -24600,4 +24600,12 @@ counted. `tests/test_compact_loop.py`, six: a restating reply closed before its 
 once through its last line before the run, noted as held; one with too little before the run asked
 again and the resample installed; each collector closing the stream where the run began; and
 `_summary_of` keeping every line of a restated reply and refusing one with no tag or under the
-floor.
+floor. Each case was checked against a mutation table: fourteen single-site mutants, six of
+`degeneration.py` and eight of `loop.py`, each run against its named case by the host's mutation
+partition harness; all fourteen were killed (ten in a first run, and the four that run left
+unjudged for want of a negative control, run again with one), and every file was restored byte
+for byte.
+
+**Trial.** On two worker sessions of the host framework, from each one's first live minute: six
+summaries installed (two on one, four on the other, 946 to 2,208 words), none convicted, no line
+restated, and no call at the summary cap.
