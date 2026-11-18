@@ -24549,6 +24549,98 @@ least one, a control test stayed green under every mutant, and every file was re
 byte. Among them: the text sent again after the pointer, as ADR-0381 had it; a pinned rule's line
 for a rule cut at the cap; either loop path left without `in_prompt`.
 
+## ADR-0388: update_plan's short form, `advance`, closes the current step and starts the next
+
+**Context.** The full-replace contract (the model sends the whole plan on every call) makes moving the plan
+on by one step cost as much as laying it out. Measured 2026-11-17 on ten worker sessions of one 27B model
+behind one pod, from 09:00Z: 461 of 2,737 responses called update_plan and nothing else, and they took 19
+to 28 percent of each session's model time (one response paired the plan with work). Joined to the pod's
+request ledger on four of the sessions (1,023 of 1,023 responses matched), those 200 responses had a median
+of 44 s, 668 streamed tokens and 1,551 characters of arguments, against 26 s, 357 tokens and 155
+characters for the 788 responses that did work: 27 percent of the four sessions' tool-call model time. The
+arguments are the resent plan. Compared call by call with the plan before it, the 201 plan-only responses
+were 93 re-plans (steps added, renamed or dropped: 47 percent of their time), 70 resends of the plan
+unchanged (28 percent; ADR-0168's lever N advanced most of them), 22 that only closed one step and started
+the next (17 percent) and 14 that changed only a note or an outcome. The 92 that moved the plan by one step
+paid about 450 tokens each to say a dozen.
+
+**Decision.**
+1. `update_plan` takes `advance` in place of `tasks`: `{"advance": {"outcome": "..."}}` closes the step the
+   plan marks current and starts the one current after it. A bare string is read as the outcome, and any
+   other value as a close with no outcome.
+2. The harness builds the full plan the advance stands for: every step's title, status and dependencies as
+   they stand, the current step `done` with the outcome, and the step that is current once it is done
+   (read from the plan as it will stand, so dependencies and derived parent statuses count) `in_progress`.
+   Notes and outcomes are left out, so each step keeps its own (ADR-0235). That plan goes through the
+   full-replace path unchanged: the carry-over, the null-close challenge (ADR-0116), the log, the receipt,
+   and the record of what the model last sent, so a later resend of the plan it now sees reads unchanged.
+3. The receipt of an advance begins `Step <id> done ('<title>').`, because the model did not send the plan
+   and this is how it learns which step closed. Its data carries `short_form` (the closed step's id, `""`
+   for a full plan), for a census.
+4. An advance is refused, with the plan untouched, when the board holds nothing of the model's (empty, or
+   only the request anchor, ADR-0111), when every step is finished, or when every open step is blocked;
+   each refusal names `tasks`. A call that sends both forms takes `tasks` and says `advance` was ignored.
+5. The schema has no `required` list: a call carries one form or the other, and a backend that builds its
+   tool-call grammar from the schema would otherwise force `tasks` out. The tool still refuses a call with
+   neither, naming both.
+6. One sentence, `PLAN_SHORT_FORM`, says it on the surfaces that say how the plan moves: the tool
+   description, the system prompt, the plan line the loop re-shows (ADR-0237's sentence's places) and the
+   receipt's rail. The unchanged and lever-N rails (ADR-0168) now point at `advance` instead of a resend.
+
+**Checked, not changed.**
+- The plan-first gate (ADR-0231): `authors_a_plan` is false for an advance, so a board with no plan of the
+  model's still asks for one, and the advance itself is refused there.
+- The plan-only rail (ADR-0371) and the plan-only run (ADR-0364): an advance alone in its response is a
+  plan-only response like any other, and its receipt reports one more step done, which the run reads as
+  the plan moving.
+- A paged skill (ADR-0067): the page turns on the network the call leaves, so an advance that closes a
+  section brings the next section, as a full plan does.
+- The exact-repeat guard: a third identical advance in a row is held as a doom loop, as a third identical
+  plan is. Three steps closed with no work and no outcome between them is a run the guard should question.
+
+**Alternatives rejected.** Per-id patching (`{"id": "2", "status": "done"}`): the full-replace contract
+exists because weak models get ids wrong, and the step to close is the one the plan already marks current.
+Advancing inside the tool without the full-replace path: a second writer of the plan's statuses, log and
+author record, which ADR-0116, ADR-0168 and ADR-0235 each had to be kept true in. Shortening the resend
+instead (sending only changed steps): every omitted step would read as dropped (ADR-0113).
+
+Not verified: that the model uses it. To measure after the roll, per session and window, against the
+figures above: update_plan calls carrying `advance`, the plan-only share of model time, and the median
+duration and argument size of plan-only responses. The re-plans, the largest share, are untouched here.
+
+**The proof.** `tests/test_plan_short_form.py` holds the short form's tests: the close and the start, the
+outcome and the log; nesting and dependencies walked to completion; notes and outcomes kept; the outcome
+from an object, a string, or the last evidence line; the null close still challenged and the second close
+accepted; a resend of the plan the advance left reading unchanged; both forms sent; the three refusals;
+a call with neither form naming both; the schema; the plan-first gate's question; the sentence on every
+surface; and, in the loop, an advance first in a batch crediting the work to the step it starts.
+`tests/test_skill_paging.py` gains one: an advance that closes a section turns the page. `tests/test_plan_unchanged.py` changes one assertion: the unchanged rail now names `advance` where it
+named a resend with status `done`.
+
+The full suite ran 7,413 passed and 1 failed: that assertion, on the rail's old wording; with it updated
+the four plan test files run 99 passed. Eighteen mutants of `update_plan.py`, `prompt.py`, `loop.py` and
+`tasks.py`, one site each, are each run against the test named for them, with a control test that must
+stay green, by a harness that checks the file is restored byte for byte: no close, the next step not
+started, no derived parent status in the look-ahead, dependencies dropped, the outcome dropped, no bare
+string, the receipt naming a close the challenge undid, no anchor-only refusal, no open-step refusal,
+`advance` overriding `tasks`, the error naming `tasks` only, `tasks` required again, no `short_form`,
+the sentence gone from the system prompt, the sentence gone from the plan line, notes not carried, and
+the no-close mutant against the paging and ride-along tests. All eighteen turn their test red, every
+control stays green, and every one of the fourteen cases is proven by at least one mutant.
+
+**Amendment: the short form is shown as the call, first.** On two worker sessions of the 27B model,
+in their first 35 and 45 minutes on the build above, 5 responses only updated the plan and none used
+`advance`: every one resent the whole plan, median 833 and 5,036 characters. Every place that named
+the short form named the whole-plan update first and the short form after it, in words, and the model
+followed the first. A cue moves a small model where it lands on what the model is already doing, and
+here that is the call it writes. So `PLAN_ADVANCE_CALL` is the call as written,
+`{"advance": {"outcome": "<what the step produced>"}}`, and the short-form sentence carries it. The
+plan line the loop shows on every call opens with it for the step that is current ("When step 2 is
+done, call update_plan with ..."), and the receipt after a plan update says it before the whole plan,
+which is kept for adding, splitting, dropping or reordering steps. A test sends the shown call as
+written and checks that it closes the step. Two mutants (the plan line and the receipt back to the
+whole-plan wording first) each turn their test red.
+
 ## ADR-0389: a summarizer reply that begins writing its own lines again is closed there
 
 **Context.** Asked with thinking off (ADR-0366), the summarizer on the pod's 27B model often writes
@@ -24609,6 +24701,57 @@ for byte.
 **Trial.** On two worker sessions of the host framework, from each one's first live minute: six
 summaries installed (two on one, four on the other, 946 to 2,208 words), none convicted, no line
 restated, and no call at the summary cap.
+
+## ADR-0390: a finished plan sent back after the turn-start reset stays closed
+
+**Context.** A finished plan leaves the board when the next turn starts (ADR-0110), so a finished goal's
+checklist does not ride into a turn about something else. Measured 2026-11-17 on ten worker sessions of the
+27B model over 2.2 hours, each response joined to the pod's request ledger: 101 responses only updated the
+plan and took 248 model-minutes. 20 of them sent a plan whose every step was finished (66 minutes), and 9
+of those were byte for byte the plan the model had last sent (33 minutes). One session sent its finished
+12-step plan (6,498 characters) back four times in 17 minutes, about 20 model-minutes. The tool put such a
+plan back on the board and answered "Plan unchanged ... complete" with the verdict rail (ADR-0168,
+ADR-0108), and from then on every call of the turn carried the plan line "Plan complete ... Answer the
+user's original request now" for a turn that was already over.
+
+**Decision.** When the board is empty, the model sends exactly the plan it last sent (the submission
+signature, ADR-0168), and every primitive step of that plan is done or cancelled, `update_plan` leaves the
+board empty. Its receipt says so ("Not reopened: this plan already finished (N/N steps done) and was
+closed, so nothing was updated. Send update_plan again only for new work; otherwise go on with your next
+action.") with no hint, and its data is `{"task_count": 0, "unchanged": true, "reopened": false}`, so the
+loop counts it with the other unchanged resends.
+
+**Checked, not changed.**
+- A finished plan resent in the turn it finished in is still on the board and keeps the verdict rail: that
+  is the call the "answer now" line exists for (ADR-0108).
+- A changed plan, an unfinished plan (including one the turn start dropped as abandoned), an `advance`, and
+  a plan sent after the model cleared the board itself (which resets the signature) go up as before.
+- The fresh-eyes review (ADR-0117) reads the plan on the board at a finish. With the board left empty, a
+  later turn's finish does not review an earlier turn's plan again.
+
+**Alternatives rejected.** Announcing the reset when the turn starts: a line on every turn after a finished
+plan, including the turns that never send it back. Clearing a finished plan resent within its own turn:
+that takes the fresh-eyes review and the verdict rail from the one call they are for.
+
+Not verified: that the model sends the plan back less often. To measure after the roll, per session and
+window, against the figures above: plan calls identical to a finished plan and their model-minutes, the
+plan-only share of model time, and closing replies that follow a finished plan.
+
+**The proof.** `tests/test_plan_finished_resend.py`: the resend after the reset is not reopened and leaves
+the board and the record as they were; the same resend within its own turn keeps the verdict rail; a
+changed finished plan, an unfinished plan and a plan sent after the model cleared the board go up; and in
+the loop, a turn that opens by sending back the last turn's finished plan ends with an empty board and no
+plan line on the call after it. `tests/test_plan_review_operator_command.py`'s next-turn test sent turn
+one's finished plan back byte for byte; it now sends a finished plan of its own, which is what it checks
+(the next turn is reviewed again).
+
+Eleven mutants of `update_plan.py`, one site each, are each run against the test named for them, with a
+control test that must stay green, by a harness that checks the file is restored byte for byte: no
+empty-board condition, no finished condition, no same-submission condition (against the changed-plan test
+and the cleared-board test), the early return removed (against the receipt test and the loop test), the
+receipt reworded, `unchanged` dropped from the data, steps counted at the top level only, sub-steps not
+walked, and `cancelled` not read as finished. All eleven turn their test red, every control stays green,
+and each of the six cases is proven by at least one mutant.
 
 ## ADR-0391: the exact-repeat guard sees a loop of rule lookups, and its recovery names the rules
 

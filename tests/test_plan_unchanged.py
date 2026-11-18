@@ -42,7 +42,8 @@ async def test_a_resend_of_the_plan_in_force_is_unchanged_not_updated() -> None:
     assert "Nothing was updated" in again.output
     assert again.data is not None and again.data["unchanged"] is True
     assert again.hint is not None
-    assert "If step 1 is finished" in again.hint and "status 'done'" in again.hint
+    # ADR-0388: a finished step closes through the short form, not another resend.
+    assert "If step 1 is finished" in again.hint and "update_plan with 'advance'" in again.hint
     assert "do it now with a tool call" in again.hint
     # A resend is not an event: the record and the progress are exactly as they were.
     assert len(net.log) == events
