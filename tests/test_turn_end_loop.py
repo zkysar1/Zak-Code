@@ -32,11 +32,14 @@ from zakcode.hooks import TurnEndPayload, TurnEndResult
 from zakcode.messages import Message
 from zakcode.providers.base import (
     Capabilities,
+    ContextWindowExceeded,
     LLMResult,
     Provider,
+    QuotaExhausted,
     RequestFailed,
     ToolCall,
 )
+from zakcode.providers.spend_gate import SpendCapReached
 from zakcode.session.store import Session
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
 
@@ -714,6 +717,144 @@ async def test_turn_end_fire_refuses_non_vetoable_reasons(tmp_path: Path) -> Non
         # plain rail here, since this reason names no skill.
         assert prompt == "[harness] Hint: Not done: verify your work."
     assert [p.stop_reason for p in hook.payloads] == ["provider_error", "recipe_stalled"]
+
+
+# ── a quota refusal ends a turn a client waits on (ADR-0393) ──────────────────
+#
+# A quota refusal is not a fact about the moment: a retry does not lift it, only a new budget does.
+# Offered to the stop hook like any provider_error (ADR-0181), a spend-cap refusal was vetoed and
+# the turn re-entered for up to 765 seconds with the request held open. Measured in review of the
+# spend gate, with the veto delays cut to 1 s and 2 s: the call was refused at once, the hook
+# vetoed, the client gave up at 1.36 s, a budget push landed at 1.70 s, and the next re-entry was
+# admitted at 3.56 s and billed 0.25 USD for a client that had left 2.2 s before. The web app turns
+# the opt-in on for the turns a client waits on; a turn the workspace drives itself keeps the
+# re-entry, and so does every other provider error.
+
+_CAP = "spend cap reached"
+
+
+def _refusing(refusal: type[QuotaExhausted] = SpendCapReached) -> FlakyScriptedProvider:
+    """A provider whose every call is refused as the spend gate refuses one: before it is sent."""
+    return FlakyScriptedProvider([refusal(_CAP)] * 20)
+
+
+async def _turn(loop: AgentLoop, *, streamed: bool) -> tuple[str, str, list[str]]:
+    """One turn on ``loop``, buffered or streamed: ``(stop_reason, error, status lines)``."""
+    if not streamed:
+        result = await loop.arun_turn("hi")
+        return result.stop_reason, result.error, []
+    events = [ev async for ev in loop.astream_turn("hi")]
+    statuses = [ev.message for ev in events if isinstance(ev, AgentStatus)]
+    done = [ev for ev in events if isinstance(ev, AgentDone)][-1]
+    return done.stop_reason, done.error, statuses
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("refusal", [SpendCapReached, QuotaExhausted])
+async def test_a_quota_refusal_ends_a_turn_a_client_waits_on_at_the_first_refusal(
+    tmp_path: Path,
+    fast_sleep: list[float],
+    refusal: type[QuotaExhausted],
+    streamed: bool,
+) -> None:
+    provider = _refusing(refusal)
+    hook = RecordingHook([_veto()] * 10)
+    loop = _make_loop(provider, tmp_path)
+    loop.end_turn_on_quota_refusal()
+    loop.hook_manager.register_turn_end(hook)
+    stop_reason, error, statuses = await _turn(loop, streamed=streamed)
+    assert provider.calls == 1  # no re-entry, so no second call to admit and bill
+    assert hook.payloads == []  # the veto-capable hook was never asked
+    assert fast_sleep == []  # and nothing waited
+    assert stop_reason == "provider_error"
+    assert error == _CAP  # the provider's own text, with no re-entry note after it
+    assert not any("the turn-end hook asked to continue" in s for s in statuses)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_a_quota_refusal_still_reaches_the_turn_end_observers_once(
+    tmp_path: Path, fast_sleep: list[float], streamed: bool
+) -> None:
+    seen: list[TurnEndPayload] = []
+    loop = _make_loop(_refusing(), tmp_path)
+    loop.end_turn_on_quota_refusal()
+    loop.hook_manager.register_turn_end(RecordingHook([_veto()] * 10))
+    loop.hook_manager.register_turn_end_observer(seen.append)
+    stop_reason, _, _ = await _turn(loop, streamed=streamed)
+    assert stop_reason == "provider_error"
+    assert [p.stop_reason for p in seen] == ["provider_error"]  # told once, never asked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize(
+    "failure",
+    [RequestFailed("scripted failure"), ContextWindowExceeded("too big")],
+    ids=["request_failed", "context_window"],
+)
+async def test_any_other_provider_error_on_such_a_turn_keeps_its_paced_re_entry(
+    tmp_path: Path, fast_sleep: list[float], failure: Exception, streamed: bool
+) -> None:
+    provider = FlakyScriptedProvider([failure] * 20)
+    hook = RecordingHook([_veto()] * 10)
+    loop = _make_loop(provider, tmp_path)
+    loop.end_turn_on_quota_refusal()
+    loop.hook_manager.register_turn_end(hook)
+    stop_reason, error, _ = await _turn(loop, streamed=streamed)
+    assert stop_reason == "provider_error"
+    assert provider.calls == _MAX_PROVIDER_ERROR_VETOES + 1
+    assert len(hook.payloads) == _MAX_PROVIDER_ERROR_VETOES
+    assert fast_sleep == [15.0, 30.0, 60.0, 120.0, 240.0, 300.0]
+    assert f"persisted through {_MAX_PROVIDER_ERROR_VETOES} hook-vetoed re-entries" in error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_a_turn_the_workspace_drives_itself_keeps_the_re_entry_on_a_quota_refusal(
+    tmp_path: Path, fast_sleep: list[float], streamed: bool
+) -> None:
+    """The decision, pinned: a say or a wake-up turn has no client waiting on it, and the
+    budget that arrives while it waits is what its re-entry is for (ADR-0181). The loop is
+    built as the web app builds a self-driven turn's, without the opt-in."""
+    provider = _refusing()
+    hook = RecordingHook([_veto()] * 10)
+    loop = _make_loop(provider, tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    stop_reason, error, _ = await _turn(loop, streamed=streamed)
+    assert stop_reason == "provider_error"
+    assert provider.calls == _MAX_PROVIDER_ERROR_VETOES + 1
+    assert len(hook.payloads) == _MAX_PROVIDER_ERROR_VETOES
+    assert sum(fast_sleep) == 765.0  # the whole paced allowance, as before this change
+    assert f"persisted through {_MAX_PROVIDER_ERROR_VETOES} hook-vetoed re-entries" in error
+
+
+@pytest.mark.asyncio
+async def test_fire_turn_end_can_be_told_the_ending_is_final(tmp_path: Path) -> None:
+    # Unit check on the gate itself, with its own positive control: the same call without the
+    # flag asks the hook.
+    hook = RecordingHook([_veto(), _veto()])
+    seen: list[TurnEndPayload] = []
+    loop = _make_loop(ScriptedProvider([]), tmp_path)
+    loop.hook_manager.register_turn_end(hook)
+    loop.hook_manager.register_turn_end_observer(seen.append)
+    final = await loop._fire_turn_end(
+        "provider_error",
+        iterations=1,
+        veto_count=0,
+        turn_assistant=[],
+        stuck_took_action=False,
+        allow_veto=False,
+    )
+    assert final is None
+    assert hook.payloads == []
+    assert [p.stop_reason for p in seen] == ["provider_error"]
+    asked = await loop._fire_turn_end(
+        "provider_error", iterations=1, veto_count=0, turn_assistant=[], stuck_took_action=False
+    )
+    assert asked == "[harness] Hint: Not done: verify your work."
+    assert [p.stop_reason for p in hook.payloads] == ["provider_error"]
 
 
 # ── doom-loop veto: pairing fix + stall-state reset ───────────────────────────

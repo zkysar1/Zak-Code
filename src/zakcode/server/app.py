@@ -1515,14 +1515,26 @@ def create_app(
         inflight.discard(session_id)
 
     def _turn_agent(
-        session: Session, model: str | None, prompter: PermissionPrompter | None
+        session: Session,
+        model: str | None,
+        prompter: PermissionPrompter | None,
+        *,
+        client_waits: bool = False,
     ) -> AgentLike:
         """The agent one turn runs on, told to skip SessionStart when its chat has already started
-        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks."""
+        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks.
+
+        ``client_waits`` marks a turn a client is held on (``POST /chat``, ``POST /chat/stream``):
+        a quota refusal ends it at once, and no Stop hook is asked to re-enter it (ADR-0393). A
+        turn the workspace drives itself, a say or a wake-up, keeps the paced re-entry
+        (ADR-0181)."""
         agent = resolved_factory(session, model, prompter)
         skip = getattr(getattr(agent, "loop", None), "skip_session_start", None)
         if skip is not None and session.id in started_chats:
             skip()
+        end_on_quota = getattr(getattr(agent, "loop", None), "end_turn_on_quota_refusal", None)
+        if client_waits and end_on_quota is not None:
+            end_on_quota()
         return agent
 
     async def _release_turn_agent(agent: AgentLike | None, session_id: str) -> None:
@@ -1569,7 +1581,9 @@ def create_app(
                 event_bus_registry.get_or_create(session.id).publish(event)
 
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
             tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
@@ -1664,7 +1678,9 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
         except BaseException:
             _release_session(session.id)
             raise
