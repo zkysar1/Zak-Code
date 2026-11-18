@@ -20178,6 +20178,17 @@ request. The other books a call priced past the cap, buffered and streamed: the 
 and a new session is refused before any request, in the same process and in a fresh one that knows only what the
 ledger holds.
 
+**Addendum (2026-11-16, from the reviews of the refresh).** The paragraph above understates two limits. The cap is
+also checked when a credit refusal or a refused key moves a live session to another account, and that check does not
+read the ledger again. A seat lasts the session's life, so a `prod` session seated on the card-billed account while
+`acct-06` and `acct-07` briefly cannot serve (no key on the machine, a rate-limit cooldown, out of credit, or at the
+steer-off line) stays on the card after they recover. The ledger can also stop the cap binding: a ledger that cannot
+be written never shows a run's spend to the other runs sharing it, a month file that cannot be opened leaves a run
+only what it counted itself, and a month file that is not UTF-8 fails the seating. So set a spend limit on the
+card-billed account at the provider before a `prod` run uses the pool. `tests/test_anthropic_pool_ring.py` also
+gains a test that a `dev`, `test` or `demo` run with only the card-billed account's key is refused before any
+request, by the account's use.
+
 ## ADR-0324: look-alike tools confuse small models, so the readers also load on request, confusable descriptions say when NOT to use them, and recovery names the tool to switch to
 
 Status: accepted. 2026-10-22. Supersedes in part ADR-0228 (the document readers no longer stay unconditionally exposed).
@@ -24380,6 +24391,428 @@ under the reading bound, no command-turn hold, a sub-agent consuming, and urgent
 eighteen turn their tests red, and every one of the eighteen cases is proven by at least one mutant. The
 first run covered seventeen: the skip mutant's replacement text already occurs in `loop.py`, which the
 harness refuses, so it was run on its own with a replacement that does not, and went red.
+
+## ADR-0386: a compaction carries the rule texts the session read, right after the summary
+
+**Context.** Under `lean_rules` the prompt carries a rules index and `read_rule` fetches a body; a
+repeat while the text is in the conversation gets a numbered pointer (ADR-0379), and an ask right
+after its own pointer gets the text (ADR-0381). The pointer's check reads the conversation
+(ADR-0372), so a compaction, which summarizes the region holding the fetched texts, sends every rule
+back to the model one call at a time, though the index tells the model that a text it read stays in
+its context. Measured 2026-11-17 on a host framework's worker sessions, from transcript metadata
+only: 51 of one session's 68 tool calls after its 10:36Z compaction were `read_rule`; of the 30
+calls after each of another session's six compactions, 19, 12 and 10 were `read_rule` after three
+of them; two other sessions counted the same way made 0 of 44 and 4 of 124. Those sessions compact
+at 109,826 to 117,845 reported prompt tokens of a 131,072 window. The host's 37 rules run 515 to
+16,108 characters as `read_rule` returns them; the seven the first session read in one batch before
+a compaction total 17,982.
+
+**Decision.** The session counts every `read_rule` ask for a rule that exists, pointers included:
+`Session.rule_reads` holds `[asks, latest]` per rule name, written through a new
+`ToolContext.note_rule_read` that the loop wires beside `in_context`. When a compaction installs a
+summary, the loop puts ONE system message right after it, opening with
+`[rules carried across the compaction]` and a line saying the texts are in force and need not be
+read again, then the text of each rule the session asked for, exactly as `read_rule` returns it
+(`rule_text`, the one function that renders both). Most-asked first, then most recently asked. Not
+carried: a rule no longer in the registry, a rule pinned in the prompt (`alwaysApply`, ADR-0105),
+and a rule whose text a tool result in the kept tail still holds. The message is held to 8 percent
+of the context window, counted like the kept tail (the provider's estimate, at least 3 characters
+a token, ADR-0132); a rule that does not fit is skipped and a smaller one after it can still go.
+The pointer's check now also reads that message, so an ask for a carried rule gets the pointer,
+and an ask right after it still gets the text. The summarizer never reads the message: at the next
+compaction it is in the old region, skipped, and carried again from the count, so there is one at
+most; a summary followed only by it is still nothing to compact. A session that asked for no rule
+compacts exactly as before. The boundary row in the transcript says `carriedRules` and
+`carriedRulesChars` when something was carried, the compaction's cost record always carries
+`carried_rules` and `carried_rules_chars`, and a turn end that falls before the kept tail goes as it
+did before the summary had company (ADR-0361).
+
+**Alternatives rejected.** Putting the most-read rules back in the prompt in full (`alwaysApply`,
+ADR-0105): every session pays for them from its first call, whether it needs them or not, the choice
+is the host's rule by rule, and the pinned render cuts each body at 8,192 characters without a note,
+inside the index's 32,768. Writing the texts into the system prompt at the compaction: an engine's
+prefix cache keys on the prompt head, and a message after the summary reaches the model the same way
+without moving anything earlier. Re-sending them as a synthetic `read_rule` call and result: the
+transcript would show calls the model never made, and the host counts `read_rule` calls from it.
+Carrying every text the window read with no cap: the host's twenty longest unpinned rules are
+115,467 characters, 29k to 38k tokens, carried into a context the next compaction must fit.
+Counting from the conversation at compaction time instead of on the session: the previous window's
+asks are in the summary by then, so the order would forget the rules read most.
+
+**The budget.** 8 percent of 131,072 is 10,485 tokens, about 31,000 characters at 3 a token.
+Compaction fires at no more than 90 percent of the window (ADR-0240). A rebuilt context is the
+system prompt, the summary (asked for in 1/32 of the window, 4,096 tokens here, and condensed once
+past 1.25 times that, ADR-0330 and ADR-0331), the carry, and a kept tail held to a quarter of the
+window (ADR-0132): about 37 percent plus the system prompt, so the carry cannot bring it to the
+threshold unless the system prompt and tool schemas alone took more than half the window. The
+window loses what the carry holds until the next compaction; a session that fetched the same texts
+again would hold them anyway, plus the calls. The first session's batch, replayed offline through
+this change with the host's rules, carries six of its seven (the seventh is pinned) in one message
+of 17,630 characters: 4,407 tokens at 4 characters a token, 5,876 at 3.
+
+Not verified: that a session given the texts stops asking for them. A carried rule asked for gets
+the pointer, and the text at a second ask right after it, as within any window. Nor that the
+system-message shape renders on every chat template: it is the summary's shape, a second system
+message after it. To read after the roll, per session against its own hours before: `read_rule`
+calls among the 30 after each compaction (the bar: under 10 percent), `carriedRules` on each
+boundary row, compactions per hour (the carry takes window room), and summaries installing as
+before. A `read_rule` ask for a pinned rule still returns its text, as before; that is outside this
+change.
+
+**The proof.** `tests/test_carry_rules.py`, nineteen cases:
+- The carry: the texts after the summary and before the kept tail through both turn paths; a
+  carried rule's pointer and then its text through both paths; no rule read, the same compacted
+  list as before and no count on the row; the row's `carriedRules`, `carriedRulesChars` and
+  `postMessages`; a second compaction whose summarizer never sees the texts and that leaves one
+  carried message; a summary with only the carry after it is nothing to compact.
+- The order and the budget: most-asked first, then most recent; the budget keeping the most-asked of
+  two and dropping the other, and the other when the counts swap; a rule over the budget skipped
+  and a smaller one after it carried; pinned rules and rules still in the tail not carried; a rule
+  gone from the registry passed over.
+- The count: every ask and the latest counted through both turn paths; the tool noting found rules
+  by their own name, a pointer included, a missing or empty rule not; the count kept with the
+  session.
+- Turn ends: the unit shift with the carry at the head, and the same through the loop.
+
+On 78d01663608d a compaction keeps the summary and the kept tail alone, and a rule read before the
+boundary comes back only through another `read_rule` call. Twenty single-purpose mutants of
+`loop.py`, `compact.py`, `read_rule.py`, `store.py` and `transcript.py`, one site each except one
+that removes two guards together, were each run against the test named for them by the host's
+mutation partition harness, which restores every file byte for byte: all twenty killed, each of the
+fifteen cases killed by at least one, a control test green under every mutant, and every restore
+clean. The two-guard mutant is reported as broad: it proves its test, not which guard.
+
+## ADR-0387: read_rule no longer sends again a text the model already holds
+
+**Context.** ADR-0386 carries the texts a session read across a compaction, which answers the first
+fetch of each rule after one. Most `read_rule` volume is the same rule asked again inside one
+window. Measured 2026-11-17 on two worker sessions of a host framework, from transcript metadata
+only (times, rule names, result sizes), each since its last compaction:
+- One session: 13 of its 41 tool calls were `read_rule`, all one rule, in bursts. By size: the text
+  (6,293 characters), then per burst its pointer (505), the text again with ADR-0381's lead (6,467),
+  and a third identical call refused by the exact-repeat guard (104, the doom-loop turn end): three
+  refusals in 12 minutes.
+- The other: 27 of 125 calls, over nine names, one of them not a rule. One rule was asked 11 times:
+  its text once, its pointer eight times and the text again twice; its last six asks came 2 to 22
+  calls apart and each got the pointer. The rule its host pinned for being read most (ADR-0381) was
+  asked seven times in three minutes and answered text, pointer, text again, pointer, pointer, text
+  again, refusal. Two other pinned rules sent 6,459 and 6,760 characters the prompt already held: a
+  pinned rule's prompt copy opens `## name`, which ADR-0372's check, looking for the tool's own
+  form, never matches.
+
+Across both, the same rule was asked again at once after 8 of 17 pointers, after 4 of 7 texts sent
+again, and after 1 of 4 refusals. Of the 39,711 characters of rule text sent while the model already
+held it, the texts sent again were 25,877 and the pinned texts 13,834.
+
+**Decision.** Two changes in `read_rule`. A rule the model does not hold still gets its text, every
+other repeat ADR-0379's numbered pointer, and `refresh=true` the text.
+- A plain ask for a rule pinned whole in the system prompt gets a numbered line: it is pinned, its
+  text is in the system prompt under the heading `## name`, it is always in force. Whole means the
+  rule is `alwaysApply` and its block, `## name` and the body, is in the prompt's rules text uncut,
+  asked through a new `ToolContext.in_prompt` that the loop answers from its own prompt builder.
+  So a pinned rule the per-rule cap cut or the rules budget dropped still gets its text, and so
+  does a bare context.
+- An ask right after the rule's own pointer line, with no other tool result between (ADR-0381's
+  moment), gets a firmer line in place of the text again: the tool result just before answered it,
+  the text has not changed and is in context from `# name` to `[end of rule 'name']`, the ask
+  changed nothing; apply it and go on, and `refresh=true` returns it if the exact wording is needed.
+
+Both lines open like the pointer, so the ask count goes on and the moment is found as before.
+
+**Alternatives rejected.** A firmer line right after a full text instead: in these windows that
+position reached the tool twice in 40 asks; the guard refused the other repeats after a text before
+the tool ran. ADR-0381's text again, kept once per window: the first text sent again in a window
+was followed at once by another ask no less often than the later ones. Exempting `read_rule` from
+the exact-repeat guard (ADR-0381 rejected it) or refusing its repeats sooner: a guard refusal can
+end a worker's turn. Rewording the index or the rules whose summaries name a recurring moment, the
+asks between other work: that text is the host's.
+
+**Not verified.** That the asks fall. The guard counts identical calls, not answers, so a burst
+still ends at the third identical call at most. What changes is that its second answer is short and
+names where the text is, and that no pinned text is sent again. Replayed through this change with
+the host's rules and the same asks, each step title as long as in the pointer measured beside it:
+the first session's 29,036 characters of `read_rule` answers come to 11,021, its three texts sent
+again (6,467 each) becoming lines of 462, and the second's 40,918 to 23,066. To read after the
+roll, per session against its own hours before: the `read_rule` share of calls, the same rule asked
+again at once after the firmer line (against 4 of 7 after the text again), guard refusals of
+`read_rule` calls an hour, and characters of rule text sent an hour.
+
+**The proof.** `tests/test_rule_reask.py`, eleven cases: the pinned line and its count, `refresh`
+on a pinned rule, a pinned rule cut at the cap and one the budget dropped, a rule not pinned whose
+block the full render holds, a bare context, the firmer line naming the text's first and last lines,
+and the loop answering from its own prompt through both turn paths and a loop whose prompt has no
+rules. ADR-0381's cases in `tests/test_read_rule_tool.py` and the carried-rule case in
+`tests/test_carry_rules.py` now expect the firmer line, and the text sent once. Seventeen
+single-site mutants of `read_rule.py` and `loop.py`, each run against the test named for it by the
+host's mutation partition harness, were all killed; each of the fourteen cases was killed by at
+least one, a control test stayed green under every mutant, and every file was restored byte for
+byte. Among them: the text sent again after the pointer, as ADR-0381 had it; a pinned rule's line
+for a rule cut at the cap; either loop path left without `in_prompt`.
+
+## ADR-0388: update_plan's short form, `advance`, closes the current step and starts the next
+
+**Context.** The full-replace contract (the model sends the whole plan on every call) makes moving the plan
+on by one step cost as much as laying it out. Measured 2026-11-17 on ten worker sessions of one 27B model
+behind one pod, from 09:00Z: 461 of 2,737 responses called update_plan and nothing else, and they took 19
+to 28 percent of each session's model time (one response paired the plan with work). Joined to the pod's
+request ledger on four of the sessions (1,023 of 1,023 responses matched), those 200 responses had a median
+of 44 s, 668 streamed tokens and 1,551 characters of arguments, against 26 s, 357 tokens and 155
+characters for the 788 responses that did work: 27 percent of the four sessions' tool-call model time. The
+arguments are the resent plan. Compared call by call with the plan before it, the 201 plan-only responses
+were 93 re-plans (steps added, renamed or dropped: 47 percent of their time), 70 resends of the plan
+unchanged (28 percent; ADR-0168's lever N advanced most of them), 22 that only closed one step and started
+the next (17 percent) and 14 that changed only a note or an outcome. The 92 that moved the plan by one step
+paid about 450 tokens each to say a dozen.
+
+**Decision.**
+1. `update_plan` takes `advance` in place of `tasks`: `{"advance": {"outcome": "..."}}` closes the step the
+   plan marks current and starts the one current after it. A bare string is read as the outcome, and any
+   other value as a close with no outcome.
+2. The harness builds the full plan the advance stands for: every step's title, status and dependencies as
+   they stand, the current step `done` with the outcome, and the step that is current once it is done
+   (read from the plan as it will stand, so dependencies and derived parent statuses count) `in_progress`.
+   Notes and outcomes are left out, so each step keeps its own (ADR-0235). That plan goes through the
+   full-replace path unchanged: the carry-over, the null-close challenge (ADR-0116), the log, the receipt,
+   and the record of what the model last sent, so a later resend of the plan it now sees reads unchanged.
+3. The receipt of an advance begins `Step <id> done ('<title>').`, because the model did not send the plan
+   and this is how it learns which step closed. Its data carries `short_form` (the closed step's id, `""`
+   for a full plan), for a census.
+4. An advance is refused, with the plan untouched, when the board holds nothing of the model's (empty, or
+   only the request anchor, ADR-0111), when every step is finished, or when every open step is blocked;
+   each refusal names `tasks`. A call that sends both forms takes `tasks` and says `advance` was ignored.
+5. The schema has no `required` list: a call carries one form or the other, and a backend that builds its
+   tool-call grammar from the schema would otherwise force `tasks` out. The tool still refuses a call with
+   neither, naming both.
+6. One sentence, `PLAN_SHORT_FORM`, says it on the surfaces that say how the plan moves: the tool
+   description, the system prompt, the plan line the loop re-shows (ADR-0237's sentence's places) and the
+   receipt's rail. The unchanged and lever-N rails (ADR-0168) now point at `advance` instead of a resend.
+
+**Checked, not changed.**
+- The plan-first gate (ADR-0231): `authors_a_plan` is false for an advance, so a board with no plan of the
+  model's still asks for one, and the advance itself is refused there.
+- The plan-only rail (ADR-0371) and the plan-only run (ADR-0364): an advance alone in its response is a
+  plan-only response like any other, and its receipt reports one more step done, which the run reads as
+  the plan moving.
+- A paged skill (ADR-0067): the page turns on the network the call leaves, so an advance that closes a
+  section brings the next section, as a full plan does.
+- The exact-repeat guard: a third identical advance in a row is held as a doom loop, as a third identical
+  plan is. Three steps closed with no work and no outcome between them is a run the guard should question.
+
+**Alternatives rejected.** Per-id patching (`{"id": "2", "status": "done"}`): the full-replace contract
+exists because weak models get ids wrong, and the step to close is the one the plan already marks current.
+Advancing inside the tool without the full-replace path: a second writer of the plan's statuses, log and
+author record, which ADR-0116, ADR-0168 and ADR-0235 each had to be kept true in. Shortening the resend
+instead (sending only changed steps): every omitted step would read as dropped (ADR-0113).
+
+Not verified: that the model uses it. To measure after the roll, per session and window, against the
+figures above: update_plan calls carrying `advance`, the plan-only share of model time, and the median
+duration and argument size of plan-only responses. The re-plans, the largest share, are untouched here.
+
+**The proof.** `tests/test_plan_short_form.py` holds the short form's tests: the close and the start, the
+outcome and the log; nesting and dependencies walked to completion; notes and outcomes kept; the outcome
+from an object, a string, or the last evidence line; the null close still challenged and the second close
+accepted; a resend of the plan the advance left reading unchanged; both forms sent; the three refusals;
+a call with neither form naming both; the schema; the plan-first gate's question; the sentence on every
+surface; and, in the loop, an advance first in a batch crediting the work to the step it starts.
+`tests/test_skill_paging.py` gains one: an advance that closes a section turns the page. `tests/test_plan_unchanged.py` changes one assertion: the unchanged rail now names `advance` where it
+named a resend with status `done`.
+
+The full suite ran 7,413 passed and 1 failed: that assertion, on the rail's old wording; with it updated
+the four plan test files run 99 passed. Eighteen mutants of `update_plan.py`, `prompt.py`, `loop.py` and
+`tasks.py`, one site each, are each run against the test named for them, with a control test that must
+stay green, by a harness that checks the file is restored byte for byte: no close, the next step not
+started, no derived parent status in the look-ahead, dependencies dropped, the outcome dropped, no bare
+string, the receipt naming a close the challenge undid, no anchor-only refusal, no open-step refusal,
+`advance` overriding `tasks`, the error naming `tasks` only, `tasks` required again, no `short_form`,
+the sentence gone from the system prompt, the sentence gone from the plan line, notes not carried, and
+the no-close mutant against the paging and ride-along tests. All eighteen turn their test red, every
+control stays green, and every one of the fourteen cases is proven by at least one mutant.
+
+**Amendment: the short form is shown as the call, first.** On two worker sessions of the 27B model,
+in their first 35 and 45 minutes on the build above, 5 responses only updated the plan and none used
+`advance`: every one resent the whole plan, median 833 and 5,036 characters. Every place that named
+the short form named the whole-plan update first and the short form after it, in words, and the model
+followed the first. A cue moves a small model where it lands on what the model is already doing, and
+here that is the call it writes. So `PLAN_ADVANCE_CALL` is the call as written,
+`{"advance": {"outcome": "<what the step produced>"}}`, and the short-form sentence carries it. The
+plan line the loop shows on every call opens with it for the step that is current ("When step 2 is
+done, call update_plan with ..."), and the receipt after a plan update says it before the whole plan,
+which is kept for adding, splitting, dropping or reordering steps. A test sends the shown call as
+written and checks that it closes the step. Two mutants (the plan line and the receipt back to the
+whole-plan wording first) each turn their test red.
+
+## ADR-0389: a summarizer reply that begins writing its own lines again is closed there
+
+**Context.** Asked with thinking off (ADR-0366), the summarizer on the pod's 27B model often writes
+its summary and then writes it again: a block of lines copied from earlier in the same reply, over
+and over, until it closes its tag or reaches the 16,469-token cap. Measured 2026-11-17 on ten worker
+sessions of a host framework, from transcript metadata only (line counts, never text), over the 86
+summaries they installed since 2026-11-16T12:00: 41 repeated five or more of their own lines, 11
+ended in a run where at least 10 of the last 15 lines stood earlier in the reply, the repeated
+blocks ran 9 to 54 lines, and the worst summary repeated 281 of its 357 lines. The repeats are
+installed, held to the line (ADR-0369), so they take the room the older history the harness carries
+after a summary would have had (ADR-0370). On the pod's ledger, 59 summarizer calls ran to the cap
+in the 24 hours to 2026-11-17T16:40Z, 622 engine-minutes. Nothing judged a summarizer reply while it
+streamed but ADR-0376's tag watcher: `repeated_tail` convicts one short line repeated, not a block,
+and `self_repetition` is read only on a final answer that stopped at the cap.
+
+**Decision.** `RestatedLines` in `zakcode.agent.degeneration` watches a streaming text a line at a
+time. A line counts once its spacing is collapsed and it is at least 20 characters long (headings
+and short list items repeat in a healthy summary). When 10 of the last 12 counted lines stood
+earlier in the text, it returns where that run began. Both summarizer collectors feed it every
+visible delta; on a verdict they close the stream, so the server stops writing as it does on
+ADR-0376's cut, and return the text up to the run with the finish reason `restated`. `_summary_of`
+keeps every line of such a reply, since it stops where a line starts, under the same tag and floor
+as a cut reply. A summary that passes is held to the line and noted as cut (ADR-0369); one that
+does not is a rejection, asked again at the rejection-retry temperature (ADR-0242). Slices, folds
+and the condensing ask go through the same collectors. The compaction record counts
+`summarizer_restated`, kept or not.
+
+**Alternatives rejected.** Dropping repeated lines once the reply ends: it keeps the new lines a run
+carries, but not the minutes a run to the cap costs. A repetition or DRY penalty sent with the ask:
+it changes every summary, the healthy ones too, and a summary rightly repeats paths and ids. A lower
+cap: a reply with no run would be cut as well. A longer unit for `repeated_tail`'s line branch: it
+judges the tail of a final answer, and a block is not a tail.
+
+**Not verified.** The minutes saved. The ledger shows which calls ran to the cap but not what they
+wrote past the line, so how many were runs is not known. Replayed through `RestatedLines` in
+40-character deltas, the 86 installed summaries gave 34 verdicts, each on a summary with 11 or more
+repeated lines, and none on the other 52, which held 0 to 12 (one held 20, spread, never 10 in 12);
+each verdict was the same fed whole. The cut removed 1,526 of the 1,563 repeated lines of the 34 and
+kept 575 to 3,574 words of each. It also dropped 12,014 words of lines after the run that neither
+repeated nor shared 60 percent of their words with a line before it, about 350 words a summary: what
+the summarizer wrote between restated blocks. To read after the roll, per session against its own
+hours before: summarizer calls at the cap an hour and their engine-minutes, repeated lines per
+installed summary, and the carried history the installed summaries hold.
+
+**The proof.** `tests/test_degeneration.py`, six cases: a restated block caught where it began, the
+same verdict at three delta sizes, a line judged when it ends, two new lines in twelve still
+convicting, a healthy summary with a recurring line and headings acquitted, and short lines never
+counted. `tests/test_compact_loop.py`, six: a restating reply closed before its end and installed
+once through its last line before the run, noted as held; one with too little before the run asked
+again and the resample installed; each collector closing the stream where the run began; and
+`_summary_of` keeping every line of a restated reply and refusing one with no tag or under the
+floor. Each case was checked against a mutation table: fourteen single-site mutants, six of
+`degeneration.py` and eight of `loop.py`, each run against its named case by the host's mutation
+partition harness; all fourteen were killed (ten in a first run, and the four that run left
+unjudged for want of a negative control, run again with one), and every file was restored byte
+for byte.
+
+**Trial.** On two worker sessions of the host framework, from each one's first live minute: six
+summaries installed (two on one, four on the other, 946 to 2,208 words), none convicted, no line
+restated, and no call at the summary cap.
+
+## ADR-0390: a finished plan sent back after the turn-start reset stays closed
+
+**Context.** A finished plan leaves the board when the next turn starts (ADR-0110), so a finished goal's
+checklist does not ride into a turn about something else. Measured 2026-11-17 on ten worker sessions of the
+27B model over 2.2 hours, each response joined to the pod's request ledger: 101 responses only updated the
+plan and took 248 model-minutes. 20 of them sent a plan whose every step was finished (66 minutes), and 9
+of those were byte for byte the plan the model had last sent (33 minutes). One session sent its finished
+12-step plan (6,498 characters) back four times in 17 minutes, about 20 model-minutes. The tool put such a
+plan back on the board and answered "Plan unchanged ... complete" with the verdict rail (ADR-0168,
+ADR-0108), and from then on every call of the turn carried the plan line "Plan complete ... Answer the
+user's original request now" for a turn that was already over.
+
+**Decision.** When the board is empty, the model sends exactly the plan it last sent (the submission
+signature, ADR-0168), and every primitive step of that plan is done or cancelled, `update_plan` leaves the
+board empty. Its receipt says so ("Not reopened: this plan already finished (N/N steps done) and was
+closed, so nothing was updated. Send update_plan again only for new work; otherwise go on with your next
+action.") with no hint, and its data is `{"task_count": 0, "unchanged": true, "reopened": false}`, so the
+loop counts it with the other unchanged resends.
+
+**Checked, not changed.**
+- A finished plan resent in the turn it finished in is still on the board and keeps the verdict rail: that
+  is the call the "answer now" line exists for (ADR-0108).
+- A changed plan, an unfinished plan (including one the turn start dropped as abandoned), an `advance`, and
+  a plan sent after the model cleared the board itself (which resets the signature) go up as before.
+- The fresh-eyes review (ADR-0117) reads the plan on the board at a finish. With the board left empty, a
+  later turn's finish does not review an earlier turn's plan again.
+
+**Alternatives rejected.** Announcing the reset when the turn starts: a line on every turn after a finished
+plan, including the turns that never send it back. Clearing a finished plan resent within its own turn:
+that takes the fresh-eyes review and the verdict rail from the one call they are for.
+
+Not verified: that the model sends the plan back less often. To measure after the roll, per session and
+window, against the figures above: plan calls identical to a finished plan and their model-minutes, the
+plan-only share of model time, and closing replies that follow a finished plan.
+
+**The proof.** `tests/test_plan_finished_resend.py`: the resend after the reset is not reopened and leaves
+the board and the record as they were; the same resend within its own turn keeps the verdict rail; a
+changed finished plan, an unfinished plan and a plan sent after the model cleared the board go up; and in
+the loop, a turn that opens by sending back the last turn's finished plan ends with an empty board and no
+plan line on the call after it. `tests/test_plan_review_operator_command.py`'s next-turn test sent turn
+one's finished plan back byte for byte; it now sends a finished plan of its own, which is what it checks
+(the next turn is reviewed again).
+
+Eleven mutants of `update_plan.py`, one site each, are each run against the test named for them, with a
+control test that must stay green, by a harness that checks the file is restored byte for byte: no
+empty-board condition, no finished condition, no same-submission condition (against the changed-plan test
+and the cleared-board test), the early return removed (against the receipt test and the loop test), the
+receipt reworded, `unchanged` dropped from the data, steps counted at the top level only, sub-steps not
+walked, and `cancelled` not read as finished. All eleven turn their test red, every control stays green,
+and each of the six cases is proven by at least one mutant.
+
+## ADR-0391: the exact-repeat guard sees a loop of rule lookups, and its recovery names the rules
+
+**Context.** ADR-0387 shortened the answers to a rule asked again; it left the exact-repeat guard
+as it was, and noted that a burst still ends at the third identical call at most. Measured
+2026-11-17 on ten worker sessions of a host framework, from transcript metadata only (times, tool
+names, rule names, record sizes):
+- 18:30 to 22:41: 1,720 model calls carried tool calls, and 139 of them (8.1 percent) were a
+  `read_rule` batch byte for byte the same as the batch just before it. The guard tripped 39
+  times, 36 of them on batches of `read_rule` alone.
+- The guard compares whole batches byte for byte, so a pair of rules asked again in the other
+  order, or one rule of the pair alone, reads to it as a new batch. One session asked the same
+  two rules in nine batches over 18 minutes, in both orders; only the ninth was the third
+  identical batch in a row, where the guard trips.
+- Over 24 hours, 36 recovery nudges followed a batch of `read_rule` alone. The next batch was the
+  same batch 15 times, other `read_rule` asks 8 times, and other work 13 times: after 23 of 36,
+  the model read rules again. The general nudge says to READ again to check the real state, which
+  fits an edit loop; in a lookup loop it names the action that repeats.
+- What a lookup loop costs past the guard: one session asked one pinned rule in 60 of its 64
+  batches over 59 minutes; each guard turn end was refused by the host's turn-end hook, which
+  delivered its loop skill again, 13 times (405,122 characters), until the fence ended the turn
+  as `veto_stall` and a wake opened the next one in the same context.
+
+**Decision.** Two changes in the exact-repeat guard, on both turn paths.
+- A batch of plain `read_rule` lookups (no `refresh=true`) counts as a repeat when every rule in
+  it was asked by the batch the guard compares against: the same rules in another order, or some
+  of them. Read from the signatures the guard already keeps (`lookup_rules`, `is_lookup_repeat` in
+  `stuck.py`), so no new state and none of the guard's resets change. Any other batch counts as
+  before.
+- When the repeated batch is such a lookup, the batch the guard does not run is answered "Not
+  answered: you asked read_rule for <rules> again right after its answer, and the text has not
+  changed", and the recovery nudge names every rule of the loop and the current plan step: the
+  texts are already in context (a pinned rule in the system prompt), reading a rule again does not
+  apply it, apply it to that step and take the step's next action now; where a rule leaves a
+  choice, decide it and go on. Any other batch keeps the general answer and nudge.
+
+**Alternatives rejected.** ADR-0387 rejected refusing `read_rule` repeats sooner because a guard
+refusal can end a worker's turn. This change refuses a reordered or partial lookup repeat at the
+same count as an identical one: it is the same loop, the recovery comes first, and a turn ends
+only if the loop goes on past it. Exempting
+`read_rule` from the guard: the loops above are the cost. A larger recovery budget for lookups,
+or taking `read_rule` off the next call: changing the tool definitions for one call makes a local
+engine read the whole context again (ADR-0268), and a second recovery is a second change to
+measure; first this one.
+
+**Not verified.** That the model takes the step's next action more often after this nudge than
+after the general one. To read after the roll, per session against its own hours before: of the
+recovery nudges after a lookup batch, how often the next batch reads rules again (23 of 36
+before); `read_rule` batches in repeat runs an hour; guard turn ends an hour.
+
+**The proof.** `tests/test_lookup_loop_recovery.py`: the repeat test (another order, a subset, a
+superset that is not one, `refresh`, a mixed batch, no batch before), the recovery texts (the
+rules and the current step, no step without a plan, and the general pair kept for any other
+batch), and through both turn paths a reordered and a partial loop refused at the third batch with
+the rules named, beside a positive control whose lookups move on and are all answered. Each test
+was checked against a mutation table: eight single-site mutants of `loop.py` and `stuck.py` (the
+new repeat test off in each guard copy, the lookup texts never chosen, no step named, the nudge
+naming only the refused batch's rules, only an equal set counted as a repeat, `refresh` read as
+a plain lookup, a batch with another tool read as a lookup), each run against its named tests by
+the host's mutation partition harness; all eight were killed, and every file was restored byte for
+byte.
 
 ## ADR-0385: on a route that is Anthropic by name the conversation takes a cache breakpoint of its own, placed where the per-call tail cannot reach it
 

@@ -69,6 +69,43 @@ def batch_signature(calls: list[ToolCall]) -> tuple[tuple[str, str], ...]:
     return tuple(call_signature(c) for c in calls)
 
 
+def lookup_rules(signature: Sequence[tuple[str, str]] | None) -> frozenset[str] | None:
+    """The rules a batch asks ``read_rule`` for, when every call in it is a plain lookup (ADR-0391).
+
+    Read from a :func:`batch_signature`, so the doom guard needs no state beyond the signature it
+    already keeps. A plain lookup names a rule and does not set ``refresh``, which is an ask on
+    purpose. ``None`` for any other batch, an empty one, or an argument that does not parse.
+    """
+    if not signature:
+        return None
+    names: set[str] = set()
+    for name, args in signature:
+        if name != "read_rule":
+            return None
+        try:
+            parsed = json.loads(args)
+        except ValueError:
+            return None
+        rule = parsed.get("name") if isinstance(parsed, dict) else None
+        if not isinstance(rule, str) or not rule.strip() or parsed.get("refresh") is True:
+            return None
+        names.add(rule.strip())
+    return frozenset(names)
+
+
+def is_lookup_repeat(
+    signature: Sequence[tuple[str, str]] | None, previous: Sequence[tuple[str, str]] | None
+) -> bool:
+    """True when a batch of plain ``read_rule`` lookups asks only for rules the batch just before
+    it asked for, in any order, all of them or some (ADR-0391). The exact-repeat guard compares
+    whole batches byte for byte, so a pair sent back in the other order, or one rule of the pair
+    alone, read to it as a new batch and the loop went on past it.
+    """
+    now = lookup_rules(signature)
+    before = lookup_rules(previous)
+    return now is not None and before is not None and now <= before
+
+
 # ── signals + ladder ────────────────────────────────────────────────────────────
 
 #: The model asked for the byte-identical batch it asked for last iteration.

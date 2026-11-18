@@ -174,8 +174,11 @@ async def test_the_next_turn_is_reviewed_again(tmp_path: Path) -> None:
     loop, reviewed = _loop(tmp_path, "/stop")
     assert await _run(loop, False, "keep working on the queue") == "completed"
     assert reviewed == []
+    # The next turn's own finished plan: turn one's, sent back byte for byte, is not reopened once
+    # the turn-start reset has cleared it (ADR-0390), so there would be no plan to review.
+    next_plan = [{"title": "do the one more thing", "status": "done"}]
     loop.provider = _Scripted(  # type: ignore[attr-defined]
-        [_call("update_plan", {"tasks": _DONE_PLAN}), _JUDGE_OK, _done("Done.")]
+        [_call("update_plan", {"tasks": next_plan}), _JUDGE_OK, _done("Done.")]
     )
     assert await _run(loop, False, "one more thing") == "completed"
     assert reviewed == ["one more thing"]

@@ -97,9 +97,20 @@ class CompactionResult(BaseModel):
     tail_elided: int = 0
 
 
+#: Prefix of the system message right after a summary that carries the texts of the rules the
+#: session read with ``read_rule`` (ADR-0386). The loop writes it; a summary is folded and this is
+#: carried again, so neither is ever summarized.
+CARRIED_RULES_MARKER = "[rules carried across the compaction]"
+
+
 def is_summary(message: Message) -> bool:
     """True if ``message`` is a compaction summary produced by this module."""
     return message.role == "system" and message.text.startswith(SUMMARY_MARKER)
+
+
+def is_carried_rules(message: Message) -> bool:
+    """True if ``message`` carries rule texts across a compaction (ADR-0386)."""
+    return message.role == "system" and message.text.startswith(CARRIED_RULES_MARKER)
 
 
 def _elidable(block: object) -> bool:
@@ -235,8 +246,9 @@ class Compactor:
             return CompactionResult(compacted=False, messages=list(messages))
         old = messages[:idx]
         recent = messages[idx:]
-        # Nothing new to fold: avoid pointlessly re-summarizing a lone prior summary.
-        if len(old) == 1 and is_summary(old[0]):
+        # Nothing new to fold: avoid pointlessly re-summarizing a lone prior summary, or one with
+        # only the rules carried after it (ADR-0386).
+        if all(is_summary(m) or is_carried_rules(m) for m in old):
             return CompactionResult(compacted=False, messages=list(messages))
 
         summary_text = await summarize(old)

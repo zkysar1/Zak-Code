@@ -37,7 +37,7 @@ from pathlib import Path
 from zakcode.config import PermissionTier, Settings
 from zakcode.tools.base import ToolSpec
 from zakcode.tools.builtins._ignore import load_ignore
-from zakcode.tools.builtins.update_plan import PLAN_ADVANCE
+from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_SHORT_FORM
 
 #: Marker separating the stable (cacheable) prefix from the dynamic context suffix.
 #: A provider's cache breakpoint is positioned here; nothing above it may change mid-session.
@@ -195,7 +195,8 @@ _PLANNING = (
     "never closes such a step by itself.\n"
     "- Keep exactly one step in_progress; as you finish each, call `update_plan` to mark it done "
     f"and the next in_progress {PLAN_ADVANCE}. The first plan can go out with the first step's "
-    "call the same way. Decomposition is also just-in-time: lay out the approach and the steps you "
+    f"call the same way. {PLAN_SHORT_FORM} Decomposition is also just-in-time: lay out the "
+    "approach and the steps you "
     "can see up front, and when a step turns out to be several actions once you reach it, break it "
     "down THEN — never skip the breakdown.\n"
     "- When a request asks for MORE THAN ONE thing — several actions, several skills, parts "

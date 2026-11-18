@@ -21,7 +21,7 @@ from zakcode.tasks import Task, TaskNetwork
 from zakcode.tools.base import ToolContext, ToolRegistry
 from zakcode.tools.builtins.read_rule import (
     ALREADY_READ,
-    ASKED_AGAIN,
+    JUST_ASKED,
     MAX_RULE_BODY_CHARS,
     ReadRuleTool,
 )
@@ -309,7 +309,7 @@ def test_another_rules_pointer_does_not_count() -> None:
     assert res.output == _pointer()
 
 
-# --- ADR-0381: an ask right after the rule's own pointer gets the text --------------------------
+# --- ADR-0381, ADR-0387: an ask right after the rule's own pointer gets the firmer line ---------
 
 
 def _ctx_after(last: str, *outputs: str) -> ToolContext:
@@ -327,30 +327,31 @@ def _ctx_after(last: str, *outputs: str) -> ToolContext:
     )
 
 
-def _again(name: str = "alpha-rule") -> str:
-    return ASKED_AGAIN.format(name=name) + "\n" + _body(name)
+def _just(name: str = "alpha-rule", n: int = 2, step: str = "") -> str:
+    return JUST_ASKED.format(n=n, name=name, step=step)
 
 
 def _ask(ctx: ToolContext, name: str = "alpha-rule", **args: object):
     return asyncio.run(ReadRuleTool().execute({"name": name, **args}, ctx))
 
 
-def test_an_ask_right_after_its_pointer_gets_the_text() -> None:
-    """ADR-0379 answered it with the next pointer, and in a trial two sessions asked on until the
-    exact-repeat guard refused them."""
+def test_an_ask_right_after_its_pointer_gets_the_firmer_line_not_the_text() -> None:
+    """ADR-0381 sent the text again here, and after 4 of 7 such texts the same rule was asked for
+    again at once (ADR-0387). The line says where the text is, and the count goes on."""
     res = _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")))
-    assert res.output == _again()
-    assert res.verbatim
+    assert res.output == _just(n=2)
+    assert "Always do the alpha thing." not in res.output
+    assert not res.verbatim
     assert not res.is_error
 
 
-def test_an_ask_right_after_a_later_pointer_gets_the_text_too() -> None:
+def test_an_ask_right_after_a_later_pointer_gets_the_firmer_line_too() -> None:
     res = _ask(_ctx_after(_pointer(n=3), _body("alpha-rule"), _pointer(n=1), _pointer(n=2)))
-    assert res.output == _again()
+    assert res.output == _just(n=4)
 
 
-def test_an_ask_by_another_spelling_right_after_its_pointer_gets_the_text() -> None:
-    assert _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")), "ALPHA-RULE").output == _again()
+def test_an_ask_by_another_spelling_right_after_its_pointer_gets_the_firmer_line() -> None:
+    assert _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")), "ALPHA-RULE").output == _just()
 
 
 def test_an_ask_right_after_the_text_gets_a_pointer() -> None:
@@ -367,9 +368,9 @@ def test_an_ask_right_after_another_rules_pointer_gets_a_pointer() -> None:
     assert _ask(_ctx_after(last, _body("alpha-rule"), _body("beta-rule"))).output == _pointer()
 
 
-def test_the_ask_after_the_text_sent_again_gets_the_next_pointer() -> None:
-    seen = _ctx_after(_again(), _body("alpha-rule"), _pointer(n=1))
-    assert _ask(seen).output == _pointer(n=2)
+def test_an_ask_right_after_the_firmer_line_gets_it_again_with_the_next_number() -> None:
+    seen = _ctx_after(_just(n=2), _body("alpha-rule"), _pointer(n=1))
+    assert _ask(seen).output == _just(n=3)
 
 
 def test_a_pointer_quoted_inside_another_result_does_not_count() -> None:
@@ -469,11 +470,11 @@ async def test_the_loop_numbers_every_repeat_and_sends_the_body_once(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_the_loop_sends_the_text_for_an_ask_right_after_its_pointer(
+async def test_the_loop_answers_an_ask_right_after_its_pointer_with_the_firmer_line(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """ADR-0381 through both turn paths: alpha, beta, alpha (a pointer: beta's text came between),
-    then alpha again at once (its pointer did not land: the text, with the lead)."""
+    """ADR-0387 through both turn paths: alpha, beta, alpha (a pointer: beta's text came between),
+    then alpha again at once (the firmer line, and alpha's text was sent once)."""
     registry = ToolRegistry()
     registry.register(ReadRuleTool())
     asks = [("r1", "alpha-rule"), ("r2", "beta-rule"), ("r3", "alpha-rule"), ("r4", "alpha-rule")]
@@ -493,8 +494,8 @@ async def test_the_loop_sends_the_text_for_an_ask_right_after_its_pointer(
     outputs = _outputs(loop)
     assert len(outputs) == 4
     assert outputs[2] == _pointer()
-    body = (await ReadRuleTool().execute({"name": "alpha-rule"}, _ctx(_registry()))).output
-    assert outputs[3] == ASKED_AGAIN.format(name="alpha-rule") + "\n" + body
+    assert outputs[3] == _just(n=2)
+    assert sum("Always do the alpha thing." in output for output in outputs) == 1
 
 
 @pytest.mark.asyncio
