@@ -24814,6 +24814,64 @@ a plain lookup, a batch with another tool read as a lookup), each run against it
 the host's mutation partition harness; all eight were killed, and every file was restored byte for
 byte.
 
+## ADR-0392: once a turn-end hook has named the session's loop, a finished plan's rail names that loop, not the original request
+
+**Context.** `update_plan` answers the call that finishes a plan with ADR-0108's rail: re-read the
+user's original request and answer it, leading with the conclusion or verdict. ADR-0208 silenced
+the loop's own "answer now" line once a turn-end hook's refusal names a skill re-entry, and left
+the tool's rail, which says the same thing, as it was. Measured 2026-11-18 on four workers of a
+host framework (five sessions: one worker was restarted), from transcript metadata only (label
+counts of the records that carry the rail, never their text):
+- From 02:30 to 10:43 UTC the rail reached them 51 times. 44 came in sessions whose turn-end
+  hook had already named their loop skill (`Session.loop_skill`, ADR-0187); 7 came in two
+  sessions before any hook had named one.
+- The turns were long. Between the turn's opening and the rail, the only other text records were
+  compaction summaries and messages that arrived mid-turn, so the session's loop, not the turn,
+  is the scope that holds: a flag scoped to one turn, as ADR-0208's is, lives in memory and a
+  process restart clears it.
+- These sessions have no person's request: their turns are the loop's passes. After their plans
+  finished they added steps to deliver a final verdict on "the original request" and re-read the
+  host framework's rule about answering one.
+
+**Decision.**
+- `ToolContext.loop_skill` is a callable that returns `Session.loop_skill` when asked. Both turn
+  paths pass it. It is read when a plan finishes, not when the context is built, because the hook
+  names the loop in the middle of the turn whose context was already built.
+- When it returns a skill, the finished-plan rail is `_LOOP_COMPLETE_HINT`: plan complete, every
+  step terminal; this session runs the /<skill> loop, so the plan was one pass of it, not a
+  deliverable; do not report that it is finished; do what /<skill> says comes next, its next
+  step, its re-entry or its close. The skill's arguments are left out. The rail says nothing
+  about a request or a verdict, because those were the words the sessions acted on.
+- All three receipts that can report a finished plan use it: a plan sent whole or closed by the
+  short form, a finished plan sent back unchanged, and a worked step the harness advances.
+- Everything else keeps ADR-0108's rail as it was: a bare context, a session whose hook has
+  never named a skill, and every open plan.
+
+**Alternatives rejected.** Scoping the change to ADR-0208's governed turn: the measured rails
+came in long turns, and that flag does not survive a restart. A clause added to the old rail
+("if no one asked, …"): it keeps the words in front of the model. No rail at all in a loop
+session: ADR-0108 measured what a small model does with silence after a finished plan.
+
+**Not covered.** A new session before its hook first names a loop (7 of the 51): its
+`Session.loop_skill` is empty until then. A person who types into a session whose hook named a
+loop earlier gets the loop's wording, because `Session.loop_skill` is never cleared. The loop's
+own "answer now" line outside a governed turn (ADR-0208) is unchanged.
+
+**Not verified.** That the sessions stop adding verdict steps and re-reading the answering rule
+after their plans finish. To read after the roll, per session against its own hours before:
+finished plans followed by a step about the original request, and reads of that rule, an hour.
+
+**The proof.** `tests/test_plan_complete_loop_rail.py`: the loop rail and its wording, the skill
+named without its arguments, all three receipts, a rail that reads the loop when the plan
+finishes, controls (a bare context, no loop named, a blank name, an open plan), and through both
+turn paths ADR-0208's scenario, where the plan that finishes before the hook names `/cycle` gets
+ADR-0108's rail and the one that finishes after it gets the loop's. Twelve single-site mutants of
+`loop.py` and `update_plan.py` (each turn path's context given no loop, or the loop as it stood
+when the turn began; the rail ignoring the loop; the arguments kept; each of the three receipts
+left on ADR-0108's rail; the loop rail without a loop; an open plan given it), each run against
+its named test by the host's mutation harness: all twelve were killed, and every file was
+restored byte for byte.
+
 ## ADR-0385: on a route that is Anthropic by name the conversation takes a cache breakpoint of its own, placed where the per-call tail cannot reach it
 
 **Status:** Accepted (2026-11-16). Supersedes the line of ADR-0298 that declined a rolling breakpoint on the
