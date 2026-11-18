@@ -139,7 +139,14 @@ from zakcode.agent.recipe import (
     resolve_run_command,
     workspace_test_files,
 )
-from zakcode.agent.stuck import SIG_REPEATED_OUTCOME, StuckAction, StuckTracker, batch_signature
+from zakcode.agent.stuck import (
+    SIG_REPEATED_OUTCOME,
+    StuckAction,
+    StuckTracker,
+    batch_signature,
+    is_lookup_repeat,
+    lookup_rules,
+)
 from zakcode.agent.trace import TurnTrace
 from zakcode.agent.verify import VerificationGate, derive_verify_command
 from zakcode.background import BackgroundTasks, tasks_dir_for
@@ -304,6 +311,46 @@ _DOOM_RECOVERY_NUDGE = (
     "state, READ it now to check its ACTUAL current contents (you may be acting on a stale or "
     "mistaken assumption). Then take a DIFFERENT approach — a different command, tool, or edit."
 )
+
+#: The answer to a repeated batch the guard does not run, beside :data:`_DOOM_RECOVERY_NUDGE`.
+_DOOM_UNEXECUTED = "Not executed: you repeated this exact action with no change."
+
+#: The answer and the nudge when the repeated batch is plain ``read_rule`` lookups (ADR-0391). The
+#: general nudge says to READ again to check the real state, which fits an edit loop: in a lookup
+#: loop it names the very action that repeats. Measured 2026-11-17 on ten worker sessions over 24
+#: hours: after 23 of 36 general nudges to a lookup loop the next batch read rules again.
+_LOOKUP_UNEXECUTED = (
+    "Not answered: you asked read_rule for {names} again right after its answer, and the text has "
+    "not changed."
+)
+_LOOKUP_RECOVERY_NUDGE = (
+    "You have asked read_rule for {names} several times in a row, and the answer did not change: "
+    "the text of each is already in your context (a pinned rule in your system prompt, any other "
+    "in an earlier read_rule result). Reading a rule again does not apply it. Apply what it says "
+    "to your current step{step} and take that step's next action now: run its command, make its "
+    "edit, update the plan, or write its note. Where a rule leaves a choice to you, decide it and "
+    "go on."
+)
+
+
+def _doom_recovery_texts(
+    calls: list[ToolCall], network: Any, previous: Sequence[tuple[str, str]] | None = None
+) -> tuple[str, str]:
+    """The answer to the batch the guard does not run, and the recovery nudge (ADR-0391): a batch
+    of plain ``read_rule`` lookups gets its own pair, the answer naming its rules and the nudge
+    every rule of the loop (with ``previous``, the guard's signature the loop repeats) and the
+    current plan step; any other batch the general pair."""
+    rules = lookup_rules(batch_signature(calls))
+    if rules is None:
+        return _DOOM_UNEXECUTED, _DOOM_RECOVERY_NUDGE
+    loop_rules = rules | (lookup_rules(previous) or frozenset())
+    current = network.current() if network is not None else None
+    step = f", {current.title!r}," if current is not None else ""
+    return (
+        _LOOKUP_UNEXECUTED.format(names=", ".join(sorted(rules))),
+        _LOOKUP_RECOVERY_NUDGE.format(names=", ".join(sorted(loop_rules)), step=step),
+    )
+
 
 #: Rate-limit retry policy (audit P0-4; widened 2026-08-26 after a field 429 storm).
 #: A PURE rate limit / transient 5xx (:class:`RateLimited` that is not one of its
@@ -10168,7 +10215,9 @@ class AgentLoop:
             # "max_iterations" stays the accurate (and outer-bound) stop reason.
             text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
             signature = batch_signature(result.tool_calls)
-            if signature == last_signature:
+            # A lookup batch asking again for rules the last batch asked for, in another order or
+            # some of them, is the same loop (ADR-0391).
+            if signature == last_signature or is_lookup_repeat(signature, last_signature):
                 if last_autoadvanced:
                     # The previous identical batch was answered with a harness plan advance —
                     # deterministic progress, not a stall. Reset the counter (consume the signal;
@@ -10194,14 +10243,13 @@ class AgentLoop:
                     doom_recoveries += 1
                     turn_degraded = True
                     self._note("intervention", "recovering from a doom loop", kind="doom_recovery")
-                    self.session.add_message(
-                        _unexecuted_tool_results(
-                            result.tool_calls,
-                            "Not executed: you repeated this exact action with no change.",
-                            "doom_recovery",
-                        )
+                    unexecuted, nudge = _doom_recovery_texts(
+                        result.tool_calls, self.session.task_network, last_signature
                     )
-                    self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                    self.session.add_message(
+                        _unexecuted_tool_results(result.tool_calls, unexecuted, "doom_recovery")
+                    )
+                    self.session.add_message(Message.user(_control_rail(nudge)))
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -12250,7 +12298,7 @@ class AgentLoop:
                 # Doom-loop guard — identical to the buffered path.
                 text_only_completions = 0  # a tool batch breaks a text-only stall (ADR-0033)
                 signature = batch_signature(tool_calls)
-                if signature == last_signature:
+                if signature == last_signature or is_lookup_repeat(signature, last_signature):
                     if last_autoadvanced:
                         # Previous identical batch drew a harness plan advance — progress, not a
                         # stall; don't count it (ADR-0168 lever N; same rule as the buffered path).
@@ -12273,14 +12321,13 @@ class AgentLoop:
                         self._note(
                             "intervention", "recovering from a doom loop", kind="doom_recovery"
                         )
-                        self.session.add_message(
-                            _unexecuted_tool_results(
-                                tool_calls,
-                                "Not executed: you repeated this exact action with no change.",
-                                "doom_recovery",
-                            )
+                        unexecuted, nudge = _doom_recovery_texts(
+                            tool_calls, self.session.task_network, last_signature
                         )
-                        self.session.add_message(Message.user(_control_rail(_DOOM_RECOVERY_NUDGE)))
+                        self.session.add_message(
+                            _unexecuted_tool_results(tool_calls, unexecuted, "doom_recovery")
+                        )
+                        self.session.add_message(Message.user(_control_rail(nudge)))
                         self._persist()
                         last_signature = None
                         repeat_count = 0
