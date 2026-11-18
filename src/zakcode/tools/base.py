@@ -363,6 +363,12 @@ class ToolContext(BaseModel):
     #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a
     #: bare context, in which case the resolver falls back to its session's recent user text.
     caller_query: str = ""
+    #: The session's loop skill, read when asked (``Session.loop_skill``, ADR-0187): the skill a
+    #: turn-end hook last named to re-enter the session's loop, as ``"<name> <args>"``, or ``""``
+    #: before any hook has named one. A callable, not a value, because the hook can name it in
+    #: the middle of a turn, after this context was built. ``update_plan`` reads it to word its
+    #: finished-plan rail for a loop (ADR-0392). ``None`` for a bare context: no loop.
+    loop_skill: Callable[[], str] | None = None
     #: The session's one scheduled wake-up (ADR-0094) — the seam the ``schedule_wakeup``
     #: tool arms and cancels through; the REPL's idle wait fires it. ``None`` for a bare
     #: loop that holds no session, so the tool returns a clean error rather than crashing.
