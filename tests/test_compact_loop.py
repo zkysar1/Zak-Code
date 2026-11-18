@@ -39,6 +39,7 @@ from zakcode.agent.loop import (
     _MAX_FOLD_PASSES,
     _MAX_SUMMARY_SLICES,
     _POSITION_NOTE_HEAD,
+    _RESTATED_FINISH,
     _SUMMARY_CLOSE,
     _SUMMARY_FAST_FAIL_RESAMPLES,
     _SUMMARY_HELD_LINE,
@@ -50,6 +51,7 @@ from zakcode.agent.loop import (
     AgentLoop,
     _carried_parts,
     _clamp_middle,
+    _collect_stream,
     _collect_stream_watching_tag,
     _earlier_summary_body,
     _first_words,
@@ -2568,3 +2570,116 @@ def test_carried_history_never_holds_a_second_copy_of_the_harness_line() -> None
 
     assert whole.count(_CARRIED_HEAD) == 1
     assert whole.startswith(f"state\n\n{_CARRIED_HEAD}\nnew")
+
+
+# ── ADR-0389: a summary that begins writing its own lines again is closed there ─────────
+
+
+def _restating(lines: int, block: int, times: int) -> str:
+    """A summarizer reply that writes ``lines`` distinct lines, then its first ``block`` lines
+    again ``times`` times over, and closes its tag."""
+    one = [f"- step {i}: the session changed parser_{i}.py and ran its tests" for i in range(lines)]
+    return "<summary>\n" + "\n".join(one + one[:block] * times) + "\n</summary>"
+
+
+class _FinishingStreamProvider(_TagWatchStreamProvider):
+    """Records, per stream, whether it ran to its done event or was closed before it."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.finished: list[bool] = []
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        system: str | None = None,
+        tools: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        self.finished.append(False)
+        async for event in super().astream(messages, system=system, tools=tools, **kwargs):
+            if isinstance(event, StreamDone):
+                self.finished[-1] = True
+            yield event
+
+
+def test_a_summary_that_restates_itself_is_closed_and_kept_up_to_the_repeat(
+    tmp_path: Path,
+) -> None:
+    # Measured 2026-11-17 on ten worker sessions: 41 of 86 installed summaries repeated five or
+    # more of their own lines, blocks of 9 to 54 lines written again until the close or the cap.
+    provider = _FinishingStreamProvider([_restating(20, 9, 6)], ["stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+    said: list[str] = []
+    loop._status_sink = said.append
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 1
+    assert provider.finished == [False]  # closed at the repeat, not streamed to its end
+    summary = loop.session.messages[0].text
+    body = _body(summary)
+    assert body.count("parser_0.py") == 1  # every line once
+    assert "parser_19.py" in body  # through the last line written before the repeat
+    assert _SUMMARY_HELD_LINE in summary
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_restated"] == 1
+    assert row["summarizer_rejected"] == 0
+    assert row["summarizer_cut"] == 0
+    assert any("began repeating its own lines; keeping the" in line for line in said)
+
+
+def test_a_reply_that_restates_itself_before_its_summary_is_asked_again(tmp_path: Path) -> None:
+    # Three lines and then the same three again: too little before the repeat to install.
+    provider = _FinishingStreamProvider([_restating(3, 3, 6), _WHOLE], ["stop", "stop"])
+    loop = _loop(provider, tmp_path, compactor=Compactor(CompactionConfig()))
+    loop.session.messages.extend(_history(5))
+
+    assert asyncio.run(loop.compact_now(trigger="auto")) is True
+
+    assert len(provider.seen) == 2
+    assert provider.finished == [False, True]
+    assert "The session fixed the parser." in loop.session.messages[0].text
+    (row,) = _compaction_rows(loop)
+    assert row["summarizer_restated"] == 1
+    assert row["summarizer_rejected"] == 1
+
+
+@pytest.mark.parametrize("collect", [_collect_stream, _collect_stream_watching_tag])
+def test_restated_lines_close_the_stream_where_the_run_began(collect: Any) -> None:
+    reply = _restating(20, 9, 6)
+    closed = False
+
+    async def _events() -> AsyncIterator[ProviderStreamEvent]:
+        nonlocal closed
+        try:
+            for i in range(0, len(reply), 16):
+                yield StreamTextDelta(text=reply[i : i + 16])
+            yield StreamUsage(usage=Usage())
+            yield StreamDone(finish_reason="stop")
+        finally:
+            closed = True
+
+    async def run() -> LLMResult:
+        result: LLMResult = await collect(_events())
+        # Read while the generator is still referenced, as in
+        # test_the_stream_is_closed_when_the_watcher_cuts.
+        assert closed is True
+        return result
+
+    result = asyncio.run(run())
+    assert result.finish_reason == _RESTATED_FINISH
+    assert result.text == reply[: reply.index("- step 0:", reply.index("- step 19:"))]
+
+
+def test_a_restated_reply_keeps_every_line_it_wrote_before_the_repeat() -> None:
+    # The watcher closes a reply where a line starts, so unlike a cut reply nothing is dropped.
+    assert _summary_of(f"<summary>{_lines(20)}\n", 900, _RESTATED_FINISH) == (_lines(20), "")
+
+
+def test_a_restated_reply_with_no_tag_or_too_little_is_no_summary() -> None:
+    reason = "it began repeating itself before it had written a summary"
+    assert _summary_of(f"{_lines(20)}\n", 900, _RESTATED_FINISH) == ("", reason)
+    assert _summary_of(f"<summary>{_lines(2)}\n", 900, _RESTATED_FINISH) == ("", reason)
