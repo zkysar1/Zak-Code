@@ -91,6 +91,24 @@ _COMPLETE_HINT = (
     "with the conclusion or verdict, then the evidence the steps produced."
 )
 
+#: Verdict rail for a session that runs a loop (ADR-0392). A turn-end hook has named the skill
+#: that re-enters this session's loop (``Session.loop_skill``, ADR-0187), so a finished plan was
+#: one pass of that loop and no request is waiting on it. Served loop sessions given the rail
+#: above went looking for one: they added steps to deliver a final verdict on "the original
+#: request" and re-read rules about answering it. This rail names the loop and says nothing about
+#: a request or a verdict, because those words were what the sessions acted on.
+_LOOP_COMPLETE_HINT = (
+    "Plan complete — every step is terminal. This session runs the /{skill} loop, so the plan was "
+    "one pass of it, not a deliverable: do not report that it is finished. Do what /{skill} says "
+    "comes next — its next step, its re-entry or its close."
+)
+
+
+def _complete_hint(ctx: ToolContext) -> str:
+    """The verdict rail for this session: the loop's once a hook has named one (ADR-0392)."""
+    loop = (ctx.loop_skill() if ctx.loop_skill is not None else "").split()
+    return _LOOP_COMPLETE_HINT.format(skill=loop[0]) if loop else _COMPLETE_HINT
+
 
 #: Challenge rail (ADR-0116): the harness just REOPENED a step the model closed on a null
 #: result with no done-condition (the advisory in the output says which and why). The next
@@ -448,8 +466,8 @@ class UpdatePlanTool(Tool):
                 # instead of the rail it ignores (arm M). The trigger is the EVIDENCE, not a
                 # setting: with nothing worked this falls through to the plain unchanged receipt,
                 # which is what keeps an always-on advance from inventing progress.
-                return self._autoadvance(network, current)
-            return self._unchanged(network, finished, total)
+                return self._autoadvance(network, current, _complete_hint(ctx))
+            return self._unchanged(network, finished, total, _complete_hint(ctx))
         if closed_on_outcome:
             # ADR-0254: say what was read, in the receipt the model gets back — a harness that
             # closes a step on the model's behalf tells the model so, and names the contract it
@@ -513,7 +531,7 @@ class UpdatePlanTool(Tool):
                 # they are the churn, and the stuck ladder must keep counting them.
                 RECEIPT_OF_CHANGE: True,
             },
-            hint=self._hint(network),
+            hint=self._hint(network, _complete_hint(ctx)),
         )
 
     @staticmethod
@@ -575,7 +593,7 @@ class UpdatePlanTool(Tool):
         return steps, step
 
     @staticmethod
-    def _autoadvance(network: TaskNetwork, step: Task) -> ToolResult:
+    def _autoadvance(network: TaskNetwork, step: Task, complete_hint: str) -> ToolResult:
         """Lever N (ADR-0168): mark a worked step done for the model and name the next (opt-in)."""
         advanced_id, advanced_title = step.id, step.title
         new_current = network.harness_advance(step)
@@ -595,7 +613,7 @@ class UpdatePlanTool(Tool):
         if new_current is None:
             tail = " — complete." if network.is_complete() else "."
             output = f"{lead} Plan now {finished}/{total} steps done{tail}"
-            hint = _COMPLETE_HINT if network.is_complete() else None
+            hint = complete_hint if network.is_complete() else None
             return ToolResult.ok(output, data=data, hint=hint)
         output = (
             f"{lead} Plan now {finished}/{total} steps done · current: {new_current.id} "
@@ -615,7 +633,9 @@ class UpdatePlanTool(Tool):
         )
 
     @staticmethod
-    def _unchanged(network: TaskNetwork, finished: int, total: int) -> ToolResult:
+    def _unchanged(
+        network: TaskNetwork, finished: int, total: int, complete_hint: str
+    ) -> ToolResult:
         """The receipt for a resend of the plan already in force (ADR-0168)."""
         data = {
             "task_count": total,
@@ -627,7 +647,7 @@ class UpdatePlanTool(Tool):
         if current is None:
             tail = " — complete." if network.is_complete() else "."
             output = f"Plan unchanged: {finished}/{total} steps done{tail} Nothing was updated."
-            hint = _COMPLETE_HINT if network.is_complete() else None
+            hint = complete_hint if network.is_complete() else None
             return ToolResult.ok(output, data=data, hint=hint)
         output = (
             f"Plan unchanged: {finished}/{total} steps done · current: {current.id} "
@@ -641,10 +661,10 @@ class UpdatePlanTool(Tool):
         return ToolResult.ok(output, data=data, hint=_UNCHANGED_HINT.format(id=current.id))
 
     @staticmethod
-    def _hint(network: Any) -> str:
+    def _hint(network: Any, complete_hint: str) -> str:
         if network.log and network.log[-1].kind == "challenged":
             return _CHALLENGED_HINT
-        return _COMPLETE_HINT if network.is_complete() else _PLANNED_HINT
+        return complete_hint if network.is_complete() else _PLANNED_HINT
 
 
 __all__ = ["UpdatePlanTool"]

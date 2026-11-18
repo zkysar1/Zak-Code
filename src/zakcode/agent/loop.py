@@ -9003,6 +9003,7 @@ class AgentLoop:
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
+            loop_skill=lambda: self.session.loop_skill,  # update_plan's loop rail (ADR-0392)
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
             background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
@@ -10711,6 +10712,7 @@ class AgentLoop:
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
             tool_registry=self.registry,  # bash refuses a TOOL typed as a command (ADR-0098)
             caller_query=user_text,  # this turn's prompt → use_skill attributes the signal to it
+            loop_skill=lambda: self.session.loop_skill,  # update_plan's loop rail (ADR-0392)
             wakeup_slot=self.wakeup_slot,  # schedule_wakeup's seam (ADR-0094)
             background_tasks=self.background_tasks,  # Bash(run_in_background) seam (ADR-0191)
         )
