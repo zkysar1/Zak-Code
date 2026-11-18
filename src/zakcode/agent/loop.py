@@ -195,6 +195,7 @@ from zakcode.providers.base import (
     ProviderError,
     ProviderStreamEvent,
     ProviderUnavailable,
+    QuotaExhausted,
     RateLimited,
     RequestFailed,
     StreamDone,
@@ -3018,6 +3019,11 @@ class AgentLoop:
         # return to the parent — a Stop hook must not resurrect them). A registered hook
         # IS a live hook; vetoes are unbounded and the cost budget is the real bound.
         self.turn_end_vetoable = turn_end_vetoable
+        # A turn a client is waiting on ends on a quota refusal instead of offering it to a
+        # veto-capable hook (ADR-0393). Off here: a turn the workspace drives itself keeps the
+        # bounded, paced re-entry of ADR-0181. The server turns it on, per turn, for
+        # POST /chat and POST /chat/stream through end_turn_on_quota_refusal().
+        self._quota_refusal_ends_turn = False
         # A veto is a TURN BOUNDARY for per-turn skill state (ADR-0048): the Agent wires its
         # skill-turn reset here (reload-dedup map + invocation budget) and _fire_turn_end
         # calls it the moment a hook vetoes. A perpetual-loop framework runs its whole
@@ -8106,6 +8112,21 @@ class AgentLoop:
         self._session_started = True
         self._session_start_done = True
 
+    def end_turn_on_quota_refusal(self) -> None:
+        """End this loop's turns on a quota refusal, without asking a Stop hook (ADR-0393).
+
+        A refusal the provider layer raises as :class:`QuotaExhausted` (the spend gate's
+        ``SpendCapReached`` among them) is no blip: waiting does not lift it, only a new budget
+        does. A hook's veto of the ``provider_error`` it ends a turn with re-enters the turn for
+        up to 765 seconds (ADR-0181), and a client waiting on that turn is held that long, or
+        has gone when a re-entry is admitted and billed. The web app calls this for the turns a
+        client waits on. The observers still see the turn end once, and every other provider
+        failure keeps its paced re-entry. There is no off switch: the mark holds for the life of
+        the loop, which the web app builds for one turn, as it relies on for
+        :meth:`skip_session_start`.
+        """
+        self._quota_refusal_ends_turn = True
+
     def _say_session_start(self, said: list[str], source: str) -> None:
         """Hand the model what a SessionStart hook said: one persisted message, once (ADR-0211).
 
@@ -8207,6 +8228,7 @@ class AgentLoop:
         veto_count: int,
         turn_assistant: list[Message],
         stuck_took_action: bool,
+        allow_veto: bool = True,
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
@@ -8222,11 +8244,14 @@ class AgentLoop:
         :data:`_VETO_STALL_THRESHOLD` such vetoes were honoured with no skill call between
         them is refused, ending the turn as ``veto_stall`` with a wake-up left behind (the
         fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
-        turn end, vetoable or not. Fail-open: a crashing hook run never blocks the stop.
+        turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
+        final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
+        veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
-            self.turn_end_vetoable
+            allow_veto
+            and self.turn_end_vetoable
             and stop_reason in _VETOABLE_STOP_REASONS
             and self.hook_manager.has_turn_end_hooks()
         )
@@ -8959,6 +8984,7 @@ class AgentLoop:
         self._veto_stall_cause = ""
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
+        refusal_ends_turn = False  # this turn's provider_error is a quota refusal it ends on
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
@@ -9225,6 +9251,7 @@ class AgentLoop:
                         )
                         continue
                     stop_reason = "provider_error"
+                    refusal_ends_turn = False
                     turn_error = (
                         f"{exc} (recovery: {self.last_compaction or 'no compactor'}; "
                         f"{context_recoveries}/{_MAX_CONTEXT_RECOVERY} attempts)"
@@ -9281,6 +9308,9 @@ class AgentLoop:
                     # harness can wait/retry/alert. (audit P0-4)
                     stop_reason = "provider_error"
                     turn_error = str(exc)
+                    refusal_ends_turn = self._quota_refusal_ends_turn and isinstance(
+                        exc, QuotaExhausted
+                    )
                     logger.error("turn aborted by provider error: %s", turn_error)
                     self._refund_iteration()  # no model work happened this iteration
                     break
@@ -9296,6 +9326,7 @@ class AgentLoop:
                             veto_count=turn_end_vetoes,
                             turn_assistant=turn_assistant,
                             stuck_took_action=stuck.took_action,
+                            allow_veto=not refusal_ends_turn,
                         )
                     if prompt is not None:
                         # A TURN_END hook re-entered a turn the provider failed (ADR-0181):
@@ -10908,6 +10939,7 @@ class AgentLoop:
                         yield AgentStatus(message=f"route: {category} → {routed}")
 
                 provider_failure: str | None = None
+                refusal_ends_turn = False  # a quota refusal this loop ends the turn on (ADR-0393)
                 retry_attempts = 0
                 interrupt_attempts = 0  # TimedOut / ModelOutputRejected (fixed bound)
                 filter_attempts = 0  # ContentFiltered resamples (its own, smaller bound)
@@ -11273,6 +11305,9 @@ class AgentLoop:
                                 yield AgentStatus(message=f"switching model: {note}")
                                 continue  # fresh accumulators, retry on the new provider
                         provider_failure = str(exc)
+                        refusal_ends_turn = self._quota_refusal_ends_turn and isinstance(
+                            exc, QuotaExhausted
+                        )
                     break
 
                 if provider_failure is None:
@@ -11318,6 +11353,7 @@ class AgentLoop:
                             veto_count=turn_end_vetoes,
                             turn_assistant=turn_assistant,
                             stuck_took_action=stuck.took_action,
+                            allow_veto=not refusal_ends_turn,
                         )
                     if prompt is not None:
                         # Hook-vetoed provider-error re-entry (ADR-0181) — see _run_turn.

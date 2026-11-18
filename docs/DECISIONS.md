@@ -24871,3 +24871,84 @@ when the turn began; the rail ignoring the loop; the arguments kept; each of the
 left on ADR-0108's rail; the loop rail without a loop; an open plan given it), each run against
 its named test by the host's mutation harness: all twelve were killed, and every file was
 restored byte for byte.
+
+## ADR-0393: a quota refusal ends a turn a client waits on, and no Stop hook is asked to re-enter it
+
+**Context.** `POST /chat` and `POST /chat/stream` hold a request open for the whole turn. A model
+call the spend gate refuses (`SpendCapReached`, a `QuotaExhausted`) ends that turn as
+`provider_error`, and ADR-0181 makes that ending vetoable: a workspace Stop hook that vetoes it
+re-enters the turn up to six times, after sleeps of 15, 30, 60, 120, 240 and 300 seconds (765 s in
+all), with the request open throughout. Measured 2026-11-15 in the third review round of the spend
+gate's first-push hold, through the app under a real server with the veto delays cut to 1 s and 2 s:
+- the call was refused at once and the hook vetoed;
+- the client gave up at 1.36 s;
+- a budget push landed at 1.70 s;
+- the next re-entry was admitted at 3.56 s and billed 0.25 USD, for a client that had left 2.2 s
+  before.
+
+With the shipped delays the request stays open for up to 765 s, past the 120 s stop allowance the
+supervisor gives a run. The spend gate's module docstring said the loop ends the turn on the first
+refusal and never retries it: true of the loop's own retry, false of a Stop hook's veto.
+
+**Decision.**
+- `AgentLoop.end_turn_on_quota_refusal()` marks a loop. On a marked loop, a `provider_error` turn
+  end whose cause is a `QuotaExhausted` (the gate's `SpendCapReached` among them) is not offered to a
+  veto-capable hook: `_fire_turn_end(..., allow_veto=False)` runs the observers, once, and asks no
+  hook. The cause is read where each turn path, buffered and streamed, turns the provider's exception
+  into the turn end.
+- The web app marks the loop of a turn a client waits on: `_turn_agent(..., client_waits=True)` for
+  `POST /chat` and `POST /chat/stream`, and for no other call.
+- Everything else keeps ADR-0181 as it was. A say or a wake-up turn has no client waiting on it, and
+  its re-entry is how it meets a budget that arrives while it waits, so it keeps the re-entry on a
+  quota refusal (decided, and pinned by a test). Every other provider error (a failed request, a
+  context window that compaction could not recover, an unavailable provider) keeps its bounded,
+  paced re-entry on every loop, marked or not.
+- The spend gate's module docstring states which turns end on the first refusal and which a hook may
+  re-enter.
+
+**Alternatives rejected.** Ending the turn when the client disconnects: it needs the disconnect seen
+mid-turn on both endpoints (the buffered one runs its turn in a task of its own, ADR-0327), and a
+client that is only slow would still have its refusal re-entered and billed; a refusal that no wait
+lifts has no reason to be held. Marking every loop the app builds: a say turn's veto is how a served
+loop crosses a refusal that a budget push then lifts, and no client is held by it. Testing for
+`SpendCapReached` alone: any `QuotaExhausted` is the same refusal, a billing action outside the
+loop's reach. Refusing the veto in the hook layer: the hook is the workspace's, and whether a stop
+is final is the loop's to say.
+
+**Not covered.** `model_failover` can still swap the provider on a quota refusal before the turn
+ends. `POST /complete` runs no loop, so a refusal there was already a 502 at once and is unchanged.
+A refusal before the gate's first budget push still reads as permanent exhaustion: telling a caller
+"retry shortly" from "out of budget" is a separate change (a distinct message, or a field in the
+spend-gate snapshot). A client that leaves during a re-entry that is not a quota refusal still has
+that re-entry run. A Stop hook is not asked on such a turn end, so it cannot arm or cancel the
+session's wake-up there (ADR-0102); a wake-up armed earlier stands. Asking the hook and then
+ignoring its veto was not taken: a block is the hook's claim that the turn goes on, and nothing
+would tell it that this one did not. The mark has no off switch: a custom agent factory that hands
+one agent to several turns would carry it from a client-waited turn into a say turn. The default
+factory builds an agent for each turn, as ADR-0342's skip of the start hooks relies on too.
+
+**Not verified.** The reproduction under a real server, with the gate armed and a budget push, was
+not re-run after the change: the tests serve a real agent through the app's test client, over a
+provider that raises `SpendCapReached` and a hook that vetoes every ending. To read after the roll:
+a refused `POST /chat` answers at once, and the spend-gate snapshot's `refused_calls` rises by one
+per refused request instead of by one per re-entry.
+
+**The proof.** `tests/test_turn_end_loop.py` on both turn paths: a marked loop ends at the first
+refusal, for `SpendCapReached` and for a plain `QuotaExhausted`, with one provider call, no hook
+asked, no wait, and the provider's own text as the error; the observers still hear the turn end once;
+any other provider error on a marked loop (a failed request, a context window that compaction could
+not recover) keeps its six paced re-entries, 15 s to 300 s; an unmarked loop keeps the whole 765 s on
+a quota refusal (the decision above); and `_fire_turn_end(allow_veto=False)` alone, with the same
+call without the flag as its positive control. `tests/test_server_quota_refusal.py` serves a real
+agent per turn over a provider the gate refuses and a hook that vetoes every ending: `POST /chat`
+and `POST /chat/stream` end after one call with the hook never asked, and a say turn on the same
+refusal makes seven calls and asks the hook six times. With the mark made a no-op, which is the
+behaviour before this change (the veto delay patched to zero), six of the thirteen loop tests fail,
+the four that count calls on `assert 7 == 1`. Thirteen single-site mutants, each run against its
+tests by the host's mutation harness: the mark a no-op; each of the two predicate sites taking any
+provider error, and each narrowed to `SpendCapReached` alone; each of the two veto call sites left
+asking; the gate ignoring the flag; the streamed path's declaration removed; `POST /chat` and
+`POST /chat/stream` each left unmarked; a say turn marked; no turn marked. All thirteen were killed,
+each by the tests meant to, and every file was restored byte for byte. The one line no test can tell
+from its absence is the buffered path's `refusal_ends_turn = False` at its context-window site: the
+flag is False there already, and a True ends the turn, so the line is there for the reader.

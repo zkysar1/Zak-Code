@@ -15,10 +15,14 @@ Mind has already spent (the floor). The row stays the one source of truth for th
 Once armed:
 
 * :meth:`SpendGate.admit` runs before every model call and raises :class:`SpendCapReached`
-  once ``spent >= cap``. It is a :class:`QuotaExhausted`, so the loop ends the turn on the
-  first refusal and never retries it. Tools, files, ``/sidecar/health`` and ``/run/stop``
-  are never refused, and the process never exits: a tripped Mind stays up and answers each
-  turn with the refusal.
+  once ``spent >= cap``. It is a :class:`QuotaExhausted`, so the loop never retries it in
+  place and ends the turn with it. A turn a client waits on (``POST /chat``,
+  ``POST /chat/stream``) stays ended: no Stop hook is asked to re-enter it (ADR-0393). A turn
+  the workspace drives itself (a say, a wake-up) may be re-entered by a Stop hook, bounded and
+  paced (ADR-0181), which is how it meets a budget pushed in the meantime. ``POST /complete``
+  runs no loop and answers the refusal at once. Tools, files, ``/sidecar/health`` and
+  ``/run/stop`` are never refused, and the process never exits: a tripped Mind stays up and
+  answers each turn with the refusal.
 * :meth:`SpendGate.charge` adds each answered call's cost. When ``spent`` first reaches
   ``cap - reserve`` it calls the soft-trip hook ONCE, and the app starts the run's graceful
   ending with reason ``mind_budget_cap``. The reserve is what that ending may spend.
