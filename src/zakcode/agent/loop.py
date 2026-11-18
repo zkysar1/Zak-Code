@@ -124,6 +124,7 @@ from zakcode.agent.degeneration import (
     BURST_MIN_REPEATS,
     RESTATEMENT_FLOOR,
     RESTATEMENT_MIN_CHARS,
+    RestatedLines,
     burst_repetition,
     repeated_tail,
     self_repetition,
@@ -476,6 +477,9 @@ _SUMMARY_TAG_GRACE_CHARS = 2_000
 #: is cheap enough to retry more than the single resample a full-length rejection gets
 #: (ADR-0376).
 _SUMMARY_FAST_FAIL_RESAMPLES = 3
+#: The finish reason of a summarizer response whose stream was closed because it began writing
+#: lines it had already written (ADR-0389). Its text stops where the run of restated lines began.
+_RESTATED_FINISH = "restated"
 #: The output cap one summarizer call asks for, its thinking included (ADR-0275). A reasoning
 #: model's thinking is billed against the cap, and it is most of what the summarizer writes.
 #: Measured 2026-10-02 on the pod's 27B model: of 266 one-call compactions since 2026-09-24, 31
@@ -703,7 +707,8 @@ def _zero_compaction_cost() -> dict[str, float]:
     """A compaction's cost record before anything ran (ADR-0241): the PreCompact hooks'
     seconds, then the summarizer's calls, tokens and seconds (every slice and fold), how
     many of its responses were not summaries (ADR-0242), how many the output limit cut off and
-    were kept (ADR-0369), and the size of the summary that was installed (ADR-0241 amendment) —
+    were kept (ADR-0369), how many were closed when they began restating themselves (ADR-0389),
+    and the size of the summary that was installed (ADR-0241 amendment) —
     the completion tokens the summarizer billed are mostly a reasoning model's thinking, and only
     the summary's own size tells the two apart."""
     return {
@@ -716,6 +721,7 @@ def _zero_compaction_cost() -> dict[str, float]:
         "summarizer_rejected": 0,
         "summarizer_fast_fail": 0,
         "summarizer_cut": 0,
+        "summarizer_restated": 0,
         "summary_chars": 0,
         "summary_tokens_estimate": 0,
         "carried_rules": 0,  # ADR-0386: rule texts carried after the summary, and their message
@@ -756,6 +762,9 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
     a cut loses is its end, and the end was the unfinished work: a section on it was in 140 of the
     207 summaries that finished and 7 of the 27 that were cut. The summary now asks for that work
     first (:data:`_SUMMARY_ORDER`), and a position note line says the summary was cut.
+
+    A response closed when it began restating itself (:data:`_RESTATED_FINISH`, ADR-0389) stops
+    where a line starts, so it keeps every line; it is held to the same tag and floor.
     """
     cleaned = _strip_model_markup(text)
     tagged = _SUMMARY_TAG_RE.search(cleaned)
@@ -764,6 +773,10 @@ def _summary_of(text: str, source_chars: int, finish_reason: str | None = None) 
         summary = summary.rpartition("\n")[0].rstrip() if tagged else ""
         if len(summary) < _SUMMARY_FLOOR_CHARS:
             return "", "it was cut off at the output limit"
+    elif finish_reason == _RESTATED_FINISH:
+        summary = summary if tagged else ""
+        if len(summary) < _SUMMARY_FLOOR_CHARS:
+            return "", "it began repeating itself before it had written a summary"
     if not summary:
         return "", "it was empty"
     if _TRANSCRIPT_TURN_RE.match(summary):
@@ -844,16 +857,21 @@ async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResu
     reason is the finish reason. Tool-call deltas are dropped: the callers here offer no
     tools, and a text-mode wrapper's synthetic calls are not an answer. The stream is
     closed on the way out whatever ended it, so a stall that the provider's per-gap bound
-    cut short releases its socket before the retry opens another (ADR-0251).
+    cut short releases its socket before the retry opens another (ADR-0251). It is also closed
+    when the text begins writing lines it already wrote (ADR-0389, :func:`_collected`).
     """
     text: list[str] = []
     thinking: list[str] = []
     usage = Usage()
     finish_reason: str | None = None
+    restated = RestatedLines()
+    cut: int | None = None
     try:
         async for event in events:
             if isinstance(event, StreamTextDelta):
                 text.append(event.text)
+                if (cut := restated.feed(event.text)) is not None:
+                    break
             elif isinstance(event, StreamThinkingDelta):
                 thinking.append(event.text)
             elif isinstance(event, StreamUsage):
@@ -864,8 +882,20 @@ async def _collect_stream(events: AsyncIterator[ProviderStreamEvent]) -> LLMResu
         aclose = getattr(events, "aclose", None)
         if aclose is not None:
             await aclose()
+    return _collected(text, thinking, usage, finish_reason, cut)
+
+
+def _collected(
+    text: list[str], thinking: list[str], usage: Usage, finish_reason: str | None, cut: int | None
+) -> LLMResult:
+    """What a summarizer stream collected. Where :class:`RestatedLines` closed it at offset ``cut``,
+    the text up to the run of restated lines and :data:`_RESTATED_FINISH` (ADR-0389): the model
+    had begun writing its summary again, and every line from there on stood earlier in it."""
+    whole = "".join(text)
+    if cut is not None:
+        whole, finish_reason = whole[:cut], _RESTATED_FINISH
     return LLMResult(
-        text="".join(text), thinking="".join(thinking), usage=usage, finish_reason=finish_reason
+        text=whole, thinking="".join(thinking), usage=usage, finish_reason=finish_reason
     )
 
 
@@ -887,7 +917,8 @@ async def _collect_stream_watching_tag(
     Only VISIBLE text (:class:`StreamTextDelta`) counts toward the grace; thinking deltas are
     ignored so a route that reasons on purpose is not cut while it thinks (ADR-0366).  When the
     grace is exceeded the stream is closed (so #862's HTTP-response close fires) and
-    :class:`_SummaryTagNotOpened` is raised with whatever text had accumulated.
+    :class:`_SummaryTagNotOpened` is raised with whatever text had accumulated. Lines the text
+    already wrote close it as they close :func:`_collect_stream` (ADR-0389).
     """
     text: list[str] = []
     thinking: list[str] = []
@@ -896,6 +927,8 @@ async def _collect_stream_watching_tag(
     visible_chars = 0
     tag_found = False
     _TAG_OPEN_RE = re.compile(r"<summary(?:\s|>)", re.I)
+    restated = RestatedLines()
+    cut: int | None = None
     try:
         async for event in events:
             if isinstance(event, StreamTextDelta):
@@ -908,6 +941,8 @@ async def _collect_stream_watching_tag(
                         raise _SummaryTagNotOpened(
                             f"it had not opened its summary within {visible_chars} characters"
                         )
+                if (cut := restated.feed(event.text)) is not None:
+                    break
             elif isinstance(event, StreamThinkingDelta):
                 thinking.append(event.text)
             elif isinstance(event, StreamUsage):
@@ -916,13 +951,11 @@ async def _collect_stream_watching_tag(
                 finish_reason = event.finish_reason
     finally:
         # Close the stream (freeing the HTTP response per #862) whether the iteration
-        # completed normally or _SummaryTagNotOpened cut it short.
+        # completed normally, _SummaryTagNotOpened cut it short or restated lines did.
         aclose = getattr(events, "aclose", None)
         if aclose is not None:
             await aclose()
-    return LLMResult(
-        text="".join(text), thinking="".join(thinking), usage=usage, finish_reason=finish_reason
-    )
+    return _collected(text, thinking, usage, finish_reason, cut)
 
 
 #: Context-proportional ceiling on a SINGLE tool result's model-facing text. Tool-level
@@ -3690,6 +3723,9 @@ class AgentLoop:
                         refused_switch = False
                     if not fast_failed:
                         self._account_summarizer_usage(result.usage, summarizer)
+                        if result.finish_reason == _RESTATED_FINISH:
+                            # ADR-0389: every stream closed on restated lines, kept or not.
+                            self._compaction_cost["summarizer_restated"] += 1
                         summary, why = _summary_of(result.text, len(prompt), result.finish_reason)
                         if summary:
                             if result.finish_reason in _LENGTH_FINISH_REASONS:
@@ -3702,6 +3738,20 @@ class AgentLoop:
                                 said = (
                                     "the summarizer's response was cut off at the output limit; "
                                     f"keeping {len(summary.split()):,} words of it"
+                                )
+                                logger.warning("compaction: %s", said)
+                                sink = self._status_sink
+                                if sink is not None:
+                                    sink(f"compaction: {said}")
+                            elif result.finish_reason == _RESTATED_FINISH:
+                                # ADR-0389: the stream was closed where the summarizer began
+                                # writing its summary again. What it wrote before is kept, held to
+                                # the line like a cut reply, and noted as one.
+                                summary = _first_words(summary, line)
+                                held = True
+                                said = (
+                                    "the summarizer began repeating its own lines; keeping the "
+                                    f"{len(summary.split()):,} words before the repeat"
                                 )
                                 logger.warning("compaction: %s", said)
                                 sink = self._status_sink
