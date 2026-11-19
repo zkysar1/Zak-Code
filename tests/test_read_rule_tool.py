@@ -179,19 +179,18 @@ def test_index_points_at_the_tool_on_a_real_rules_tree(tmp_path: Path) -> None:
     assert not res.is_error and "BODY-MARKER" in res.output
 
 
-def test_the_index_and_the_tool_say_to_read_each_rule_once() -> None:
-    """ADR-0379: both told the model to read a rule when it looks relevant to the current step,
-    and a rule summarised as a trigger looks relevant after every step."""
-    assert "read each rule once" in ReadRuleTool.spec.description
-    assert "read each rule once" in _registry().render_index()
-
-
-def test_the_index_and_the_tool_tie_a_read_to_the_first_time_not_to_each_step() -> None:
-    """ADR-0381: both still opened with "relevant to the current step", and in worker sessions a
-    read came 4 s to 2 min after each plan update, with real work between."""
-    for text in (ReadRuleTool.spec.description, _registry().render_index()):
-        assert "the first time a rule" in text
-        assert "at a new plan step too" in text
+def test_the_index_and_the_tool_say_apply_the_summary_and_read_only_for_detail() -> None:
+    """ADR-0394: ADR-0379 and ADR-0381 qualified the order to read a rule when it looks relevant
+    ("read each rule once", "the first time a rule looks relevant") and the asks went on, whatever
+    the answer said. Both now make the summary the thing to apply and a read the exception: for
+    detail the summary does not give, at most once."""
+    index = _registry().render_index()
+    assert "apply that summary as written" in index
+    assert "Apply a rule's summary directly" in ReadRuleTool.spec.description
+    for text in (ReadRuleTool.spec.description, index):
+        assert "only when you need" in text
+        assert "at most once" in text
+        assert "looks relevant" not in text
         assert "relevant to the current step" not in text
 
 

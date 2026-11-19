@@ -24813,3 +24813,42 @@ naming only the refused batch's rules, only an equal set counted as a repeat, `r
 a plain lookup, a batch with another tool read as a lookup), each run against its named tests by
 the host's mutation partition harness; all eight were killed, and every file was restored byte for
 byte.
+
+## ADR-0394: the rules index says apply each rule's summary, and read a rule only for detail
+
+**Context.** ADR-0372, ADR-0379, ADR-0381, ADR-0386, ADR-0387 and ADR-0391 changed what `read_rule`
+answers and how its repeats are guarded, and the asks did not fall. Measured 2026-11-18 on ten
+worker sessions of a host framework (transcript metadata only): `read_rule` was 261 of 1,537 calls
+(17%) from 09:53 to 12:56Z, and about 225 of the 255 reads on the three heaviest sessions brought
+no new text. The share of rule-only responses followed by another rule read was about the same
+whatever the answer had been: 57 to 79% after the full text, 54 to 81% after a pointer. When one
+rule stopped being read, another rule's reads rose in its place. So the order comes before the
+answer. The index header and the tool description both tell the model to call `read_rule` when a
+rule looks relevant (since ADR-0381, "the first time" it does), and a small model carries that out
+at every step a summary matches. The host writes each summary as the rule's imperative (for example
+"No destructive store op before an integrity-verified archive exists outside the blast radius"), so
+the line can be applied as it stands.
+
+**Decision.** Wording only. The index header says each rule is listed with a one-line summary of
+what it requires: apply that summary as written, and call `read_rule` only for detail the summary
+does not give, each rule at most once. The pinned header says the pinned texts are already in the
+prompt and need no `read_rule`. The tool description says the same. No answer, guard or parameter
+changes.
+
+**Alternatives rejected.** Another change to the answer: the answer measured no effect on the next
+ask. Removing `read_rule` from worker sessions: a rule's detail is still sometimes needed, and the
+measured displacement says the stall would move to another tool. Pinning more rules in full: every
+turn pays for them, and pinned rules were asked for too.
+
+Not verified: that the asks fall. A trial on one worker session reads it against a bar written on the
+host's goal before the trial: `read_rule` calls that bring no new text, per session-hour, at most half
+the session's own hours before; the share of model time in responses that only update the plan, only
+read rules or only read the session's own history falls at least 8 points more than on the untreated
+sessions over the same hours; and guard turn ends and `veto_stall` stay at or below the hours before.
+A running session keeps the index text it pinned (ADR-0260) until its next compaction; the tool
+description reaches it at the roll.
+
+**The proof.** `tests/test_read_rule_tool.py` pins the new wording in the index and the tool
+description, and that neither says "looks relevant"; `tests/test_rules_always_apply.py` pins the
+pinned header. Each is mutation-proven: putting back the old index line, the old description or the
+old pinned header turns its test red.

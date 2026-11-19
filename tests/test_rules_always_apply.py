@@ -63,7 +63,9 @@ class TestLeanIndex:
             description="Archive before delete",
         )
         out = _registry(other, pinned).render_index()
-        assert out.startswith("Pinned rules (full text — always apply these):")
+        assert out.startswith(
+            "Pinned rules (full text, already in your prompt: apply these, no read_rule needed):"
+        )
         assert "## return-protocol\nEND EVERY TURN WITH A TOOL CALL.\nSecond line." in out
         assert "- archive-before-delete: Archive before delete [" in out
         assert "ARCHIVE FIRST" not in out  # the unpinned body is NOT in the prompt
