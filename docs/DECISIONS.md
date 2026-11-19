@@ -24952,3 +24952,41 @@ asking; the gate ignoring the flag; the streamed path's declaration removed; `PO
 each by the tests meant to, and every file was restored byte for byte. The one line no test can tell
 from its absence is the buffered path's `refusal_ends_turn = False` at its context-window site: the
 flag is False there already, and a True ends the turn, so the line is there for the reader.
+
+## ADR-0397: a delegation that names a still-running background task of this session is refused
+
+**Context.** A sub-agent has its own session and so its own background-task table (ADR-0191,
+ADR-0236): `TaskOutput` and `TaskStop` in a child see only the child's tasks. A parent whose Bash
+call outlived its timeout gets that command moved to the background with the words "To wait for
+it, call TaskOutput(task_id=...)", and some parents delegate the wait instead. Measured on the
+worker fleet, 24 h to 2026-11-19 19:30Z: of 18 sub-agents, 4 were sent to wait on their parent's
+own background command (a selection walk moved to the background at the 120 s timeout). Their
+`TaskOutput` and `TaskStop` calls named the parent's task ids. Between them they made 131 tool calls
+and held their parents' turns about 100 minutes. One spent 40 minutes and 70 calls on a finished,
+17-line, 6 KB output file while its parent held no work; an operator interrupt ended it.
+
+**Decision.**
+- Before any child starts, `task` reads the session's background tasks. If a subtask's prompt names
+  one that is still running, the call is refused and no child of the batch starts. A prompt names a
+  task by its id as a whole token, or by its output file's path.
+- The refusal names the subtask, the task and its label. It gives the one call that waits
+  (`TaskOutput(task_id=..., timeout=600000)`) and the output file. It says that work on the output
+  can be delegated once the task has exited. `data.refused` is
+  `names_own_running_background_task`, for a census.
+- A finished task is not refused: its output file is a path a child can read.
+
+**Alternatives rejected.** Letting a child's `TaskOutput` read the parent's table: the child would
+then wait on the parent's task, and the parent's turn would still be held for that wait. Its own
+`TaskOutput` holds the same turn for the same wait, without a second context. Refusing every
+prompt that names any task of the session: delegating the analysis of a long finished output is a
+fair use of a child. Matching a bare substring: an id inside a longer token (a commit, a log id)
+would refuse an unrelated delegation.
+
+**Not covered.** A prompt that describes the task without naming it ("wait for the walk I just
+started") still starts a child; that child's `TaskOutput` still fails as before. A parent that
+delegates a long run of its own work (the measured 432-minute child) is not limited here.
+
+**Not verified.** The census is from transcript metadata: tool names, timestamps, and the
+`task_id` inputs of the children's calls. The prompts were not read, so how many of the 4 named
+the task in a form this guard matches is not known. To read after the roll: `task` results with
+`data.refused` set, and children whose `TaskOutput` names a parent's task, which should be none.
