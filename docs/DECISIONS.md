@@ -24952,3 +24952,63 @@ asking; the gate ignoring the flag; the streamed path's declaration removed; `PO
 each by the tests meant to, and every file was restored byte for byte. The one line no test can tell
 from its absence is the buffered path's `refusal_ends_turn = False` at its context-window site: the
 flag is False there already, and a True ends the turn, so the line is there for the reader.
+
+## ADR-0394: a user rule pinned with alwaysApply is not displaced by a workspace rule of the same name
+
+**Context.** ADR-0044 lets a deployment keep text the model must not replace in an `alwaysApply: true`
+rule in the user rules directory (`~/.config/zakcode/rules/`), outside the workspace where the file
+tools do not write, and names one limit: a workspace rule of the same name shadows it, so the
+deployment moves any same-named workspace file aside at each start. The loader gives a rule the name
+in its frontmatter `name` before its file stem and lets a later root win (bundled, user,
+`<workspace>/.zakcode/rules`, `<workspace>/.claude/rules`). The independent re-review of PR 857
+measured the consequence on head 54ebad9cc377, in a
+scratch workspace: a `save_rule` call carrying a pinned card's name is saved into `.zakcode/rules`,
+and the next Agent on that workspace holds the workspace rule (`always_apply` false) with the card's
+text and its help-line figure absent from the system prompt; `write_file` into either workspace rules
+dir does the same. The move-aside runs when the deployment's bootstrap runs, and a process restart
+does not run it, so the window opens at the model's write and stays open until the next bootstrap. A
+move-aside keyed on a filename never sees a file of another name that carries `name: <card>`.
+
+**Decision.**
+- `discover_rules` keeps a rule from the user root that carries `alwaysApply: true` against a rule of
+  the same name from either project root (`.zakcode/rules`, `.claude/rules`). The test is the rule's
+  name, as the registry keys it, so a differently named file with the card's `name:` is refused too.
+- The refused file stays on disk and is recorded in the returned errors, and so on `Agent.rule_errors`,
+  under a path-qualified key (`.zakcode/rules/<file>.md`, which cannot overwrite a parse error kept
+  under a bare filename), with a log warning. Nothing is deleted or moved.
+- Everything else keeps its order. An unpinned user rule is still overridden by a project rule; a
+  pinned rule in a project root is still overridden by a later project root; two files of one name
+  inside the user root keep their order; a project rule with a new name loads beside the card.
+- The module docstring, `discover_rules` and `project_rules_dir` state the exception.
+
+**Alternatives rejected.** A pre-start step on the host's service unit that moves the files aside: it runs
+once per process start, so the next Agent of a running process still reads the shadow, and it is keyed
+on the filename. A `save_rule` that refuses a name another root holds pinned: `write_file` reaches the
+same directories with no rule tool in the way, so only the loader sees both. Protecting every pinned
+rule in every root: a checked-in project rule that pins itself is an operator's file in the workspace
+and keeps overriding an earlier project root, as documented.
+
+**Consequences.** From the release that carries this change, a deployment no longer needs the
+move-aside to keep a pinned card in the prompt. The deployment's move-aside stays harmless and still
+covers builds that predate this one. A `save_rule` call under a pinned card's name still reports the
+rule saved, because the tool writes the file and does not read the pins; the refusal is read from
+`Agent.rule_errors` and the log. ADR-0044's closing limit (a same-named workspace rule shadows a pinned
+user rule) no longer holds on such a build.
+
+**The proof.** `tests/test_rules_pinned_shadow.py`, 11 tests. Before the loader change, 7 of the first 9
+failed, each on the held rule's body being the shadow's, and 2 passed as the controls they are: a user
+rule that is not pinned is still overridden, and a new name loads beside the card. The failing seven
+are the loader on both project roots, the card name carried by a differently named file, and the next
+Agent's stable prompt tier for a rule written by `save_rule` and by a plain file write, under the
+default and the lean render, which must carry the card's text and both of its figures (988, 12356) and
+not the shadow's. Two controls were added for the guard's scope: a pinned project rule overridden by a
+later project root, and two user-root files of one name in their old order. Six single-site mutants,
+each run against the file by the host's mutation harness: the guard never firing, its user-root check
+dropped, its project-roots-only check dropped, its `always_apply` test dropped, the refused file still
+registered, and the error keyed by bare filename. All six were killed, by 7, 1, 1, 1, 7 and 3 of the
+tests, each by the tests meant to, and the file was restored byte for byte.
+
+**Not covered.** A card pinned in the bundled root, and the other roots a pinned rule could sit in, are
+unchanged. A skill of the same name as another skill follows the same later-wins order by name; this
+change does not touch skills. A deployment keeps the build it pins until the pin is moved, and no
+running deployment carries this change until then.

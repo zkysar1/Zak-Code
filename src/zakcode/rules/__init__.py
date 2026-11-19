@@ -23,6 +23,11 @@ precedence (later overrides earlier by rule name):
 * project (``<workspace>/.zakcode/rules`` then ``<workspace>/.claude/rules`` — the
   latter for Claude Code compatibility).
 
+One exception to "later overrides earlier": a user rule that carries ``alwaysApply: true``
+is never displaced by a project rule of the same name (ADR-0394). The project roots are the
+ones the model's own file tools write into, so text an operator pinned outside the workspace
+must not be replaceable from inside it.
+
 A rule file may carry an optional ``---`` frontmatter block (``name`` / ``description``
 are recognized; anything else is ignored); without one, the file *stem* is the rule
 name and the whole file is the body. Parsing is defensive — an unreadable file is
@@ -353,14 +358,30 @@ def discover_rules(workspace_root: str | Path) -> tuple[RuleRegistry, dict[str, 
     """Discover all rules (bundled → user → project) into a :class:`RuleRegistry`.
 
     Later sources override earlier ones by name (so a project rule shadows a bundled
-    one of the same name). Returns ``(registry, errors)``.
+    one of the same name), except that a user rule pinned with ``alwaysApply: true`` is
+    kept against a project rule of the same name, whatever that file is called (the name
+    is the frontmatter ``name`` before it is the stem). The refused file stays on disk and
+    is recorded in the errors under its path-qualified key, e.g. ``.zakcode/rules/x.md``.
+    Returns ``(registry, errors)``.
     """
     registry = RuleRegistry()
     all_errors: dict[str, str] = {}
-    for d in default_rule_dirs(workspace_root):
+    dirs = default_rule_dirs(workspace_root)
+    user_dir, project_dirs = dirs[1], dirs[2:]
+    for d in dirs:
         rules, errors = discover_rule_dir(d)
         all_errors.update(errors)
         for rule in rules:
+            held = registry.get(rule.name)
+            if d in project_dirs and held and held.always_apply and held.path.parent == user_dir:
+                all_errors[f"{d.parent.name}/{d.name}/{rule.path.name}"] = (
+                    f"RuleShadowRefused: {rule.path} would replace the pinned rule {rule.name!r} "
+                    f"from {held.path}; the pinned rule is kept and this file is ignored"
+                )
+                logger.warning(
+                    "refusing workspace rule %s: it shadows pinned %s", rule.path, held.path
+                )
+                continue
             registry.add(rule, replace=True)
     return registry, all_errors
 
@@ -382,7 +403,9 @@ def project_rules_dir(workspace_root: str | Path) -> Path:
     matching ``<workspace>/.zakcode/skills``. Note :func:`default_rule_dirs` scans
     ``.claude/rules`` *after* this one, so a same-named rule in that compatibility dir
     still shadows a rule written here — deliberate (a checked-in project rule outranks a
-    runtime-authored one), but worth knowing when a saved rule seems not to take effect.
+    runtime-authored one), but worth knowing when a saved rule seems not to take effect. A
+    rule saved under the name of a user rule pinned with ``alwaysApply: true`` takes no effect
+    at all: :func:`discover_rules` keeps the pinned rule and records the refusal.
     """
     return Path(workspace_root) / ".zakcode" / "rules"
 
