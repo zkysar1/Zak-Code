@@ -24974,4 +24974,10 @@ also called another tool keeps it, and the stored turn is not edited; of three a
 repeated call id only the one that got a pointer leaves; a text answer counts as going on, and the
 lookup loop's nudge stays; every call left in the view keeps its answer; and through the loop, on
 both turn paths, the model stops seeing an ask once it has taken a step while the stored pointers
-count on (ask 1, then ask 2). MUTATION_PROOF_PENDING
+count on (ask 1, then ask 2). Nine single-site mutants
+of `loop.py` and `read_rule.py`, one per case, each run by the host's mutation harness against the
+test for its case: the pointer not seen; the lookup loop's refusal not seen; every answer counted
+as sending nothing; every turn counted as going on; any tool's answer taken for a lookup's; asks
+paired by id instead of position; the stored turn edited in place; a turn of asks alone kept; the
+view left out of `_messages_for_call`. All nine went red, the read_rule and lookup-loop tests stayed
+green under each, and the files were restored byte for byte.
