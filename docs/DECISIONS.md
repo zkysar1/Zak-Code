@@ -24871,3 +24871,51 @@ when the turn began; the rail ignoring the loop; the arguments kept; each of the
 left on ADR-0108's rail; the loop rail without a loop; an open plan given it), each run against
 its named test by the host's mutation harness: all twelve were killed, and every file was
 restored byte for byte.
+
+## ADR-0395: the compaction summarizer never reads a rule lookup
+
+**Context.** Worker sessions ask `read_rule` for rules whose text they already hold. The pointer
+(ADR-0372, ADR-0379), the answer right after a pointer (ADR-0387) and the exact-repeat guard
+(ADR-0391) each answer such an ask without the text, and none of them stopped the asks. A wording
+change (the index and the tool saying apply a rule's summary and read a rule at most once) was
+trialed on one worker and failed: six minutes after a compaction it asked 27 times in twenty
+minutes, 24 of them for texts it held. Measured 2026-11-19 on ten worker sessions of a host
+framework, 20:00 UTC the day before to 05:35 UTC, from transcript metadata only (row types,
+timestamps, tool names, fixed result labels, and a count of the token `read_rule` in each
+summary, never any text):
+- 79 context segments (6 session starts, 73 after compactions), 5,024 model calls, and 803
+  lookups that got no new text.
+- No session called `read_rule` before its first compaction (6 sessions, 208 model calls).
+- Where the segment before had no burst (5 or more such asks, each within ten minutes of the
+  last), the next segment spent 9.5 percent of its model calls on such asks after a summary that
+  named `read_rule` (29 segments, 8 with a burst), against 1.6 percent after one that did not
+  (11 segments, 1 burst).
+- After a burst every summary named `read_rule`, and the next segment spent 29.6 percent (23
+  segments, 16 bursts).
+- A compaction keeps eight messages (`postMessages`), so the summary is what tells the session
+  what it did. The summarizer's input listed each lookup as `(called read_rule with {"name": ...})`
+  followed by the text or the pointer it got.
+- The carried rules (ADR-0386) do not tell the segments apart: one worker's last four segments
+  each carried eleven, and only the last one asked.
+
+**Decision.** `_render_for_summary` leaves out every `read_rule` call and the result that answers
+it. Other calls in the same response, and their results, are rendered as before. The harness still
+carries the texts of the rules the session read after the summary (ADR-0386), so no rule text is
+lost; only the record of having looked them up is.
+
+**Alternatives rejected.** Telling the summarizer not to list rule lookups: the instruction puts the
+tool's name in front of the model that writes the summary. Taking lookups out of the kept tail too:
+the tail is eight messages, and an ask there already gets the pointer. Not carrying the rules: they
+did not tell asking segments from quiet ones.
+
+**Not verified.** That sessions on this build ask less after their compactions. To read after a
+trial, per worker against its own segments before, with the untreated workers as the control:
+no-new-text lookups as a share of model calls in each segment after a compaction, and bursts per
+segment. An earlier summary that named lookups is condensed into the next one, so the name can
+outlive the change by a compaction or two.
+
+**The proof.** `tests/test_compact_loop.py`: a lookup and its result are left out while another
+tool's call and output stay; a lookup beside a bash call in one response leaves the bash call and
+its output. Two single-site mutants of `loop.py` (the lookup not recognized; its result not left
+out), each run against each test by the host's mutation harness: all four runs went red, and the
+file was restored byte for byte.

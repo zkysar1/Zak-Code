@@ -3574,8 +3574,12 @@ class AgentLoop:
         tool output that was already held. Any other user text arrives whole. A previous
         compaction's summary arrives under ``[earlier summary]``, without the lines the harness
         writes fresh at every compaction (ADR-0330), as history the close says to condense.
+        A ``read_rule`` call and its result are left out (ADR-0395): the harness carries the
+        texts of the rules the session read after the summary (ADR-0386), and a summary that
+        listed rule lookups was followed by the same lookups again.
         """
         parts: list[str] = []
+        rule_lookups: set[str] = set()  # ADR-0395: their results are left out with them
         for message in messages:
             if is_carried_rules(message):
                 continue  # rule texts the harness carries again from its count (ADR-0386)
@@ -3591,10 +3595,15 @@ class AgentLoop:
             if text:
                 lines.append(text)
             for use in message.tool_uses:
+                if use.name == "read_rule":
+                    rule_lookups.add(use.id)
+                    continue
                 args = json.dumps(use.input, ensure_ascii=False, default=str)
                 lines.append(f"(called {use.name} with {args[:200]})")
             for block in message.blocks:
                 if isinstance(block, ToolResultBlock) and block.output:
+                    if block.tool_use_id in rule_lookups:
+                        continue
                     lines.append(_held_for_summary(block.output, "this output"))
             if lines:
                 parts.append(f"[{label}]\n" + "\n".join(lines))

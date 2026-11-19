@@ -630,6 +630,57 @@ def test_the_summarizer_reads_a_long_tool_output_by_its_head_and_tail(tmp_path: 
     assert len(rendered) < _SUMMARY_OUTPUT_CHARS + 300
 
 
+def _rule_lookup(tool_id: str, name: str, output: str) -> list[Message]:
+    return [
+        Message(
+            role="assistant",
+            blocks=[ToolUseBlock(id=tool_id, name="read_rule", input={"name": name})],
+        ),
+        Message.tool_results([ToolResultBlock(tool_use_id=tool_id, output=output)]),
+    ]
+
+
+def test_the_summarizer_never_reads_a_rule_lookup() -> None:
+    """ADR-0395. Measured 2026-11-19 on ten worker sessions (63 compactions, transcript metadata
+    only): where the segment before had no burst of lookups, 9.5 percent of the next segment's
+    model calls were read_rule asks that got no new text after a summary that named read_rule,
+    against 1.6 percent after one that did not. The texts are carried after the summary."""
+    text = "# retrieve-first\nRETRIEVE BEFORE DECIDING.\n[end of rule 'retrieve-first']"
+    pointer = "[already read; ask 2] Rule 'retrieve-first' is in your context"
+    history = [
+        Message.user("start"),
+        *_rule_lookup("r1", "retrieve-first", text),
+        *_tool_pair("t1", "the file says 42"),
+        *_rule_lookup("r2", "retrieve-first", pointer),
+    ]
+    rendered = AgentLoop._render_for_summary(history)
+    assert "read_rule" not in rendered and "retrieve-first" not in rendered
+    assert "RETRIEVE BEFORE DECIDING" not in rendered and "already read" not in rendered
+    assert "(called read with {})" in rendered and "the file says 42" in rendered
+
+
+def test_a_rule_lookup_beside_other_work_leaves_only_the_work() -> None:
+    """ADR-0395. Lookups often ride in the same response as real work: only the lookup and its
+    own result go; the other call and its result are summarized as before."""
+    reply = Message(
+        role="assistant",
+        blocks=[
+            ToolUseBlock(id="r1", name="read_rule", input={"name": "verify-first"}),
+            ToolUseBlock(id="b1", name="bash", input={"command": "git status"}),
+        ],
+    )
+    results = Message.tool_results(
+        [
+            ToolResultBlock(tool_use_id="r1", output="[already read; ask 3] Rule 'verify-first'"),
+            ToolResultBlock(tool_use_id="b1", output="nothing to commit"),
+        ]
+    )
+    rendered = AgentLoop._render_for_summary([Message.user("go"), reply, results])
+    assert "verify-first" not in rendered and "already read" not in rendered
+    assert '(called bash with {"command": "git status"})' in rendered
+    assert "nothing to commit" in rendered
+
+
 def test_clipping_the_summarizer_s_copy_leaves_the_conversation_whole(tmp_path: Path) -> None:
     """Three 20,000-character outputs overflowed one 8,192-character slice, so the summarizer
     ran once per slice; clipped, the transcript fits one call. The messages it was handed
