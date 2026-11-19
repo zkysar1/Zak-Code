@@ -24919,3 +24919,59 @@ tool's call and output stay; a lookup beside a bash call in one response leaves 
 its output. Two single-site mutants of `loop.py` (the lookup not recognized; its result not left
 out), each run against each test by the host's mutation harness: all four runs went red, and the
 file was restored byte for byte.
+
+## ADR-0396: a rule lookup that sent no text leaves the request once the model has gone on past it
+
+**Context.** ADR-0395 took rule lookups out of the compaction summary. On a trial, one worker's
+first segment after a treated compaction asked no rule again in 18 model calls, against 52 such
+asks in 51 calls in the segment before; another worker on the same build spent 29 of 49 calls on
+such asks in a treated segment, in a burst that began well into it. Measured 2026-11-19 on ten
+worker sessions of a host framework, 20:00 UTC the day before to 08:35 UTC, from transcript
+metadata only (row types, timestamps, tool names, fixed result labels, never any text):
+- 46 bursts (5 or more asks that got no rule text, each within ten minutes of the last) held
+  1,213 such asks.
+- No burst began at a session's start. 37 of the 46 began more than ten minutes into their
+  segment; the other 9 began within ten minutes after a compaction, 6 of them with a lookup in
+  the kept tail.
+- 29 bursts, holding 877 of the asks, were interleaved with work: the model's other tool calls
+  made up at least a quarter of its responses during the burst. A rule was asked again before
+  step after step, and every earlier ask and its pointer stayed in the conversation for the next
+  ask to follow.
+
+**Decision.** `_messages_for_call` sends the persisted history less the `read_rule` asks whose
+every answer sent no rule text (a pointer line, ADR-0372, ADR-0379, ADR-0387, or the lookup loop's
+refusal, ADR-0391), once an assistant turn after them has called another tool or answered in text.
+The answer leaves with its ask. A turn that held only such asks leaves whole, its text and
+thinking with it; a turn that also called another tool keeps that call and its result. A rule's
+text, the answer that sent it, an error, and every ask after the model's last step stay. The
+session, its transcript and the ask count (which reads the stored conversation) keep every lookup,
+so the pointer's number goes on rising. An ask and its answer are paired by position, the answer
+before the next assistant turn, because a provider's call ids can repeat from one turn to the next.
+
+**Cache.** The request's prefix now changes where an ask leaves, on the call after the step that
+passed it. That call's new tokens were the step and its result either way; the extra read is the
+step's own message when the call before it rested its tail (ADR-0193). On the first call of a
+running session after it moves to this build, every earlier such ask leaves at once and the prompt
+is read again from the first of them, once per session.
+
+**Alternatives rejected.** Leaving an ask out on the very next call: the model would not see the
+answer to its own call. Taking the asks out of the stored session: the ask count and the
+transcript are read from it, and the transcript is where a trial is measured. Refusing repeat asks,
+or withdrawing `read_rule` after some number of them: that boxes the model in, and the exact-repeat
+guard (ADR-0391) already refuses an ask right after its answer. Rewording the index or the tool
+again: trialed under ADR-0394, and it failed.
+
+**Not verified.** That workers on this build ask less in the middle of a segment. To read after a
+trial, per worker against its own window before and against the untreated workers: no-new-text
+asks as a share of model calls, the number of bursts and the asks in each, and the prompt tokens
+the provider read again per call.
+
+**The proof.** `tests/test_view_without_spent_lookups.py`: each answer that sends no text (the
+pointer, the answer right after it, the pinned answer and the lookup loop's refusal) leaves once
+the model has gone on, and the rule's text stays; the asks since the last step stay; a rule's text
+and a not-found error stay; another tool's output that reads like a pointer stays; a turn that
+also called another tool keeps it, and the stored turn is not edited; of three asks under one
+repeated call id only the one that got a pointer leaves; a text answer counts as going on, and the
+lookup loop's nudge stays; every call left in the view keeps its answer; and through the loop, on
+both turn paths, the model stops seeing an ask once it has taken a step while the stored pointers
+count on (ask 1, then ask 2). MUTATION_PROOF_PENDING

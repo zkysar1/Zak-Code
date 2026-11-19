@@ -260,7 +260,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins.read_rule import rule_text
+from zakcode.tools.builtins.read_rule import is_pointer_answer, rule_text
 from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
@@ -350,6 +350,81 @@ def _doom_recovery_texts(
         _LOOKUP_UNEXECUTED.format(names=", ".join(sorted(rules))),
         _LOOKUP_RECOVERY_NUDGE.format(names=", ".join(sorted(loop_rules)), step=step),
     )
+
+
+#: How the lookup loop's answer (:data:`_LOOKUP_UNEXECUTED`) opens, before the rules it names.
+_LOOKUP_UNEXECUTED_OPENING = _LOOKUP_UNEXECUTED.split("{names}", 1)[0]
+
+
+def _spent_lookup_answer(output: str) -> bool:
+    """True when a ``read_rule`` answer sent no rule text: a pointer line (ADR-0372, ADR-0387)
+    or the lookup loop's refusal (ADR-0391)."""
+    return is_pointer_answer(output) or output.startswith(_LOOKUP_UNEXECUTED_OPENING)
+
+
+def _without_spent_lookups(messages: list[Message]) -> list[Message]:
+    """The history a provider call sends: the stored conversation less the ``read_rule`` asks
+    that sent no rule text, once the model has gone on past them (ADR-0396).
+
+    Measured 2026-11-19 on ten worker sessions of a host framework, from transcript metadata
+    only: 46 runs of repeat lookups (at least five answers that sent no text, no gap over ten
+    minutes) held 1,213 such answers, and 877 of them were in runs where the model's other tool
+    calls made up at least a quarter of its turns: a rule asked again before step after step. No
+    run began at a session's start. Every earlier ask stayed in the conversation, so the model
+    had more of its own pattern to follow at each step. Here an ask whose every answer was a
+    pointer line or the lookup loop's refusal leaves the request once an assistant turn after it
+    called another tool or answered in text; its tool result leaves with it, and a turn of such
+    asks alone goes whole, its text and thinking with it. A rule's text, the answer that sent
+    it, and every ask after the model's last step stay. The session, its transcript and the ask
+    count read from it (ADR-0379) keep every lookup. An ask and its answer are paired by
+    position, the answer before the next assistant turn, because a provider's call ids can
+    repeat from one turn to the next. The request's prefix changes where the first ask leaves,
+    the call after the step that passed it, whose own tokens were new to that call anyway.
+    """
+    went_on = -1  # the last assistant turn that called another tool, or none
+    for index, message in enumerate(messages):
+        if message.role == "assistant" and (
+            not message.tool_uses or any(use.name != "read_rule" for use in message.tool_uses)
+        ):
+            went_on = index
+    drop: dict[int, set[str]] = {}
+    for index in range(went_on):
+        asked = {use.id for use in messages[index].tool_uses if use.name == "read_rule"}
+        if messages[index].role != "assistant" or not asked:
+            continue
+        answers: dict[str, list[tuple[int, bool]]] = {}
+        for later in range(index + 1, went_on):
+            if messages[later].role == "assistant":
+                break
+            for block in messages[later].blocks:
+                if isinstance(block, ToolResultBlock) and block.tool_use_id in asked:
+                    answers.setdefault(block.tool_use_id, []).append(
+                        (later, _spent_lookup_answer(block.output))
+                    )
+        for call_id, found in answers.items():
+            if all(spent for _, spent in found):
+                drop.setdefault(index, set()).add(call_id)
+                for later, _ in found:
+                    drop.setdefault(later, set()).add(call_id)
+    if not drop:
+        return messages
+    view: list[Message] = []
+    for index, message in enumerate(messages):
+        ids = drop.get(index)
+        if not ids:
+            view.append(message)
+            continue
+        kept = [
+            block
+            for block in message.blocks
+            if not (isinstance(block, ToolUseBlock) and block.id in ids)
+            and not (isinstance(block, ToolResultBlock) and block.tool_use_id in ids)
+        ]
+        if message.role == "assistant" and not any(isinstance(b, ToolUseBlock) for b in kept):
+            continue  # a turn of such asks alone
+        if kept:
+            view.append(message.model_copy(update={"blocks": kept}))
+    return view
 
 
 #: Rate-limit retry policy (audit P0-4; widened 2026-08-26 after a field 429 storm).
@@ -4675,7 +4750,8 @@ class AgentLoop:
         **ephemeral tail message** — appended after all real history, NOT persisted
         to the session — so the cached system+history prefix is untouched
         (prompt-cache safe) and the conversation on disk stays clean. With no
-        context hooks this is exactly ``self.session.messages``.
+        context hooks this is the persisted history, less the rule lookups that sent no
+        text once the model has gone on past them (ADR-0396).
         """
         self._call_has_tail = False
         self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
@@ -4686,12 +4762,13 @@ class AgentLoop:
             # once. Looked at on EVERY request, before the rest decision below: a plan reopened on
             # a resting call and closed again by the next would otherwise never be seen to move.
             self._refused_plan = None
+        history = _without_spent_lookups(self.session.messages)
         if self._tail_rests_this_call():
             # ADR-0193: this call goes out as the persisted history alone, so the provider
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
             # is not sent.
             self._call_rails_rested = True
-            return self.session.messages
+            return history
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
             texts = await self.hook_manager.gather_context(
@@ -4735,9 +4812,9 @@ class AgentLoop:
             # moment ago, so the label and the wire cannot disagree.
             self._call_rails_silenced.append("plan_complete")
         if not tail:
-            return self.session.messages
+            return history
         self._call_has_tail = True
-        return [*self.session.messages, *tail]
+        return [*history, *tail]
 
     def _tail_rests_this_call(self) -> bool:
         """Whether this call goes out WITHOUT its ephemeral tail (ADR-0193).

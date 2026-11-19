@@ -83,12 +83,21 @@ PINNED = (
 )
 
 
+#: How every pointer line opens, the plain one, :data:`JUST_ASKED` and :data:`PINNED` alike.
+_POINTER_OPENING = r"\[already read; ask [0-9]+\] Rule "
+
+
+def is_pointer_answer(output: str) -> bool:
+    """True when ``output`` is a pointer line: an answer that sent no rule text (ADR-0396)."""
+    return re.match(_POINTER_OPENING, output) is not None
+
+
 def _right_after_its_pointer(ctx: ToolContext, name: str) -> bool:
     """True when the conversation's most recent tool result is a pointer line for rule ``name``:
     the plain one, :data:`JUST_ASKED` or :data:`PINNED`, which all open the same way."""
     last = getattr(ctx, "last_tool_output", None)
     previous = last() if last is not None else None
-    head = r"\[already read; ask [0-9]+\] Rule " + re.escape(repr(name)) + " "
+    head = _POINTER_OPENING + re.escape(repr(name)) + " "
     return previous is not None and re.match(head, previous) is not None
 
 
