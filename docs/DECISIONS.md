@@ -25116,3 +25116,60 @@ model cycling through held rules ended `stuck` after two pointers and five refus
 and a `refresh=true` at the bound answered, and asks between real steps never refused. Five
 mutations (the flag, either path's held check, the run's count, the refusal's signal) each fail
 the file.
+
+## ADR-0400: a completion that only asked for rules the model holds is not sent back to it
+
+Status: accepted. 2026-11-20. Follows ADR-0399, on the request side, and held to ADR-0193 (what a
+request carries is the start of what the next one carries).
+
+Context. ADR-0399 bounds a run of lookups for held rules at two pointer answers and five refusals
+per re-entry, and the run comes back. A pointer answer (ADR-0379, ADR-0387) is a short success, so
+each one stays in the conversation as a completion that called `read_rule` and a result saying the
+text is already there, and the conversation the model reads fills with its own lookups.
+
+What was measured, before building. The served worker sessions and local model of ADR-0399, read
+from each session's own transcript (tool names, times, rule names and fixed answer labels only),
+24 h to 2026-11-20 14:55, nine of the ten sessions. For each completion that called a tool, the
+lookup-only completions among the 25 before the five just before it, in the same compaction
+segment, against whether it was lookup-only too: with none, 65 of 2,360 were (3%); with 1 or 2,
+88 of 519 (17%); with 3 to 5, 98 of 361 (27%); with 6 to 10, 189 of 441 (43%); with 11 to 25,
+1,687 of 2,122 (80%). By place in the segment it rose the same way: 11% of the first 30
+completions, 25% of completions 30 to 99, 70% of 100 to 199 and 96% after that. After a lookup
+answered by a pointer the next completion was another lookup 1,677 times in 1,930 (87%). Changing
+the words that bring a rule up did not move the total: when the workspace gave the rule asked for
+most a new index line, asks for it fell from 8.1 to 6.2 per 100 tool calls and all rule asks only
+from 26.5 to 25.5 (4,846 calls before, 4,654 after); in one session asks for that rule went to none
+and asks for other rules rose from 1.0 to 58.6 per 100.
+
+Decision.
+- `_messages_for_call` sends `_hide_pointer_asks(session.messages)`, on both turn paths and on a
+  resting call (ADR-0193). A completion whose blocks are only `read_rule` calls (no text; thinking
+  allowed), followed at once by the tool message holding exactly their results, each with the
+  pointer flag of ADR-0399 and no error, is sent as one user-role line: "[harness]
+  Hint: You asked read_rule for <names>: it is already in your context, so nothing new came back,
+  and an ask like this one is not shown in the conversation. Apply it to the step you are on and
+  take its next action." ("they are" and "them" for two or more rules.)
+- A first read, a `refresh=true` text, an error, a refusal (ADR-0399), a batch with another tool,
+  text beside the call and a pointer beside a text answer are sent as they are.
+- The line is built from the pair alone (the rule names in call order, once each) and takes the
+  completion's time, never from state that moves, so what a history is sent as is the start of
+  what any longer one is sent as: a provider's cached prefix and ADR-0193's resting checkpoint hold.
+- The session, the transcript and every counter keep both messages: ADR-0399's bound, the doom
+  guard (ADR-0391), the ask count (ADR-0386) and compaction read the session, not the request.
+
+Not done, and not measured. The measurement does not separate imitation from a session that stays
+in one mode for its own reasons; the trial reads lookup-only completions per 100 completions on two
+sessions against their own previous window and the other sessions, and the cached tokens of the
+call after a hidden pair. A model may ask a rule again because its earlier ask is out of view; the
+line names the rule for that reason. A compaction summary still reads the lookups.
+
+The proof. `tests/test_pointer_ask_hidden.py` pins a pointer-only pair sent as one line with the
+completion's time, the other messages the same objects, and the history itself returned when
+nothing is hidden; two rules named once in the plural, and a rule asked twice in one batch named
+once; a first read, an error, a refusal, a pointer beside a text answer, a batch with another tool
+and text beside the call each sent as they are; a pair split or unanswered kept; what each history
+is sent as being the start of what the next is sent as; and, on both turn paths, the request after
+two held asks carrying neither call but a line for each while the session keeps them, and a model
+cycling through held rules still ended `stuck` after two pointers and five refusals. Ten mutations
+(the wiring, text beside the call, another tool, a partial answer, a split pair, an error, the
+pointer flag, the line's time, a rule named once, the plural) each fail the file.

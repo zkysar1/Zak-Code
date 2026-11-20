@@ -251,6 +251,7 @@ from zakcode.tasks import (
 )
 from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
+    RULE_POINTER,
     STDOUT_CHARS,
     ConcurrencyClass,
     Sampler,
@@ -331,6 +332,15 @@ _LOOKUP_RECOVERY_NUDGE = (
     "to your current step{step} and take that step's next action now: run its command, make its "
     "edit, update the plan, or write its note. Where a rule leaves a choice to you, decide it and "
     "go on."
+)
+
+#: What a request carries in place of a completion that only asked ``read_rule`` for rules the
+#: model holds, and its answers (ADR-0400). Built from the rule names alone, never from state that
+#: moves such as the plan step, so every request renders it the same at the same place.
+_POINTER_ASK_HIDDEN = (
+    "You asked read_rule for {names}: {they} already in your context, so nothing new came back, "
+    "and an ask like this one is not shown in the conversation. Apply {it} to the step you are on "
+    "and take its next action."
 )
 
 
@@ -2610,6 +2620,64 @@ def _control_rail(text: str) -> str:
     return f"[harness] {_RAIL_HINT} {text}"
 
 
+def _pointer_ask_names(call: Message, answer: Message) -> list[str] | None:
+    """The rules ``call`` asked for, when it is a completion that did nothing but ask
+    ``read_rule`` and ``answer`` holds exactly its answers, each a pointer (ADR-0400); otherwise
+    ``None``. Any text, any other tool or an error is news, and the pair is kept."""
+    uses = call.tool_uses
+    if (
+        not uses
+        or call.text.strip()
+        or any(use.name != "read_rule" for use in uses)
+        or len(answer.blocks) != len(uses)
+    ):
+        return None
+    ids = {use.id for use in uses}
+    for result in answer.blocks:
+        if not (
+            isinstance(result, ToolResultBlock)
+            and result.tool_use_id in ids
+            and not result.is_error
+            and bool((result.data or {}).get(RULE_POINTER))
+        ):
+            return None
+        ids.discard(result.tool_use_id)
+    return list(dict.fromkeys(str(use.input.get("name")) for use in uses))
+
+
+def _hide_pointer_asks(messages: list[Message]) -> list[Message]:
+    """``messages`` as a request carries them (ADR-0400): each completion that only asked
+    ``read_rule`` for rules the model holds, with the tool message answering it, becomes one
+    harness line naming those rules. A pair is judged on its own two messages and the line takes
+    the completion's time, so what a request carried is the start of what the next one carries
+    and a cached prefix holds. The session keeps both messages; this only shapes what is sent.
+    ``messages`` itself comes back when there is nothing to replace."""
+    out: list[Message] | None = None
+    i = 0
+    while i < len(messages):
+        names = _pointer_ask_names(messages[i], messages[i + 1]) if i + 1 < len(messages) else None
+        if names is None:
+            if out is not None:
+                out.append(messages[i])
+            i += 1
+            continue
+        if out is None:
+            out = messages[:i]
+        one = len(names) == 1
+        line = _POINTER_ASK_HIDDEN.format(
+            names=", ".join(names), they="it is" if one else "they are", it="it" if one else "them"
+        )
+        out.append(
+            Message(
+                role="user",
+                blocks=[TextBlock(text=_control_rail(line))],
+                created_at=messages[i].created_at,
+            )
+        )
+        i += 2
+    return messages if out is None else out
+
+
 def _last_assistant_text(turn_assistant: list[Message]) -> str:
     """The most recent non-empty assistant text THIS turn (TURN_END payload field).
 
@@ -4672,11 +4740,13 @@ class AgentLoop:
         **ephemeral tail message** — appended after all real history, NOT persisted
         to the session — so the cached system+history prefix is untouched
         (prompt-cache safe) and the conversation on disk stays clean. With no
-        context hooks this is exactly ``self.session.messages``.
+        context hooks this is exactly ``self.session.messages``, less each completion
+        that only asked ``read_rule`` for rules the model holds (ADR-0400).
         """
         self._call_has_tail = False
         self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
         self._call_rails_silenced = []
+        history = _hide_pointer_asks(self.session.messages)
         if self._refused_plan is not None and not self.session.task_network.is_complete():
             # ADR-0205: the refused plan moved on (new steps, or the board was cleared). Whatever
             # finishes next is a NEW plan even if it reads the same, and its closing line is owed
@@ -4688,7 +4758,7 @@ class AgentLoop:
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
             # is not sent.
             self._call_rails_rested = True
-            return self.session.messages
+            return history
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
             texts = await self.hook_manager.gather_context(
@@ -4732,9 +4802,9 @@ class AgentLoop:
             # moment ago, so the label and the wire cannot disagree.
             self._call_rails_silenced.append("plan_complete")
         if not tail:
-            return self.session.messages
+            return history
         self._call_has_tail = True
-        return [*self.session.messages, *tail]
+        return [*history, *tail]
 
     def _tail_rests_this_call(self) -> bool:
         """Whether this call goes out WITHOUT its ephemeral tail (ADR-0193).
