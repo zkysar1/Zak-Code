@@ -71,7 +71,9 @@ async def test_a_running_task_named_by_id_is_refused_before_any_child(tmp_path: 
     assert tasks.status(rec)[0] == "running"  # control: the fixture is the live case
     spawner = _Spawner()
     prompt = f"Wait for background task {TASK_ID} to finish and report which goal it selected."
-    result = await TaskTool().execute({"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec]))
+    result = await TaskTool().execute(
+        {"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec])
+    )
     assert result.is_error
     assert spawner.calls == [], "no sub-agent may start on a refused delegation"
     assert f'TaskOutput(task_id="{TASK_ID}", timeout=600000)' in result.output
@@ -83,7 +85,9 @@ async def test_a_running_task_named_by_its_output_file_is_refused(tmp_path: Path
     rec = _record(tmp_path)
     spawner = _Spawner()
     prompt = f"Read {rec.output_file} once it is complete and summarise the candidates."
-    result = await TaskTool().execute({"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec]))
+    result = await TaskTool().execute(
+        {"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec])
+    )
     assert result.is_error and spawner.calls == []
 
 
@@ -109,7 +113,9 @@ async def test_a_finished_task_may_be_delegated(tmp_path: Path) -> None:
     rec = _record(tmp_path, exited=True)
     spawner = _Spawner()
     prompt = f"Summarise the output of task {TASK_ID} in {rec.output_file}."
-    result = await TaskTool().execute({"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec]))
+    result = await TaskTool().execute(
+        {"tasks": [{"prompt": prompt}]}, _ctx(tmp_path, spawner, [rec])
+    )
     assert not result.is_error
     assert spawner.calls == [("general-purpose", prompt)]
 
@@ -129,7 +135,8 @@ async def test_a_prompt_naming_no_task_spawns_as_before(tmp_path: Path) -> None:
     spawner = _Spawner()
     rec = _record(tmp_path)
     result = await TaskTool().execute(
-        {"tasks": [{"prompt": "find every caller of goal-selector"}]}, _ctx(tmp_path, spawner, [rec])
+        {"tasks": [{"prompt": "find every caller of goal-selector"}]},
+        _ctx(tmp_path, spawner, [rec]),
     )
     assert not result.is_error and len(spawner.calls) == 1
 
