@@ -397,6 +397,14 @@ class ToolContext(BaseModel):
 #: it is. A file edit needs no flag: it opens a new repeated-outcome epoch (ADR-0038).
 RECEIPT_OF_CHANGE = "receipt_of_change"
 
+#: A key ``read_rule`` sets to ``True`` in :attr:`ToolResult.data` when its answer is a POINTER
+#: and sends no rule text (ADR-0399): the text is still in the conversation, or pinned whole in
+#: the system prompt, so the answer says where it is. The stuck ladder counts completions of
+#: plain ``read_rule`` lookups whose every result is such a pointer (``zakcode.agent.stuck``):
+#: a model that asks again and again for rules it holds, a different rule each time, is bounded
+#: as a plan-only run is (ADR-0364). A flag, not a search of the text, for ADR-0203's reason.
+RULE_POINTER = "rule_pointer"
+
 #: A key a tool sets in :attr:`ToolResult.data` to the number of leading characters of its
 #: ``output`` that are the COMMAND'S OWN output, when it closes that output with words of its
 #: own (the shell tool's ``[exit code: N]`` line). The PostToolUse wire cuts Claude Code's
@@ -729,6 +737,7 @@ __all__ = [
     "SkillResolver",
     "ToolResult",
     "RECEIPT_OF_CHANGE",
+    "RULE_POINTER",
     "STDOUT_CHARS",
     "Tool",
     "ToolRegistry",

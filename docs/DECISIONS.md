@@ -25012,3 +25012,107 @@ tests, each by the tests meant to, and the file was restored byte for byte.
 unchanged. A skill of the same name as another skill follows the same later-wins order by name; this
 change does not touch skills. A deployment keeps the build it pins until the pin is moved, and no
 running deployment carries this change until then.
+
+## ADR-0397: a delegation that names a still-running background task of this session is refused
+
+**Context.** A sub-agent has its own session and so its own background-task table (ADR-0191,
+ADR-0236): `TaskOutput` and `TaskStop` in a child see only the child's tasks. A parent whose Bash
+call outlived its timeout gets that command moved to the background with the words "To wait for
+it, call TaskOutput(task_id=...)", and some parents delegate the wait instead. Measured on the
+worker fleet, 24 h to 2026-11-19 19:30Z: of 18 sub-agents, 4 were sent to wait on their parent's
+own background command (a selection walk moved to the background at the 120 s timeout). Their
+`TaskOutput` and `TaskStop` calls named the parent's task ids. Between them they made 131 tool calls
+and held their parents' turns about 100 minutes. One spent 40 minutes and 70 calls on a finished,
+17-line, 6 KB output file while its parent held no work; an operator interrupt ended it.
+
+**Decision.**
+- Before any child starts, `task` reads the session's background tasks. If a subtask's prompt names
+  one that is still running, the call is refused and no child of the batch starts. A prompt names a
+  task by its id as a whole token, or by its output file's path.
+- The refusal names the subtask, the task and its label. It gives the one call that waits
+  (`TaskOutput(task_id=..., timeout=600000)`) and the output file. It says that work on the output
+  can be delegated once the task has exited. `data.refused` is
+  `names_own_running_background_task`, for a census.
+- A finished task is not refused: its output file is a path a child can read.
+
+**Alternatives rejected.** Letting a child's `TaskOutput` read the parent's table: the child would
+then wait on the parent's task, and the parent's turn would still be held for that wait. Its own
+`TaskOutput` holds the same turn for the same wait, without a second context. Refusing every
+prompt that names any task of the session: delegating the analysis of a long finished output is a
+fair use of a child. Matching a bare substring: an id inside a longer token (a commit, a log id)
+would refuse an unrelated delegation.
+
+**Not covered.** A prompt that describes the task without naming it ("wait for the walk I just
+started") still starts a child; that child's `TaskOutput` still fails as before. A parent that
+delegates a long run of its own work (the measured 432-minute child) is not limited here.
+
+**Not verified.** The census is from transcript metadata: tool names, timestamps, and the
+`task_id` inputs of the children's calls. The prompts were not read, so how many of the 4 named
+the task in a form this guard matches is not known. To read after the roll: `task` results with
+`data.refused` set, and children whose `TaskOutput` names a parent's task, which should be none.
+
+## ADR-0399: a run of completions that only ask for rules the model holds is bounded, as a run of plan-only ones is
+
+Status: accepted. 2026-11-20. The third sibling of ADR-0364, after ADR-0373, on its path and its
+ladder, and held to ADR-0198 (a rail says only what was counted).
+
+Context. A `read_rule` ask for a rule whose text is still in the conversation, or pinned whole in
+the system prompt, is answered by a pointer (ADR-0379, ADR-0387): the answer says where the text
+is and sends none. A model that asks again and again makes no progress, and when each ask names
+another rule no net sees it. The doom guard and its lookup test (ADR-0391) need a batch that
+repeats the one before it. The outcome signal of ADR-0038 skips a harness delivery. The other
+signals key on errors, and a pointer is a success.
+
+What was measured, before building. Ten served worker sessions, one 35B-class local model, read
+from each session's own transcript (tool names, times, rule names and fixed answer labels only),
+2026-11-20. Over 6 h, 709 of 3,046 tool calls (23%) were `read_rule`. One session sent 374
+completions in 90 minutes that were each a single `read_rule` call, cycling through its rules;
+344 were answered by a pointer (96 of them by the pinned one), they added 227,353 characters of
+results, four compactions fell inside the run, and no guard fired: no lookup nudge, no doom end,
+no stuck step. Another session's loops asked the SAME rule again, so the ADR-0391 guard did see
+them (3 lookup nudges, 2 doom ends), and 11 turn-end vetoes sent it back each time. From 02:00 to
+12:53 the ten sessions received 1,429 pointer answers, and from 09:53 to 12:53 completions that
+only asked `read_rule` took 38% and 33% of the model time of the two worst sessions.
+
+Decision.
+- `read_rule` flags each pointer answer, the plain one, `JUST_ASKED` and `PINNED`, with
+  `data={RULE_POINTER: True}` (`zakcode.tools.base`). A flag, not a search of the text, for
+  ADR-0203's reason.
+- The stuck tracker counts the completions in a row whose calls are all plain lookups
+  (`lookup_rules`: a rule name and no `refresh=true`) and whose every answer carries the flag. A
+  first read, a `refresh=true` ask, an error, or any other call ends the run. The count is apart
+  from ADR-0364's and ADR-0373's, and each of their runs is ended by a lookup.
+- The third such completion in a row is answered unexecuted, on both turn paths, by the path
+  ADR-0364 built (`data={"plan_only_bound": True}`, the note `kind="plan_only_bound"`), but only
+  when `read_rule` would answer every call of it with a pointer. The loop asks `would_point`,
+  which is `execute`'s own decision (one function, `_pointer_template`) without its one side
+  effect, the ask count of ADR-0386. A new rule, or `refresh=true`, at the bound is answered.
+- Its words: "Not executed: this is response 3 in a row that only asks read_rule for rules already
+  in your context, with no other tool call between them. Asking again for a rule you hold returns
+  nothing new. The plan's current step is <id> '<title>': apply the rules you have to it and do it
+  now with a tool call that does the work, or answer in text if the work is done. read_rule
+  answers again once another tool has run; refresh=true returns a rule's text only if you need its
+  exact wording."
+- A refusal fires `SIG_LOOKUP_ONLY` alone and drives the ladder one rung per refusal after the
+  first: a nudge at the 4th such completion, read-only tools at the 5th (`read_rule` is one), the
+  step back at the 6th, a stop at the 7th. The nudge and rung 1's seeded step say what was
+  counted, and that step's note says a rule lookup is not the work.
+- A lookup that repeats the batch before it is still the doom guard's (ADR-0391), which runs first
+  and resets the tracker when it acts.
+
+Not done, and not measured. A refused ask is not counted for ADR-0386's carry, so the rules a
+compaction carries are the most-asked among the asks that ran. A turn-end veto resets the run,
+as it resets ADR-0364's and ADR-0373's, so a host whose hook sends a stuck turn back sees at most
+two pointer answers and five refusals per re-entry, not an end to the loop; how often hosts send
+such a turn back is to be read on the trial. Asks for held rules mixed with a first read are
+answered, and a model that adds one new rule to every ask walks past this bound.
+
+The proof. `tests/test_lookup_only_bound.py` pins the third pointer-answered lookup due though
+every rule differs; a first read, a text beside pointers, an error, `refresh=true`, another tool,
+a plan call and a reset each ending the run; the flag counted only on a `read_rule` lookup; the
+ladder to a stop with its own signal and evidence; the rails' words; `would_point` agreeing with
+the tool's flagged answer in ten states, without counting an ask; and, on both turn paths, a
+model cycling through held rules ended `stuck` after two pointers and five refusals, a new rule
+and a `refresh=true` at the bound answered, and asks between real steps never refused. Five
+mutations (the flag, either path's held check, the run's count, the refusal's signal) each fail
+the file.
