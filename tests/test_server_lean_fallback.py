@@ -217,3 +217,33 @@ def test_research_journal_takes_precedence_over_journal_dir(tmp_path: Path) -> N
     (tmp_path / "journal" / "journal.md").write_text("lean loses\n", encoding="utf-8")
     body = _client(tmp_path).get("/workspace/summary").json()
     assert body["journal"].startswith("RESEARCH wins")
+
+
+def _framework_journal(root: Path, day: str, text: str, agent: str = "res") -> Path:
+    year, month, _ = day.split("-")
+    d = root / "agents" / agent / "journal" / year / month
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{day}.md"
+    f.write_text(text, encoding="utf-8")
+    return f
+
+
+def test_workspace_summary_reads_the_residents_framework_journal(tmp_path: Path) -> None:
+    # g-374-2504: a resident that journals through the framework has neither root journal file.
+    _framework_journal(tmp_path, "2026-11-18", "older day\n")
+    _framework_journal(tmp_path, "2026-11-19", "NEWEST day\n" + "x" * 6000)
+    body = _client(tmp_path).get("/workspace/summary").json()
+    assert body["journal"].startswith("NEWEST day")
+    assert len(body["journal"]) == 5000
+
+
+def test_root_journal_still_wins_over_the_framework_journal(tmp_path: Path) -> None:
+    _framework_journal(tmp_path, "2026-11-19", "framework loses\n")
+    (tmp_path / "research").mkdir()
+    (tmp_path / "research" / "journal.md").write_text("RESEARCH wins\n", encoding="utf-8")
+    body = _client(tmp_path).get("/workspace/summary").json()
+    assert body["journal"].startswith("RESEARCH wins")
+
+
+def test_workspace_summary_journal_empty_without_any_journal(tmp_path: Path) -> None:
+    assert _client(tmp_path).get("/workspace/summary").json()["journal"] == ""

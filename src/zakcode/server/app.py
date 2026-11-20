@@ -2401,6 +2401,25 @@ def create_app(
             return []
         return out
 
+    def _newest_framework_journal() -> str:
+        """The first 5000 characters of the newest dated narrative file of the resident's own journal.
+
+        Newest by the date in the file name (``YYYY-MM-DD.md`` sorts as written), then by modification
+        time. Any unreadable file or directory degrades to the empty string, like the view files above.
+        """
+        try:
+            candidates = [
+                p
+                for p in _workspace_root.glob("agents/*/journal/*/*/*.md")
+                if p.is_file()
+            ]
+            if not candidates:
+                return ""
+            newest = max(candidates, key=lambda p: (p.name, p.stat().st_mtime))
+            return newest.read_text(encoding="utf-8", errors="replace")[:5000]
+        except OSError:
+            return ""
+
     @app.get("/workspace/summary")
     def workspace_summary() -> dict[str, Any]:
         """World-view summary for the gateway: research journal head + finding count (P0-4).
@@ -2412,6 +2431,11 @@ def create_app(
         Journal location differs by agent shape: the v0 Tricks loop writes
         ``research/journal.md``; a lean research agent writes ``journal/journal.md``.
         Read whichever exists (``research/`` takes precedence).
+
+        When NEITHER exists, fall back to the resident's own framework journal: the newest dated
+        narrative file ``agents/<agent>/journal/YYYY/MM/YYYY-MM-DD.md`` under the workspace, with
+        the same 5000-character cap and the same degrade-to-empty rule (g-374-2504). A resident
+        that journals through the framework otherwise showed an empty journal in the view.
         """
         journal = ""
         for journal_path in (
@@ -2424,6 +2448,8 @@ def create_app(
                     break
             except OSError:
                 journal = ""
+        else:
+            journal = _newest_framework_journal()
         return {
             "journal": journal,
             "finding_count": _count_findings(),
