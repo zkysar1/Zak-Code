@@ -2,10 +2,7 @@
 THIS session. A sub-agent has its own task table, so it cannot wait on, read the status of or stop
 that task; the parent waits with ``TaskOutput`` itself, in one call.
 
-Measured on the worker fleet, 24 h to 2026-11-19 19:30Z: 4 of 18 sub-agents were sent to wait on
-their parent's own background command (a selection walk the Bash tool had moved to the background at
-its 120 s timeout). They spent 131 tool calls and about 100 minutes of the parents' turns on it; one
-spent 40 minutes and 70 calls on a 17-line output file while its parent held no work.
+What was measured is recorded in ADR-0397.
 
 Driven by a fake spawner and a real :class:`BackgroundTasks` over records whose status is derived as
 in production (a live pid and no exit file is ``running``; an exit file is ``completed``).

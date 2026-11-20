@@ -204,13 +204,11 @@ _PRINT_ONLY_RE = re.compile(
 #: (ADR-0399): plain lookups (:func:`lookup_rules`), every one answered by a pointer
 #: (``RULE_POINTER``), the text being in the conversation or pinned in the system prompt. Each
 #: can name another rule, which the doom guard's repeat test (ADR-0391) cannot see, and the
-#: outcome signal skips a harness delivery. Measured on a served fleet (ten worker sessions, one
-#: 35B-class local model, 2026-11-20): one session sent 374 completions in 90 minutes that were
-#: each one read_rule call, 344 of them answered by a pointer, cycling through its rules, and
-#: no guard fired. A first read, or a ``refresh=true`` ask, is not counted and never refused;
-#: the loop refuses only when every rule asked for would get a pointer. The completion that
-#: would be the ``plan_only_at``-th in a row is refused unexecuted and climbs the ladder as a
-#: plan-only refusal does, on ``SIG_LOOKUP_ONLY``.
+#: outcome signal skips a harness delivery. What was measured is recorded in ADR-0399. A first
+#: read, or a ``refresh=true`` ask, is not counted and never refused; the loop refuses only when
+#: every rule asked for would get a pointer. The completion that would be the ``plan_only_at``-th
+#: in a row is refused unexecuted and climbs the ladder as a plan-only refusal does, on
+#: ``SIG_LOOKUP_ONLY``.
 SIG_LOOKUP_ONLY = "lookup-only"
 
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
