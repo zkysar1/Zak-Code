@@ -2482,8 +2482,10 @@ class LiteLLMProvider(Provider):
         repairs = 0
         while True:
             # The spend gate: a Mind that has spent its cap sends nothing. Every dispatch asks,
-            # a re-issue included, and outside the try so the refusal is not re-mapped.
-            get_gate().admit()
+            # a re-issue included, and outside the try so the refusal is not re-mapped. A refusal
+            # against a cap only the ledger holds is held for the vessel's first push, and the
+            # wait yields to the loop.
+            await get_gate().admit_async()
             try:
                 response = await litellm.acompletion(**call_kwargs)
                 break
@@ -2907,7 +2909,7 @@ class LiteLLMProvider(Provider):
         try:
             while True:
                 # As in acomplete, every dispatch asks the spend gate first.
-                get_gate().admit()
+                await get_gate().admit_async()
                 try:
                     started = time.monotonic()  # the first-chunk wait counts from here
                     # Of the request about to be sent, so a repaired re-issue is read as sent.
