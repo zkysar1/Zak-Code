@@ -207,6 +207,7 @@ from zakcode.providers.base import (
     ToolCall,
     UnknownContextWindow,
 )
+from zakcode.providers.endpoints import is_local_model
 from zakcode.providers.labels import ModelRef, display_model_id
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
 from zakcode.providers.text_tools import defang_untrusted
@@ -2678,6 +2679,85 @@ def _hide_pointer_asks(messages: list[Message]) -> list[Message]:
     return messages if out is None else out
 
 
+def _answers_exactly(call: Message, answer: Message, *, errors: bool) -> bool:
+    """Whether ``answer`` is the tool message holding exactly ``call``'s results, one per call;
+    with ``errors`` false, none of them an error (ADR-0401)."""
+    uses = call.tool_uses
+    if not uses or len(answer.blocks) != len(uses):
+        return False
+    ids = {use.id for use in uses}
+    for result in answer.blocks:
+        if not (
+            isinstance(result, ToolResultBlock)
+            and result.tool_use_id in ids
+            and (errors or not result.is_error)
+        ):
+            return False
+        ids.discard(result.tool_use_id)
+    return not ids
+
+
+def _replays_thinking(message: Message) -> bool:
+    """Whether ``message`` holds a signed thinking block, which its provider takes back exactly as
+    it was returned (the litellm wire replays signed blocks only), so it is never reshaped."""
+    return any(isinstance(block, ThinkingBlock) and block.signature for block in message.blocks)
+
+
+def _pair_plan_updates(messages: list[Message]) -> list[Message]:
+    """``messages`` as a request carries them on a self-hosted model (ADR-0401): a completion that
+    did nothing but call ``update_plan``, its answer, the completion right after it and that one's
+    answer go out as ONE completion holding the update first and then the next completion's calls,
+    and one tool message holding all their results, in that order: the shape ADR-0237 asks for.
+
+    A model writes the shape its history shows: docs/DECISIONS.md (ADR-0401) records sessions where
+    nearly every response held one call and plan updates went out alone, though the same model
+    returns an update and a command in one response when asked. The session keeps all four
+    messages; this only shapes what is sent. Kept as they are: an update that failed, one with text
+    beside it, a next completion that updates the plan itself, anything between them (a skill page
+    arrives in its own message), an exchange not yet answered, and a signed thinking block.
+    ``messages`` itself comes back when nothing pairs."""
+    out: list[Message] | None = None
+    i = 0
+    while i < len(messages):
+        if i + 3 < len(messages):
+            plan, plan_answer, work, work_answer = messages[i : i + 4]
+            paired = (
+                plan.role == "assistant"
+                and work.role == "assistant"
+                and not plan.text.strip()
+                and all(use.name == "update_plan" for use in plan.tool_uses)
+                and all(use.name != "update_plan" for use in work.tool_uses)
+                and not _replays_thinking(plan)
+                and not _replays_thinking(work)
+                and _answers_exactly(plan, plan_answer, errors=False)
+                and _answers_exactly(work, work_answer, errors=True)
+            )
+            if paired:
+                if out is None:
+                    out = messages[:i]
+                lead = [block for block in work.blocks if not isinstance(block, ToolUseBlock)]
+                out.append(
+                    Message(
+                        role="assistant",
+                        blocks=[*lead, *plan.tool_uses, *work.tool_uses],
+                        created_at=plan.created_at,
+                    )
+                )
+                out.append(
+                    Message(
+                        role=work_answer.role,
+                        blocks=[*plan_answer.blocks, *work_answer.blocks],
+                        created_at=work_answer.created_at,
+                    )
+                )
+                i += 4
+                continue
+        if out is not None:
+            out.append(messages[i])
+        i += 1
+    return messages if out is None else out
+
+
 def _last_assistant_text(turn_assistant: list[Message]) -> str:
     """The most recent non-empty assistant text THIS turn (TURN_END payload field).
 
@@ -4732,6 +4812,24 @@ class AgentLoop:
                 return text or None
         return None
 
+    def _pairs_plan_updates(self) -> bool:
+        """Whether this call's history goes out with each plan-only completion paired with the
+        next (ADR-0401). Only on a model a self-hosted endpoint serves: pairing rewrites history a
+        request already sent, which such a server reuses up to where the two differ, a few hundred
+        tokens back. Never on a model this session measured to reuse only a whole earlier prompt
+        (ADR-0193), where each pairing would cost the whole prompt, nor on a metered model."""
+        model = self.provider.model_id()
+        if not model or model in self.session.tail_sparse_models:
+            return False
+        try:
+            return is_local_model(
+                model,
+                getattr(self.provider, "api_base", None),
+                getattr(self.provider, "local_api_bases", None),
+            )
+        except ValueError:  # a routing sentinel names no destination
+            return False
+
     async def _messages_for_call(self, user_text: str, iteration: int) -> list[Message]:
         """The message list for the next provider call, with any injected context.
 
@@ -4741,12 +4839,15 @@ class AgentLoop:
         to the session — so the cached system+history prefix is untouched
         (prompt-cache safe) and the conversation on disk stays clean. With no
         context hooks this is exactly ``self.session.messages``, less each completion
-        that only asked ``read_rule`` for rules the model holds (ADR-0400).
+        that only asked ``read_rule`` for rules the model holds (ADR-0400), and on a
+        self-hosted model with each plan-only completion sent paired with the next (ADR-0401).
         """
         self._call_has_tail = False
         self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
         self._call_rails_silenced = []
         history = _hide_pointer_asks(self.session.messages)
+        if self._pairs_plan_updates():
+            history = _pair_plan_updates(history)
         if self._refused_plan is not None and not self.session.task_network.is_complete():
             # ADR-0205: the refused plan moved on (new steps, or the board was cleared). Whatever
             # finishes next is a NEW plan even if it reads the same, and its closing line is owed
