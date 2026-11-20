@@ -25173,3 +25173,45 @@ two held asks carrying neither call but a line for each while the session keeps 
 cycling through held rules still ended `stuck` after two pointers and five refusals. Ten mutations
 (the wiring, text beside the call, another tool, a partial answer, a split pair, an error, the
 pointer flag, the line's time, a rule named once, the plural) each fail the file.
+
+## ADR-0402: a delegated sub-agent starts from the parent's tool menu
+
+Status: accepted. 2026-11-20. Extends ADR-0228 (rarely-used built-ins start hidden, readers come
+back when the workspace holds that type) from the main agent to its delegates.
+
+Context. ADR-0228 hides the document creators and readers in the main agent because a small model
+confuses a document reader with `Read`. The agent built its delegates' registry straight from the
+factory, which registers every tool active, so a delegated sub-agent was offered all of them, on
+the reasoning that it has no `tool_search` to load a hidden one with. A hidden tool stays
+dispatchable when named (`ToolRegistry.execute` resolves by name, whatever the active state), so
+that reasoning holds for loading by search only.
+
+What was measured, before building. Ten served sessions on one local model, read from their
+transcripts on 2026-11-20 (tool names, path extensions, fixed result labels and counts only), 24 h
+to 23:30. The eight hidden tools were called 102 times, every call refused (`read_pdf` 100,
+`read_docx` 2), none of them from a session's live main transcript. No workspace held a PDF outside
+dot-directories. In one session, while its main loop was live, its delegates called `read_pdf` 83
+times between 21:00 and 23:00, on `.md` paths 57 times and `.json` paths 26 times, mostly four calls
+to a completion; 78 were refused with "path must end with .pdf", and 70 were followed at once by
+another `read_pdf` call.
+
+Decision.
+- `hide_on_request_tools(registry, workspace_root)` in `tools/builtins/default_registry.py` hides
+  `ON_REQUEST_TOOLS` and re-exposes each reader `workspace_doc_readers` finds. The agent applies it
+  to its own registry, as before, and to the registry it gives delegates, after that registry's
+  exposure filter.
+- The factory is unchanged and still registers every tool active. A delegate still runs a hidden
+  tool it names; the prompt lists no "Loaded on request" line for it, because that line needs
+  `tool_search`.
+- Plan Mode's read-only subset is unchanged: it never held these tools.
+
+Not done, and not measured. No delegate call to a creator was seen in the window, so whether one
+ever needs a creator it is not told the name of is unmeasured. The readers' refusal texts are
+unchanged. The trial reads calls to the hidden tools per session, and refusals of any tool, on two
+sessions against their own previous window and the other sessions.
+
+The proof. `tests/test_on_request_tools.py` pins the factory registering them active; a delegate
+in a workspace with no document offered none of them while still holding each one; a delegate in a
+workspace holding a PDF offered `read_pdf` and not the others; and a hidden reader named by a
+delegate reaching its own refusal for a `.md` path, not "unknown tool". One mutation (the delegate's
+call removed) fails both menu tests.
