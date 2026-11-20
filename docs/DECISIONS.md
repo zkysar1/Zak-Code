@@ -25032,12 +25032,20 @@ When it started, on one worker: update_plan went with another call 18 times and 
 19:10Z and alone every time after (5 in 5 to 20:00Z, then 258 in 258 on 10-23), and it has gone with another
 call 0 to 8 times a day since. Two things changed that day. The pod's engine-config backups date a canary of
 `flint-UD-Q3_K_XL` from 18:29Z and the move of every engine from 20:27Z; and PR 803, merged at 14:50Z, tells
-the model to plan by default and never to start a step before its approach is on the plan. Which one stopped
-the pairing is not measured: the counts before 19:10Z are small, and the session id the worker kept all day
-outlives restarts, so it does not show when the worker took the new build. Responses with several calls fell
-from 30 percent of the worker's responses on 10-21 to 3 percent on 10-23 and were back to 28 and 34 percent
-on 10-26 and 10-27, with update_plan still alone: the model sends several calls at once, only not with a plan
-update.
+the model to plan by default and never to start a step before its approach is on the plan. The timing cannot
+tell them apart: the counts before 19:10Z are small, and the session id the worker kept all day outlives
+restarts, so it does not show when the worker took the new build.
+
+The model does. From 09:07Z on 2026-11-11 to 09:48Z the next day, two of the ten engines at a time served
+`Qwen3.8-27B-UD-Q4_K_XL` and the other eight `flint-UD-Q3_K_XL`, under one prompt (PR 803 included). Each
+worker's responses were matched to the pod's request ledger by time (16 sessions matched one ledger session
+on all of their responses, the runner-up on 6 to 13 percent; shorter transcripts that matched under 60
+percent were left out), and each response took the model of the engine that served it, leaving out ten
+minutes around each switch. update_plan went with another call 43 times
+in 57 on Qwen3.8 and 16 times in 1,203 on flint, while responses with several calls were 25 and 23 percent of
+each. On the same workers in the same day: 28 in 30 on Qwen3.8 and 0 in 30 on flint (one worker), 8 in 11 and
+0 in 58 (a second), 6 in 12 and 8 in 45 (a third). So the pairing ADR-0237 asks for is one the served model
+does not make, whatever the prompt says, and a carrier that needs no second call is the change that holds.
 
 **Decision.**
 1. Bash's input takes an optional `advance` object, `{"outcome": "<what the step produced>"}`. Bash's schema
@@ -25082,9 +25090,8 @@ update.
 amendment already ask, and 530 of 544 went alone. Closing a step on the harness's own judgement that it is
 done: the harness cannot see a step's done-condition met; the model says so. The field on every tool: the
 next call was Bash 158 times in 238, and the field on Skill would be a second path through a paged skill's
-sections. Taking back PR 803's sentence about starting a step: not shown to be the cause, and it is part of
-what makes the model plan; it is the next thing to measure, since a cause there would cover the re-plans too,
-which this change leaves alone.
+sections. Taking back PR 803's sentence about starting a step: measured not to be the cause (the same prompt
+paired 43 times in 57 on Qwen3.8), and it is part of what makes the model plan.
 
 Not verified: that the model uses it. To measure on a trial of one or two worker sessions against the others
 over the same window: advance-only update_plan responses and their minutes per 100 responses, Bash calls

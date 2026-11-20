@@ -78,9 +78,10 @@ PLAN_SHORT_FORM = (
 #: flint-UD-Q3_K_XL: 530 of 544 update_plan calls in 12.6 hours were alone in their response, 886
 #: model minutes; 237 of them were the short form, and the response after those ran Bash alone 158
 #: times in 238. One worker's day-by-day count dates the change: 0 alone and 18 paired on
-#: 2026-10-21, 258 alone and 0 paired on 2026-10-23. On 10-22 the pod's engines moved to that model
-#: and PR 803's plan-by-default prompt merged; which one stopped the pairing is not measured (the
-#: ADR has the timing). So the advance goes where ADR-0388's amendment says a cue moves a small
+#: 2026-10-21, 258 alone and 0 paired on 2026-10-23, after the pod's engines moved to that model.
+#: The model is the cause: on 2026-11-11, under one prompt, responses that Qwen3.8 served paired
+#: update_plan 43 times in 57 and responses that flint served 16 times in 1,203 (the ADR has the
+#: method). So the advance goes where ADR-0388's amendment says a cue moves a small
 #: model, the call it writes: an optional field of Bash's input, applied by the harness before the
 #: command runs (``AgentLoop._execute_carried_advance``). The carried form is named first wherever
 #: the advance is said, and the update_plan short form stays for a next step that does not start
