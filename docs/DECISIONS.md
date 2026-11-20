@@ -25173,3 +25173,75 @@ two held asks carrying neither call but a line for each while the session keeps 
 cycling through held rules still ended `stuck` after two pointers and five refusals. Ten mutations
 (the wiring, text beside the call, another tool, a partial answer, a split pair, an error, the
 pointer flag, the line's time, a rule named once, the plural) each fail the file.
+
+## ADR-0401: a plan-only completion is sent paired with the completion after it
+
+Status: accepted. 2026-11-20. Follows ADR-0237 (a plan update rides with the next step's first
+call) and ADR-0400 (the request shows the model a history built for it), held to ADR-0193.
+
+Context. ADR-0237 asks for the plan update in the same response as the next step's first call, and
+ADR-0364 and ADR-0388 bound and shorten the update sent alone. The update still goes alone.
+
+What was measured, before building. The served worker sessions of ADR-0400 behind one pod (the
+27B on ten engines), read from each session's own transcript (tool names, times, call shapes and
+fixed receipt labels only). From 19:00 to 20:35 on 2026-11-20, on the build of ADR-0400, ten
+sessions: of 573 responses that called a tool, 100 called only `update_plan`, and they took 174
+of the 863 minutes between responses (20%), 0.9 to 3.5 minutes each against 0.6 to 2.0 for the
+others; one response paired an update with another call. From 14:30 to 20:30, 94 to 100 percent
+of each of six sessions' responses held exactly one call, and on three of four sessions the
+commonest run of other calls between two plan updates was one call (on the fourth, none). Two
+requests to the same pod asking in one user message for an update and then a command each came
+back with both calls, with `parallel_tool_calls` unset and set: the server does not hold a
+response to one call, and the model can write the pair. What it writes follows what its history
+shows: ADR-0400 took held-rule asks out of the request, and on the same ten sessions those asks
+fell from 376 in the 3.9 h before its build (96 an hour) to 15 in the 1.6 h after (10 an hour),
+on one session that held the same work throughout from 22 to 36 an hour to 2.5; and one session
+that had begun sending two reads in a response sent 12 of its last 14 calls two to a response.
+
+Decision.
+- `_messages_for_call` sends `_pair_plan_updates` of the ADR-0400 history when
+  `_pairs_plan_updates()` holds: the provider's model is one a self-hosted endpoint serves
+  (`is_local_model` on its model, base and listed local bases), and this session has not measured
+  it to reuse only a whole earlier prompt (ADR-0193).
+- Four messages in a row pair: a completion whose calls are all `update_plan`, with no text and no
+  signed thinking; the tool message holding exactly its results, none an error; the next
+  completion, with a call and no `update_plan` among its calls, and no signed thinking; and the
+  tool message holding exactly its results, an error allowed. They are sent as one assistant
+  message (the next completion's text and thinking, then the update's calls, then its own), with
+  the update's time, and one tool message (the update's results, then the next ones), with the
+  latter's time.
+- Sent as they are: an update that failed, one with text or another call beside it, a next
+  completion that updates the plan itself, anything between the four (a skill page, a harness
+  line), an exchange not yet answered, and a signed thinking block, which its provider takes back
+  exactly as returned. Of two updates in a row, the second pairs.
+- The session, the transcript and every counter keep all four messages: ADR-0364's bound, the
+  stuck tracker, the plan receipts, the page delivery (ADR-0067) and compaction read the session,
+  not the request.
+
+What it costs. What a history is sent as is the start of what a longer one is sent as, except once
+per pairing: when the next completion's answer arrives the update joins it, and the two requests
+agree up to the update. A self-hosted server's prompt cache reuses the longest prefix it holds, so
+it reads the update (0.8 to 3.3 thousand characters on average on these sessions), its answer and
+the next call once more. A provider that reuses only a whole earlier prompt would read the whole
+prompt again, and a metered one would bill it, so neither pairs.
+
+Not done, and not measured. Whether the model follows its history here: the trial reads
+plan-only responses, their share of model time and paired responses on two sessions against
+their own previous window and the other sessions. A paged skill's section close goes alone
+(ADR-0237): a model that pairs one guesses the next section's first call, and the page still
+arrives after the batch. A compaction summary still reads the updates.
+
+The proof. `tests/test_plan_update_paired.py` pins an update and the next completion sent as one,
+update first, with the next completion's text, the results in order and the update's and the
+answer's times, and the history itself untouched; each update of a run paired with the completion
+after it; of two updates in a row the second paired; a failed command still paired; an unsigned
+thinking block kept with the completion that is sent; the history itself returned when nothing
+pairs; a failed update, text beside it, a call beside it, a next completion updating the plan, a
+signed block on either, an unanswered next completion, a page between and text after each sent as
+they are; the projection moving only where an update meets its next completion, and then agreeing
+up to the update; the gate pairing on a listed self-hosted model and not on one measured to reuse
+whole prompts, an unlisted base, a named cloud model or a test stub; and, on both turn paths, the
+request after the next call carrying the update and that call as one completion while the session
+keeps both, and a metered model handed both as they came. Seven mutations (the wiring, the failed
+update, the measured-cache exclusion, the order, text beside the update, a next completion updating
+the plan, a signed next completion) each turn their test red.
