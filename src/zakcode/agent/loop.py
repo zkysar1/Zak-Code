@@ -262,7 +262,12 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins.read_rule import rule_text
-from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
+from zakcode.tools.builtins.update_plan import (
+    PLAN_ADVANCE,
+    PLAN_ADVANCE_CALL,
+    PLAN_ADVANCE_CARRIED,
+    authors_a_plan,
+)
 from zakcode.usage import Usage
 from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
@@ -2457,6 +2462,37 @@ _MAX_PLAN_FIRST_NUDGES = 2
 #: evidence (ADR-0110 / ADR-0111) — the plan's own bookkeeping is not work the step did, and
 #: reading the record must leave no trace in it.
 _PLAN_TOOLS = frozenset({"update_plan", "plan", "todo", "plan_recall", "plan_history"})
+
+#: Tools whose call may carry the plan's short form in an ``advance`` field (ADR-0398). Bash only:
+#: after a plan-only advance, the served model's next response was Bash alone 158 times in 238.
+_ADVANCE_CARRIERS = frozenset({"Bash"})
+
+#: What a carried advance's result says when a paged skill is in the plan (ADR-0398). A paged
+#: section's next part arrives only in the reply to the update that closes it (ADR-0237), so the
+#: command the model wrote beside the close was written without it: the plan is left as it is.
+_CARRIED_ADVANCE_PAGED = (
+    "[plan] Not advanced: this plan holds a paged skill's sections, and the next section comes "
+    "only in the reply to an update_plan call sent alone. The command below ran for the step "
+    "still current."
+)
+
+
+def _carried_advance(call: ToolCall) -> tuple[ToolCall, Any] | None:
+    """A carrier call holding an ``advance`` field: the call without it, and the field (ADR-0398).
+
+    ``None`` for any other call. The field is taken off even when it is null or false, so the tool
+    never sees a key its schema calls optional and the harness owns; an advance of null or false
+    then carries nothing (the second element is ``None``).
+    """
+    if call.name not in _ADVANCE_CARRIERS or not isinstance(call.arguments, dict):
+        return None
+    if "advance" not in call.arguments:
+        return None
+    rest = {key: value for key, value in call.arguments.items() if key != "advance"}
+    value = call.arguments["advance"]
+    carried = None if value is None or value is False else value
+    return ToolCall(id=call.id, name=call.name, arguments=rest), carried
+
 
 #: Waiting for the operator is a turn-ENDING state (ADR-0121): a call to any of these names
 #: that SUCCEEDS ends the turn with the plan untouched. Prose cannot stop a loop — a model
@@ -4981,10 +5017,10 @@ class AgentLoop:
             _PLAN_JUST_UPDATED
             if just_updated
             else (
-                f"[plan] Harness-tracked plan for the current goal. When {step} is done, call "
-                f"update_plan with {PLAN_ADVANCE_CALL}: it marks that step done and starts the "
-                f"next. Send it {PLAN_ADVANCE}. Send the whole plan only to add, split, drop or "
-                "reorder steps; decompose any step that turns out to be several actions.\n\n"
+                f"[plan] Harness-tracked plan for the current goal. When {step} is done, "
+                f"{PLAN_ADVANCE_CARRIED}; otherwise call update_plan with {PLAN_ADVANCE_CALL} "
+                f"{PLAN_ADVANCE}. Send the whole plan only to add, split, drop or reorder steps; "
+                "decompose any step that turns out to be several actions.\n\n"
             )
         )
         if request:
@@ -5901,6 +5937,13 @@ class AgentLoop:
                 names.append(skill)
         return names
 
+    def _plan_holds_paged_skill(self) -> bool:
+        """Whether a skill paged this session may have sections in the plan (ADR-0398): a
+        carried advance is not applied then, since a paged section closes alone (ADR-0237)."""
+        return any(
+            self._ensure_skill_pages(name) is not None for name in self._paged_skills_in_plan()
+        )
+
     def _open_delivered_section(self) -> tuple[str, int, int, str] | None:
         """The section the model holds and has not closed — ``(skill, page, count, title)`` —
         preferring the one whose step is the plan's current step, else the most recently
@@ -6574,6 +6617,9 @@ class AgentLoop:
         error block through here, so the blocker-without-evidence guard sees ONE truth: did
         anything the model tried actually fail this turn.
         """
+        carried = _carried_advance(call)
+        if carried is not None:
+            return await self._execute_carried_advance(*carried, ctx, restrict_to=restrict_to)
         if call.name not in _PLAN_TOOLS:
             self._turn_did_work = True  # releases a command turn's perception hold (ADR-0273)
         _status_writer().set_tool_start(self.session.id, call.name)
@@ -6725,6 +6771,46 @@ class AgentLoop:
         # served (streamed) run's trace carried no tool ledger at all.
         self._note("tool", call.name, ok=not block.is_error)
         _status_writer().set_tool_end(self.session.id)
+        return block
+
+    async def _execute_carried_advance(
+        self,
+        call: ToolCall,
+        advance: Any,
+        ctx: ToolContext,
+        *,
+        restrict_to: set[str] | None = None,
+    ) -> ToolResultBlock:
+        """A carrier call's ``advance`` (ADR-0398): close the current step, then run the call.
+
+        The advance runs first, as a harness-made ``update_plan`` call through this same seam, so
+        everything the short form does when the model sends it alone happens here too (the
+        null-close challenge, the log, the census notes, the receipt). The call then runs and is
+        credited to the step the advance started, as in a batch of update_plan then the call
+        (ADR-0110, ADR-0237), and the advance's receipt leads the call's own result. The call runs
+        whatever the advance did: a refused advance leaves the plan as it was and says why. While a
+        paged skill's sections are in the plan nothing is advanced (``_CARRIED_ADVANCE_PAGED``).
+        """
+        receipt = ""
+        if advance is not None:
+            if self._plan_holds_paged_skill():
+                receipt = _CARRIED_ADVANCE_PAGED
+            else:
+                plan_call = ToolCall(
+                    id=f"{call.id}-advance", name="update_plan", arguments={"advance": advance}
+                )
+                plan_block = await self._execute_tool_call(plan_call, ctx, restrict_to=restrict_to)
+                receipt = f"[plan, from this call's advance] {plan_block.output}"
+                self._note(
+                    "intervention",
+                    "plan advance carried by the call",
+                    kind="plan_advance_carried",
+                    tool=call.name,
+                    ok=not plan_block.is_error,
+                )
+        block = await self._execute_tool_call(call, ctx, restrict_to=restrict_to)
+        if receipt:
+            block.output = f"{receipt}\n\n{block.output}" if block.output else receipt
         return block
 
     async def _execute_tool_call_gated(

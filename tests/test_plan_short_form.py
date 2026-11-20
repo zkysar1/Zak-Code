@@ -41,6 +41,7 @@ from zakcode.tools.builtins.update_plan import (
     _PLANNED_HINT,
     _UNCHANGED_HINT,
     PLAN_ADVANCE_CALL,
+    PLAN_ADVANCE_CARRIED,
     PLAN_SHORT_FORM,
     UpdatePlanTool,
     authors_a_plan,
@@ -309,9 +310,13 @@ def test_the_short_form_is_said_where_the_advance_is(tmp_path: Path) -> None:
     assert current is not None
     reminder = loop._plan_reminder()
     assert reminder is not None
-    lead = f"When step {current.id} is done, call update_plan with {PLAN_ADVANCE_CALL}"
+    # ADR-0398: the line leads with the advance carried by the next Bash call, then the short
+    # form as a call of its own, both before the whole-plan form.
+    lead = f"When step {current.id} is done, {PLAN_ADVANCE_CARRIED}"
     assert lead in reminder.text
-    assert reminder.text.index(lead) < reminder.text.index("whole plan")
+    short = f"call update_plan with {PLAN_ADVANCE_CALL}"
+    text = reminder.text
+    assert text.index(lead) < text.index(short) < text.index("whole plan")
 
 
 async def test_the_call_the_model_is_shown_is_one_the_tool_takes() -> None:

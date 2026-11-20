@@ -22,6 +22,7 @@ from zakcode.tools.base import (
 )
 from zakcode.tools.builtins._proc import CommandTimeout, run_capturing
 from zakcode.tools.builtins._suggest import suggest
+from zakcode.tools.builtins.update_plan import BASH_ADVANCE_FIELD
 from zakcode.virtual_paths import expand_virtual_prefix
 
 # Default and hard-cap timeouts, in seconds. The cap is generous so a real build/test suite
@@ -1138,6 +1139,19 @@ class BashTool(Tool):
                         "<task-notification> harness line at its next idle prompt). Read its "
                         "output with TaskOutput, kill it with TaskStop. No '&' needed."
                     ),
+                },
+                # ADR-0398: the plan's short form, carried by the call that starts the next step.
+                # The loop applies it and removes it before this tool runs, so execute() never
+                # sees it; it is here so the model reads it where it writes the call.
+                "advance": {
+                    "type": "object",
+                    "description": BASH_ADVANCE_FIELD,
+                    "properties": {
+                        "outcome": {
+                            "type": "string",
+                            "description": "What the step being closed produced, in a few words.",
+                        },
+                    },
                 },
             },
             "required": ["command"],

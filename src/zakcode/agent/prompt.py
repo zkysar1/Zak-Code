@@ -37,7 +37,11 @@ from pathlib import Path
 from zakcode.config import PermissionTier, Settings
 from zakcode.tools.base import ToolSpec
 from zakcode.tools.builtins._ignore import load_ignore
-from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_SHORT_FORM
+from zakcode.tools.builtins.update_plan import (
+    PLAN_ADVANCE,
+    PLAN_ADVANCE_CARRIED,
+    PLAN_SHORT_FORM,
+)
 
 #: Marker separating the stable (cacheable) prefix from the dynamic context suffix.
 #: A provider's cache breakpoint is positioned here; nothing above it may change mid-session.
@@ -193,7 +197,8 @@ _PLANNING = (
     "completion stays checkable, not a guess; for a step that searches, lists, or looks something "
     "up, the note says what a hit looks like AND what proves the scope was visible — a null result "
     "never closes such a step by itself.\n"
-    "- Keep exactly one step in_progress; as you finish each, call `update_plan` to mark it done "
+    "- Keep exactly one step in_progress; as you finish each, "
+    f"{PLAN_ADVANCE_CARRIED}, or else call `update_plan` to mark it done "
     f"and the next in_progress {PLAN_ADVANCE}. The first plan can go out with the first step's "
     f"call the same way. {PLAN_SHORT_FORM} Decomposition is also just-in-time: lay out the "
     "approach and the steps you "

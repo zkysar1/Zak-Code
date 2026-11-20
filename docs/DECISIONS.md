@@ -25012,3 +25012,95 @@ tests, each by the tests meant to, and the file was restored byte for byte.
 unchanged. A skill of the same name as another skill follows the same later-wins order by name; this
 change does not touch skills. A deployment keeps the build it pins until the pin is moved, and no
 running deployment carries this change until then.
+
+## ADR-0398: Bash carries the plan's short form: an `advance` field closes the current step before the command runs
+
+**Context.** ADR-0237 asks the model to send a plan update in the same response as the next step's first
+call, and ADR-0388 shrank the update to `{"advance": ...}` and, in its amendment, showed it as the call to
+write. Neither removes the response that does nothing else, and the served model makes that response nearly
+every time. Measured 2026-11-20 on ten workers behind one pod serving `flint-UD-Q3_K_XL`, over the
+12.6 hours to 06:35Z: 530 of 544 update_plan calls were alone in their response, and those 530 responses
+took 886 model minutes. Compared call by call with the plan before it, they were 237 advances (295 minutes,
+33 percent, about 75 s each), 103 re-plans that changed the steps' structure (216 minutes, 24 percent, about
+126 s each), 75 resends of the plan unchanged (132 minutes, 15 percent), 50 that added steps (117 minutes),
+28 whole plans that moved one step (50 minutes), 19 that changed several statuses (45 minutes) and 18 first
+plans (31 minutes). In a read of the same sessions ten minutes earlier, the response after an advance-only
+response was Bash alone 158 times in 238. update_plan responses were 16 percent of the sessions' model time.
+
+When it started, on one worker: update_plan went with another call 18 times and alone 0 times on
+2026-10-21; on 10-22 it went with another call 2 times in 2 before 18:40Z, alone 4 times in 7 from 18:40Z to
+19:10Z and alone every time after (5 in 5 to 20:00Z, then 258 in 258 on 10-23), and it has gone with another
+call 0 to 8 times a day since. Two things changed that day. The pod's engine-config backups date a canary of
+`flint-UD-Q3_K_XL` from 18:29Z and the move of every engine from 20:27Z; and PR 803, merged at 14:50Z, tells
+the model to plan by default and never to start a step before its approach is on the plan. Which one stopped
+the pairing is not measured: the counts before 19:10Z are small, and the session id the worker kept all day
+outlives restarts, so it does not show when the worker took the new build. Responses with several calls fell
+from 30 percent of the worker's responses on 10-21 to 3 percent on 10-23 and were back to 28 and 34 percent
+on 10-26 and 10-27, with update_plan still alone: the model sends several calls at once, only not with a plan
+update.
+
+**Decision.**
+1. Bash's input takes an optional `advance` object, `{"outcome": "<what the step produced>"}`. Bash's schema
+   says what it does, at the call the model is writing: set it only on the first call of the next plan step;
+   it closes the step marked current and starts the next before the command runs. `required` stays
+   `["command"]`.
+2. The loop takes the field off the call first (`_carried_advance`, at the top of `_execute_tool_call`, the
+   seam every tool path goes through, ADR-0110), runs `{"advance": <value>}` as a harness-made update_plan
+   call through the same seam, and then runs the command. So a carried advance gets what the short form gets
+   when it is sent alone: the null-close challenge (ADR-0116), the log, the census data and the receipt. The
+   command's result opens with that receipt (`[plan, from this call's advance] Step 1 done ...`), and the
+   command is credited to the step the advance started, as after update_plan then Bash in one batch.
+3. The tool never sees the field. A null or false value is taken off and carries nothing. A refused advance
+   (no plan of the model's, every step finished or blocked) leaves the plan as it was and says why in the
+   receipt, and the command still runs.
+4. While a paged skill's sections are in the plan (ADR-0067), nothing is advanced and the result says so: a
+   paged section's next part arrives only in the reply to an update that closes it (ADR-0237), so a command
+   written beside the close was written without that part.
+5. Only Bash carries the field (`_ADVANCE_CARRIERS`): it was the next call 158 times in 238. Every other
+   tool's input passes through untouched, a field named `advance` included.
+6. One sentence, `PLAN_ADVANCE_CARRIED` ("if the next step starts with Bash, put `"advance": {...}` in that
+   Bash call's input"), comes first wherever the advance is said: the tool description, the system prompt,
+   the plan line the loop shows on every call, and the receipt after a plan update. The update_plan short form
+   follows it, for a next step that does not start with Bash, and the whole plan stays for adding, splitting,
+   dropping or reordering steps.
+7. Each carried advance records an intervention note, `plan_advance_carried`, with the tool and whether the
+   advance was accepted, for a census.
+
+**Checked, not changed.**
+- Bash is NEVER_PARALLEL, so a carrier call never runs in the concurrent path, and the advance and the
+  command run in that order.
+- The exact-repeat guard sees the Bash call as the model wrote it, field included.
+- The plan-only rail (ADR-0371) and the plan-only run (ADR-0364): a Bash call that carries an advance is not a
+  plan-only response.
+- The plan-first gate (ADR-0231) still decides the command: with no plan of the model's, the advance is
+  refused and the command meets the gate as before.
+- Cost: the plan line grows by 73 characters, about 29 tokens, in the uncached tail of every call (prefix
+  reuse on the pod's engines is exact-prefix only). The field's description sits in Bash's schema, in the
+  cached head. One avoided advance-only response is worth about 75 s.
+
+**Alternatives rejected.** A stronger sentence asking for the pairing: ADR-0237's sentence and ADR-0388's
+amendment already ask, and 530 of 544 went alone. Closing a step on the harness's own judgement that it is
+done: the harness cannot see a step's done-condition met; the model says so. The field on every tool: the
+next call was Bash 158 times in 238, and the field on Skill would be a second path through a paged skill's
+sections. Taking back PR 803's sentence about starting a step: not shown to be the cause, and it is part of
+what makes the model plan; it is the next thing to measure, since a cause there would cover the re-plans too,
+which this change leaves alone.
+
+Not verified: that the model uses it. To measure on a trial of one or two worker sessions against the others
+over the same window: advance-only update_plan responses and their minutes per 100 responses, Bash calls
+carrying `advance`, and closes that come early (an advance on a Bash call that is not the first of its step).
+
+**The proof.** `tests/test_plan_advance_carried.py` (9 tests): the schema offers the field and does not
+require it; a carried advance closes the step with its outcome, starts the next, credits the command to the
+next step and keeps the field from the tool, buffered and streaming; a refused advance still runs the
+command; a null or false field carries nothing; a plan holding a paged skill is left as it is; only Bash
+carries the field; and every surface names the carried form first. `tests/test_plan_short_form.py` changes
+one assertion: the plan line now leads with the carried form, then the short form, then the whole plan.
+The full suite ran 7,527 passed and 33 skipped, and ruff check, ruff format --check and mypy pass on the whole
+repository. Nine mutants of `loop.py`, `update_plan.py` and `bash.py`, one site each, are each run against the
+test named for them, with `tests/test_plan_unchanged.py` as a control that must stay green, by a harness that
+checks the file is restored byte for byte: the advance never dispatched, the command run before the advance,
+the field passed through to the tool, a refused advance skipping the command, a null or false field carried
+as an advance, the paged-skill check skipped, a second tool carrying the field, the receipt after a plan
+update without the carried form, and Bash's description of the field replaced. All nine turn their test red,
+and every control stays green.

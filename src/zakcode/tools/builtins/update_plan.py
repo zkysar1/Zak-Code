@@ -73,12 +73,38 @@ PLAN_SHORT_FORM = (
     "instead of the whole plan."
 )
 
+#: The advance carried by the work call itself (ADR-0398). ADR-0237's sentence asks for a pairing
+#: the served model does not make. Measured 2026-11-20 on ten worker Bodies behind one pod serving
+#: flint-UD-Q3_K_XL: 530 of 544 update_plan calls in 12.6 hours were alone in their response, 886
+#: model minutes; 237 of them were the short form, and the response after those ran Bash alone 158
+#: times in 238. One worker's day-by-day count dates the change: 0 alone and 18 paired on
+#: 2026-10-21, 258 alone and 0 paired on 2026-10-23. On 10-22 the pod's engines moved to that model
+#: and PR 803's plan-by-default prompt merged; which one stopped the pairing is not measured (the
+#: ADR has the timing). So the advance goes where ADR-0388's amendment says a cue moves a small
+#: model, the call it writes: an optional field of Bash's input, applied by the harness before the
+#: command runs (``AgentLoop._execute_carried_advance``). The carried form is named first wherever
+#: the advance is said, and the update_plan short form stays for a next step that does not start
+#: with Bash.
+#: The sentence is only the cue: it rides the plan line, the uncached tail of every call, so what
+#: the field does is said once, in Bash's schema (:data:`BASH_ADVANCE_FIELD`), in the cached head.
+PLAN_ADVANCE_FIELD = '"advance": {"outcome": "<what the step produced>"}'
+PLAN_ADVANCE_CARRIED = (
+    f"if the next step starts with Bash, put {PLAN_ADVANCE_FIELD} in that Bash call's input"
+)
+#: Bash's own description of the field (ADR-0398), read at the call the model is writing.
+BASH_ADVANCE_FIELD = (
+    "Optional. Set it only on the first call of the next plan step: it closes the step marked "
+    "'<- current' (outcome: what that step produced) and starts the next before this command "
+    "runs, so closing the step needs no update_plan response of its own."
+)
+
 #: Next-step rail: after planning, the model should act on the current step, not re-plan. The
-#: short form leads (ADR-0388 amendment); the whole plan is for changing the steps.
+#: short form leads (ADR-0388 amendment), the carried form first (ADR-0398); the whole plan is
+#: for changing the steps.
 _PLANNED_HINT = (
-    "Plan updated. Now do the step marked '<- current'. When it is done, close it with "
-    f"update_plan {PLAN_ADVANCE_CALL} {PLAN_ADVANCE}. Send the whole plan only to add, split, "
-    "drop or reorder steps."
+    f"Plan updated. Now do the step marked '<- current'. When it is done, {PLAN_ADVANCE_CARRIED}; "
+    f"otherwise close it with update_plan {PLAN_ADVANCE_CALL} {PLAN_ADVANCE}. Send the whole plan "
+    "only to add, split, drop or reorder steps."
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
@@ -325,7 +351,8 @@ class UpdatePlanTool(Tool):
             "'figure out how' (a step whose approach you have not worked out is not primitive: "
             "break it into 'subtasks' or make working out the how its own step, and use "
             "'blocked_by' when a step depends on earlier ones). Then, as "
-            f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}. "
+            f"you go, mark a step done and the next one in_progress {PLAN_ADVANCE}; "
+            f"{PLAN_ADVANCE_CARRIED}. "
             f"{PLAN_SHORT_FORM} Otherwise send the WHOLE plan each time: every step's title and "
             "status. A step keeps the note "
             "and outcome you already gave it, so send those only when they are new or changed. "
