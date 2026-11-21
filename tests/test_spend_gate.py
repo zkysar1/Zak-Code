@@ -19,7 +19,7 @@ What is pinned here, each with its positive control:
   holding fails a test instead of hanging the run;
 * the health snapshot's ``pushed`` says whether THIS process has accepted a budget push: false in
   a fresh process, including one that booted armed from a ledger an earlier process wrote, true
-  from the first accepted push on, and still false after a push the gate refused;
+  from the first accepted push on, and unchanged by a push the gate refused;
 * ``POST /budget`` is bearer-gated, refuses bad values, arms the gate, shows in
   ``/sidecar/health``, and a soft trip starts the run's ending with ``mind_budget_cap``.
 """
@@ -419,6 +419,26 @@ def test_a_push_the_gate_refuses_is_not_a_push_taken(tmp_path: Path) -> None:
         with pytest.raises(ValueError):
             gate.set_budget(cap_usd=1.0, reserve_usd=2.0, floor_usd=0.0)  # reserve above the cap
         assert gate.snapshot()["pushed"] is False
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [
+        {"cap_usd": -1, "reserve_usd": 0, "floor_usd": 0},
+        {"cap_usd": 1.0, "reserve_usd": 2.0, "floor_usd": 0.0},
+    ],
+    ids=["not-money", "reserve-above-the-cap"],
+)
+def test_a_push_the_gate_refuses_after_one_is_taken_leaves_pushed_true(
+    refused: dict[str, float],
+) -> None:
+    gate = SpendGate()
+    gate.set_budget(cap_usd=3.0, reserve_usd=0.5, floor_usd=1.0)
+    with pytest.raises(ValueError):
+        gate.set_budget(**refused)
+    snap = gate.snapshot()
+    assert snap["pushed"] is True, "a refused push does not take back the push already taken"
+    assert snap["cap_usd"] == 3.0, "and it changed nothing else"
 
 
 def test_an_unreadable_ledger_reads_not_pushed_until_a_push_rearms(tmp_path: Path) -> None:

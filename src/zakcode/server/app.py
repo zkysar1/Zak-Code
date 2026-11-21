@@ -2470,7 +2470,7 @@ def create_app(
             "observation_intake": dict(_observation_stats),
             # The per-Mind spend gate. `armed` false means no budget has been
             # pushed, and nothing is refused; the vessel pushes again when it reads that.
-            # `pushed` false means no push has reached THIS process yet, armed or not.
+            # `pushed` false means no push has been accepted by THIS process yet, armed or not.
             "spend_gate": get_gate().snapshot(),
         }
 
