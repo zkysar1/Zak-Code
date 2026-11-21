@@ -2402,16 +2402,15 @@ def create_app(
         return out
 
     def _newest_framework_journal() -> str:
-        """The first 5000 characters of the newest dated narrative file of the resident's own journal.
+        """The first 5000 characters of the newest dated file of the resident's own journal.
 
-        Newest by the date in the file name (``YYYY-MM-DD.md`` sorts as written), then by modification
-        time. Any unreadable file or directory degrades to the empty string, like the view files above.
+        Newest by the date in the file name (``YYYY-MM-DD.md`` sorts as written), then by
+        modification time. Any unreadable file or directory degrades to the empty string,
+        like the view files above.
         """
         try:
             candidates = [
-                p
-                for p in _workspace_root.glob("agents/*/journal/*/*/*.md")
-                if p.is_file()
+                p for p in _workspace_root.glob("agents/*/journal/*/*/*.md") if p.is_file()
             ]
             if not candidates:
                 return ""
