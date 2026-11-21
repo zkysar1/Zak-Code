@@ -17,6 +17,9 @@ What is pinned here, each with its positive control:
   and ``POST /chat``), which belongs to that caller's task and opens no window;
 * the bound is pinned as it ships and every wait on it is itself bounded, so a bound that stops
   holding fails a test instead of hanging the run;
+* the health snapshot's ``pushed`` says whether THIS process has accepted a budget push: false in
+  a fresh process, including one that booted armed from a ledger an earlier process wrote, true
+  from the first accepted push on, and still false after a push the gate refused;
 * ``POST /budget`` is bearer-gated, refuses bad values, arms the gate, shows in
   ``/sidecar/health``, and a soft trip starts the run's ending with ``mind_budget_cap``.
 """
@@ -372,6 +375,77 @@ def test_no_ledger_file_means_an_unarmed_gate(tmp_path: Path) -> None:
     gate = SpendGate(tmp_path / "absent.json")
     gate.admit()
     assert gate.snapshot()["armed"] is False
+
+
+# ── pushed: whether THIS process has taken a budget push ─────────────────────────────────
+
+
+def test_pushed_reads_false_until_this_process_takes_a_push_and_true_after() -> None:
+    gate = SpendGate()
+    assert gate.snapshot()["pushed"] is False
+
+    answer = gate.set_budget(cap_usd=5.0, reserve_usd=1.0, floor_usd=0.5)
+    assert answer["pushed"] is True, "the answer to the push already says it was taken"
+    assert gate.snapshot()["pushed"] is True
+
+
+def test_a_gate_booted_from_its_ledger_is_armed_and_not_pushed_until_the_next_push(
+    tmp_path: Path,
+) -> None:
+    """The case ``armed`` cannot tell apart: a sidecar restarted inside one run.
+
+    The earlier process took a push and wrote its ledger. The new process boots armed from that
+    ledger, with a readable ledger and a cap that may be stale, and no push has reached it. Every
+    other field reads as it does for a gate that was pushed to; ``pushed`` is the one that says
+    this process has not been.
+    """
+    ledger = tmp_path / "run" / "spend-ledger.json"
+    earlier = SpendGate(ledger)
+    assert earlier.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=2.0)["pushed"] is True
+
+    gate = SpendGate(ledger)  # a new process: it boots from what the earlier run left
+    snap = gate.snapshot()
+    assert snap["armed"] is True and snap["ledger_ok"] is True and snap["tripped"] is False
+    assert snap["pushed"] is False
+
+    gate.set_budget(cap_usd=15.0, reserve_usd=4.32, floor_usd=2.0)  # the vessel's next push
+    assert gate.snapshot()["pushed"] is True
+
+
+def test_a_push_the_gate_refuses_is_not_a_push_taken(tmp_path: Path) -> None:
+    ledger = tmp_path / "spend-ledger.json"
+    SpendGate(ledger).set_budget(cap_usd=3.0, reserve_usd=0.5, floor_usd=1.0)
+    for gate in (SpendGate(), SpendGate(ledger)):  # unarmed, and booted armed from the ledger
+        with pytest.raises(ValueError):
+            gate.set_budget(cap_usd=1.0, reserve_usd=2.0, floor_usd=0.0)  # reserve above the cap
+        assert gate.snapshot()["pushed"] is False
+
+
+def test_an_unreadable_ledger_reads_not_pushed_until_a_push_rearms(tmp_path: Path) -> None:
+    ledger = tmp_path / "spend-ledger.json"
+    ledger.write_text("{not json", encoding="utf-8")
+
+    gate = SpendGate(ledger)
+    snap = gate.snapshot()
+    assert snap["ledger_ok"] is False and snap["pushed"] is False
+
+    gate.set_budget(cap_usd=3.0, reserve_usd=0.0, floor_usd=1.0)
+    snap = gate.snapshot()
+    assert snap["ledger_ok"] is True and snap["pushed"] is True
+
+
+def test_pushed_stays_true_through_later_pushes_charges_and_a_new_period() -> None:
+    gate = SpendGate()
+    gate.set_budget(cap_usd=10.0, reserve_usd=1.0, floor_usd=2.0)
+    gate.charge(Usage(cost_usd=1.0))
+    assert gate.snapshot()["pushed"] is True
+
+    gate.set_budget(cap_usd=10.0, reserve_usd=1.0, floor_usd=2.5)  # the row, pushed again
+    gate.set_budget(cap_usd=10.0, reserve_usd=1.0, floor_usd=0.5)  # a floor below base: new period
+    gate.charge(Usage(cost_usd=20.0))  # past the cap
+    snap = gate.snapshot()
+    assert snap["tripped"] is True
+    assert snap["pushed"] is True
 
 
 # ── the first push: a refusal against a cap only the ledger holds waits for it ───────────
@@ -958,6 +1032,26 @@ def test_sidecar_health_reports_the_gate(tmp_path: Path) -> None:
     )
     after = client.get("/sidecar/health", headers=_auth()).json()["spend_gate"]
     assert after["armed"] is True and after["cap_usd"] == 4.0 and after["spent_usd"] == 1.5
+
+
+def test_sidecar_health_and_post_budget_carry_pushed(tmp_path: Path) -> None:
+    """``pushed`` rides the snapshot ``armed`` rides: ``/sidecar/health`` and the push's answer.
+
+    A push the route refuses (400) is not taken, so it leaves ``pushed`` false; the next good push
+    flips it, and the answer to that push already says so.
+    """
+    client = _client(tmp_path)
+    assert client.get("/sidecar/health", headers=_auth()).json()["spend_gate"]["pushed"] is False
+
+    bad = client.post("/budget", json={"cap_usd": 1.0, "reserve_usd": 2.0}, headers=_auth())
+    assert bad.status_code == 400
+    assert client.get("/sidecar/health", headers=_auth()).json()["spend_gate"]["pushed"] is False
+
+    good = client.post(
+        "/budget", json={"cap_usd": 4.0, "reserve_usd": 1.0, "floor_usd": 1.5}, headers=_auth()
+    )
+    assert good.json()["spend_gate"]["pushed"] is True
+    assert client.get("/sidecar/health", headers=_auth()).json()["spend_gate"]["pushed"] is True
 
 
 async def test_a_soft_trip_starts_the_runs_ending_with_mind_budget_cap(tmp_path: Path) -> None:
