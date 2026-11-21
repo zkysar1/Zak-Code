@@ -83,7 +83,7 @@ from zakcode.messages import Message
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.spend_gate import STOP_REASON as SPEND_STOP_REASON
-from zakcode.providers.spend_gate import get_gate
+from zakcode.providers.spend_gate import decide_at_once, get_gate
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import provider_key_env_names, strip_url_credentials
 from zakcode.server.brand import brand_page
@@ -1515,14 +1515,26 @@ def create_app(
         inflight.discard(session_id)
 
     def _turn_agent(
-        session: Session, model: str | None, prompter: PermissionPrompter | None
+        session: Session,
+        model: str | None,
+        prompter: PermissionPrompter | None,
+        *,
+        client_waits: bool = False,
     ) -> AgentLike:
         """The agent one turn runs on, told to skip SessionStart when its chat has already started
-        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks."""
+        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks.
+
+        ``client_waits`` marks a turn a client is held on (``POST /chat``, ``POST /chat/stream``):
+        a quota refusal ends it at once, and no Stop hook is asked to re-enter it (ADR-0393). A
+        turn the workspace drives itself, a say or a wake-up, keeps the paced re-entry
+        (ADR-0181)."""
         agent = resolved_factory(session, model, prompter)
         skip = getattr(getattr(agent, "loop", None), "skip_session_start", None)
         if skip is not None and session.id in started_chats:
             skip()
+        end_on_quota = getattr(getattr(agent, "loop", None), "end_turn_on_quota_refusal", None)
+        if client_waits and end_on_quota is not None:
+            end_on_quota()
         return agent
 
     async def _release_turn_agent(agent: AgentLike | None, session_id: str) -> None:
@@ -1569,7 +1581,9 @@ def create_app(
                 event_bus_registry.get_or_create(session.id).publish(event)
 
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
             tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
@@ -1583,8 +1597,11 @@ def create_app(
                     status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
                 )
             # The turn runs in a task of its own so that Stop can cancel it where it waits, as
-            # the say consumer's Stop cancels a say turn (ADR-0327).
-            turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
+            # the say consumer's Stop cancels a say turn (ADR-0327). This request answers one
+            # client, as /complete does, so the turn's model calls are decided at once and never
+            # held for the vessel's first push: the task copies the context it is created in.
+            with decide_at_once():
+                turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
             stopped = asyncio.ensure_future(stop.wait())
             try:
                 await asyncio.wait({turn, stopped}, return_when=asyncio.FIRST_COMPLETED)
@@ -1664,7 +1681,9 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
         except BaseException:
             _release_session(session.id)
             raise
@@ -1785,9 +1804,14 @@ def create_app(
         # (e.g. a bad request.model) becomes a clean 502, never an unhandled 500.
         try:
             provider = resolved_provider_factory(request.model)
-            result = await complete_structured(
-                provider, messages, system=request.system, schema=request.schema_, max_repairs=1
-            )
+            # A request/response caller decides at once. A refusal against a cap only the spend
+            # gate's ledger holds is a 502 now, not a hold for the vessel's first push: a held
+            # request is still billed when the push lands after its client has gone, and it keeps
+            # the server from stopping inside the supervisor's timeout.
+            with decide_at_once():
+                result = await complete_structured(
+                    provider, messages, system=request.system, schema=request.schema_, max_repairs=1
+                )
         except ProviderError as exc:
             raise HTTPException(
                 status_code=502,
@@ -4431,6 +4455,9 @@ def create_app(
         task.add_done_callback(spend_stop_tasks.discard)
 
     get_gate().set_soft_trip_hook(_spend_soft_trip)
+    # This process serves POST /budget, so the vessel's first push can reach it: the gate holds a
+    # refusal against a cap only its ledger holds for that push. No other process marks its gate.
+    get_gate().expect_push()
 
     @app.post("/budget")
     async def budget(request: BudgetPush) -> dict[str, Any]:

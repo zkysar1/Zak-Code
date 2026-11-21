@@ -24872,6 +24872,147 @@ left on ADR-0108's rail; the loop rail without a loop; an open plan given it), e
 its named test by the host's mutation harness: all twelve were killed, and every file was
 restored byte for byte.
 
+## ADR-0393: a quota refusal ends a turn a client waits on, and no Stop hook is asked to re-enter it
+
+**Context.** `POST /chat` and `POST /chat/stream` hold a request open for the whole turn. A model
+call the spend gate refuses (`SpendCapReached`, a `QuotaExhausted`) ends that turn as
+`provider_error`, and ADR-0181 makes that ending vetoable: a workspace Stop hook that vetoes it
+re-enters the turn up to six times, after sleeps of 15, 30, 60, 120, 240 and 300 seconds (765 s in
+all), with the request open throughout. Measured 2026-11-15 in the third review round of the spend
+gate's first-push hold, through the app under a real server with the veto delays cut to 1 s and 2 s:
+- the call was refused at once and the hook vetoed;
+- the client gave up at 1.36 s;
+- a budget push landed at 1.70 s;
+- the next re-entry was admitted at 3.56 s and billed 0.25 USD, for a client that had left 2.2 s
+  before.
+
+With the shipped delays the request stays open for up to 765 s, past the 120 s stop allowance the
+supervisor gives a run. The spend gate's module docstring said the loop ends the turn on the first
+refusal and never retries it: true of the loop's own retry, false of a Stop hook's veto.
+
+**Decision.**
+- `AgentLoop.end_turn_on_quota_refusal()` marks a loop. On a marked loop, a `provider_error` turn
+  end whose cause is a `QuotaExhausted` (the gate's `SpendCapReached` among them) is not offered to a
+  veto-capable hook: `_fire_turn_end(..., allow_veto=False)` runs the observers, once, and asks no
+  hook. The cause is read where each turn path, buffered and streamed, turns the provider's exception
+  into the turn end.
+- The web app marks the loop of a turn a client waits on: `_turn_agent(..., client_waits=True)` for
+  `POST /chat` and `POST /chat/stream`, and for no other call.
+- Everything else keeps ADR-0181 as it was. A say or a wake-up turn has no client waiting on it, and
+  its re-entry is how it meets a budget that arrives while it waits, so it keeps the re-entry on a
+  quota refusal (decided, and pinned by a test). Every other provider error (a failed request, a
+  context window that compaction could not recover, an unavailable provider) keeps its bounded,
+  paced re-entry on every loop, marked or not.
+- The spend gate's module docstring states which turns end on the first refusal and which a hook may
+  re-enter.
+
+**Alternatives rejected.** Ending the turn when the client disconnects: it needs the disconnect seen
+mid-turn on both endpoints (the buffered one runs its turn in a task of its own, ADR-0327), and a
+client that is only slow would still have its refusal re-entered and billed; a refusal that no wait
+lifts has no reason to be held. Marking every loop the app builds: a say turn's veto is how a served
+loop crosses a refusal that a budget push then lifts, and no client is held by it. Testing for
+`SpendCapReached` alone: any `QuotaExhausted` is the same refusal, a billing action outside the
+loop's reach. Refusing the veto in the hook layer: the hook is the workspace's, and whether a stop
+is final is the loop's to say.
+
+**Not covered.** `model_failover` can still swap the provider on a quota refusal before the turn
+ends. `POST /complete` runs no loop, so a refusal there was already a 502 at once and is unchanged.
+A refusal before the gate's first budget push still reads as permanent exhaustion: telling a caller
+"retry shortly" from "out of budget" is a separate change (a distinct message, or a field in the
+spend-gate snapshot). A client that leaves during a re-entry that is not a quota refusal still has
+that re-entry run. A Stop hook is not asked on such a turn end, so it cannot arm or cancel the
+session's wake-up there (ADR-0102); a wake-up armed earlier stands. Asking the hook and then
+ignoring its veto was not taken: a block is the hook's claim that the turn goes on, and nothing
+would tell it that this one did not. The mark has no off switch: a custom agent factory that hands
+one agent to several turns would carry it from a client-waited turn into a say turn. The default
+factory builds an agent for each turn, as ADR-0342's skip of the start hooks relies on too.
+
+**Not verified.** The reproduction under a real server, with the gate armed and a budget push, was
+not re-run after the change: the tests serve a real agent through the app's test client, over a
+provider that raises `SpendCapReached` and a hook that vetoes every ending. To read after the roll:
+a refused `POST /chat` answers at once, and the spend-gate snapshot's `refused_calls` rises by one
+per refused request instead of by one per re-entry.
+
+**The proof.** `tests/test_turn_end_loop.py` on both turn paths: a marked loop ends at the first
+refusal, for `SpendCapReached` and for a plain `QuotaExhausted`, with one provider call, no hook
+asked, no wait, and the provider's own text as the error; the observers still hear the turn end once;
+any other provider error on a marked loop (a failed request, a context window that compaction could
+not recover) keeps its six paced re-entries, 15 s to 300 s; an unmarked loop keeps the whole 765 s on
+a quota refusal (the decision above); and `_fire_turn_end(allow_veto=False)` alone, with the same
+call without the flag as its positive control. `tests/test_server_quota_refusal.py` serves a real
+agent per turn over a provider the gate refuses and a hook that vetoes every ending: `POST /chat`
+and `POST /chat/stream` end after one call with the hook never asked, and a say turn on the same
+refusal makes seven calls and asks the hook six times. With the mark made a no-op, which is the
+behaviour before this change (the veto delay patched to zero), six of the thirteen loop tests fail,
+the four that count calls on `assert 7 == 1`. Thirteen single-site mutants, each run against its
+tests by the host's mutation harness: the mark a no-op; each of the two predicate sites taking any
+provider error, and each narrowed to `SpendCapReached` alone; each of the two veto call sites left
+asking; the gate ignoring the flag; the streamed path's declaration removed; `POST /chat` and
+`POST /chat/stream` each left unmarked; a say turn marked; no turn marked. All thirteen were killed,
+each by the tests meant to, and every file was restored byte for byte. The one line no test can tell
+from its absence is the buffered path's `refusal_ends_turn = False` at its context-window site: the
+flag is False there already, and a True ends the turn, so the line is there for the reader.
+
+## ADR-0394: a user rule pinned with alwaysApply is not displaced by a workspace rule of the same name
+
+**Context.** ADR-0044 lets a deployment keep text the model must not replace in an `alwaysApply: true`
+rule in the user rules directory (`~/.config/zakcode/rules/`), outside the workspace where the file
+tools do not write, and names one limit: a workspace rule of the same name shadows it, so the
+deployment moves any same-named workspace file aside at each start. The loader gives a rule the name
+in its frontmatter `name` before its file stem and lets a later root win (bundled, user,
+`<workspace>/.zakcode/rules`, `<workspace>/.claude/rules`). The independent re-review of PR 857
+measured the consequence on head 54ebad9cc377, in a
+scratch workspace: a `save_rule` call carrying a pinned card's name is saved into `.zakcode/rules`,
+and the next Agent on that workspace holds the workspace rule (`always_apply` false) with the card's
+text and its help-line figure absent from the system prompt; `write_file` into either workspace rules
+dir does the same. The move-aside runs when the deployment's bootstrap runs, and a process restart
+does not run it, so the window opens at the model's write and stays open until the next bootstrap. A
+move-aside keyed on a filename never sees a file of another name that carries `name: <card>`.
+
+**Decision.**
+- `discover_rules` keeps a rule from the user root that carries `alwaysApply: true` against a rule of
+  the same name from either project root (`.zakcode/rules`, `.claude/rules`). The test is the rule's
+  name, as the registry keys it, so a differently named file with the card's `name:` is refused too.
+- The refused file stays on disk and is recorded in the returned errors, and so on `Agent.rule_errors`,
+  under a path-qualified key (`.zakcode/rules/<file>.md`, which cannot overwrite a parse error kept
+  under a bare filename), with a log warning. Nothing is deleted or moved.
+- Everything else keeps its order. An unpinned user rule is still overridden by a project rule; a
+  pinned rule in a project root is still overridden by a later project root; two files of one name
+  inside the user root keep their order; a project rule with a new name loads beside the card.
+- The module docstring, `discover_rules` and `project_rules_dir` state the exception.
+
+**Alternatives rejected.** A pre-start step on the host's service unit that moves the files aside: it runs
+once per process start, so the next Agent of a running process still reads the shadow, and it is keyed
+on the filename. A `save_rule` that refuses a name another root holds pinned: `write_file` reaches the
+same directories with no rule tool in the way, so only the loader sees both. Protecting every pinned
+rule in every root: a checked-in project rule that pins itself is an operator's file in the workspace
+and keeps overriding an earlier project root, as documented.
+
+**Consequences.** From the release that carries this change, a deployment no longer needs the
+move-aside to keep a pinned card in the prompt. The deployment's move-aside stays harmless and still
+covers builds that predate this one. A `save_rule` call under a pinned card's name still reports the
+rule saved, because the tool writes the file and does not read the pins; the refusal is read from
+`Agent.rule_errors` and the log. ADR-0044's closing limit (a same-named workspace rule shadows a pinned
+user rule) no longer holds on such a build.
+
+**The proof.** `tests/test_rules_pinned_shadow.py`, 11 tests. Before the loader change, 7 of the first 9
+failed, each on the held rule's body being the shadow's, and 2 passed as the controls they are: a user
+rule that is not pinned is still overridden, and a new name loads beside the card. The failing seven
+are the loader on both project roots, the card name carried by a differently named file, and the next
+Agent's stable prompt tier for a rule written by `save_rule` and by a plain file write, under the
+default and the lean render, which must carry the card's text and both of its figures (988, 12356) and
+not the shadow's. Two controls were added for the guard's scope: a pinned project rule overridden by a
+later project root, and two user-root files of one name in their old order. Six single-site mutants,
+each run against the file by the host's mutation harness: the guard never firing, its user-root check
+dropped, its project-roots-only check dropped, its `always_apply` test dropped, the refused file still
+registered, and the error keyed by bare filename. All six were killed, by 7, 1, 1, 1, 7 and 3 of the
+tests, each by the tests meant to, and the file was restored byte for byte.
+
+**Not covered.** A card pinned in the bundled root, and the other roots a pinned rule could sit in, are
+unchanged. A skill of the same name as another skill follows the same later-wins order by name; this
+change does not touch skills. A deployment keeps the build it pins until the pin is moved, and no
+running deployment carries this change until then.
+
 ## ADR-0385: on a route that is Anthropic by name the conversation takes a cache breakpoint of its own, placed where the per-call tail cannot reach it
 
 **Status:** Accepted (2026-11-16). Supersedes the line of ADR-0298 that declined a rolling breakpoint on the
