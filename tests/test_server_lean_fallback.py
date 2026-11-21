@@ -229,7 +229,7 @@ def _framework_journal(root: Path, day: str, text: str, agent: str = "res") -> P
 
 
 def test_workspace_summary_reads_the_residents_framework_journal(tmp_path: Path) -> None:
-    # g-374-2504: a resident that journals through the framework has neither root journal file.
+    # A resident that journals through the framework has neither root journal file.
     _framework_journal(tmp_path, "2026-11-18", "older day\n")
     _framework_journal(tmp_path, "2026-11-19", "NEWEST day\n" + "x" * 6000)
     body = _client(tmp_path).get("/workspace/summary").json()

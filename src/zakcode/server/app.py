@@ -2433,7 +2433,7 @@ def create_app(
 
         When NEITHER exists, fall back to the resident's own framework journal: the newest dated
         narrative file ``agents/<agent>/journal/YYYY/MM/YYYY-MM-DD.md`` under the workspace, with
-        the same 5000-character cap and the same degrade-to-empty rule (g-374-2504). A resident
+        the same 5000-character cap and the same degrade-to-empty rule. A resident
         that journals through the framework otherwise showed an empty journal in the view.
         """
         journal = ""
