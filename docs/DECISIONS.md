@@ -25143,6 +25143,11 @@ put the pane in copy mode at scroll position 10, and the visible window of the m
 not move. So a message taller than the pane could not be scrolled, and the wheel took the keyboard with it:
 in copy mode typed keys go to tmux until `q`.
 
+A paste is the other case. A 30-line bracketed paste into the real cockpit's box (tmux `paste-buffer -p`, on
+the same client) is collapsed to `▸ ⟪pasted #1 · 30 lines⟫`, and the box stays at 5 rows, so there is no tall
+message to scroll. On the unchanged build three wheel-ups over that box still put it in copy mode (scroll
+position 0, over an empty scrollback), and typed keys go to tmux until `q`.
+
 Decision. The prompt session is built with `mouse_support=True` (`cli/saybox.py`). The box asks its terminal
 for mouse reporting while it reads a message and drops it when the prompt ends (prompt_toolkit enables it at
 the first paint and disables it when the renderer resets). tmux then forwards the wheel to the prompt,
@@ -25154,6 +25159,9 @@ the same three wheel-up events leave the pane out of copy mode and move its visi
 30 up to lines 13 to 27; the chat pane enters copy mode as before, at scroll position 10 over the stand-in's
 history in (A) and at 0 over the real chat pane's empty history in (B); in (B) the events left the workspace
 with no `.say` and no `.interrupt` file, so they carried no message and no stop request.
+
+The same paste after the change: three wheel-ups leave the box out of copy mode and its one-line token as it
+was, so the wheel no longer takes the keyboard away from a pasted message either.
 
 Consequences. With mouse reporting on, a plain click-and-drag over the box is delivered to the prompt and
 does not start a tmux selection; select text in the box with Shift held (a terminal that reports the mouse
