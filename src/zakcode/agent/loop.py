@@ -261,7 +261,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins.read_rule import rule_text
+from zakcode.tools.builtins.read_rule import rule_text, would_point
 from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
@@ -5112,19 +5112,29 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only or stuck.last_was_print_only:
+        if (
+            stuck.last_outcome_was_receipt
+            or stuck.last_was_plan_only
+            or stuck.last_was_print_only
+            or stuck.last_was_lookup_only
+        ):
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
             # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
             # and any call to another tool is what ends that run. ADR-0373: so does a run of prints.
+            # ADR-0399: and a run of asks for rules the model already holds.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
                         (
-                            "you have been printing fixed strings, and the last were not executed. "
+                            "you have been asking read_rule for rules already in your context, "
+                            "and the last were not executed. A rule lookup is not that work. "
+                            if stuck.last_was_lookup_only
+                            else "you have been printing fixed strings, and the last were not "
+                            "executed. "
                             if stuck.last_was_print_only
                             else "you have been sending only plan calls, and the last were not "
                             "executed. "
@@ -7556,24 +7566,34 @@ class AgentLoop:
         """
         current = self.session.task_network.current()
         step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
-        printed = stuck.refuses_print_only(calls)
-        run, did = (
-            (stuck.print_only_run, "only printed a fixed string")
-            if printed
-            else (stuck.plan_only_run, "called only the plan tools")
-        )
+        # The loop refuses a lookup completion only once _lookups_held has passed (ADR-0399), and
+        # a batch of read_rule calls is neither plan-only nor print-only, so this test suffices.
+        if stuck.lookup_only_due(calls):
+            run, did = stuck.lookup_only_run, "only asked read_rule for rules already held"
+            output = stuck.lookup_only_message(step)
+        elif stuck.refuses_print_only(calls):
+            run, did = stuck.print_only_run, "only printed a fixed string"
+            output = stuck.print_only_message(step)
+        else:
+            run, did = stuck.plan_only_run, "called only the plan tools"
+            output = stuck.plan_only_message(step)
         self._note(
             "intervention",
             f"response {run + 1} in a row {did}",
             kind="plan_only_bound",
         )
-        output = stuck.print_only_message(step) if printed else stuck.plan_only_message(step)
         return [
             ToolResultBlock(
                 tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
             )
             for call in calls
         ]
+
+    @staticmethod
+    def _lookups_held(calls: list[ToolCall], ctx: ToolContext) -> bool:
+        """True when ``read_rule`` would answer every call with a pointer (ADR-0399): the
+        lookup-only bound refuses an ask only for rules the model holds, never a first read."""
+        return bool(calls) and all(would_point(call.arguments, ctx) for call in calls)
 
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
@@ -10402,10 +10422,16 @@ class AgentLoop:
             # it never aborts the turn). A wholly read-only batch runs concurrently.
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
             # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
-            # unexecuted instead; its refusals feed the ladder below like any results.
-            plan_only_refused = stuck.refuses_plan_only(
-                result.tool_calls
-            ) or stuck.refuses_print_only(result.tool_calls)
+            # unexecuted instead; its refusals feed the ladder below like any results. So do
+            # the print-only (ADR-0373) and lookup-only (ADR-0399) bounds.
+            plan_only_refused = (
+                stuck.refuses_plan_only(result.tool_calls)
+                or stuck.refuses_print_only(result.tool_calls)
+                or (
+                    stuck.lookup_only_due(result.tool_calls)
+                    and self._lookups_held(result.tool_calls, ctx)
+                )
+            )
             if plan_only_refused:
                 result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
             else:
@@ -12503,8 +12529,11 @@ class AgentLoop:
                 result_blocks: list[ToolResultBlock] = []
                 # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
                 # completion in a row is answered unexecuted, and its refusals feed the ladder.
-                plan_only_refused = stuck.refuses_plan_only(tool_calls) or stuck.refuses_print_only(
-                    tool_calls
+                # So do the print-only (ADR-0373) and lookup-only (ADR-0399) bounds.
+                plan_only_refused = (
+                    stuck.refuses_plan_only(tool_calls)
+                    or stuck.refuses_print_only(tool_calls)
+                    or (stuck.lookup_only_due(tool_calls) and self._lookups_held(tool_calls, ctx))
                 )
                 refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
                 for index, call in enumerate(tool_calls):

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -154,6 +155,23 @@ class TaskTool(Tool):
                     )
             prepared.append((type_name, prompt))
 
+        # ADR-0397: a sub-agent has its own task table, so it can neither wait on, read the
+        # status of, nor stop a background command of THIS session (its TaskOutput answers that
+        # no such task exists). A delegation that names one still running is refused before any
+        # child starts; the parent waits with TaskOutput itself, which is one call.
+        named = _running_background_task_named(ctx, [p for _t, p in prepared])
+        if named is not None:
+            i, task_id, label, output_file = named
+            return ToolResult.error(
+                f"task[{i}] names background task {task_id} of THIS session, still running "
+                f"({label}). A sub-agent has its own task table: it cannot wait on, read or stop "
+                f"that task (its TaskOutput answers that no such task exists). Wait for it here: "
+                f'TaskOutput(task_id="{task_id}", timeout=600000) returns when it exits; its '
+                f"output is in {output_file}. Delegate work on that output afterwards if you "
+                "still need to.",
+                data={"refused": "names_own_running_background_task", "task_id": task_id},
+            )
+
         # A batch identical to one that ran to its end in this turn gets a pointer to that result
         # while the result is still in the conversation (ADR-0382); rerun=true runs it anyway.
         key = _batch_key(prepared)
@@ -213,6 +231,24 @@ class TaskTool(Tool):
                 "child_cost_usd": total_cost,
             },
         )
+
+
+def _running_background_task_named(
+    ctx: ToolContext, prompts: list[str]
+) -> tuple[int, str, str, str] | None:
+    """The first prompt that names a STILL-RUNNING background task of this session, by its id
+    (a whole token) or its output file, as ``(index, id, label, output_file)``; else ``None``.
+    A finished task is not refused: its output file is readable from a child (ADR-0397)."""
+    tasks = getattr(ctx, "background_tasks", None)
+    if tasks is None:
+        return None
+    running = [t for t in tasks.records() if tasks.status(t)[0] == "running"]
+    for i, prompt in enumerate(prompts):
+        for t in running:
+            whole = rf"(?<![0-9A-Za-z_-]){re.escape(t.id)}(?![0-9A-Za-z_-])"
+            if re.search(whole, prompt) or (t.output_file and t.output_file in prompt):
+                return i, t.id, t.label, t.output_file
+    return None
 
 
 __all__ = ["TaskTool"]
