@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 import typer
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from zakcode.cli import cockpit
 from zakcode.cli._theme import ZAK_THEME
+from zakcode.cli.saybox import SayBoxEditor
 from zakcode.session.say_inbox import BUSY_STALE_SECONDS, busy_path, served_path
 
 
@@ -109,6 +112,13 @@ def test_cockpit_creates_session_in_inheritance_safe_order(
     assert resize[-1] == str(cockpit._SAY_BOX_HEIGHT) and _target(resize) == _FakeTmux.BOX
     # stdin is not a tty under pytest, so no attach happened.
     assert "attach-session" not in subs
+
+
+def test_cockpit_turns_tmux_mouse_on_for_its_session(fake_tmux: _FakeTmux, tmp_path: Path) -> None:
+    """The wheel is tmux's to route: over the chat pane it scrolls that pane's history, and over the
+    say box it goes to the box's own prompt (ADR-0403). Both rest on this one session option."""
+    cockpit.cockpit(session="agentbox", workspace=tmp_path, ledger=None, attach=True)
+    assert ["/usr/bin/tmux", "set-option", "-t", "agentbox", "mouse", "on"] in fake_tmux.calls
 
 
 def test_cockpit_targets_its_window_and_panes_by_id_never_by_number(
@@ -715,6 +725,37 @@ def test_say_box_prompt_uses_the_given_editor(tmp_path: Path) -> None:
     kind, line = cockpit._say_box_prompt(tmp_path / ".say", tmp_path / ".interrupt", "carry", ed)
     assert (kind, line) == ("line", "from editor")
     assert ed.defaults == ["carry"]
+
+
+class _MouseSpyOutput(DummyOutput):
+    """A terminal that notes when the program asks for mouse reporting and when it lets go."""
+
+    def __init__(self) -> None:
+        self.mouse: list[str] = []
+
+    def enable_mouse_support(self) -> None:
+        self.mouse.append("on")
+
+    def disable_mouse_support(self) -> None:
+        self.mouse.append("off")
+
+
+def test_say_box_asks_its_terminal_for_mouse_reporting(tmp_path: Path) -> None:
+    """The box's prompt requests mouse reporting while it reads and drops it when it is done.
+
+    tmux with ``mouse on`` gives the wheel to the program in a pane only if that program asked for
+    mouse reporting. Otherwise tmux scrolls the pane's scrollback of earlier repaints, and the
+    message being composed stays where it was (ADR-0403).
+    """
+    terminal = _MouseSpyOutput()
+    with create_pipe_input() as pipe:
+        editor = SayBoxEditor(
+            tmp_path / ".say", tmp_path / ".interrupt", input=pipe, output=terminal
+        )
+        pipe.send_text("hello\r")
+        assert editor.prompt() == ("line", "hello")
+    assert terminal.mouse[:1] == ["on"]
+    assert terminal.mouse[-1:] == ["off"]
 
 
 def test_say_box_loop_routes_status_into_the_editor_toolbar(

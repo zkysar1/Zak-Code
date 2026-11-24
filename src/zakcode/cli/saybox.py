@@ -210,6 +210,10 @@ class SayBoxEditor:
         self._session: Any = PromptSession(
             key_bindings=bindings,
             multiline=True,
+            # Ask the terminal for mouse reporting: tmux (mouse on) then hands the wheel to this
+            # prompt, which scrolls the message being composed. Without it tmux keeps the wheel
+            # and scrolls the pane's scrollback of earlier repaints instead (ADR-0403).
+            mouse_support=True,
             history=history,
             auto_suggest=AutoSuggestFromHistory(),
             prompt_continuation=lambda width, line_number, wrap_count: [

@@ -280,7 +280,11 @@ The pane starts at 5 rows and **grows with the text** (wrapped rows + toolbar + 
 breath, capped at 16) then shrinks back after each send; a token keeps a paste at one
 row. The last send's status (`✓ sent (12 lines) 14:22`, busy, stop sent) lives in a dim
 bottom toolbar beside the key help, never in the pane's scrollback — which is cleared
-on every prompt so a wheel-up in the box shows nothing stale. A line that went
+on every prompt. The box also asks its terminal for mouse reporting (ADR-0403): with the
+cockpit's tmux `mouse on`, the wheel over the box scrolls the message being composed,
+while the wheel over the chat pane still enters tmux's copy mode on the chat history
+(`q` snaps back). A plain drag over the box goes to the box, so select text there with
+Shift held. A line that went
 somewhere other than the chat pane says where: `✓ sent → the running turn` while a turn
 in another process holds the inbox (ADR-0060), `✓ sent → the web app's chat` while
 `zakcode webapp` serves the workspace, and a stop there reads `stop signal sent — the
