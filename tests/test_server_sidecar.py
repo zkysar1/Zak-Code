@@ -56,7 +56,8 @@ def _client(workspace: Path, *, auth_token: str | None = None) -> TestClient:
     return TestClient(_make_app(workspace, auth_token=auth_token))
 
 
-#: /sidecar/health's spend_gate before the vessel has pushed a budget: armed false, all zeros.
+#: /sidecar/health's spend_gate before the vessel has pushed a budget: armed false, not pushed,
+#: all zeros.
 _UNARMED_SPEND_GATE = {
     "armed": False,
     "cap_usd": 0.0,
@@ -67,6 +68,7 @@ _UNARMED_SPEND_GATE = {
     "refused_calls": 0,
     "unpriced_calls": 0,
     "ledger_ok": True,
+    "pushed": False,
 }
 
 
