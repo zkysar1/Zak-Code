@@ -25216,6 +25216,53 @@ workspace holding a PDF offered `read_pdf` and not the others; and a hidden read
 delegate reaching its own refusal for a `.md` path, not "unknown tool". One mutation (the delegate's
 call removed) fails both menu tests.
 
+## ADR-0404: a rung that no failing call tripped seeds no "keeps failing" step
+
+Status: accepted. 2026-11-25. Amends ADR-0057 (decompose-on-stuck) for the rungs ADR-0038 and
+ADR-0209 trip, and carries ADR-0209's lesson (a count scoped to the turn misreads a turn that is the
+whole run) to the steps rung 1 seeds.
+
+Context. Rung 1 seeds its "keeps failing" steps from the tracker's failure counts
+(`error_signatures`, `failing_tools`) whatever tripped it. Those counts span the turn: only a
+turn-end veto or the step-back rung clears them. A served session's turn runs for hours, so when a
+re-measured result trips rung 1, the counts hold failures the model moved past long before, and
+the plan gets "Investigate: why `Bash` keeps failing across 11 attempts", whose note says the
+arguments changed each time and the call still failed, then "Decide: name the assumption the failed
+steps share" -- about a rung that no failing call tripped.
+
+What was measured, before building. Eleven served worker sessions on one local model, read from
+their transcripts (tool names, times, `is_error` flags, fixed rail and step labels and counts
+only), 24 h to 2026-11-25 07:15. Rung 1 fired 149 times: 120 on a re-measured result, 13 on a
+failing tool, 7 on a run of rule lookups, 4 on plan-only runs, 1 on a receipt and 4 on wording the
+probe did not sort. In the plan redrawn right after 118 fresh re-measure rungs, 28 carried a "keeps
+failing" step built from the turn's failure counts: the batch that tripped 23 of them had no failed
+result at all, and the other 5 only failed ones. Every re-measure rung closed on "the failed
+steps". The trip itself mostly stands: of 121 re-measure rungs from 07:29, in 55 the same result
+came back three times or more within one compaction segment, in 20 it straddled a compaction, and
+in 46 the repeat could not be rebuilt from the transcript. A seeded step was marked done in 32 of
+the 149 rungs.
+
+Decision.
+- `StuckTracker.last_had_failures`: the most recent observation counted a batch that only failed or
+  a call that failed again (`SIG_ALL_ERRORS`, `SIG_REPEATED_FAILURE`).
+- `_seed_investigation_steps` seeds the "keeps failing" steps only when it is true, and its closing
+  step reads "Decide: name the assumption the failed steps share and verify it" then and "...the
+  last steps share..." otherwise.
+- The failure counts, the rail's diagnosis and every rung threshold are unchanged, and a rung that
+  failing calls tripped seeds exactly what it did before.
+
+Not done, and not measured. The counts stay turn-scoped, so a rung that failing calls trip can still
+name failures from earlier in the turn beside the ones that tripped it; scoping them per lap, as
+ADR-0209 did for outcomes, would change the repeated-failure signal itself and is left alone. The
+rail still asks for read-only probes before the original step is retried. The trial reads, on two
+sessions against their own previous window and the other sessions, the re-measure rungs that seed a
+failure step (none expected) and the tool calls from a rung to the next call that is not a read.
+
+The proof. `tests/test_stuck_decompose.py` pins a turn whose two early failures are followed by a
+re-measured result: rung 1 seeds the re-measurement step and "the last steps", and no step says a
+tool keeps failing; and a turn of failing calls still seeding "keeps failing across 3 attempts" and
+"the failed steps". Two mutations (the gate always open, always shut) each fail the file.
+
 ## ADR-0407: a shell check run again and again, answered the same, is a stuck signal
 
 Status: accepted. 2026-11-25. Extends ADR-0038 (re-observing a known result is not progress) to a

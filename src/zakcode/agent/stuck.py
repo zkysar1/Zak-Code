@@ -437,6 +437,13 @@ class StuckTracker:
         return self._poll_run
 
     @property
+    def last_had_failures(self) -> bool:
+        """Whether failing calls were part of what the most recent :meth:`observe` counted: a
+        batch that only failed, or a call that failed again (ADR-0404). The failure counts
+        span the turn, so they say why THIS rung was reached only when this is true."""
+        return SIG_ALL_ERRORS in self._last_signals or SIG_REPEATED_FAILURE in self._last_signals
+
+    @property
     def lookup_only_run(self) -> int:
         """How many completions in a row only asked ``read_rule`` for rules already held, each
         answered by a pointer (ADR-0399); 0 after any other call or answer."""
