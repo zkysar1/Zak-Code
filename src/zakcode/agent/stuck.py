@@ -890,7 +890,7 @@ class StuckTracker:
                 f"You have now run the same check {self._poll_run} times in a row, and it "
                 "answered the same each time apart from its numbers. Each run is a model call "
                 "that learns nothing new. If you are waiting for a background task you "
-                "started, wait for it with TaskOutput and a long timeout, not by checking: "
+                "started, wait for it by calling TaskOutput with timeout=600000, not by checking: "
                 "it returns when the task exits or the timeout passes. If you are waiting "
                 "for something outside this session, do not wait by checking: arm a wake-up "
                 "for when it can change (ScheduleWakeup) and end your turn. Otherwise act on "

@@ -30,6 +30,7 @@ from zakcode.agent.stuck import (
     poll_answer,
     poll_command,
 )
+from zakcode.background import MAX_BLOCK_MS
 from zakcode.config import PermissionTier, Settings
 from zakcode.events import AgentDone, AgentStatus
 from zakcode.messages import ToolResultBlock
@@ -498,6 +499,23 @@ def test_every_call_of_a_batch_is_compared_with_its_own_command() -> None:
         assert tracker.poll_run == 1 and not tracker.last_was_poll
 
 
+def test_a_batch_whose_calls_trade_answers_or_commands_is_no_longer_the_same_check() -> None:
+    # The same two commands and the same two answers, paired the other way round: the first call
+    # now has the answer the last one had, or the command the last one ran. Each call is compared
+    # with its own, so no count of the commands and answers on their own sees the change.
+    still, moved = "still running", UNCHANGED
+    control, swapped_answers, swapped_commands = _tracker(), _tracker(), _tracker()
+    for n in range(POLL_AT - 1):
+        for tracker in (control, swapped_answers, swapped_commands):
+            _pair(tracker, n, first_answer=still, last_answer=moved)
+    _pair(control, 9, first_answer=still, last_answer=moved)
+    _pair(swapped_answers, 9, first_answer=moved, last_answer=still)
+    _pair(swapped_commands, 9, first="b", last="a", first_answer=still, last_answer=moved)
+    assert control.last_was_poll  # the control: nothing traded, the sixth completion fires
+    for tracker in (swapped_answers, swapped_commands):
+        assert tracker.poll_run == 1 and not tracker.last_was_poll
+
+
 def test_the_poll_never_lowers_a_rung_that_a_repeated_outcome_has_earned() -> None:
     # Each answer is long enough to count as an outcome, so one result comes back six times and
     # the ladder is at its stop by the sixth. The poll signal fires there too, and would put the
@@ -809,15 +827,19 @@ def test_the_nudge_says_what_was_counted_and_what_to_do_instead() -> None:
     nudge = tracker.nudge_message()
     assert nudge.startswith("You have now run the same check 6 times in a row")
     assert "answered the same each time apart from its numbers" in nudge
-    # two ways to wait without checking, each for its own case and in the tools' own words
+    assert "Each run is a model call that learns nothing new" in nudge
+    # two ways to wait without checking, each for its own case and in the tools' own words, the
+    # first with the longest wait the tool takes (it waits 30 seconds when its call names none)
     assert (
-        "a background task you started, wait for it with TaskOutput and a long timeout, not by "
-        "checking: it returns when the task exits or the timeout passes"
+        "a background task you started, wait for it by calling TaskOutput with "
+        f"timeout={MAX_BLOCK_MS}, not by checking: it returns when the task exits or the "
+        "timeout passes"
     ) in nudge
     assert (
         "something outside this session, do not wait by checking: arm a wake-up for when it "
         "can change (ScheduleWakeup) and end your turn"
     ) in nudge
+    assert nudge.endswith("Otherwise act on what the check showed.")
     for wrong in ("failed", "stuck", "same tool result", "plan tools"):
         assert wrong not in nudge  # said only what the harness knows
     for n in (7, 8):  # the number is the run's length, not the threshold
@@ -868,9 +890,12 @@ def _shell_loop(
     *,
     max_iterations: int = 15,
     tool: Tool | None = None,
+    also: Tool | None = None,
 ) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(tool or _Shell())
+    if also is not None:
+        registry.register(also)
     return AgentLoop(
         provider,
         registry,
@@ -962,7 +987,13 @@ def test_a_check_that_failed_each_time_is_still_given_the_one_decision_step(tmp_
     assert [t.title for t in steps] == [DECIDE]
     note = steps[0].note
     assert "another run adds nothing" in note
-    assert "called TaskOutput with a long timeout on a background task you started" in note
+    assert (
+        "Done when you have either done the next piece of work its answer calls for, or waited "
+        "without checking"
+    ) in note
+    assert (
+        f"called TaskOutput with timeout={MAX_BLOCK_MS} on a background task you started"
+    ) in note
     assert (
         "for anything outside this session, armed a wake-up (ScheduleWakeup) for when it can "
         "change and ended your turn saying what you are waiting for"
@@ -1011,3 +1042,81 @@ def test_a_model_that_works_between_its_checks_is_never_told(
         asyncio.run(loop.arun_turn("watch the build"))
     assert provider.calls == 3 * POLL_AT + 1  # the floor: the whole script ran
     assert not any("same check" in r for r in _rails(loop))
+
+
+# ── the first way to wait, on a task that stays silent ──────────────────────
+
+
+#: What the tool that waits on a background task answers while the task is still running.
+STILL_RUNNING = (
+    "[task bg-1] status: running\ncommand: sleep 7200\noutput file: /tmp/bg-1.out\n\n"
+    "(no output yet)"
+)
+
+
+class _TaskOutput(Tool):
+    """Stands in for the tool that waits on a background task that stays silent: after its whole
+    timeout it answers, in the same words each time, that the task is still running."""
+
+    spec = ToolSpec(
+        name="TaskOutput",
+        description="waits for a background task",
+        required_permission=PermissionTier.READ_ONLY,
+    )
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.ok(STILL_RUNNING)
+
+
+def _waits_on_a_silent_task(
+    tmp_path: Path, *, streamed: bool, timeout_changes: bool
+) -> tuple[str, list[str]]:
+    """The stop reason and what each wait answered, for a model that does what the nudge says:
+    six checks, then a wait on a background task that stays silent, again and again."""
+
+    def script(n: int) -> LLMResult:
+        if n <= POLL_AT:
+            return LLMResult(tool_calls=[_c(f"c{n}", "Bash", command=_status_check(n))])
+        timeout = MAX_BLOCK_MS - 1000 * (n - POLL_AT) if timeout_changes else MAX_BLOCK_MS
+        return LLMResult(tool_calls=[_c(f"c{n}", "TaskOutput", task_id="bg-1", timeout=timeout)])
+
+    loop = _shell_loop(
+        _ScriptByCallProvider(script), tmp_path, max_iterations=30, also=_TaskOutput()
+    )
+    if streamed:
+        events = _drain(loop, "wait for the build job to finish")
+        stop_reason = next(e for e in events if isinstance(e, AgentDone)).stop_reason
+    else:
+        stop_reason = asyncio.run(loop.arun_turn("wait for the build job to finish")).stop_reason
+    results = [
+        block.output or ""
+        for message in loop.session.messages
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+    return stop_reason, results[POLL_AT:]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+def test_waits_that_come_back_the_same_are_refused_and_end_the_turn_the_known_cost(
+    tmp_path: Path, streamed: bool
+) -> None:
+    # The nudge's first way, followed for a task that stays silent past its timeouts: the wait
+    # answers in the same words each time, so the exact-repeat guard refuses the third, lets two
+    # more run and ends the turn as `doom_loop` at the sixth. The cost is named in the ADR.
+    stop_reason, waits = _waits_on_a_silent_task(tmp_path, streamed=streamed, timeout_changes=False)
+    assert stop_reason == "doom_loop"
+    assert [wait == STILL_RUNNING for wait in waits] == [True, True, False, True, True, False]
+    assert waits[2].startswith("Not executed: you repeated this exact action")
+    assert waits[5].startswith("Not executed: this exact tool batch has been repeated")
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+def test_waits_with_a_new_timeout_each_time_are_read_by_the_ladder_the_known_cost(
+    tmp_path: Path, streamed: bool
+) -> None:
+    # A new timeout is a new call, so the exact-repeat guard refuses none of the six waits, and
+    # the ladder, which reads the same result, ends the turn as `stuck`.
+    stop_reason, waits = _waits_on_a_silent_task(tmp_path, streamed=streamed, timeout_changes=True)
+    assert stop_reason == "stuck"
+    assert waits == [STILL_RUNNING] * 6
