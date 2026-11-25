@@ -345,10 +345,46 @@ def _names_google(failed: ImportError) -> bool:
     one it was raised over. A Vertex call without the stack raises ``No module named 'google'``,
     and litellm raises its own ``ImportError`` over it, "Google Cloud SDK not found", which names
     no module."""
-    for err in (failed, failed.__cause__, failed.__context__):
-        if isinstance(err, ImportError) and (err.name or "").split(".")[0] == "google":
-            return True
-    return False
+    return any(_is_google_import(err) for err in (failed, failed.__cause__, failed.__context__))
+
+
+#: Root modules of the Vertex stack the ``google`` extra brings: ``google`` (auth, the cloud SDK)
+#: and ``vertexai`` (the SDK litellm imports for Vertex's partner models: Claude, Mistral, Llama).
+_GOOGLE_ROOTS = frozenset({"google", "vertexai"})
+
+
+def _is_google_import(err: BaseException | None) -> bool:
+    """Whether ``err`` is an ImportError for a module rooted at ``google`` or ``vertexai``."""
+    return isinstance(err, ImportError) and (err.name or "").split(".")[0] in _GOOGLE_ROOTS
+
+
+#: How many links back from a provider error a failed Google import is looked for.
+_GOOGLE_CHAIN_LINKS = 4
+
+
+def _google_import_behind(exc: BaseException) -> ImportError | None:
+    """The failed Google import a few links behind ``exc``, else ``None``.
+
+    A Vertex partner model without the stack raises litellm's BadRequestError over its own
+    VertexAIError over ``No module named 'vertexai'``: two links back, which ``_failed_import``
+    does not read. Only an import rooted at ``google`` or ``vertexai`` is taken from that far, so
+    an unrelated import that failed further back in a real outage's chain still does not make the
+    outage a broken install (ADR-0338).
+    """
+    seen = {id(exc)}
+    frontier = [exc]
+    for _ in range(_GOOGLE_CHAIN_LINKS):
+        behind: list[BaseException] = []
+        for err in frontier:
+            for link in (err.__cause__, err.__context__):
+                if link is None or id(link) in seen:
+                    continue
+                seen.add(id(link))
+                behind.append(link)
+                if isinstance(link, ImportError) and _is_google_import(link):
+                    return link
+        frontier = behind
+    return None
 
 
 def _is_ollama_model(model: str) -> bool:
@@ -1802,6 +1838,8 @@ class LiteLLMProvider(Provider):
         message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         failed_import = _failed_import(exc)
+        if failed_import is None or not _names_google(failed_import):
+            failed_import = _google_import_behind(exc) or failed_import
         if failed_import is not None and _names_google(failed_import):
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
             # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
