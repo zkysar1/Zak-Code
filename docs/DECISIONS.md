@@ -25329,3 +25329,209 @@ it once; and the command readers, where a heredoc's body and quoted text are dat
 single-site mutations each fail their own test while an unrelated test file stays green, and four
 more for the amendment (either write keeping the count, a write silencing the stretch, one wording
 for both) each fail their own test while a control test stays green.
+
+## ADR-0407: a shell check run again and again, answered the same, is a stuck signal
+
+Status: accepted. 2026-11-25. Extends ADR-0038 (re-observing a known result is not progress) to a
+result it cannot read, and ADR-0057 (a stuck model gets investigative steps, not advice) with a step
+for a run of checks.
+
+Context. A model that waits for something by checking it runs one shell command again and again: a
+status read, a lock read, `git status`, a `sleep` and an echo. Each run puts a number in the
+command (an attempt counter, a time, the name of the file its output is sent to), so no two calls
+are the same string, and the exact-repeat doom guard compares batches byte for byte. The answer is
+no help either. The outcome signal of ADR-0038 skips an answer under 24 characters, so a command
+whose output went to a file, which answers only `[exit code: 0]`, never counts, and it masks only
+times, hashes and runs of four or more digits, so a small number that moves reads as a new result.
+The calls succeed, so none of the tracker's votes fires. Every run is a full model call.
+
+What was measured, before building. Served sessions on one local model, read from their transcripts
+(digit-normalised command hashes, result hashes, lengths and counts only), and a replay.
+- A check over those transcripts flagged 13 episodes of a repeated shell command from 2026-11-13 to
+  2026-11-19, about two a day; it flags only a run of 30 in a row. In the 12 whose transcripts could
+  be read, one command was repeated 15 to 100 times with only its digits changing, nearly every call
+  succeeded, and each episode held a session for 5 to 20 minutes.
+- On 2026-11-22 one session ran one query on its running job 42 times in a row, each time sending
+  the output to a new numbered file, so every result was empty.
+- A census of ten sessions from 2026-11-18 to 2026-11-22 (a command run 8 or more times with at most
+  three other calls between the repeats): 34 episodes and 1,162 calls, about 230 a day. 459 of the
+  calls sent their output to a file (198 of 252 on 2026-11-18, 187 of 208 on 2026-11-20), the shape
+  whose result is empty by construction.
+- Replay, to read the false-positive rate: 11 recorded sessions of another coding agent, 108,207
+  completions, 75,677 of them only shell calls; each result's text compared and never printed. A
+  call made from inside one script is logged as a completion of its own with the script's one
+  timestamp, so neighbouring completions with one timestamp are read as one turn (a first pass that
+  did not read 46 runs; the other 38 were loops inside one script). Runs of six or more: 8, all in
+  one session on 2026-11-19 and 2026-11-20, 75 completions with 35 of them at or after the sixth
+  (0.05% of the shell-only completions), each a wait written into the command: a `for` loop with
+  `sleep` run again six times, an interruptible-sleep script run twice. Completions at which a run
+  had reached five were 44, and three 76. None of the eight was an enumeration. The replay was run
+  again on the final tracker: the same 8 runs, of the same lengths.
+
+Decision.
+- `StuckTracker._observe_poll` reads a run of shell completions. A completion extends the run when
+  every call in it is a call to one of the tracker's `shell_tools` and its commands
+  (`poll_command`) and answers (`poll_answer`, with the error flag) equal the previous completion's.
+  Any other completion ends it: a completion with a call to another tool, or with a call that cannot
+  be read as a check (no command, or no result), sets the run to 0, and a shell completion that
+  differs starts a new run at 1. The loop gives the tracker only completions that called a tool (its
+  two `observe` calls, one per turn path), so a batch with none ends a run only where the loop calls
+  `reset()`.
+- `poll_command` collapses whitespace, masks the word after an output redirect (`>`, `>>`, `2>`,
+  `&>`; `2>&1` redirects to no file and stays) and masks digit runs. `poll_answer` collapses
+  whitespace, masks digit runs and keeps the first 4,000 characters. A command that printed nothing
+  (an empty result, or only the exit-code line) is compared with its digits kept and only its
+  redirect targets masked, because it asked nothing a second answer could confirm: `py step1.py`
+  then `py step2.py` are two jobs, `q.sh > out1` then `q.sh > out2` one check. A command that only
+  writes literal words into a file (an `echo` or `printf` with no pipe, separator, line break,
+  parenthesis, expansion, glob or input redirect anywhere in it, such as `echo '' > a/__init__.py`)
+  reads nothing, so it is no check and keeps its target: the file it writes is the work. It is tried
+  on the command as written, less the space and line breaks around it, so a line break between two
+  statements keeps a write out: the check on the next line is read by what it asks.
+- `POLL_AT = 6` completions in a row fire `SIG_POLL`. It is strong, as a repeated outcome is: the
+  run's length puts the ladder at least on the rung it names whatever the votes say (6 nudge, 7
+  narrow, 8 step back, 9 stop with the default thresholds, for a check that succeeds each time),
+  and never lowers a rung the votes have earned. A check that fails each time climbs by its
+  failures from the third completion, and the run's length is a floor under that climb. A
+  completion the NARROW step turned away (every result `step_restricted`) is neither part of the
+  run nor its end; counted as a new answer it would end the run and the ladder
+  would start over.
+- The nudge says what the harness knows: "You have now run the same check N times in a row, and it
+  answered the same each time apart from its numbers. Each run is a model call that learns nothing
+  new. If you are waiting for a background task you started, wait for it by calling TaskOutput with
+  timeout=600000, not by checking: it returns when the task exits or the timeout passes. If you are
+  waiting for something outside this session, do not wait by checking: arm a wake-up for when it can
+  change (ScheduleWakeup) and end your turn. Otherwise act on what the check showed." The two ways
+  to wait follow the tools' own words: Bash tells the model it will be notified of a background
+  task's exit at the session's next idle prompt and to call `TaskOutput` with `timeout=600000` to
+  wait for it now (ADR-0236); `TaskOutput` takes its timeout in milliseconds, waits only 30 seconds
+  when its call names none, and stops at 600,000, so the nudge names the longest wait it takes; and
+  a wake-up is for state the harness cannot report. It is the text said when the answers also repeat
+  as outcomes.
+- Rung 1 seeds one step, "Decide: act on what the check showed, or wait without checking", and
+  neither the investigate step nor the closing assumption step: a check that succeeded each time
+  failed nowhere, so each of those would say what is not so (ADR-0057). Its note names the nudge's
+  two ways to wait. `_seed_investigation_steps` gives it whenever the last completion was a poll, a
+  check that failed each time included: its answer is the error, so acting on it or waiting without
+  checking are what is left. The loop seeds only when no investigation step is open, so a check that
+  failed from its third run has its failure steps open when the sixth arrives, and the poll's nudge
+  points back at them and adds none. `evidence()` carries `poll`, the run's length, while the signal
+  fires.
+- The tracker needs `shell_tools`, which both turn paths already pass for the print-only bound
+  (ADR-0373); without them it counts nothing.
+
+Not done, and not measured.
+- Strictly consecutive only. A model that runs the check, another command and the check again (a
+  `sleep` in a call of its own, say) is not covered. The census above allowed up to three other
+  calls between repeats, and which of its 34 episodes were strictly consecutive was not separated.
+- A silent poll whose command also changes a number outside its redirect targets
+  (`q.sh --try 3 > out3`) reads as numbered jobs and is not seen. No run of numbered silent jobs
+  appeared in the replay, so that rule rests on the argument above and on its test, not on a count.
+- An enumeration of different items whose answers match up to their numbers (`wc -l data/part_N.csv`
+  answering `N data/part_N.csv`; `python ex1.py`, then `python ex2.py`, answering `Exercise N OK`;
+  `curl localhost:8080/items/N`; `sed -n 'A,Bp' train.log` over a log of numbers) reads as a poll,
+  and so does a watch of progress that moves only in its numbers (`tail -1 build.log` answering
+  `compiled 10%`, then `20%`). A probe of the tracker stops each at the ninth completion with the
+  later items never asked for, and the ladder's stop is the cost; `tests/test_stuck_poll.py` pins
+  each of the five, so that a change to it is made on purpose. None of the replay's runs was one:
+  all eight were a wait written into one command. The nudge's last sentence is the way out.
+- A command that printed nothing and differs only in the file its output goes to is one check, so a
+  copy of one file into several, a command to each (`cat template > a`, then `cat template > b`),
+  reads as a poll. A literal `echo` or `printf` write is exempt: without the exemption a probe of
+  nine such writes, one to a completion, was nudged at the sixth completion and stopped at the
+  ninth. Other forms of the same write are not exempt: `: > f`, `cat /dev/null > f` and one heredoc
+  body written into different files each stop at the ninth when only the file differs. Nor is a
+  literal write whose words hold a glob character or a line break, quoted or not (`echo '*.pyc' >
+  .gitignore`, `echo '[pytest]' > pytest.ini`, `echo 'Continue?' > p.txt`, a quoted text of two
+  lines): the exemption cannot tell a quoted one from a bare one, so one such text written into nine
+  files stops at the ninth. Nor is a command of several statements, each a literal write (two on two
+  lines, two joined by `&&`), or a write continued over a line break: the exemption is one statement
+  on one line, so one text written into nine sets of files this way stops at the ninth.
+- Only `>`, `>>`, `2>` and `&>` name an output file. A silent poll that names it another way keeps
+  the number in its command and is not seen: with a flag (`curl -s -o /tmp/st_N.json URL`,
+  `wget -q -O /tmp/st_N.html URL`), with `>&` or `>|`, or through `| tee`. The same `curl` with
+  `> /tmp/st_N.json` stops at the ninth. The tests pin each spelling as it is.
+- A `>` inside a quoted program (`awk '$3 > limit' a.txt`) is read as a redirect, so two filters
+  that differ only after it read as one command when their answers match. The same read is how a
+  poll whose redirect sits inside a quoted shell (`bash -c '... > out'`) is seen.
+- The signal counts completions and reads no clock: a poll with a long wait in each call is a poll.
+- Above its first rung the ladder says what it says for every stuck signal. The narrow step (the
+  seventh completion) says "Use them to investigate: read the file, the error, or the directory, and
+  find the real cause before attempting another change", the step back (the eighth) says "Several
+  different attempts have all failed", which is not so of a check that failed nowhere, and the rail
+  of the first rung ends with "Do them in order with read-only probes, mark each done with
+  update_plan, and only then retry the original step, differently", which can read as leave to check
+  once more beside the poll's decision step. All three are shared with the sibling signals and are
+  not changed here.
+- The first way to wait is not free. A task that stays silent past its timeouts answers "status:
+  running" in the same words each time, so a model that waits on it again and again meets the
+  exact-repeat guard (ADR-0168, `DOOM_LOOP_THRESHOLD = 3`): the third wait is refused, two more run,
+  and the turn ends as `doom_loop` at the sixth, after four waits of up to ten minutes. A model that
+  changes its timeout each time is refused nowhere: six waits run and the ladder ends the turn as
+  `stuck`. This is the cost of the call itself, which Bash's own result already points a model at
+  (ADR-0236) and the nudge now points a polling model at too. Two ways out were not taken: exempting
+  a blocking `TaskOutput` from the guard and the outcome signal, which would leave a wait on a task
+  that never exits with no guard at all, and telling the model what to do when a wait returns still
+  running, since the tool's own description says not to poll it with a wake-up and the end of the
+  turn is a way out only where the session has an idle prompt. For the same reason the second way, a
+  wake-up, ends a one-shot run: it fires only at an idle prompt. `TaskOutput` answers for the tasks
+  in the session's table: those Bash started with `run_in_background`, and a foreground command it
+  moved to the background at its timeout (ADR-0236). A job put in the background with `&` in its
+  command is none of them, and the call answers with an error that lists the tasks it knows.
+  `tests/test_stuck_poll.py` pins both endings, on both turn paths.
+- The replay is of another agent, so it measures the false-positive rate and not the catch rate; the
+  catch rate rests on the shapes above, built into the tests. Whether a model told this waits
+  without checking (calls `TaskOutput`, or arms a wake-up and ends its turn) is the trial's
+  question. The trial reads, on sessions on a build with this change against the sessions on the
+  previous build, repeat-loop episodes per session-day, calls per episode and the turns that end as
+  `doom_loop` or `stuck` after this nudge; the census above (34 episodes, 1,162 calls, ten sessions,
+  five days) is the before.
+
+The proof. `tests/test_stuck_poll.py` pins: the measured shape (a check whose output goes to a new
+numbered file each time, six different strings) firing at the sixth completion and not before, with
+the ladder's rung for each length of run, and the run's length in the evidence only while the signal
+fires; each variation the measurements found (a counter, a time, a number in a path, every redirect
+form, an appended log, spacing) read as one check, and the same variations over commands that
+printed nothing, by an exit-code line or by no text at all, split into the redirect forms that match
+and the numbers that do not; one text written into nine different files never a check, with the
+space and line breaks around it no matter, and a write that reads or runs something (a pipe, a
+separator, a line break, an input redirect, a parenthesis, an expansion, a glob, in its words or
+after its arrow, with the check on the next line read by what it asks) still read by what it asks; a
+different check, a call to another tool, an edit between runs and a file read in pages each not a
+poll, each with a control that is; each of these costs named above as it stands (answers that differ
+only in numbers, five shapes; a silent write the exemption does not cover, four shapes, and a quoted
+arrow read as a redirect; a text with a quoted glob or two lines, or a write of several statements,
+written into many files; an output file named by `>&`, `>|`, `tee` or a flag) read as one check or
+not read, and a redirect inside a quoted shell masked as any other; numbers in an answer not a
+change and words a change; a check that begins to fail; batches (two shell calls to a completion,
+each call compared with its own command, answer and error flag, the answers or the commands of the
+two traded, one mixed with another tool, one of the two, one turned away and one run); a call with
+no command, a command that is not text and a call with no result; each shell tool counting and no
+other; the tracker inert without shell tools and the threshold the tracker's own; `reset()`, a
+refused completion, an empty completion and a completion the NARROW step turned away; the poll a
+floor under the rung a repeated outcome has earned; a command of 100,000 characters of digits,
+arrows or words masked in linear time; the nudge as one whole text (its count, its two ways to wait
+with the longest wait the tool takes, its sentence on what a run costs and its last sentence) and
+its place before the repeated-outcome text; the one decision step for a check that failed each time,
+and its note as one whole text; and, on both turn paths, the seeded step and the rail, a model that
+keeps checking nudged, narrowed, stepped back and stopped as `stuck` with one check turned away, a
+check that failed from its third run pointed back at the failure steps it has, a model that waits as
+the nudge says on a task that stays silent (its third wait refused and its turn ended as
+`doom_loop`, or, with a new timeout each time, as `stuck`), and a model that works between its
+checks never told. One hundred and three distinct single-site mutations of the signal are each
+killed by the tests written for them (the threshold, each mask and the width of a digit run, the
+answer and the error flag compared and each call of a batch compared with its own command and
+answer, the silent rule and its two forms, the literal-write exemption with its head and its width,
+its word boundary, its anchor, the strip of the command and the text it is tried on, each of the
+twelve characters that keep a command out of it (the line break among them) and the arrow that ends
+its words, a non-shell call, a call with no command or no result, an empty completion and a mixed
+batch, the narrow transparency and its rule that every call be turned away, the strong mapping, its
+floor and the signal's report, the nudge's place, count and words, the evidence field, its value and
+the completions it is on, reset and refusal, run extension and restart, the redirect forms and the
+spellings it does not read, the tracker's own threshold, the seeded branch, its early return, its
+failure guard and its note's words, the seeding over open steps on each turn path, and the
+linear-time bound), and the partition by case names no case that nothing reddens. The two tests of a
+wait pin what the guards do with it, not the signal: of the mutations above only one reddens them
+(the threshold made unreachable, since each takes its six polls from it), and each goes red under a
+mutation of a guard: the first when the exact-repeat threshold is raised by one (on either turn
+path), the second when a call's signature leaves out its timeout or the ladder's stop is raised.

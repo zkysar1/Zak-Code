@@ -5275,6 +5275,32 @@ class AgentLoop:
         failure counts span the turn, and a long turn holds failures the model moved past
         long ago, which say nothing about a rung a re-measured result or a plan run tripped.
         """
+        if stuck.last_was_poll:
+            # ADR-0407: the same shell check, run again and again and answered the same each time.
+            # A check that succeeded each time failed nowhere and left no result to read, so the
+            # investigate step and the closing assumption step would each say what is not so. The
+            # one step is the decision the repeats put off, and it stands when the check failed
+            # each time too: its answer is the error, so acting on it or waiting without checking
+            # are what is left. The loop seeds only when no investigation step is open, so
+            # failure steps seeded when the failures reached rung 1, before the run was long
+            # enough, are pointed at and not replaced.
+            poll_steps = [
+                Task(
+                    title="Decide: act on what the check showed, or wait without checking",
+                    note=(
+                        "you have run the same check again and again and it answered the same "
+                        "each time, so another run adds nothing. Done when you have either done "
+                        "the next piece of work its answer calls for, or waited without "
+                        "checking: called TaskOutput with timeout=600000 on a background task you "
+                        "started, or, for anything outside this session, armed a wake-up "
+                        "(ScheduleWakeup) for when it can change and ended your turn saying what "
+                        "you are waiting for"
+                    ),
+                )
+            ]
+            network = self.session.task_network
+            network.insert_before(network.current(), poll_steps)
+            return poll_steps
         steps: list[Task] = []
         failed = stuck.last_had_failures
         repeated = stuck.error_signatures()[:2] if failed else []
