@@ -23,6 +23,11 @@ precedence (later overrides earlier by rule name):
 * project (``<workspace>/.zakcode/rules`` then ``<workspace>/.claude/rules`` — the
   latter for Claude Code compatibility).
 
+One exception to "later overrides earlier": a user rule that carries ``alwaysApply: true``
+is never displaced by a project rule of the same name (ADR-0394). The project roots are the
+ones the model's own file tools write into, so text an operator pinned outside the workspace
+must not be replaceable from inside it.
+
 A rule file may carry an optional ``---`` frontmatter block (``name`` / ``description``
 are recognized; anything else is ignored); without one, the file *stem* is the rule
 name and the whole file is the body. Parsing is defensive — an unreadable file is
@@ -115,6 +120,22 @@ class Rule:
         self.path = path
         self.description = description
         self.always_apply = always_apply
+
+    def summary(self) -> str:
+        """The rule's one-line summary: its frontmatter ``description``, else its first non-empty
+        body line without a leading Markdown heading marker, capped at
+        :data:`_INDEX_SUMMARY_CHARS`; ``""`` when the rule has neither.
+
+        The index lists a rule by it, and ``read_rule`` restates it when a rule is asked for again
+        while its text is still in the conversation (ADR-0379), so both say the same thing.
+        """
+        summary = (self.description or "").strip()
+        if not summary:
+            first = next((ln.strip() for ln in self.content.splitlines() if ln.strip()), "")
+            summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
+        if len(summary) > _INDEX_SUMMARY_CHARS:
+            summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
+        return summary
 
 
 class RuleRegistry:
@@ -219,8 +240,11 @@ class RuleRegistry:
             return ""
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
-            "name with a one-line summary; when a rule looks relevant to the current step, "
-            "call read_rule with its name to get the full text, then apply it. (The file "
+            "name with a one-line summary; the first time a rule looks relevant, call "
+            "read_rule with its name to get the full text, then apply it. A rule's text "
+            "stays in your context and does not change: read each rule once, and when its "
+            "summary looks relevant again, at a new plan step too, apply the text you "
+            "already have. (The file "
             "path is shown too, so your file-read tool also works if read_rule is "
             "unavailable.):"
         )
@@ -252,12 +276,7 @@ class RuleRegistry:
         for rule in self._ordered():
             if rule.always_apply:
                 continue
-            summary = (rule.description or "").strip()
-            if not summary:
-                first = next((ln.strip() for ln in rule.content.splitlines() if ln.strip()), "")
-                summary = first.lstrip("#").strip()  # drop a leading Markdown heading marker
-            if len(summary) > _INDEX_SUMMARY_CHARS:
-                summary = summary[: _INDEX_SUMMARY_CHARS - 3].rstrip() + "..."
+            summary = rule.summary()
             line = (
                 f"- {rule.name}: {summary} [{rule.path}]"
                 if summary
@@ -339,14 +358,30 @@ def discover_rules(workspace_root: str | Path) -> tuple[RuleRegistry, dict[str, 
     """Discover all rules (bundled → user → project) into a :class:`RuleRegistry`.
 
     Later sources override earlier ones by name (so a project rule shadows a bundled
-    one of the same name). Returns ``(registry, errors)``.
+    one of the same name), except that a user rule pinned with ``alwaysApply: true`` is
+    kept against a project rule of the same name, whatever that file is called (the name
+    is the frontmatter ``name`` before it is the stem). The refused file stays on disk and
+    is recorded in the errors under its path-qualified key, e.g. ``.zakcode/rules/x.md``.
+    Returns ``(registry, errors)``.
     """
     registry = RuleRegistry()
     all_errors: dict[str, str] = {}
-    for d in default_rule_dirs(workspace_root):
+    dirs = default_rule_dirs(workspace_root)
+    user_dir, project_dirs = dirs[1], dirs[2:]
+    for d in dirs:
         rules, errors = discover_rule_dir(d)
         all_errors.update(errors)
         for rule in rules:
+            held = registry.get(rule.name)
+            if d in project_dirs and held and held.always_apply and held.path.parent == user_dir:
+                all_errors[f"{d.parent.name}/{d.name}/{rule.path.name}"] = (
+                    f"RuleShadowRefused: {rule.path} would replace the pinned rule {rule.name!r} "
+                    f"from {held.path}; the pinned rule is kept and this file is ignored"
+                )
+                logger.warning(
+                    "refusing workspace rule %s: it shadows pinned %s", rule.path, held.path
+                )
+                continue
             registry.add(rule, replace=True)
     return registry, all_errors
 
@@ -368,7 +403,9 @@ def project_rules_dir(workspace_root: str | Path) -> Path:
     matching ``<workspace>/.zakcode/skills``. Note :func:`default_rule_dirs` scans
     ``.claude/rules`` *after* this one, so a same-named rule in that compatibility dir
     still shadows a rule written here — deliberate (a checked-in project rule outranks a
-    runtime-authored one), but worth knowing when a saved rule seems not to take effect.
+    runtime-authored one), but worth knowing when a saved rule seems not to take effect. A
+    rule saved under the name of a user rule pinned with ``alwaysApply: true`` takes no effect
+    at all: :func:`discover_rules` keeps the pinned rule and records the refusal.
     """
     return Path(workspace_root) / ".zakcode" / "rules"
 
@@ -401,9 +438,11 @@ def save_rule(
       ``lines[0].strip() == "---"``, so anything above it — a blank line, a comment — makes
       the parser return *no metadata* and treat the whole file as the body. The rule would
       still load, silently, under its filename stem with its description lost.
-    * ``name`` and ``description`` must be single-line. The frontmatter parser is line-based,
-      so an embedded newline either invents a bogus key or (if the line is ``---``) closes
-      the block early.
+    * ``name`` and ``description`` must be single-line, and a line is what the reader splits
+      on: :func:`_split_frontmatter` uses ``str.splitlines()``, which breaks on more than LF
+      and CR (also U+000B, U+000C, U+001C to U+001E, U+0085, U+2028 and U+2029). The
+      frontmatter parser is line-based, so an embedded break either invents a bogus key
+      (``alwaysApply: true`` among them) or (if the line is ``---``) closes the block early.
     * ``body`` is capped at :data:`MAX_RULE_FILE_CHARS`, because that is the bound
       :meth:`RuleRegistry._body_block` truncates at when rendering. Refusing here is better
       than authoring a rule that is silently cut in half every turn it is read.
@@ -427,7 +466,9 @@ def save_rule(
             f"rule body is {len(body)} chars, over the {MAX_RULE_FILE_CHARS}-char per-rule "
             "budget; the render would truncate it silently. Split it or shorten it."
         )
-    if "\n" in description or "\r" in description:
+    # The reader splits with str.splitlines(), so refuse every break it honors, not only LF and
+    # CR (an empty description has no lines, hence the first operand).
+    if description and description.splitlines() != [description]:
         raise RuleError("rule description must be a single line (the frontmatter is line-based)")
     root = Path(rules_dir)
     path = root / f"{name}.md"

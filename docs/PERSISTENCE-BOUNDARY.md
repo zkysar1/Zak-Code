@@ -6,6 +6,9 @@ from the harness; the host framework owns memory and attaches its own via the ge
 **One line:** *The harness RECORDS what happened and EXPOSES seams. It does not REMEMBER, RECALL,
 or LEARN. "Memory" is the host framework's word, and the host framework's job.*
 
+The general rule this document applies to memory is in the charter:
+[`CHARTER.md`](CHARTER.md), "The line with a host framework".
+
 ---
 
 ## Why

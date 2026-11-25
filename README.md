@@ -233,7 +233,8 @@ policy, the update path — see [`docs/DEPLOY.md`](docs/DEPLOY.md).
 Key `cli` flags: `--provider` / `--model` (override the model), `--server <url>` (drive a
 remote server), `--skill-dir <dir>` (load an external skill directory), and `--extra-root
 <dir>` (grant the file tools an **additional trusted root to read _and write_ under** — a
-sandbox-widening flag; see [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) §4).
+sandbox-widening flag; see [`docs/GUARDRAILS.md`](docs/GUARDRAILS.md) §4). A workspace's settings
+files make the same grant with Claude Code's `permissions.additionalDirectories`.
 
 ## Small-model reliability (the Recipe Cursor)
 

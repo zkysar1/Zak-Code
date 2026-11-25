@@ -118,7 +118,9 @@ class GrepTool(Tool):
             return ToolResult.error(f"Invalid regex {pattern!r}: {exc}")
 
         try:
-            resolved = resolve_path(base, ctx.workspace_root, ctx.extra_workspace_roots)
+            resolved = resolve_path(
+                base, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
+            )
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

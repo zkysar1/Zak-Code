@@ -48,25 +48,19 @@
     ]
   },
   {
-    "name": "rank_order_acct01_after_higher_promo",
+    "name": "card_key_in_slots_00_and_01_gives_dev_none_and_prod_acct00",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
-    "env_present": ["00","01","02","03","04","05","06","07","08"],
-    "state": {
-      "members": {
-        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"}
-      }
-    },
+    "env_present": ["00","01"],
+    "state": {},
     "ops": [
       {
         "op": "assign", "session": "s1", "use": "dev",
-        "expect": {"member": "acct-01", "retry": false, "moved": false, "alert": false}
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "assign", "session": "s2", "use": "prod",
+        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
       }
     ]
   },
@@ -75,6 +69,9 @@
     "rule": [1],
     "now": "2026-10-15T12:00:00Z",
     "env_present": ["09","10"],
+    "registry_overrides": {
+      "members": {"acct-09": {"status": "empty"}, "acct-10": {"status": "empty"}}
+    },
     "state": {},
     "ops": [
       {
@@ -84,10 +81,46 @@
     ]
   },
   {
+    "name": "dev_takes_slot_09_before_10_and_11",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["09","10","11"],
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-09", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "dev_takes_the_lower_rank_not_the_first_listed",
+    "rule": [1, 2, 4],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["02","03","04"],
+    "registry_overrides": {
+      "members": {"acct-02": {"rank": 50}}
+    },
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "acct-03", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "response", "session": "s1", "status": 402, "error_type": "billing_error",
+        "expect": {"member": "acct-04", "retry": true, "moved": true, "alert": false}
+      }
+    ]
+  },
+  {
     "name": "prod_null_cap_gives_none",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
-    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "env_present": ["00","01","02","03","04","05","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": null}}
+    },
     "state": {},
     "ops": [
       {
@@ -100,7 +133,7 @@
     "name": "prod_with_cap_gives_acct00",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
-    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "env_present": ["00","01","02","03","04","05","08"],
     "registry_overrides": {
       "members": {"acct-00": {"monthly_cap_usd": 50}}
     },
@@ -120,7 +153,7 @@
     "name": "cap_reached_gives_none",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
-    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "env_present": ["00","01","02","03","04","05","08"],
     "registry_overrides": {
       "members": {"acct-00": {"monthly_cap_usd": 50}}
     },
@@ -137,7 +170,7 @@
     ]
   },
   {
-    "name": "dev_falls_to_acct00_after_all_promo_exhausted_with_cap",
+    "name": "dev_gets_none_after_all_promo_exhausted_even_with_cap",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
     "env_present": ["00","01","02","03","04","05","06","07","08"],
@@ -152,22 +185,24 @@
         "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
         "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
         "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-01": {"exhausted_until": "2026-11-01T00:00:00Z"}
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"}
       }
     },
     "ops": [
       {
         "op": "assign", "session": "s1", "use": "dev",
-        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
       }
     ]
   },
   {
-    "name": "dev_no_fallback_without_cap",
+    "name": "prod_gets_acct00_after_all_promo_exhausted_with_cap",
     "rule": [1, 2],
     "now": "2026-10-15T12:00:00Z",
     "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
     "state": {
       "members": {
         "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
@@ -176,14 +211,13 @@
         "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
         "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
         "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"},
-        "acct-01": {"exhausted_until": "2026-11-01T00:00:00Z"}
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"}
       }
     },
     "ops": [
       {
-        "op": "assign", "session": "s1", "use": "dev",
-        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
       }
     ]
   },
@@ -448,6 +482,152 @@
         "op": "response", "session": "s1", "status": 400,
         "message": "max_tokens: 300001 is greater than the model's max output token limit: 128000",
         "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_takes_its_promo_members_before_the_card",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-06", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_skips_an_exhausted_promo_member_to_the_next",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-07", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_steers_off_its_promo_members_to_the_card",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-06": {"spend_mtd": 195.0},
+        "acct-07": {"spend_mtd": 195.0}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-00", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "dev_never_takes_a_member_reserved_for_prod",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-02": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-03": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-04": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-05": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-08": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "dev",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_steers_one_reserved_member_off_to_the_other",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-06": {"spend_mtd": 195.0}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "acct-07", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "prod_holding_only_the_reserved_keys_both_exhausted_gives_none",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["06","07"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {
+      "members": {
+        "acct-06": {"exhausted_until": "2026-11-01T00:00:00Z"},
+        "acct-07": {"exhausted_until": "2026-11-01T00:00:00Z"}
+      }
+    },
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "prod",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      }
+    ]
+  },
+  {
+    "name": "unnamed_use_gets_none",
+    "rule": [1, 2],
+    "now": "2026-10-15T12:00:00Z",
+    "env_present": ["00","01","02","03","04","05","06","07","08"],
+    "registry_overrides": {
+      "members": {"acct-00": {"monthly_cap_usd": 100}}
+    },
+    "state": {},
+    "ops": [
+      {
+        "op": "assign", "session": "s1", "use": "",
+        "expect": {"member": "NONE", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "assign", "session": "s2", "use": "dev",
+        "expect": {"member": "acct-02", "retry": false, "moved": false, "alert": false}
+      },
+      {
+        "op": "assign", "session": "s3", "use": "prod",
+        "expect": {"member": "acct-06", "retry": false, "moved": false, "alert": false}
       }
     ]
   }

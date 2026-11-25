@@ -6,6 +6,9 @@ the first batch of four parallel Reads all came back ``File not found``. The ser
 ``WORLD_PATH`` is ``<workspace>/knowledge``, so the file was at
 ``<workspace>/knowledge/knowledge/tree/…``. The layout below is that one, written by the same
 provisioner step (``agents/<id>/local-paths.conf``, unquoted absolute values).
+
+Glob, Grep and LS were left on the literal spelling when those three were widened; their pins
+sit in their own section below the first three tools'.
 """
 
 from __future__ import annotations
@@ -31,6 +34,9 @@ from zakcode.tools.base import ConcurrencyClass, ToolContext, ToolSpec
 from zakcode.tools.builtins._safety import PathEscapeError, check_tree_note_layout, resolve_path
 from zakcode.tools.builtins.default_registry import default_registry
 from zakcode.tools.builtins.edit import EditFileTool
+from zakcode.tools.builtins.glob import GlobTool
+from zakcode.tools.builtins.grep import GrepTool
+from zakcode.tools.builtins.list_dir import ListDirTool
 from zakcode.tools.builtins.read_file import ReadFileTool
 from zakcode.tools.builtins.write_file import WriteFileTool
 from zakcode.virtual_paths import expand_virtual_prefix
@@ -256,6 +262,117 @@ async def test_a_workspace_that_declares_no_world_keeps_its_own_world_directory(
     result = await ReadFileTool().execute({"path": "world/map.md"}, _ctx(tmp_path))
     assert not result.is_error, result.output
     assert result.output == "a game map\n"
+
+
+# ── Glob, Grep and LS: the tools that look rather than touch ────────────────────
+#
+# A session that listed ``world/`` or searched ``world/knowledge/`` got the same ``File not found``
+# its first Read did. Each tool has the served layout (the declared directory lies inside the
+# workspace), the hosted one (it lies outside), the call without the roots, and a workspace path
+# that must not move. A bare ``world`` is not a prefix (the contract needs the slash), so the
+# directory calls below name ``world/…`` or ``meta/``.
+
+
+def _node_file(ws: Path) -> Path:
+    """Where ``world/{_NODE}`` really is in the served layout."""
+    return (ws / "knowledge" / _NODE).resolve()
+
+
+async def test_glob_finds_the_node_under_the_declared_world(served: Path) -> None:
+    result = await GlobTool().execute(
+        {"pattern": "**/*.md", "path": "world/knowledge/tree"}, _ctx(served)
+    )
+    assert not result.is_error, result.output
+    assert result.data is not None
+    assert result.data["matches"] == [str(_node_file(served))]
+
+
+async def test_glob_searches_the_declared_meta_where_the_conf_puts_it(hosted: Path) -> None:
+    result = await GlobTool().execute({"pattern": "*.yaml", "path": "meta/"}, _ctx(hosted))
+    assert not result.is_error, result.output
+    meta = _mind_virtual_roots(hosted)["meta"]
+    assert result.data is not None
+    assert result.data["matches"] == [str(meta / "reflection-strategy.yaml")]
+
+
+async def test_the_same_glob_without_the_roots_is_the_field_failure(served: Path) -> None:
+    """Positive control: on this layout, with no virtual roots, there is no such directory."""
+    result = await GlobTool().execute(
+        {"pattern": "**/*.md", "path": "world/knowledge/tree"}, _ctx(served, declared=False)
+    )
+    assert result.is_error
+    assert result.output.startswith("Base path is not a directory: world/knowledge/tree")
+
+
+async def test_glob_passes_a_workspace_path_through_untouched(served: Path) -> None:
+    ctx = _ctx(served)
+    relative = await GlobTool().execute({"pattern": "*.md"}, ctx)
+    absolute = await GlobTool().execute({"pattern": "*.md", "path": str(served)}, ctx)
+    expected = [str((served / "notes.md").resolve())]
+    assert relative.data is not None
+    assert absolute.data is not None
+    assert (relative.data["matches"], absolute.data["matches"]) == (expected, expected)
+
+
+async def test_grep_searches_the_node_under_the_declared_world(served: Path) -> None:
+    result = await GrepTool().execute(
+        {"pattern": "softmax", "path": "world/knowledge/tree"}, _ctx(served)
+    )
+    assert not result.is_error, result.output
+    assert result.output == f"{_node_file(served)}:2:softmax turns scores into probabilities"
+
+
+async def test_grep_searches_the_declared_meta_where_the_conf_puts_it(hosted: Path) -> None:
+    result = await GrepTool().execute({"pattern": "depth", "path": "meta/"}, _ctx(hosted))
+    assert not result.is_error, result.output
+    meta = _mind_virtual_roots(hosted)["meta"]
+    assert result.output == f"{meta / 'reflection-strategy.yaml'}:1:depth: 1"
+
+
+async def test_the_same_grep_without_the_roots_is_the_field_failure(served: Path) -> None:
+    """Positive control: on this layout, with no virtual roots, there is no such path."""
+    result = await GrepTool().execute(
+        {"pattern": "softmax", "path": "world/knowledge/tree"}, _ctx(served, declared=False)
+    )
+    assert result.is_error
+    assert result.output.startswith("Path not found: world/knowledge/tree")
+
+
+async def test_grep_passes_a_workspace_path_through_untouched(served: Path) -> None:
+    ctx = _ctx(served)
+    relative = await GrepTool().execute({"pattern": "note", "path": "notes.md"}, ctx)
+    absolute = await GrepTool().execute({"pattern": "note", "path": str(served / "notes.md")}, ctx)
+    expected = f"{(served / 'notes.md').resolve()}:1:workspace note"
+    assert (relative.output, absolute.output) == (expected, expected)
+
+
+async def test_ls_lists_the_declared_world(served: Path) -> None:
+    result = await ListDirTool().execute({"path": "world/"}, _ctx(served))
+    assert not result.is_error, result.output
+    assert result.output == "knowledge/\nprogram.md"
+    assert result.data is not None
+    assert result.data["path"] == str((served / "knowledge").resolve())
+
+
+async def test_ls_lists_the_declared_meta_where_the_conf_puts_it(hosted: Path) -> None:
+    result = await ListDirTool().execute({"path": "meta/"}, _ctx(hosted))
+    assert not result.is_error, result.output
+    assert result.output == "reflection-strategy.yaml"
+    assert not (hosted / "meta").exists()
+
+
+async def test_the_same_ls_without_the_roots_is_the_field_failure(served: Path) -> None:
+    """Positive control: on this layout, with no virtual roots, there is no such directory."""
+    result = await ListDirTool().execute({"path": "world/"}, _ctx(served, declared=False))
+    assert result.is_error
+    assert result.output.startswith("Directory not found: world/")
+
+
+async def test_ls_passes_a_workspace_path_through_untouched(served: Path) -> None:
+    ctx = _ctx(served)
+    relative = await ListDirTool().execute({"path": "agents"}, ctx)
+    absolute = await ListDirTool().execute({"path": str(served / "agents")}, ctx)
+    assert (relative.output, absolute.output) == ("char-1/", "char-1/")
 
 
 # ── the Agent derives the roots once and hands them to everything that needs them ──

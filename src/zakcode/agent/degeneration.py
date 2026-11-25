@@ -44,7 +44,7 @@ guard exists to stop (the per-completion output cap bounds that one instead).
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, deque
 
 #: Window of trailing non-empty lines the line branch examines.
 _TAIL_LINES = 15
@@ -235,3 +235,54 @@ def self_repetition(text: str) -> float:
         else:
             seen.add(window)
     return repeated / windows
+
+
+#: Restated lines (ADR-0389). A summarizer asked with thinking off wrote its summary and then
+#: wrote it again: blocks of 9 to 54 lines copied from earlier in the same reply, over and over,
+#: to its own close or to the output cap. :func:`repeated_tail` convicts one short line repeated
+#: and :func:`self_repetition` is read only on a reply that stopped at the cap, so nothing judged
+#: these while they streamed. Measured 2026-11-17 on the 86 summaries ten worker sessions
+#: installed since 2026-11-16T12:00: 41 repeated five or more of their own lines, 11 ended in a
+#: run where at least 10 of the last 15 lines stood earlier in the reply, and the worst repeated
+#: 281 of its 357 lines. A line counts once its spacing is collapsed and it is at least this
+#: long: headings, rules and short list items repeat in a healthy summary.
+_RESTATED_LINE_MIN_CHARS = 20
+#: The window of counted lines, and how many of them must have stood earlier to convict. Two
+#: lines in twelve may be new, because a restated block mutates now and then.
+_RESTATED_WINDOW = 12
+_RESTATED_REPEATS = 10
+
+
+class RestatedLines:
+    """Watch a streaming text for a run of lines it already wrote (ADR-0389).
+
+    :meth:`feed` takes the text a delta at a time and returns ``None`` while the text is healthy.
+    Once :data:`_RESTATED_REPEATS` of the last :data:`_RESTATED_WINDOW` counted lines stood
+    earlier in the text, it returns where the run began: the offset in the whole text of the
+    first of those lines. A line is judged when it ends, so the result does not depend on where
+    the deltas split the text.
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""  # the line that has not ended yet
+        self._offset = 0  # where ``_pending`` starts in the whole text
+        self._seen: set[str] = set()
+        #: Per counted line in the window: its offset if it stood earlier, else ``None``.
+        self._window: deque[int | None] = deque(maxlen=_RESTATED_WINDOW)
+
+    def feed(self, text: str) -> int | None:
+        """Add ``text``; the offset where a run of restated lines began, or ``None``."""
+        self._pending += text
+        while (end := self._pending.find("\n")) >= 0:
+            line, start = self._pending[:end], self._offset
+            self._pending = self._pending[end + 1 :]
+            self._offset += end + 1
+            key = " ".join(line.split()).lower()
+            if len(key) < _RESTATED_LINE_MIN_CHARS:
+                continue
+            self._window.append(start if key in self._seen else None)
+            self._seen.add(key)
+            restated = [at for at in self._window if at is not None]
+            if len(restated) >= _RESTATED_REPEATS:
+                return restated[0]
+        return None

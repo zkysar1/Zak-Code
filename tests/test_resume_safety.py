@@ -10,12 +10,15 @@ tests pin both stamps (both turn paths), the pure notice, and the append-only lo
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 
+from zakcode import cli
 from zakcode.agent.loop import AgentLoop
 from zakcode.build_info import running_build
 from zakcode.messages import Message
@@ -136,3 +139,62 @@ def test_streaming_turn_stamps_build_and_stop_reason(tmp_path: Path) -> None:
     loaded = store.load(loop.session.id)
     assert loaded.last_stop_reason == "completed"
     assert loaded.build == running_build()
+
+
+# ── the check, as the CLI runs it on a resume ────────────────────────────────
+
+
+class _Resumed:
+    """What ``_announce_resume`` is handed: a session, and a loop that records each
+    compaction it is asked for."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.loop = self
+        self.compactions: list[str] = []
+
+    async def compact_now(self, *, trigger: str = "manual") -> bool:
+        self.compactions.append(trigger)
+        return True
+
+
+def _resume(
+    monkeypatch: pytest.MonkeyPatch, *, saved_by: str, stop_reason: str = "completed"
+) -> tuple[_Resumed, str]:
+    """Resume a document ``saved_by`` a build, on an install from a local path whose
+    checkout is at ``0c28c8b0c28c``: no recorded commit, labelled by its HEAD."""
+    monkeypatch.setattr(cli, "running_build", lambda: "0c28c8b0c28c", raising=False)
+    monkeypatch.setattr(cli, "build_commit", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(cli, "_SESSION_LOOP", None)
+    agent = _Resumed(Session(cwd=".", model="m", build=saved_by, last_stop_reason=stop_reason))
+    out = io.StringIO()
+    cli._announce_resume(Console(file=out, width=200), agent)
+    return agent, out.getvalue()
+
+
+def test_a_local_install_resuming_its_own_document_is_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The loop stamps a document with running_build(), so the check must read the same.
+    # Read against build_commit(), which is None here, this resume compacted every time.
+    agent, said = _resume(monkeypatch, saved_by="0c28c8b0c28c")
+    assert agent.compactions == []
+    assert said == ""
+
+
+def test_a_local_install_resuming_another_builds_document_compacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, said = _resume(monkeypatch, saved_by="c4edaa4c4eda")
+    assert agent.compactions == ["resume"]
+    assert "c4edaa4c4eda" in said and "0c28c8b0c28c" in said
+    assert "context compacted before resuming" in said
+
+
+def test_a_local_install_resuming_after_a_collapsed_turn_compacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reason = sorted(RESUME_COMPACT_STOP_REASONS)[0]
+    agent, said = _resume(monkeypatch, saved_by="0c28c8b0c28c", stop_reason=reason)
+    assert agent.compactions == ["resume"]
+    assert reason in said

@@ -24,7 +24,7 @@ import socket
 import time
 import urllib.request
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from typing import Any
 
 import httpx
@@ -345,10 +345,46 @@ def _names_google(failed: ImportError) -> bool:
     one it was raised over. A Vertex call without the stack raises ``No module named 'google'``,
     and litellm raises its own ``ImportError`` over it, "Google Cloud SDK not found", which names
     no module."""
-    for err in (failed, failed.__cause__, failed.__context__):
-        if isinstance(err, ImportError) and (err.name or "").split(".")[0] == "google":
-            return True
-    return False
+    return any(_is_google_import(err) for err in (failed, failed.__cause__, failed.__context__))
+
+
+#: Root modules of the Vertex stack the ``google`` extra brings: ``google`` (auth, the cloud SDK)
+#: and ``vertexai`` (the SDK litellm imports for Vertex's partner models: Claude, Mistral, Llama).
+_GOOGLE_ROOTS = frozenset({"google", "vertexai"})
+
+
+def _is_google_import(err: BaseException | None) -> bool:
+    """Whether ``err`` is an ImportError for a module rooted at ``google`` or ``vertexai``."""
+    return isinstance(err, ImportError) and (err.name or "").split(".")[0] in _GOOGLE_ROOTS
+
+
+#: How many links back from a provider error a failed Google import is looked for.
+_GOOGLE_CHAIN_LINKS = 4
+
+
+def _google_import_behind(exc: BaseException) -> ImportError | None:
+    """The failed Google import a few links behind ``exc``, else ``None``.
+
+    A Vertex partner model without the stack raises litellm's BadRequestError over its own
+    VertexAIError over ``No module named 'vertexai'``: two links back, which ``_failed_import``
+    does not read. Only an import rooted at ``google`` or ``vertexai`` is taken from that far, so
+    an unrelated import that failed further back in a real outage's chain still does not make the
+    outage a broken install (ADR-0338).
+    """
+    seen = {id(exc)}
+    frontier = [exc]
+    for _ in range(_GOOGLE_CHAIN_LINKS):
+        behind: list[BaseException] = []
+        for err in frontier:
+            for link in (err.__cause__, err.__context__):
+                if link is None or id(link) in seen:
+                    continue
+                seen.add(id(link))
+                behind.append(link)
+                if isinstance(link, ImportError) and _is_google_import(link):
+                    return link
+        frontier = behind
+    return None
 
 
 def _is_ollama_model(model: str) -> bool:
@@ -1366,7 +1402,7 @@ class LiteLLMProvider(Provider):
             cost = cls._coerce_cost(hidden.get("response_cost"))
         model = str(_get(response, "model") or "")
 
-        # A cache write the backend bills and does not name (ADR-0370). On a write-billed tier the
+        # A cache write the backend bills and does not name (ADR-0343). On a write-billed tier the
         # provider charges every prompt token that is not a cache read at the cache-WRITE rate, yet
         # the usage carries no creation count, so litellm's own ``response_cost`` and the price-map
         # fallback below both priced those tokens at the plain input rate and ``cost_usd`` ran about
@@ -1415,7 +1451,7 @@ class LiteLLMProvider(Provider):
         )
 
     #: Models whose provider bills every prompt token that is not a cache read as a cache write
-    #: while naming no creation count (ADR-0370). Measured per model from the provider's own
+    #: while naming no creation count (ADR-0343). Measured per model from the provider's own
     #: billing lines, never inferred from the price map: Anthropic names its creation counts and
     #: bills the rest at the plain input rate, and a write rate in the map says nothing about
     #: whether the provider bills the unread prompt as written. Widen only on a model's own
@@ -1838,6 +1874,8 @@ class LiteLLMProvider(Provider):
         message = redact_secrets(_page_text(redact_secrets(str(exc))[0]))[0]
 
         failed_import = _failed_import(exc)
+        if failed_import is None or not _names_google(failed_import):
+            failed_import = _google_import_behind(exc) or failed_import
         if failed_import is not None and _names_google(failed_import):
             # Vertex AI reached without the google auth/SDK stack installed. The dependency
             # is OPTIONAL by design (the `google` extra pulls ~30 google-cloud packages
@@ -2518,8 +2556,10 @@ class LiteLLMProvider(Provider):
         repairs = 0
         while True:
             # The spend gate: a Mind that has spent its cap sends nothing. Every dispatch asks,
-            # a re-issue included, and outside the try so the refusal is not re-mapped.
-            get_gate().admit()
+            # a re-issue included, and outside the try so the refusal is not re-mapped. A refusal
+            # against a cap only the ledger holds is held for the vessel's first push, and the
+            # wait yields to the loop.
+            await get_gate().admit_async()
             try:
                 response = await litellm.acompletion(**call_kwargs)
                 break
@@ -2809,7 +2849,7 @@ class LiteLLMProvider(Provider):
 
     async def _bounded_chunks(
         self, resp: Any, *, prompt_estimate: int, started: float
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any, None]:
         """Yield the stream's chunks, bounding the WAIT for each one (ADR-0120, #176).
 
         litellm's scalar ``timeout`` does not bound a streaming READ. Measured on a
@@ -2840,6 +2880,7 @@ class LiteLLMProvider(Provider):
         """
         iterator = resp.__aiter__()
         seen = 0
+        ended = False  # the stream ran to its end, so the response has nothing left to send
         first_wait: float | None = None  # request start → first chunk, once it arrives
         usage: Usage | None = None  # the final chunk's usage, for the cache-read share
         first_bound = self._first_chunk_bound(prompt_estimate)
@@ -2854,10 +2895,9 @@ class LiteLLMProvider(Provider):
                     async with asyncio.timeout(bound):
                         chunk = await iterator.__anext__()
                 except StopAsyncIteration:
+                    ended = True
                     return
                 except TimeoutError as exc:
-                    with contextlib.suppress(Exception):  # release the socket; never mask it
-                        await resp.aclose()
                     if seen == 0:
                         raise self._first_chunk_expiry(prompt_estimate, bound) from exc
                     raise TimedOut(
@@ -2873,6 +2913,13 @@ class LiteLLMProvider(Provider):
                 seen += 1
                 yield chunk
         finally:
+            # Left before its end (a stall above, an error, or a reader that stopped reading):
+            # close the response. Open, it goes on taking the server's output to its cap and
+            # holds the card, while the caller has already moved on. Release the socket; never
+            # mask what ended the stream.
+            if not ended:
+                with contextlib.suppress(Exception):
+                    await resp.aclose()
             # A first chunk that arrived is a measurement however the stream ended; the
             # cache share is known only if the usage chunk came, else the whole prompt is
             # charged, which can only make the backend look faster, never slower.
@@ -2931,11 +2978,12 @@ class LiteLLMProvider(Provider):
         delivered = False  # any text or tool-call fragment reached the caller
         streamed_usage: Usage | None = None  # summed as the loop sums it, for a filtered end
         repairs = 0  # re-issues this call has spent, at most _MAX_REQUEST_REPAIRS (ADR-0303)
+        chunk_stream: AsyncGenerator[Any, None] | None = None  # the response being read
         await self._pace()
         try:
             while True:
                 # As in acomplete, every dispatch asks the spend gate first.
-                get_gate().admit()
+                await get_gate().admit_async()
                 try:
                     started = time.monotonic()  # the first-chunk wait counts from here
                     # Of the request about to be sent, so a repaired re-issue is read as sent.
@@ -2943,9 +2991,10 @@ class LiteLLMProvider(Provider):
                     resp = await litellm.acompletion(**call_kwargs)
                     # A gateway's fallback headers are on the stream before its first chunk.
                     self._warn_on_fallback(resp)
-                    async for chunk in self._bounded_chunks(
+                    chunk_stream = self._bounded_chunks(
                         resp, prompt_estimate=prompt_estimate, started=started
-                    ):
+                    )
+                    async for chunk in chunk_stream:
                         chunks += 1
                         # No served-model capture here, deliberately (ADR-0214). A chunk's
                         # ``model`` is NOT the server's: litellm's stream wrapper stamps every
@@ -3020,6 +3069,15 @@ class LiteLLMProvider(Provider):
                 "finish_reason": finish_reason,
                 "deltas": [_compact_delta(d) for d in (*head, *tail)],
             }
+            # A caller that stops reading early closes THIS generator, and an ``async for``
+            # does not close the generator it was suspended in, so the response would stay
+            # open: close that reader here, and it releases the response at once. Measured
+            # 2026-11-08 against a local server: without this, a reader that left after 50
+            # events, by aclose() or by dropping the stream, never closed the connection,
+            # and the server went on sending. A no-op for a stream that already ended.
+            if chunk_stream is not None:
+                with contextlib.suppress(Exception):
+                    await chunk_stream.aclose()
 
         # The spend gate: the stream counts against this Mind's cap. A stream that reported no usage
         # is counted as unpriced, never guessed.

@@ -16,9 +16,17 @@ from typing import Any
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import (
+    _MIDTURN_SAY_FRAME,
+    _OBSERVATION_FRAME,
+    _PLAN_JUST_UPDATED,
+    _SESSION_START_FRAME,
+    AgentLoop,
+    _control_rail,
+)
 from zakcode.agent.prompt import SystemPromptBuilder
 from zakcode.config import PermissionTier, load_settings
+from zakcode.messages import Message, ToolResultBlock, ToolUseBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tasks import Task, skill_pages
@@ -163,3 +171,176 @@ def test_a_paged_section_says_its_update_goes_alone_and_the_last_section_does_no
     assert "update_plan, alone in its response" in pages.render(1)
     assert "section 2 of 2 arrives in the reply to that call" in pages.render(1)
     assert "alone in its response" not in pages.render(2)
+
+
+# ── ADR-0371: the plan line after a response that only updated the plan ────────────────
+
+
+def _after(
+    tmp_path: Path, *responses: tuple[str, ...], tasks: list[Task] | None = None
+) -> AgentLoop:
+    """A loop whose session holds ``responses``, each the tool names of one assistant response."""
+    loop = AgentLoop(_Scripted([_done()]), ToolRegistry(), Session(cwd=str(tmp_path), model="t"))
+    network = loop.session.task_network
+    network.tasks = tasks or [Task(title="a", status="in_progress"), Task(title="b")]
+    network.normalize()
+    for i, names in enumerate(responses):
+        blocks = [ToolUseBlock(id=f"c{i}{name}", name=name, input={}) for name in names]
+        message = (
+            Message(role="assistant", blocks=blocks) if blocks else Message.assistant_text("x")
+        )
+        loop.session.messages.append(message)
+        results = [ToolResultBlock(tool_use_id=block.id, output="ok") for block in blocks]
+        if results:
+            loop.session.messages.append(Message.tool_results(results))
+    return loop
+
+
+def _line(loop: AgentLoop) -> str:
+    reminder = loop._plan_reminder()
+    assert reminder is not None
+    return reminder.text
+
+
+def test_after_a_response_that_only_planned_the_line_says_do_the_step(tmp_path: Path) -> None:
+    # Measured 2026-11-06: 2,054 of 2,062 update_plan calls alone in their response, 57.5 model
+    # hours in 24 hours on ten sessions, a third changing nothing. The line rides last on every
+    # call, and it said to keep the plan current right after the model had.
+    text = _line(_after(tmp_path, ("update_plan",)))
+
+    assert text.startswith(_PLAN_JUST_UPDATED)
+    assert PLAN_ADVANCE not in text
+    assert "<- current" in text  # the step it names is on the board it shows
+
+
+@pytest.mark.parametrize(
+    "response",
+    [("bash",), ("update_plan", "bash"), ("bash", "update_plan"), ()],
+    ids=["work", "plan with work", "work with plan", "text"],
+)
+def test_after_any_other_response_the_line_keeps_the_plan_current(
+    tmp_path: Path, response: tuple[str, ...]
+) -> None:
+    text = _line(_after(tmp_path, response))
+
+    assert PLAN_ADVANCE in text and _PLAN_JUST_UPDATED not in text
+
+
+def test_with_no_response_yet_the_line_keeps_the_plan_current(tmp_path: Path) -> None:
+    assert PLAN_ADVANCE in _line(_after(tmp_path))
+
+
+def test_the_last_response_decides_not_an_earlier_plan_call(tmp_path: Path) -> None:
+    assert PLAN_ADVANCE in _line(_after(tmp_path, ("update_plan",), ("bash",)))
+    assert _line(_after(tmp_path, ("bash",), ("update_plan",))).startswith(_PLAN_JUST_UPDATED)
+
+
+def test_with_no_current_step_the_line_keeps_the_plan_current(tmp_path: Path) -> None:
+    # It would name a step the board does not mark.
+    tasks = [Task(title="a", status="blocked", note="waiting on x")]
+
+    assert PLAN_ADVANCE in _line(_after(tmp_path, ("update_plan",), tasks=tasks))
+
+
+def test_an_undecomposed_step_still_asks_for_a_plan_update(tmp_path: Path) -> None:
+    tasks = [Task(title="a", kind="compound", status="in_progress"), Task(title="b")]
+
+    text = _line(_after(tmp_path, ("update_plan",), tasks=tasks))
+
+    assert PLAN_ADVANCE in text and "decompose them" in text
+
+
+def test_the_quality_note_waits_until_there_is_work_to_show(tmp_path: Path) -> None:
+    # Its receipt's twin was followed by another plan call 56 percent of the time, a clean receipt
+    # 30 percent.
+    assert "Plan quality" in _line(_after(tmp_path, ("bash",)))
+    assert "Plan quality" not in _line(_after(tmp_path, ("update_plan",)))
+
+
+def test_the_line_says_the_plan_was_called_and_asks_for_the_step_in_words(tmp_path: Path) -> None:
+    # A third of the calls change nothing, so the line says the tool was called, not that the plan
+    # was updated. The words are read here, not the constant, so a line that loses its instruction
+    # fails this test.
+    text = _line(_after(tmp_path, ("update_plan",)))
+
+    assert text.startswith(
+        "[plan] Harness-tracked plan for the current goal. Your last response called update_plan "
+        "and nothing else. "
+    )
+    assert "updated in your last response" not in text
+    assert (
+        "Do not call update_plan in this response: do the step marked '<- current' now with a "
+        "tool call.\n\n" in text
+    )
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "do x instead",
+        _MIDTURN_SAY_FRAME.format(text="look at y first"),
+        _OBSERVATION_FRAME.format(envelope_id="e1", text="the door opened"),
+        _SESSION_START_FRAME.format(why="a new session is starting", text="goal g in flight"),
+    ],
+    ids=["new turn", "operator note", "perception", "hook"],
+)
+def test_input_after_the_plan_call_keeps_the_plan_current(tmp_path: Path, said: str) -> None:
+    # The model has not answered what spoke after its plan call, and "do the step now" would talk
+    # over it.
+    loop = _after(tmp_path, ("update_plan",))
+    loop.session.messages.append(Message.user(said))
+
+    text = _line(loop)
+
+    assert PLAN_ADVANCE in text and _PLAN_JUST_UPDATED not in text
+
+
+def test_a_harness_rail_after_the_plan_call_still_says_do_the_step(tmp_path: Path) -> None:
+    # The next section of a paged skill arrives as a [harness] rail right after the update that
+    # closed a section. That is the harness, not input, and the step it brings is the one to do.
+    loop = _after(tmp_path, ("update_plan",))
+    loop.session.messages.append(Message.user(_control_rail("Section 2 of 3 of skill 'w'.")))
+
+    assert _line(loop).startswith(_PLAN_JUST_UPDATED)
+
+
+class _Recording(_Scripted):
+    def __init__(self, results: list[LLMResult]) -> None:
+        super().__init__(results)
+        self.requests: list[list[Any]] = []
+
+    async def acomplete(self, messages, *, system=None, tools=None, **kw) -> LLMResult:
+        self.requests.append(list(messages))
+        return await super().acomplete(messages, system=system, tools=tools, **kw)
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["run", "stream"])
+async def test_a_turn_reads_the_line_on_the_call_after_a_plan_call_and_not_after_work(
+    tmp_path: Path, streaming: bool
+) -> None:
+    registry = ToolRegistry()
+    registry.register(_Write())
+    registry.register(UpdatePlanTool())
+    provider = _Recording(
+        [
+            _batch(_plan("in_progress")),
+            _judge_ok(),
+            _batch(_write()),
+            _batch(_plan("done", "in_progress")),
+            _batch(_write()),
+            _done(),
+        ]
+    )
+    loop = AgentLoop(provider, registry, Session(cwd=str(tmp_path), model="t"), max_iterations=8)
+    if streaming:
+        async for _event in loop.astream_turn("do a then b"):
+            pass
+    else:
+        await loop.arun_turn("do a then b")
+
+    shown = [
+        any(_PLAN_JUST_UPDATED in message.text for message in request)
+        for request in provider.requests
+        if any("[plan]" in message.text for message in request)
+    ]
+    assert shown[:4] == [True, False, True, False]  # the plan gate's nudges follow

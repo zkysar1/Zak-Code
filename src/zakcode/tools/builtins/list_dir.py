@@ -65,7 +65,9 @@ class ListDirTool(Tool):
         target = path if path else "."
 
         try:
-            resolved = resolve_path(target, ctx.workspace_root, ctx.extra_workspace_roots)
+            resolved = resolve_path(
+                target, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
+            )
         except PathEscapeError as exc:
             return ToolResult.error(str(exc))
         except Exception as exc:  # noqa: BLE001 - handlers must never raise

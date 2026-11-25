@@ -26,10 +26,13 @@ from zakcode.session.observation_inbox import (
     KIND_CHANGE,
     KIND_FAREWELL,
     KIND_HEARTBEAT,
+    KIND_URGENT,
     NARRATION_MAX_LINES,
     OBSERVATION_ENVELOPE_VERSION,
     RECEIVER_SLICES,
     SHED_FAREWELL_SLICE,
+    URGENT_DROPPED_SLICE,
+    URGENT_EVENTS_SLICE,
     WAKING_KINDS,
     carry_farewell,
     carry_forward,
@@ -466,8 +469,8 @@ def _chars(observation: dict[str, object]) -> int:
     return len(json.dumps(observation, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
-def test_only_a_change_or_a_farewell_may_wake() -> None:
-    assert {KIND_CHANGE, KIND_FAREWELL} == WAKING_KINDS
+def test_only_a_change_a_farewell_or_an_urgent_event_may_wake() -> None:
+    assert {KIND_CHANGE, KIND_FAREWELL, KIND_URGENT} == WAKING_KINDS
     assert KIND_HEARTBEAT not in WAKING_KINDS
     assert "" not in WAKING_KINDS, "an unstamped envelope must never wake"
     assert "snapshot" not in WAKING_KINDS, "nor an unknown kind"
@@ -725,7 +728,12 @@ def test_the_count_gives_way_last_when_the_newest_report_leaves_no_room_for_it()
 
 
 def test_the_slices_the_receiver_mints_are_named_in_one_place() -> None:
-    assert set(RECEIVER_SLICES) == {EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE}
+    assert set(RECEIVER_SLICES) == {
+        EARLIER_FAREWELL_SLICE,
+        SHED_FAREWELL_SLICE,
+        URGENT_EVENTS_SLICE,
+        URGENT_DROPPED_SLICE,
+    }
 
 
 # ── carry_forward: both EVENTS under the one floor ─────────────────────────────────────────

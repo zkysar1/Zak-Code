@@ -292,6 +292,12 @@ class ToolContext(BaseModel):
     #: path that opens with one before confining it. Empty for a workspace that declares none.
     virtual_roots: dict[str, Path] = Field(default_factory=dict)
     spawner: SubAgentSpawner | None = None
+    #: The task batches that ran to their end in this turn (ADR-0382), by a digest of what each
+    #: one runs: the time it returned, the head of its output and the output's length. The loop
+    #: builds one context per turn, so the record is the turn's and every turn starts empty. The
+    #: ``task`` tool answers an identical batch with a pointer while that head is still in the
+    #: conversation, instead of running it again.
+    task_runs: dict[str, tuple[str, str, int]] = Field(default_factory=dict)
     #: Extra environment for subprocess tools (bash/powershell) — e.g. ``HTTP(S)_PROXY`` pointing
     #: at the egress proxy when the network-egress sandbox is on. Empty for an ordinary turn.
     egress_env: dict[str, str] = Field(default_factory=dict)
@@ -329,6 +335,24 @@ class ToolContext(BaseModel):
     #: wires it when ``enable_rules``; ``None`` otherwise, so the tool returns a clean
     #: "rules not enabled" error rather than crashing.
     rule_registry: Any | None = None
+    #: True when a tool result still in the conversation contains this text, character for
+    #: character (ADR-0372). The ``read_rule`` tool answers a repeat with a pointer only then, so
+    #: nothing has to be reset when a compaction or an elision takes the body away. ``None`` (a
+    #: bare context) always delivers.
+    in_context: Callable[[str], bool] | None = None
+    #: The output of the conversation's most recent tool result, or ``None`` (ADR-0381). The
+    #: ``read_rule`` tool answers a repeat that comes right after its own pointer with a firmer
+    #: line that says where the text is (ADR-0387). ``None`` (a bare context) never treats a
+    #: repeat as one.
+    last_tool_output: Callable[[], str | None] | None = None
+    #: True when the rules text in the system prompt holds this text, character for character
+    #: (ADR-0387). The ``read_rule`` tool answers a plain ask for a rule pinned there whole with
+    #: where it is instead of the text again. ``None`` (a bare context) always delivers.
+    in_prompt: Callable[[str], bool] | None = None
+    #: Counts one ``read_rule`` ask by the rule's own name (ADR-0386). The loop keeps how often the
+    #: session asked for each rule, and a compaction carries the most-asked texts across it.
+    #: ``None`` (a bare context) counts nothing.
+    note_rule_read: Callable[[str], None] | None = None
     #: The loop's :class:`ToolRegistry`, so the bash tool can recognise a registered tool
     #: written as a shell command (``ScheduleWakeup(prompt=…)``) and refuse it with the
     #: tool's real name and parameters instead of running it into a syntax error
@@ -339,6 +363,12 @@ class ToolContext(BaseModel):
     #: the parent's originating turn). Each loop stamps its own; empty for a loop that builds a
     #: bare context, in which case the resolver falls back to its session's recent user text.
     caller_query: str = ""
+    #: The session's loop skill, read when asked (``Session.loop_skill``, ADR-0187): the skill a
+    #: turn-end hook last named to re-enter the session's loop, as ``"<name> <args>"``, or ``""``
+    #: before any hook has named one. A callable, not a value, because the hook can name it in
+    #: the middle of a turn, after this context was built. ``update_plan`` reads it to word its
+    #: finished-plan rail for a loop (ADR-0392). ``None`` for a bare context: no loop.
+    loop_skill: Callable[[], str] | None = None
     #: The session's one scheduled wake-up (ADR-0094) — the seam the ``schedule_wakeup``
     #: tool arms and cancels through; the REPL's idle wait fires it. ``None`` for a bare
     #: loop that holds no session, so the tool returns a clean error rather than crashing.
@@ -366,6 +396,14 @@ class ToolContext(BaseModel):
 #: search of the text, for the reason ADR-0203 gives: whoever builds an answer says what
 #: it is. A file edit needs no flag: it opens a new repeated-outcome epoch (ADR-0038).
 RECEIPT_OF_CHANGE = "receipt_of_change"
+
+#: A key ``read_rule`` sets to ``True`` in :attr:`ToolResult.data` when its answer is a POINTER
+#: and sends no rule text (ADR-0399): the text is still in the conversation, or pinned whole in
+#: the system prompt, so the answer says where it is. The stuck ladder counts completions of
+#: plain ``read_rule`` lookups whose every result is such a pointer (``zakcode.agent.stuck``):
+#: a model that asks again and again for rules it holds, a different rule each time, is bounded
+#: as a plan-only run is (ADR-0364). A flag, not a search of the text, for ADR-0203's reason.
+RULE_POINTER = "rule_pointer"
 
 #: A key a tool sets in :attr:`ToolResult.data` to the number of leading characters of its
 #: ``output`` that are the COMMAND'S OWN output, when it closes that output with words of its
@@ -699,6 +737,7 @@ __all__ = [
     "SkillResolver",
     "ToolResult",
     "RECEIPT_OF_CHANGE",
+    "RULE_POINTER",
     "STDOUT_CHARS",
     "Tool",
     "ToolRegistry",

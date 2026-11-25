@@ -83,7 +83,7 @@ from zakcode.messages import Message
 from zakcode.permissions import PermissionOutcome, PermissionPrompter, PermissionRequest
 from zakcode.providers.base import Provider, ProviderError
 from zakcode.providers.spend_gate import STOP_REASON as SPEND_STOP_REASON
-from zakcode.providers.spend_gate import get_gate
+from zakcode.providers.spend_gate import decide_at_once, get_gate
 from zakcode.providers.structured import complete_structured, schema_error
 from zakcode.secrets import provider_key_env_names, strip_url_credentials
 from zakcode.server.brand import brand_page
@@ -132,14 +132,19 @@ from zakcode.session.framework_stop import (
 from zakcode.session.observation_inbox import (
     EARLIER_FAREWELL_SLICE,
     FAREWELL_SLICE,
+    KIND_URGENT,
     OBSERVATION_STAGE_LOCK,
     PERCEPTION_RECEIVED_SIGNAL,
     RECEIVER_SLICES,
     SHED_FAREWELL_SLICE,
+    URGENT_SLICE,
     WAKING_KINDS,
     carry_forward,
+    parse_urgent_event,
     peek_observation,
+    stage_urgent,
     staged_kind,
+    urgent_path,
 )
 from zakcode.session.say_inbox import (
     BusyLease,
@@ -1510,14 +1515,26 @@ def create_app(
         inflight.discard(session_id)
 
     def _turn_agent(
-        session: Session, model: str | None, prompter: PermissionPrompter | None
+        session: Session,
+        model: str | None,
+        prompter: PermissionPrompter | None,
+        *,
+        client_waits: bool = False,
     ) -> AgentLike:
         """The agent one turn runs on, told to skip SessionStart when its chat has already started
-        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks."""
+        in this server (ADR-0342). An agent with no loop (a remote or stub one) has no hooks.
+
+        ``client_waits`` marks a turn a client is held on (``POST /chat``, ``POST /chat/stream``):
+        a quota refusal ends it at once, and no Stop hook is asked to re-enter it (ADR-0393). A
+        turn the workspace drives itself, a say or a wake-up, keeps the paced re-entry
+        (ADR-0181)."""
         agent = resolved_factory(session, model, prompter)
         skip = getattr(getattr(agent, "loop", None), "skip_session_start", None)
         if skip is not None and session.id in started_chats:
             skip()
+        end_on_quota = getattr(getattr(agent, "loop", None), "end_turn_on_quota_refusal", None)
+        if client_waits and end_on_quota is not None:
+            end_on_quota()
         return agent
 
     async def _release_turn_agent(agent: AgentLike | None, session_id: str) -> None:
@@ -1564,7 +1581,9 @@ def create_app(
                 event_bus_registry.get_or_create(session.id).publish(event)
 
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
             tee(WatchMarkerRequest(event="user_message", text=request.message))
             slash = await dispatch_slash(agent, request.message)
             if slash.refusal:
@@ -1578,8 +1597,11 @@ def create_app(
                     status_code=403 if slash.refusal == "denied" else 500, detail=slash.notice
                 )
             # The turn runs in a task of its own so that Stop can cancel it where it waits, as
-            # the say consumer's Stop cancels a say turn (ADR-0327).
-            turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
+            # the say consumer's Stop cancels a say turn (ADR-0327). This request answers one
+            # client, as /complete does, so the turn's model calls are decided at once and never
+            # held for the vessel's first push: the task copies the context it is created in.
+            with decide_at_once():
+                turn = asyncio.ensure_future(agent.arun_turn(slash.turn_text or request.message))
             stopped = asyncio.ensure_future(stop.wait())
             try:
                 await asyncio.wait({turn, stopped}, return_when=asyncio.FIRST_COMPLETED)
@@ -1659,7 +1681,9 @@ def create_app(
         # and its finally would then never run — permanently stranding the reservation and
         # 409-ing the session until restart. Release it on a build failure. (audit2 #5)
         try:
-            agent = _turn_agent(session, request.model, _inbox_prompter(session.id))
+            agent = _turn_agent(
+                session, request.model, _inbox_prompter(session.id), client_waits=True
+            )
         except BaseException:
             _release_session(session.id)
             raise
@@ -1780,9 +1804,14 @@ def create_app(
         # (e.g. a bad request.model) becomes a clean 502, never an unhandled 500.
         try:
             provider = resolved_provider_factory(request.model)
-            result = await complete_structured(
-                provider, messages, system=request.system, schema=request.schema_, max_repairs=1
-            )
+            # A request/response caller decides at once. A refusal against a cap only the spend
+            # gate's ledger holds is a 502 now, not a hold for the vessel's first push: a held
+            # request is still billed when the push lands after its client has gone, and it keeps
+            # the server from stopping inside the supervisor's timeout.
+            with decide_at_once():
+                result = await complete_structured(
+                    provider, messages, system=request.system, schema=request.schema_, max_repairs=1
+                )
         except ProviderError as exc:
             raise HTTPException(
                 status_code=502,
@@ -2521,6 +2550,16 @@ def create_app(
         farewell's ``bodyReport`` is the last word of a body that is gone: an unread one rides
         forward through every later frame. Every other slice still takes the newest value.
 
+        An ``urgent`` frame is the third case, and it does not use the slot at all. It carries
+        ONE event the producer wants answered rather than merely seen (``urgentEvent``:
+        ``urgentKind``, ``logId``, ``seq`` and an optional ``entry``), and an event that a
+        later one pushed out was never perceived, so it joins a queue of its own
+        (``<workspace>/.observation-urgent``) and neither replaces nor is replaced by the slot.
+        The queue is de-duplicated on ``(logId, seq)``, holds at most 32 events inside the
+        same floor as a frame, and drops the OLDEST with a count when it is passed. The route
+        checks the SHAPE of the event and never its ``urgentKind``: which kinds exist is for the
+        producer and the reader to agree on. It wakes a sleeping mind like a change does.
+
         This route NEVER writes the knowledge tree (P2 — the mind is the only writer of its
         own tree). It stages a frame; the mind decides what, if anything, to encode.
         """
@@ -2574,90 +2613,133 @@ def create_app(
 
         root = Path(resolved_settings.workspace_root)
         target = root / ".observation"
-        # The receiver mints two slice names of its own, for the reports it carries
-        # (RECEIVER_SLICES). A producer cannot supply them: they are dropped here, so whatever a
-        # staged frame holds under those names was put there by a carry and not by a vessel.
+        # The receiver mints slice names of its own, for the reports it carries and the urgent
+        # events it queues (RECEIVER_SLICES). A producer cannot supply them: they are dropped
+        # here, so whatever a staged file holds under those names was put there by the receiver
+        # and not by a vessel.
         incoming: dict[str, Any] = {
             name: value
             for name, value in request.observation.items()
             if name not in RECEIVER_SLICES
         }
-        # ONE lock around look, carry and write, shared with the reader (OBSERVATION_STAGE_LOCK).
-        with OBSERVATION_STAGE_LOCK:
-            superseded = target.exists()
-            root.mkdir(parents=True, exist_ok=True)
-            observation = incoming
+        urgent_log = ""
+        if request.kind == KIND_URGENT:
+            # AN URGENT FRAME IS AN EVENT, NOT A READING, so it never takes the single slot below
+            # and never replaces what is in it. Latest-wins is right for a reading because the
+            # newest one IS the world; an event that a later event pushed out was never perceived.
+            # It joins a queue of its own (stage_urgent): de-duplicated on (logId, seq), bounded
+            # to URGENT_QUEUE_MAX_EVENTS events inside the same floor as a frame, the oldest
+            # dropped and counted. Only the event is kept; a slice beside it is counted as shed
+            # in the log line. A frame with no readable event is refused: there is nothing to
+            # queue, and a 200 would tell the producer it was.
+            event = parse_urgent_event(incoming)
+            if event is None:
+                logger.warning("perception-intake REFUSED ref=%s reason=bad_urgent_event", ref)
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "an urgent frame carries no readable urgentEvent (urgentKind, logId, seq)"
+                    ),
+                )
+            target = urgent_path(root)
+            queued = stage_urgent(
+                target,
+                OBSERVATION_FRAME.format(observed_at=request.observedAt),
+                event,
+                OBSERVATION_MAX_CHARS,
+            )
+            superseded = False
             merged_changes = False
             farewell_carried = False
-            # PEEK the pending frame once: the carry and the sticky-kind logic below both need
-            # it, and only when superseding.
-            pending: dict[str, Any] | None = None
-            pending_observation: Any = None
-            if superseded:
-                # Two EVENTS are not readings of current state, and plain latest-wins would lose
-                # them: the change list (two envelopes can land inside one ReAct iteration) and a
-                # farewell's report (a body's last word, which nothing follows and the vessel
-                # will not repeat). Both ride forward under the receiver's floor, which governs
-                # what it WRITES and not only what it accepts: a long supersession streak must
-                # not grow the staged file past the cap the intake check applies to a payload.
-                # Every OTHER slice stays latest-wins, because the newest reading of the world IS
-                # the world. What the fit sheds, and in what order, is documented on
-                # carry_forward and carry_farewell, and counted in the log line below. PEEK, never
-                # read: consuming here would deliver that envelope to nobody, turning
-                # exactly-once into exactly-never.
-                pending = peek_observation(target)
-                pending_observation = (pending or {}).get("observation")
-                observation, merged_changes, farewell_carried = carry_forward(
-                    pending_observation, incoming, OBSERVATION_MAX_CHARS
-                )
-            # The incoming slices the floor cost this frame. The frame names which of its slices
-            # moved, and a name the fit shed must not still be listed as one.
-            shed_slices = [name for name in incoming if name not in observation]
-            changed_slices = [name for name in request.changedSlices if name not in shed_slices]
-            if farewell_carried:
-                # The carried report is part of what this frame holds; naming it keeps
-                # changedSlices true to the observation it describes.
-                changed_slices += [
-                    name
-                    for name in (FAREWELL_SLICE, EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
-                    if name in observation and name not in changed_slices
-                ]
-            staged = {
-                "envelopeVersion": request.envelopeVersion,
-                "externalClientRef": ref,
-                "observedAt": request.observedAt,
-                "observation": observation,
-                "droppedSlices": list(request.droppedSlices),
-                # Staged alongside the payload so whatever reads this file can tell a narrowed
-                # CHANGE, or a body's FAREWELL, from a periodic full picture — the same
-                # distinction the wake below turns on, and useless to a reader that has to guess
-                # it.
-                #
-                # STICKY KIND: when the message-based ending path is active, there is no
-                # signal-file wake.  The host reads the frame on its own tick, and a
-                # heartbeat superseding an unread change or farewell must not hide it.  So the
-                # staged `kind` stays `farewell`, else `change`, whenever the pending frame was
-                # one and this one is not; and a farewell landing on an unread change stays a
-                # farewell.
-                "kind": staged_kind(
-                    request.kind,
-                    (pending or {}).get("kind") if isinstance(pending_observation, dict) else None,
-                ),
-                "changedSlices": changed_slices,
-                # The frame travels WITH the payload so whatever reads this file cannot
-                # present untrusted world text to the model unframed (P1).
-                "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
-            }
-            write_text_atomic(target, json.dumps(staged, ensure_ascii=False) + "\n")
+            observation: dict[str, Any] = {URGENT_SLICE: event}
+            shed_slices = [name for name in incoming if name != URGENT_SLICE]
+            urgent_log = (
+                f" urgent_kind={event['urgentKind']} log_id={event['logId']} seq={event['seq']}"
+                f" queued={queued.queued} depth={queued.depth} urgent_shed={queued.shed}"
+            )
+        else:
+            # ONE lock around look, carry and write, shared with the reader
+            # (OBSERVATION_STAGE_LOCK).
+            with OBSERVATION_STAGE_LOCK:
+                superseded = target.exists()
+                root.mkdir(parents=True, exist_ok=True)
+                observation = incoming
+                merged_changes = False
+                farewell_carried = False
+                # PEEK the pending frame once: the carry and the sticky-kind logic below both need
+                # it, and only when superseding.
+                pending: dict[str, Any] | None = None
+                pending_observation: Any = None
+                if superseded:
+                    # Two EVENTS are not readings of current state, and plain latest-wins would lose
+                    # them: the change list (two envelopes can land inside one ReAct iteration) and
+                    # a farewell's report (a body's last word, which nothing follows and the vessel
+                    # will not repeat). Both ride forward under the receiver's floor, which governs
+                    # what it WRITES and not only what it accepts: a long supersession streak must
+                    # not grow the staged file past the cap the intake check applies to a payload.
+                    # Every OTHER slice stays latest-wins, because the newest reading of the world
+                    # IS the world. What the fit sheds, and in what order, is documented on
+                    # carry_forward and carry_farewell, and counted in the log line below. PEEK,
+                    # never read: consuming here would deliver that envelope to nobody, turning
+                    # exactly-once into exactly-never.
+                    pending = peek_observation(target)
+                    pending_observation = (pending or {}).get("observation")
+                    observation, merged_changes, farewell_carried = carry_forward(
+                        pending_observation, incoming, OBSERVATION_MAX_CHARS
+                    )
+                # The incoming slices the floor cost this frame. The frame names which of its slices
+                # moved, and a name the fit shed must not still be listed as one.
+                shed_slices = [name for name in incoming if name not in observation]
+                changed_slices = [name for name in request.changedSlices if name not in shed_slices]
+                if farewell_carried:
+                    # The carried report is part of what this frame holds; naming it keeps
+                    # changedSlices true to the observation it describes.
+                    changed_slices += [
+                        name
+                        for name in (FAREWELL_SLICE, EARLIER_FAREWELL_SLICE, SHED_FAREWELL_SLICE)
+                        if name in observation and name not in changed_slices
+                    ]
+                staged = {
+                    "envelopeVersion": request.envelopeVersion,
+                    "externalClientRef": ref,
+                    "observedAt": request.observedAt,
+                    "observation": observation,
+                    "droppedSlices": list(request.droppedSlices),
+                    # Staged alongside the payload so whatever reads this file can tell a narrowed
+                    # CHANGE, or a body's FAREWELL, from a periodic full picture — the same
+                    # distinction the wake below turns on, and useless to a reader that has to guess
+                    # it.
+                    #
+                    # STICKY KIND: when the message-based ending path is active, there is no
+                    # signal-file wake.  The host reads the frame on its own tick, and a
+                    # heartbeat superseding an unread change or farewell must not hide it.  So the
+                    # staged `kind` stays `farewell`, else `change`, whenever the pending frame was
+                    # one and this one is not; and a farewell landing on an unread change stays a
+                    # farewell.
+                    "kind": staged_kind(
+                        request.kind,
+                        (pending or {}).get("kind")
+                        if isinstance(pending_observation, dict)
+                        else None,
+                    ),
+                    "changedSlices": changed_slices,
+                    # The frame travels WITH the payload so whatever reads this file cannot
+                    # present untrusted world text to the model unframed (P1).
+                    "frame": OBSERVATION_FRAME.format(observed_at=request.observedAt),
+                }
+                write_text_atomic(target, json.dumps(staged, ensure_ascii=False) + "\n")
         # THE FRAME IS ON DISK BEFORE THE AGENT IS TOLD TO LOOK. A wake that overtakes its
         # own payload wakes a loop to an empty inbox, which is worse than not waking it.
         #
-        # ONLY A CHANGE OR A FAREWELL WAKES (WAKING_KINDS). A heartbeat is timer-driven and
-        # says nothing new, so waking on one would convert every quiescent sleep into a
-        # busy-poll — and an unstamped envelope (kind == "") is deliberately NOT waking, so
+        # ONLY A CHANGE, A FAREWELL OR AN URGENT EVENT WAKES (WAKING_KINDS). A heartbeat is
+        # timer-driven and says nothing new, so waking on one would convert every quiescent sleep
+        # into a busy-poll — and an unstamped envelope (kind == "") is deliberately NOT waking, so
         # an older vessel cannot wake this loop by accident. A farewell wakes because nothing
         # follows it: the mind's next round perceives a world its body has left, and this
-        # frame is the only place the body's account of it exists. Membership is the
+        # frame is the only place the body's account of it exists. An urgent event wakes because
+        # it is the one frame its producer wants ANSWERED: left to wait out a sleep it is a
+        # late answer to an event that has already happened. How often one may start a turn is
+        # the delivering loop's bound, not this route's. Membership is the
         # fail-safe direction: a missed wake costs latency (the mind perceives this frame on
         # its next round anyway), a spurious one costs the sleep itself.
         #
@@ -2679,8 +2761,9 @@ def create_app(
         # THE WORKSPACE'S OWN HOOK COMES FIRST (ADR-0270). A host that wants to hear about a
         # change declares an ObservationReceived hook, and the hook decides what this route
         # otherwise decides for it below: whether the host runs a loop worth waking, and how
-        # to wake it. The route keeps what belongs to the envelope (only a change or a
-        # farewell is handed over, after it is staged) and reads the hook's exit code as the
+        # to wake it. The route keeps what belongs to the envelope (only a change, a
+        # farewell or an urgent event is handed over, after it is staged; `observation_path`
+        # names the file it was staged in) and reads the hook's exit code as the
         # disposition. It runs whichever ending the run uses, and a workspace that declares
         # it never also gets the signal-file wake: one wake per frame.
         delivered: bool | None = None
@@ -2766,11 +2849,12 @@ def create_app(
         # One line per accepted frame. `perception-intake` is the marker a log filter
         # anchors on and no sibling line emits it; an unparseable observedAt logs
         # age=None rather than a fabricated number, so a broken clock or a changed
-        # envelope shape is visible here instead of silently reading as fresh.
+        # envelope shape is visible here instead of silently reading as fresh. An urgent frame's
+        # line ends with the identity of its event and what the queue did with it.
         logger.info(
             "perception-intake ref=%s kind=%s age_s=%s superseded=%s merged=%s "
             "slices=%d dropped=%d changed=%d wake=%s mode=%s farewell_carried=%s "
-            "farewell_shed=%d reports_shed=%d",
+            "farewell_shed=%d reports_shed=%d%s",
             ref,
             request.kind or "-",
             age,
@@ -2784,6 +2868,7 @@ def create_app(
             farewell_carried,
             len(shed_slices),
             observation.get(SHED_FAREWELL_SLICE, 0),
+            urgent_log,
         )
         return {
             "accepted": True,
@@ -2903,9 +2988,10 @@ def create_app(
         Like every route here it serves the already-filtered bundle verbatim and
         holds NO projection logic: the cut is made at the source by the
         framework's KnowledgeProjection. For `program` that cut is a
-        marker pair in world/program.md rather than self.md's structural
-        first-'##' rule — program.md has no enforced section structure, so the
-        projection fails CLOSED and publishes {} when no marker is present.
+        marker pair in the shared-purpose document rather than the identity
+        document's structural first-'##' rule — the shared-purpose document has
+        no enforced section structure, so the projection fails CLOSED and
+        publishes {} when no marker is present.
         Re-deriving any of that here would be a second, divergent redactor.
 
         NOTE the empty steady state is EXPECTED, not a defect: at the time this
@@ -3377,6 +3463,11 @@ def create_app(
     # Whether a DONE condition has been observed: taken + completed stop_reason +
     # nothing in flight.
     run_ending_done = False
+    # Whether THIS process removed its own line from the slot at an overrun. An empty slot after
+    # that is our doing, never evidence that the agent read the line.
+    run_ending_retracted = False
+    # When the ending opened (monotonic): what the ``taken`` and ``completed`` log lines count from.
+    run_ending_opened_at: float | None = None
 
     def _arm_run_deadlines() -> None:
         nonlocal run_deadline, turn_deadline, effective_reserve, last_say_at
@@ -3632,10 +3723,11 @@ def create_app(
         retried on each beat inside the window, and on each watcher tick while a turn is
         in flight — see ``_retry_run_ending_write``.
         """
-        nonlocal run_ending_until, run_ending_written
+        nonlocal run_ending_until, run_ending_written, run_ending_opened_at
         if run_ending_until is not None:
             return
-        run_ending_until = time.monotonic() + _framework_stop_grace()
+        run_ending_opened_at = time.monotonic()
+        run_ending_until = run_ending_opened_at + _framework_stop_grace()
         inbox = say_path(resolved_settings.workspace_root)
         if write_say(inbox, _own_line()):
             run_ending_written = True
@@ -3678,30 +3770,43 @@ def create_app(
             run_ending_written = True
             logger.info("run ending: queued the configured line (retry)")
 
+    def _run_ending_age() -> float:
+        """Seconds since the ending opened; 0 before it has."""
+        if run_ending_opened_at is None:
+            return 0.0
+        return time.monotonic() - run_ending_opened_at
+
     def _check_run_ending_seen() -> None:
         """Record TAKEN when the inbox no longer holds our line.
 
-        Called at every boundary where the inbox could have been read.  The line
-        could have been consumed by a turn (between-turn poll or mid-turn delivery);
-        either way, the inbox is now empty or holds someone else's text.  Only once the
-        line was WRITTEN: before that, an empty slot or a different say is the operator's
-        traffic, not evidence that our line was read.
+        Called at every boundary where the inbox could have been read, and on every
+        watcher tick while a turn is in flight: a long-running agent loop's whole run can be
+        ONE turn and it reads the slot mid-turn (ADR-0051), so a check made only when a turn
+        ends never saw the line go, and the overrun lines said "never taken" about a line the
+        agent had read and was acting on (a served run whose line was delivered mid-turn 53 s
+        after it was queued still read "never taken" at the overrun). The line could have been
+        consumed by a turn (between-turn poll or mid-turn delivery); either way, the inbox is
+        now empty or holds someone else's text.  Only once the line was WRITTEN: before that,
+        an empty slot or a different say is the operator's traffic, not evidence that our line
+        was read.
         """
         nonlocal run_ending_taken
-        if run_ending_taken or run_ending_until is None or not run_ending_written:
+        if run_ending_taken or run_ending_retracted:
+            return
+        if run_ending_until is None or not run_ending_written:
             return
         inbox = say_path(resolved_settings.workspace_root)
-        if not say_pending(inbox):
-            run_ending_taken = True
-            return
-        # The slot holds something — check whether it is still ours.
-        try:
-            text = inbox.read_text(encoding="utf-8").strip()
-        except OSError:
-            return
-        if text != _own_line():
+        if say_pending(inbox):
+            # The slot holds something — check whether it is still ours.
+            try:
+                text = inbox.read_text(encoding="utf-8").strip()
+            except OSError:
+                return
+            if text == _own_line():
+                return
             # Someone else wrote a say; ours was taken.
-            run_ending_taken = True
+        run_ending_taken = True
+        logger.info("run ending: taken after %.1fs", _run_ending_age())
 
     def _check_run_ending_done(last_stop_reason: str | None) -> None:
         """Record DONE when the host's stop has finished.
@@ -3719,6 +3824,9 @@ def create_app(
         if inflight:
             return
         run_ending_done = True
+        # The only trace a completed ending leaves. Without it a count of completed endings was
+        # the endings that began minus the overruns, which a restart or a torn-down host corrupts.
+        logger.info("run ending: completed after %.1fs", _run_ending_age())
 
     def _retract_own_line() -> bool:
         """Delete the pending say only when it holds exactly our line; True when it did.
@@ -3726,7 +3834,11 @@ def create_app(
         A PEEK, never a consume: reading the say (which deletes it) and writing a
         different one back would open a window in which the operator's say is lost.
         NEVER deletes a different pending say.
+
+        Remembers that it did: an empty slot after our own retraction is our doing, so the
+        boundary check that follows must not read it as the agent having taken the line.
         """
+        nonlocal run_ending_retracted
         inbox = say_path(resolved_settings.workspace_root)
         if not say_pending(inbox):
             return False
@@ -3738,6 +3850,7 @@ def create_app(
             return False
         with contextlib.suppress(OSError):
             inbox.unlink()
+        run_ending_retracted = True
         return True
 
     def _abandon_run_ending() -> None:
@@ -3943,6 +4056,9 @@ def create_app(
             # beat loop is parked awaiting it, and that turn empties the slot itself, so this
             # tick is the only thing awake to put the line back inside the window (ADR-0347).
             _retry_run_ending_write()
+            # The agent reads the slot at its own iteration boundaries, inside this turn: only a
+            # check made HERE sees the line go, and the overrun below reports what this finds.
+            _check_run_ending_seen()
             if turn_deadline is not None and time.monotonic() >= turn_deadline:
                 break
             # Host-neutral ending: check overrun.
@@ -3991,6 +4107,7 @@ def create_app(
                     # The cap's own first write can have been refused too, and the beat loop
                     # is parked awaiting this turn just the same (ADR-0347).
                     _retry_run_ending_write()
+                    _check_run_ending_seen()  # the line goes mid-turn; see the watcher loop above
             if run_ending_until is not None:
                 taken = "taken" if run_ending_taken else "never taken"
                 logger.warning("run cap: run ending ran past its window (%s) — interrupting", taken)
@@ -4338,6 +4455,9 @@ def create_app(
         task.add_done_callback(spend_stop_tasks.discard)
 
     get_gate().set_soft_trip_hook(_spend_soft_trip)
+    # This process serves POST /budget, so the vessel's first push can reach it: the gate holds a
+    # refusal against a cap only its ledger holds for that push. No other process marks its gate.
+    get_gate().expect_push()
 
     @app.post("/budget")
     async def budget(request: BudgetPush) -> dict[str, Any]:

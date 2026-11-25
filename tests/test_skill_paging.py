@@ -426,6 +426,36 @@ def test_marking_a_section_done_turns_the_page(tmp_path: Path) -> None:
     assert summary["delivered_tokens"] > 0 and summary["body_tokens"] > 0
 
 
+def test_the_short_form_advance_turns_the_page_too(tmp_path: Path) -> None:
+    # ADR-0388: an 'advance' closes the section the plan marks current without resending the
+    # plan, and the page turns exactly as for a full-replace: the reply to it carries page 2.
+    def script(n: int, messages: list[Message]) -> LLMResult:
+        if n == 1:
+            return _use()
+        if n == 2:
+            advance = {"advance": {"outcome": "first thing done"}}
+            return LLMResult(tool_calls=[ToolCall(id="a1", name="update_plan", arguments=advance)])
+        return LLMResult(text="done")
+
+    provider = _ScriptByCall(script)
+    loop = _loop(provider, tmp_path)
+    result = asyncio.run(loop.arun_turn("run /demo"))
+    assert result.stop_reason == "completed"
+    page, _ = _page_after_plan(provider, "[/demo — page 2 of 3: Step 2: Second]")
+    assert "Do the second thing." in page and "Do the third thing." not in page
+    # Section 1's one leaf is its sub-step: the advance closes that, and the section with it.
+    leaf = loop.session.task_network.leaves()[0]
+    assert (leaf.id, leaf.status, leaf.outcome, leaf.note) == (
+        "1.1",
+        "done",
+        "first thing done",
+        MARK,
+    )
+    assert loop.session.task_network.tasks[0].status == "done"
+    (note,) = _notes(loop, "skill_page")
+    assert (note["skill"], note["page"], note["skipped"]) == ("demo", 2, 0)
+
+
 def test_the_plan_pulls_pages_in_order_and_never_twice(tmp_path: Path) -> None:
     def script(n: int, messages: list[Message]) -> LLMResult:
         if n == 1:

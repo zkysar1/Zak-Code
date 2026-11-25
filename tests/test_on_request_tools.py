@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from zakcode import Agent
+from zakcode.agent.subagent import GENERAL_PURPOSE
 from zakcode.artifacts import artifact_from_path
 from zakcode.config import Settings
 from zakcode.server.app import _reader_tool_for_artifact
-from zakcode.tools.base import ToolContext
+from zakcode.tools.base import ToolContext, ToolRegistry
 from zakcode.tools.builtins.default_registry import ON_REQUEST_TOOLS, default_registry
 
 
@@ -40,10 +41,54 @@ def test_the_on_request_tools_start_hidden_and_the_rest_do_not(tmp_path: Path) -
     assert {"Read", "Edit", "Bash", "Grep", "update_plan", "tool_search"} <= set(exposed)
 
 
-def test_a_sub_agent_registry_keeps_them(tmp_path: Path) -> None:
-    # The factory is unchanged: a sub-agent's registry has no tool_search to load them with.
+def test_the_factory_registers_them_active(tmp_path: Path) -> None:
+    # The factory is unchanged: the agent hides them on each registry it builds from it.
     registry = default_registry()
     assert all(registry.is_active(name) for name in ON_REQUEST_TOOLS)
+
+
+def _delegate_registry(tmp_path: Path) -> ToolRegistry:
+    agent = Agent(
+        settings=Settings(
+            default_model="scripted/test", context_window=8192, workspace_root=tmp_path
+        ),
+        enable_subagents=True,
+    )
+    manager = agent.loop.spawner
+    assert manager is not None
+    return manager._runner.child_registry(GENERAL_PURPOSE)  # type: ignore[attr-defined]
+
+
+def _offered(registry: ToolRegistry) -> set[str]:
+    return {d["function"]["name"] for d in registry.definitions()}
+
+
+def test_a_delegate_starts_from_the_parent_menu(tmp_path: Path) -> None:
+    # ADR-0402: a delegate offered every tool reached for read_pdf on .md and .json files and
+    # looped on the refusal, in a workspace that held no PDF.
+    child = _delegate_registry(tmp_path)
+    offered = _offered(child)
+    for name in ON_REQUEST_TOOLS:
+        assert child.get(name) is not None  # still registered, so still dispatchable by name
+        assert name not in offered
+    assert {"Read", "Edit", "Bash", "Grep"} <= offered
+
+
+def test_a_delegate_is_offered_the_reader_its_workspace_needs(tmp_path: Path) -> None:
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    offered = _offered(_delegate_registry(tmp_path))
+    assert "read_pdf" in offered
+    assert "read_docx" not in offered and "create_pdf" not in offered
+
+
+async def test_a_delegate_still_runs_a_hidden_tool_by_name(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("# notes\n")
+    child = _delegate_registry(tmp_path)
+    result = await child.execute(
+        "read_pdf", {"path": "notes.md"}, ToolContext(workspace_root=tmp_path)
+    )
+    # The tool's own refusal, not "unknown tool": the call reached the PDF reader.
+    assert result.is_error and "must end with .pdf" in result.output
 
 
 async def test_tool_search_loads_one_by_name_in_a_session_without_mcp(tmp_path: Path) -> None:
