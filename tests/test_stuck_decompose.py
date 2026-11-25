@@ -138,7 +138,7 @@ def test_stuck_rung_one_adds_investigative_steps_instead_of_advice(tmp_path: Pat
     titles = _titles(loop)
     # Varying arguments, same failure: the wrong-premise shape names the tool, not the args.
     assert titles[0] == "Investigate: why `boom` keeps failing across 3 attempts"
-    assert titles[1].startswith("Decide: name the assumption")
+    assert titles[1] == "Decide: name the assumption the failed steps share and verify it"
     note = loop.session.task_network.tasks[0].note
     assert "arguments are not the problem" in note and "Done when" in note
     added = [r for r in _rails(loop) if "I added 2 investigative steps" in r]
@@ -244,6 +244,30 @@ def test_repeated_outcome_gets_a_re_measurement_step(tmp_path: Path) -> None:
     titles = _titles(loop)
     assert titles[0] == "Investigate: what the result you keep re-measuring already tells you"
     assert titles[1].startswith("Decide:")
+    added = [r for r in _rails(loop) if "I added 2 investigative steps" in r]
+    assert added and "observed the SAME tool result 3 times" in added[0]
+
+
+def test_failures_the_turn_moved_past_seed_no_failure_step_on_a_re_measure_rung(
+    tmp_path: Path,
+) -> None:
+    # ADR-0404, the measured shape: a long turn holds failures the model has moved past, then a
+    # re-measured result trips rung 1. The failure counts span the turn, so before this change
+    # the rung said `boom` "keeps failing" although nothing had failed since. The rung is about
+    # the repeat: no step may say a tool keeps failing, and the decide step names no failed steps.
+    def script(n: int) -> LLMResult:
+        if n <= 2:
+            return LLMResult(tool_calls=[_c(f"c{n}", "boom", n=n)])
+        return LLMResult(tool_calls=[_c(f"c{n}", "probe", command=f"# probe {n}\ngit refs")])
+
+    loop = _loop(_ScriptByCallProvider(script), tmp_path, _BoomTool(), _ProbeTool())
+    asyncio.run(loop.arun_turn("find the stale claim ref"))
+    titles = _titles(loop)
+    assert titles[:2] == [
+        "Investigate: what the result you keep re-measuring already tells you",
+        "Decide: name the assumption the last steps share and verify it",
+    ]
+    assert not any("keeps failing" in t for t in titles)
     added = [r for r in _rails(loop) if "I added 2 investigative steps" in r]
     assert added and "observed the SAME tool result 3 times" in added[0]
 
