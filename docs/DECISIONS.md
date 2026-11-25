@@ -25263,16 +25263,16 @@ Decision.
   differs starts a new run at 1. The loop gives the tracker only completions that called a tool (its
   two `observe` calls, one per turn path), so a batch with none ends a run only where the loop calls
   `reset()`.
-- `poll_command` collapses whitespace, masks the word after an output redirect (`>`, `>>`, `2>`, `&>`;
-  `2>&1` redirects to no file and stays) and masks digit runs. `poll_answer` collapses whitespace,
-  masks digit runs and keeps the first 4,000 characters. A command that printed nothing (an empty
-  result, or only the exit-code line) is compared with its digits kept and only its redirect targets
-  masked, because it asked nothing a second answer could confirm: `py step1.py` then `py step2.py`
-  are two jobs, `q.sh > out1` then `q.sh > out2` one check. A command that only writes literal
-  words into a file (an `echo` or `printf` with no pipe, separator, line break, parenthesis,
-  expansion, glob or input redirect anywhere in it, such as `echo '' > a/__init__.py`) reads
-  nothing, so it is no check and keeps its target: the file it writes is the work. It is tried on
-  the command as written, less the space and line breaks around it, so a line break between two
+- `poll_command` collapses whitespace, masks the word after an output redirect (`>`, `>>`, `2>`,
+  `&>`; `2>&1` redirects to no file and stays) and masks digit runs. `poll_answer` collapses
+  whitespace, masks digit runs and keeps the first 4,000 characters. A command that printed nothing
+  (an empty result, or only the exit-code line) is compared with its digits kept and only its
+  redirect targets masked, because it asked nothing a second answer could confirm: `py step1.py`
+  then `py step2.py` are two jobs, `q.sh > out1` then `q.sh > out2` one check. A command that only
+  writes literal words into a file (an `echo` or `printf` with no pipe, separator, line break,
+  parenthesis, expansion, glob or input redirect anywhere in it, such as `echo '' > a/__init__.py`)
+  reads nothing, so it is no check and keeps its target: the file it writes is the work. It is tried
+  on the command as written, less the space and line breaks around it, so a line break between two
   statements keeps a write out: the check on the next line is read by what it asks.
 - `POLL_AT = 6` completions in a row fire `SIG_POLL`. It is strong, as a repeated outcome is: the
   run's length puts the ladder at least on the rung it names whatever the votes say (6 nudge, 7
@@ -25308,8 +25308,8 @@ Decision.
 
 Not done, and not measured.
 - Strictly consecutive only. A model that runs the check, another command and the check again (a
-  `sleep` in a call of its own, say) is not covered. The census above allowed up to three other calls
-  between repeats, and which of its 34 episodes were strictly consecutive was not separated.
+  `sleep` in a call of its own, say) is not covered. The census above allowed up to three other
+  calls between repeats, and which of its 34 episodes were strictly consecutive was not separated.
 - A silent poll whose command also changes a number outside its redirect targets
   (`q.sh --try 3 > out3`) reads as numbered jobs and is not seen. No run of numbered silent jobs
   appeared in the replay, so that rule rests on the argument above and on its test, not on a count.
@@ -25360,9 +25360,10 @@ Not done, and not measured.
   that never exits with no guard at all, and telling the model what to do when a wait returns still
   running, since the tool's own description says not to poll it with a wake-up and the end of the
   turn is a way out only where the session has an idle prompt. For the same reason the second way, a
-  wake-up, ends a one-shot run: it fires only at an idle prompt. `TaskOutput` also sees only the
-  tasks Bash started with `run_in_background`: a job put in the background with `&` in its command
-  is none of them, and the call answers with an error that lists the tasks it knows.
+  wake-up, ends a one-shot run: it fires only at an idle prompt. `TaskOutput` answers for the tasks
+  in the session's table: those Bash started with `run_in_background`, and a foreground command it
+  moved to the background at its timeout (ADR-0236). A job put in the background with `&` in its
+  command is none of them, and the call answers with an error that lists the tasks it knows.
   `tests/test_stuck_poll.py` pins both endings, on both turn paths.
 - The replay is of another agent, so it measures the false-positive rate and not the catch rate; the
   catch rate rests on the shapes above, built into the tests. Whether a model told this waits
@@ -25395,24 +25396,28 @@ no command, a command that is not text and a call with no result; each shell too
 other; the tracker inert without shell tools and the threshold the tracker's own; `reset()`, a
 refused completion, an empty completion and a completion the NARROW step turned away; the poll a
 floor under the rung a repeated outcome has earned; a command of 100,000 characters of digits,
-arrows or words masked in linear time; the nudge's words, its two ways to wait among them with the
-longest wait the tool takes, its sentence on what a run costs, its last sentence, its count and its
-place before the repeated-outcome text; the one decision step for a check that failed each time, and
-its note; and, on both turn paths, the seeded step and the rail, a model that keeps checking nudged,
-narrowed, stepped back and stopped as `stuck` with one check turned away, a check that failed from
-its third run pointed back at the failure steps it has, a model that waits as the nudge says on a
-task that stays silent (its third wait refused and its turn ended as `doom_loop`, or, with a new
-timeout each time, as `stuck`), and a model that works between its checks never told. Ninety-nine
-distinct single-site mutations of the signal are each killed by the tests written for them (the
-threshold, each mask and the width of a digit run, the answer and the error flag compared and each
-call of a batch compared with its own command, answer and place in the batch, the silent rule and
-its two forms, the literal-write exemption with its head and its width, its word boundary, its
-anchor, the strip of the command and the text it is tried on, each of the twelve characters that
-keep a command out of it (the line break among them) and the arrow that ends its words, a non-shell
-call, a call with no command or no result, an empty completion and a mixed batch, the narrow
-transparency and its rule that every call be turned away, the strong mapping, its floor and the
-signal's report, the nudge's place, count and words, the evidence field, its value and the
-completions it is on, reset and refusal, run extension and restart, the redirect forms and the
+arrows or words masked in linear time; the nudge as one whole text (its count, its two ways to wait
+with the longest wait the tool takes, its sentence on what a run costs and its last sentence) and
+its place before the repeated-outcome text; the one decision step for a check that failed each time,
+and its note as one whole text; and, on both turn paths, the seeded step and the rail, a model that
+keeps checking nudged, narrowed, stepped back and stopped as `stuck` with one check turned away, a
+check that failed from its third run pointed back at the failure steps it has, a model that waits as
+the nudge says on a task that stays silent (its third wait refused and its turn ended as
+`doom_loop`, or, with a new timeout each time, as `stuck`), and a model that works between its
+checks never told. One hundred and three distinct single-site mutations of the signal are each
+killed by the tests written for them (the threshold, each mask and the width of a digit run, the
+answer and the error flag compared and each call of a batch compared with its own command and
+answer, the silent rule and its two forms, the literal-write exemption with its head and its width,
+its word boundary, its anchor, the strip of the command and the text it is tried on, each of the
+twelve characters that keep a command out of it (the line break among them) and the arrow that ends
+its words, a non-shell call, a call with no command or no result, an empty completion and a mixed
+batch, the narrow transparency and its rule that every call be turned away, the strong mapping, its
+floor and the signal's report, the nudge's place, count and words, the evidence field, its value and
+the completions it is on, reset and refusal, run extension and restart, the redirect forms and the
 spellings it does not read, the tracker's own threshold, the seeded branch, its early return, its
 failure guard and its note's words, the seeding over open steps on each turn path, and the
-linear-time bound), and the partition by case names no case that nothing reddens.
+linear-time bound), and the partition by case names no case that nothing reddens. The two tests of a
+wait pin what the guards do with it, not the signal: of the mutations above only one reddens them
+(the threshold made unreachable, since each takes its six polls from it), and each goes red under a
+mutation of a guard: the first when the exact-repeat threshold is raised by one (on either turn
+path), the second when a call's signature leaves out its timeout or the ladder's stop is raised.

@@ -825,21 +825,18 @@ def test_the_nudge_says_what_was_counted_and_what_to_do_instead() -> None:
     for n in range(1, POLL_AT + 1):
         _poll(tracker, n)
     nudge = tracker.nudge_message()
-    assert nudge.startswith("You have now run the same check 6 times in a row")
-    assert "answered the same each time apart from its numbers" in nudge
-    assert "Each run is a model call that learns nothing new" in nudge
+    # The whole text, so that a change to any word is made on purpose (the ADR quotes it). It gives
     # two ways to wait without checking, each for its own case and in the tools' own words, the
-    # first with the longest wait the tool takes (it waits 30 seconds when its call names none)
-    assert (
-        "a background task you started, wait for it by calling TaskOutput with "
+    # first with the longest wait the tool takes (it waits 30 seconds when its call names none).
+    assert nudge == (
+        "You have now run the same check 6 times in a row, and it answered the same each time "
+        "apart from its numbers. Each run is a model call that learns nothing new. If you are "
+        "waiting for a background task you started, wait for it by calling TaskOutput with "
         f"timeout={MAX_BLOCK_MS}, not by checking: it returns when the task exits or the "
-        "timeout passes"
-    ) in nudge
-    assert (
-        "something outside this session, do not wait by checking: arm a wake-up for when it "
-        "can change (ScheduleWakeup) and end your turn"
-    ) in nudge
-    assert nudge.endswith("Otherwise act on what the check showed.")
+        "timeout passes. If you are waiting for something outside this session, do not wait by "
+        "checking: arm a wake-up for when it can change (ScheduleWakeup) and end your turn. "
+        "Otherwise act on what the check showed."
+    )
     for wrong in ("failed", "stuck", "same tool result", "plan tools"):
         assert wrong not in nudge  # said only what the harness knows
     for n in (7, 8):  # the number is the run's length, not the threshold
@@ -986,18 +983,16 @@ def test_a_check_that_failed_each_time_is_still_given_the_one_decision_step(tmp_
     steps = loop._seed_investigation_steps(tracker)
     assert [t.title for t in steps] == [DECIDE]
     note = steps[0].note
-    assert "another run adds nothing" in note
-    assert (
-        "Done when you have either done the next piece of work its answer calls for, or waited "
-        "without checking"
-    ) in note
-    assert (
-        f"called TaskOutput with timeout={MAX_BLOCK_MS} on a background task you started"
-    ) in note
-    assert (
-        "for anything outside this session, armed a wake-up (ScheduleWakeup) for when it can "
-        "change and ended your turn saying what you are waiting for"
-    ) in note
+    # The whole text, so that a change to any word is made on purpose: the step says what is done
+    # and gives both ways to wait without checking in the tools' own words.
+    assert note == (
+        "you have run the same check again and again and it answered the same each time, so "
+        "another run adds nothing. Done when you have either done the next piece of work its "
+        "answer calls for, or waited without checking: called TaskOutput with "
+        f"timeout={MAX_BLOCK_MS} on a background task you started, or, for anything outside "
+        "this session, armed a wake-up (ScheduleWakeup) for when it can change and ended your "
+        "turn saying what you are waiting for"
+    )
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
