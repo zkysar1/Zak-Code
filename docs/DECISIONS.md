@@ -25272,8 +25272,8 @@ Decision.
   words into a file (an `echo` or `printf` with no pipe, separator, line break, parenthesis,
   expansion, glob or input redirect anywhere in it, such as `echo '' > a/__init__.py`) reads
   nothing, so it is no check and keeps its target: the file it writes is the work. It is tried on
-  the command as written, so a line break keeps a write out: the check on the next line is read
-  by what it asks.
+  the command as written, less the space and line breaks around it, so a line break between two
+  statements keeps a write out: the check on the next line is read by what it asks.
 - `POLL_AT = 6` completions in a row fire `SIG_POLL`. It is strong, as a repeated outcome is: the
   run's length puts the ladder at least on the rung it names whatever the votes say (6 nudge, 7
   narrow, 8 step back, 9 stop with the default thresholds, for a check that succeeds each time),
@@ -25284,17 +25284,21 @@ Decision.
   would start over.
 - The nudge says what the harness knows: "You have now run the same check N times in a row, and it
   answered the same each time apart from its numbers. Each run is a model call that learns nothing
-  new. If you are waiting for something that has not happened yet, do not wait by checking: arm a
+  new. If you are waiting for a background task you started, end your turn: you are told when it
+  exits. If you are waiting for something outside this session, do not wait by checking: arm a
   wake-up for when it can change (ScheduleWakeup) and end your turn. Otherwise act on what the check
-  showed." It is the text said when the answers also repeat as outcomes.
+  showed." The two ways to wait follow the tools' own words: the harness reports a background task
+  that exits, and a wake-up is for state it cannot report. It is the text said when the answers
+  also repeat as outcomes.
 - Rung 1 seeds one step, "Decide: act on what the check showed, or wait without checking", and none
   of the failure steps, the re-measure step or the closing assumption step: a check that succeeded
-  each time failed nowhere, so each of those would say what is not so (ADR-0057).
-  `_seed_investigation_steps` gives it whenever the last completion was a poll, a check that failed
-  each time included: its answer is the error, so acting on it or waiting without checking are what
-  is left. The loop seeds only when no investigation step is open, so a check that failed from its
-  third run has its failure steps open when the sixth arrives, and the poll's nudge points back at
-  them and adds none. `evidence()` carries `poll`, the run's length, while the signal fires.
+  each time failed nowhere, so each of those would say what is not so (ADR-0057). Its note names the
+  nudge's two ways to wait. `_seed_investigation_steps` gives it whenever the last completion was a
+  poll, a check that failed each time included: its answer is the error, so acting on it or waiting
+  without checking are what is left. The loop seeds only when no investigation step is open, so a
+  check that failed from its third run has its failure steps open when the sixth arrives, and the
+  poll's nudge points back at them and adds none. `evidence()` carries `poll`, the run's length,
+  while the signal fires.
 - The tracker needs `shell_tools`, which both turn paths already pass for the print-only bound
   (ADR-0373); without them it counts nothing.
 
@@ -25322,7 +25326,9 @@ Not done, and not measured.
   literal write whose words hold a glob character or a line break, quoted or not
   (`echo '*.pyc' > .gitignore`, `echo '[pytest]' > pytest.ini`, `echo 'Continue?' > p.txt`, a quoted
   text of two lines): the exemption cannot tell a quoted one from a bare one, so one such text
-  written into nine files stops at the ninth.
+  written into nine files stops at the ninth. Nor is a command of several statements, each a literal
+  write (two on two lines, two joined by `&&`, a write continued over a line break): the exemption
+  is one statement long, so one text written into nine sets of files this way stops at the ninth.
 - Only `>`, `>>`, `2>` and `&>` name an output file. A silent poll that names it another way keeps
   the number in its command and is not seen: with a flag (`curl -s -o /tmp/st_N.json URL`,
   `wget -q -O /tmp/st_N.html URL`), with `>&` or `>|`, or through `| tee`. The same `curl` with
@@ -25340,38 +25346,40 @@ Not done, and not measured.
 
 The proof. `tests/test_stuck_poll.py` pins: the measured shape (a check whose output goes to a new
 numbered file each time, six different strings) firing at the sixth completion and not before, with
-the ladder's rung for each length of run, and the run's length in the evidence only while the
-signal fires; each variation the measurements found (a counter, a time, a number in a path, every
-redirect form, an appended log, spacing) read as one check, and the same variations over commands
-that printed nothing, by an exit-code line or by no text at all, split into the redirect forms that
-match and the numbers that do not; one text written into different files never a check, however
-often, and a write that reads or runs something (a pipe, a separator, a line break, an input
-redirect, a parenthesis, an expansion, a glob, in its words or after its arrow, with the check on
-the next line read by what it asks) still read by what it asks; a different check, a call to
-another tool, an edit between runs and a file read in pages each not a poll, each with a control
-that is; each cost named above as it stands (answers that differ only in numbers, five shapes; a
-text with a quoted glob or two lines written into many files; an output file named by `>&`, `>|`,
-`tee` or a flag) read as one check or not read; numbers in an answer not a change and words a
-change; a check that begins to fail; batches (two shell calls to a completion, each call compared
-with its own answer and error flag, one mixed with another tool, one of the two, one turned away
-and one run); a call with no command, a command that is not text and a call with no result; each
-shell tool counting and no other; the tracker inert without shell tools and the threshold the
-tracker's own; `reset()`, a refused completion, an empty completion and a completion the NARROW
-step turned away; the poll a floor under the rung a repeated outcome has earned; a command of
-100,000 characters of digits, arrows or words masked in linear time; the nudge's words, its count
-and its place before the repeated-outcome text; the one decision step for a check that failed each
-time; and, on both turn paths, the seeded step and the rail, a model that keeps checking nudged,
+the ladder's rung for each length of run, and the run's length in the evidence only while the signal
+fires; each variation the measurements found (a counter, a time, a number in a path, every redirect
+form, an appended log, spacing) read as one check, and the same variations over commands that
+printed nothing, by an exit-code line or by no text at all, split into the redirect forms that match
+and the numbers that do not; one text written into nine different files never a check, with the
+space and line breaks around it no matter, and a write that reads or runs something (a pipe, a
+separator, a line break, an input redirect, a parenthesis, an expansion, a glob, in its words or
+after its arrow, with the check on the next line read by what it asks) still read by what it asks; a
+different check, a call to another tool, an edit between runs and a file read in pages each not a
+poll, each with a control that is; each cost named above as it stands (answers that differ only in
+numbers, five shapes; a text with a quoted glob or two lines, or a write of several statements,
+written into many files; an output file named by `>&`, `>|`, `tee` or a flag) read as one check or
+not read; numbers in an answer not a change and words a change; a check that begins to fail; batches
+(two shell calls to a completion, each call compared with its own command, answer and error flag,
+one mixed with another tool, one of the two, one turned away and one run); a call with no command, a
+command that is not text and a call with no result; each shell tool counting and no other; the
+tracker inert without shell tools and the threshold the tracker's own; `reset()`, a refused
+completion, an empty completion and a completion the NARROW step turned away; the poll a floor under
+the rung a repeated outcome has earned; a command of 100,000 characters of digits, arrows or words
+masked in linear time; the nudge's words, its two ways to wait among them, its count and its place
+before the repeated-outcome text; the one decision step for a check that failed each time, and its
+note; and, on both turn paths, the seeded step and the rail, a model that keeps checking nudged,
 narrowed, stepped back and stopped as `stuck` with one check turned away, a check that failed from
 its third run pointed back at the failure steps it has, and a model that works between its checks
-never told. Sixty-nine single-site mutations of the signal are each killed by the tests written for
-them (the threshold, each mask and the width of a digit run, the answer and the error flag
-compared and each call of a batch compared with its own, the silent rule and its two forms, the
-literal-write exemption with its head and its width, its word boundary, its anchor and the text it
-is tried on, each of the twelve characters that keep a command out of it (the line break among
-them) and the arrow that ends its words, a non-shell call, a call with no command or no result, an
-empty completion and a mixed batch, the narrow transparency and its rule that every call be turned
-away, the strong mapping, its floor and the signal's report, the nudge's place and count, the
-evidence field, its value and the completions it is on, reset and refusal, run extension and
-restart, the redirect forms and the spellings it does not read, the tracker's own threshold, the
-seeded branch, its early return and its failure guard, the seeding over open steps on each turn
-path, and the linear-time bound), and the partition by case names no case that nothing reddens.
+never told. Seventy-seven single-site mutations of the signal are each killed by the tests written
+for them (the threshold, each mask and the width of a digit run, the answer and the error flag
+compared and each call of a batch compared with its own command and answer, the silent rule and its
+two forms, the literal-write exemption with its head and its width, its word boundary, its anchor,
+the strip of the command and the text it is tried on, each of the twelve characters that keep a
+command out of it (the line break among them) and the arrow that ends its words, a non-shell call, a
+call with no command or no result, an empty completion and a mixed batch, the narrow transparency
+and its rule that every call be turned away, the strong mapping, its floor and the signal's report,
+the nudge's place, count and words, the evidence field, its value and the completions it is on,
+reset and refusal, run extension and restart, the redirect forms and the spellings it does not read,
+the tracker's own threshold, the seeded branch, its early return, its failure guard and its note's
+words, the seeding over open steps on each turn path, and the linear-time bound), and the partition
+by case names no case that nothing reddens.

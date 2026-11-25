@@ -888,9 +888,11 @@ class StuckTracker:
             return (
                 f"You have now run the same check {self._poll_run} times in a row, and it "
                 "answered the same each time apart from its numbers. Each run is a model call "
-                "that learns nothing new. If you are waiting for something that has not "
-                "happened yet, do not wait by checking: arm a wake-up for when it can change "
-                "(ScheduleWakeup) and end your turn. Otherwise act on what the check showed."
+                "that learns nothing new. If you are waiting for a background task you "
+                "started, end your turn: you are told when it exits. If you are waiting for "
+                "something outside this session, do not wait by checking: arm a wake-up for "
+                "when it can change (ScheduleWakeup) and end your turn. Otherwise act on what "
+                "the check showed."
             )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:

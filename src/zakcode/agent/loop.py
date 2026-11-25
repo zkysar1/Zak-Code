@@ -5166,9 +5166,10 @@ class AgentLoop:
                     note=(
                         "you have run the same check again and again and it answered the same "
                         "each time, so another run adds nothing. Done when you have either done "
-                        "the next piece of work its answer calls for, or armed a wake-up "
-                        "(ScheduleWakeup) for when it can change and ended your turn saying what "
-                        "you are waiting for"
+                        "the next piece of work its answer calls for, or ended your turn saying "
+                        "what you are waiting for (a background task you started tells you when "
+                        "it exits; for anything outside this session, arm a wake-up "
+                        "(ScheduleWakeup) for when it can change first)"
                     ),
                 )
             ]

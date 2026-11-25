@@ -198,13 +198,29 @@ LITERAL_WRITES: dict[str, Callable[[int], str]] = {
 
 
 @pytest.mark.parametrize("variant", sorted(LITERAL_WRITES))
-def test_one_text_written_into_different_files_is_no_check_however_often(variant: str) -> None:
+def test_one_text_written_into_different_files_is_no_check_for_nine_completions(
+    variant: str,
+) -> None:
     commands = [LITERAL_WRITES[variant](n) for n in range(len(PACKAGES))]
     assert len(commands) >= POLL_AT + 3  # the stop, had they read as one check
     tracker = _tracker()
     assert _run(tracker, commands) == 0  # EMPTY_OK: nothing printed
     assert tracker.poll_run == 1
     assert tracker.next_action() is StuckAction.CONTINUE
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [("", "\n"), ("", "\r\n\r\n"), ("\n  ", ""), ("  ", "  \n")],
+    ids=["a trailing line break", "a trailing blank line", "a leading line break", "spaces around"],
+)
+def test_the_space_and_line_breaks_around_a_write_do_not_make_it_several_statements(
+    before: str, after: str
+) -> None:
+    commands = [f"{before}echo '' > src/{p}/__init__.py{after}" for p in PACKAGES]
+    tracker = _tracker()
+    assert _run(tracker, commands) == 0
+    assert tracker.poll_run == 1
 
 
 #: One text with a quoted glob character written into a file each time. The exemption cannot tell
@@ -226,6 +242,30 @@ def test_one_text_with_a_quoted_glob_written_into_many_files_reads_as_a_poll_the
     actions: list[StuckAction] = []
     for n in range(len(PACKAGES)):
         _ran(tracker, _shell(QUOTED_GLOBS[variant](n), n))
+        actions.append(tracker.next_action())
+    assert tracker.poll_run == len(PACKAGES) and actions[-1] is StuckAction.STOP
+
+
+#: A literal write that is several statements, or one carried over a line break. The exemption is
+#: one statement long, so one text written into many files this way reads as one check run again
+#: (ADR-0407, Not done).
+SEVERAL_STATEMENTS: dict[str, Callable[[int], str]] = {
+    "two writes on two lines": lambda n: (
+        f"echo x > {PACKAGES[n]}/a.txt\necho x > {PACKAGES[n]}/b.txt"
+    ),
+    "two writes joined by &&": lambda n: (
+        f"echo x > {PACKAGES[n]}/a.txt && echo x > {PACKAGES[n]}/b.txt"
+    ),
+    "a write carried over a line break": lambda n: f"echo '' \\\n> {PACKAGES[n]}/__init__.py",
+}
+
+
+@pytest.mark.parametrize("variant", sorted(SEVERAL_STATEMENTS))
+def test_a_write_of_several_statements_reads_as_a_poll_the_known_cost(variant: str) -> None:
+    tracker = _tracker()
+    actions: list[StuckAction] = []
+    for n in range(len(PACKAGES)):
+        _ran(tracker, _shell(SEVERAL_STATEMENTS[variant](n), n))
         actions.append(tracker.next_action())
     assert tracker.poll_run == len(PACKAGES) and actions[-1] is StuckAction.STOP
 
@@ -380,9 +420,14 @@ def test_a_completion_is_in_a_run_only_when_every_call_in_it_is_a_shell_call() -
 
 
 def _pair(
-    tracker: StuckTracker, n: int, *, first_answer: str = UNCHANGED, first_error: bool = False
+    tracker: StuckTracker,
+    n: int,
+    *,
+    first: str = "a",
+    first_answer: str = UNCHANGED,
+    first_error: bool = False,
 ) -> None:
-    calls = [*_shell(f"q.sh a {n}", 2 * n), *_shell(f"q.sh b {n}", 2 * n + 1)]
+    calls = [*_shell(f"q.sh {first} {n}", 2 * n), *_shell(f"q.sh b {n}", 2 * n + 1)]
     results = [
         ToolResultBlock(tool_use_id=calls[0].id, output=first_answer, is_error=first_error),
         ToolResultBlock(tool_use_id=calls[1].id, output=UNCHANGED),
@@ -401,6 +446,14 @@ def test_every_call_of_a_batch_is_compared_with_its_own_answer_and_error_flag() 
             _pair(tracker, n)
         _pair(tracker, 9, **changed)  # only the FIRST call's answer or error flag differs
         assert tracker.poll_run == 1 and not tracker.last_was_poll
+
+
+def test_every_call_of_a_batch_is_compared_with_its_own_command() -> None:
+    tracker = _tracker()
+    for n in range(POLL_AT - 1):
+        _pair(tracker, n)
+    _pair(tracker, 9, first="c")  # only the FIRST call's command differs; the last is as before
+    assert tracker.poll_run == 1 and not tracker.last_was_poll
 
 
 def test_the_poll_never_lowers_a_rung_that_a_repeated_outcome_has_earned() -> None:
@@ -437,7 +490,12 @@ def test_the_evidence_names_the_run_only_when_the_signal_fired() -> None:
 def test_a_call_with_no_command_or_no_result_ends_the_run_and_is_never_read() -> None:
     # A provider hands back {"_raw": ...} for arguments it could not decode, and a call can have no
     # result: neither reads as a check, and neither may fail the tracker.
-    undecoded = [{"_raw": '{"command": "q.sh'}, {}, {"command": None}, {"command": ["q.sh"]}]
+    undecoded: list[dict[str, Any]] = [
+        {"_raw": '{"command": "q.sh'},
+        {},
+        {"command": None},
+        {"command": ["q.sh"]},
+    ]
     for arguments in undecoded:
         tracker = _tracker()
         for n in range(1, POLL_AT):
@@ -710,6 +768,8 @@ def test_the_nudge_says_what_was_counted_and_what_to_do_instead() -> None:
     assert nudge.startswith("You have now run the same check 6 times in a row")
     assert "answered the same each time apart from its numbers" in nudge
     assert "(ScheduleWakeup)" in nudge and "end your turn" in nudge
+    # a background task the harness reports on is not waited for by checking, nor by a wake-up
+    assert "a background task you started, end your turn: you are told when it exits" in nudge
     for wrong in ("failed", "stuck", "same tool result", "plan tools"):
         assert wrong not in nudge  # said only what the harness knows
     for n in (7, 8):  # the number is the run's length, not the threshold
@@ -850,7 +910,14 @@ def test_a_check_that_failed_each_time_is_still_given_the_one_decision_step(tmp_
     for n in range(POLL_AT):
         _ran(tracker, _shell(_status_check(n), n), "connection refused", is_error=True)
     assert tracker.last_was_poll and tracker.failing_tools()  # the floor: failures to point at
-    assert [t.title for t in loop._seed_investigation_steps(tracker)] == [DECIDE]
+    steps = loop._seed_investigation_steps(tracker)
+    assert [t.title for t in steps] == [DECIDE]
+    note = steps[0].note
+    assert (
+        "another run adds nothing" in note and "ended your turn saying what you are waiting" in note
+    )
+    assert "a background task you started tells you when it exits" in note
+    assert "(ScheduleWakeup)" in note
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
@@ -876,7 +943,10 @@ def test_a_check_that_failed_from_its_third_run_is_pointed_back_at_the_steps_it_
     assert "no progress — re-pointed at 2 investigative steps in the plan" in notes
 
 
-def test_a_model_that_works_between_its_checks_is_never_told(tmp_path: Path) -> None:
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+def test_a_model_that_works_between_its_checks_is_never_told(
+    tmp_path: Path, streamed: bool
+) -> None:
     def script(n: int) -> LLMResult:
         if n > 3 * POLL_AT:
             return LLMResult(text="done")
@@ -884,7 +954,11 @@ def test_a_model_that_works_between_its_checks_is_never_told(tmp_path: Path) -> 
             return LLMResult(tool_calls=[_c(f"c{n}", "Bash", command=_status_check(n))])
         return LLMResult(tool_calls=[_c(f"c{n}", "Bash", command=f"git log -n {n}")])
 
-    loop = _shell_loop(_ScriptByCallProvider(script), tmp_path, max_iterations=4 * POLL_AT)
-    result = asyncio.run(loop.arun_turn("watch the build"))
-    assert result.iterations == 3 * POLL_AT + 1  # the floor: the whole script ran
+    provider = _ScriptByCallProvider(script)
+    loop = _shell_loop(provider, tmp_path, max_iterations=4 * POLL_AT)
+    if streamed:
+        _drain(loop, "watch the build")
+    else:
+        asyncio.run(loop.arun_turn("watch the build"))
+    assert provider.calls == 3 * POLL_AT + 1  # the floor: the whole script ran
     assert not any("same check" in r for r in _rails(loop))
