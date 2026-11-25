@@ -3,8 +3,8 @@
 A summary replaces what a stretch printed with a short account of it. A model that read a long
 source in pages and wrote nothing down reads it again after the summary, and again after the
 next one: the measurement is in ADR-0405. So when the context nears the compaction threshold
-and the stretch since the last summary printed files and wrote none, the harness says so once,
-while the model still holds what it read.
+and the stretch since the last summary printed files and wrote none since it began or last
+wrote one, the harness says so once, while the model still holds what it read.
 
 Hermetic: scripted providers, an in-memory stand-in for the shell tool, a tmp workspace.
 """
@@ -141,7 +141,8 @@ def test_a_read_only_stretch_near_the_threshold_is_told_once(tmp_path: Path) -> 
     provider.tokens = inside
     note = loop._summary_ahead_rail()
     assert note is not None
-    assert "read files 8 times, most often score.py ×8" in note
+    assert "Since it began or was last summarized, you have read files 8 times" in note
+    assert "most often score.py ×8, and written none." in note
     assert loop._summary_ahead_rail() is None  # once a stretch
 
 
@@ -153,13 +154,22 @@ def test_too_few_reads_say_nothing(tmp_path: Path) -> None:
     assert loop._summary_ahead_rail() is None
 
 
-def test_a_stretch_that_wrote_a_file_is_not_told(tmp_path: Path) -> None:
+def test_a_write_restarts_the_count(tmp_path: Path) -> None:
     provider = _Provider()
     loop = _loop(provider, tmp_path)
     provider.tokens = _band(loop)[1]
     _read_pages(loop, 8)
     loop._count_stretch_io(*_shell("w", "cat > notes.md <<'EOF'\nscore(row) -> dict\nEOF"))
+    assert loop._summary_ahead_rail() is None  # what was read is written down
+    # An early write does not silence the reads after it: they are counted from the write.
+    _read_pages(loop, 7, name="trend.py")
     assert loop._summary_ahead_rail() is None
+    loop._count_stretch_io(*_shell("t8", "sed -n '700,780p' src/trend.py"))
+    note = loop._summary_ahead_rail()
+    assert note is not None
+    assert "Since you last wrote a file, you have read files 8 times" in note
+    assert "most often trend.py ×8, and written nothing more." in note
+    assert "score.py" not in note
 
 
 def test_the_read_tool_counts_as_printing_the_file(tmp_path: Path) -> None:
@@ -261,11 +271,16 @@ class _WriteFile(Tool):
 
 def test_a_write_through_a_file_tool_is_writing(tmp_path: Path) -> None:
     def script(n: int) -> LLMResult:
-        if n == 1:
+        if n <= 3:
+            command = f"sed -n '{(n - 1) * 80 + 1},{n * 80}p' src/intro.md"
+            return LLMResult(
+                tool_calls=[ToolCall(id=f"i{n}", name="Bash", arguments={"command": command})]
+            )
+        if n == 4:
             args = {"path": "notes.md", "content": "score(row) -> dict"}
             return LLMResult(tool_calls=[ToolCall(id="w", name="write_file", arguments=args)])
-        if n <= 10:
-            command = f"sed -n '{(n - 2) * 80 + 1},{(n - 1) * 80}p' src/score.py"
+        if n <= 12:
+            command = f"sed -n '{(n - 5) * 80 + 1},{(n - 4) * 80}p' src/score.py"
             return LLMResult(
                 tool_calls=[ToolCall(id=f"c{n}", name="Bash", arguments={"command": command})]
             )
@@ -275,9 +290,14 @@ def test_a_write_through_a_file_tool_is_writing(tmp_path: Path) -> None:
     loop = _loop(provider, tmp_path)
     loop.registry.register(_WriteFile())
     provider.tokens = _band(loop)[1]
-    loop.run_turn("note the interface, then page through src/score.py")
-    assert provider.calls == 11  # the write ran, and the nine reads after it
-    assert _notes(loop) == []
+    loop.run_turn("read the intro, note the interface, then page through src/score.py")
+    assert provider.calls == 13  # three reads, the write, and the eight reads after it
+    notes = _notes(loop)
+    assert len(notes) == 1
+    # Counted from the write: given after the eighth read since it, and naming only those.
+    assert "Since you last wrote a file" in notes[0]
+    assert "score.py ×8" in notes[0]
+    assert "intro.md" not in notes[0]
 
 
 def test_no_compactor_no_note(tmp_path: Path) -> None:

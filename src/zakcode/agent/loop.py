@@ -605,15 +605,25 @@ _POSITION_NOTE_RE = re.compile(re.escape(_POSITION_NOTE_HEAD) + r".*?(?=\n[ \t]*
 #: wrote none is told, once, that a summary is near: the room of a few calls to write down what
 #: it needs before the summary replaces what it read with a short account of it.
 _SUMMARY_AHEAD_AT = 0.85
-#: ADR-0405: files printed in the stretch before that note has anything to say.
+#: ADR-0405: files printed since the stretch began or last wrote one, before that note has
+#: anything to say.
 _SUMMARY_AHEAD_MIN_READS = 8
 _SUMMARY_AHEAD_RAIL = (
-    "This conversation will be summarized soon ({pct}% of the way there). Since it began or was "
-    "last summarized, you have read files {reads} times, most often {files}, and written none. "
+    "This conversation will be summarized soon ({pct}% of the way there). {span} "
     "The summary keeps only a short account of what you read, so after it you would have to read "
     "them again. Before it comes, write down what you will need from them: in the file you are "
     "building, or in a short notes file. After the summary, read your notes rather than the "
     "sources; if you need more from a source, have a sub-agent read it and report only that."
+)
+#: ADR-0405: what the note counts, in a stretch that has written nothing, and in one that has: a
+#: write restarts the count, so an early write does not silence the reads after it.
+_SUMMARY_AHEAD_SPAN = (
+    "Since it began or was last summarized, you have read files {reads} times, most often "
+    "{files}, and written none."
+)
+_SUMMARY_AHEAD_SPAN_AFTER_WRITE = (
+    "Since you last wrote a file, you have read files {reads} times, most often {files}, and "
+    "written nothing more."
 )
 #: The line a summary that was cut or held adds to that note (ADR-0369): a resumed model must not
 #: read it as the whole history (ADR-0275), and the note is written fresh at every compaction, so
@@ -3421,8 +3431,9 @@ class AgentLoop:
         self._turn_scripts_run = set()
         self._turn_files_read = set()
         # ADR-0405: the stretch since the conversation began or was last summarized: the files it
-        # printed (base name -> times), whether it wrote a file, and whether it was told that a
-        # summary is near. Not per turn: a summary ends a stretch (_adopt_compacted).
+        # printed since it began or last wrote one (base name -> times), whether it wrote a file,
+        # and whether it was told that a summary is near. Not per turn: a summary ends a stretch
+        # (_adopt_compacted).
         self._stretch_reads: Counter[str] = Counter()
         self._stretch_wrote = False
         self._stretch_noted = False
@@ -4174,7 +4185,8 @@ class AgentLoop:
 
     def _count_stretch_io(self, call: ToolCall, block: ToolResultBlock) -> None:
         """Count a call that printed a file into, or wrote one from, the stretch (ADR-0405). A
-        failed call counts for neither. A file tool's write is counted where its edit is."""
+        failed call counts for neither. A write restarts the count of files printed. A file tool's
+        write is counted where its edit is."""
         if block.is_error:
             return
         if call.name in _READ_TOOLS:
@@ -4186,17 +4198,19 @@ class AgentLoop:
             if not isinstance(command, str):
                 return
             if _writes_a_file(command):
+                self._stretch_reads.clear()
                 self._stretch_wrote = True
             else:
                 self._stretch_reads.update(_files_printed(command))
 
     def _summary_ahead_rail(self) -> str | None:
-        """The note that a summary is near, for a stretch that printed files and wrote none
-        (ADR-0405), or ``None``. Once a stretch, from :data:`_SUMMARY_AHEAD_AT` of the compaction
-        threshold up to the threshold: past it the compaction runs before the next call, and the
-        note would arrive after the loss it warns of. A courtesy: never raises.
+        """The note that a summary is near, for a stretch that printed files and wrote none since
+        it began or last wrote one (ADR-0405), or ``None``. Once a stretch, from
+        :data:`_SUMMARY_AHEAD_AT` of the compaction threshold up to the threshold: past it the
+        compaction runs before the next call, and the note would arrive after the loss it warns
+        of. A courtesy: never raises.
         """
-        if self.compactor is None or self._stretch_noted or self._stretch_wrote:
+        if self.compactor is None or self._stretch_noted:
             return None
         reads = sum(self._stretch_reads.values())
         if reads < _SUMMARY_AHEAD_MIN_READS:
@@ -4214,7 +4228,8 @@ class AgentLoop:
         self._stretch_noted = True
         files = ", ".join(f"{name} ×{n}" for name, n in self._stretch_reads.most_common(3))
         pct = min(99, round(100 * tokens / threshold))
-        return _SUMMARY_AHEAD_RAIL.format(pct=pct, reads=reads, files=files)
+        span = _SUMMARY_AHEAD_SPAN_AFTER_WRITE if self._stretch_wrote else _SUMMARY_AHEAD_SPAN
+        return _SUMMARY_AHEAD_RAIL.format(pct=pct, span=span.format(reads=reads, files=files))
 
     async def _statuses_until(self, task: asyncio.Future[Any]) -> AsyncIterator[AgentStatus]:
         """Yield the retry notices a buffered call emits while ``task`` runs (ADR-0100).
@@ -7188,7 +7203,8 @@ class AgentLoop:
             self._turn_write_calls += 1  # a real change ran (claim-vs-action guard, ADR-0033)
             if spec.required_permission is PermissionTier.WORKSPACE_WRITE:
                 self._turn_edit_calls += 1  # a file edit: new repeated-outcome epoch (ADR-0038)
-                self._stretch_wrote = True  # ADR-0405: the stretch wrote a file
+                self._stretch_reads.clear()  # ADR-0405: a write restarts the count of reads
+                self._stretch_wrote = True
 
         # 4. PostToolUse hooks (observe-only; their notes are appended as feedback).
         post = await self.hook_manager.run(
