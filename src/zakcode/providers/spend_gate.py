@@ -72,6 +72,18 @@ instead of waiting out a bound nothing can end. And the request/response callers
 and ``POST /chat``, run inside :func:`decide_at_once`. A streamed turn, over ``POST /chat/stream``
 or a say, keeps the hold.
 
+THE PUSHED FIELD. ``armed`` cannot say whether the vessel has pushed to THIS process: a sidecar
+restarted inside one run boots armed from its ledger, so its ``armed``, ``ledger_ok`` and
+``tripped`` read as they do after a push, while the cap it holds is only the ledger's. The health
+snapshot's ``pushed`` is the field that can. It is false in a fresh process, however the gate
+booted, and true from the first accepted ``POST /budget`` on; a push the gate refuses (a
+``ValueError``) is not accepted and leaves it as it was, and nothing sets it back. It is the same
+event that ends a held refusal's wait (THE FIRST PUSH), so the health view and the hold agree. A
+process built before this field existed reports none: read an absent field as unknown, never as
+false. Pinned by tests/test_spend_gate.py: a fresh process, a boot from the ledger, a boot from an
+unreadable ledger, a push refused before and after an accepted one, later pushes and
+``/sidecar/health``; and by tests/test_server_sidecar.py, which compares the exact health body.
+
 AN UNPRICED CALL (``Usage.cost_unpriced``, or a stream that reported no usage) is counted, not
 refused, the same rule as :class:`~zakcode.agent.budget.IterationBudget`: the price is never
 guessed. The health snapshot reports ``unpriced_calls`` so a reader can tell a cap it cannot
@@ -383,6 +395,7 @@ class SpendGate:
             "refused_calls": self._refused,
             "unpriced_calls": self._unpriced,
             "ledger_ok": not (self._load_failed or self._write_failed),
+            "pushed": self._first_push.is_set(),
         }
 
     # ── the ledger ───────────────────────────────────────────────────────────────

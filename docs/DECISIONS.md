@@ -25219,6 +25219,77 @@ workspace holding a PDF offered `read_pdf` and not the others; and a hidden read
 delegate reaching its own refusal for a `.md` path, not "unknown tool". One mutation (the delegate's
 call removed) fails both menu tests.
 
+## ADR-0403: the say box asks its terminal for mouse reporting, so the wheel over it scrolls the message being composed
+
+Status: accepted. 2026-11-24. Finishes what ADR-0119 began for the box: the pane grows with the text,
+and its scrollback is cleared before each prompt.
+
+Context. An operator reported on 2026-09-01 that pasting a large text into the cockpit and scrolling up
+with the wheel went into the history of past messages and not into the paste. The cockpit's tmux session
+runs with `mouse on` (`launch_cockpit`). tmux's default binding for the wheel over a pane is
+`WheelUpPane`: `if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { copy-mode -e }`
+(tmux 3.4, `list-keys -T root`). So the wheel reaches the program in a pane only when that program has
+asked its terminal for mouse reporting (`mouse_any_flag`); otherwise tmux enters copy mode on the pane and
+scrolls the pane's own scrollback. The say box's prompt never asked.
+
+ADR-0119 took out most of what that scrollback held: a large paste is one token, the pane grows with the
+text up to 16 rows, and the scrollback is cleared before each prompt. What was left, measured on 2026-11-24
+against origin/main at 8c49278 on a Linux box with tmux 3.4 and a pty client sending the SGR wheel event a
+terminal sends. Two runs: (A) the real `zakcode cockpit-say-box` command in a pane beside a stand-in chat
+pane that had printed 379 lines; (B) the real `launch_cockpit`, with its own panes, session options and pane
+sizing, on a 50-row by 220-column client. In both, the idle box pane reports `mouse_any_flag` 0. After a
+30-line message is composed in it (the pane grown to its 16-row cap) the pane holds scrollback of earlier
+repaints of the message: 11 lines in (A), among them the first two lines of the message, a bare gutter, the
+key-help toolbar, then lines 26 to 30 and the toolbar; 27 lines in (B). Three wheel-up events over the box
+put the pane in copy mode at scroll position 10, and the visible window of the message (lines 16 to 30) did
+not move. So a message taller than the pane could not be scrolled, and the wheel took the keyboard with it:
+in copy mode typed keys go to tmux until `q`.
+
+A paste is the other case. A 30-line bracketed paste into the real cockpit's box (tmux `paste-buffer -p`, on
+the same client) is collapsed to `▸ ⟪pasted #1 · 30 lines⟫`, and the box stays at 5 rows, so there is no tall
+message to scroll. On the unchanged build three wheel-ups over that box still put it in copy mode (scroll
+position 0, over an empty scrollback), and typed keys go to tmux until `q`.
+
+Decision. The prompt session is built with `mouse_support=True` (`cli/saybox.py`). The box asks its terminal
+for mouse reporting while it reads a message and drops it when the prompt ends (prompt_toolkit enables it at
+the first paint and disables it when the renderer resets). tmux then forwards the wheel to the prompt,
+which scrolls its window over the message. The chat pane asks for no mouse reporting, so the wheel over it
+still enters copy mode on the chat history, and `q` snaps back. One behaviour per pane, no setting.
+
+The same two runs after the change: the idle box pane reports `mouse_any_flag` 1 (and `mouse_sgr_flag` 1);
+the same three wheel-up events leave the pane out of copy mode and move its visible window from lines 16 to
+30 up to lines 13 to 27; the chat pane enters copy mode as before, at scroll position 10 over the stand-in's
+history in (A) and at 0 over the real chat pane's empty history in (B); in (B) the events left the workspace
+with no `.say` and no `.interrupt` file, so they carried no message and no stop request.
+
+The same paste after the change: three wheel-ups leave the box out of copy mode and its one-line token as it
+was, so the wheel no longer takes the keyboard away from a pasted message either.
+
+Consequences. With mouse reporting on, a plain click-and-drag over the box is delivered to the prompt and
+does not start a tmux selection; select text in the box with Shift held (a terminal that reports the mouse
+offers its own selection under Shift). A click in the box moves the cursor. The say inbox stays the one
+input door: no input path and no transport change, the chat pane keeps its keyboard off, and the plain
+`input()` fallback is unchanged. For the other client surfaces: the web page is unchanged, the inline
+REPL has no say box, and the redraw of a saved conversation is unchanged.
+
+Alternatives rejected. Turning tmux's mouse off: the chat pane would lose the wheel scroll that is its one
+way back through the conversation. A tmux binding that skips copy mode over the box: it puts the decision
+in a second place, outside the program that owns the text, and a replaced binding silently restores the
+old behaviour. A setting for either: the cockpit has one way of doing this.
+
+Not done, and not measured. No terminal emulator's wheel was driven; the probes send the sequence tmux
+receives from its client, and how an emulator turns a wheel click into that sequence is the emulator's.
+The chat pane's scroll over real conversation history was seen only on the stand-in in (A): a headless run
+cannot make a model call, so the real chat pane in (B) held no conversation yet. Dragging over the box was
+not measured in any emulator. The banner row and the chat pane's title still read "wheel scrolls (q snaps
+back)", which stays true of the chat pane.
+
+The proof. `test_say_box_asks_its_terminal_for_mouse_reporting` drives the editor through a pipe whose
+terminal records the mouse request: on at the first paint, off when the prompt ends. It fails with the
+one argument removed. `test_cockpit_turns_tmux_mouse_on_for_its_session` pins the session option the
+wheel's routing rests on, which no test held before; it fails with `mouse off`. Each was run red against
+its own mutation and green again after the restore.
+
 ## ADR-0404: a rung that no failing call tripped seeds no "keeps failing" step
 
 Status: accepted. 2026-11-25. Amends ADR-0057 (decompose-on-stuck) for the rungs ADR-0038 and
