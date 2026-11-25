@@ -426,8 +426,8 @@ class StuckTracker:
     @property
     def last_was_poll(self) -> bool:
         """Whether the most recent :meth:`observe` was the ``poll_at``-th completion of a run
-        that put the same question to the shell and got the same answer, or a later one
-        (ADR-0407). Nothing failed and there is no result to read: the remedy is to stop asking."""
+        that put the same question to the shell and got the same answer, or a later one, a check
+        that failed each time included (ADR-0407). The remedy is to stop asking."""
         return SIG_POLL in self._last_signals
 
     @property

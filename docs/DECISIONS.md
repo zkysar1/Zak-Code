@@ -25341,15 +25341,15 @@ Decision.
   when its call names none, and stops at 600,000, so the nudge names the longest wait it takes; and
   a wake-up is for state the harness cannot report. It is the text said when the answers also repeat
   as outcomes.
-- Rung 1 seeds one step, "Decide: act on what the check showed, or wait without checking", and none
-  of the failure steps, the re-measure step or the closing assumption step: a check that succeeded
-  each time failed nowhere, so each of those would say what is not so (ADR-0057). Its note names the
-  nudge's two ways to wait. `_seed_investigation_steps` gives it whenever the last completion was a
-  poll, a check that failed each time included: its answer is the error, so acting on it or waiting
-  without checking are what is left. The loop seeds only when no investigation step is open, so a
-  check that failed from its third run has its failure steps open when the sixth arrives, and the
-  poll's nudge points back at them and adds none. `evidence()` carries `poll`, the run's length,
-  while the signal fires.
+- Rung 1 seeds one step, "Decide: act on what the check showed, or wait without checking", and
+  neither the re-measure step nor the closing assumption step: a check that succeeded each time
+  failed nowhere, so each of those would say what is not so (ADR-0057). Its note names the nudge's
+  two ways to wait. `_seed_investigation_steps` gives it whenever the last completion was a poll, a
+  check that failed each time included: its answer is the error, so acting on it or waiting without
+  checking are what is left. The loop seeds only when no investigation step is open, so a check that
+  failed from its third run has its failure steps open when the sixth arrives, and the poll's nudge
+  points back at them and adds none. `evidence()` carries `poll`, the run's length, while the signal
+  fires.
 - The tracker needs `shell_tools`, which both turn paths already pass for the print-only bound
   (ADR-0373); without them it counts nothing.
 
