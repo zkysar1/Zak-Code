@@ -29,7 +29,14 @@ from collections.abc import Callable
 from typing import Any
 
 from zakcode.config import PermissionTier
-from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
+from zakcode.tools.base import (
+    RULE_POINTER,
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+)
 
 #: Cap on a single returned body. Rules are already bounded per-file at discovery
 #: (``MAX_RULE_FILE_CHARS``); this is a second belt so one pathological rule cannot dominate a
@@ -145,6 +152,64 @@ def _pinned_in_prompt(ctx: ToolContext, rule: Any) -> bool:
     return bool(in_prompt(f"## {rule.name}\n{body}"))
 
 
+def _find_rule(registry: Any, name: str) -> tuple[str, Any] | None:
+    """The rule ``name`` names, with the name it is registered under, or ``None``.
+
+    Case-insensitive second pass: the model is copying a name out of prose, so a capitalisation
+    slip should not read as "no such rule" when one plainly exists."""
+    rule = registry.get(name)
+    if rule is not None:
+        return name, rule
+    lowered = name.lower()
+    for candidate in registry.names():
+        if candidate.lower() == lowered:
+            rule = registry.get(candidate)
+            return (candidate, rule) if rule is not None else None
+    return None
+
+
+def _pointer_template(
+    ctx: ToolContext, rule: Any, name: str, text: str, refresh: bool
+) -> str | None:
+    """The pointer that answers this ask, or ``None`` when the rule's text itself is sent.
+
+    ONE decision, read by :meth:`ReadRuleTool.execute` and by :func:`would_point`, so the
+    lookup-only bound (ADR-0399) never refuses an ask the tool would have answered with text."""
+    if refresh:
+        return None
+    # A rule pinned whole in the system prompt is already there: say where, never send it again
+    # unless asked for on purpose (ADR-0387).
+    if _pinned_in_prompt(ctx, rule):
+        return PINNED
+    # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); one
+    # right after this rule's own pointer gets the firmer line that says where the text is, not
+    # the text again (ADR-0387). The body comes back only when asked for on purpose.
+    in_context = getattr(ctx, "in_context", None)
+    if in_context is not None and in_context(text):
+        return JUST_ASKED if _right_after_its_pointer(ctx, name) else ALREADY_READ
+    return None
+
+
+def would_point(args: dict[str, Any], ctx: ToolContext) -> bool:
+    """True when ``read_rule`` would answer ``args`` with a pointer and send no rule text.
+
+    The decision :meth:`ReadRuleTool.execute` makes, without its one side effect (the ask count a
+    compaction reads, ADR-0386), so the loop can ask it of a call it has not run (ADR-0399).
+    False for every other answer: a first read, ``refresh=true``, a name that matches no rule, an
+    empty body, rules disabled."""
+    registry = getattr(ctx, "rule_registry", None)
+    name = args.get("name")
+    if registry is None or not isinstance(name, str) or not name.strip():
+        return False
+    found = _find_rule(registry, name.strip())
+    if found is None:
+        return False
+    name, rule = found
+    text = rule_text(name, rule)
+    refresh = args.get("refresh") is True
+    return text is not None and _pointer_template(ctx, rule, name, text, refresh) is not None
+
+
 class ReadRuleTool(Tool):
     """Return one rule's full body by name, from the session's discovered rule registry."""
 
@@ -195,18 +260,8 @@ class ReadRuleTool(Tool):
             return ToolResult.error("'name' is required and must be a non-empty string.")
         name = name.strip()
 
-        rule = registry.get(name)
-        if rule is None:
-            # Case-insensitive second pass: the model is copying a name out of prose, so a
-            # capitalisation slip should not read as "no such rule" when one plainly exists.
-            lowered = name.lower()
-            for candidate in registry.names():
-                if candidate.lower() == lowered:
-                    rule = registry.get(candidate)
-                    name = candidate
-                    break
-
-        if rule is None:
+        found = _find_rule(registry, name)
+        if found is None:
             names = registry.names()
             available = ", ".join(names) or "(none discovered)"
             # The closest one or two names lead (ADR-0380): with only the full list, a session asked
@@ -223,6 +278,7 @@ class ReadRuleTool(Tool):
                 fix=f"{lead}Use one of the available rules: {available}.",
             )
 
+        name, rule = found
         text = rule_text(name, rule)
         if text is None:
             return ToolResult.error(
@@ -234,17 +290,9 @@ class ReadRuleTool(Tool):
         note = getattr(ctx, "note_rule_read", None)
         if note is not None:
             note(name)
-        in_context = getattr(ctx, "in_context", None)
-        refresh = args.get("refresh") is True
-        # A rule pinned whole in the system prompt is already there: say where, never send it again
-        # unless asked for on purpose (ADR-0387).
-        if not refresh and _pinned_in_prompt(ctx, rule):
-            return ToolResult.ok(_pointer(rule, name, ctx, in_context, PINNED))
-        # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); one
-        # right after this rule's own pointer gets the firmer line that says where the text is, not
-        # the text again (ADR-0387). The body comes back only when asked for on purpose.
-        if in_context is not None and not refresh and in_context(text):
-            if _right_after_its_pointer(ctx, name):
-                return ToolResult.ok(_pointer(rule, name, ctx, in_context, JUST_ASKED))
-            return ToolResult.ok(_pointer(rule, name, ctx, in_context))
+        template = _pointer_template(ctx, rule, name, text, args.get("refresh") is True)
+        if template is not None:
+            # Flagged, so the stuck ladder can count a run of asks answered this way (ADR-0399).
+            pointer = _pointer(rule, name, ctx, getattr(ctx, "in_context", None), template)
+            return ToolResult.ok(pointer, data={RULE_POINTER: True})
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped

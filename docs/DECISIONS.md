@@ -21063,7 +21063,10 @@ Decision.
    `STOP_CHECK_MS` (5000 ms) asks the saved conversation whether a turn runs (`running`). If none
    does, the end never reached this page, so the page ends the turn shown and says "the turn has
    ended"; if one does, the status says "still stopping — the server has not ended the turn yet",
-   and another Stop asks again. A turn the page ends this way refreshes the chat list.
+   and another Stop asks again. A turn the page ends this way refreshes the chat list. A page
+   hidden when the check comes due has let go of its watch (ADR-0339), so the end cannot have
+   reached it and "no turn runs" would only mean it was not listening: the check waits until the
+   page is shown, then waits `STOP_CHECK_MS` again so the resumed watch replays the end first.
 3. Each answer is for the turn it stopped. A counter that moves at every turn start and end
    (`turnSeq`) is read before acting, so an answer that comes after that turn ended, after another
    chat opened or after the next turn started does nothing.
@@ -24392,6 +24395,189 @@ eighteen turn their tests red, and every one of the eighteen cases is proven by 
 first run covered seventeen: the skip mutant's replacement text already occurs in `loop.py`, which the
 harness refuses, so it was run on its own with a replacement that does not, and went red.
 
+## ADR-0385: on a route that is Anthropic by name the conversation takes a cache breakpoint of its own, placed where the per-call tail cannot reach it
+
+**Status:** Accepted (2026-11-16). Supersedes the line of ADR-0298 that declined a rolling breakpoint on the
+conversation, and takes "history breakpoints for Anthropic models" off ADR-0193's not-done list.
+
+**Context.** An Anthropic model caches only what a request marks, and `_apply_prompt_cache` marked one thing, the
+system prompt's stable block. Every call therefore read that block from the cache and was sent the whole conversation
+again at the full input price. ADR-0193 listed history breakpoints as not done. ADR-0298 declined a rolling breakpoint
+"for a benefit nobody has measured" and said a measured hit rate would change that.
+
+Two measurements exist now. Both are read from the usage rows a session keeps for each model call. Neither is a wire
+capture.
+
+* 2026-11-07, every served session file of one deployment. 59 `claude-sonnet-5-5` sessions with at least ten main
+  calls after their first eight (2,791 such calls, 46 workspaces, created 2026-10-21 to 2026-11-06) read 28.6% of their
+  prompt tokens from the cache, and 40 of the 59 hold one read count flat while the prompt grows. Two were read row by
+  row: one cache write on the first call (28,505 and 27,931 tokens), none after it, and every later main call reading
+  that same count (32 of 32, 75 of 75) while the prompt grew from 64,825 to 133,336 and from 61,161 to 138,781. On the
+  models ADR-0193 was written for, which reuse a whole earlier prompt by themselves, the same deployment's sessions read
+  93.0% (873 sessions, 83,160 calls). So the conversation this runtime sends does hold still from call to call. What an
+  Anthropic route lacked was the mark.
+* 2026-11-16, one served session: 39 main calls in 200 seconds on `anthropic/claude-sonnet-5-5`, no side call. A cache
+  write of 29,100 tokens on call 1 and none after; a cache read of exactly 29,100 on 38 of 38 later calls while the
+  prompt went from 61,626 to 108,863. Of 3,250,433 prompt tokens, 2,115,533 (65%) were billed as plain input. The rows'
+  own `cost_usd` is reproduced to the last digit by $2.00 input, $0.10 cache read, $2.50 cache write and $10.00 output
+  per million tokens. It sums to $4.52, and $4.23 of that (94%) is the uncached conversation.
+
+The rules a breakpoint has to follow are Anthropic's, read on 2026-11-16 from its prompt-caching reference as bundled
+with the `claude-api` skill. A request may carry at most four breakpoints. A cache write costs 1.25 times the input
+price at the default five-minute lifetime and 2 times at the one-hour lifetime. A read costs 0.05 times input on Sonnet
+5.5 and renews the lifetime: $0.10 against $2.00 per million tokens, the figures that reproduce the second
+measurement's `cost_usd`. (An earlier bundled copy of the reference named the 0.05 rate for Opus 5.5 only.) The
+published pricing page (`platform.claude.com/docs/en/about-claude/pricing`), read the same day, lists Claude Sonnet 5.5
+at $2 input, $2.50 for a five-minute write, $4 for a one-hour write, $0.10 for a cache hit and $10 output per million
+tokens, which is 1.25, 2 and 0.05 times input. A prefix
+under 512 tokens on that model is not cached, and that is not an error. A breakpoint looks back at most 20 positions
+for an earlier entry, a run of tool calls or of tool results counting as one. A read can land only where an earlier
+request put a breakpoint.
+
+What decides where a breakpoint can sit is this runtime's own per-call tail. `_messages_for_call` appends it (context
+from hooks, the turn's prompt context, the plan reminder) as user messages after the persisted history, and the next
+request does not carry it (ADR-0193). A breakpoint on the tail, or behind it, writes a prefix no later request can
+read. Anthropic's automatic breakpoint, a top-level field that marks the last block of a request, would sit exactly
+there: by the reference's own description every call would pay the write and none would read. That is read from the
+reference, not measured.
+
+Measured 2026-11-16 on litellm 1.86.2, through litellm's own client with `httpx.AsyncClient.send` replaced by a canned
+answer (the method of ADR-0298). A `cache_control` key on a `role: "tool"` message reaches the Anthropic body on that
+message's `tool_result` block. On an assistant message with text it reaches the text block, after a thinking block when
+there is one. The tail, a user message that follows tool results, is merged into the same Anthropic user message as a
+text block after them. litellm leaves the caller's own messages as they were on this route.
+
+**Decision.**
+
+1. On a route that is Anthropic by name (`_supports_cache_control(model)` with no opt-in: an `anthropic/` prefix or a
+   `claude` name, and the registry's `supports_caching`), a request whose system block carries the breakpoint takes ONE
+   more, on the last assistant or tool message that has text (`_conversation_breakpoint`). It is the same
+   `{"type": "ephemeral"}` marker, so it has the system block's five-minute lifetime. A request then uses two of the four
+   breakpoints.
+2. It never sits on a user message. That keeps the tail out of the cached prefix without this layer knowing what a tail
+   is, so the loop and the provider interface are unchanged. The price is that the turn's own new user message, which
+   this layer cannot tell from a tail, is sent uncached on the call that brings it. The next call, whose breakpoint has
+   moved past it, caches it.
+3. A request with no assistant or tool message takes none. That is a conversation's first call, and a side call (the
+   summarizer, the judges, the classifiers), which sends its own instruction and one user message and is asked once. A
+   system prompt with no boundary takes no breakpoint at all, as before.
+4. A message with no text is passed over, because the marker needs a block to sit on: an empty tool result, and an
+   assistant message that only calls tools.
+5. It is stamped on every build of the same messages, not only the first, and lands on the same message each time.
+6. The name is the whole rule, and two corners follow from it. A bare `claude` name with an API base set is sent to
+   that base as an Anthropic request (measured on litellm 1.86.2: posted to `<base>/v1/messages` in Anthropic's own
+   shape). It carried the system block's marker there on the name alone before this ADR, and the conversation's marker
+   follows the first. An `anthropic/` route is not a corner of this kind, because no API base reaches it: the provider
+   forwards `api_base` only to a model on the generic OpenAI-compatible path (a bare name, or an `openai`,
+   `openai_like`, `hosted_vllm` or `text-completion-openai` prefix), never to a named provider
+   (`model_uses_generic_endpoint`, pinned for `anthropic/claude-sonnet-4-6` in `tests/test_endpoint_config.py`). A route
+   that is Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
+   sent the by-name request, both markers on the messages and nothing in `extra_body`. What is sent as it was before is
+   a route that carries a marker ONLY because it opted in (ADR-0298), one that is not Anthropic by name, such as
+   `openai/Claude4.5`. No gateway has been measured with a second marker, and ADR-0298's repair makes a wrong guess
+   expensive there: a gateway that refused the new marker by naming it would be served the plain request for the rest of
+   the session and lose the breakpoint it has. A server behind an API base that takes the first marker and refuses the
+   second has no repair at all. Every call to it after a conversation's first would fail until the switch of point 7
+   is off. None has been seen, and the first marker has gone to such a server for as long as the name test has stood.
+7. `Settings.cache_conversation: bool = True` (`ZAKCODE_CACHE_CONVERSATION`) turns it off for the process, and the
+   request is then the one sent before this ADR. It is on by default because the uncached conversation was most of what a
+   long session cost. The switch is the way back that waits for no build, and the way to run one build both ways.
+
+**What it should cost.** These are estimates from the rows of the second measurement, not measurements of the change.
+Take its 39 calls and let each call read what the call before it marked and write the growth, with 1,000 tokens of each
+prompt left uncached for the tail: $0.76 against $4.52, which is 0.17 times. With no tail it is $0.69, and with 4,000
+tokens of tail $0.98. Now let the same calls come in wakes that each start after the cache has expired, so the first
+call of a wake writes everything and the rest read. Against today's request in the same conditions, wakes of ten calls
+cost 0.29 times as much, of five 0.43, of three 0.58 and of two 0.77. A wake of ONE call is the case that loses: nothing
+is read, the whole prompt is written at 1.25 times input, and the call costs 1.145 times what it costs today.
+
+**Declined, as choices.** Anthropic's automatic breakpoint, for the reason above. A second breakpoint kept on the
+previous call's position: one call adds about four positions (an assistant message's thinking, its text and its run of
+tool calls, then the run of tool results), well inside the 20 the lookback covers, and a marker nobody needs is one of
+four. The one-hour lifetime: it doubles the write, and it pays only for a conversation whose calls start between five
+minutes and an hour apart. The usage rows carry no time, so which sessions those are is not known, and it waits for
+measured gaps. Telling this layer which messages are the tail, through the provider interface or a flag on a message:
+it would cache the turn's new user message one call sooner, and it changes the loop, the interface, every provider and
+every test double to do it. Keeping each call's reminder in the history instead of dropping it, which is the form
+Anthropic's reference recommends because a reminder that is removed is an edit to the history: it would let the
+reminder be cached and a replayed thinking block stay valid, and it undoes ADR-0193's ephemeral tail for every model,
+so it is a decision about the loop for a measured served run to inform. A measured gateway that takes a second marker
+would change point 6, and measured gaps the lifetime.
+
+**Not verified.** The hit rate. Nothing here was sent to Anthropic: the request shape is proved against litellm's own
+client over canned answers, and the saving is an estimate from usage rows. Whether a served session's later calls read
+the conversation back is for a served run to show in its own usage rows: `cache_creation_tokens` near what the last
+call added, `cache_read_tokens` near the previous prompt, and both moving with the conversation. Three things could
+hold the read down and would show there. A session on a Claude 5 model replays its thinking blocks under `drop_block`
+(ADR-0321), and a block made on a call that carried a tail is stale on the next. The API should drop it the same way on
+every later request, so the prefix should hold, but that is reasoning and not a reading. A tool loaded on request
+(ADR-0228) changes the tool list, which is ahead of everything, and costs one full write. A compaction rewrites the
+history and costs one full write, as it does for any cache.
+
+Two more things each cost one full write of the conversation by the reference's rules, and neither was run here. The
+body of an ended skill turn is cut from an earlier user message at the next turn's start
+(`_elide_ended_skill_bodies`, ADR-0045), and a change inside the prefix un-caches everything after it. A credit-pool
+move to another account (`_pool_failover`) lands where a different organization or workspace keeps its cache, which
+holds nothing of this conversation.
+
+On a route that reaches Anthropic's API, a reasoning-overflow retry is not a third by default. The loop asks for
+thinking off on that retry (ADR-0056), but `render_thinking_switch` drops the switch there and sends nothing in its
+place, so the request's thinking setting is the one the call before it had. What the retry does leave out is a
+configured `reasoning_effort` (`render_reasoning_effort`), which is unset by default. Where one is configured and
+differs from the model's own default effort, that one request goes out at the default, and by the reference a changed
+effort invalidates the cached messages for it: one write, on a retry that is itself rare. A bare `claude` name behind
+an API base is outside this reading: `render_thinking_switch` keeps the switch there, and what the server behind the
+base does with it was not measured.
+
+The estimate rests on a filtered sample: sessions with at least ten main calls after their first eight, and one run of
+39 calls. How often a real conversation wakes for a single call, the case that costs more, was not counted. And nothing
+in the runtime trips on a session that writes on every call and never reads. The loop's flat-read probe (ADR-0193)
+asks a different question, whether the tail defeats a cache that reuses a whole earlier prompt, and it stops after two
+misses (`_CACHE_PROBE_LIMIT`). Until something watches for it, a served session's usage rows are the only detector.
+
+**Consequences.** On a route that is Anthropic by name a session's usage rows change shape: a cache write on most calls
+where there was one a session, and a cache read that grows with the prompt where there was a flat one. Cache writes stop
+being a rounding error. On the measured run they go from 29,100 tokens ($0.07, under 2% of the cost) to about 108,000
+($0.27, about 35% of a much smaller cost), so anything that prices a run from these rows needs a cache-write rate for the
+model. A call that begins a turn sends that turn's new user message uncached once. Every other route, every side call
+and every route that carries a marker only because it opted in sends the request it sent before. To check a route, run a few tool calls and read the
+rows as described above; to go back, set `ZAKCODE_CACHE_CONVERSATION=false`.
+
+The proof. `tests/test_prompt_cache_history.py` (40 tests). Where it sits: on the last tool result; unmoved by one, two
+or three tail messages; on the answer before a turn's new user message; moving forward with the conversation; absent on
+a first call, on a side call and under a system prompt with no boundary; passing over an empty tool result and an
+assistant message with no text; on the text and not on a thinking block; at most two breakpoints in a request; the same
+message on a second build, and put back on a build that follows a strip. Which routes: two that are Anthropic by name
+take it, and so does a bare `claude` name behind an API base; a by-name route that has also set `prompt_caching` is sent
+the by-name request, with nothing in `extra_body` (two names); three that take no breakpoint are sent what they were;
+four routes that opted in and are not Anthropic by name (`openai/`, `hosted_vllm/`, `bedrock/`, `vertex_ai/`) keep their
+one, and nothing rides `extra_body` for the conversation. The switch: on in the
+settings and in a provider built without them, read from the environment, and with it off the request is the old one,
+on the builders and on the wire. On the wire, read from litellm's own client: the marker on the second `tool_result`
+with the tail's text block after it, two breakpoints in the body, the same on a streamed call, and an answer's marker
+on its text block after the thinking block. A bare `claude` name behind an API base is read going to that base as an
+Anthropic request with both breakpoints, and a request that asks for thinking (`anthropic/claude-sonnet-5-5`) is read
+carrying both. What the API then does with a replayed thinking block is the API's and no test here reaches it. The property the read rests on is tested directly: everything up to the
+block one call marks reappears unchanged, markers aside, at the head of the next call's body, whose tail is different
+text and whose own breakpoint is further on. One premise test pins where litellm puts a message's marker and that it
+leaves the caller's list alone, so an upgrade that changes either says so. It is known at the locked 1.86.2. The
+project's own floor is lower (`litellm>=1.66`), and on a version between the two nothing here has been run.
+
+Fourteen mutants of `litellm_provider.py` and `config.py`, one site each, were each run against that file by a harness
+that restores the source byte for byte and refuses a site that does not occur exactly once: a user message allowed to
+take the marker (14 tests red), a message with no text not passed over (1), an opted-in route taking it (4), the switch
+ignored (2), a request with no marked system block marked anyway (1), the first eligible message taken and not the last
+(14), the system slot nameable (1), the setting defaulting to off (16), a provider built without settings having it off
+(1), the one-hour lifetime (4), the old early return on a rebuild (1), only tool messages eligible (4), only assistant
+messages eligible (11), and the system block's own marker dropped (22). All fourteen turned tests red, and the file was
+green before the first and after the last. The harness is not in the repository: it edits the source in place and was
+run from outside the checkout, so this paragraph is its only record. Those counts are from the file as it stood at 35
+tests. Run again at 40 tests, the same fourteen and two more turned tests red: a `claude` name behind an API base
+refused the conversation's marker (2 tests), and a by-name route that had also opted in refused it (2).
+
+The repository's checks are green with the change: `ruff check` and `ruff format --check` clean, `mypy` clean over
+171 source files, and 7,421 tests passed with 33 skipped.
+
 ## ADR-0386: a compaction carries the rule texts the session read, right after the summary
 
 **Context.** Under `lean_rules` the prompt carries a rules index and `read_rule` fetches a body; a
@@ -25013,185 +25199,252 @@ unchanged. A skill of the same name as another skill follows the same later-wins
 change does not touch skills. A deployment keeps the build it pins until the pin is moved, and no
 running deployment carries this change until then.
 
-## ADR-0385: on a route that is Anthropic by name the conversation takes a cache breakpoint of its own, placed where the per-call tail cannot reach it
+## ADR-0397: a delegation that names a still-running background task of this session is refused
 
-**Status:** Accepted (2026-11-16). Supersedes the line of ADR-0298 that declined a rolling breakpoint on the
-conversation, and takes "history breakpoints for Anthropic models" off ADR-0193's not-done list.
-
-**Context.** An Anthropic model caches only what a request marks, and `_apply_prompt_cache` marked one thing, the
-system prompt's stable block. Every call therefore read that block from the cache and was sent the whole conversation
-again at the full input price. ADR-0193 listed history breakpoints as not done. ADR-0298 declined a rolling breakpoint
-"for a benefit nobody has measured" and said a measured hit rate would change that.
-
-Two measurements exist now. Both are read from the usage rows a session keeps for each model call. Neither is a wire
-capture.
-
-* 2026-11-07, every served session file of one deployment. 59 `claude-sonnet-5-5` sessions with at least ten main
-  calls after their first eight (2,791 such calls, 46 workspaces, created 2026-10-21 to 2026-11-06) read 28.6% of their
-  prompt tokens from the cache, and 40 of the 59 hold one read count flat while the prompt grows. Two were read row by
-  row: one cache write on the first call (28,505 and 27,931 tokens), none after it, and every later main call reading
-  that same count (32 of 32, 75 of 75) while the prompt grew from 64,825 to 133,336 and from 61,161 to 138,781. On the
-  models ADR-0193 was written for, which reuse a whole earlier prompt by themselves, the same deployment's sessions read
-  93.0% (873 sessions, 83,160 calls). So the conversation this runtime sends does hold still from call to call. What an
-  Anthropic route lacked was the mark.
-* 2026-11-16, one served session: 39 main calls in 200 seconds on `anthropic/claude-sonnet-5-5`, no side call. A cache
-  write of 29,100 tokens on call 1 and none after; a cache read of exactly 29,100 on 38 of 38 later calls while the
-  prompt went from 61,626 to 108,863. Of 3,250,433 prompt tokens, 2,115,533 (65%) were billed as plain input. The rows'
-  own `cost_usd` is reproduced to the last digit by $2.00 input, $0.10 cache read, $2.50 cache write and $10.00 output
-  per million tokens. It sums to $4.52, and $4.23 of that (94%) is the uncached conversation.
-
-The rules a breakpoint has to follow are Anthropic's, read on 2026-11-16 from its prompt-caching reference as bundled
-with the `claude-api` skill. A request may carry at most four breakpoints. A cache write costs 1.25 times the input
-price at the default five-minute lifetime and 2 times at the one-hour lifetime. A read costs 0.05 times input on Sonnet
-5.5 and renews the lifetime: $0.10 against $2.00 per million tokens, the figures that reproduce the second
-measurement's `cost_usd`. (An earlier bundled copy of the reference named the 0.05 rate for Opus 5.5 only.) The
-published pricing page (`platform.claude.com/docs/en/about-claude/pricing`), read the same day, lists Claude Sonnet 5.5
-at $2 input, $2.50 for a five-minute write, $4 for a one-hour write, $0.10 for a cache hit and $10 output per million
-tokens, which is 1.25, 2 and 0.05 times input. A prefix
-under 512 tokens on that model is not cached, and that is not an error. A breakpoint looks back at most 20 positions
-for an earlier entry, a run of tool calls or of tool results counting as one. A read can land only where an earlier
-request put a breakpoint.
-
-What decides where a breakpoint can sit is this runtime's own per-call tail. `_messages_for_call` appends it (context
-from hooks, the turn's prompt context, the plan reminder) as user messages after the persisted history, and the next
-request does not carry it (ADR-0193). A breakpoint on the tail, or behind it, writes a prefix no later request can
-read. Anthropic's automatic breakpoint, a top-level field that marks the last block of a request, would sit exactly
-there: by the reference's own description every call would pay the write and none would read. That is read from the
-reference, not measured.
-
-Measured 2026-11-16 on litellm 1.86.2, through litellm's own client with `httpx.AsyncClient.send` replaced by a canned
-answer (the method of ADR-0298). A `cache_control` key on a `role: "tool"` message reaches the Anthropic body on that
-message's `tool_result` block. On an assistant message with text it reaches the text block, after a thinking block when
-there is one. The tail, a user message that follows tool results, is merged into the same Anthropic user message as a
-text block after them. litellm leaves the caller's own messages as they were on this route.
+**Context.** A sub-agent has its own session and so its own background-task table (ADR-0191,
+ADR-0236): `TaskOutput` and `TaskStop` in a child see only the child's tasks. A parent whose Bash
+call outlived its timeout gets that command moved to the background with the words "To wait for
+it, call TaskOutput(task_id=...)", and some parents delegate the wait instead. Measured on the
+worker fleet, 24 h to 2026-11-19 19:30Z: of 18 sub-agents, 4 were sent to wait on their parent's
+own background command (a selection walk moved to the background at the 120 s timeout). Their
+`TaskOutput` and `TaskStop` calls named the parent's task ids. Between them they made 131 tool calls
+and held their parents' turns about 100 minutes. One spent 40 minutes and 70 calls on a finished,
+17-line, 6 KB output file while its parent held no work; an operator interrupt ended it.
 
 **Decision.**
+- Before any child starts, `task` reads the session's background tasks. If a subtask's prompt names
+  one that is still running, the call is refused and no child of the batch starts. A prompt names a
+  task by its id as a whole token, or by its output file's path.
+- The refusal names the subtask, the task and its label. It gives the one call that waits
+  (`TaskOutput(task_id=..., timeout=600000)`) and the output file. It says that work on the output
+  can be delegated once the task has exited. `data.refused` is
+  `names_own_running_background_task`, for a census.
+- A finished task is not refused: its output file is a path a child can read.
 
-1. On a route that is Anthropic by name (`_supports_cache_control(model)` with no opt-in: an `anthropic/` prefix or a
-   `claude` name, and the registry's `supports_caching`), a request whose system block carries the breakpoint takes ONE
-   more, on the last assistant or tool message that has text (`_conversation_breakpoint`). It is the same
-   `{"type": "ephemeral"}` marker, so it has the system block's five-minute lifetime. A request then uses two of the four
-   breakpoints.
-2. It never sits on a user message. That keeps the tail out of the cached prefix without this layer knowing what a tail
-   is, so the loop and the provider interface are unchanged. The price is that the turn's own new user message, which
-   this layer cannot tell from a tail, is sent uncached on the call that brings it. The next call, whose breakpoint has
-   moved past it, caches it.
-3. A request with no assistant or tool message takes none. That is a conversation's first call, and a side call (the
-   summarizer, the judges, the classifiers), which sends its own instruction and one user message and is asked once. A
-   system prompt with no boundary takes no breakpoint at all, as before.
-4. A message with no text is passed over, because the marker needs a block to sit on: an empty tool result, and an
-   assistant message that only calls tools.
-5. It is stamped on every build of the same messages, not only the first, and lands on the same message each time.
-6. The name is the whole rule, and two corners follow from it. A bare `claude` name with an API base set is sent to
-   that base as an Anthropic request (measured on litellm 1.86.2: posted to `<base>/v1/messages` in Anthropic's own
-   shape). It carried the system block's marker there on the name alone before this ADR, and the conversation's marker
-   follows the first. An `anthropic/` route is not a corner of this kind, because no API base reaches it: the provider
-   forwards `api_base` only to a model on the generic OpenAI-compatible path (a bare name, or an `openai`,
-   `openai_like`, `hosted_vllm` or `text-completion-openai` prefix), never to a named provider
-   (`model_uses_generic_endpoint`, pinned for `anthropic/claude-sonnet-4-6` in `tests/test_endpoint_config.py`). A route
-   that is Anthropic by name and has also set `prompt_caching` is still a by-name route: it is
-   sent the by-name request, both markers on the messages and nothing in `extra_body`. What is sent as it was before is
-   a route that carries a marker ONLY because it opted in (ADR-0298), one that is not Anthropic by name, such as
-   `openai/Claude4.5`. No gateway has been measured with a second marker, and ADR-0298's repair makes a wrong guess
-   expensive there: a gateway that refused the new marker by naming it would be served the plain request for the rest of
-   the session and lose the breakpoint it has. A server behind an API base that takes the first marker and refuses the
-   second has no repair at all. Every call to it after a conversation's first would fail until the switch of point 7
-   is off. None has been seen, and the first marker has gone to such a server for as long as the name test has stood.
-7. `Settings.cache_conversation: bool = True` (`ZAKCODE_CACHE_CONVERSATION`) turns it off for the process, and the
-   request is then the one sent before this ADR. It is on by default because the uncached conversation was most of what a
-   long session cost. The switch is the way back that waits for no build, and the way to run one build both ways.
+**Alternatives rejected.** Letting a child's `TaskOutput` read the parent's table: the child would
+then wait on the parent's task, and the parent's turn would still be held for that wait. Its own
+`TaskOutput` holds the same turn for the same wait, without a second context. Refusing every
+prompt that names any task of the session: delegating the analysis of a long finished output is a
+fair use of a child. Matching a bare substring: an id inside a longer token (a commit, a log id)
+would refuse an unrelated delegation.
 
-**What it should cost.** These are estimates from the rows of the second measurement, not measurements of the change.
-Take its 39 calls and let each call read what the call before it marked and write the growth, with 1,000 tokens of each
-prompt left uncached for the tail: $0.76 against $4.52, which is 0.17 times. With no tail it is $0.69, and with 4,000
-tokens of tail $0.98. Now let the same calls come in wakes that each start after the cache has expired, so the first
-call of a wake writes everything and the rest read. Against today's request in the same conditions, wakes of ten calls
-cost 0.29 times as much, of five 0.43, of three 0.58 and of two 0.77. A wake of ONE call is the case that loses: nothing
-is read, the whole prompt is written at 1.25 times input, and the call costs 1.145 times what it costs today.
+**Not covered.** A prompt that describes the task without naming it ("wait for the walk I just
+started") still starts a child; that child's `TaskOutput` still fails as before. A parent that
+delegates a long run of its own work (the measured 432-minute child) is not limited here.
 
-**Declined, as choices.** Anthropic's automatic breakpoint, for the reason above. A second breakpoint kept on the
-previous call's position: one call adds about four positions (an assistant message's thinking, its text and its run of
-tool calls, then the run of tool results), well inside the 20 the lookback covers, and a marker nobody needs is one of
-four. The one-hour lifetime: it doubles the write, and it pays only for a conversation whose calls start between five
-minutes and an hour apart. The usage rows carry no time, so which sessions those are is not known, and it waits for
-measured gaps. Telling this layer which messages are the tail, through the provider interface or a flag on a message:
-it would cache the turn's new user message one call sooner, and it changes the loop, the interface, every provider and
-every test double to do it. Keeping each call's reminder in the history instead of dropping it, which is the form
-Anthropic's reference recommends because a reminder that is removed is an edit to the history: it would let the
-reminder be cached and a replayed thinking block stay valid, and it undoes ADR-0193's ephemeral tail for every model,
-so it is a decision about the loop for a measured served run to inform. A measured gateway that takes a second marker
-would change point 6, and measured gaps the lifetime.
+**Not verified.** The census is from transcript metadata: tool names, timestamps, and the
+`task_id` inputs of the children's calls. The prompts were not read, so how many of the 4 named
+the task in a form this guard matches is not known. To read after the roll: `task` results with
+`data.refused` set, and children whose `TaskOutput` names a parent's task, which should be none.
 
-**Not verified.** The hit rate. Nothing here was sent to Anthropic: the request shape is proved against litellm's own
-client over canned answers, and the saving is an estimate from usage rows. Whether a served session's later calls read
-the conversation back is for a served run to show in its own usage rows: `cache_creation_tokens` near what the last
-call added, `cache_read_tokens` near the previous prompt, and both moving with the conversation. Three things could
-hold the read down and would show there. A session on a Claude 5 model replays its thinking blocks under `drop_block`
-(ADR-0321), and a block made on a call that carried a tail is stale on the next. The API should drop it the same way on
-every later request, so the prefix should hold, but that is reasoning and not a reading. A tool loaded on request
-(ADR-0228) changes the tool list, which is ahead of everything, and costs one full write. A compaction rewrites the
-history and costs one full write, as it does for any cache.
+## ADR-0399: a run of completions that only ask for rules the model holds is bounded, as a run of plan-only ones is
 
-Two more things each cost one full write of the conversation by the reference's rules, and neither was run here. The
-body of an ended skill turn is cut from an earlier user message at the next turn's start
-(`_elide_ended_skill_bodies`, ADR-0045), and a change inside the prefix un-caches everything after it. A credit-pool
-move to another account (`_pool_failover`) lands where a different organization or workspace keeps its cache, which
-holds nothing of this conversation.
+Status: accepted. 2026-11-20. The third sibling of ADR-0364, after ADR-0373, on its path and its
+ladder, and held to ADR-0198 (a rail says only what was counted).
 
-On a route that reaches Anthropic's API, a reasoning-overflow retry is not a third by default. The loop asks for
-thinking off on that retry (ADR-0056), but `render_thinking_switch` drops the switch there and sends nothing in its
-place, so the request's thinking setting is the one the call before it had. What the retry does leave out is a
-configured `reasoning_effort` (`render_reasoning_effort`), which is unset by default. Where one is configured and
-differs from the model's own default effort, that one request goes out at the default, and by the reference a changed
-effort invalidates the cached messages for it: one write, on a retry that is itself rare. A bare `claude` name behind
-an API base is outside this reading: `render_thinking_switch` keeps the switch there, and what the server behind the
-base does with it was not measured.
+Context. A `read_rule` ask for a rule whose text is still in the conversation, or pinned whole in
+the system prompt, is answered by a pointer (ADR-0379, ADR-0387): the answer says where the text
+is and sends none. A model that asks again and again makes no progress, and when each ask names
+another rule no net sees it. The doom guard and its lookup test (ADR-0391) need a batch that
+repeats the one before it. The outcome signal of ADR-0038 skips a harness delivery. The other
+signals key on errors, and a pointer is a success.
 
-The estimate rests on a filtered sample: sessions with at least ten main calls after their first eight, and one run of
-39 calls. How often a real conversation wakes for a single call, the case that costs more, was not counted. And nothing
-in the runtime trips on a session that writes on every call and never reads. The loop's flat-read probe (ADR-0193)
-asks a different question, whether the tail defeats a cache that reuses a whole earlier prompt, and it stops after two
-misses (`_CACHE_PROBE_LIMIT`). Until something watches for it, a served session's usage rows are the only detector.
+What was measured, before building. Ten served worker sessions, one 35B-class local model, read
+from each session's own transcript (tool names, times, rule names and fixed answer labels only),
+2026-11-20. Over 6 h, 709 of 3,046 tool calls (23%) were `read_rule`. One session sent 374
+completions in 90 minutes that were each a single `read_rule` call, cycling through its rules;
+344 were answered by a pointer (96 of them by the pinned one), they added 227,353 characters of
+results, four compactions fell inside the run, and no guard fired: no lookup nudge, no doom end,
+no stuck step. Another session's loops asked the SAME rule again, so the ADR-0391 guard did see
+them (3 lookup nudges, 2 doom ends), and 11 turn-end vetoes sent it back each time. From 02:00 to
+12:53 the ten sessions received 1,429 pointer answers, and from 09:53 to 12:53 completions that
+only asked `read_rule` took 38% and 33% of the model time of the two worst sessions.
 
-**Consequences.** On a route that is Anthropic by name a session's usage rows change shape: a cache write on most calls
-where there was one a session, and a cache read that grows with the prompt where there was a flat one. Cache writes stop
-being a rounding error. On the measured run they go from 29,100 tokens ($0.07, under 2% of the cost) to about 108,000
-($0.27, about 35% of a much smaller cost), so anything that prices a run from these rows needs a cache-write rate for the
-model. A call that begins a turn sends that turn's new user message uncached once. Every other route, every side call
-and every route that carries a marker only because it opted in sends the request it sent before. To check a route, run a few tool calls and read the
-rows as described above; to go back, set `ZAKCODE_CACHE_CONVERSATION=false`.
+Decision.
+- `read_rule` flags each pointer answer, the plain one, `JUST_ASKED` and `PINNED`, with
+  `data={RULE_POINTER: True}` (`zakcode.tools.base`). A flag, not a search of the text, for
+  ADR-0203's reason.
+- The stuck tracker counts the completions in a row whose calls are all plain lookups
+  (`lookup_rules`: a rule name and no `refresh=true`) and whose every answer carries the flag. A
+  first read, a `refresh=true` ask, an error, or any other call ends the run. The count is apart
+  from ADR-0364's and ADR-0373's, and each of their runs is ended by a lookup.
+- The third such completion in a row is answered unexecuted, on both turn paths, by the path
+  ADR-0364 built (`data={"plan_only_bound": True}`, the note `kind="plan_only_bound"`), but only
+  when `read_rule` would answer every call of it with a pointer. The loop asks `would_point`,
+  which is `execute`'s own decision (one function, `_pointer_template`) without its one side
+  effect, the ask count of ADR-0386. A new rule, or `refresh=true`, at the bound is answered.
+- Its words: "Not executed: this is response 3 in a row that only asks read_rule for rules already
+  in your context, with no other tool call between them. Asking again for a rule you hold returns
+  nothing new. The plan's current step is <id> '<title>': apply the rules you have to it and do it
+  now with a tool call that does the work, or answer in text if the work is done. read_rule
+  answers again once another tool has run; refresh=true returns a rule's text only if you need its
+  exact wording."
+- A refusal fires `SIG_LOOKUP_ONLY` alone and drives the ladder one rung per refusal after the
+  first: a nudge at the 4th such completion, read-only tools at the 5th (`read_rule` is one), the
+  step back at the 6th, a stop at the 7th. The nudge and rung 1's seeded step say what was
+  counted, and that step's note says a rule lookup is not the work.
+- A lookup that repeats the batch before it is still the doom guard's (ADR-0391), which runs first
+  and resets the tracker when it acts.
 
-The proof. `tests/test_prompt_cache_history.py` (40 tests). Where it sits: on the last tool result; unmoved by one, two
-or three tail messages; on the answer before a turn's new user message; moving forward with the conversation; absent on
-a first call, on a side call and under a system prompt with no boundary; passing over an empty tool result and an
-assistant message with no text; on the text and not on a thinking block; at most two breakpoints in a request; the same
-message on a second build, and put back on a build that follows a strip. Which routes: two that are Anthropic by name
-take it, and so does a bare `claude` name behind an API base; a by-name route that has also set `prompt_caching` is sent
-the by-name request, with nothing in `extra_body` (two names); three that take no breakpoint are sent what they were;
-four routes that opted in and are not Anthropic by name (`openai/`, `hosted_vllm/`, `bedrock/`, `vertex_ai/`) keep their
-one, and nothing rides `extra_body` for the conversation. The switch: on in the
-settings and in a provider built without them, read from the environment, and with it off the request is the old one,
-on the builders and on the wire. On the wire, read from litellm's own client: the marker on the second `tool_result`
-with the tail's text block after it, two breakpoints in the body, the same on a streamed call, and an answer's marker
-on its text block after the thinking block. A bare `claude` name behind an API base is read going to that base as an
-Anthropic request with both breakpoints, and a request that asks for thinking (`anthropic/claude-sonnet-5-5`) is read
-carrying both. What the API then does with a replayed thinking block is the API's and no test here reaches it. The property the read rests on is tested directly: everything up to the
-block one call marks reappears unchanged, markers aside, at the head of the next call's body, whose tail is different
-text and whose own breakpoint is further on. One premise test pins where litellm puts a message's marker and that it
-leaves the caller's list alone, so an upgrade that changes either says so. It is known at the locked 1.86.2. The
-project's own floor is lower (`litellm>=1.66`), and on a version between the two nothing here has been run.
+Not done, and not measured. A refused ask is not counted for ADR-0386's carry, so the rules a
+compaction carries are the most-asked among the asks that ran. A turn-end veto resets the run,
+as it resets ADR-0364's and ADR-0373's, so a host whose hook sends a stuck turn back sees at most
+two pointer answers and five refusals per re-entry, not an end to the loop; how often hosts send
+such a turn back is to be read on the trial. Asks for held rules mixed with a first read are
+answered, and a model that adds one new rule to every ask walks past this bound.
 
-Fourteen mutants of `litellm_provider.py` and `config.py`, one site each, were each run against that file by a harness
-that restores the source byte for byte and refuses a site that does not occur exactly once: a user message allowed to
-take the marker (14 tests red), a message with no text not passed over (1), an opted-in route taking it (4), the switch
-ignored (2), a request with no marked system block marked anyway (1), the first eligible message taken and not the last
-(14), the system slot nameable (1), the setting defaulting to off (16), a provider built without settings having it off
-(1), the one-hour lifetime (4), the old early return on a rebuild (1), only tool messages eligible (4), only assistant
-messages eligible (11), and the system block's own marker dropped (22). All fourteen turned tests red, and the file was
-green before the first and after the last. The harness is not in the repository: it edits the source in place and was
-run from outside the checkout, so this paragraph is its only record. Those counts are from the file as it stood at 35
-tests. Run again at 40 tests, the same fourteen and two more turned tests red: a `claude` name behind an API base
-refused the conversation's marker (2 tests), and a by-name route that had also opted in refused it (2).
+The proof. `tests/test_lookup_only_bound.py` pins the third pointer-answered lookup due though
+every rule differs; a first read, a text beside pointers, an error, `refresh=true`, another tool,
+a plan call and a reset each ending the run; the flag counted only on a `read_rule` lookup; the
+ladder to a stop with its own signal and evidence; the rails' words; `would_point` agreeing with
+the tool's flagged answer in ten states, without counting an ask; and, on both turn paths, a
+model cycling through held rules ended `stuck` after two pointers and five refusals, a new rule
+and a `refresh=true` at the bound answered, and asks between real steps never refused. Five
+mutations (the flag, either path's held check, the run's count, the refusal's signal) each fail
+the file.
 
-The repository's checks are green with the change: `ruff check` and `ruff format --check` clean, `mypy` clean over
-171 source files, and 7,421 tests passed with 33 skipped.
+## ADR-0400: a completion that only asked for rules the model holds is not sent back to it
+
+Status: accepted. 2026-11-20. Follows ADR-0399, on the request side, and held to ADR-0193 (what a
+request carries is the start of what the next one carries).
+
+Context. ADR-0399 bounds a run of lookups for held rules at two pointer answers and five refusals
+per re-entry, and the run comes back. A pointer answer (ADR-0379, ADR-0387) is a short success, so
+each one stays in the conversation as a completion that called `read_rule` and a result saying the
+text is already there, and the conversation the model reads fills with its own lookups.
+
+What was measured, before building. The served worker sessions and local model of ADR-0399, read
+from each session's own transcript (tool names, times, rule names and fixed answer labels only),
+24 h to 2026-11-20 14:55, nine of the ten sessions. For each completion that called a tool, the
+lookup-only completions among the 25 before the five just before it, in the same compaction
+segment, against whether it was lookup-only too: with none, 65 of 2,360 were (3%); with 1 or 2,
+88 of 519 (17%); with 3 to 5, 98 of 361 (27%); with 6 to 10, 189 of 441 (43%); with 11 to 25,
+1,687 of 2,122 (80%). By place in the segment it rose the same way: 11% of the first 30
+completions, 25% of completions 30 to 99, 70% of 100 to 199 and 96% after that. After a lookup
+answered by a pointer the next completion was another lookup 1,677 times in 1,930 (87%). Changing
+the words that bring a rule up did not move the total: when the workspace gave the rule asked for
+most a new index line, asks for it fell from 8.1 to 6.2 per 100 tool calls and all rule asks only
+from 26.5 to 25.5 (4,846 calls before, 4,654 after); in one session asks for that rule went to none
+and asks for other rules rose from 1.0 to 58.6 per 100.
+
+Decision.
+- `_messages_for_call` sends `_hide_pointer_asks(session.messages)`, on both turn paths and on a
+  resting call (ADR-0193). A completion whose blocks are only `read_rule` calls (no text; thinking
+  allowed), followed at once by the tool message holding exactly their results, each with the
+  pointer flag of ADR-0399 and no error, is sent as one user-role line: "[harness]
+  Hint: You asked read_rule for <names>: it is already in your context, so nothing new came back,
+  and an ask like this one is not shown in the conversation. Apply it to the step you are on and
+  take its next action." ("they are" and "them" for two or more rules.)
+- A first read, a `refresh=true` text, an error, a refusal (ADR-0399), a batch with another tool,
+  text beside the call and a pointer beside a text answer are sent as they are.
+- The line is built from the pair alone (the rule names in call order, once each) and takes the
+  completion's time, never from state that moves, so what a history is sent as is the start of
+  what any longer one is sent as: a provider's cached prefix and ADR-0193's resting checkpoint hold.
+- The session, the transcript and every counter keep both messages: ADR-0399's bound, the doom
+  guard (ADR-0391), the ask count (ADR-0386) and compaction read the session, not the request.
+
+Not done, and not measured. The measurement does not separate imitation from a session that stays
+in one mode for its own reasons; the trial reads lookup-only completions per 100 completions on two
+sessions against their own previous window and the other sessions, and the cached tokens of the
+call after a hidden pair. A model may ask a rule again because its earlier ask is out of view; the
+line names the rule for that reason. A compaction summary still reads the lookups.
+
+The proof. `tests/test_pointer_ask_hidden.py` pins a pointer-only pair sent as one line with the
+completion's time, the other messages the same objects, and the history itself returned when
+nothing is hidden; two rules named once in the plural, and a rule asked twice in one batch named
+once; a first read, an error, a refusal, a pointer beside a text answer, a batch with another tool
+and text beside the call each sent as they are; a pair split or unanswered kept; what each history
+is sent as being the start of what the next is sent as; and, on both turn paths, the request after
+two held asks carrying neither call but a line for each while the session keeps them, and a model
+cycling through held rules still ended `stuck` after two pointers and five refusals. Ten mutations
+(the wiring, text beside the call, another tool, a partial answer, a split pair, an error, the
+pointer flag, the line's time, a rule named once, the plural) each fail the file.
+
+## ADR-0402: a delegated sub-agent starts from the parent's tool menu
+
+Status: accepted. 2026-11-20. Extends ADR-0228 (rarely-used built-ins start hidden, readers come
+back when the workspace holds that type) from the main agent to its delegates.
+
+Context. ADR-0228 hides the document creators and readers in the main agent because a small model
+confuses a document reader with `Read`. The agent built its delegates' registry straight from the
+factory, which registers every tool active, so a delegated sub-agent was offered all of them, on
+the reasoning that it has no `tool_search` to load a hidden one with. A hidden tool stays
+dispatchable when named (`ToolRegistry.execute` resolves by name, whatever the active state), so
+that reasoning holds for loading by search only.
+
+What was measured, before building. Ten served sessions on one local model, read from their
+transcripts on 2026-11-20 (tool names, path extensions, fixed result labels and counts only), 24 h
+to 23:30. The eight hidden tools were called 102 times, every call refused (`read_pdf` 100,
+`read_docx` 2), none of them from a session's live main transcript. No workspace held a PDF outside
+dot-directories. In one session, while its main loop was live, its delegates called `read_pdf` 83
+times between 21:00 and 23:00, on `.md` paths 57 times and `.json` paths 26 times, mostly four calls
+to a completion; 78 were refused with "path must end with .pdf", and 70 were followed at once by
+another `read_pdf` call.
+
+Decision.
+- `hide_on_request_tools(registry, workspace_root)` in `tools/builtins/default_registry.py` hides
+  `ON_REQUEST_TOOLS` and re-exposes each reader `workspace_doc_readers` finds. The agent applies it
+  to its own registry, as before, and to the registry it gives delegates, after that registry's
+  exposure filter.
+- The factory is unchanged and still registers every tool active. A delegate still runs a hidden
+  tool it names; the prompt lists no "Loaded on request" line for it, because that line needs
+  `tool_search`.
+- Plan Mode's read-only subset is unchanged: it never held these tools.
+
+Not done, and not measured. No delegate call to a creator was seen in the window, so whether one
+ever needs a creator it is not told the name of is unmeasured. The readers' refusal texts are
+unchanged. The trial reads calls to the hidden tools per session, and refusals of any tool, on two
+sessions against their own previous window and the other sessions.
+
+The proof. `tests/test_on_request_tools.py` pins the factory registering them active; a delegate
+in a workspace with no document offered none of them while still holding each one; a delegate in a
+workspace holding a PDF offered `read_pdf` and not the others; and a hidden reader named by a
+delegate reaching its own refusal for a `.md` path, not "unknown tool". One mutation (the delegate's
+call removed) fails both menu tests.
+
+## ADR-0404: a rung that no failing call tripped seeds no "keeps failing" step
+
+Status: accepted. 2026-11-25. Amends ADR-0057 (decompose-on-stuck) for the rungs ADR-0038 and
+ADR-0209 trip, and carries ADR-0209's lesson (a count scoped to the turn misreads a turn that is the
+whole run) to the steps rung 1 seeds.
+
+Context. Rung 1 seeds its "keeps failing" steps from the tracker's failure counts
+(`error_signatures`, `failing_tools`) whatever tripped it. Those counts span the turn: only a
+turn-end veto or the step-back rung clears them. A served session's turn runs for hours, so when a
+re-measured result trips rung 1, the counts hold failures the model moved past long before, and
+the plan gets "Investigate: why `Bash` keeps failing across 11 attempts", whose note says the
+arguments changed each time and the call still failed, then "Decide: name the assumption the failed
+steps share" -- about a rung that no failing call tripped.
+
+What was measured, before building. Eleven served worker sessions on one local model, read from
+their transcripts (tool names, times, `is_error` flags, fixed rail and step labels and counts
+only), 24 h to 2026-11-25 07:15. Rung 1 fired 149 times: 120 on a re-measured result, 13 on a
+failing tool, 7 on a run of rule lookups, 4 on plan-only runs, 1 on a receipt and 4 on wording the
+probe did not sort. In the plan redrawn right after 118 fresh re-measure rungs, 28 carried a "keeps
+failing" step built from the turn's failure counts: the batch that tripped 23 of them had no failed
+result at all, and the other 5 only failed ones. Every re-measure rung closed on "the failed
+steps". The trip itself mostly stands: of 121 re-measure rungs from 07:29, in 55 the same result
+came back three times or more within one compaction segment, in 20 it straddled a compaction, and
+in 46 the repeat could not be rebuilt from the transcript. A seeded step was marked done in 32 of
+the 149 rungs.
+
+Decision.
+- `StuckTracker.last_had_failures`: the most recent observation counted a batch that only failed or
+  a call that failed again (`SIG_ALL_ERRORS`, `SIG_REPEATED_FAILURE`).
+- `_seed_investigation_steps` seeds the "keeps failing" steps only when it is true, and its closing
+  step reads "Decide: name the assumption the failed steps share and verify it" then and "...the
+  last steps share..." otherwise.
+- The failure counts, the rail's diagnosis and every rung threshold are unchanged, and a rung that
+  failing calls tripped seeds exactly what it did before.
+
+Not done, and not measured. The counts stay turn-scoped, so a rung that failing calls trip can still
+name failures from earlier in the turn beside the ones that tripped it; scoping them per lap, as
+ADR-0209 did for outcomes, would change the repeated-failure signal itself and is left alone. The
+rail still asks for read-only probes before the original step is retried. The trial reads, on two
+sessions against their own previous window and the other sessions, the re-measure rungs that seed a
+failure step (none expected) and the tool calls from a rung to the next call that is not a read.
+
+The proof. `tests/test_stuck_decompose.py` pins a turn whose two early failures are followed by a
+re-measured result: rung 1 seeds the re-measurement step and "the last steps", and no step says a
+tool keeps failing; and a turn of failing calls still seeding "keeps failing across 3 attempts" and
+"the failed steps". Two mutations (the gate always open, always shut) each fail the file.

@@ -38,10 +38,10 @@ from rich.text import Text
 from zakcode import __version__
 from zakcode.background import prepare_restart
 from zakcode.build_info import (
-    build_commit,
     build_dir,
     build_url,
     install_changed,
+    running_build,
     version_line,
 )
 from zakcode.cli._glyphs import enable_utf8, resolve_glyphs
@@ -1456,8 +1456,13 @@ def _announce_resume(console: Console, agent: Any) -> None:
     2026-08-26 field collapse resumed an old-build transcript on a process that was itself
     still the old build. The human is told why in one line. Must run on the session event
     loop (the compaction is a provider call that shares the loop every later turn uses).
+
+    The build compared is :func:`running_build`, the reading the loop stamps the document
+    with when it saves (ADR-0034). ``build_commit`` is ``None`` on an install from a local
+    path, whose label is its checkout's HEAD: read here, it made every such resume look
+    like another build's, and compacted a transcript this same build had written.
     """
-    notice = agent.session.resume_notice(running_build=build_commit())
+    notice = agent.session.resume_notice(running_build=running_build())
     if notice is None:
         return
     notice_warn(console, notice)

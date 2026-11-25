@@ -45,7 +45,7 @@ from hashlib import blake2b
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
-from zakcode.tools.base import RECEIPT_OF_CHANGE
+from zakcode.tools.base import RECEIPT_OF_CHANGE, RULE_POINTER
 
 # ── canonical tool-call identity (shared with the loop's doom guard) ─────────────
 
@@ -200,6 +200,16 @@ SIG_PRINT_ONLY = "print-only"
 _PRINT_ONLY_RE = re.compile(
     r"""\s*echo(?:[ \t]+(?:"[^"`$\\]*"|'[^']*'|[^\s"'`$\\|;&<>()#*?\[\]~{}]+))+\s*"""
 )
+#: The same bound on completions that only ask ``read_rule`` for rules the model already holds
+#: (ADR-0399): plain lookups (:func:`lookup_rules`), every one answered by a pointer
+#: (``RULE_POINTER``), the text being in the conversation or pinned in the system prompt. Each
+#: can name another rule, which the doom guard's repeat test (ADR-0391) cannot see, and the
+#: outcome signal skips a harness delivery. What was measured is recorded in ADR-0399. A first
+#: read, or a ``refresh=true`` ask, is not counted and never refused; the loop refuses only when
+#: every rule asked for would get a pointer. The completion that would be the ``plan_only_at``-th
+#: in a row is refused unexecuted and climbs the ladder as a plan-only refusal does, on
+#: ``SIG_LOOKUP_ONLY``.
+SIG_LOOKUP_ONLY = "lookup-only"
 
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
 #: style acknowledgements repeat legitimately.
@@ -289,6 +299,7 @@ class StuckTracker:
         self.shell_tools = shell_tools
         self._plan_only_run = 0  # consecutive plan-only completions that did not move the plan
         self._print_only_run = 0  # consecutive completions that only printed literal words
+        self._lookup_only_run = 0  # consecutive rule lookups answered by pointers alone
         self._plan_finished: int | None = None  # the done count the last plan receipt reported
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
@@ -340,6 +351,25 @@ class StuckTracker:
         return SIG_PRINT_ONLY in self._last_signals
 
     @property
+    def last_was_lookup_only(self) -> bool:
+        """Whether the most recent :meth:`observe` was a completion the lookup-only bound refused
+        (ADR-0399). The rules asked for are already held: the remedy is the work."""
+        return SIG_LOOKUP_ONLY in self._last_signals
+
+    @property
+    def last_had_failures(self) -> bool:
+        """Whether failing calls were part of what the most recent :meth:`observe` counted: a
+        batch that only failed, or a call that failed again (ADR-0404). The failure counts
+        span the turn, so they say why THIS rung was reached only when this is true."""
+        return SIG_ALL_ERRORS in self._last_signals or SIG_REPEATED_FAILURE in self._last_signals
+
+    @property
+    def lookup_only_run(self) -> int:
+        """How many completions in a row only asked ``read_rule`` for rules already held, each
+        answered by a pointer (ADR-0399); 0 after any other call or answer."""
+        return self._lookup_only_run
+
+    @property
     def print_only_run(self) -> int:
         """How many completions in a row only printed literal words (ADR-0373); 0 after any
         other call."""
@@ -360,6 +390,16 @@ class StuckTracker:
         """Whether ``calls``, not yet executed, are the completion the print-only bound refuses:
         prints alone, after ``plan_only_at - 1`` such completions in a row (ADR-0373)."""
         return self._is_print_only(calls) and self._print_only_run >= self.plan_only_at - 1
+
+    def lookup_only_due(self, calls: Sequence[ToolCall]) -> bool:
+        """Whether ``calls``, not yet executed, are plain ``read_rule`` lookups after
+        ``plan_only_at - 1`` completions in a row of lookups answered by pointers alone
+        (ADR-0399). The bound refuses them only when every rule they ask for would get a pointer
+        too, which the loop checks: the tracker does not hold the conversation."""
+        return (
+            lookup_rules(batch_signature(list(calls))) is not None
+            and self._lookup_only_run >= self.plan_only_at - 1
+        )
 
     @property
     def actions(self) -> list[str]:
@@ -387,6 +427,8 @@ class StuckTracker:
             data["plan_only"] = self._plan_only_run
         if self.last_was_print_only:
             data["print_only"] = self._print_only_run
+        if self.last_was_lookup_only:
+            data["lookup_only"] = self._lookup_only_run
         if SIG_REPEATED_OUTCOME in self._last_signals:
             data["tool"] = self._last_outcome_tool
             data["repeats"] = self._last_outcome_repeats
@@ -455,8 +497,12 @@ class StuckTracker:
         ):
             # ADR-0364: the bound answered this completion unexecuted. Its own signal alone, one
             # rung per refusal after the first, and nothing else counted (see SIG_PLAN_ONLY).
-            # ADR-0373 refuses prints the same way, on their own count and signal.
-            if self._is_print_only(calls):
+            # ADR-0373 refuses prints the same way, on their own count and signal, and ADR-0399
+            # rule lookups.
+            if lookup_rules(sig) is not None:
+                self._lookup_only_run += 1
+                run, signal = self._lookup_only_run, SIG_LOOKUP_ONLY
+            elif self._is_print_only(calls):
                 self._print_only_run += 1
                 run, signal = self._print_only_run, SIG_PRINT_ONLY
             else:
@@ -551,6 +597,13 @@ class StuckTracker:
         self._prev_sig = sig
         self._observe_plan_only(calls, by_id)
         self._print_only_run = self._print_only_run + 1 if self._is_print_only(calls) else 0
+        pointed = lookup_rules(sig) is not None and all(
+            (r := by_id.get(c.id)) is not None
+            and not r.is_error
+            and bool((r.data or {}).get(RULE_POINTER))
+            for c in calls
+        )
+        self._lookup_only_run = self._lookup_only_run + 1 if pointed else 0
 
     def _is_plan_only(self, calls: Sequence[ToolCall]) -> bool:
         return bool(calls and self.plan_tools) and all(c.name in self.plan_tools for c in calls)
@@ -632,6 +685,7 @@ class StuckTracker:
         self._error_counts.clear()
         self._plan_only_run = 0
         self._print_only_run = 0
+        self._lookup_only_run = 0
 
     # ── recovery messages ────────────────────────────────────────────────────
     def plan_only_message(self, step: str | None) -> str:
@@ -668,6 +722,24 @@ class StuckTracker:
             f"changes nothing. {then} A print runs again once another tool has run."
         )
 
+    def lookup_only_message(self, step: str | None) -> str:
+        """The result every call of a refused lookup-only completion gets (ADR-0399). ``step``
+        names the plan's current step, or is None when the plan has none to name."""
+        then = (
+            f"The plan's current step is {step}: apply the rules you have to it and do it now "
+            "with a tool call that does the work, or answer in text if the work is done."
+            if step
+            else "Apply the rules you have and do the next piece of actual work with a tool call, "
+            "or answer in text if the work is done."
+        )
+        return (
+            f"Not executed: this is response {self._lookup_only_run + 1} in a row that only asks "
+            "read_rule for rules already in your context, with no other tool call between them. "
+            f"Asking again for a rule you hold returns nothing new. {then} read_rule answers again "
+            "once another tool has run; refresh=true returns a rule's text only if you need its "
+            "exact wording."
+        )
+
     def nudge_message(self) -> str:
         """The diagnosis injected on a :attr:`StuckAction.NUDGE` — WHY the model is stuck.
 
@@ -688,6 +760,13 @@ class StuckTracker:
                 "fixed string, and the harness did not execute the last of them. Printing is not "
                 "progress on the task: do the current step with a tool call, or answer in text "
                 "if the work is done."
+            )
+        if self.last_was_lookup_only:
+            return (
+                f"You have now sent {self._lookup_only_run} responses in a row that only ask "
+                "read_rule for rules already in your context, and the harness did not execute the "
+                "last of them. Asking for a rule you hold is not progress on the task: apply the "
+                "rules you have and do the current step with a tool call."
             )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:

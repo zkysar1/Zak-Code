@@ -251,6 +251,7 @@ from zakcode.tasks import (
 )
 from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
+    RULE_POINTER,
     STDOUT_CHARS,
     ConcurrencyClass,
     Sampler,
@@ -261,7 +262,7 @@ from zakcode.tools.base import (
     ToolResult,
     ToolSpec,
 )
-from zakcode.tools.builtins.read_rule import rule_text
+from zakcode.tools.builtins.read_rule import rule_text, would_point
 from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
 from zakcode.usage import Usage
 from zakcode.wakeup import (
@@ -331,6 +332,15 @@ _LOOKUP_RECOVERY_NUDGE = (
     "to your current step{step} and take that step's next action now: run its command, make its "
     "edit, update the plan, or write its note. Where a rule leaves a choice to you, decide it and "
     "go on."
+)
+
+#: What a request carries in place of a completion that only asked ``read_rule`` for rules the
+#: model holds, and its answers (ADR-0400). Built from the rule names alone, never from state that
+#: moves such as the plan step, so every request renders it the same at the same place.
+_POINTER_ASK_HIDDEN = (
+    "You asked read_rule for {names}: {they} already in your context, so nothing new came back, "
+    "and an ask like this one is not shown in the conversation. Apply {it} to the step you are on "
+    "and take its next action."
 )
 
 
@@ -2610,6 +2620,64 @@ def _control_rail(text: str) -> str:
     return f"[harness] {_RAIL_HINT} {text}"
 
 
+def _pointer_ask_names(call: Message, answer: Message) -> list[str] | None:
+    """The rules ``call`` asked for, when it is a completion that did nothing but ask
+    ``read_rule`` and ``answer`` holds exactly its answers, each a pointer (ADR-0400); otherwise
+    ``None``. Any text, any other tool or an error is news, and the pair is kept."""
+    uses = call.tool_uses
+    if (
+        not uses
+        or call.text.strip()
+        or any(use.name != "read_rule" for use in uses)
+        or len(answer.blocks) != len(uses)
+    ):
+        return None
+    ids = {use.id for use in uses}
+    for result in answer.blocks:
+        if not (
+            isinstance(result, ToolResultBlock)
+            and result.tool_use_id in ids
+            and not result.is_error
+            and bool((result.data or {}).get(RULE_POINTER))
+        ):
+            return None
+        ids.discard(result.tool_use_id)
+    return list(dict.fromkeys(str(use.input.get("name")) for use in uses))
+
+
+def _hide_pointer_asks(messages: list[Message]) -> list[Message]:
+    """``messages`` as a request carries them (ADR-0400): each completion that only asked
+    ``read_rule`` for rules the model holds, with the tool message answering it, becomes one
+    harness line naming those rules. A pair is judged on its own two messages and the line takes
+    the completion's time, so what a request carried is the start of what the next one carries
+    and a cached prefix holds. The session keeps both messages; this only shapes what is sent.
+    ``messages`` itself comes back when there is nothing to replace."""
+    out: list[Message] | None = None
+    i = 0
+    while i < len(messages):
+        names = _pointer_ask_names(messages[i], messages[i + 1]) if i + 1 < len(messages) else None
+        if names is None:
+            if out is not None:
+                out.append(messages[i])
+            i += 1
+            continue
+        if out is None:
+            out = messages[:i]
+        one = len(names) == 1
+        line = _POINTER_ASK_HIDDEN.format(
+            names=", ".join(names), they="it is" if one else "they are", it="it" if one else "them"
+        )
+        out.append(
+            Message(
+                role="user",
+                blocks=[TextBlock(text=_control_rail(line))],
+                created_at=messages[i].created_at,
+            )
+        )
+        i += 2
+    return messages if out is None else out
+
+
 def _last_assistant_text(turn_assistant: list[Message]) -> str:
     """The most recent non-empty assistant text THIS turn (TURN_END payload field).
 
@@ -4672,11 +4740,13 @@ class AgentLoop:
         **ephemeral tail message** — appended after all real history, NOT persisted
         to the session — so the cached system+history prefix is untouched
         (prompt-cache safe) and the conversation on disk stays clean. With no
-        context hooks this is exactly ``self.session.messages``.
+        context hooks this is exactly ``self.session.messages``, less each completion
+        that only asked ``read_rule`` for rules the model holds (ADR-0400).
         """
         self._call_has_tail = False
         self._call_rails, self._call_rails_rested = [], False  # ADR-0204: said per request
         self._call_rails_silenced = []
+        history = _hide_pointer_asks(self.session.messages)
         if self._refused_plan is not None and not self.session.task_network.is_complete():
             # ADR-0205: the refused plan moved on (new steps, or the board was cleared). Whatever
             # finishes next is a NEW plan even if it reads the same, and its closing line is owed
@@ -4688,7 +4758,7 @@ class AgentLoop:
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
             # is not sent.
             self._call_rails_rested = True
-            return self.session.messages
+            return history
         tail: list[Message] = []
         if self.hook_manager.has_context_hooks():
             texts = await self.hook_manager.gather_context(
@@ -4732,9 +4802,9 @@ class AgentLoop:
             # moment ago, so the label and the wire cannot disagree.
             self._call_rails_silenced.append("plan_complete")
         if not tail:
-            return self.session.messages
+            return history
         self._call_has_tail = True
-        return [*self.session.messages, *tail]
+        return [*history, *tail]
 
     def _tail_rests_this_call(self) -> bool:
         """Whether this call goes out WITHOUT its ephemeral tail (ADR-0193).
@@ -5080,9 +5150,14 @@ class AgentLoop:
         done-conditions, spliced in ahead of the step the model is stuck on, where the
         re-injected plan and the plan gate keep them in view until they are marked done.
         Capability-triggered decomposition (R3 / ADaPT), done by the harness this time.
+
+        The failure steps come only from a rung that failing calls tripped (ADR-0404): the
+        failure counts span the turn, and a long turn holds failures the model moved past
+        long ago, which say nothing about a rung a re-measured result or a plan run tripped.
         """
         steps: list[Task] = []
-        repeated = stuck.error_signatures()[:2]
+        failed = stuck.last_had_failures
+        repeated = stuck.error_signatures()[:2] if failed else []
         for name, args in repeated:
             shown = args if len(args) <= 80 else args[:77] + "..."
             steps.append(
@@ -5096,7 +5171,7 @@ class AgentLoop:
                 )
             )
         named = {name for name, _args in repeated}
-        for name, count in stuck.failing_tools():
+        for name, count in stuck.failing_tools() if failed else []:
             if len(steps) >= 2:
                 break
             if name in named:
@@ -5112,19 +5187,29 @@ class AgentLoop:
                     ),
                 )
             )
-        if stuck.last_outcome_was_receipt or stuck.last_was_plan_only or stuck.last_was_print_only:
+        if (
+            stuck.last_outcome_was_receipt
+            or stuck.last_was_plan_only
+            or stuck.last_was_print_only
+            or stuck.last_was_lookup_only
+        ):
             # ADR-0209: what came back again was a tool's receipt for a change (the plan
             # tool's), with no work in between. There is no result to interpret, so the step
             # is the work itself. One successful work call is also what makes the next
             # receipt a new one to the ladder, so doing the step is what ends the climb.
             # ADR-0364: a run of plan-only completions the bound refused has the same remedy,
             # and any call to another tool is what ends that run. ADR-0373: so does a run of prints.
+            # ADR-0399: and a run of asks for rules the model already holds.
             steps.append(
                 Task(
                     title="Do: one piece of actual work on the step you were on",
                     note=(
                         (
-                            "you have been printing fixed strings, and the last were not executed. "
+                            "you have been asking read_rule for rules already in your context, "
+                            "and the last were not executed. A rule lookup is not that work. "
+                            if stuck.last_was_lookup_only
+                            else "you have been printing fixed strings, and the last were not "
+                            "executed. "
                             if stuck.last_was_print_only
                             else "you have been sending only plan calls, and the last were not "
                             "executed. "
@@ -5160,7 +5245,10 @@ class AgentLoop:
             )
         steps.append(
             Task(
-                title="Decide: name the assumption the failed steps share and verify it",
+                title=(
+                    f"Decide: name the assumption the {'failed' if failed else 'last'} steps "
+                    "share and verify it"
+                ),
                 note=(
                     "done when a read-only probe has confirmed or refuted it (a path that "
                     "exists, a command that is available, an interface that matches) — only "
@@ -7556,24 +7644,34 @@ class AgentLoop:
         """
         current = self.session.task_network.current()
         step = f"{current.id} {clip(current.title, 80)!r}" if current is not None else None
-        printed = stuck.refuses_print_only(calls)
-        run, did = (
-            (stuck.print_only_run, "only printed a fixed string")
-            if printed
-            else (stuck.plan_only_run, "called only the plan tools")
-        )
+        # The loop refuses a lookup completion only once _lookups_held has passed (ADR-0399), and
+        # a batch of read_rule calls is neither plan-only nor print-only, so this test suffices.
+        if stuck.lookup_only_due(calls):
+            run, did = stuck.lookup_only_run, "only asked read_rule for rules already held"
+            output = stuck.lookup_only_message(step)
+        elif stuck.refuses_print_only(calls):
+            run, did = stuck.print_only_run, "only printed a fixed string"
+            output = stuck.print_only_message(step)
+        else:
+            run, did = stuck.plan_only_run, "called only the plan tools"
+            output = stuck.plan_only_message(step)
         self._note(
             "intervention",
             f"response {run + 1} in a row {did}",
             kind="plan_only_bound",
         )
-        output = stuck.print_only_message(step) if printed else stuck.plan_only_message(step)
         return [
             ToolResultBlock(
                 tool_use_id=call.id, output=output, is_error=True, data={"plan_only_bound": True}
             )
             for call in calls
         ]
+
+    @staticmethod
+    def _lookups_held(calls: list[ToolCall], ctx: ToolContext) -> bool:
+        """True when ``read_rule`` would answer every call with a pointer (ADR-0399): the
+        lookup-only bound refuses an ask only for rules the model holds, never a first read."""
+        return bool(calls) and all(would_point(call.arguments, ctx) for call in calls)
 
     @staticmethod
     def _batch_did_no_work(blocks: list[ToolResultBlock]) -> bool:
@@ -10402,10 +10500,16 @@ class AgentLoop:
             # it never aborts the turn). A wholly read-only batch runs concurrently.
             # ``restrict_now`` enforces a stuck NARROW step's read-only limit at execution.
             # The plan-only bound (ADR-0364) answers the third plan-only completion in a row
-            # unexecuted instead; its refusals feed the ladder below like any results.
-            plan_only_refused = stuck.refuses_plan_only(
-                result.tool_calls
-            ) or stuck.refuses_print_only(result.tool_calls)
+            # unexecuted instead; its refusals feed the ladder below like any results. So do
+            # the print-only (ADR-0373) and lookup-only (ADR-0399) bounds.
+            plan_only_refused = (
+                stuck.refuses_plan_only(result.tool_calls)
+                or stuck.refuses_print_only(result.tool_calls)
+                or (
+                    stuck.lookup_only_due(result.tool_calls)
+                    and self._lookups_held(result.tool_calls, ctx)
+                )
+            )
             if plan_only_refused:
                 result_blocks = self._refuse_plan_only(result.tool_calls, stuck)
             else:
@@ -12503,8 +12607,11 @@ class AgentLoop:
                 result_blocks: list[ToolResultBlock] = []
                 # The plan-only bound (ADR-0364), as on the buffered path: the third plan-only
                 # completion in a row is answered unexecuted, and its refusals feed the ladder.
-                plan_only_refused = stuck.refuses_plan_only(tool_calls) or stuck.refuses_print_only(
-                    tool_calls
+                # So do the print-only (ADR-0373) and lookup-only (ADR-0399) bounds.
+                plan_only_refused = (
+                    stuck.refuses_plan_only(tool_calls)
+                    or stuck.refuses_print_only(tool_calls)
+                    or (stuck.lookup_only_due(tool_calls) and self._lookups_held(tool_calls, ctx))
                 )
                 refusals = self._refuse_plan_only(tool_calls, stuck) if plan_only_refused else []
                 for index, call in enumerate(tool_calls):
