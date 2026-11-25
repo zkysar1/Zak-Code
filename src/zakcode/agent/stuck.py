@@ -212,7 +212,7 @@ _PRINT_ONLY_RE = re.compile(
 SIG_LOOKUP_ONLY = "lookup-only"
 
 #: A run of completions that put the same question to the shell and are told the same answer
-#: (ADR-0406). A model that waits for something by checking it runs one command again and again,
+#: (ADR-0407). A model that waits for something by checking it runs one command again and again,
 #: and a number in it (a counter, a time, the name of the file its output goes to) makes every
 #: call a new string, so the doom guard's byte-identical test never sees the repeat. The answer
 #: is empty or short, which the outcome signal skips, or it carries a small number, which that
@@ -266,30 +266,32 @@ def outcome_signature(
 #: `2>` stays outside the match: a `\d*` in front of the arrow is not needed, and a search that
 #: retried it from every digit of a long run took quadratic time.
 _REDIRECT_TARGET_RE = re.compile(r"(>>?)\s*(?!&)\S+")
-#: What makes a command read or run something: a pipe, a separator, an input redirect, a
-#: parenthesis, an expansion, a glob.
-_READS_OR_RUNS = r"|;&<()`$*?\["
+#: What makes a command read or run something: a pipe, a separator (``;``, ``&`` or a line
+#: break), an input redirect, a parenthesis, an expansion, a glob.
+_READS_OR_RUNS = r"|;&<()`$*?\[\n"
 #: A whole command that writes literal words into a file (``echo '' > pkg/__init__.py``). It reads
 #: nothing, so it is no check and the file it writes is the work, not where an answer went. One
 #: character of ``_READS_OR_RUNS`` anywhere in it, quoted or not, keeps it out. The first arrow ends
-#: the words, so the pattern has one way to match and takes linear time.
+#: the words, so the pattern has one way to match and takes linear time. It is tried on the command
+#: as written: with its line breaks turned into spaces, ``echo x >> log`` and the check on the next
+#: line would read as one write, and the output file of the check would be kept, not masked.
 _LITERAL_WRITE_RE = re.compile(rf"(?:echo|printf)\b[^{_READS_OR_RUNS}>]*>[^{_READS_OR_RUNS}]*")
 _NUMBER_RE = re.compile(r"\d+")
 
 
 def poll_command(command: str, *, numbers: bool = True) -> str:
     """A shell command with the targets of its output redirects masked and, unless ``numbers``
-    is false, its numbers too (ADR-0406), so a check run again with a new counter, a new time or
+    is false, its numbers too (ADR-0407), so a check run again with a new counter, a new time or
     a new output file reads as the one it is. Whitespace is collapsed; ``2>&1`` redirects to no
     file and stays, and so does the target of a literal write (``_LITERAL_WRITE_RE``)."""
     spaced = " ".join(command.split())
-    if _LITERAL_WRITE_RE.fullmatch(spaced) is None:
+    if _LITERAL_WRITE_RE.fullmatch(command.strip()) is None:
         spaced = _REDIRECT_TARGET_RE.sub(r"\1 F", spaced)
     return _NUMBER_RE.sub("#", spaced) if numbers else spaced
 
 
 def poll_answer(output: str) -> str:
-    """A shell result with its numbers masked and only its head kept (ADR-0406)."""
+    """A shell result with its numbers masked and only its head kept (ADR-0407)."""
     return _NUMBER_RE.sub("#", " ".join(output.split()))[:_OUTCOME_HEAD_CHARS]
 
 
@@ -355,13 +357,13 @@ class StuckTracker:
         #: The loop's shell tools (ADR-0373). Empty, the print-only bound never counts anything.
         self.shell_tools = shell_tools
         #: The completions in a row that put the same question to a shell tool and got the same
-        #: answer before ``SIG_POLL`` fires (ADR-0406). Without shell tools it counts nothing.
+        #: answer before ``SIG_POLL`` fires (ADR-0407). Without shell tools it counts nothing.
         self.poll_at = poll_at
         self._plan_only_run = 0  # consecutive plan-only completions that did not move the plan
         self._print_only_run = 0  # consecutive completions that only printed literal words
         self._lookup_only_run = 0  # consecutive rule lookups answered by pointers alone
         #: The last completion's shell commands and answers, masked, and how many completions in a
-        #: row have equalled them (ADR-0406).
+        #: row have equalled them (ADR-0407).
         self._poll_key: tuple[tuple[str, ...], tuple[tuple[bool, str], ...]] | None = None
         self._poll_run = 0
         self._plan_finished: int | None = None  # the done count the last plan receipt reported
@@ -424,13 +426,13 @@ class StuckTracker:
     def last_was_poll(self) -> bool:
         """Whether the most recent :meth:`observe` was the ``poll_at``-th completion of a run
         that put the same question to the shell and got the same answer, or a later one
-        (ADR-0406). Nothing failed and there is no result to read: the remedy is to stop asking."""
+        (ADR-0407). Nothing failed and there is no result to read: the remedy is to stop asking."""
         return SIG_POLL in self._last_signals
 
     @property
     def poll_run(self) -> int:
         """How many completions in a row, the last included, put the same question to the shell
-        and got the same answer (ADR-0406); 0 after any call that is not a shell call."""
+        and got the same answer (ADR-0407); 0 after any call that is not a shell call."""
         return self._poll_run
 
     @property
@@ -671,7 +673,7 @@ class StuckTracker:
             # consecutive streak never formed while the same result came back fifteen times.
             self._streak = max(self._streak, self.nudge_at + (worst - self.outcome_repeat_at))
         if polled >= self.poll_at:
-            # A strong signal too (ADR-0406): the run is the evidence, whatever the vote says.
+            # A strong signal too (ADR-0407): the run is the evidence, whatever the vote says.
             self._streak = max(self._streak, self.nudge_at + (polled - self.poll_at))
         self._prev_sig = sig
         self._observe_plan_only(calls, by_id)
@@ -696,7 +698,7 @@ class StuckTracker:
         )
 
     def _observe_poll(self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]) -> int:
-        """Extend or end the poll run (ADR-0406) and return its length, this completion included.
+        """Extend or end the poll run (ADR-0407) and return its length, this completion included.
 
         A completion can be part of a run only when every call in it is a shell call with a
         command and a result. The run goes on while its masked commands and masked answers equal

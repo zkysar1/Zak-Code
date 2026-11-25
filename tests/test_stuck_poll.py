@@ -1,4 +1,4 @@
-"""The poll signal (ADR-0406): the same shell check run again and again, answered the same.
+"""The poll signal (ADR-0407): the same shell check run again and again, answered the same.
 
 A model that waits by checking runs one command repeatedly, and a number in it (a counter, a
 time, the file its output goes to) makes every call a new string. The doom guard compares batches
@@ -125,16 +125,19 @@ NUMBER_VARIANTS: dict[str, Callable[[int], str]] = {
     "a time in the command": lambda n: f"bash q.sh --since 2026-11-25T08:{10 + n}:00",
     "a number in a path": lambda n: f"cat /tmp/session-{n}/state",
 }
-#: Where its output goes, and how the command is spaced.
+#: Where its output goes.
 TARGET_VARIANTS: dict[str, Callable[[int], str]] = {
     "an output file with a number": lambda n: f"bash q.sh --job j-7 > /tmp/out_{n}.txt",
     "an output file with no number": lambda n: f"bash q.sh --job j-7 > /tmp/o_{LETTERS[n]}.txt",
     "an appended log": lambda n: f"bash q.sh --job j-7 >> /tmp/log-{LETTERS[n]} 2>&1",
     "the error stream sent to a file": lambda n: f"bash q.sh --job j-7 2>/tmp/e{LETTERS[n]}",
     "both streams sent to a file": lambda n: f"bash q.sh --job j-7 &>/tmp/all_{LETTERS[n]}",
+}
+#: How the command is spaced.
+SPACING_VARIANTS: dict[str, Callable[[int], str]] = {
     "spacing": lambda n: "bash q.sh" + (" ", "\t", "  ", " \t", "   ", "\t\t")[n] + "--job j-7",
 }
-VARIANTS = {**NUMBER_VARIANTS, **TARGET_VARIANTS}
+VARIANTS = {**NUMBER_VARIANTS, **TARGET_VARIANTS, **SPACING_VARIANTS}
 
 
 @pytest.mark.parametrize("variant", sorted(VARIANTS))
@@ -152,6 +155,12 @@ def test_a_check_that_printed_nothing_is_the_same_check_when_only_its_output_fil
     variant: str,
 ) -> None:
     commands = [TARGET_VARIANTS[variant](n) for n in range(POLL_AT)]
+    assert len(set(commands)) == POLL_AT
+    assert _run(_tracker(), commands) == 1  # EMPTY_OK: nothing printed
+
+
+def test_a_check_that_printed_nothing_is_the_same_check_when_only_its_spacing_differs() -> None:
+    commands = [SPACING_VARIANTS["spacing"](n) for n in range(POLL_AT)]
     assert len(set(commands)) == POLL_AT
     assert _run(_tracker(), commands) == 1  # EMPTY_OK: nothing printed
 
@@ -184,6 +193,7 @@ LITERAL_WRITES: dict[str, Callable[[int], str]] = {
     "a printf with an escape": lambda n: f"printf '# header\\n' > src/{PACKAGES[n]}/mod.py",
     "an append": lambda n: f"echo done >> logs/{PACKAGES[n]}.log",
     "numbered files": lambda n: f"echo '' > part{n}.txt",
+    "no space before the arrow": lambda n: f"echo>src/{PACKAGES[n]}/__init__.py",
 }
 
 
@@ -195,6 +205,29 @@ def test_one_text_written_into_different_files_is_no_check_however_often(variant
     assert _run(tracker, commands) == 0  # EMPTY_OK: nothing printed
     assert tracker.poll_run == 1
     assert tracker.next_action() is StuckAction.CONTINUE
+
+
+#: One text with a quoted glob character written into a file each time. The exemption cannot tell
+#: a quoted glob from a bare one, so these read as one check run again (ADR-0407, Not done).
+QUOTED_GLOBS: dict[str, Callable[[int], str]] = {
+    "a pattern file": lambda n: f"echo '*.pyc' > {PACKAGES[n]}/.gitignore",
+    "a section name": lambda n: f"echo '[pytest]' > {PACKAGES[n]}/pytest.ini",
+    "a printf pattern": lambda n: f"printf '*.log\\n' > {PACKAGES[n]}/.gitignore",
+    "a question": lambda n: f"echo 'Continue?' > {PACKAGES[n]}/prompt.txt",
+    "a quoted text of two lines": lambda n: f"echo 'line one\nline two' > {PACKAGES[n]}/notes.txt",
+}
+
+
+@pytest.mark.parametrize("variant", sorted(QUOTED_GLOBS))
+def test_one_text_with_a_quoted_glob_written_into_many_files_reads_as_a_poll_the_known_cost(
+    variant: str,
+) -> None:
+    tracker = _tracker()
+    actions: list[StuckAction] = []
+    for n in range(len(PACKAGES)):
+        _ran(tracker, _shell(QUOTED_GLOBS[variant](n), n))
+        actions.append(tracker.next_action())
+    assert tracker.poll_run == len(PACKAGES) and actions[-1] is StuckAction.STOP
 
 
 def test_a_different_check_is_not_the_same_check_though_the_answers_match() -> None:
@@ -268,10 +301,11 @@ def test_reading_a_file_in_pages_is_no_poll_when_every_page_answers_in_other_wor
     assert _run(_tracker(), commands, lambda n: "(end of file)") == POLL_AT + 1
 
 
-#: Items asked for one at a time, each answered in words that differ only in their numbers. The
-#: masks cannot tell them from one check run again (ADR-0406, Not done), so the ladder reaches its
-#: stop at the ninth. The cost is pinned so that a change to it is made on purpose.
-ENUMERATIONS: dict[str, tuple[Callable[[int], str], Callable[[int], str]]] = {
+#: Items asked for one at a time, and a watch of progress, each answered in words that differ only
+#: in their numbers. The masks cannot tell them from one check run again (ADR-0407, Not done), so
+#: the ladder reaches its stop at the ninth. The cost is pinned so that a change to it is made on
+#: purpose.
+NUMBERS_ONLY: dict[str, tuple[Callable[[int], str], Callable[[int], str]]] = {
     "numbered scripts": (lambda n: f"python ex{n}.py", lambda n: f"Exercise {n} OK"),
     "pages of a log": (
         lambda n: f"sed -n '{40 * n + 1},{40 * n + 40}p' train.log",
@@ -281,14 +315,17 @@ ENUMERATIONS: dict[str, tuple[Callable[[int], str], Callable[[int], str]]] = {
         lambda n: f"curl -s localhost:8080/items/{n}",
         lambda n: f'{{"id": {n}, "state": "ok"}}',
     ),
+    "line counts of numbered files": (
+        lambda n: f"wc -l data/part_{n}.csv",
+        lambda n: f"{100 + n} data/part_{n}.csv",
+    ),
+    "a progress watch": (lambda n: "tail -1 build.log", lambda n: f"compiled {10 * n}%"),
 }
 
 
-@pytest.mark.parametrize("name", sorted(ENUMERATIONS))
-def test_items_asked_for_by_number_and_answered_alike_read_as_one_check_the_known_cost(
-    name: str,
-) -> None:
-    command, answer = ENUMERATIONS[name]
+@pytest.mark.parametrize("name", sorted(NUMBERS_ONLY))
+def test_answers_that_differ_only_in_numbers_read_as_one_check_the_known_cost(name: str) -> None:
+    command, answer = NUMBERS_ONLY[name]
     tracker = _tracker()
     actions: list[StuckAction] = []
     for n in range(1, 10):
@@ -340,6 +377,61 @@ def test_a_completion_is_in_a_run_only_when_every_call_in_it_is_a_shell_call() -
         _ran(one, pair(n), UNCHANGED)
     _ran(one, _shell("q.sh a 9", 40), UNCHANGED)  # one of the two checks alone is another question
     assert one.poll_run == 1
+
+
+def _pair(
+    tracker: StuckTracker, n: int, *, first_answer: str = UNCHANGED, first_error: bool = False
+) -> None:
+    calls = [*_shell(f"q.sh a {n}", 2 * n), *_shell(f"q.sh b {n}", 2 * n + 1)]
+    results = [
+        ToolResultBlock(tool_use_id=calls[0].id, output=first_answer, is_error=first_error),
+        ToolResultBlock(tool_use_id=calls[1].id, output=UNCHANGED),
+    ]
+    tracker.observe(calls, results)
+
+
+def test_every_call_of_a_batch_is_compared_with_its_own_answer_and_error_flag() -> None:
+    tracker = _tracker()
+    for n in range(POLL_AT):
+        _pair(tracker, n)
+    assert tracker.last_was_poll  # the control: both calls alike each time
+    for changed in ({"first_answer": "now it is different"}, {"first_error": True}):
+        tracker = _tracker()
+        for n in range(POLL_AT - 1):
+            _pair(tracker, n)
+        _pair(tracker, 9, **changed)  # only the FIRST call's answer or error flag differs
+        assert tracker.poll_run == 1 and not tracker.last_was_poll
+
+
+def test_the_poll_never_lowers_a_rung_that_a_repeated_outcome_has_earned() -> None:
+    # Each answer is long enough to count as an outcome, so one result comes back six times and
+    # the ladder is at its stop by the sixth. The poll signal fires there too, and would put the
+    # run back on the first rung if it set the rung and did not only raise it.
+    tracker = _tracker()
+    answer = "3 jobs pending, none started, the list has not moved since the last look"
+    actions = []
+    for n in range(1, POLL_AT + 1):
+        _ran(tracker, _shell(_status_check(n), n), answer)
+        actions.append(tracker.next_action())
+    assert SIG_POLL in tracker.last_signals and SIG_REPEATED_OUTCOME in tracker.last_signals
+    assert actions == [
+        StuckAction.CONTINUE,
+        StuckAction.CONTINUE,
+        StuckAction.NUDGE,
+        StuckAction.NARROW,
+        StuckAction.STEP_BACK,
+        StuckAction.STOP,
+    ]
+
+
+def test_the_evidence_names_the_run_only_when_the_signal_fired() -> None:
+    tracker = _tracker()
+    answer = "3 jobs pending, none started, the list has not moved since the last look"
+    for n in range(3):
+        _ran(tracker, _shell("bash q.sh --job j-7", n), answer)
+    assert tracker.poll_run == 3 and not tracker.last_was_poll  # a run, short of the threshold
+    assert SIG_REPEATED_OUTCOME in tracker.last_signals  # something else fired
+    assert "poll" not in tracker.evidence()
 
 
 def test_a_call_with_no_command_or_no_result_ends_the_run_and_is_never_read() -> None:
@@ -536,13 +628,17 @@ def test_a_literal_write_keeps_the_file_it_writes_into(one: str, other: str) -> 
         "bash q.sh; echo ok > {}",
         "echo2 q > {}",
         "printfx q > {}",
+        "echo x >> /tmp/poll.log\nbash q.sh > {}",
+        "printf x >> /tmp/poll.log\nbash q.sh > {}",
+        "echo x >> /tmp/poll.log\r\nbash q.sh > {}",
+        "echo x >> /tmp/poll.log\n\nbash q.sh > {} 2>&1",
     ],
 )
 def test_a_write_that_reads_or_runs_something_is_still_read_by_what_it_asks(template: str) -> None:
     assert poll_command(template.format("a")) == poll_command(template.format("b"))
 
 
-@pytest.mark.parametrize("char", list("|;&<()`$*?["))
+@pytest.mark.parametrize("char", [*"|;&<()`$*?[", "\n"])
 def test_one_pipe_separator_expansion_or_glob_anywhere_makes_a_write_something_else(
     char: str,
 ) -> None:
@@ -551,6 +647,28 @@ def test_one_pipe_separator_expansion_or_glob_anywhere_makes_a_write_something_e
     for template in ("echo a{c}b > {t}", "printf a{c}b > {t}", "echo x > {t}{c}q.sh"):
         one = poll_command(template.format(c=char, t="x"))
         assert one == poll_command(template.format(c=char, t="y"))
+
+
+#: Ways a silent check names the file its output goes to that the redirect mask does not read:
+#: another spelling of the redirect, a pipe into `tee`, and a flag of the program itself.
+UNMASKED_SPELLINGS: dict[str, Callable[[int], str]] = {
+    "both streams with >&": lambda n: f"bash q.sh --job j-7 >& /tmp/out_{n}.txt",
+    "an output clobbered with >|": lambda n: f"bash q.sh --job j-7 >| /tmp/out_{n}.txt",
+    "a pipe into tee": lambda n: f"bash q.sh --job j-7 | tee /tmp/out_{n}.txt",
+    "the output flag of curl": lambda n: (
+        f"curl -s -o /tmp/st_{n}.json http://localhost:8080/status"
+    ),
+    "the output flag of wget": lambda n: (
+        f"wget -q -O /tmp/st_{n}.html http://localhost:8080/status"
+    ),
+}
+
+
+@pytest.mark.parametrize("variant", sorted(UNMASKED_SPELLINGS))
+def test_an_output_file_named_in_another_way_is_not_masked_the_known_cost(variant: str) -> None:
+    commands = [UNMASKED_SPELLINGS[variant](n) for n in range(2 * POLL_AT)]
+    assert len({poll_command(c) for c in commands}) == 1  # the floor: one command up to numbers
+    assert _run(_tracker(), commands) == 0  # printed nothing: the number in the file differs
 
 
 HOSTILE = {
@@ -629,11 +747,22 @@ class _Shell(Tool):
         return ToolResult.ok(EMPTY_OK)
 
 
+class _FailingShell(_Shell):
+    """Stands in for a shell whose every command fails."""
+
+    async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return ToolResult.error("connection refused")
+
+
 def _shell_loop(
-    provider: _ScriptByCallProvider, tmp_path: Path, *, max_iterations: int = 15
+    provider: _ScriptByCallProvider,
+    tmp_path: Path,
+    *,
+    max_iterations: int = 15,
+    tool: Tool | None = None,
 ) -> AgentLoop:
     registry = ToolRegistry()
-    registry.register(_Shell())
+    registry.register(tool or _Shell())
     return AgentLoop(
         provider,
         registry,
@@ -713,6 +842,38 @@ def test_a_model_that_keeps_checking_is_nudged_narrowed_stepped_back_and_stopped
     assert loop._trace is not None and [
         e.detail for e in loop._trace.events if e.data.get("kind") == "stuck"
     ][-1].startswith("stuck")
+
+
+def test_a_check_that_failed_each_time_is_still_given_the_one_decision_step(tmp_path: Path) -> None:
+    loop = _shell_loop(_polls_forever(), tmp_path)
+    tracker = _tracker()
+    for n in range(POLL_AT):
+        _ran(tracker, _shell(_status_check(n), n), "connection refused", is_error=True)
+    assert tracker.last_was_poll and tracker.failing_tools()  # the floor: failures to point at
+    assert [t.title for t in loop._seed_investigation_steps(tracker)] == [DECIDE]
+
+
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+def test_a_check_that_failed_from_its_third_run_is_pointed_back_at_the_steps_it_has(
+    tmp_path: Path, streamed: bool
+) -> None:
+    # The loop seeds steps only when none is open. The failures reached rung 1 at the third run
+    # and seeded the failure steps; the sixth run finds them open, so the poll's nudge points back
+    # at them and adds none of its own.
+    loop = _shell_loop(_polls_forever(), tmp_path, tool=_FailingShell())
+    if streamed:
+        _drain(loop, "wait for the lock to be released")
+    else:
+        asyncio.run(loop.arun_turn("wait for the lock to be released"))
+    titles = _titles(loop)
+    assert len(titles) == 2 and DECIDE not in titles
+    assert titles[0].startswith("Investigate: why `Bash` keeps failing")
+    assert titles[1].startswith("Decide: name the assumption")
+    assert any("run the same check 6 times in a row" in r for r in _rails(loop))
+    assert loop._trace is not None
+    notes = [e.detail for e in loop._trace.events if e.data.get("kind") == "stuck"]
+    assert "no progress — added 2 investigative steps in the plan" in notes
+    assert "no progress — re-pointed at 2 investigative steps in the plan" in notes
 
 
 def test_a_model_that_works_between_its_checks_is_never_told(tmp_path: Path) -> None:
