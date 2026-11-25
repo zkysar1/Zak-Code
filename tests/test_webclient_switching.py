@@ -49,8 +49,10 @@ _PLACEHOLDER = _SERVED_INPUT.group(1)
 _SERVER = r"""
 const __SCN = JSON.parse(process.argv[2]);
 const __later = setTimeout;  // the real clock, for this script's own timing
-// The reconnect backoff is a wait, not behaviour under test: the page's timers fire at once.
-globalThis.setTimeout = (fn, _ms, ...args) => __later(fn, 0, ...args);
+// The reconnect backoff is a wait, not behaviour under test: the page's timers fire at once. The
+// wait after a Stop is the one exception a scenario may keep (stopCheckMs), 5000 ms on the page.
+globalThis.setTimeout = (fn, ms, ...args) =>
+  __later(fn, ms === 5000 && __SCN.stopCheckMs ? __SCN.stopCheckMs : 0, ...args);
 const __asked = {};  // transcripts asked for, per chat
 const __watched = {};  // watch connections asked for, per chat
 const __posted = [];  // what the page posted that the script has no answer of its own for
@@ -254,6 +256,7 @@ def _page(
     interrupt: dict[str, Any] | None = None,
     hidden: bool = False,
     waiting: str | None = None,
+    stop_check_ms: int = 0,
 ) -> list[dict[str, Any]]:
     """Run the page against the scripted chats, the first one current; what it showed at each
     ``look`` step. The page must draw exactly the error cards in ``errors`` (none by default).
@@ -261,7 +264,8 @@ def _page(
     ``interrupt`` is how the server answers a Stop: its ``status``, ``body`` and ``delay``.
     ``hidden`` opens the page in a background tab; a ``hidden`` step moves it there or back.
     ``waiting`` names the chat whose turn waits on a permission, as the chat list marks it; a
-    ``set`` step changes it, or the current chat."""
+    ``set`` step changes it, or the current chat. ``stop_check_ms`` keeps the wait after a Stop
+    (5000 ms on the page) at that many ms, where every other timer fires at once."""
     assert _NODE is not None
     script = tmp_path / f"page-{time.monotonic_ns()}.js"
     script.write_text(_DOM + _SERVER + _page_script(), encoding="utf-8")
@@ -274,6 +278,7 @@ def _page(
         "hidden": hidden,
         "placeholder": _PLACEHOLDER,
         "waiting": waiting,
+        "stopCheckMs": stop_check_ms,
     }
     proc = subprocess.run(
         [_NODE, str(script), json.dumps(scenario)], capture_output=True, timeout=60, check=False
@@ -568,6 +573,54 @@ def test_a_stopped_turn_whose_end_never_comes_is_asked_after(
     assert after["status"] == status
     noted = [text for text in _row_texts(after) if text == "·the turn has ended"]
     assert noted == ([] if running else ["·the turn has ended"])
+
+
+def test_a_stop_then_a_hidden_tab_waits_to_be_shown_before_asking_after_the_stop(
+    tmp_path: Path,
+) -> None:
+    """A tab that hid after Stop let go of its watch (ADR-0339), so the turn's end
+    could not reach it, and the check after the Stop read "no turn runs" and ended the turn
+    locally: the finished call read "interrupted", and the replayed result drew a row of its own.
+    The check waits until the page is shown, so the resumed watch replays the end first."""
+    result = _frame(
+        3, event="tool_result", tool_use_id="t1", output="deployed", is_error=False, at=_T0 + 4
+    )
+    done = _frame(
+        4, event="done", stop_reason="interrupted", iterations=1, usage=_USAGE, at=_T0 + 5
+    )
+    chat = _chat(
+        A,
+        "chat A",
+        watch={"null": {"frames": _TURN}, "2": {"frames": [result, done], "delay": 100}},
+        transcripts=[{}, {"running": False}],
+    )
+    hidden, shown = _page(
+        tmp_path,
+        [chat],
+        [
+            {"at": 300, "press": "send"},
+            {"at": 400, "hidden": True},
+            {"at": 1000, "look": "hidden past the check"},  # the check was due at 700
+            {"at": 1100, "hidden": False},
+            {"at": 1800, "look": "shown"},
+        ],
+        stop_check_ms=400,
+    )
+    assert hidden["send"] == "■"  # the turn is still shown running
+    assert "·the turn has ended" not in _row_texts(hidden)
+    assert shown["send"] == "↑"  # the replayed end ended it
+    assert "·the turn has ended" not in _row_texts(shown)
+    assert "Ran · 1 line" in _tool_card(shown)  # its result came with the replay, not "interrupted"
+
+
+def test_a_watch_let_go_of_in_a_background_tab_does_not_say_it_is_reconnecting(
+    tmp_path: Path,
+) -> None:
+    """Letting go of the watch is not a drop (ADR-0339): the page said "reconnecting" and slept
+    its backoff for a connection it had ended on purpose."""
+    chat = _chat(A, "chat A", watch={"null": {"frames": _TURN}})
+    [away] = _page(tmp_path, [chat], [{"at": 200, "hidden": True}, {"at": 400, "look": "away"}])
+    assert away["connection"] == "connected"
 
 
 @pytest.mark.parametrize(
