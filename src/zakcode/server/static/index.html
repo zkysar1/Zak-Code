@@ -1674,6 +1674,14 @@
   // ended where this page did not hear it, and ends here too; one it still runs is said to be.
   async function checkStopped(turn) {
     if (turn !== turnSeq) return;
+    // A hidden page let go of its watch (ADR-0339), so the turn's end cannot have reached it: the
+    // server's answer would read "ended" only because this page was not listening. Wait until it is
+    // shown, so the resumed watch replays the end first, then ask again after the same wait.
+    if (document.hidden) {
+      await whenShown();
+      if (turn === turnSeq) setTimeout(() => checkStopped(turn), STOP_CHECK_MS);
+      return;
+    }
     let running = true;
     try {
       const resp = await fetch("/sessions/" + sessionId + "/transcript?limit=0");
@@ -2063,6 +2071,7 @@
         });
       } catch (e) { /* fall through to reconnect */ }
       if (gen !== shown) return;  // another chat opened: its own watch is on its way
+      if (document.hidden) continue;  // the page let go of it on purpose (ADR-0339): not a drop to back off from
       setConn("connecting", "reconnecting");
       // The turn on screen stays: a dropped connection is not a turn end. The resume goes on from
       // the cursor, so a running tool card, the approval it waits on and Stop are still the turn's;
