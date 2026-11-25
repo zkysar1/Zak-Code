@@ -58,7 +58,7 @@ class _Provider(Provider):
 class _Shell(Tool):
     """Stands in for the shell tool: a different page of output for every call. The pages differ
     in their words, not only in their numbers: a check that answers the same apart from its
-    numbers is a poll to the stuck tracker (ADR-0407), which is not what paging a file looks like."""
+    numbers is a poll to the stuck tracker (ADR-0407), not what paging a file looks like."""
 
     spec = ToolSpec(name="Bash", description="Runs a command.")
 
