@@ -5151,6 +5151,27 @@ class AgentLoop:
         re-injected plan and the plan gate keep them in view until they are marked done.
         Capability-triggered decomposition (R3 / ADaPT), done by the harness this time.
         """
+        if stuck.last_was_poll:
+            # ADR-0406: the same shell check, run again and again and answered the same each time.
+            # A check that succeeded each time failed nowhere and left no result to read, so the
+            # failure steps, the re-measure step and the closing assumption step would each say
+            # what is not so. The one step is the decision the repeats put off. A check that
+            # failed each time reached rung 1 by its failures, and their steps are seeded.
+            poll_steps = [
+                Task(
+                    title="Decide: act on what the check showed, or wait without checking",
+                    note=(
+                        "you have run the same check again and again and it answered the same "
+                        "each time, so another run adds nothing. Done when you have either done "
+                        "the next piece of work its answer calls for, or armed a wake-up "
+                        "(ScheduleWakeup) for when it can change and ended your turn saying what "
+                        "you are waiting for"
+                    ),
+                )
+            ]
+            network = self.session.task_network
+            network.insert_before(network.current(), poll_steps)
+            return poll_steps
         steps: list[Task] = []
         repeated = stuck.error_signatures()[:2]
         for name, args in repeated:

@@ -211,6 +211,25 @@ _PRINT_ONLY_RE = re.compile(
 #: ``SIG_LOOKUP_ONLY``.
 SIG_LOOKUP_ONLY = "lookup-only"
 
+#: A run of completions that put the same question to the shell and are told the same answer
+#: (ADR-0406). A model that waits for something by checking it runs one command again and again,
+#: and a number in it (a counter, a time, the name of the file its output goes to) makes every
+#: call a new string, so the doom guard's byte-identical test never sees the repeat. The answer
+#: is empty or short, which the outcome signal skips, or it carries a small number, which that
+#: signal does not mask, so the repeats never read as one result. Each call is a model call that
+#: learns nothing. A completion extends the run when every call in it is a shell call and its
+#: commands (:func:`poll_command`) and answers (:func:`poll_answer`) equal the last
+#: completion's; any other call, or a different command or answer, ends it. A command that
+#: printed nothing proves nothing about what it asked, so it must match but for where its output
+#: went: ``py step1.py`` then ``py step2.py`` are two jobs, ``q.sh > out1`` then ``q.sh > out2`` one
+#: check. A literal write (``echo '' > a``, then ``echo '' > b``) reads nothing, so it checks
+#: nothing: the file it writes is the work, and two files are two commands. A completion the
+#: NARROW step turned away is neither part of the run nor its end.
+#: ``POLL_AT`` in a row fire ``SIG_POLL``, STRONG like a repeated outcome: the run climbs the
+#: ladder by its length, the ``POLL_AT``-th completion landing on the nudge.
+POLL_AT = 6
+SIG_POLL = "poll"
+
 #: Outputs shorter than this (normalized) never count as a repeated outcome: ``ok`` / ``done``
 #: style acknowledgements repeat legitimately.
 _OUTCOME_MIN_CHARS = 24
@@ -240,6 +259,37 @@ def outcome_signature(
         return None
     signature = f"{name}\x00{epoch}\x00{normalized[:_OUTCOME_HEAD_CHARS]}"
     return signature if work is None else f"{signature}\x00{work}"
+
+
+#: The word after an output redirect (`>`, `>>`, `2>`, the `>` of `&>`): where the output goes is
+#: not what was asked. `2>&1` names no file, so the `&` after the arrow is left alone.
+_REDIRECT_TARGET_RE = re.compile(r"(\d*>>?)\s*(?!&)\S+")
+#: A whole command that writes literal words into a file (``echo '' > pkg/__init__.py``). It reads
+#: nothing, so it is no check and the file it writes is the work, not where an answer went. Any
+#: expansion, pipe, separator or input redirect makes it something else.
+_LITERAL_WRITE_RE = re.compile(r"(?:echo|printf)\b[^|;&<>()`$]*>>?\s*[^\s|;&<>()`$]+")
+_NUMBER_RE = re.compile(r"\d+")
+
+
+def poll_command(command: str, *, numbers: bool = True) -> str:
+    """A shell command with the targets of its output redirects masked and, unless ``numbers``
+    is false, its numbers too (ADR-0406), so a check run again with a new counter, a new time or
+    a new output file reads as the one it is. Whitespace is collapsed; ``2>&1`` redirects to no
+    file and stays, and so does the target of a literal write (``_LITERAL_WRITE_RE``)."""
+    spaced = " ".join(command.split())
+    if _LITERAL_WRITE_RE.fullmatch(spaced) is None:
+        spaced = _REDIRECT_TARGET_RE.sub(r"\1 F", spaced)
+    return _NUMBER_RE.sub("#", spaced) if numbers else spaced
+
+
+def poll_answer(output: str) -> str:
+    """A shell result with its numbers masked and only its head kept (ADR-0406)."""
+    return _NUMBER_RE.sub("#", " ".join(output.split()))[:_OUTCOME_HEAD_CHARS]
+
+
+#: What a command that printed nothing answers, numbers masked: the shell tools end every result
+#: with their exit-code line, and a result with no text at all is the same silence.
+_SILENT_ANSWERS = frozenset({"", "[exit code: #]"})
 
 
 class StuckAction(Enum):
@@ -283,6 +333,7 @@ class StuckTracker:
         plan_tools: frozenset[str] = frozenset(),
         plan_only_at: int = PLAN_ONLY_AT,
         shell_tools: frozenset[str] = frozenset(),
+        poll_at: int = POLL_AT,
     ) -> None:
         self.vote_threshold = vote_threshold
         self.nudge_at = nudge_at
@@ -297,9 +348,16 @@ class StuckTracker:
         self.plan_only_at = plan_only_at
         #: The loop's shell tools (ADR-0373). Empty, the print-only bound never counts anything.
         self.shell_tools = shell_tools
+        #: The completions in a row that put the same question to a shell tool and got the same
+        #: answer before ``SIG_POLL`` fires (ADR-0406). Without shell tools it counts nothing.
+        self.poll_at = poll_at
         self._plan_only_run = 0  # consecutive plan-only completions that did not move the plan
         self._print_only_run = 0  # consecutive completions that only printed literal words
         self._lookup_only_run = 0  # consecutive rule lookups answered by pointers alone
+        #: The last completion's shell commands and answers, masked, and how many completions in a
+        #: row have equalled them (ADR-0406).
+        self._poll_key: tuple[tuple[str, ...], tuple[tuple[bool, str], ...]] | None = None
+        self._poll_run = 0
         self._plan_finished: int | None = None  # the done count the last plan receipt reported
         self._streak = 0  # consecutive stuck (>= vote_threshold signals) iterations
         self._prev_sig: tuple[tuple[str, str], ...] | None = None
@@ -355,6 +413,19 @@ class StuckTracker:
         """Whether the most recent :meth:`observe` was a completion the lookup-only bound refused
         (ADR-0399). The rules asked for are already held: the remedy is the work."""
         return SIG_LOOKUP_ONLY in self._last_signals
+
+    @property
+    def last_was_poll(self) -> bool:
+        """Whether the most recent :meth:`observe` was the ``poll_at``-th completion of a run
+        that put the same question to the shell and got the same answer, or a later one
+        (ADR-0406). Nothing failed and there is no result to read: the remedy is to stop asking."""
+        return SIG_POLL in self._last_signals
+
+    @property
+    def poll_run(self) -> int:
+        """How many completions in a row, the last included, put the same question to the shell
+        and got the same answer (ADR-0406); 0 after any call that is not a shell call."""
+        return self._poll_run
 
     @property
     def lookup_only_run(self) -> int:
@@ -422,6 +493,8 @@ class StuckTracker:
             data["print_only"] = self._print_only_run
         if self.last_was_lookup_only:
             data["lookup_only"] = self._lookup_only_run
+        if self.last_was_poll:
+            data["poll"] = self._poll_run
         if SIG_REPEATED_OUTCOME in self._last_signals:
             data["tool"] = self._last_outcome_tool
             data["repeats"] = self._last_outcome_repeats
@@ -505,6 +578,7 @@ class StuckTracker:
             self._last_signals = [signal]
             self._streak = max(self._streak, self.nudge_at + refusals - 2)
             self._prev_sig = sig
+            self._poll_key, self._poll_run = None, 0
             return
 
         errored_now: list[tuple[str, str]] = []
@@ -575,6 +649,9 @@ class StuckTracker:
         self._last_outcome_receipt = worst_receipt
         if worst >= self.outcome_repeat_at:
             signals.append(SIG_REPEATED_OUTCOME)
+        polled = self._observe_poll(calls, by_id)
+        if polled >= self.poll_at:
+            signals.append(SIG_POLL)
 
         self._last_signals = signals
         if len(signals) >= self.vote_threshold:
@@ -587,6 +664,9 @@ class StuckTracker:
             # of what the interleaved iterations did — the field loop alternated probes, so a
             # consecutive streak never formed while the same result came back fifteen times.
             self._streak = max(self._streak, self.nudge_at + (worst - self.outcome_repeat_at))
+        if polled >= self.poll_at:
+            # A strong signal too (ADR-0406): the run is the evidence, whatever the vote says.
+            self._streak = max(self._streak, self.nudge_at + (polled - self.poll_at))
         self._prev_sig = sig
         self._observe_plan_only(calls, by_id)
         self._print_only_run = self._print_only_run + 1 if self._is_print_only(calls) else 0
@@ -608,6 +688,40 @@ class StuckTracker:
             and _PRINT_ONLY_RE.fullmatch(command) is not None
             for c in calls
         )
+
+    def _observe_poll(self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]) -> int:
+        """Extend or end the poll run (ADR-0406) and return its length, this completion included.
+
+        A completion can be part of a run only when every call in it is a shell call with a
+        command and a result. The run goes on while its masked commands and masked answers equal
+        the last completion's, and starts again at 1 on any other shell completion. Whether a
+        call failed is part of the answer: a check that began to fail has changed its answer.
+        A command that printed nothing is compared with its numbers kept, as it asked nothing a
+        second answer could confirm. A completion the NARROW step turned away did nothing: the
+        run stands as it was, and the call that follows it goes on from there."""
+        if calls and all(
+            (r := by_id.get(c.id)) is not None and (r.data or {}).get("step_restricted")
+            for c in calls
+        ):
+            return 0
+        commands: list[str] = []
+        answers: list[tuple[bool, str]] = []
+        for call in calls:
+            command = call.arguments.get("command")
+            result = by_id.get(call.id)
+            if call.name not in self.shell_tools or not isinstance(command, str) or result is None:
+                self._poll_key, self._poll_run = None, 0
+                return 0
+            answer = poll_answer(result.output or "")
+            commands.append(poll_command(command, numbers=answer not in _SILENT_ANSWERS))
+            answers.append((result.is_error, answer))
+        if not commands:
+            self._poll_key, self._poll_run = None, 0
+            return 0
+        key = (tuple(commands), tuple(answers))
+        self._poll_run = self._poll_run + 1 if key == self._poll_key else 1
+        self._poll_key = key
+        return self._poll_run
 
     def _observe_plan_only(
         self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]
@@ -679,6 +793,7 @@ class StuckTracker:
         self._plan_only_run = 0
         self._print_only_run = 0
         self._lookup_only_run = 0
+        self._poll_key, self._poll_run = None, 0
 
     # ── recovery messages ────────────────────────────────────────────────────
     def plan_only_message(self, step: str | None) -> str:
@@ -760,6 +875,14 @@ class StuckTracker:
                 "read_rule for rules already in your context, and the harness did not execute the "
                 "last of them. Asking for a rule you hold is not progress on the task: apply the "
                 "rules you have and do the current step with a tool call."
+            )
+        if self.last_was_poll:
+            return (
+                f"You have now run the same check {self._poll_run} times in a row, and it "
+                "answered the same each time apart from its numbers. Each run is a model call "
+                "that learns nothing new. If you are waiting for something that has not "
+                "happened yet, do not wait by checking: arm a wake-up for when it can change "
+                "(ScheduleWakeup) and end your turn. Otherwise act on what the check showed."
             )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:
