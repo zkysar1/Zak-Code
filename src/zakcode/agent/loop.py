@@ -5158,7 +5158,7 @@ class AgentLoop:
         if stuck.last_was_poll:
             # ADR-0407: the same shell check, run again and again and answered the same each time.
             # A check that succeeded each time failed nowhere and left no result to read, so the
-            # re-measure step and the closing assumption step would each say what is not so. The
+            # investigate step and the closing assumption step would each say what is not so. The
             # one step is the decision the repeats put off, and it stands when the check failed
             # each time too: its answer is the error, so acting on it or waiting without checking
             # are what is left. The loop seeds only when no investigation step is open, so

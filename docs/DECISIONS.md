@@ -25342,7 +25342,7 @@ Decision.
   a wake-up is for state the harness cannot report. It is the text said when the answers also repeat
   as outcomes.
 - Rung 1 seeds one step, "Decide: act on what the check showed, or wait without checking", and
-  neither the re-measure step nor the closing assumption step: a check that succeeded each time
+  neither the investigate step nor the closing assumption step: a check that succeeded each time
   failed nowhere, so each of those would say what is not so (ADR-0057). Its note names the nudge's
   two ways to wait. `_seed_investigation_steps` gives it whenever the last completion was a poll, a
   check that failed each time included: its answer is the error, so acting on it or waiting without
