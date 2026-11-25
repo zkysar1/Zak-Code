@@ -270,6 +270,36 @@ def test_a_write_of_several_statements_reads_as_a_poll_the_known_cost(variant: s
     assert tracker.poll_run == len(PACKAGES) and actions[-1] is StuckAction.STOP
 
 
+#: Silent commands that differ only in the file they write, or in the word after a quoted arrow,
+#: which the exemption does not cover: a write that is no literal ``echo`` or ``printf``, and an
+#: arrow read as a redirect wherever it stands. Each reads as one check run again (ADR-0407,
+#: Not done).
+OTHER_SILENT_WRITES: dict[str, Callable[[int], str]] = {
+    "a copy of one file": lambda n: f"cat template.txt > {PACKAGES[n]}/out.txt",
+    "a colon redirect": lambda n: f": > {PACKAGES[n]}/flag",
+    "an empty source": lambda n: f"cat /dev/null > {PACKAGES[n]}/flag",
+    "a heredoc body": lambda n: f"cat <<'EOF' > {PACKAGES[n]}/notes.txt\nsame text\nEOF",
+    "a quoted arrow in a filter": lambda n: f"awk '$3 > {PACKAGES[n]}' data.txt",
+}
+
+
+@pytest.mark.parametrize("variant", sorted(OTHER_SILENT_WRITES))
+def test_a_silent_write_the_exemption_does_not_cover_reads_as_a_poll_the_known_cost(
+    variant: str,
+) -> None:
+    tracker = _tracker()
+    actions: list[StuckAction] = []
+    for n in range(len(PACKAGES)):
+        _ran(tracker, _shell(OTHER_SILENT_WRITES[variant](n), n))
+        actions.append(tracker.next_action())
+    assert tracker.poll_run == len(PACKAGES) and actions[-1] is StuckAction.STOP
+
+
+def test_a_redirect_inside_a_quoted_shell_is_masked_like_any_other() -> None:
+    one = poll_command("bash -c 'q.sh --job j-7 > /tmp/a.txt'")
+    assert one == poll_command("bash -c 'q.sh --job j-7 > /tmp/b.txt'")
+
+
 def test_a_different_check_is_not_the_same_check_though_the_answers_match() -> None:
     fields = ["status", "title", "size", "notes", "label", "age", "kind", "mode"]
     commands = [f"bash q.sh --job j-7 --field {name}" for name in fields]
@@ -426,11 +456,14 @@ def _pair(
     first: str = "a",
     first_answer: str = UNCHANGED,
     first_error: bool = False,
+    last: str = "b",
+    last_answer: str = UNCHANGED,
+    last_error: bool = False,
 ) -> None:
-    calls = [*_shell(f"q.sh {first} {n}", 2 * n), *_shell(f"q.sh b {n}", 2 * n + 1)]
+    calls = [*_shell(f"q.sh {first} {n}", 2 * n), *_shell(f"q.sh {last} {n}", 2 * n + 1)]
     results = [
         ToolResultBlock(tool_use_id=calls[0].id, output=first_answer, is_error=first_error),
-        ToolResultBlock(tool_use_id=calls[1].id, output=UNCHANGED),
+        ToolResultBlock(tool_use_id=calls[1].id, output=last_answer, is_error=last_error),
     ]
     tracker.observe(calls, results)
 
@@ -440,20 +473,29 @@ def test_every_call_of_a_batch_is_compared_with_its_own_answer_and_error_flag() 
     for n in range(POLL_AT):
         _pair(tracker, n)
     assert tracker.last_was_poll  # the control: both calls alike each time
-    for changed in ({"first_answer": "now it is different"}, {"first_error": True}):
+    changes: tuple[dict[str, Any], ...] = (
+        {"first_answer": "now it is different"},
+        {"first_error": True},
+        {"last_answer": "now it is different"},
+        {"last_error": True},
+    )
+    for changed in changes:
         tracker = _tracker()
         for n in range(POLL_AT - 1):
             _pair(tracker, n)
-        _pair(tracker, 9, **changed)  # only the FIRST call's answer or error flag differs
+        _pair(tracker, 9, **changed)  # only ONE call's answer or error flag differs
         assert tracker.poll_run == 1 and not tracker.last_was_poll
 
 
 def test_every_call_of_a_batch_is_compared_with_its_own_command() -> None:
-    tracker = _tracker()
+    changed_first, changed_last = _tracker(), _tracker()
     for n in range(POLL_AT - 1):
-        _pair(tracker, n)
-    _pair(tracker, 9, first="c")  # only the FIRST call's command differs; the last is as before
-    assert tracker.poll_run == 1 and not tracker.last_was_poll
+        _pair(changed_first, n)
+        _pair(changed_last, n)
+    _pair(changed_first, 9, first="c")  # only the FIRST call's command differs
+    _pair(changed_last, 9, last="c")  # only the LAST call's command differs
+    for tracker in (changed_first, changed_last):
+        assert tracker.poll_run == 1 and not tracker.last_was_poll
 
 
 def test_the_poll_never_lowers_a_rung_that_a_repeated_outcome_has_earned() -> None:
@@ -767,9 +809,15 @@ def test_the_nudge_says_what_was_counted_and_what_to_do_instead() -> None:
     nudge = tracker.nudge_message()
     assert nudge.startswith("You have now run the same check 6 times in a row")
     assert "answered the same each time apart from its numbers" in nudge
-    assert "(ScheduleWakeup)" in nudge and "end your turn" in nudge
-    # a background task the harness reports on is not waited for by checking, nor by a wake-up
-    assert "a background task you started, end your turn: you are told when it exits" in nudge
+    # two ways to wait without checking, each for its own case and in the tools' own words
+    assert (
+        "a background task you started, wait for it with TaskOutput and a long timeout, not by "
+        "checking: it returns when the task exits or the timeout passes"
+    ) in nudge
+    assert (
+        "something outside this session, do not wait by checking: arm a wake-up for when it "
+        "can change (ScheduleWakeup) and end your turn"
+    ) in nudge
     for wrong in ("failed", "stuck", "same tool result", "plan tools"):
         assert wrong not in nudge  # said only what the harness knows
     for n in (7, 8):  # the number is the run's length, not the threshold
@@ -913,11 +961,12 @@ def test_a_check_that_failed_each_time_is_still_given_the_one_decision_step(tmp_
     steps = loop._seed_investigation_steps(tracker)
     assert [t.title for t in steps] == [DECIDE]
     note = steps[0].note
+    assert "another run adds nothing" in note
+    assert "called TaskOutput with a long timeout on a background task you started" in note
     assert (
-        "another run adds nothing" in note and "ended your turn saying what you are waiting" in note
-    )
-    assert "a background task you started tells you when it exits" in note
-    assert "(ScheduleWakeup)" in note
+        "for anything outside this session, armed a wake-up (ScheduleWakeup) for when it can "
+        "change and ended your turn saying what you are waiting for"
+    ) in note
 
 
 @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])

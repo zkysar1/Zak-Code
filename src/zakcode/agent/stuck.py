@@ -273,7 +273,8 @@ _READS_OR_RUNS = r"|;&<()`$*?\[\n"
 #: nothing, so it is no check and the file it writes is the work, not where an answer went. One
 #: character of ``_READS_OR_RUNS`` anywhere in it, quoted or not, keeps it out. The first arrow ends
 #: the words, so the pattern has one way to match and takes linear time. It is tried on the command
-#: as written: with its line breaks turned into spaces, ``echo x >> log`` and the check on the next
+#: as written, less the space and line breaks around it (a trailing line break is no second
+#: statement): with its line breaks turned into spaces, ``echo x >> log`` and the check on the next
 #: line would read as one write, and the output file of the check would be kept, not masked.
 _LITERAL_WRITE_RE = re.compile(rf"(?:echo|printf)\b[^{_READS_OR_RUNS}>]*>[^{_READS_OR_RUNS}]*")
 _NUMBER_RE = re.compile(r"\d+")
@@ -889,10 +890,11 @@ class StuckTracker:
                 f"You have now run the same check {self._poll_run} times in a row, and it "
                 "answered the same each time apart from its numbers. Each run is a model call "
                 "that learns nothing new. If you are waiting for a background task you "
-                "started, end your turn: you are told when it exits. If you are waiting for "
-                "something outside this session, do not wait by checking: arm a wake-up for "
-                "when it can change (ScheduleWakeup) and end your turn. Otherwise act on what "
-                "the check showed."
+                "started, wait for it with TaskOutput and a long timeout, not by checking: "
+                "it returns when the task exits or the timeout passes. If you are waiting "
+                "for something outside this session, do not wait by checking: arm a wake-up "
+                "for when it can change (ScheduleWakeup) and end your turn. Otherwise act on "
+                "what the check showed."
             )
         if SIG_REPEATED_OUTCOME in self._last_signals:
             if self.last_outcome_was_receipt:
