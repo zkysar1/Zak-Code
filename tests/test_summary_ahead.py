@@ -56,7 +56,9 @@ class _Provider(Provider):
 
 
 class _Shell(Tool):
-    """Stands in for the shell tool: a different page of output for every call."""
+    """Stands in for the shell tool: a different page of output for every call. The pages differ
+    in their words, not only in their numbers: a check that answers the same apart from its
+    numbers is a poll to the stuck tracker (ADR-0407), which is not what paging a file looks like."""
 
     spec = ToolSpec(name="Bash", description="Runs a command.")
 
@@ -65,7 +67,9 @@ class _Shell(Tool):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self.runs += 1
-        return ToolResult.ok(output=f"page {self.runs} of {args.get('command')}")
+        word = "".join(chr(97 + (self.runs * 7 + i * 3) % 26) for i in range(6))
+        page = f"page {self.runs} of {args.get('command')}"
+        return ToolResult.ok(output=f"{page}: {word} {word[::-1]}")
 
 
 def _loop(provider: Provider, tmp_path: Path) -> AgentLoop:
