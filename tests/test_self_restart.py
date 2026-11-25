@@ -188,18 +188,25 @@ _NOTHING_SET_ASIDE = SimpleNamespace(loop=SimpleNamespace(restart_boundary=None)
 _STOP_HOOK_RESTART = SimpleNamespace(loop=SimpleNamespace(restart_boundary="stop-hook"))
 
 
-def test_a_turn_that_ended_for_a_restart_restarts_before_any_door(tmp_path: Path) -> None:
+def test_a_turn_that_ended_for_a_restart_restarts_before_any_door(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The loop chose this boundary (ADR-0101). A due wake-up or a background command's exit
     # note waiting at a door must not open one more turn on the build being left behind.
+    # With no newer build installed, no other turn end restarts (ADR-0406).
+    monkeypatch.setattr(cli, "install_changed", lambda: None)
     mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
     assert cli._restart_now(SimpleNamespace(stop_reason="restart"), mux, _NOTHING_SET_ASIDE)
     assert not cli._restart_now(SimpleNamespace(stop_reason="completed"), mux, _NOTHING_SET_ASIDE)
     assert not cli._restart_now(None, mux, _NOTHING_SET_ASIDE)
 
 
-def test_a_stop_hook_restart_is_taken_whatever_the_turn_ended_on(tmp_path: Path) -> None:
+def test_a_stop_hook_restart_is_taken_whatever_the_turn_ended_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # ADR-0099: at a vetoed stop the turn keeps its own stop reason, a collapse or not, so
     # what says it ended for a restart is the loop's record of the restart it set aside.
+    monkeypatch.setattr(cli, "install_changed", lambda: None)
     mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
     for reason in ("stuck", "completed"):
         done = SimpleNamespace(stop_reason=reason)
@@ -214,6 +221,44 @@ def test_a_typed_ahead_line_is_served_before_the_restart(tmp_path: Path) -> None
     mux.queue.put(("line", "one more thing"))
     assert not cli._restart_now(SimpleNamespace(stop_reason="restart"), mux, _NOTHING_SET_ASIDE)
     assert not cli._restart_now(SimpleNamespace(stop_reason="stuck"), mux, _STOP_HOOK_RESTART)
+
+
+#: How the other turns end (ADR-0406): an operator's interrupt has no done event at all.
+_OTHER_ENDS = (
+    None,
+    SimpleNamespace(stop_reason="interrupted"),
+    SimpleNamespace(stop_reason="stuck"),
+    SimpleNamespace(stop_reason="completed"),
+)
+
+
+def test_any_other_turn_end_restarts_first_while_a_newer_build_is_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A turn end the loop did not choose for a restart still restarts before any door when
+    # a newer build is installed: the idle wait would serve its doors first (ADR-0406).
+    mux = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    for done in _OTHER_ENDS:
+        assert cli._restart_now(done, mux, _NOTHING_SET_ASIDE) is True, done
+    monkeypatch.setattr(cli, "install_changed", lambda: None)
+    for done in _OTHER_ENDS:
+        assert cli._restart_now(done, mux, _NOTHING_SET_ASIDE) is False, done
+
+
+def test_input_held_only_in_this_process_is_served_before_any_other_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A typed-ahead line and a say held back from a permission prompt live only in this
+    # process; an exec would drop them, so they run first, on the build they arrived under.
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    typed = _InputMux(tmp_path / "say", tmp_path / "stop", keyboard=False)
+    typed.queue.put(("line", "one more thing"))
+    held = _InputMux(tmp_path / "say2", tmp_path / "stop2", keyboard=False)
+    held._held_says.append("not an answer to the prompt")
+    for mux in (typed, held):
+        for done in _OTHER_ENDS:
+            assert cli._restart_now(done, mux, _NOTHING_SET_ASIDE) is False, done
 
 
 # ── the handoff ──────────────────────────────────────────────────────────────
@@ -600,6 +645,46 @@ def test_a_stop_hook_restart_is_taken_before_a_due_wakeup(
     assert execs == [sys.executable]
     handed_on = store.load(agent.session.id).pending_wakeup
     assert handed_on is not None and handed_on.prompt == "re-poll"
+
+
+def test_an_interrupted_turn_restarts_before_a_due_wakeup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Field incident (2026-11-25): an operator interrupted a worker session mid-way through
+    a long task to move it onto a build installed under it. The turn ended, the REPL served
+    the wake-up that had come due during the task, and a new turn ran on the old build. The
+    restart is taken as the turn ends now (ADR-0406); the wake-up waits on the saved session
+    for the fresh process, and nothing is carried as a Stop hook's continuation."""
+    from zakcode.wakeup import Wakeup
+
+    for name in ("ZAKCODE_RESTART_CONTINUATION", "ZAKCODE_RESTART_BOUNDARY"):
+        monkeypatch.setenv(name, "unset-by-teardown")
+    monkeypatch.setattr(cli.sys, "argv", ["zakcode", "cli", "-s", "stale-id"])
+    agent = _unattended_agent(tmp_path)
+    store = SessionStore(tmp_path / "sessions")
+    agent.session.pending_wakeup = Wakeup(
+        prompt="re-poll", due_at=1.0, armed_at=0.0, delay_seconds=60
+    )  # long overdue
+    store.save(agent.session)
+    agent.loop.store = store
+    agent.loop.restart_continuation = None
+    agent.loop.restart_boundary = None
+    monkeypatch.setattr(cli, "install_changed", lambda: ("old-build", "new-build"))
+    execs: list[str] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append(path)
+        raise _Execd
+
+    monkeypatch.setattr(cli.os, "execv", execv)
+    # No door on this mux: consulting one before the exec would raise, not pass.
+    mux = SimpleNamespace(queue=queue.Queue())
+    with pytest.raises(_Execd):
+        cli._after_turn(_console(), agent, mux, None, 0)  # an interrupt leaves no done event
+    assert execs == [sys.executable]
+    handed_on = store.load(agent.session.id).pending_wakeup
+    assert handed_on is not None and handed_on.prompt == "re-poll"
+    assert "ZAKCODE_RESTART_CONTINUATION" not in os.environ
 
 
 def test_a_stop_hook_restart_that_does_not_happen_leaves_the_turn_as_it_was(
