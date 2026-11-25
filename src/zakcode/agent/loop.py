@@ -5150,9 +5150,14 @@ class AgentLoop:
         done-conditions, spliced in ahead of the step the model is stuck on, where the
         re-injected plan and the plan gate keep them in view until they are marked done.
         Capability-triggered decomposition (R3 / ADaPT), done by the harness this time.
+
+        The failure steps come only from a rung that failing calls tripped (ADR-0404): the
+        failure counts span the turn, and a long turn holds failures the model moved past
+        long ago, which say nothing about a rung a re-measured result or a plan run tripped.
         """
         steps: list[Task] = []
-        repeated = stuck.error_signatures()[:2]
+        failed = stuck.last_had_failures
+        repeated = stuck.error_signatures()[:2] if failed else []
         for name, args in repeated:
             shown = args if len(args) <= 80 else args[:77] + "..."
             steps.append(
@@ -5166,7 +5171,7 @@ class AgentLoop:
                 )
             )
         named = {name for name, _args in repeated}
-        for name, count in stuck.failing_tools():
+        for name, count in stuck.failing_tools() if failed else []:
             if len(steps) >= 2:
                 break
             if name in named:
@@ -5240,7 +5245,10 @@ class AgentLoop:
             )
         steps.append(
             Task(
-                title="Decide: name the assumption the failed steps share and verify it",
+                title=(
+                    f"Decide: name the assumption the {'failed' if failed else 'last'} steps "
+                    "share and verify it"
+                ),
                 note=(
                     "done when a read-only probe has confirmed or refuted it (a path that "
                     "exists, a command that is available, an interface that matches) — only "
