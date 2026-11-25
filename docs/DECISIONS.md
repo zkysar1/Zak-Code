@@ -21063,7 +21063,10 @@ Decision.
    `STOP_CHECK_MS` (5000 ms) asks the saved conversation whether a turn runs (`running`). If none
    does, the end never reached this page, so the page ends the turn shown and says "the turn has
    ended"; if one does, the status says "still stopping — the server has not ended the turn yet",
-   and another Stop asks again. A turn the page ends this way refreshes the chat list.
+   and another Stop asks again. A turn the page ends this way refreshes the chat list. A page
+   hidden when the check comes due has let go of its watch (ADR-0339), so the end cannot have
+   reached it and "no turn runs" would only mean it was not listening: the check waits until the
+   page is shown, then waits `STOP_CHECK_MS` again so the resumed watch replays the end first.
 3. Each answer is for the turn it stopped. A counter that moves at every turn start and end
    (`turnSeq`) is read before acting, so an answer that comes after that turn ended, after another
    chat opened or after the next turn started does nothing.
