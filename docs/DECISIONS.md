@@ -25314,3 +25314,52 @@ absence below that band, past the threshold, after a write through the shell or 
 fewer than 8 reads; a failed call counting for nothing; a compaction starting a new stretch; both
 loop twins giving it once; and the command readers, where a heredoc's body and quoted text are data.
 Fifteen single-site mutations each fail their own test while an unrelated test file stays green.
+
+## ADR-0406: any turn end takes a newer build before an input door
+
+Status: accepted. 2026-11-25. Extends the restart-first rule of ADR-0101 (amended 2026-09-26) and
+ADR-0099 (amended 2026-09-30) from the two boundaries a loop chooses for a restart to every turn end.
+
+Context. ADR-0034 restarts a session into a newly installed build at its idle prompt, through a probe
+the input wait runs every 5 s. The REPL serves its doors first: a due wake-up and a background
+command's exit note are taken by `try_input` before the wait begins, so a session that has one
+waiting whenever a turn ends never reaches the probe. The amendments took the restart as the turn
+ends for a turn that ended `restart` (a skill re-entry) or at a vetoed stop. A turn that ends any
+other way (an operator's interrupt, a collapse, a finished answer) still went to the doors first.
+
+What was measured, before building. 2026-11-25, worker sessions on eleven machines: the newest
+status file of each (state, build, turn start, wake-up due time, last stop reason) and the heads of
+transcript records only. Two sessions were given a new build at 08:47 and 08:48 and at 09:18 still
+ran the old one, inside turns that had begun at 15:04 the day before and at 08:37. An operator's
+interrupt is the way to move such a session. On the first, the turn ended at 09:22:05 and a new
+turn opened in the same second with "[harness] scheduled wake-up", on the old build; a second
+interrupt at 09:26:42, with the wake-up the session had armed again 447 s away, restarted it into
+the new build in 7 s. The other session took three interrupts: the first was answered by a
+background command's exit note, the second by a wake-up 6.6 h overdue, and the third restarted it.
+Between 09:22 and 09:29, eight of the eleven sessions held a wake-up already due, by 63 s to
+18.4 h, so one interrupt would have opened one more turn on the old build in each of them.
+
+Decision.
+- `_restart_now` takes the restart first at any turn end while `install_changed()` reports a newer
+  build, as it already did for a turn that ended `restart` or at a Stop-hook veto. An interrupted
+  turn reaches `_after_turn` with no done event and counts as any other end.
+- What lives only in this process is still served first: a typed-ahead line, as before, and a say
+  held back from a permission prompt. Every other door persists across the exec (the wake-up on the
+  saved session, a say in its file, an exit note on the task record) and the fresh process serves
+  it.
+- With no newer build installed nothing changes. After the restart the fresh process continues
+  only what the old build would have (ADR-0263): after an interrupt, nothing until a door opens.
+
+Not done. A held say is still lost when a skill or Stop-hook boundary restarts the session, as
+before this change; a worker session never asks for permission, so it never holds one. The idle
+probe of ADR-0034 is unchanged and still serves a build installed while a session sits idle. The
+trial reads interrupts per session moved at the next build installed on sessions running this one:
+one each, against two and three in the measurement above.
+
+The proof. `tests/test_self_restart.py`: every other turn end (no done event, `interrupted`,
+`stuck`, `completed`) restarts first while a newer build is installed and never without one; a
+typed-ahead line and a held say are served first; an interrupted turn whose session holds an overdue
+wake-up execs before any door and the wake-up is on the saved session for the fresh process, with no
+Stop-hook continuation carried. Five mutations (no other turn end restarts, so the interrupt test
+fails too; the held-say check removed; the typed-line check removed; the restart taken with no newer
+build) each fail their test, and an unrelated test file stays green under all five.
