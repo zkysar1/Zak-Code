@@ -25245,10 +25245,10 @@ Decision.
   the file reader, and the shell's `cat`, `head`, `tail`, `less`, `more`, `bat`, `nl`, `awk` and
   `sed -n`) and whether it wrote one (a file tool's edit, or `_writes_a_file`: a redirect not to a
   descriptor or /dev, `tee`, `cp`, `mv`, `install`, `sed -i`, a commit, or Python's own writers). A
-  compaction starts a new stretch (`_adopt_compacted`).
+  write restarts the count of files printed. A compaction starts a new stretch (`_adopt_compacted`).
 - After a batch the stuck ladder left alone, `_summary_ahead_rail` gives one control rail per stretch
-  when the stretch printed files at least 8 times and wrote none, and the anchored count (ADR-0077) is
-  from 85% of the compaction threshold up to the threshold. Past the threshold the compaction runs
+  when the stretch printed files at least 8 times since it began or last wrote one, and the anchored
+  count (ADR-0077) is from 85% of the compaction threshold up to the threshold. Past the threshold the compaction runs
   before the next call, so a note would arrive after the loss it warns of. The rail names the three
   files read most and asks the model to write down what it will need, in the file it is building or
   a short notes file; after the summary, to read the notes rather than the sources, and to have a
@@ -25256,14 +25256,26 @@ Decision.
 - Nothing is refused or narrowed, and no threshold moves.
 
 Not done, and not measured. A read the probe does not parse (a script that prints a file, a quoted
-path) is not counted, which only makes the note rarer. A stretch that wrote anything is never told,
-even when what it wrote is unrelated. The counts restart with the process. Whether the model writes
+path) is not counted, which only makes the note rarer. A write restarts the count whatever it wrote,
+even when it is unrelated to what was read. The counts restart with the process. Whether the model writes
 its notes, and then reads them instead of the sources, is the trial's question: on two sessions,
 against their own previous 24 hours, the share of stretches that re-read and wrote nothing, and what
 the stretch after a note writes.
 
+Amended, 2026-11-25, after the trial. On the two trial sessions, 1 of 5 stretches re-read and wrote
+nothing, against 7 of 13 on seven sessions without the note over the same hours, and 2 of 3 notes
+were followed by a write within three calls. But the note came before only 2 of the 4 summaries
+whose stretch printed files at least 8 times. In both misses, and in one stretch still open at the
+reading, the stretch wrote one file early (after 0, 3 and 12 files printed), then printed files 8,
+18 and 9 more times and wrote nothing more: as first built, one write silenced the whole stretch. A
+write now restarts the count, so the note counts the files printed since the stretch began or last
+wrote one, and its wording says which.
+
 The proof. `tests/test_summary_ahead.py` pins the note once in a stretch near the threshold; its
-absence below that band, past the threshold, after a write through the shell or a file tool and with
-fewer than 8 reads; a failed call counting for nothing; a compaction starting a new stretch; both
-loop twins giving it once; and the command readers, where a heredoc's body and quoted text are data.
-Fifteen single-site mutations each fail their own test while an unrelated test file stays green.
+absence below that band, past the threshold, right after a write through the shell or a file tool
+and with fewer than 8 reads; the count restarting at a write through either, and the wording after
+one; a failed call counting for nothing; a compaction starting a new stretch; both loop twins giving
+it once; and the command readers, where a heredoc's body and quoted text are data. Fifteen
+single-site mutations each fail their own test while an unrelated test file stays green, and four
+more for the amendment (either write keeping the count, a write silencing the stretch, one wording
+for both) each fail their own test while a control test stays green.
