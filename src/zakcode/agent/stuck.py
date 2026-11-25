@@ -262,12 +262,18 @@ def outcome_signature(
 
 
 #: The word after an output redirect (`>`, `>>`, `2>`, the `>` of `&>`): where the output goes is
-#: not what was asked. `2>&1` names no file, so the `&` after the arrow is left alone.
-_REDIRECT_TARGET_RE = re.compile(r"(\d*>>?)\s*(?!&)\S+")
+#: not what was asked. `2>&1` names no file, so the `&` after the arrow is left alone. The digit of
+#: `2>` stays outside the match: a `\d*` in front of the arrow is not needed, and a search that
+#: retried it from every digit of a long run took quadratic time.
+_REDIRECT_TARGET_RE = re.compile(r"(>>?)\s*(?!&)\S+")
+#: What makes a command read or run something: a pipe, a separator, an input redirect, a
+#: parenthesis, an expansion, a glob.
+_READS_OR_RUNS = r"|;&<()`$*?\["
 #: A whole command that writes literal words into a file (``echo '' > pkg/__init__.py``). It reads
-#: nothing, so it is no check and the file it writes is the work, not where an answer went. Any
-#: expansion, pipe, separator or input redirect makes it something else.
-_LITERAL_WRITE_RE = re.compile(r"(?:echo|printf)\b[^|;&<>()`$]*>>?\s*[^\s|;&<>()`$]+")
+#: nothing, so it is no check and the file it writes is the work, not where an answer went. One
+#: character of ``_READS_OR_RUNS`` anywhere in it, quoted or not, keeps it out. The first arrow ends
+#: the words, so the pattern has one way to match and takes linear time.
+_LITERAL_WRITE_RE = re.compile(rf"(?:echo|printf)\b[^{_READS_OR_RUNS}>]*>[^{_READS_OR_RUNS}]*")
 _NUMBER_RE = re.compile(r"\d+")
 
 

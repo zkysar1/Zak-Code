@@ -5155,8 +5155,10 @@ class AgentLoop:
             # ADR-0406: the same shell check, run again and again and answered the same each time.
             # A check that succeeded each time failed nowhere and left no result to read, so the
             # failure steps, the re-measure step and the closing assumption step would each say
-            # what is not so. The one step is the decision the repeats put off. A check that
-            # failed each time reached rung 1 by its failures, and their steps are seeded.
+            # what is not so. The one step is the decision the repeats put off, and it stands when
+            # the check failed each time too: its answer is the error, so acting on it or waiting
+            # without checking are what is left. Failures that reached rung 1 before the run was
+            # long enough had their steps seeded then.
             poll_steps = [
                 Task(
                     title="Decide: act on what the check showed, or wait without checking",
