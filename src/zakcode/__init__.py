@@ -48,9 +48,8 @@ from zakcode.session.store import Session, SessionStore
 from zakcode.skills.fit import SkillFit, measure_skill_fit
 from zakcode.tools.base import SampleCutOff, SkillLoad, SkillResolver
 from zakcode.tools.builtins.default_registry import (
-    ON_REQUEST_TOOLS,
     default_registry,
-    workspace_doc_readers,
+    hide_on_request_tools,
 )
 from zakcode.virtual_paths import VIRTUAL_PREFIX_KEYS
 
@@ -1041,6 +1040,10 @@ class Agent:
                 allow=list(self.settings.tool_exposure_allow),
                 deny=list(self.settings.tool_exposure_deny),
             )
+            # The parent's menu, not every tool (ADR-0402): a delegate offered the document
+            # readers in a workspace with no such file reached for read_pdf on .md and .json
+            # files and looped on its refusal. Hidden tools stay dispatchable when named.
+            hide_on_request_tools(child_registry, self.settings.workspace_root)
             # Give the general-purpose delegate the same skill-invocation surface as the parent:
             # use_skill on the child registry + the resolver below. (Plan Mode's subset omits it,
             # so a read-only planner still cannot chain skills.) Gated on enable_skills via the
@@ -1127,15 +1130,13 @@ class Agent:
         # is 0, which limits MCP tools only; a hidden built-in always loads.
         from zakcode.tools.builtins.tool_search import ToolSearchTool
 
-        for name in ON_REQUEST_TOOLS:
-            self.registry.deactivate(name)
-        # Re-expose a document reader the moment the workspace actually holds that type: a
-        # coding session with no Office file keeps the smaller, less-confusable menu (a small
-        # model otherwise reaches for read_docx on a .py file and loops), while a session with a
-        # real document keeps its reader in the list -- the server's upload prompt names it by
-        # tool (ADR-0228 context-aware exposure). tool_search still surfaces any hidden reader.
-        for reader in workspace_doc_readers(self.settings.workspace_root):
-            self.registry.activate(reader)
+        # Hide the on-request tools, then re-expose a document reader the moment the workspace
+        # actually holds that type: a coding session with no Office file keeps the smaller,
+        # less-confusable menu (a small model otherwise reaches for read_docx on a .py file and
+        # loops), while a session with a real document keeps its reader in the list -- the
+        # server's upload prompt names it by tool (ADR-0228 context-aware exposure). tool_search
+        # still surfaces any hidden reader.
+        hide_on_request_tools(self.registry, self.settings.workspace_root)
         self.registry.register(ToolSearchTool(self.registry, budget=self._mcp_tool_budget))
 
         # Plugins (M6), opt-in. Discover plugins (project + user dirs + entry points)

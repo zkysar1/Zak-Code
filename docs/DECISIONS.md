@@ -21063,7 +21063,10 @@ Decision.
    `STOP_CHECK_MS` (5000 ms) asks the saved conversation whether a turn runs (`running`). If none
    does, the end never reached this page, so the page ends the turn shown and says "the turn has
    ended"; if one does, the status says "still stopping — the server has not ended the turn yet",
-   and another Stop asks again. A turn the page ends this way refreshes the chat list.
+   and another Stop asks again. A turn the page ends this way refreshes the chat list. A page
+   hidden when the check comes due has let go of its watch (ADR-0339), so the end cannot have
+   reached it and "no turn runs" would only mean it was not listening: the check waits until the
+   page is shown, then waits `STOP_CHECK_MS` again so the resumed watch replays the end first.
 3. Each answer is for the turn it stopped. A counter that moves at every turn start and end
    (`turnSeq`) is read before acting, so an answer that comes after that turn ended, after another
    chat opened or after the next turn started does nothing.
@@ -25117,6 +25120,105 @@ and a `refresh=true` at the bound answered, and asks between real steps never re
 mutations (the flag, either path's held check, the run's count, the refusal's signal) each fail
 the file.
 
+## ADR-0400: a completion that only asked for rules the model holds is not sent back to it
+
+Status: accepted. 2026-11-20. Follows ADR-0399, on the request side, and held to ADR-0193 (what a
+request carries is the start of what the next one carries).
+
+Context. ADR-0399 bounds a run of lookups for held rules at two pointer answers and five refusals
+per re-entry, and the run comes back. A pointer answer (ADR-0379, ADR-0387) is a short success, so
+each one stays in the conversation as a completion that called `read_rule` and a result saying the
+text is already there, and the conversation the model reads fills with its own lookups.
+
+What was measured, before building. The served worker sessions and local model of ADR-0399, read
+from each session's own transcript (tool names, times, rule names and fixed answer labels only),
+24 h to 2026-11-20 14:55, nine of the ten sessions. For each completion that called a tool, the
+lookup-only completions among the 25 before the five just before it, in the same compaction
+segment, against whether it was lookup-only too: with none, 65 of 2,360 were (3%); with 1 or 2,
+88 of 519 (17%); with 3 to 5, 98 of 361 (27%); with 6 to 10, 189 of 441 (43%); with 11 to 25,
+1,687 of 2,122 (80%). By place in the segment it rose the same way: 11% of the first 30
+completions, 25% of completions 30 to 99, 70% of 100 to 199 and 96% after that. After a lookup
+answered by a pointer the next completion was another lookup 1,677 times in 1,930 (87%). Changing
+the words that bring a rule up did not move the total: when the workspace gave the rule asked for
+most a new index line, asks for it fell from 8.1 to 6.2 per 100 tool calls and all rule asks only
+from 26.5 to 25.5 (4,846 calls before, 4,654 after); in one session asks for that rule went to none
+and asks for other rules rose from 1.0 to 58.6 per 100.
+
+Decision.
+- `_messages_for_call` sends `_hide_pointer_asks(session.messages)`, on both turn paths and on a
+  resting call (ADR-0193). A completion whose blocks are only `read_rule` calls (no text; thinking
+  allowed), followed at once by the tool message holding exactly their results, each with the
+  pointer flag of ADR-0399 and no error, is sent as one user-role line: "[harness]
+  Hint: You asked read_rule for <names>: it is already in your context, so nothing new came back,
+  and an ask like this one is not shown in the conversation. Apply it to the step you are on and
+  take its next action." ("they are" and "them" for two or more rules.)
+- A first read, a `refresh=true` text, an error, a refusal (ADR-0399), a batch with another tool,
+  text beside the call and a pointer beside a text answer are sent as they are.
+- The line is built from the pair alone (the rule names in call order, once each) and takes the
+  completion's time, never from state that moves, so what a history is sent as is the start of
+  what any longer one is sent as: a provider's cached prefix and ADR-0193's resting checkpoint hold.
+- The session, the transcript and every counter keep both messages: ADR-0399's bound, the doom
+  guard (ADR-0391), the ask count (ADR-0386) and compaction read the session, not the request.
+
+Not done, and not measured. The measurement does not separate imitation from a session that stays
+in one mode for its own reasons; the trial reads lookup-only completions per 100 completions on two
+sessions against their own previous window and the other sessions, and the cached tokens of the
+call after a hidden pair. A model may ask a rule again because its earlier ask is out of view; the
+line names the rule for that reason. A compaction summary still reads the lookups.
+
+The proof. `tests/test_pointer_ask_hidden.py` pins a pointer-only pair sent as one line with the
+completion's time, the other messages the same objects, and the history itself returned when
+nothing is hidden; two rules named once in the plural, and a rule asked twice in one batch named
+once; a first read, an error, a refusal, a pointer beside a text answer, a batch with another tool
+and text beside the call each sent as they are; a pair split or unanswered kept; what each history
+is sent as being the start of what the next is sent as; and, on both turn paths, the request after
+two held asks carrying neither call but a line for each while the session keeps them, and a model
+cycling through held rules still ended `stuck` after two pointers and five refusals. Ten mutations
+(the wiring, text beside the call, another tool, a partial answer, a split pair, an error, the
+pointer flag, the line's time, a rule named once, the plural) each fail the file.
+
+## ADR-0402: a delegated sub-agent starts from the parent's tool menu
+
+Status: accepted. 2026-11-20. Extends ADR-0228 (rarely-used built-ins start hidden, readers come
+back when the workspace holds that type) from the main agent to its delegates.
+
+Context. ADR-0228 hides the document creators and readers in the main agent because a small model
+confuses a document reader with `Read`. The agent built its delegates' registry straight from the
+factory, which registers every tool active, so a delegated sub-agent was offered all of them, on
+the reasoning that it has no `tool_search` to load a hidden one with. A hidden tool stays
+dispatchable when named (`ToolRegistry.execute` resolves by name, whatever the active state), so
+that reasoning holds for loading by search only.
+
+What was measured, before building. Ten served sessions on one local model, read from their
+transcripts on 2026-11-20 (tool names, path extensions, fixed result labels and counts only), 24 h
+to 23:30. The eight hidden tools were called 102 times, every call refused (`read_pdf` 100,
+`read_docx` 2), none of them from a session's live main transcript. No workspace held a PDF outside
+dot-directories. In one session, while its main loop was live, its delegates called `read_pdf` 83
+times between 21:00 and 23:00, on `.md` paths 57 times and `.json` paths 26 times, mostly four calls
+to a completion; 78 were refused with "path must end with .pdf", and 70 were followed at once by
+another `read_pdf` call.
+
+Decision.
+- `hide_on_request_tools(registry, workspace_root)` in `tools/builtins/default_registry.py` hides
+  `ON_REQUEST_TOOLS` and re-exposes each reader `workspace_doc_readers` finds. The agent applies it
+  to its own registry, as before, and to the registry it gives delegates, after that registry's
+  exposure filter.
+- The factory is unchanged and still registers every tool active. A delegate still runs a hidden
+  tool it names; the prompt lists no "Loaded on request" line for it, because that line needs
+  `tool_search`.
+- Plan Mode's read-only subset is unchanged: it never held these tools.
+
+Not done, and not measured. No delegate call to a creator was seen in the window, so whether one
+ever needs a creator it is not told the name of is unmeasured. The readers' refusal texts are
+unchanged. The trial reads calls to the hidden tools per session, and refusals of any tool, on two
+sessions against their own previous window and the other sessions.
+
+The proof. `tests/test_on_request_tools.py` pins the factory registering them active; a delegate
+in a workspace with no document offered none of them while still holding each one; a delegate in a
+workspace holding a PDF offered `read_pdf` and not the others; and a hidden reader named by a
+delegate reaching its own refusal for a `.md` path, not "unknown tool". One mutation (the delegate's
+call removed) fails both menu tests.
+
 ## ADR-0403: the say box asks its terminal for mouse reporting, so the wheel over it scrolls the message being composed
 
 Status: accepted. 2026-11-24. Finishes what ADR-0119 began for the box: the pane grows with the text,
@@ -25187,3 +25289,50 @@ terminal records the mouse request: on at the first paint, off when the prompt e
 one argument removed. `test_cockpit_turns_tmux_mouse_on_for_its_session` pins the session option the
 wheel's routing rests on, which no test held before; it fails with `mouse off`. Each was run red against
 its own mutation and green again after the restore.
+
+## ADR-0404: a rung that no failing call tripped seeds no "keeps failing" step
+
+Status: accepted. 2026-11-25. Amends ADR-0057 (decompose-on-stuck) for the rungs ADR-0038 and
+ADR-0209 trip, and carries ADR-0209's lesson (a count scoped to the turn misreads a turn that is the
+whole run) to the steps rung 1 seeds.
+
+Context. Rung 1 seeds its "keeps failing" steps from the tracker's failure counts
+(`error_signatures`, `failing_tools`) whatever tripped it. Those counts span the turn: only a
+turn-end veto or the step-back rung clears them. A served session's turn runs for hours, so when a
+re-measured result trips rung 1, the counts hold failures the model moved past long before, and
+the plan gets "Investigate: why `Bash` keeps failing across 11 attempts", whose note says the
+arguments changed each time and the call still failed, then "Decide: name the assumption the failed
+steps share" -- about a rung that no failing call tripped.
+
+What was measured, before building. Eleven served worker sessions on one local model, read from
+their transcripts (tool names, times, `is_error` flags, fixed rail and step labels and counts
+only), 24 h to 2026-11-25 07:15. Rung 1 fired 149 times: 120 on a re-measured result, 13 on a
+failing tool, 7 on a run of rule lookups, 4 on plan-only runs, 1 on a receipt and 4 on wording the
+probe did not sort. In the plan redrawn right after 118 fresh re-measure rungs, 28 carried a "keeps
+failing" step built from the turn's failure counts: the batch that tripped 23 of them had no failed
+result at all, and the other 5 only failed ones. Every re-measure rung closed on "the failed
+steps". The trip itself mostly stands: of 121 re-measure rungs from 07:29, in 55 the same result
+came back three times or more within one compaction segment, in 20 it straddled a compaction, and
+in 46 the repeat could not be rebuilt from the transcript. A seeded step was marked done in 32 of
+the 149 rungs.
+
+Decision.
+- `StuckTracker.last_had_failures`: the most recent observation counted a batch that only failed or
+  a call that failed again (`SIG_ALL_ERRORS`, `SIG_REPEATED_FAILURE`).
+- `_seed_investigation_steps` seeds the "keeps failing" steps only when it is true, and its closing
+  step reads "Decide: name the assumption the failed steps share and verify it" then and "...the
+  last steps share..." otherwise.
+- The failure counts, the rail's diagnosis and every rung threshold are unchanged, and a rung that
+  failing calls tripped seeds exactly what it did before.
+
+Not done, and not measured. The counts stay turn-scoped, so a rung that failing calls trip can still
+name failures from earlier in the turn beside the ones that tripped it; scoping them per lap, as
+ADR-0209 did for outcomes, would change the repeated-failure signal itself and is left alone. The
+rail still asks for read-only probes before the original step is retried. The trial reads, on two
+sessions against their own previous window and the other sessions, the re-measure rungs that seed a
+failure step (none expected) and the tool calls from a rung to the next call that is not a read.
+
+The proof. `tests/test_stuck_decompose.py` pins a turn whose two early failures are followed by a
+re-measured result: rung 1 seeds the re-measurement step and "the last steps", and no step says a
+tool keeps failing; and a turn of failing calls still seeding "keeps failing across 3 attempts" and
+"the failed steps". Two mutations (the gate always open, always shut) each fail the file.

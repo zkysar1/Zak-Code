@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 #: upload prompt (which names its reader via ``_reader_tool_for_artifact``) still works, and
 #: ``tool_search`` surfaces a reader on demand for an unannounced file. The image reader
 #: (``inspect_image``) stays exposed — it is not confusable with ``read_file``. This factory
-#: still registers every tool active, so a sub-agent's registry, which has no ``tool_search``,
-#: keeps them all.
+#: still registers every tool active; the agent hides these on its own registry and on the one
+#: its delegated sub-agents get, with :func:`hide_on_request_tools` (ADR-0402).
 ON_REQUEST_TOOLS: tuple[str, ...] = (
     "create_docx",
     "create_xlsx",
@@ -110,6 +110,21 @@ def workspace_doc_readers(workspace_root: str | Path, *, max_entries: int = 1000
         # (a miss is recoverable via tool_search), never raise.
         pass
     return found
+
+
+def hide_on_request_tools(registry: ToolRegistry, workspace_root: str | Path) -> None:
+    """Hide :data:`ON_REQUEST_TOOLS` in ``registry``, then re-expose each document reader the
+    workspace already holds (:func:`workspace_doc_readers`).
+
+    The main agent and its delegated sub-agents start from this same menu (ADR-0228, ADR-0402).
+    Hiding only shortens the list the model is offered: a hidden tool stays registered and
+    dispatchable when named, so a delegate, which has no ``tool_search``, still runs one it is told
+    to use.
+    """
+    for name in ON_REQUEST_TOOLS:
+        registry.deactivate(name)
+    for reader in workspace_doc_readers(workspace_root):
+        registry.activate(reader)
 
 
 def default_registry(settings: Settings | None = None) -> ToolRegistry:

@@ -619,6 +619,52 @@ def test_error_mapping_a_missing_google_stack_behind_a_connection_error_names_th
     assert "zakcode update --extra google" in str(mapped)
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "vertex_ai/claude-sonnet-4@20250514",
+        "vertex_ai/mistral-large@2411",
+        "vertex_ai/meta/llama-3.1-405b-instruct-maas",
+    ],
+)
+def test_error_mapping_a_vertex_partner_model_without_the_stack_names_the_extra(model: str) -> None:
+    """A Vertex partner model without the google stack fails as BadRequestError, raised over
+    litellm's VertexAIError, raised over ``No module named 'vertexai'``: two links back, rooted at
+    ``vertexai`` and not ``google`` (measured on litellm 1.86.2). The hint named
+    nothing and litellm's own ``pip install google-cloud-aiplatform`` is not runnable in a uv tool
+    env."""
+    missing = ModuleNotFoundError("No module named 'vertexai'", name="vertexai")
+    vertex = type("VertexAIError", (Exception,), {})(f"{model}: {missing}")
+    wrapped = _raised_over(
+        _raised_over(missing, vertex), type("BadRequestError", (Exception,), {})(f"{model}")
+    )
+    mapped = LiteLLMProvider._map_error(wrapped)  # type: ignore[arg-type]
+    assert isinstance(mapped, RequestFailed)
+    assert "zakcode update --extra google" in str(mapped)
+    assert "pip install" not in str(mapped)
+
+
+def test_error_mapping_an_unrelated_import_four_links_back_is_not_taken_for_google() -> None:
+    """Only a ``google`` or ``vertexai`` import is looked for past the first links, and only
+    ``_GOOGLE_CHAIN_LINKS`` back: an unrelated import that failed behind a Vertex error does not
+    earn the google hint, and a google import beyond the limit does not either."""
+    from zakcode.providers import litellm_provider as lp
+
+    unrelated = ModuleNotFoundError("No module named 'left_pad'", name="left_pad")
+    over_unrelated = _raised_over(
+        _raised_over(unrelated, ValueError("middle")), _connection_error("Connection error.")
+    )
+    assert lp._google_import_behind(over_unrelated) is None
+    assert "--extra google" not in str(LiteLLMProvider._map_error(over_unrelated))  # type: ignore[arg-type]
+
+    google = ModuleNotFoundError("No module named 'vertexai'", name="vertexai")
+    chain: BaseException = google
+    for index in range(lp._GOOGLE_CHAIN_LINKS + 1):
+        chain = _raised_over(chain, ValueError(f"link {index}"))
+    assert lp._google_import_behind(chain) is None  # five links back: past the limit
+    assert lp._google_import_behind(_raised_over(google, ValueError("one link"))) is google
+
+
 def test_error_mapping_an_outage_with_no_import_under_it_is_still_an_outage() -> None:
     """The neighbours stay outages: a refused connection; a server's own message that names a
     module, with no import failed here; an import that failed two links back in a real outage's

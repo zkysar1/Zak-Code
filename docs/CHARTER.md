@@ -31,6 +31,23 @@ deeply along the way.
 - 1:1 byte-parity with Claude Code's source — we target *capability* parity, our own way.
 - Cloud multi-tenant SaaS / billing infrastructure.
 
+## The line with a host framework
+
+Zak Code is the harness. It makes the model calls, decides which tools and skills to use,
+and iterates until the job is done. It has to stay useful by itself, for a job that needs
+nothing more.
+
+A **host framework** can be plugged into it: a layer that brings memory, goals or a loop of
+its own. The harness never takes those in. It records what happened and exposes seams; it
+does not remember, recall or learn ([`PERSISTENCE-BOUNDARY.md`](PERSISTENCE-BOUNDARY.md)).
+A framework reaches it only through what any workspace has: hooks, settings, skills, rules
+and workspace files ([`HOST-FRAMEWORK-COMPAT.md`](HOST-FRAMEWORK-COMPAT.md)).
+
+The test for any change: **would it make sense in a workspace with no host framework in
+it?** If not, it belongs to the framework. A cost or quality improvement is sorted by the
+same test. How a model call is made, cached or routed is the harness's. What a framework
+does with its memory and its goals is the framework's.
+
 ## Principles
 
 1. **Clean-room.** Patterns, not proprietary code. Re-express every idea in our design.
@@ -41,6 +58,8 @@ deeply along the way.
 6. **Safe by default.** Confirm destructive actions; never leak secrets.
 7. **Documentation-driven.** Docs are the contract; they change with the code.
 8. **Small, verifiable steps.** Every milestone is testable and demoable.
+9. **A plain harness first.** Nothing a host framework owns moves into the engine: no
+   memory, no goals, no loop of its own. See "The line with a host framework" above.
 
 ## Success criteria
 
