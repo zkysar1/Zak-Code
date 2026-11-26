@@ -25838,15 +25838,16 @@ path), the second when a call's signature leaves out its timeout or the ladder's
 Status: accepted. 2026-11-26. Narrows how the observation narration reads the hearing slice.
 
 Context. An observation can carry a `communicationPerception` slice, what a body has recently heard:
-`lastReadChats`, a read cursor, and `heardChats`, a short window of rows, oldest first, each with a
-`sender`, a `text` and a time. The narration listed the slice's keys as the people heard, so a served
-mind was told "you can hear lastReadChats, heardChats": two field names stated as speakers, and the
-speakers themselves never named.
+`lastReadChats`, a read cursor; `heardChats`, a short window of rows, oldest first, each with a
+`sender`, a `text` and a time; and, once there are any, `recentWorldEvents`. The narration listed
+the slice's keys as the people heard, so a served mind was told "you can hear lastReadChats,
+heardChats": field names stated as speakers, and the speakers themselves never named.
 
 Decision.
-- Only each row's `sender` is read. The names are distinct, in the window's order, at most three
-  followed by a count, as the other company lines name people. A window that names nobody, or no
-  window, says nothing.
+- Only each row's `sender` is read. The names are distinct and in the window's order, the first
+  three followed by a count of the rest, as the other company lines name people. A window that names
+  nobody, or no window, says nothing. The cursor and the world events are not narrated; the raw slice
+  carries them.
 - The text of a heard line is never narrated. The raw slice still carries it to the model; the
   narration repeats no one's words, so a whispered line is not repeated there.
 - A sender is the wire's own name and the vessel does not bound it, so each is folded to one

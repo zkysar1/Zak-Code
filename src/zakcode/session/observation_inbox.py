@@ -788,8 +788,9 @@ def _narrate_company(observation: dict[str, Any]) -> list[str]:
     verified-empty one.
 
     Who is HEARD comes from the ``sender`` of each ``communicationPerception.heardChats`` row,
-    the Environment Server's window of recently heard lines (distinct, oldest first). The slice's
-    other fields are the vessel's own bookkeeping, and a window that names nobody says nothing.
+    the Environment Server's window of recently heard lines (distinct, oldest first). Nothing else
+    in the slice names a speaker: its read cursor and its list of recent world events are left to
+    the raw slice. A window that names nobody says nothing.
     """
     lines: list[str] = []
     units = observation.get("unitPerception")

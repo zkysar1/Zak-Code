@@ -320,6 +320,13 @@ def test_company_says_nothing_when_no_speaker_is_reported(heard: object) -> None
     assert narrate_observation(envelope) == []
 
 
+def test_company_names_the_first_three_speakers_in_window_order() -> None:
+    senders = ("Zed", "Abe", "Zed", "Mo", "Kit")
+    envelope = _envelope(observation=_heard(*({"sender": name, "text": "hi"} for name in senders)))
+
+    assert narrate_observation(envelope) == ["you can hear Zed, Abe, Mo (and 1 more)"]
+
+
 def test_a_heard_speaker_cannot_start_a_narration_line_or_run_long() -> None:
     """A sender is the wire's own name and the vessel does not cap it: the narration keeps it to
     one printable line of at most 64 characters."""
