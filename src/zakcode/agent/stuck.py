@@ -45,7 +45,7 @@ from hashlib import blake2b
 
 from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import ToolCall
-from zakcode.tools.base import RECEIPT_OF_CHANGE, RULE_POINTER
+from zakcode.tools.base import RECEIPT_OF_CHANGE, RULE_POINTER, WAITED_ON_RUNNING
 
 # ── canonical tool-call identity (shared with the loop's doom guard) ─────────────
 
@@ -641,6 +641,8 @@ class StuckTracker:
                 continue
             if call.name in self.uncounted_outcome_tools:
                 continue  # the harness's own delivery: identical by construction, no measurement
+            if not result.is_error and (result.data or {}).get(WAITED_ON_RUNNING):
+                continue  # a whole wait on a task still running: nothing known yet (ADR-0410)
             # The tool's own flag, never a search of the text (ADR-0203). An ERROR is never a
             # receipt of change, whatever its data says: nothing changed.
             receipt = not result.is_error and bool((result.data or {}).get(RECEIPT_OF_CHANGE))
