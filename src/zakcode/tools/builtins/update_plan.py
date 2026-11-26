@@ -140,8 +140,13 @@ _ADVANCED_HINT = (
 )
 
 
-def _task_schema(depth: int) -> dict[str, Any]:
-    """JSON schema for one task node, nesting ``subtasks`` to ``depth`` levels."""
+def _task_schema(depth: int, *, described: bool = True) -> dict[str, Any]:
+    """JSON schema for one task node, nesting ``subtasks`` to ``depth`` levels.
+
+    The field descriptions are written once, on the outermost node (``described``). The nested
+    nodes carry the same field names, types, status values and required list without them: the
+    schema is sent on every model call, so a repeated description costs context every time.
+    """
     properties: dict[str, Any] = {
         "title": {
             "type": "string",
@@ -191,14 +196,16 @@ def _task_schema(depth: int) -> dict[str, Any]:
         properties["subtasks"] = {
             "type": "array",
             "description": (
-                "Sub-steps this step decomposes into. A step WITH subtasks is a compound goal "
-                "(its status is derived from them); a step WITHOUT subtasks is a primitive action."
+                "Sub-steps this step decomposes into, each with the same fields as a step. A step "
+                "WITH subtasks is a compound goal (its status is derived from them); a step "
+                "WITHOUT subtasks is a primitive action."
             ),
-            "items": {
-                "type": "object",
-                "properties": _task_schema(depth - 1)["properties"],
-                "required": ["title"],
-            },
+            "items": _task_schema(depth - 1, described=False),
+        }
+    if not described:
+        properties = {
+            name: {key: value for key, value in prop.items() if key != "description"}
+            for name, prop in properties.items()
         }
     return {"type": "object", "properties": properties, "required": ["title"]}
 

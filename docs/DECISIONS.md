@@ -25856,3 +25856,25 @@ Decision.
 Consequences. A producer that sent a map keyed by speaker would now be narrated as silence. No such
 producer was found: the slice's writer, the Environment Server's communication perception, sends the
 window above.
+
+## ADR-0411: the planning tool's schema writes each field description once
+
+Status: accepted. 2026-11-26. Narrows the schema the planning tool sends; what it accepts is unchanged.
+
+Context. A tool's schema is sent on every model call. `update_plan` nests sub-steps three levels
+deep (`_MAX_DEPTH`; no recursive `$ref`, which weak models and some providers mishandle), and each
+level repeated the five fields' descriptions word for word. Measured on main at 12530a7, on an agent
+built as the server builds it (24 tools, OpenAI-shaped JSON): `update_plan` was 7,271 of 26,610
+tool-schema characters, 6,032 of them its parameters.
+
+Decision.
+- The descriptions are written once, on the outermost step. The nested levels keep the same field
+  names, types, status values and required list; only the prose is left out.
+- The `subtasks` description says each sub-step takes the same fields as a step, so the nested
+  levels' meaning is said in one place.
+
+Consequences. `update_plan` is 4,359 characters, 2,912 fewer on every call (its parameters 3,120);
+no other tool's schema changed. The shape a backend builds a tool-call grammar from is unchanged.
+Whether a model fills nested fields as well without the repeated prose was not measured: the same
+descriptions are on the level above in the same schema. A test holds each description to one
+occurrence and every level to the outer step's fields.
