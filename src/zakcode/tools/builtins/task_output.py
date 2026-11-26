@@ -6,9 +6,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from zakcode.background import DEFAULT_BLOCK_MS, MAX_BLOCK_MS
+from zakcode.background import (
+    DEFAULT_BLOCK_MS,
+    MAX_BLOCK_MS,
+    WAIT_MARK_MAX_AGE_S,
+    WAIT_MARK_MIN_MS,
+)
 from zakcode.config import PermissionTier
-from zakcode.tools.base import ConcurrencyClass, Tool, ToolContext, ToolResult, ToolSpec
+from zakcode.tools.base import (
+    WAITED_ON_RUNNING,
+    ConcurrencyClass,
+    Tool,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+)
 
 
 class TaskOutputTool(Tool):
@@ -84,6 +96,11 @@ class TaskOutputTool(Tool):
             "exit_code": code,
             "output_file": task.output_file,
         }
+        if block and status == "running" and timeout >= WAIT_MARK_MIN_MS:
+            # ADR-0410: a whole wait on a task still running is the wait going on, not a stall.
+            age = tasks.age_seconds(task)
+            if age is not None and age < WAIT_MARK_MAX_AGE_S:
+                data[WAITED_ON_RUNNING] = True
         if status == "completed" and code not in (0, None):
             return ToolResult.error(text, data=data)
         return ToolResult.ok(text, data=data)
