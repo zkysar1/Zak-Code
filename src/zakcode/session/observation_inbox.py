@@ -273,6 +273,9 @@ _URGENT_LOG_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 #: How much of the vessel's stated reason a narration line repeats.
 FAREWELL_REASON_MAX_CHARS = 120
 
+#: How much of one heard speaker's name a narration line repeats; the vessel does not cap it.
+HEARD_SENDER_MAX_CHARS = 64
+
 
 def _is_count(value: Any) -> TypeGuard[int]:
     """A real integer — ``bool`` is an ``int`` in Python and is never a byte count."""
@@ -783,6 +786,11 @@ def _narrate_company(observation: dict[str, Any]) -> list[str]:
     warrants ``you are alone here``, whereas an absent slice means the vessel never reported
     and warrants silence. Collapsing the two would let a mind read an unreported world as a
     verified-empty one.
+
+    Who is HEARD comes from the ``sender`` of each ``communicationPerception.heardChats`` row,
+    the Environment Server's window of recently heard lines (distinct, oldest first). Nothing else
+    in the slice names a speaker: its read cursor and its list of recent world events are left to
+    the raw slice. A window that names nobody says nothing.
     """
     lines: list[str] = []
     units = observation.get("unitPerception")
@@ -793,11 +801,19 @@ def _narrate_company(observation: dict[str, Any]) -> list[str]:
             if others
             else "you are alone here"
         )
-    heard = observation.get("communicationPerception")
-    if isinstance(heard, dict):
-        said = [key for key in heard if isinstance(key, str)]
-        if said:
-            lines.append(f"you can hear {_name_some(said)}")
+    # Only each row's ``sender`` is read: its ``text`` stays out of the narration, so a
+    # whispered line is never repeated here. A sender is the wire's own name and reaches the
+    # model, so it is kept to one printable, bounded line.
+    rows = _slice_of(observation, "communicationPerception").get("heardChats")
+    speakers: dict[str, None] = {}
+    for row in rows if isinstance(rows, list) else []:
+        sender = row.get("sender") if isinstance(row, dict) else None
+        if isinstance(sender, str):
+            name = "".join(c for c in " ".join(sender.split()) if c.isprintable()).strip()
+            if name:
+                speakers[name[:HEARD_SENDER_MAX_CHARS]] = None
+    if speakers:
+        lines.append(f"you can hear {_name_some(list(speakers))}")
     return lines
 
 
