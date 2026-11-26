@@ -10876,9 +10876,10 @@ ended `veto_stall`, and later turns were refused the same way. Both doom-loop si
 answer the batch before the hook is asked, and a veto and a stop share that answer. Test:
 `tests/test_turn_end_loop.py::test_a_vetoed_doom_loop_answers_its_calls_before_the_re_entry`
 (the rail and a delivered skill, both turn paths, against a provider that refuses a
-mis-paired transcript). Two related cases are not changed here: a turn cancelled, or its
-stream closed, while a tool batch runs can also leave calls unanswered, and a session
-already saved in the old order is still refused.
+mis-paired transcript). Related cases are not changed here: a turn cancelled, its stream
+closed, or its process killed while a tool batch runs can also leave calls unanswered; and a
+session already saved in the old order is not repaired on load, so it stays refused until a
+compaction drops those messages.
 
 ## ADR-0188: function tools on the gpt-5.6 chat route ride with `reasoning_effort="none"`, a remedy the provider names is applied in place, and the sidecar signs the stop it raises
 
