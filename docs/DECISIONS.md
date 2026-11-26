@@ -25380,6 +25380,70 @@ re-measured result: rung 1 seeds the re-measurement step and "the last steps", a
 tool keeps failing; and a turn of failing calls still seeding "keeps failing across 3 attempts" and
 "the failed steps". Two mutations (the gate always open, always shut) each fail the file.
 
+## ADR-0405: a stretch that only read is told, once, that a summary is near
+
+Status: accepted. 2026-11-25. Builds on ADR-0074 (a runner's whole session is one turn, so the
+compaction check runs before every call) and ADR-0232 (the summarizer reads each tool output by its
+head and tail).
+
+Context. A compaction replaces what the conversation printed with a short account of it. A model
+that pages through a long source, meaning to write once it has read enough, loses the pages at the
+summary and pages through again, from the top, in the next stretch; when what it needs is more than
+one stretch holds, it never writes. Nothing tells it so. The summary says what it was doing, not that
+the same pages went the same way last time, and the stuck tracker cannot see it: pages of different
+ranges are different outputs, and a lap that reads one page it had not read before is new (ADR-0209).
+
+What was measured, before building. Eleven served worker sessions on one local model, read from their
+transcripts (tool names, command heads, file base names, output sizes, times and compaction rows; no
+output text), 24 h to 2026-11-25 08:20. A stretch runs from one compaction row to the next. A read
+names a file in a file tool or in a shell command that opens or pages it; a re-read names a file an
+earlier stretch of the same session read; a write is a file tool's edit or a command that writes a
+file. Of 245 stretches, 78 (31.8%) re-read at least five times, at least half their reads were
+re-reads, and wrote nothing. Of 3,810 reads, 1,906 were re-reads: 11.4 MB of the 23.2 MB of file
+output read. One task went round 14 such stretches in a row on one session (12 hours) and then 10
+stretches on another, each paging the same two sources of about 900 lines from line 1 (lines 1-80,
+80-140, 600-700 in one stretch; 1-80, 560-700, 700-900, 1-90 in another), and neither wrote anything.
+
+Decision.
+- Each stretch counts the files it printed (`_count_stretch_io` and `_files_printed`, by base name:
+  the file reader, and the shell's `cat`, `head`, `tail`, `less`, `more`, `bat`, `nl`, `awk` and
+  `sed -n`) and whether it wrote one (a file tool's edit, or `_writes_a_file`: a redirect not to a
+  descriptor or /dev, `tee`, `cp`, `mv`, `install`, `sed -i`, a commit, or Python's own writers). A
+  write restarts the count of files printed. A compaction starts a new stretch (`_adopt_compacted`).
+- After a batch the stuck ladder left alone, `_summary_ahead_rail` gives one control rail per stretch
+  when the stretch printed files at least 8 times since it began or last wrote one, and the anchored
+  count (ADR-0077) is from 85% of the compaction threshold up to the threshold. Past the threshold the compaction runs
+  before the next call, so a note would arrive after the loss it warns of. The rail names the three
+  files read most and asks the model to write down what it will need, in the file it is building or
+  a short notes file; after the summary, to read the notes rather than the sources, and to have a
+  sub-agent read a source when it needs more from one.
+- Nothing is refused or narrowed, and no threshold moves.
+
+Not done, and not measured. A read the probe does not parse (a script that prints a file, a quoted
+path) is not counted, which only makes the note rarer. A write restarts the count whatever it wrote,
+even when it is unrelated to what was read. The counts restart with the process. Whether the model writes
+its notes, and then reads them instead of the sources, is the trial's question: on two sessions,
+against their own previous 24 hours, the share of stretches that re-read and wrote nothing, and what
+the stretch after a note writes.
+
+Amended, 2026-11-25, after the trial. On the two trial sessions, 1 of 5 stretches re-read and wrote
+nothing, against 7 of 13 on seven sessions without the note over the same hours, and 2 of 3 notes
+were followed by a write within three calls. But the note came before only 2 of the 4 summaries
+whose stretch printed files at least 8 times. In both misses, and in one stretch still open at the
+reading, the stretch wrote one file early (after 0, 3 and 12 files printed), then printed files 8,
+18 and 9 more times and wrote nothing more: as first built, one write silenced the whole stretch. A
+write now restarts the count, so the note counts the files printed since the stretch began or last
+wrote one, and its wording says which.
+
+The proof. `tests/test_summary_ahead.py` pins the note once in a stretch near the threshold; its
+absence below that band, past the threshold, right after a write through the shell or a file tool
+and with fewer than 8 reads; the count restarting at a write through either, and the wording after
+one; a failed call counting for nothing; a compaction starting a new stretch; both loop twins giving
+it once; and the command readers, where a heredoc's body and quoted text are data. Fifteen
+single-site mutations each fail their own test while an unrelated test file stays green, and four
+more for the amendment (either write keeping the count, a write silencing the stretch, one wording
+for both) each fail their own test while a control test stays green.
+
 ## ADR-0407: a shell check run again and again, answered the same, is a stuck signal
 
 Status: accepted. 2026-11-25. Extends ADR-0038 (re-observing a known result is not progress) to a
