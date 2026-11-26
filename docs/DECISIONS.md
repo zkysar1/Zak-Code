@@ -25870,11 +25870,11 @@ tool-schema characters, 6,032 of them its parameters.
 Decision.
 - The descriptions are written once, on the outermost step. The nested levels keep the same field
   names, types, status values and required list; only the prose is left out.
-- The `subtasks` description says each sub-step takes the same fields as a step, so the nested
-  levels' meaning is said in one place.
+- The `subtasks` description says the sub-steps take the same fields as a step and how deep a
+  plan nests, so the nested levels' meaning is said in one place.
 
-Consequences. `update_plan` is 4,359 characters, 2,912 fewer on every call (its parameters 3,120);
+Consequences. `update_plan` is 4,385 characters, 2,886 fewer on every call (its parameters 3,146);
 no other tool's schema changed. The shape a backend builds a tool-call grammar from is unchanged.
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
-descriptions are on the level above in the same schema. A test holds each description to one
-occurrence and every level to the outer step's fields.
+descriptions are on the outermost step in the same schema. A test holds each description to one
+occurrence and every level to the outer step's fields, with no constraint of its own.

@@ -196,9 +196,9 @@ def _task_schema(depth: int, *, described: bool = True) -> dict[str, Any]:
         properties["subtasks"] = {
             "type": "array",
             "description": (
-                "Sub-steps this step decomposes into, each with the same fields as a step. A step "
-                "WITH subtasks is a compound goal (its status is derived from them); a step "
-                "WITHOUT subtasks is a primitive action."
+                "Sub-steps this step decomposes into, with the same fields as a step; a plan nests "
+                f"{_MAX_DEPTH} levels at most. A step WITH subtasks is a compound goal (its status "
+                "is derived from them); a step WITHOUT subtasks is a primitive action."
             ),
             "items": _task_schema(depth - 1, described=False),
         }
