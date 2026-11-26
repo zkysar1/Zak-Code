@@ -25846,3 +25846,27 @@ wait pin what the guards do with it, not the signal: of the mutations above only
 (the threshold made unreachable, since each takes its six polls from it), and each goes red under a
 mutation of a guard: the first when the exact-repeat threshold is raised by one (on either turn
 path), the second when a call's signature leaves out its timeout or the ladder's stop is raised.
+
+## ADR-0408: the narration names heard speakers from the heard window, never its field names or words
+
+Status: accepted. 2026-11-26. Narrows how the observation narration reads the hearing slice.
+
+Context. An observation can carry a `communicationPerception` slice, what a body has recently heard:
+`lastReadChats`, a read cursor; `heardChats`, a short window of rows, oldest first, each with a
+`sender`, a `text` and a time; and, once there are any, `recentWorldEvents`. The narration listed
+the slice's keys as the people heard, so a served mind was told "you can hear lastReadChats,
+heardChats": field names stated as speakers, and the speakers themselves never named.
+
+Decision.
+- Only each row's `sender` is read. The names are distinct and in the window's order, the first
+  three followed by a count of the rest, as the other company lines name people. A window that names
+  nobody, or no window, says nothing. The cursor and the world events are not narrated; the raw slice
+  carries them.
+- The text of a heard line is never narrated. The raw slice still carries it to the model; the
+  narration repeats no one's words, so a whispered line is not repeated there.
+- A sender is the wire's own name and the vessel does not bound it, so each is folded to one
+  printable line and cut at `HEARD_SENDER_MAX_CHARS` (64).
+
+Consequences. A producer that sent a map keyed by speaker would now be narrated as silence. No such
+producer was found: the slice's writer, the Environment Server's communication perception, sends the
+window above.
