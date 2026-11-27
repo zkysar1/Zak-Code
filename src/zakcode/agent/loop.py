@@ -73,6 +73,12 @@ Stop conditions
 * ``"budget_exhausted"`` — an optional cumulative cost/token ceiling
   (``Settings.max_cost_usd`` / ``max_tokens``, shared across the whole sub-agent tree)
   was crossed (parity #4). A hard, non-vetoable bound like ``max_iterations``.
+* ``"context_full"`` — a SUB-AGENT's context reached the compaction threshold, or overflowed
+  and was recovered (ADR-0412). A sub-agent is not summarized and left to read on: it is
+  asked for its report, and its turn ends with that reply, which the parent receives as its
+  answer. A reply with no text is asked for once more. A parent's own turn never ends this way.
+* ``"context_full_no_report"`` — as ``"context_full"``, but the reply to the second ask held no
+  text either: the sub-agent gave no report, and the parent is told so (ADR-0412).
 * ``"skill_too_large"`` — a skill (or rule) body that cannot fit this model's context
   window at all: beside the system prompt it leaves less than the answer room. Nothing the
   model does changes that, so the turn ends loudly here instead of continuing without the
@@ -624,6 +630,34 @@ _SUMMARY_AHEAD_SPAN = (
 _SUMMARY_AHEAD_SPAN_AFTER_WRITE = (
     "Since you last wrote a file, you have read files {reads} times, most often {files}, and "
     "written nothing more."
+)
+#: ADR-0412: what a sub-agent is told, once, when its context reaches the compaction threshold.
+#: A summary would let it read on: measured on a self-hosted fleet, sub-agents that compacted ran
+#: on for up to 172 minutes more, reading again what the summary had dropped, while the parent
+#: that started them waited with no way to act. This reply is its last; the turn ends with it.
+_CONTEXT_FULL_RAIL = (
+    "Your context is full. You are a sub-agent, and the agent that started you is waiting for "
+    "your answer and can do nothing until it has it. Write your report now, in plain text: what "
+    "you found (with the paths, line numbers and values that support it) and what you did not get "
+    "to. This reply is your last one: no tool you call in it will run, and the agent that started "
+    "you receives this reply as your answer."
+)
+#: ADR-0412: the result a tool call in that last reply gets, so the session stays resumable.
+_CONTEXT_FULL_NOT_RUN = (
+    "Not executed: this sub-agent's context is full, so its turn ended with this reply as its "
+    "report."
+)
+#: ADR-0412: a reply to the ask with no text in it is no report. Thinking took the room the
+#: window left, or the model called a tool. It is asked once more, with thinking off, and the
+#: reply to that ends the turn whatever it holds.
+_CONTEXT_FULL_REASK = (
+    "Your last reply held no report. Write it now, in plain text and with no tool call: what you "
+    "found (with the paths, line numbers and values that support it) and what you did not get "
+    "to. This reply ends your turn, and the agent that started you receives it as your answer."
+)
+#: ADR-0412: the result a tool called in a reply with no text gets, before that second ask.
+_CONTEXT_FULL_NOT_RUN_REASK = (
+    "Not executed: this sub-agent's context is full. Write your report as plain text instead."
 )
 #: The line a summary that was cut or held adds to that note (ADR-0369): a resumed model must not
 #: read it as the whole history (ADR-0275), and the note is written fresh at every compaction, so
@@ -2778,7 +2812,8 @@ def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: st
     a user message with no ``tool_result``). Answering each call with an
     ``is_error`` result first keeps the session replayable — the same pairing
     contract the doom-loop veto epilogue maintains. Used by the
-    ``budget_exhausted`` and non-veto ``doom_loop`` break sites (both twins).
+    ``budget_exhausted``, non-veto ``doom_loop`` and ``context_full`` (ADR-0412) break
+    sites (both twins).
     """
     return Message.tool_results(
         [
@@ -3089,6 +3124,7 @@ class AgentLoop:
         consume_observation_inbox: bool = False,
         compose_skill: Callable[..., Any] | None = None,
         refresh_hooks: Callable[[], object] | None = None,
+        report_at_window: bool = False,
     ) -> None:
         self.provider = provider
         # A loop cannot run on a model whose window nobody knows (ADR-0066): every
@@ -3148,6 +3184,17 @@ class AgentLoop:
         # return to the parent — a Stop hook must not resurrect them). A registered hook
         # IS a live hook; vetoes are unbounded and the cost budget is the real bound.
         self.turn_end_vetoable = turn_end_vetoable
+        # ADR-0412: a SUB-AGENT loop is not summarized when its context reaches the compaction
+        # threshold. It is asked for its report (_maybe_compact, or at the first rung of the
+        # in-call overflow recovery that makes room), and its turn ends with the reply,
+        # ``stop_reason="context_full"``, or ``"context_full_no_report"`` when it was asked twice
+        # and neither reply held text. Structural, like the veto seam above: SubAgentRunner
+        # sets it on every child, a parent's own loop never has it. ``_context_full`` records
+        # that the ask was made, ``_report_reasked`` that a reply with no text was asked again.
+        # A sub-agent's loop runs one turn, so both hold for the loop's life.
+        self._report_at_window = report_at_window
+        self._context_full = False
+        self._report_reasked = False
         # A turn a client is waiting on ends on a quota refusal instead of offering it to a
         # veto-capable hook (ADR-0393). Off here: a turn the workspace drives itself keeps the
         # bounded, paced re-entry of ADR-0181. The server turns it on, per turn, for
@@ -4208,9 +4255,10 @@ class AgentLoop:
         it began or last wrote one (ADR-0405), or ``None``. Once a stretch, from
         :data:`_SUMMARY_AHEAD_AT` of the compaction threshold up to the threshold: past it the
         compaction runs before the next call, and the note would arrive after the loss it warns
-        of. A courtesy: never raises.
+        of. A courtesy: never raises. A sub-agent is not told: it is not summarized at the
+        threshold but asked for its report there (ADR-0412), so the note would be false.
         """
-        if self.compactor is None or self._stretch_noted:
+        if self.compactor is None or self._report_at_window or self._stretch_noted:
             return None
         reads = sum(self._stretch_reads.values())
         if reads < _SUMMARY_AHEAD_MIN_READS:
@@ -4294,12 +4342,30 @@ class AgentLoop:
             answer_room=_answer_room(caps),
         ):
             return None
+        if self._report_at_window:
+            # ADR-0412: a sub-agent is asked for its report instead of being summarized, and its
+            # turn ends with the reply. Nothing is rewritten, so no PreCompact hook fires.
+            self._ask_for_report()
+            return "context near the window — a sub-agent reports instead of being summarized"
         # Let a host serialize learning/state before the transcript is compacted.
         await self._fire_pre_compact("auto")
         compacted, outcome = await self._compact_or_elide(trigger="auto")
         if not compacted:
             return f"compaction failed — {outcome}; continuing with the full history"
         return f"context near the window — {outcome}"
+
+    def _ask_for_report(self) -> None:
+        """Ask a sub-agent for its report, once (ADR-0412): the rail joins the conversation, and
+        the turn ends with the reply (``stop_reason="context_full"``; ``"context_full_no_report"``
+        when a reply with no text, asked once more, holds none either). The threshold check asks
+        before the call that would cross the window; when the loop could not see the size
+        coming, the in-call overflow recovery asks at the first rung that makes room, on the
+        retried call."""
+        if self._context_full:
+            return
+        self._context_full = True
+        self.session.add_message(Message.user(_control_rail(_CONTEXT_FULL_RAIL)))
+        self._persist()
 
     def _adopt_compacted(
         self, messages: list[Message], *, summary: str | None = None, trigger: str = ""
@@ -4737,10 +4803,18 @@ class AgentLoop:
         """One rung of the overflow-recovery ladder (ADR-0083), by attempt number: the
         first summarizes (eliding old tool outputs if the summarizer fails); the second
         elides every long tool output, tail included — model-free, so it cannot fail the
-        way the first can. ``_MAX_CONTEXT_RECOVERY`` is the ladder's length."""
+        way the first can. ``_MAX_CONTEXT_RECOVERY`` is the ladder's length.
+
+        A sub-agent that recovered here is then asked for its report (ADR-0412): it ran into
+        the window without the threshold check seeing it coming, and the recovery buys the
+        room for that one reply, not for reading on."""
         if attempt == 0 and await self.compact_now(trigger="auto"):
-            return True
-        return await self.elide_now(trigger="auto")
+            recovered = True
+        else:
+            recovered = await self.elide_now(trigger="auto")
+        if recovered and self._report_at_window:
+            self._ask_for_report()
+        return recovered
 
     async def _compact_for_clamped_overflow(
         self, finish_reason: str | None, clamped_cap: int | None
@@ -4873,6 +4947,10 @@ class AgentLoop:
             # once. Looked at on EVERY request, before the rest decision below: a plan reopened on
             # a resting call and closed again by the next would otherwise never be seen to move.
             self._refused_plan = None
+        if self._context_full:
+            # ADR-0412: a sub-agent asked for its report reads that ask last. No plan, context or
+            # answered note follows it on the calls that end its turn.
+            return history
         if self._tail_rests_this_call():
             # ADR-0193: this call goes out as the persisted history alone, so the provider
             # holds a full prompt the NEXT call extends. Nothing is gathered for a tail that
@@ -9776,6 +9854,53 @@ class AgentLoop:
                     self._persist()
                 break
 
+            # ADR-0412: this reply is a sub-agent's report, asked for when its context filled
+            # (_ask_for_report). Its turn ends here; a tool it called in the reply does not run.
+            # A reply with no text is no report: it is asked once more, with thinking off where
+            # the provider takes that, and with the room a clamped call lacked
+            # (_compact_for_clamped_overflow). When the reply to that holds no text either, the
+            # turn ends context_full_no_report, so the parent is not told a report came.
+            if self._context_full:
+                if not result.text.strip() and not self._report_reasked:
+                    self._report_reasked = True
+                    thinking_off_next_call = True
+                    self._note(
+                        "intervention",
+                        "sub-agent reply held no report: asked once more, thinking off",
+                        kind="context_full_reask",
+                    )
+                    if result.has_tool_calls:
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                result.tool_calls, _CONTEXT_FULL_NOT_RUN_REASK, "context_full"
+                            )
+                        )
+                    self.session.add_message(Message.user(_control_rail(_CONTEXT_FULL_REASK)))
+                    await self._compact_for_clamped_overflow(
+                        result.finish_reason, result.clamped_output_cap
+                    )
+                    self._refund_iteration()  # a reply with no report did no work
+                    self._persist()
+                    continue
+                stop_reason = "context_full" if result.text.strip() else "context_full_no_report"
+                self._note(
+                    "intervention",
+                    "sub-agent context full: its report ends the turn"
+                    if stop_reason == "context_full"
+                    else "sub-agent context full: asked twice, it gave no report",
+                    kind=stop_reason,
+                )
+                if result.has_tool_calls:
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            result.tool_calls,
+                            _CONTEXT_FULL_NOT_RUN,
+                            "context_full",
+                        )
+                    )
+                    self._persist()
+                break
+
             # No tool calls → the turn is finishing (cleanly when the model has said
             # anything this turn; the empty give-up gate below handles total silence).
             if not result.has_tool_calls:
@@ -11839,6 +11964,59 @@ class AgentLoop:
                         self._persist()
                     yield AgentStatus(
                         message="stopping: cost ceiling unenforceable (model has no price)"
+                    )
+                    break
+
+                # ADR-0412, streaming twin of the buffered path: a sub-agent's report ends its turn,
+                # a reply with no text is asked once more, with thinking off where the provider
+                # takes that, and a second reply with no text ends it context_full_no_report.
+                if self._context_full:
+                    if not assistant_text.strip() and not self._report_reasked:
+                        self._report_reasked = True
+                        thinking_off_next_call = True
+                        self._note(
+                            "intervention",
+                            "sub-agent reply held no report: asked once more, thinking off",
+                            kind="context_full_reask",
+                        )
+                        if tool_calls:
+                            self.session.add_message(
+                                _unexecuted_tool_results(
+                                    tool_calls, _CONTEXT_FULL_NOT_RUN_REASK, "context_full"
+                                )
+                            )
+                        self.session.add_message(Message.user(_control_rail(_CONTEXT_FULL_REASK)))
+                        await self._compact_for_clamped_overflow(
+                            stream_finish_reason, stream_clamped_cap
+                        )
+                        self._refund_iteration()  # a reply with no report did no work
+                        self._persist()
+                        yield AgentStatus(
+                            message="sub-agent reply held no report; asking once more"
+                        )
+                        continue
+                    reported = bool(assistant_text.strip())
+                    stop_reason = "context_full" if reported else "context_full_no_report"
+                    self._note(
+                        "intervention",
+                        "sub-agent context full: its report ends the turn"
+                        if reported
+                        else "sub-agent context full: asked twice, it gave no report",
+                        kind=stop_reason,
+                    )
+                    if tool_calls:
+                        self.session.add_message(
+                            _unexecuted_tool_results(
+                                tool_calls,
+                                _CONTEXT_FULL_NOT_RUN,
+                                "context_full",
+                            )
+                        )
+                        self._persist()
+                    yield AgentStatus(
+                        message="stopping: sub-agent context full, its report returned"
+                        if reported
+                        else "stopping: sub-agent context full, it gave no report"
                     )
                     break
 
