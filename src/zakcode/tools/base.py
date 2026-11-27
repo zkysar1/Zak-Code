@@ -24,6 +24,7 @@ Design rules (see ``docs/ARCHITECTURE.md`` / ``docs/GUARDRAILS.md``):
 
 from __future__ import annotations
 
+import copy
 import difflib
 import logging
 from abc import ABC, abstractmethod
@@ -666,7 +667,31 @@ class ToolRegistry:
                 for name, t in self._tools.items()
                 if name in wanted and self.exposure_allows(name)
             ]
-        return [t.spec.to_openai() for t in chosen]
+        definitions = [t.spec.to_openai() for t in chosen]
+        if any(t.spec.name == "update_plan" for t in chosen):
+            # ADR-0416: with the plan tool on offer, every other tool may carry ``step_done``,
+            # which closes the plan's current step inside the call. A backend builds its
+            # tool-call grammar from the schema, so the property must be declared or the model
+            # cannot emit it. Deep copies (a ToolSpec is never mutated) and the same output on
+            # every call (the definitions render first in the prompt, ADR-0268). Imported here:
+            # the plan tool imports this module.
+            from zakcode.tools.builtins.update_plan import (
+                PLAN_TOOL_NAMES,
+                STEP_DONE_ARG,
+                STEP_DONE_PROPERTY,
+            )
+
+            for definition in definitions:
+                function = definition["function"]
+                if function["name"] in PLAN_TOOL_NAMES:
+                    continue
+                parameters = copy.deepcopy(function.get("parameters") or {"type": "object"})
+                parameters.setdefault("type", "object")
+                properties = parameters.setdefault("properties", {})
+                if STEP_DONE_ARG not in properties:  # a tool's own argument of that name wins
+                    properties[STEP_DONE_ARG] = copy.deepcopy(STEP_DONE_PROPERTY)
+                function["parameters"] = parameters
+        return definitions
 
     async def execute(self, name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         """Dispatch a tool call by name/alias.
