@@ -1677,11 +1677,24 @@ def _restart_now(done: Any, mux: Any, agent: Any) -> bool:
     queue and would die with the exec. Every other door persists — the wake-up on the
     session, a say in its file, an exit note on the task record — and reaches the fresh
     process through its own doors.
+
+    Any other turn end restarts first too while a newer build is installed (ADR-0406): an
+    operator's interrupt, a collapse, a finished answer. Its idle wait served the same doors
+    ahead of the same 5 s probe, so a session that never sat idle with nothing waiting never
+    took the build. Measured 2026-11-25 on worker sessions mid-way through one long task
+    with a build installed under them: an operator's interrupt meant to move each onto it
+    opened a new turn on the old build at once whenever a wake-up had come due or a
+    background command had exited during the task (8 of 11 sessions held an overdue
+    wake-up), and one session took three interrupts to move. A say held back from a
+    permission prompt lives only in this process too, so it is served first like a typed
+    line.
     """
-    boundary = getattr(getattr(agent, "loop", None), "restart_boundary", None)
-    if getattr(done, "stop_reason", None) != "restart" and boundary != "stop-hook":
+    if not mux.queue.empty():
         return False
-    return bool(mux.queue.empty())
+    boundary = getattr(getattr(agent, "loop", None), "restart_boundary", None)
+    if getattr(done, "stop_reason", None) == "restart" or boundary == "stop-hook":
+        return True
+    return not getattr(mux, "_held_says", None) and install_changed() is not None
 
 
 def _after_turn(console: Console, agent: Any, mux: _InputMux, done: Any, kicks: int) -> int:
@@ -4240,8 +4253,9 @@ def chat(
             # Cosmetic Claude Code statusLine (opt-in; no-op unless configured). After the
             # turn, in-process only — it never gated or slowed the turn that just ran.
             _maybe_render_status_line(console, agent)
-            # A restart this turn ended for (ADR-0099, ADR-0101) is taken here, before any
-            # door is consulted or any continue-once kick is queued; see _after_turn.
+            # A restart this turn ended for (ADR-0099, ADR-0101), or any turn end while a newer
+            # build is installed (ADR-0406), is taken here, before any door is consulted or any
+            # continue-once kick is queued; see _after_turn.
             kicks = _after_turn(console, agent, mux, renderer.last_done, kicks)
         except ProviderError as exc:
             notice_error(console, "provider error", str(exc))
