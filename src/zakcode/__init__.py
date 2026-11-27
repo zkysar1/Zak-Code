@@ -819,7 +819,9 @@ class Agent:
             # False, so an operator who sets nothing sees no change.
             use_lean = self.settings.lean_rules if lean_rules is None else lean_rules
             rules_text = (
-                self.rule_registry.render_index() if use_lean else self.rule_registry.render()
+                self.rule_registry.render_index(relative_to=self.settings.workspace_root)
+                if use_lean
+                else self.rule_registry.render()
             )
             # Vinheim Lever A chunk 2: the retrieval half of the lean path. The
             # index names every rule but carries no bodies, so the model needs a cheap,

@@ -25862,6 +25862,52 @@ Consequences. A producer that sent a map keyed by speaker would now be narrated 
 producer was found: the slice's writer, the Environment Server's communication perception, sends the
 window above.
 
+## ADR-0409: the rules index prints a rule's path relative to the workspace root
+
+Status: accepted. 2026-11-26. Narrows what each line of the lean rules index spends on the path
+(ADR-0105).
+
+Context. Under `lean_rules` every rule that is not pinned is one index line, `- name: summary
+[path]`, and `path` was the rule file's absolute path as discovered. A host framework keeps its
+rules in `<workspace>/.claude/rules`, so every line carried the workspace root, a separator and
+then `.claude/rules/<name>.md`: the same root on every line, in the cached prefix of every call.
+Nothing reads it: the model reaches a rule with `read_rule(name)`, and the path is only the
+fallback the header offers when that tool is unavailable. Measured on served sessions of
+2026-11-26, from the session documents' character counts only: 34 to 37 index lines of 279 to 320
+characters at the median (302 to 343 at the longest), inside a rules block of 31,372 to 32,657
+characters against `MAX_RULES_TOTAL_CHARS` (32,768, with 80 reserved for the omission note). One of
+those blocks had 31 characters left before an index line would be dropped, and a line past the
+budget is dropped with a count and no names. `Read`'s `path` parameter takes "absolute or relative
+to the workspace root", so the fallback works with the shorter form.
+
+Decision. `RuleRegistry.render_index` takes `relative_to`, the workspace root. A rule whose path
+lies inside it prints that path relative to it (`.claude/rules/<name>.md`). A rule outside it, a
+bundled rule or one from the user's own rules directory, keeps its absolute path. With no
+`relative_to` every path is printed as before and the render is byte-identical to the earlier one.
+With it, the header's parenthetical says the path is relative to the workspace root when the rule
+lies inside it, so the model passes the path as printed. The agent passes its workspace root, the
+value the rules were discovered from. The rules text no longer varies with where a workspace lives,
+so two workspaces that carry the same rules share that part of the cached prefix.
+
+Alternatives rejected. The file name alone (the model must guess the directory, and a bundled rule
+shares none with a project rule). No path (the header promises a fallback when `read_rule` is
+unavailable). The root once in the header and a bare relative name per line (two readings of one
+path, and a bundled rule has no root to share).
+
+Consequences. Each line loses the root's length and one separator. A host framework's rules
+directory (39 files, 4 pinned, 35 index lines) copied under an 89-character root renders as 29,643
+characters with absolute paths and 26,555 with relative ones, 3,088 fewer once the header's longer
+parenthetical (62 characters) is counted, and the room under the budget grows from 3,045 to 6,133
+characters. At 2.7 characters a token that is about 1.1 thousand tokens on every call of a session
+with a lean index. The cached prefix changes once for a running workspace, at its next session.
+Pinned in `tests/test_rules.py`: the relative form and its header, the absolute path kept for a rule
+outside the workspace, the default render unchanged, a 150-rule corpus whose absolute index
+overflows the budget and whose relative index does not, and the same through `Agent`. Six
+mutations were run, each reverting or bending one line of `render_index`, its helper or its call
+site, and each turned only the tests that guard that line red: the helper ignores the root (four
+tests), matches it as a string prefix (one), loses its outside-root fallback (one), the call site
+omits the root (one), the header note is dropped (two), the default header changes (one).
+
 ## ADR-0410: a whole wait on a background task still running is the wait going on, not a stall
 
 Status: accepted. 2026-11-26. Amends ADR-0407's first way to wait.
@@ -25919,3 +25965,25 @@ twelve times and then the task exits: no wait is refused, no rail is sent, and t
 answer). `tests/test_stuck_poll.py` keeps pinning ADR-0407's two endings for unmarked waits.
 Mutation-proved: dropping the tool's mark, the ladder's skip, or the guard's skip on either turn
 path each turns its test red, and each restore turns it green.
+
+## ADR-0411: the planning tool's schema writes each field description once
+
+Status: accepted. 2026-11-26. Narrows the schema the planning tool sends; what it accepts is unchanged.
+
+Context. A tool's schema is sent on every model call. `update_plan` nests sub-steps three levels
+deep (`_MAX_DEPTH`; no recursive `$ref`, which weak models and some providers mishandle), and each
+level repeated the five fields' descriptions word for word. Measured on main at 12530a7, on an agent
+built as the server builds it (24 tools, OpenAI-shaped JSON): `update_plan` was 7,271 of 26,610
+tool-schema characters, 6,032 of them its parameters.
+
+Decision.
+- The descriptions are written once, on the outermost step. The nested levels keep the same field
+  names, types, status values and required list; only the prose is left out.
+- The `subtasks` description says the sub-steps take the same fields as a step and how deep a
+  plan nests, so the nested levels' meaning is said in one place.
+
+Consequences. `update_plan` is 4,385 characters, 2,886 fewer on every call (its parameters 3,146);
+no other tool's schema changed. The shape a backend builds a tool-call grammar from is unchanged.
+Whether a model fills nested fields as well without the repeated prose was not measured: the same
+descriptions are on the outermost step in the same schema. A test holds each description to one
+occurrence and every level to the outer step's fields, with no constraint of its own.
