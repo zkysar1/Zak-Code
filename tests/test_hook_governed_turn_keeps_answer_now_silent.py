@@ -141,7 +141,7 @@ async def test_a_new_turn_starts_ungoverned(tmp_path: Path, streamed: bool) -> N
         _judge_ok(),  # 9  side
         _plan("done"),  # 10
         _say("done: the second turn's answer"),  # 11  the line is owed, and rides
-        _review_ok(),  # 12  side
+        # no review side call: the first turn's hook named the session's loop (ADR-0419)
     ]
     provider, hook = _Scripted([*first, *second]), _Hook([SKILL_REASON])
     loop = _loop(provider, tmp_path, hook)
