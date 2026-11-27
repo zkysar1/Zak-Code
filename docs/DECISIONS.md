@@ -9636,6 +9636,32 @@ risk direction is favourable but INFERRED (a more capable model ticks `status` m
 resends → the lever fires even less), NOT measured. The opt-out (`plan_autoadvance=False` /
 `ZAKCODE_PLAN_AUTOADVANCE=0`) ships for any harmed caller — the first candidate being a >35B model.
 
+### ADR-0168 amended 2026-11-27: the advance comes on the second unchanged resend
+
+**Problem.** Lever N's trigger is "the current step has work recorded on it", and every non-plan call
+made while a step is current counts as work. Two served-session misfires closed a step that was not
+done on the first unchanged resend: in one, the only call since the plan was a line that answered an
+injected observation; in the other, a compound step had real evidence for its first half only.
+
+**Why not a better evidence rule.** Dropping the observation-answering call from the evidence leaves
+the second case, where the call was real work. Requiring the closed step's own evidence (not any
+step's) removes the walk that gets a model out of the arm M loop: after step 1 closes, step 2 has no
+evidence of its own, and three tests that pin the walk fail. "Has evidence" cannot mean "done" for
+any choice of which evidence counts.
+
+**Decision.** The evidence trigger is unchanged. The first unchanged resend that meets it gets the
+unchanged receipt, which asks the model to close the step or do it (receipt data
+`advance_offered`). A second unchanged resend while the same step is current advances it, as
+before. A changed plan clears the question. The two repeat bounds treat the ask as progress on its
+way: the doom-loop guard does not count the resend that follows it, and the plan-only bound
+(ADR-0364) neither lengthens nor ends its run on it.
+
+**Cost.** A model that only ever resends now takes two responses per step instead of one. A model
+that restates its plan once after a call no longer loses an unfinished step. A model that resends
+twice with the step unfinished still has it closed: the rule narrows the misfire, it does not
+remove it. Not measured on a served model; to be read from `plan_unchanged` and
+`plan_autoadvance` notes after it ships.
+
 ## ADR-0169: a cut guide says so — the fold's per-file cap ends with an omission note, built from the 14o cliff
 
 **Date:** 2026-09-14 · **Status:** accepted (ships default-on; re-measure pre-registered) · **Instrument:**

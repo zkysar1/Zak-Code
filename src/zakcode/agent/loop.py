@@ -10666,9 +10666,13 @@ class AgentLoop:
                     result.tool_calls, ctx, restrict_to=restrict_now
                 )
             turn_tool_results.extend(result_blocks)
-            # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
-            # identical resend next iteration reads as progress (not a stall) at the guard.
-            last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
+            # ADR-0168 lever N: remember if the harness advanced the plan on this batch, or asked
+            # once before advancing it (ADR-0168 amended), so an identical resend next iteration
+            # reads as progress (not a stall) at the guard.
+            last_autoadvanced = any(
+                (b.data or {}).get("autoadvanced") or (b.data or {}).get("advance_offered")
+                for b in result_blocks
+            )
             self._harvest_skill_invocations(result.tool_calls, result_blocks, skills_invoked)
             # If the whole batch was denied/vetoed, no work happened — refund the unit.
             if self._batch_did_no_work(result_blocks):
@@ -12791,7 +12795,10 @@ class AgentLoop:
                 if self._batch_did_no_work(result_blocks):
                     self._refund_iteration()
                 # ADR-0168 lever N: remember a harness plan advance for the next guard check.
-                last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
+                last_autoadvanced = any(
+                    (b.data or {}).get("autoadvanced") or (b.data or {}).get("advance_offered")
+                    for b in result_blocks
+                )
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()

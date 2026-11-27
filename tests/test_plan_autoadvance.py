@@ -1,5 +1,6 @@
 """Lever N (ADR-0168): when the model resends the plan unchanged and the current step has been
-worked on but left non-terminal, the harness marks it done and advances. UNCONDITIONAL since
+worked on but left non-terminal, the harness asks once, and on the second unchanged resend marks
+it done and advances (amended 2026-11-27). UNCONDITIONAL since
 ADR-0202 — there is no setting, no env var, and no context flag.
 
 Measured on the bench (arm M, 2026-09-13, a 35B on task 10): the model wrote the module, exported
@@ -30,6 +31,15 @@ def _ctx() -> tuple[ToolContext, TaskNetwork]:
     return ToolContext(workspace_root=Path("/tmp"), task_network=net), net
 
 
+async def _resend_twice(ctx: ToolContext, plan: list = PLAN):
+    """Resend ``plan`` unchanged twice: the first only asks (ADR-0168 amended), the second is
+    lever N's. Returns the second receipt."""
+    asked = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    assert asked.output.startswith("Plan unchanged"), asked.output
+    assert asked.data is not None and asked.data["advance_offered"] is True
+    return await UpdatePlanTool().execute({"tasks": plan}, ctx)
+
+
 async def _lay_out_and_work(ctx: ToolContext, net: TaskNetwork) -> None:
     """Send the plan once, then record that the current step was worked on (evidence attached)."""
     await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
@@ -49,14 +59,38 @@ async def test_there_is_no_switch_the_advance_is_unconditional() -> None:
     # that used to default to the conservative side and silently get the doom loop instead.
     ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
-    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    result = await _resend_twice(ctx)
     assert result.data is not None and result.data["autoadvanced"] is True
+
+
+async def test_one_resend_after_work_asks_and_closes_nothing() -> None:
+    # "Has evidence" is not "done": the evidence may be a call that only answered an injected
+    # observation, or the first half of a compound step. One resend closes nothing.
+    ctx, net = _ctx()
+    await _lay_out_and_work(ctx, net)
+    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    assert result.output.startswith("Plan unchanged: 0/3 steps done")
+    assert result.data is not None and not result.data.get("autoadvanced")
+    assert net.tasks[0].status != "done"
+    assert result.hint is not None and "If step 1 is finished" in result.hint
+
+
+async def test_a_changed_plan_clears_the_question() -> None:
+    ctx, net = _ctx()
+    await _lay_out_and_work(ctx, net)
+    await UpdatePlanTool().execute({"tasks": PLAN}, ctx)  # asked
+    edited = [PLAN[0], dict(PLAN[1], note="symbol imports cleanly"), PLAN[2]]
+    await UpdatePlanTool().execute({"tasks": edited}, ctx)
+    assert net.advance_offered_step == ""
+    again = await UpdatePlanTool().execute({"tasks": edited}, ctx)
+    assert again.data is not None and again.data["advance_offered"] is True
+    assert net.tasks[0].status != "done"
 
 
 async def test_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> None:
     ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
-    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    result = await _resend_twice(ctx)
     assert result.output.startswith("Advanced step 1 ('write the module') to done")
     assert "current: 2 export it" in result.output
     assert result.data is not None and result.data["autoadvanced"] is True
@@ -71,13 +105,13 @@ async def test_a_worked_step_resent_unchanged_is_advanced_for_the_model() -> Non
 async def test_the_advance_is_sticky_across_a_blind_resend_of_the_same_plan() -> None:
     ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
-    await UpdatePlanTool().execute({"tasks": PLAN}, ctx)  # advances step 1
+    await _resend_twice(ctx)  # advances step 1
     assert net.tasks[0].status == "done"
 
     # The model resends its ORIGINAL all-pending plan (it will not emit status:done). The full
     # replace would set step 1 back to pending, but harness_done keeps it done — and the frontier
     # advances again (the plan has been worked on).
-    result = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    result = await _resend_twice(ctx)
     assert net.tasks[0].status == "done"  # NOT undone by the resend
     assert result.output.startswith("Advanced step 2 ('export it') to done")
     assert net.current().title == "add tests"
@@ -87,11 +121,11 @@ async def test_it_walks_the_frontier_to_completion_then_hands_over_the_verdict()
     ctx, net = _ctx()
     await _lay_out_and_work(ctx, net)
     # The model keeps resending the same all-pending plan; the harness walks each worked step done.
-    r1 = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    r1 = await _resend_twice(ctx)
     assert r1.data["advanced_step"] == "1"
-    r2 = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    r2 = await _resend_twice(ctx)
     assert r2.data["advanced_step"] == "2"
-    r3 = await UpdatePlanTool().execute({"tasks": PLAN}, ctx)
+    r3 = await _resend_twice(ctx)
     assert r3.data["advanced_step"] == "3"
     assert net.is_complete()
     assert r3.data["complete"] is True
@@ -119,7 +153,7 @@ async def test_an_outcome_recorded_but_status_left_pending_is_advanced() -> None
     plan = [dict(PLAN[0], status="pending", outcome="wrote the module"), PLAN[1], PLAN[2]]
     first = await UpdatePlanTool().execute({"tasks": plan}, ctx)
     assert first.output.startswith("Plan updated: 0/3 steps done")
-    result = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    result = await _resend_twice(ctx, plan)
     assert result.output.startswith("Advanced step 1")
     assert net.tasks[0].status == "done"
 
@@ -152,12 +186,12 @@ async def test_a_same_title_child_does_not_break_the_advance_or_its_stickiness()
     ]
     await UpdatePlanTool().execute({"tasks": plan}, ctx)
     net.attach_evidence(net.current(), "wrote /tmp/utils/duration.py")
-    r1 = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    r1 = await _resend_twice(ctx, plan)
     assert r1.data is not None and r1.data.get("autoadvanced")  # fires despite the title collision
     child = net.tasks[0].children[0]
     assert child.status == "done" and child.harness_done is True
     # STICKS and walks the frontier: the next identical resend advances step 2, not 1.1 again.
-    r2 = await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    r2 = await _resend_twice(ctx, plan)
     assert net.tasks[0].children[0].status == "done"  # the collision no longer undoes it
     assert r2.output.startswith("Advanced step 2")
 
@@ -188,7 +222,18 @@ async def test_the_doom_guard_lets_the_harness_walk_a_resent_plan_to_completion(
     provider = _Scripted([_plan_call(plan), _judge_ok(), _plan_call(plan)])
     session = Session(cwd="/tmp", model="test/model")
     loop = AgentLoop(provider, default_registry(), session, max_iterations=20, settings=Settings())
+    kinds: list[str | None] = []
+    note = loop._note
+
+    def record(*args: object, **kwargs: object) -> None:
+        kinds.append(kwargs.get("kind"))  # type: ignore[arg-type]
+        note(*args, **kwargs)  # type: ignore[arg-type]
+
+    loop._note = record  # type: ignore[method-assign]
     await loop.arun_turn("do a three-step thing")
+    # The ask is not a stall: the walk must not spend the turn's one doom-loop recovery.
+    walked = [k for k in kinds if k in ("plan_autoadvance", "doom_recovery")]
+    assert walked[:3] == ["plan_autoadvance"] * 3, walked
 
     net = session.task_network
     assert net.is_complete()  # the harness walked all three steps done across identical resends

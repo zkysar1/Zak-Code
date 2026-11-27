@@ -68,23 +68,26 @@ async def test_leaving_out_what_did_not_change_is_not_an_edit_in_either_form() -
 
 
 async def test_the_short_form_still_reaches_the_advance() -> None:
-    # The doom-loop rail (ADR-0168 lever N) must fire on the FIRST unchanged resend, and a model
+    # The doom-loop rail (ADR-0168 lever N) must count the FIRST unchanged resend, and a model
     # that switched to the short form has changed nothing. Read literally, the short form would
     # differ from the long one and read "Plan updated", putting the advance off by a call.
     ctx, net = _ctx()
     await UpdatePlanTool().execute({"tasks": LONG}, ctx)
     net.attach_evidence(net.tasks[0], "Write utils/duration.py ✓")
 
+    asked = await UpdatePlanTool().execute({"tasks": SHORT}, ctx)
+    assert asked.data is not None and asked.data["advance_offered"] is True, asked.output
     advanced = await UpdatePlanTool().execute({"tasks": SHORT}, ctx)
 
     assert advanced.output.startswith("Advanced step 1"), advanced.output
     assert net.tasks[0].status == "done" and net.tasks[0].note == "the module imports"
     assert net.tasks[0].outcome.startswith("last action:")  # the harness wrote this one
 
-    # Keep resending: every resend walks the frontier. What the MODEL sent is what a left-out
+    # Keep resending: every second resend walks the frontier. What the MODEL sent is what a left-out
     # field stands for, never an outcome the harness wrote into the step; the map read after
     # the replace held one, and the third resend read as an edit instead of advancing.
     for step in ("2", "3"):
+        await UpdatePlanTool().execute({"tasks": SHORT}, ctx)  # asks once
         again = await UpdatePlanTool().execute({"tasks": SHORT}, ctx)
         assert again.data is not None and again.data.get("advanced_step") == step, again.output
     assert net.is_complete()

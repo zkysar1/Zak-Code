@@ -357,6 +357,8 @@ async def test_the_plan_tool_flags_plan_updated_and_neither_unchanged_receipt() 
     worked = [PLAN[0], dict(PLAN[1], outcome="the script ran clean"), PLAN[2]]
     sent = await UpdatePlanTool().execute({"tasks": worked}, ctx)
     assert sent.data is not None and sent.data[RECEIPT_OF_CHANGE] is True
+    asked = await UpdatePlanTool().execute({"tasks": worked}, ctx)  # asks once, changes nothing
+    assert asked.data is not None and RECEIPT_OF_CHANGE not in asked.data
     advanced = await UpdatePlanTool().execute({"tasks": worked}, ctx)
     assert advanced.data is not None and advanced.data.get("autoadvanced") is True
     assert RECEIPT_OF_CHANGE not in advanced.data

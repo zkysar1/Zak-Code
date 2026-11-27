@@ -397,6 +397,10 @@ class TaskNetwork(BaseModel):
     #: that submission). A field it leaves out of its next one means "as I last sent it", and the
     #: signature above reads the submission that way. Set and cleared with the signature.
     last_author_fields: dict[str, list[str]] = Field(default_factory=dict)
+    #: ADR-0168 amended — the id of the current step whose unchanged resend has been answered once.
+    #: Lever N closes that step only if the plan comes back unchanged a second time while it is
+    #: still current. A changed plan clears it.
+    advance_offered_step: str = ""
 
     # ── authoring / normalization ───────────────────────────────────────────────
 
