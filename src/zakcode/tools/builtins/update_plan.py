@@ -95,8 +95,14 @@ PLAN_SHORT_FORM = (
 #: short form leads (ADR-0388 amendment); the whole plan is for changing the steps.
 _PLANNED_HINT = (
     "Plan updated. Now do the step marked '<- current'. When it is done, close it "
-    f"{PLAN_ADVANCE}; update_plan with {PLAN_ADVANCE_CALL} does the same on its own. "
-    "Send the whole plan only to add, split, drop or reorder steps."
+    f"{PLAN_ADVANCE}. Send the whole plan only to add, split, drop or reorder steps."
+)
+
+#: What the receipt of an ``advance`` adds (ADR-0416 amendment): the model was shown both calls
+#: after every update and kept writing the one it already wrote, a response of its own.
+STEP_DONE_NUDGE = (
+    "A response that only closes a step costs a whole model call: next time, put "
+    '"step_done": "<what it produced>" on the next step\'s first call.'
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
@@ -526,7 +532,9 @@ class UpdatePlanTool(Tool):
             # ADR-0388: the short form names the step it closed. The model never sent the plan,
             # so this line is how it learns WHICH step the advance closed — the one the plan
             # marked current, which need not be the one the model had in mind.
-            output = f"Step {closed.id} done ({clip(closed.title, 60)!r}). {output}"
+            output = (
+                f"Step {closed.id} done ({clip(closed.title, 60)!r}). {output} {STEP_DONE_NUDGE}"
+            )
         if advisories:
             output += "\n\nNotes:\n" + "\n".join(f"- {a}" for a in advisories)
         if deficiencies:

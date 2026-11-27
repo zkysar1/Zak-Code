@@ -43,6 +43,7 @@ from zakcode.tools.builtins.update_plan import (
     PLAN_ADVANCE,
     PLAN_ADVANCE_CALL,
     PLAN_SHORT_FORM,
+    STEP_DONE_NUDGE,
     UpdatePlanTool,
     authors_a_plan,
 )
@@ -302,7 +303,10 @@ def test_the_short_form_is_said_where_the_advance_is(tmp_path: Path) -> None:
 
     # ADR-0388 amendment: the receipt and the plan line lead with the short form as the call
     # itself, before the whole-plan form, and the plan line names the step it would close.
-    assert _PLANNED_HINT.index(PLAN_ADVANCE_CALL) < _PLANNED_HINT.index("whole plan")
+    assert _PLANNED_HINT.index(PLAN_ADVANCE) < _PLANNED_HINT.index("whole plan")
+    # ADR-0416 amendment: the per-update rails show only step_done; the advance call is the
+    # tool description's, for a response with no other call to make.
+    assert PLAN_ADVANCE_CALL not in _PLANNED_HINT
     loop = AgentLoop(_Scripted([_done()]), ToolRegistry(), Session(cwd=str(tmp_path), model="t"))
     loop.session.task_network.tasks = [Task(title="a", status="in_progress"), Task(title="b")]
     loop.session.task_network.normalize()
@@ -312,11 +316,9 @@ def test_the_short_form_is_said_where_the_advance_is(tmp_path: Path) -> None:
     assert reminder is not None
     # ADR-0416: the plan line leads with step_done inside the next call; the short form is the
     # call for a response with no other call to make.
-    lead = (
-        f"When step {current.id} is done, close it {PLAN_ADVANCE}; "
-        f"update_plan with {PLAN_ADVANCE_CALL}"
-    )
+    lead = f"When step {current.id} is done, close it {PLAN_ADVANCE}. Send the whole plan"
     assert lead in reminder.text
+    assert PLAN_ADVANCE_CALL not in reminder.text
     assert reminder.text.index(lead) < reminder.text.index("whole plan")
 
 
@@ -329,6 +331,8 @@ async def test_the_call_the_model_is_shown_is_one_the_tool_takes() -> None:
     assert not res.is_error, res.output
     assert _data(res)["short_form"] == "1"
     assert _statuses(network)["change the port"] == "in_progress"
+    # ADR-0416 amendment: the advance's own receipt says what the step_done argument saves.
+    assert STEP_DONE_NUDGE in res.output
 
 
 # ── in the loop: the advance rides along like the full form ───────────────────────────

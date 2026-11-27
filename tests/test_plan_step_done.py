@@ -33,6 +33,7 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins.update_plan import (
     PLAN_TOOL_NAMES,
     STEP_DONE_ARG,
+    STEP_DONE_NUDGE,
     UpdatePlanTool,
 )
 from zakcode.usage import Usage
@@ -216,6 +217,7 @@ async def test_a_call_with_step_done_closes_the_step_and_credits_the_new_one(
     receipt = _outputs(session, "w2")
     assert receipt.startswith("[plan] Step 1 done ('a'); step 2 ('b') is current.\n")
     assert receipt.endswith("written")
+    assert STEP_DONE_NUDGE not in receipt  # the nudge is the stand-alone advance's alone
     sent = [
         block
         for message in session.messages

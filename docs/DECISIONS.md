@@ -25990,3 +25990,13 @@ offer. A model that never uses `step_done` pays only that. A close inside a call
 nothing recorded on it and for a paged section, and the model learns so from the line. To measure after the
 roll: the plan-only responses' share of model-response time (17.7 percent before), `plan_step_done` uses, and
 `plan_step_done_refused` counts by reason.
+
+Amendment, the same day, after a trial on two worker sessions from 17:47 to 18:25 UTC. On one, plan-only
+responses went from 7 of 73 to 0 of 36, and `step_done` closed a step. The other never used it: twice it sent
+`advance` in a response of its own just before a call that could have carried the close. Its receipt and plan
+line showed both the `step_done` wording and the advance call, and its context held dozens of its own earlier
+advance calls. A small model copies the call it is shown (ADR-0388), so the rails now show only `step_done`:
+the plan line and the receipt after an update no longer name the advance call, which the tool description and
+the system prompt still give for a response with no other call to make. The receipt of an `advance` adds one
+line (`STEP_DONE_NUDGE`): a response that only closes a step costs a whole model call, so put `step_done` on
+the next step's first call.
