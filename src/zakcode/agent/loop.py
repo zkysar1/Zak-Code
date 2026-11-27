@@ -6539,8 +6539,10 @@ class AgentLoop:
 
     def _plan_review_due(self, spent: int) -> bool:
         """The fresh-eyes review fires once per turn, on a completed plan the model authored
-        (an anchor-only board is a record, not a plan), never on a composed /skill turn, and
-        never once an operator-only command has arrived mid-turn (ADR-0265)."""
+        (an anchor-only board is a record, not a plan), never on a composed /skill turn, never
+        once an operator-only command has arrived mid-turn (ADR-0265), and never in a session
+        whose turn-end hook has named its loop (ADR-0419): the review reads an answer against a
+        request, and a loop's pass has no request waiting on it (ADR-0392)."""
         network = self.session.task_network
         return (
             self.settings.plan_review
@@ -6549,6 +6551,7 @@ class AgentLoop:
             and not network.is_anchor_only()
             and self._turn_skill is None
             and not self._turn_operator_command
+            and not str(self.session.loop_skill or "").split()
         )
 
     def _seed_review_step(self, issues: str) -> None:
