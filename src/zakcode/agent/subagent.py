@@ -195,11 +195,14 @@ class SubAgentRunner:
         # every tool result exactly as the parent's does, and without a compactor the child
         # has no recovery when it reaches the window: the overflow ends the child's turn and
         # the parent gets a stop instead of the child's answer. With one, each child loop
-        # compacts its OWN transcript, against its own model's window, the way the parent
-        # loop compacts. The compactor object is shared because it holds only settings and
-        # no per-session state, so one tuning governs the whole delegation tree. ``None``
-        # (compaction off) leaves a child uncompacted, as before. ``summarizer_provider=None``
-        # means each loop asks its own provider for the summary, as the parent loop does.
+        # watches its OWN transcript against its own model's window. At the threshold a child
+        # is asked for its report and ends with it (ADR-0412) rather than being summarized and
+        # reading on; the compactor recovers, once, an overflow the threshold check did not see
+        # coming, so that report has room. The compactor object is shared because it holds only
+        # settings and no per-session state, so one tuning governs the whole delegation tree.
+        # ``None`` (compaction off) leaves a child uncompacted, as before.
+        # ``summarizer_provider=None`` means each loop asks its own provider for the summary, as
+        # the parent loop does.
         self.compactor = compactor
         self.summarizer_provider = summarizer_provider
         # The summarizer's thinking setting (ADR-0366), as the session resolved it: a child asks
@@ -306,6 +309,10 @@ class SubAgentRunner:
             compactor=self.compactor,
             summarizer_provider=self.summarizer_provider,
             summarizer_thinking=self.summarizer_thinking,
+            # ADR-0412: at the compaction threshold a child is asked for its report instead of
+            # being summarized, and its turn ends with that reply. The compactor above stays for
+            # the one overflow recovery that makes room for the report when the size went unseen.
+            report_at_window=True,
             # Write-grounding + the verify-before-finish gate are always-on in AgentLoop, so
             # delegated create-and-run work is grounded/gated automatically — nothing to thread.
         )

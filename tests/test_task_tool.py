@@ -19,7 +19,12 @@ from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.task import ALREADY_RUN, TaskTool
+from zakcode.tools.builtins.task import (
+    ALREADY_RUN,
+    CONTEXT_FULL_NO_REPORT_NOTE,
+    CONTEXT_FULL_NOTE,
+    TaskTool,
+)
 from zakcode.usage import Usage
 
 
@@ -280,6 +285,51 @@ async def test_a_batch_with_a_stopped_subtask_runs_again(tmp_path: Path) -> None
     again = await TaskTool().execute({"tasks": [{"prompt": "a"}]}, ctx)
     assert len(spawner.calls) == 2
     assert "(stopped: max_iterations)" in again.output
+
+
+async def test_a_subtask_that_reported_at_a_full_context_ran_to_its_end(tmp_path: Path) -> None:
+    """ADR-0412: a sub-agent whose turn ended with the report it gave when its context filled
+    ran to its end. The parent is told so, and the same batch again would fill the same window
+    at the same place, so it gets the pointer rather than a second run."""
+
+    class _FullSpawner(_FakeSpawner):
+        async def spawn(self, *, type_name: str, prompt: str) -> SubAgentResult:
+            self.calls.append((type_name, prompt))
+            return SubAgentResult(name=type_name, summary="report", stop_reason="context_full")
+
+    spawner = _FullSpawner()
+    ctx = _ctx_seen(tmp_path, spawner)
+    first = await TaskTool().execute({"tasks": [{"prompt": "a"}]}, ctx)
+    again = await TaskTool().execute({"tasks": [{"prompt": "a"}]}, ctx)
+    assert first.output == (
+        f"[task 1] general-purpose (stopped: context_full; {CONTEXT_FULL_NOTE}):\nreport"
+    )
+    assert len(spawner.calls) == 1
+    assert again.output.startswith("[already run this turn] ")
+
+
+async def test_a_subtask_that_gave_no_report_runs_again(tmp_path: Path) -> None:
+    """ADR-0412: a sub-agent whose context filled and that gave no report when asked twice did
+    not run to its end. The parent is told the text is not a report, and the same batch again is
+    run, not pointed at what it returned."""
+
+    class _NoReportSpawner(_FakeSpawner):
+        async def spawn(self, *, type_name: str, prompt: str) -> SubAgentResult:
+            self.calls.append((type_name, prompt))
+            return SubAgentResult(
+                name=type_name, summary="last read", stop_reason="context_full_no_report"
+            )
+
+    spawner = _NoReportSpawner()
+    ctx = _ctx_seen(tmp_path, spawner)
+    first = await TaskTool().execute({"tasks": [{"prompt": "a"}]}, ctx)
+    again = await TaskTool().execute({"tasks": [{"prompt": "a"}]}, ctx)
+    assert first.output == (
+        "[task 1] general-purpose "
+        f"(stopped: context_full_no_report; {CONTEXT_FULL_NO_REPORT_NOTE}):\nlast read"
+    )
+    assert len(spawner.calls) == 2
+    assert not again.output.startswith("[already run")
 
 
 async def test_a_rerun_that_fails_leaves_the_next_repeat_to_run(tmp_path: Path) -> None:

@@ -72,7 +72,7 @@ class _Shell(Tool):
         return ToolResult.ok(output=f"{page}: {word} {word[::-1]}")
 
 
-def _loop(provider: Provider, tmp_path: Path) -> AgentLoop:
+def _loop(provider: Provider, tmp_path: Path, *, report_at_window: bool = False) -> AgentLoop:
     registry = ToolRegistry()
     registry.register(_Shell())
     return AgentLoop(
@@ -82,6 +82,7 @@ def _loop(provider: Provider, tmp_path: Path) -> AgentLoop:
         workspace_root=tmp_path,
         max_iterations=15,
         compactor=Compactor(CompactionConfig()),
+        report_at_window=report_at_window,
     )
 
 
@@ -205,6 +206,17 @@ def test_past_the_threshold_the_compaction_comes_first(tmp_path: Path) -> None:
     provider.tokens = threshold
     _read_pages(loop, 8)
     assert loop._summary_ahead_rail() is None
+
+
+def test_a_sub_agent_is_not_told_of_a_summary_it_will_not_get(tmp_path: Path) -> None:
+    # A sub-agent is asked for its report at the threshold instead of being summarized
+    # (ADR-0412): the stretch that tells a parent loop a summary is near says nothing to it.
+    for report_at_window, told in ((False, True), (True, False)):
+        provider = _Provider()
+        loop = _loop(provider, tmp_path, report_at_window=report_at_window)
+        provider.tokens = _band(loop)[1]
+        _read_pages(loop, 8)
+        assert (loop._summary_ahead_rail() is not None) is told
 
 
 def test_a_summary_starts_a_new_stretch(tmp_path: Path) -> None:
