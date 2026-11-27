@@ -172,6 +172,91 @@ def test_render_index_summary_is_capped(tmp_path: Path) -> None:
     assert "d" * _INDEX_SUMMARY_CHARS not in index
 
 
+def test_render_index_prints_rule_paths_relative_to_the_workspace_root(tmp_path: Path) -> None:
+    _write(tmp_path / ".claude" / "rules" / "style.md", "---\ndescription: tabs\n---\nBODY")
+    registry, _ = discover_rules(tmp_path)
+    index = registry.render_index(relative_to=tmp_path)
+    shown = Path(".claude") / "rules" / "style.md"
+    assert f"- style: tabs [{shown}]" in index  # the root's text is not repeated on the line
+    assert str(tmp_path) not in index
+    # The header says what the shorter path is relative to, so the model passes it as printed.
+    assert "relative to the workspace root" in index
+
+
+def test_render_index_keeps_the_absolute_path_of_a_rule_outside_the_workspace(
+    tmp_path: Path,
+) -> None:
+    from zakcode.rules import Rule
+
+    # A sibling directory whose name begins with the workspace's name shares the root's text as a
+    # string prefix without lying inside it.
+    workspace = tmp_path / "ws"
+    outside = tmp_path / "ws2" / "outside.md"
+    inside = workspace / ".claude" / "rules" / "inside.md"
+    registry = RuleRegistry()
+    registry.add(Rule("outside", "body", outside, description="d"))
+    registry.add(Rule("inside", "body", inside, description="d"))
+    index = registry.render_index(relative_to=workspace)
+    assert f"- outside: d [{outside}]" in index
+    assert f"- inside: d [{Path('.claude') / 'rules' / 'inside.md'}]" in index
+
+
+def test_render_index_without_a_root_prints_absolute_paths_as_before(tmp_path: Path) -> None:
+    _write(tmp_path / ".claude" / "rules" / "style.md", "---\ndescription: tabs\n---\nBODY")
+    registry, _ = discover_rules(tmp_path)
+    index = registry.render_index()
+    assert f"- style: tabs [{tmp_path / '.claude' / 'rules' / 'style.md'}]" in index
+
+    def header(text: str) -> str:
+        return next(block for block in text.split("\n\n") if block.startswith("Project rules"))
+
+    # The default header is the relative-mode header with only the path note swapped back.
+    swapped = header(registry.render_index(relative_to=tmp_path)).replace(
+        "path, relative to the workspace root when the rule lies inside it, is shown too, ",
+        "path is shown too, ",
+    )
+    assert header(index) == swapped
+
+
+def test_relative_paths_keep_index_lines_that_absolute_paths_overflow_the_budget() -> None:
+    from zakcode.rules import Rule
+
+    root = Path("/") / ("w" * 90)  # a deep workspace root, as a served home has
+    registry = RuleRegistry()
+    for i in range(150):
+        name = f"rule-{i:03d}"
+        registry.add(
+            Rule(name, "body", root / ".claude" / "rules" / f"{name}.md", description="d" * 140)
+        )
+    absolute = registry.render_index()
+    relative = registry.render_index(relative_to=root)
+    assert "omitted" in absolute  # the premise: this corpus overflows the budget by absolute path
+    assert absolute.count("- rule-") < 150
+    assert "omitted" not in relative
+    assert relative.count("- rule-") == 150  # every rule is still named
+    assert len(relative) <= MAX_RULES_TOTAL_CHARS
+
+
+def test_agent_lean_rules_index_prints_workspace_relative_paths(tmp_path: Path) -> None:
+    from zakcode import Agent
+    from zakcode.evals.harness import ScriptedProvider, reply
+
+    rule = tmp_path / ".claude" / "rules" / "team.md"
+    _write(rule, "---\ndescription: TEAM_RULE_SUMMARY\n---\nBODY")
+    agent = Agent(
+        provider=ScriptedProvider(script=[reply("ok")]),
+        enable_rules=True,
+        lean_rules=True,
+        default_model="scripted/test",
+        context_window=8192,
+        workspace_root=str(tmp_path),
+    )
+    prompt = agent.loop.prompt_builder.build(agent.settings)
+    stable = prompt[: prompt.index(DYNAMIC_BOUNDARY)]
+    assert f"[{Path('.claude') / 'rules' / 'team.md'}]" in stable
+    assert str(rule) not in stable  # the absolute path is not what the model is shown
+
+
 def test_render_index_bounded_with_many_rules() -> None:
     from zakcode.rules import Rule
 
