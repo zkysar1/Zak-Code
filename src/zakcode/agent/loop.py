@@ -4356,12 +4356,18 @@ class AgentLoop:
         needs no reset. ``read_rule`` closes its text with a line naming the rule, so a contained
         copy is the rule as it reads now, with or without a note after it.
         """
+        return self._tool_result_holds(text) or any(
+            is_carried_rules(message) and text in message.text for message in self.session.messages
+        )
+
+    def _tool_result_holds(self, text: str) -> bool:
+        """True if a tool result in the conversation contains ``text``, the carried rules message
+        not counted (ADR-0417): ``read_rule`` sends a rule's text once when only that message
+        holds it."""
         return any(
             isinstance(block, ToolResultBlock) and text in block.output
             for message in self.session.messages
             for block in message.blocks
-        ) or any(
-            is_carried_rules(message) and text in message.text for message in self.session.messages
         )
 
     def _note_rule_read(self, name: str) -> None:
@@ -9271,6 +9277,7 @@ class AgentLoop:
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
+            in_tool_results=self._tool_result_holds,  # read_rule, carried text (ADR-0417)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
             in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
@@ -11000,6 +11007,7 @@ class AgentLoop:
             skill_pages_for=self._skill_pages_for_delivery,  # whole when it fits (ADR-0192)
             rule_registry=self._rule_registry,  # read_rule's source (None = rules disabled)
             in_context=self._tool_output_in_context,  # read_rule's repeat check (ADR-0372)
+            in_tool_results=self._tool_result_holds,  # read_rule, carried text (ADR-0417)
             last_tool_output=self._last_tool_output,  # read_rule: after its pointer (ADR-0381)
             in_prompt=self._rules_in_prompt,  # read_rule: a rule pinned whole there (ADR-0387)
             note_rule_read=self._note_rule_read,  # read_rule's ask count, for the carry (ADR-0386)
