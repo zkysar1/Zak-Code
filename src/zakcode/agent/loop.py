@@ -253,6 +253,7 @@ from zakcode.tool_names import canonical_tool_name
 from zakcode.tools.base import (
     RULE_POINTER,
     STDOUT_CHARS,
+    WAITED_ON_RUNNING,
     ConcurrencyClass,
     Sampler,
     SkillResolver,
@@ -9254,6 +9255,7 @@ class AgentLoop:
         # identical resend is deterministic PROGRESS, not a stall, so the guard below does not count
         # it. Set only by an advance that actually fired, which needs a worked-on step (ADR-0202).
         last_autoadvanced = False
+        last_waited = False  # ADR-0410: the last batch was waits on running tasks
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
 
         ctx = ToolContext(
@@ -10509,6 +10511,13 @@ class AgentLoop:
                     # path that sets last_autoadvanced, so an ordinary repeat still counts.)
                     repeat_count = 1
                     last_autoadvanced = False
+                elif last_waited:
+                    # The previous identical batch was waits that each ran a whole timeout on a
+                    # background task still running (ADR-0410): time passed and nothing is known
+                    # yet, so the resend is the wait going on, the way Bash's result says to wait
+                    # (ADR-0236), not a stall. A task past six hours stops being flagged.
+                    repeat_count = 1
+                    last_waited = False
                 else:
                     repeat_count += 1
             else:
@@ -10669,6 +10678,11 @@ class AgentLoop:
             # ADR-0168 lever N: remember if the harness advanced the plan on this batch, so an
             # identical resend next iteration reads as progress (not a stall) at the guard.
             last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
+            # ADR-0410: remember a batch made only of whole waits on running tasks, so the same
+            # wait sent again reads as the wait going on (not a stall) at the guard.
+            last_waited = bool(result_blocks) and all(
+                not b.is_error and (b.data or {}).get(WAITED_ON_RUNNING) for b in result_blocks
+            )
             self._harvest_skill_invocations(result.tool_calls, result_blocks, skills_invoked)
             # If the whole batch was denied/vetoed, no work happened — refund the unit.
             if self._batch_did_no_work(result_blocks):
@@ -10982,6 +10996,7 @@ class AgentLoop:
         last_signature: tuple[tuple[str, str], ...] | None = None
         repeat_count = 0
         last_autoadvanced = False  # ADR-0168 lever N: see the buffered path
+        last_waited = False  # ADR-0410: see the buffered path
         doom_recoveries = 0  # confidently-wrong recovery attempts spent this turn
         last_plan_render: str | None = None  # last plan emitted, so a task_update fires on change
 
@@ -12608,6 +12623,10 @@ class AgentLoop:
                         # stall; don't count it (ADR-0168 lever N; same rule as the buffered path).
                         repeat_count = 1
                         last_autoadvanced = False
+                    elif last_waited:
+                        # A wait going on, not a stall (ADR-0410; same rule as the buffered path).
+                        repeat_count = 1
+                        last_waited = False
                     else:
                         repeat_count += 1
                 else:
@@ -12792,6 +12811,10 @@ class AgentLoop:
                     self._refund_iteration()
                 # ADR-0168 lever N: remember a harness plan advance for the next guard check.
                 last_autoadvanced = any((b.data or {}).get("autoadvanced") for b in result_blocks)
+                # ADR-0410: a batch of whole waits on running tasks, for the next guard check.
+                last_waited = bool(result_blocks) and all(
+                    not b.is_error and (b.data or {}).get(WAITED_ON_RUNNING) for b in result_blocks
+                )
 
                 self.session.add_message(Message.tool_results(result_blocks))
                 self._persist()

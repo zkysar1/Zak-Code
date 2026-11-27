@@ -405,6 +405,16 @@ RECEIPT_OF_CHANGE = "receipt_of_change"
 #: as a plan-only run is (ADR-0364). A flag, not a search of the text, for ADR-0203's reason.
 RULE_POINTER = "rule_pointer"
 
+#: A key ``TaskOutput`` sets to ``True`` in :attr:`ToolResult.data` when the call WAITED its whole
+#: timeout, at least a minute, on a background task that is still running and younger than six
+#: hours (ADR-0410). Such an answer reads "status: running" in the same words each time, and it is
+#: not a re-measured result: time passed and nothing is known yet. Bash's own result tells a model
+#: to wait that way and to call again while the task runs (ADR-0236), so neither the exact-repeat
+#: guard nor the stuck ladder's repeated-outcome signal counts a flagged answer. A shorter wait,
+#: a ``block=false`` look, and any answer about a task that exited stay ordinary, counted results.
+#: A flag, not a search of the text, for ADR-0203's reason.
+WAITED_ON_RUNNING = "waited_on_running"
+
 #: A key a tool sets in :attr:`ToolResult.data` to the number of leading characters of its
 #: ``output`` that are the COMMAND'S OWN output, when it closes that output with words of its
 #: own (the shell tool's ``[exit code: N]`` line). The PostToolUse wire cuts Claude Code's

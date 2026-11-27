@@ -1051,7 +1051,9 @@ STILL_RUNNING = (
 
 class _TaskOutput(Tool):
     """Stands in for the tool that waits on a background task that stays silent: after its whole
-    timeout it answers, in the same words each time, that the task is still running."""
+    timeout it answers, in the same words each time, that the task is still running. It sets no
+    ADR-0410 mark, so each answer reads as the real tool's does after a wait shorter than a minute
+    or on a task six hours old; ``tests/test_wait_on_running_task.py`` pins the marked waits."""
 
     spec = ToolSpec(
         name="TaskOutput",
@@ -1098,7 +1100,8 @@ def test_waits_that_come_back_the_same_are_refused_and_end_the_turn_the_known_co
 ) -> None:
     # The nudge's first way, followed for a task that stays silent past its timeouts: the wait
     # answers in the same words each time, so the exact-repeat guard refuses the third, lets two
-    # more run and ends the turn as `doom_loop` at the sixth. The cost is named in the ADR.
+    # more run and ends the turn as `doom_loop` at the sixth. The cost is named in the ADR, and
+    # since ADR-0410 only an unmarked wait pays it: under a minute, or on a task six hours old.
     stop_reason, waits = _waits_on_a_silent_task(tmp_path, streamed=streamed, timeout_changes=False)
     assert stop_reason == "doom_loop"
     assert [wait == STILL_RUNNING for wait in waits] == [True, True, False, True, True, False]
@@ -1111,7 +1114,7 @@ def test_waits_with_a_new_timeout_each_time_are_read_by_the_ladder_the_known_cos
     tmp_path: Path, streamed: bool
 ) -> None:
     # A new timeout is a new call, so the exact-repeat guard refuses none of the six waits, and
-    # the ladder, which reads the same result, ends the turn as `stuck`.
+    # the ladder, which reads the same result, ends the turn as `stuck` (unmarked, ADR-0410).
     stop_reason, waits = _waits_on_a_silent_task(tmp_path, streamed=streamed, timeout_changes=True)
     assert stop_reason == "stuck"
     assert waits == [STILL_RUNNING] * 6
