@@ -272,7 +272,6 @@ from zakcode.tools.base import (
 from zakcode.tools.builtins.read_rule import rule_text, would_point
 from zakcode.tools.builtins.update_plan import (
     PLAN_ADVANCE,
-    PLAN_ADVANCE_CALL,
     PLAN_TOOL_NAMES,
     STEP_DONE_ARG,
     authors_a_plan,
@@ -5271,8 +5270,7 @@ class AgentLoop:
             if just_updated
             else (
                 f"[plan] Harness-tracked plan for the current goal. When {step} is done, close "
-                f"it {PLAN_ADVANCE}; update_plan with {PLAN_ADVANCE_CALL} does the same on its "
-                "own. Send the whole plan only to add, split, drop or "
+                f"it {PLAN_ADVANCE}. Send the whole plan only to add, split, drop or "
                 "reorder steps; decompose any step that turns out to be several actions.\n\n"
             )
         )
