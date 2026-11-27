@@ -341,6 +341,11 @@ class ToolContext(BaseModel):
     #: nothing has to be reset when a compaction or an elision takes the body away. ``None`` (a
     #: bare context) always delivers.
     in_context: Callable[[str], bool] | None = None
+    #: True when a tool result in the conversation contains this text, the rules a compaction
+    #: carried not counted (ADR-0417). ``in_context`` also counts that carried system message; the
+    #: ``read_rule`` tool sends a rule's text on the first ask when only the carried message holds
+    #: it, and a pointer once a tool result does. ``None`` falls back to ``in_context``.
+    in_tool_results: Callable[[str], bool] | None = None
     #: The output of the conversation's most recent tool result, or ``None`` (ADR-0381). The
     #: ``read_rule`` tool answers a repeat that comes right after its own pointer with a firmer
     #: line that says where the text is (ADR-0387). ``None`` (a bare context) never treats a

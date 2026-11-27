@@ -211,7 +211,11 @@ def _pointer_template(
     # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); one
     # right after this rule's own pointer gets the firmer line that says where the text is, not
     # the text again (ADR-0387). The body comes back only when asked for on purpose.
-    if in_context is not None and in_context(text):
+    # The text a compaction carried sits in a system message, not in a tool result, so the first
+    # ask after it gets the text and later ones the pointer (ADR-0417). A context without the
+    # narrower check keeps the ADR-0372 behaviour.
+    held = getattr(ctx, "in_tool_results", None) or in_context
+    if held is not None and held(text):
         return JUST_ASKED if _right_after_its_pointer(ctx, name) else ALREADY_READ
     return None
 

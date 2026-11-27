@@ -30,7 +30,7 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import Rule, RuleRegistry
 from zakcode.session.store import Session, TurnEnd
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.read_rule import JUST_ASKED, ReadRuleTool, rule_text
+from zakcode.tools.builtins.read_rule import ReadRuleTool, rule_text
 from zakcode.usage import Usage
 
 
@@ -172,20 +172,20 @@ async def test_a_compaction_carries_the_rules_the_session_read(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_an_ask_for_a_carried_rule_gets_the_pointer_then_the_firmer_line(
+async def test_an_ask_for_a_carried_rule_gets_the_text_then_the_pointer(
     tmp_path: Path, streaming: bool
 ) -> None:
-    """The text is in the conversation, so ADR-0379's pointer answers; an ask right after it gets
-    the line that says where the text is (ADR-0387)."""
-    loop = await _read_then_compact(tmp_path, "alpha-rule")
+    """Only the carried message holds the text, so the first ask sends it as a tool result
+    (ADR-0417); the ask after it gets the pointer (ADR-0379)."""
+    loop = await _read_then_compact(tmp_path, "beta-rule")
     provider = loop.provider
     assert isinstance(provider, _Scripted)
-    provider.results = [_read("r8", "alpha-rule"), _read("r9", "alpha-rule"), _DONE]
+    provider.results = [_read("r8", "beta-rule"), _read("r9", "beta-rule"), _DONE]
     provider.seen = []
     await _turn(loop, "again", streaming=streaming)
-    pointer, again = _outputs(loop)
-    assert pointer.startswith("[already read; ask 1] Rule 'alpha-rule' ")
-    assert again == JUST_ASKED.format(n=2, name="alpha-rule", step="")
+    text, pointer = _outputs(loop)
+    assert text == _text("beta-rule")
+    assert pointer.startswith("[already read; ask 1] Rule 'beta-rule' ")
 
 
 @pytest.mark.asyncio
