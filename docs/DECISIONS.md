@@ -25924,3 +25924,69 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0416: a plan step closes inside the next call (`step_done`)
+
+Status: accepted. 2026-11-27. Builds on ADR-0237 (the pairing request), ADR-0371 (the plan line) and
+ADR-0388 (`advance`).
+
+Context. ADR-0237 asked the model to send the plan update in the same response as the next step's first
+call, and ADR-0388 made the update short. Measured 2026-11-27, 14:35 to 17:10 UTC, from each session's
+transcript, on eleven unattended worker sessions sharing one local 27B model behind one inference pod:
+
+- 811 model responses. 109 of them (13.4 percent) called update_plan and nothing else.
+- Those 109 took 14,425 of the 81,457 seconds of model-response time: 17.7 percent. On some sessions their
+  median latency was several times a work call's (226 s against 32 s; 86 s against 11 s).
+- 61 of the 109 used `advance`; 47 resent the whole plan.
+- Not one update_plan call shared a response with another call (0 of 108). Responses with two or more calls
+  of any kind are rare: 0 to 33 percent per session.
+
+The model makes one call per response, so asking it to pair two calls does not work. The close has to ride
+inside a call it was going to make anyway.
+
+Decision.
+
+1. Any tool call except the plan tools may carry an optional string argument `step_done`: what the finished
+   step produced. The plan tools are `update_plan`, `plan`, `todo`, `plan_recall` and `plan_history`
+   (`PLAN_TOOL_NAMES`, defined once in the plan tool and shared with the loop).
+2. The wire schema declares it. When `update_plan` is among the tools offered, `ToolRegistry.definitions()`
+   adds one optional `step_done` property, with a one-sentence description, to every other tool's
+   parameters. It works on deep copies, so no `ToolSpec` changes, and the output is identical on every call,
+   so the cached prompt prefix does not move (ADR-0268). A backend that builds its tool-call grammar from the
+   schema can only emit what the schema declares, so the property has to be there.
+3. The loop applies it first. In `_execute_tool_call`, before anything else about the call, the harness closes
+   the plan's current step with that outcome and starts the next through `update_plan`'s `advance` (ADR-0388),
+   the one writer of the plan's statuses. It then strips `step_done` from a copy of the call and runs the call
+   as usual. The model's own call is left as it sent it, so the transcript keeps the argument. The evidence
+   owner is read after the close, so the call's evidence is credited to the step it starts (ADR-0110,
+   ADR-0237).
+4. One line goes ahead of the call's output: `[plan] Step 3 done ('...'); step 4 ('...') is current.` The same
+   path serves the buffered batch, the streamed path and harness-made calls.
+5. Four cases are not applied, and the call still runs, with `[plan] step_done not applied: <reason>`:
+   - no plan of the model's (empty, or only the request anchor);
+   - the current step has no evidence and no outcome (ADR-0168 lever N's trigger), so the argument cannot
+     invent progress. A step that a `step_done` close just started counts only its own evidence: when every
+     call of a parallel batch carries the argument, the first closes the step and the rest are refused until
+     a call's work lands on the new one;
+   - the current step is a section of a paged skill (ADR-0067): the next section arrives only in the reply to
+     `update_plan`, so the model is told to call it alone;
+   - an empty or whitespace value is stripped and ignored, with no line.
+   The traces carry `kind="plan_step_done"` for a close and `kind="plan_step_done_refused"` for the
+   not-applied cases.
+6. The wording leads with `step_done` on every surface that says how the plan moves: `PLAN_ADVANCE` (tool
+   description, system prompt, the plan line the loop re-shows) and the receipt's rail. `advance` and the
+   whole plan stay valid: a re-plan still needs `update_plan`, a paged section still needs it alone, and
+   `PLAN_SHORT_FORM` now says it is for a response with no other call to make.
+
+Alternatives rejected.
+
+- Keep asking for the pairing in one response. Measured not to happen: 0 of 108.
+- Close the step automatically, with no word from the model. The harness cannot tell that a step is done; it
+  would invent progress. The close stays the model's statement, now made inside a call.
+- A harness-side tool that closes the step. It is the same extra response.
+
+Consequences. Each declared tool schema grows by one short optional property whenever `update_plan` is on
+offer. A model that never uses `step_done` pays only that. A close inside a call is refused for a step with
+nothing recorded on it and for a paged section, and the model learns so from the line. To measure after the
+roll: the plan-only responses' share of model-response time (17.7 percent before), `plan_step_done` uses, and
+`plan_step_done_refused` counts by reason.

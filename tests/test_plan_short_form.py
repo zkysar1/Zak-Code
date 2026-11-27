@@ -40,6 +40,7 @@ from zakcode.tools.builtins.update_plan import (
     _COMPLETE_HINT,
     _PLANNED_HINT,
     _UNCHANGED_HINT,
+    PLAN_ADVANCE,
     PLAN_ADVANCE_CALL,
     PLAN_SHORT_FORM,
     UpdatePlanTool,
@@ -309,7 +310,12 @@ def test_the_short_form_is_said_where_the_advance_is(tmp_path: Path) -> None:
     assert current is not None
     reminder = loop._plan_reminder()
     assert reminder is not None
-    lead = f"When step {current.id} is done, call update_plan with {PLAN_ADVANCE_CALL}"
+    # ADR-0416: the plan line leads with step_done inside the next call; the short form is the
+    # call for a response with no other call to make.
+    lead = (
+        f"When step {current.id} is done, close it {PLAN_ADVANCE}; "
+        f"update_plan with {PLAN_ADVANCE_CALL}"
+    )
     assert lead in reminder.text
     assert reminder.text.index(lead) < reminder.text.index("whole plan")
 

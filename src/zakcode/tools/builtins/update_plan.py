@@ -36,21 +36,39 @@ _MAX_DEPTH = 3
 
 _STATUS_VALUES = ["pending", "in_progress", "done", "blocked", "cancelled"]
 
-#: How the plan advances (ADR-0237): in the response that starts the next step, never in one of
-#: its own. Every model call is a round trip, and on a slow backend a response that only
-#: updates the plan is the most expensive kind: measured 2026-09-23 on the 131k P40 pod, it took
-#: 17.8 and 22.3 percent of the two worker sessions' model time (median 104 and 146 seconds,
-#: against 38 and 35 for a work call), and on one session 43 of 53 such calls in a day were
-#: followed by a response that only ran Bash, which they could have ridden with. The plan goes
-#: FIRST in the batch because a call's evidence belongs to the step current when it runs
-#: (ADR-0110), and the batch runs in order (update_plan is NEVER_PARALLEL). One sentence, said by
-#: the tool description, this tool's receipt, the system prompt and the plan the loop re-shows
-#: each call, so the model reads the same rule everywhere it looks. A paged skill's section is
-#: the exception, and its page says so: the next section arrives only in the reply to the update.
+#: How the plan advances (ADR-0237, ADR-0416): inside the next step's first call, never in a
+#: response of its own. Every model call is a round trip, and on a slow backend a response that
+#: only updates the plan is the most expensive kind: measured 2026-09-23 on the 131k P40 pod, it
+#: took 17.8 and 22.3 percent of the two worker sessions' model time (median 104 and 146 seconds,
+#: against 38 and 35 for a work call). ADR-0237 asked the model to pair ``update_plan`` with the
+#: work in one response; measured 2026-11-27 on eleven worker sessions of one 27B model, not one
+#: of 108 update_plan calls shared a response with another call. So the close rides INSIDE the
+#: call (ADR-0416): any tool but the plan's takes an optional ``step_done``, which the harness
+#: applies before the call runs (the call's evidence is credited to the step it starts, ADR-0110).
+#: One sentence, said by the tool description, this tool's receipt, the system prompt and the plan
+#: the loop re-shows each call, so the model reads the same rule everywhere it looks. A paged
+#: skill's section is the exception, and its page says so: the next section arrives only in the
+#: reply to an update_plan call.
 PLAN_ADVANCE = (
-    "in the same response as the next step's first call, update_plan first: a response that "
-    "only updates the plan costs a whole model call"
+    'by adding "step_done": "<what it produced>" to the next step\'s first call, on any tool: '
+    "a response that only updates the plan costs a whole model call"
 )
+
+#: The tools that edit or read the plan itself (ADR-0110 / ADR-0111): their calls are never a
+#: step's evidence, and (ADR-0416) they never take ``step_done``.
+PLAN_TOOL_NAMES = frozenset({"update_plan", "plan", "todo", "plan_recall", "plan_history"})
+
+#: The argument that closes the plan's current step inside another call (ADR-0416), and the
+#: schema property that declares it. A backend builds its tool-call grammar from the schema, so
+#: the property must be declared on every tool that may carry it or the model cannot emit it.
+STEP_DONE_ARG = "step_done"
+STEP_DONE_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "Optional. Closes the plan's current step before this call runs and starts the next: "
+        "what the finished step produced."
+    ),
+}
 
 #: The short form (ADR-0388): close the current step and start the next without resending the
 #: plan. Measured 2026-11-17 on ten 27B worker sessions behind one pod: the
@@ -69,16 +87,16 @@ PLAN_ADVANCE = (
 #: writes.
 PLAN_ADVANCE_CALL = '{"advance": {"outcome": "<what the step produced>"}}'
 PLAN_SHORT_FORM = (
-    f"To close the current step and start the next, call update_plan with {PLAN_ADVANCE_CALL} "
-    "instead of the whole plan."
+    "To close the current step with no other call to make, call update_plan with "
+    f"{PLAN_ADVANCE_CALL} instead of the whole plan."
 )
 
 #: Next-step rail: after planning, the model should act on the current step, not re-plan. The
 #: short form leads (ADR-0388 amendment); the whole plan is for changing the steps.
 _PLANNED_HINT = (
-    "Plan updated. Now do the step marked '<- current'. When it is done, close it with "
-    f"update_plan {PLAN_ADVANCE_CALL} {PLAN_ADVANCE}. Send the whole plan only to add, split, "
-    "drop or reorder steps."
+    "Plan updated. Now do the step marked '<- current'. When it is done, close it "
+    f"{PLAN_ADVANCE}; update_plan with {PLAN_ADVANCE_CALL} does the same on its own. "
+    "Send the whole plan only to add, split, drop or reorder steps."
 )
 
 #: Verdict rail (ADR-0108): the call that closes the LAST step is the one moment the harness
