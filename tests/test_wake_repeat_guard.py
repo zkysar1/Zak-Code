@@ -35,7 +35,13 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ProviderEr
 from zakcode.session.store import Session
 from zakcode.tools import default_registry
 from zakcode.usage import Usage
-from zakcode.wakeup import LOOP_SENTINEL, WakeupSlot, provider_hold_delay, turn_fingerprint
+from zakcode.wakeup import (
+    DEFAULT_DELAY_SECONDS,
+    LOOP_SENTINEL,
+    WakeupSlot,
+    provider_hold_delay,
+    turn_fingerprint,
+)
 
 MODEL = "fake/scripted"
 #: The verdict one agent repeated, shortened. Any fixed string does; that it is FIXED is the point.
@@ -435,6 +441,61 @@ def test_the_door_puts_an_unfired_sentinel_back_and_lifts_the_turn_mark() -> Non
 
 def test_the_provider_hold_schedule_doubles_to_the_clamp() -> None:
     assert [provider_hold_delay(n) for n in range(1, 7)] == [600, 1200, 2400, 3600, 3600, 3600]
+
+
+# ── ADR-0414: the net the REPL leaves behind a degenerated end ──────────────────────
+
+
+def _degenerate() -> LLMResult:
+    """A completion that collapsed into one line repeated: discarded, retried, then the turn
+    ends ``degenerated`` (ADR-0018)."""
+    line = "I will now provide the information you requested.\n\n"
+    return LLMResult(text="My apologies!\n\n" + line * 22, tool_calls=[], usage=Usage(total_tokens=1))
+
+
+def test_the_collapse_net_is_the_stall_net_and_keeps_a_held_wake_up(tmp_path: Path) -> None:
+    loop = _loop(_Scripted([_say(OTHER)]), tmp_path)
+    assert loop.arm_collapse_net() is True
+    held = loop.wakeup_slot.pending()
+    assert held is not None and held.prompt == LOOP_SENTINEL
+    assert held.delay_seconds == DEFAULT_DELAY_SECONDS
+    # A wake-up the framework armed itself outranks it, as it does the veto_stall net.
+    loop.wakeup_slot.arm("/poll the queue", 120)
+    assert loop.arm_collapse_net() is False
+    assert _held(loop) == "/poll the queue"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_no_collapse_net_behind_a_wake_up_turn_that_degenerated_as_the_last_did(
+    tmp_path: Path, streamed: bool
+) -> None:
+    loop = _loop(_Scripted([_degenerate()]), tmp_path)
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+    # The first such turn only records how it ended, so the net goes behind it.
+    assert loop.arm_collapse_net() is True
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+    # The second ended the same way: the pair the repeat guard stops, so no new net.
+    assert loop.arm_collapse_net() is False
+    assert _held(loop) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_a_wake_up_turn_that_degenerated_after_a_different_one_gets_the_net(
+    tmp_path: Path, streamed: bool
+) -> None:
+    # The positive control for the test above: the same second turn, after a first wake-up
+    # turn that ended another way, is no repeat, and the net goes behind it.
+    loop = _loop(_Scripted([_say(OTHER), _degenerate()]), tmp_path)
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "completed"
+    _fire_sentinel(loop)
+    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+    assert loop.arm_collapse_net() is True
+    assert _held(loop) == LOOP_SENTINEL
 
 
 def _unused(message: Message) -> None:  # pragma: no cover - import anchor for the type only

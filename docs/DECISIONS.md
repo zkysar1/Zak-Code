@@ -25856,3 +25856,47 @@ Decision.
 Consequences. A producer that sent a map keyed by speaker would now be narrated as silence. No such
 producer was found: the slice's writer, the Environment Server's communication perception, sends the
 window above.
+
+## ADR-0414: a degenerated end that nothing will continue leaves the loop's stall net behind it
+
+Status: accepted. 2026-11-27. Extends ADR-0090's continuation with ADR-0187's stall net.
+
+Context. `degenerated` is the one collapse no turn-end hook may veto (ADR-0018), so a framework
+whose Stop hook keeps a perpetual loop alive never hears of it. The REPL continues an unattended
+session once after a collapse with plan steps open (ADR-0090). A second collapse in a row, or a
+collapse with no open plan, ended at the prompt "for the operator to see", and nothing else brought
+the session back: no wake-up was held, because the model that degenerated had not armed one.
+Measured 2026-11-27 on one worker session, twice in one night: a degenerated end, its continuation,
+a second degenerated end, and then the session sat at its prompt for 72 and then 118 minutes, until
+an operator's note arrived.
+
+Decision.
+- When an unattended session's turn ends `degenerated` and the REPL will not continue it (its one
+  continuation is spent, or there is no open plan), the REPL asks the loop for its stall net,
+  `AgentLoop.arm_collapse_net`: the sentinel a `veto_stall` leaves (ADR-0187), due in
+  `DEFAULT_DELAY_SECONDS` (600). When it fires, the loop's skill re-enters on a compacted context:
+  the sentinel turn compacts after a `degenerated` end as it does after a `veto_stall`.
+- No net goes behind a wake-up turn that ended exactly as the last one did. The repeat guard
+  (ADR-0216) leaves its verdict on the loop and the collapse net reads it, so a session that
+  degenerates on every re-entry is tried twice more, ten minutes apart, and then left at its prompt
+  as before.
+- A held wake-up is kept: the framework's own net, or a hook's, outranks this one, as it outranks
+  the `veto_stall` net.
+- Every other collapse is unchanged. `doom_loop`, `stuck` and `gave_up` reach the turn-end hooks,
+  which own the re-entry, and an attended session is its operator's.
+
+Not done.
+- The continuation stays once in a row, immediate and on the same context. A second immediate
+  continuation is what ADR-0018 rules out; the net differs in its delay and its compacted context.
+- The net is armed after the turn has ended, so that turn's trace does not record it. The REPL
+  prints one line, and the live status file shows the wake-up as due.
+
+Proof. `tests/test_self_restart.py`: the REPL arms the net after a spent continuation and after a
+collapse with no open plan, and never after a vetoable collapse or in an attended session; the
+sentinel turn compacts after a `degenerated` end. `tests/test_wake_repeat_guard.py`, through the
+real loop, buffered and streaming: the net is the sentinel at the default delay and a held wake-up
+is kept; no net goes behind a wake-up turn that degenerated as the last one did, and one does behind
+a wake-up turn that degenerated after a different ending. Nine one-site mutations, each
+undoing one piece of this change (the two calls that arm the net, the `degenerated`-only and
+unattended-only gates, the sentinel's compaction, the repeat guard's verdict and its read, the
+held wake-up check, and the net's prompt and delay), each turn their named tests red.

@@ -3397,6 +3397,10 @@ class AgentLoop:
         # the net instead of cancelling it. Per turn, like the fence.
         self._veto_stall_cause = ""
         self._veto_delivered: str | None = None
+        # Whether the turn that just ended was a wake-up turn ending exactly as the last one did
+        # (ADR-0216). Set by the repeat guard at every turn end and read after it, by
+        # :meth:`arm_collapse_net` (ADR-0414), so no new net goes behind that pair.
+        self._wake_repeated = False
         # Work calls this loop has run (ADR-0196): successful calls to anything but the
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
         # readings of it, and only ever within one skill turn.
@@ -8722,6 +8726,29 @@ class AgentLoop:
             kind="veto_stall_net",
         )
 
+    def arm_collapse_net(self) -> bool:
+        """Leave the stall net behind a ``degenerated`` turn end that nothing else will
+        continue (ADR-0414); ``True`` when a net was armed.
+
+        ``degenerated`` is the one collapse no turn-end hook may veto (ADR-0018), so a
+        framework whose Stop hook keeps a perpetual loop alive never hears of it, and the REPL
+        continues the session once (ADR-0090). When that continuation degenerated too, or
+        there was no open plan to continue, the session sat at its prompt until someone
+        typed: measured 2026-11-27 on a worker session, 72 and then 118 minutes. The REPL
+        calls this then. The net is the one a ``veto_stall`` leaves (:meth:`_arm_stall_net`):
+        the sentinel fires in ten minutes and re-enters the loop's skill on a compacted
+        context.
+
+        Not behind a wake-up turn that ended exactly as the last one did: that is the pair
+        the repeat guard stops (ADR-0216), and a new net would run it again. A held wake-up
+        is kept, as there.
+        """
+        if self._wake_repeated or self.wakeup_slot.pending() is not None:
+            return False
+        self.wakeup_slot.arm(LOOP_SENTINEL, DEFAULT_DELAY_SECONDS)
+        logger.info("degenerated turn end left at the prompt: armed the loop sentinel (ADR-0414)")
+        return True
+
     def _apply_hook_wakeup(self, result: TurnEndResult) -> None:
         """Arm or cancel the session's wake-up on a TURN_END hook's say-so (ADR-0102).
 
@@ -8771,6 +8798,7 @@ class AgentLoop:
             turn_fingerprint(stop_reason, _last_assistant_text(turn_assistant)),
             provider_failed=provider_failed,
         )
+        self._wake_repeated = was_sentinel_turn and repeated
         if provider_failed:
             if was_sentinel_turn:
                 held = self.wakeup_slot.pending()
