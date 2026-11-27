@@ -3681,10 +3681,10 @@ def create_app(
     async def _begin_framework_stop() -> None:
         """Raise the framework's own stop ONCE and open the window it needs to run it.
 
-        Idempotent across the four callers that can end a run (the human's
-        ``/run/stop``, the mid-turn cap watcher, the between-beats cap check, the
-        between-beats idle check) so they share ONE window rather than each restarting
-        the grace.
+        Callers that can end a run: the human's ``/run/stop``, the mid-turn cap watcher,
+        the between-beats cap check and the between-beats idle check. Once the window is
+        open a later call is a no-op, so a caller arriving after that shares it rather
+        than restarting the grace.
         """
         nonlocal framework_stop_until, framework_stop_raised_at, stop_reentry_pending
         if framework_stop_until is not None:

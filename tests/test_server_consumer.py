@@ -650,6 +650,7 @@ def _build_bounded(
     run_end_command: str | None = None,
     idle_timeout: float | None = None,
     stop_agent: str | None = None,
+    stop_message: str | None = None,
 ) -> tuple[Any, list[tuple[str, float]], list[str], float]:
     """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
     t0 = time.monotonic()
@@ -665,6 +666,7 @@ def _build_bounded(
         run_end_command=run_end_command,
         run_idle_timeout=idle_timeout,
         run_stop_agent=stop_agent,
+        run_stop_message=stop_message,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -755,37 +757,55 @@ def test_duration_cap_outranks_the_idle_window(tmp_path: Path) -> None:
 def test_an_open_ending_window_logs_the_idle_ending_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The window the idle bound opens lasts several beats; the bound speaks once.
+    """The window the idle bound opens lasts many beats; the bound speaks once.
 
     A raised framework stop queues no say, so the liveness stamp does not move while the
     window is open, and a check that ran again on every beat logged the same line each time.
     """
     monkeypatch.setattr("zakcode.server.app.request_framework_stop", lambda *a, **k: True)
+    # Short beats, so the window holds many of them even on a slow machine.
+    monkeypatch.setattr("zakcode.server.app._IDLE_BEAT_SECONDS", 0.05)
     app, _seen, endings, _t0 = _build_bounded(
         tmp_path, reserve=1.2, idle_timeout=0.2, stop_agent="seed-agent"
     )
     caplog.set_level("INFO", logger="zakcode.server")
 
+    started = time.monotonic()
     asyncio.run(app.state.consume_say_loop())
 
+    # The whole window ran: with no open window the run would end at about 0.2 s.
+    assert time.monotonic() - started >= 1.2
     assert endings == ["idle"]
     said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("no say in ")]
     assert len(said) == 1, said
 
 
+@pytest.mark.parametrize(
+    "stop",
+    [{"stop_agent": "seed-agent"}, {"stop_message": "wrap up now"}],
+    ids=["framework-stop", "stop-message"],
+)
 def test_the_caps_open_ending_keeps_its_name_when_the_idle_window_trips_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    stop: dict[str, str],
 ) -> None:
-    """Both trip on the same beat and the cap opens a window: the run still ends as
-    `duration_cap`, and the idle bound neither renames it nor logs."""
+    """Both trip on the same beat and the cap opens a window, by either stop setting: the run
+    still ends as `duration_cap`, and the idle bound neither renames it nor logs."""
     monkeypatch.setattr("zakcode.server.app.request_framework_stop", lambda *a, **k: True)
     app, _seen, endings, _t0 = _build_bounded(
-        tmp_path, max_duration=2.0, reserve=1.5, idle_timeout=0.5, stop_agent="seed-agent"
+        tmp_path, max_duration=2.0, reserve=1.5, idle_timeout=0.5, **stop
     )
     caplog.set_level("INFO", logger="zakcode.server")
 
+    started = time.monotonic()
     asyncio.run(app.state.consume_say_loop())
 
+    if "stop_agent" in stop:
+        # No say ends this window early, so it runs to the cap at 2 s. With no window
+        # the run would end at about 0.5 s. (The message window ends once its turn does.)
+        assert time.monotonic() - started >= 1.8
     assert endings == ["duration_cap"]
     assert not [r for r in caplog.records if r.getMessage().startswith("no say in ")]
 
