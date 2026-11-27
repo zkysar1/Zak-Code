@@ -26297,3 +26297,47 @@ window's edge moved by one, a net left unrecorded or recorded after the arm, a t
 times, no loop-skill gate, a held wake-up replaced, cancelled, counted, or cancelled once the bound
 is spent, the bound lifted for turns that do nothing, the method renamed from under the REPL, the
 REPL speaking when refused, and one for each REPL and sentinel case above.
+
+## ADR-0415: the task tool's description tells the model to take a short step itself
+
+Status: accepted. 2026-11-27. Narrows when the `task` tool is reached for (ADR-0382, ADR-0397).
+
+Context. The description said "Use it to parallelize independent research or work" and nothing
+about what a delegation costs. A sub-agent starts with only its prompt and the always-on rules,
+runs on the same model as its parent, and the parent's turn waits on the call (`NEVER_PARALLEL`).
+On a slow local model that wait is long, and the sub-agent's own calls compete with every other
+session for the same inference capacity. Measured from transcript metadata over the 24 hours to
+2026-11-27T16:00Z on eleven worker sessions sharing one local model: 48 `task` calls, and 1,460
+minutes in which a parent waited on one, about 9% of those sessions' wall time. The six sessions
+that delegated ran 36 sub-agents, which made 1,466 model calls of their own, about 15% of every
+model call the eleven sessions made. Fourteen of the runs were one lookup: read a file and report
+on it, list the records of one kind, find the files whose names carry an id, read one attribute of
+a process, find one pattern in one file. Two of those named a background task of the parent that
+was still running, which ADR-0397 now refuses. The other twelve made 652 model calls and kept
+their parents waiting 716 minutes, 15 to 107 minutes each (median 56), for an answer the parent
+could have read in one to three calls of its own. The remaining runs were independent reviews and
+research across many files, the work delegation is for.
+
+Decision. The description keeps its first and last sentences and between them says what a
+sub-agent costs and which steps to take directly (`DO_IT_YOURSELF`): a sub-agent knows only the
+prompt it is given, runs on the same model, and the caller waits until it finishes, so a step the
+caller could take in a call or three costs it many calls and much longer; reading a file,
+searching for a name, listing records, and checking a process or one of the caller's own
+background tasks are named. It then names what delegation is for: work of many steps that does not
+need the caller's context, such as research across many files or a review that must not share the
+caller's reasoning, with independent subtasks put in one call so they run in parallel. Nothing is
+refused and the tool behaves as before: a short step can still be delegated.
+
+Alternatives rejected. A refusal keyed on the prompt's wording (a lookup and a review use the same
+verbs: the measured briefs of both said "read", "check" and "report"). A cap on a sub-agent's calls
+(it would cut the reviews and research the tool exists for along with the lookups, and it leaves the
+choice to delegate where it was). A line in the system prompt instead (the description is what the
+model reads when it picks the tool, and it reaches every caller of the tool whatever system prompt
+that caller composes).
+
+Consequences. The description grows from 283 to 765 characters in every request's tool list, in
+the cached prefix. Pinned in `tests/test_task_tool.py`: the description carries the paragraph, which
+names the four steps, what a sub-agent knows and that the caller waits, and the description still
+names the review and parallel uses after it and ends with the budget sentence. The effect is read on
+the same sessions once the build reaches them: the sub-agent runs that are one lookup, and the
+minutes parents wait on them.
