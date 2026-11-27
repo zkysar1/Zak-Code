@@ -45,6 +45,27 @@ ALREADY_RUN = (
     "call task again with rerun=true, or change the batch to say what is different."
 )
 
+#: What the parent is told about a sub-agent whose turn ended when its context filled (ADR-0412).
+#: The text below it is every reply the sub-agent wrote, so its report is the last part.
+CONTEXT_FULL_NOTE = (
+    "its context filled and it was asked for its report, which ends the text below; what it did "
+    "not get to is a task for a new, narrower sub-agent, since this same batch would stop at the "
+    "same place again"
+)
+
+#: What the parent is told about a sub-agent whose context filled and that gave no report when it
+#: was asked twice (ADR-0412). Its batch did not run to its end: the parent holds no report from
+#: it, so a pointer would send it back to text that is not one, and the same batch runs again.
+CONTEXT_FULL_NO_REPORT_NOTE = (
+    "its context filled and it was asked twice for its report and gave none, so the text below "
+    "is not a report: it is what it wrote before, the output of the last tool it ran, or a line "
+    "saying it wrote nothing; what it did not get to is a task for a new, narrower sub-agent"
+)
+
+#: The stop reasons of a sub-agent that ran to its end, whose batch a later identical ask may lean
+#: on (ADR-0382): it completed, or it reported when its context filled (ADR-0412).
+_RAN_TO_ITS_END = frozenset({"completed", "context_full"})
+
 #: How much of an earlier result's opening is kept to ask whether that result is still in the
 #: conversation. A clamp keeps a result's head and tail and a compaction or an elision takes the
 #: whole result, so the head answers for the result; the whole text would not fit a clamped one.
@@ -204,16 +225,27 @@ class TaskTool(Tool):
                 errors += 1
                 lines.append(f"[task {i + 1}] {type_name}: ERROR: {type(res).__name__}: {res}")
             elif isinstance(res, SubAgentResult):
-                note = "" if res.stop_reason == "completed" else f" (stopped: {res.stop_reason})"
+                if res.stop_reason == "completed":
+                    note = ""
+                elif res.stop_reason == "context_full":
+                    note = f" (stopped: context_full; {CONTEXT_FULL_NOTE})"
+                elif res.stop_reason == "context_full_no_report":
+                    note = f" (stopped: context_full_no_report; {CONTEXT_FULL_NO_REPORT_NOTE})"
+                else:
+                    note = f" (stopped: {res.stop_reason})"
                 lines.append(f"[task {i + 1}] {res.name}{note}:\n{res.summary}")
                 total_tokens += res.usage.total_tokens
                 total_cost += res.usage.cost_usd
 
         output = "\n\n".join(lines)
-        # Only a batch whose every subtask completed is one a later identical ask may lean on; an
-        # error or a stopped subtask leaves the batch to run again (ADR-0382).
+        # Only a batch whose every subtask ran to its end is one a later identical ask may lean on;
+        # an error or a stopped subtask leaves the batch to run again (ADR-0382). A subtask that
+        # reported when its context filled ran to its end (ADR-0412): the same batch again would
+        # fill the same window at the same place.
         if runs is not None:
-            if all(isinstance(r, SubAgentResult) and r.stop_reason == "completed" for r in results):
+            if all(
+                isinstance(r, SubAgentResult) and r.stop_reason in _RAN_TO_ITS_END for r in results
+            ):
                 at = datetime.now(UTC).strftime("%H:%M:%SZ")
                 runs[key] = (at, output[:_PROBE_CHARS], len(output))
             else:

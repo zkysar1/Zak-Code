@@ -26036,3 +26036,110 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0412: a sub-agent whose context fills reports to its parent instead of being summarized
+
+Status: accepted. 2026-11-26. Amends #751 (2026-10-09), which gave a delegated sub-agent the
+parent's compactor so that a child no longer dies at the window. It keeps that change's aim, an
+answer for the parent and not a stop, and ends the child there instead of letting it read on.
+
+Context. A sub-agent's loop runs with no iteration bound (`DEFAULT_MAX_ITERATIONS` is 0), and its
+parent's turn waits inside the `task` call until the child's turn ends. With the parent's
+compactor, a child that fills its window is summarized and goes on reading, and a summary keeps
+only a short account of what it read (ADR-0405), so it reads much of it again. ADR-0038 rejected a
+finite default iteration cap and a wall-clock cap, because a legitimate long task would hit
+them; this decision adds neither. The bound here is the child's own window, which the loop
+already measures: a delegate is one context of work, and what it did not get to is a narrower task
+the parent can delegate again.
+
+What was measured, before building. Eleven served sessions on local models, 72 h to 23:18Z on
+2026-11-26, from their transcripts (tool names, timestamps and counts only). 221 `task` calls; the
+parents waited 7,328 minutes inside them, 15% of the sessions' wall time; 83 waits ran 30 minutes
+or more, 53 an hour or more, 10 two hours or more. On three of those sessions, each child
+transcript linked to its call by start time: of the 21 children whose parent waited an hour or
+more, 13 had been summarized at least once. Their first summary came 9 to 101 minutes in, and
+they ran on after it for 7 to 172 minutes, 815 minutes in all. One child was summarized twice in
+83 minutes while its parent waited on a one-line code lookup.
+
+Decision.
+- `AgentLoop(report_at_window=True)` marks a sub-agent loop; `SubAgentRunner` sets it on every
+  child and nothing else does. Structural, like `turn_end_vetoable`, not a setting.
+- At the compaction threshold, `_maybe_compact` does not summarize such a loop. It adds one
+  `[harness]` rail asking for the report (what was found, with paths, line numbers and values, and
+  what was not reached), and the turn ends after the next reply with
+  `stop_reason="context_full"`. A tool called in that reply does not run; it gets a "Not executed"
+  result so the session stays resumable. At the threshold nothing is rewritten, so no PreCompact
+  hook fires there; the overflow recovery, and the room made before a second ask, compact as
+  they did before and fire it.
+- An overflow the threshold check did not see coming is still recovered in the call by the
+  existing ladder (`_recover_context`), and the first rung that makes room asks for the report on
+  the retried call. The compactor stays on the child for that reason only.
+- A reply to the ask with no text in it, or only whitespace, is no report: thinking took the room
+  the window left, or the model called a tool. It is asked once more, with the room a call the
+  window held down lacked (ADR-0310), and with thinking off where the provider takes that
+  override (`providers/thinking.py`): an OpenAI-compatible route (a bare model name, or an
+  `openai/`, `openai_like/`, `hosted_vllm/` or `text-completion-openai/` one) reached through a
+  configured `api_base` gets the switch as written, a Gemini model the lowest thinking budget it
+  accepts (2.5-pro cannot switch thinking off), and every other route, Anthropic and Ollama among
+  them, gets none, so there the second ask goes out with thinking as it was. A tool it
+  called gets a "Not executed" result. That first reply with no report did no work, so its unit
+  goes back to the shared iteration pool, as a discarded completion's does; a loop's own per-turn
+  cap still counts it (`IterationBudget.refund`). The reply to the second ask ends the turn
+  whatever it holds, so a child is asked at most twice; a retried call can come before it (the
+  overflow recovery's, or a retry of a discarded reply, next point), and so can the stops listed
+  under "Not done". When it holds no text either, the turn ends
+  `stop_reason="context_full_no_report"`, and that reply is not refunded.
+- Once the ask is made, no plan reminder, injected context or answered note rides the ephemeral
+  tail, so no other instruction outranks it. A reply discarded as degenerate, as a capped
+  restatement or as an apology spiral is still retried once behind its own rail (ADR-0018,
+  ADR-0368, ADR-0040), and the reply to that is handled as above.
+- The `task` tool tells the parent the child's context filled and it was asked for its report,
+  which ends the text (the text is every reply the child wrote), and that what it did not reach is
+  a task for a new, narrower sub-agent. A `context_full` child ran to its end for ADR-0382: the
+  same batch again gets the pointer, since it would fill the same window at the same place. The
+  pointer fires only while the earlier result, with that note, is still in the conversation.
+  `rerun=true` still runs it. For `context_full_no_report` the parent is told the text is not a
+  report (it is what the child wrote before, the output of the last tool it ran, or a line saying
+  it wrote nothing). That batch did not run to its end: the parent holds no report from it, so a
+  pointer would send it back to text that is not one, and the same batch runs again. The note
+  still tells the parent to narrow it.
+- ADR-0405's note that a summary is near is not given to a sub-agent: it is not summarized at the
+  threshold, so the note would be false, and the note suggests a sub-agent, which a child cannot
+  start.
+- A parent's own loop is unchanged: it is summarized at the threshold and reads on, and it is
+  told a summary is near as before.
+
+Not done, and not measured. How much of what a child read after its first summary went into its
+answer is not measured: the transcripts were read for metadata only. A child is given no notice
+before its window fills; the ask is the first it hears of it. The ask needs the compactor's
+threshold: a child with no compactor still dies at the window,
+as before. A child can still end with no report: when it answers both asks with no text
+(`context_full_no_report`), when the overflow ladder runs out (`provider_error`), when an
+iteration bound is spent before the ask is answered (`max_iterations`), when the report reply
+crosses a cost budget (`budget_exhausted`), or when it degenerates twice; a report cut at the
+output cap is delivered as cut. `context_full` is not a degraded stop: the report is the designed
+end of a delegate whose window filled. `context_full_no_report` is not marked degraded either:
+nothing reads a child's degraded flag, since the parent gets a child's turn only through
+`SubAgentResult`, which carries none. Thinking stays on for the second ask where the provider
+takes no thinking override, so there an empty second reply is likelier; that is not measured on
+such a provider. Whether parents delegate a narrower task, do the
+rest themselves, or stop is what the trial reads: per session, minutes waited in `task` calls,
+waits over an hour, and `context_full` ends, against each session's previous 72 h.
+
+The proof. `tests/test_subagent_compaction.py` drives the real delegation seam on a scripted
+small-window server: with compaction off the child still dies at the window (the control); at the
+threshold the child is asked once and its report is the answer, with reads left undone; blind to
+the size, the child runs into the window, the recovery compacts and the retried call is the
+report; a Write called in the report does not run; an empty reply and a tool-only reply are each
+asked once more, with thinking off, and the reply to that ends the turn, even when it is empty or
+a tool call again, and then the parent is told the child gave no report; a child with a plan reads
+the ask last; and a parent reading the same files itself is summarized and finishes every read. A
+loop built directly with `report_at_window`, buffered and streaming, ends its turn on the report,
+answers the Write called in it "Not executed", asks once more after a tool-only reply, a blank one
+and one the window held down, which it compacts first, and ends `context_full_no_report` on a
+second reply that is empty, blank or a tool call, which does not run; asking twice costs the
+shared pool what asking once does, whether the second reply is a report or not.
+`tests/test_task_tool.py` pins
+the parent's notes, the pointer for a repeated `context_full` batch and a second run for a
+`context_full_no_report` one, and `tests/test_summary_ahead.py` that the stretch which tells a
+parent loop a summary is near tells a sub-agent nothing.
