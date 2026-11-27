@@ -649,6 +649,7 @@ def _build_bounded(
     message: str | None = None,
     run_end_command: str | None = None,
     idle_timeout: float | None = None,
+    stop_agent: str | None = None,
 ) -> tuple[Any, list[tuple[str, float]], list[str], float]:
     """An app whose run is bounded; returns (app, turns_seen, endings, t0)."""
     t0 = time.monotonic()
@@ -663,6 +664,7 @@ def _build_bounded(
         run_consolidation_message=message,
         run_end_command=run_end_command,
         run_idle_timeout=idle_timeout,
+        run_stop_agent=stop_agent,
     )
 
     async def _on_run_end(reason: str) -> None:
@@ -748,6 +750,44 @@ def test_duration_cap_outranks_the_idle_window(tmp_path: Path) -> None:
     asyncio.run(app.state.consume_say_loop())
 
     assert endings == ["duration_cap"]
+
+
+def test_an_open_ending_window_logs_the_idle_ending_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The window the idle bound opens lasts several beats; the bound speaks once.
+
+    A raised framework stop queues no say, so the liveness stamp does not move while the
+    window is open, and a check that ran again on every beat logged the same line each time.
+    """
+    monkeypatch.setattr("zakcode.server.app.request_framework_stop", lambda *a, **k: True)
+    app, _seen, endings, _t0 = _build_bounded(
+        tmp_path, reserve=1.2, idle_timeout=0.2, stop_agent="seed-agent"
+    )
+    caplog.set_level("INFO", logger="zakcode.server")
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["idle"]
+    said = [r.getMessage() for r in caplog.records if r.getMessage().startswith("no say in ")]
+    assert len(said) == 1, said
+
+
+def test_the_caps_open_ending_keeps_its_name_when_the_idle_window_trips_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both trip on the same beat and the cap opens a window: the run still ends as
+    `duration_cap`, and the idle bound neither renames it nor logs."""
+    monkeypatch.setattr("zakcode.server.app.request_framework_stop", lambda *a, **k: True)
+    app, _seen, endings, _t0 = _build_bounded(
+        tmp_path, max_duration=2.0, reserve=1.5, idle_timeout=0.5, stop_agent="seed-agent"
+    )
+    caplog.set_level("INFO", logger="zakcode.server")
+
+    asyncio.run(app.state.consume_say_loop())
+
+    assert endings == ["duration_cap"]
+    assert not [r for r in caplog.records if r.getMessage().startswith("no say in ")]
 
 
 def test_duration_cap_ends_the_run_and_names_the_reason(tmp_path: Path) -> None:
