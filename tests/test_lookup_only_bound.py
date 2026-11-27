@@ -36,7 +36,7 @@ from zakcode.rules import Rule, RuleRegistry
 from zakcode.session.store import Session
 from zakcode.tools.base import RULE_POINTER, ToolContext
 from zakcode.tools.builtins.default_registry import default_registry
-from zakcode.tools.builtins.read_rule import ReadRuleTool, would_point
+from zakcode.tools.builtins.read_rule import REFRESH_HEAD, ReadRuleTool, would_point
 from zakcode.usage import Usage
 
 # ── the tracker ─────────────────────────────────────────────────────────────────
@@ -241,6 +241,11 @@ def _case(name: str) -> tuple[ToolContext, dict[str, Any], bool]:
             {"name": "alpha-rule", "refresh": True},
             False,
         ),
+        "held-refresh-after-a-refresh": (
+            _ctx(registry, held=(*held, REFRESH_HEAD.format(name="alpha-rule") + held[0])),
+            {"name": "alpha-rule", "refresh": True},
+            True,
+        ),
         "held-case-slip": (_ctx(registry, held=held), {"name": " ALPHA-RULE "}, True),
         "no-such-rule": (_ctx(registry, held=held), {"name": "alpha-rules"}, False),
         "empty-name": (_ctx(registry, held=held), {"name": ""}, False),
@@ -258,6 +263,7 @@ def _case(name: str) -> tuple[ToolContext, dict[str, Any], bool]:
         "pinned",
         "pinned-refresh",
         "held-refresh",
+        "held-refresh-after-a-refresh",
         "held-case-slip",
         "no-such-rule",
         "empty-name",
@@ -415,7 +421,7 @@ async def test_a_new_rule_or_a_refresh_at_the_bound_is_answered_never_refused(
         "pointer",  # another tool ran: answered again
     ]
     assert results[5].output.startswith("# d-rule")
-    assert results[8].output.startswith("# c-rule")
+    assert results[8].output.startswith("[sent again on refresh] Rule 'c-rule':\n# c-rule")
     assert probe.runs == 1
 
 

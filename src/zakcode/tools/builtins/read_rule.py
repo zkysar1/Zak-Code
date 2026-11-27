@@ -89,6 +89,23 @@ PINNED = (
     "returns it here only if you need it as a tool result."
 )
 
+#: How the text a ``refresh=true`` ask sends begins when the model already holds it, in the
+#: conversation or pinned in the system prompt (ADR-0413). The next refresh looks for this whole
+#: string, head and text, so one refresh is answered with the text while it is held, and one after
+#: it gets :data:`REFRESHED` until a compaction or an elision takes that copy away.
+REFRESH_HEAD = "[sent again on refresh] Rule {name!r}:\n"
+
+#: The answer to a ``refresh=true`` ask while the copy an earlier refresh sent is still in the
+#: conversation (ADR-0413). Before, every refresh sent the text again: measured over 72 hours to
+#: 2026-11-27 on eleven worker sessions, 138 of the 180 refreshes answered with the text came after
+#: an earlier refresh of the same rule with no compaction between, 646,912 characters, and one
+#: session asked for one rule 32 times that way. Opens like the pointer, so the count goes on.
+REFRESHED = (
+    "[already read; ask {n}] Rule {name!r} was sent again on an earlier refresh=true ask, and that "
+    'copy is still in your context, unchanged, after "[sent again on refresh] Rule {name!r}". '
+    "Another refresh sends nothing new. Apply that text{step} and go on with your work."
+)
+
 
 def _right_after_its_pointer(ctx: ToolContext, name: str) -> bool:
     """True when the conversation's most recent tool result is a pointer line for rule ``name``:
@@ -168,6 +185,11 @@ def _find_rule(registry: Any, name: str) -> tuple[str, Any] | None:
     return None
 
 
+def _refreshed(name: str, text: str) -> str:
+    """What a ``refresh=true`` ask sends for a text the model already holds (ADR-0413)."""
+    return REFRESH_HEAD.format(name=name) + text
+
+
 def _pointer_template(
     ctx: ToolContext, rule: Any, name: str, text: str, refresh: bool
 ) -> str | None:
@@ -175,7 +197,12 @@ def _pointer_template(
 
     ONE decision, read by :meth:`ReadRuleTool.execute` and by :func:`would_point`, so the
     lookup-only bound (ADR-0399) never refuses an ask the tool would have answered with text."""
+    in_context = getattr(ctx, "in_context", None)
     if refresh:
+        # The way back to the text, once while it is held: a refresh while the copy the last one
+        # sent is still in the conversation would send that same string again (ADR-0413).
+        if in_context is not None and in_context(_refreshed(name, text)):
+            return REFRESHED
         return None
     # A rule pinned whole in the system prompt is already there: say where, never send it again
     # unless asked for on purpose (ADR-0387).
@@ -184,7 +211,6 @@ def _pointer_template(
     # A repeat while the text is in the conversation gets the numbered pointer (ADR-0379); one
     # right after this rule's own pointer gets the firmer line that says where the text is, not
     # the text again (ADR-0387). The body comes back only when asked for on purpose.
-    in_context = getattr(ctx, "in_context", None)
     if in_context is not None and in_context(text):
         return JUST_ASKED if _right_after_its_pointer(ctx, name) else ALREADY_READ
     return None
@@ -195,8 +221,8 @@ def would_point(args: dict[str, Any], ctx: ToolContext) -> bool:
 
     The decision :meth:`ReadRuleTool.execute` makes, without its one side effect (the ask count a
     compaction reads, ADR-0386), so the loop can ask it of a call it has not run (ADR-0399).
-    False for every other answer: a first read, ``refresh=true``, a name that matches no rule, an
-    empty body, rules disabled."""
+    False for every other answer: a first read, a ``refresh=true`` ask the text goes out for
+    (ADR-0413), a name that matches no rule, an empty body, rules disabled."""
     registry = getattr(ctx, "rule_registry", None)
     name = args.get("name")
     if registry is None or not isinstance(name, str) or not name.strip():
@@ -290,9 +316,17 @@ class ReadRuleTool(Tool):
         note = getattr(ctx, "note_rule_read", None)
         if note is not None:
             note(name)
-        template = _pointer_template(ctx, rule, name, text, args.get("refresh") is True)
+        refresh = args.get("refresh") is True
+        in_context = getattr(ctx, "in_context", None)
+        template = _pointer_template(ctx, rule, name, text, refresh)
         if template is not None:
             # Flagged, so the stuck ladder can count a run of asks answered this way (ADR-0399).
-            pointer = _pointer(rule, name, ctx, getattr(ctx, "in_context", None), template)
+            pointer = _pointer(rule, name, ctx, in_context, template)
             return ToolResult.ok(pointer, data={RULE_POINTER: True})
+        if refresh and (
+            _pinned_in_prompt(ctx, rule) or (in_context is not None and in_context(text))
+        ):
+            # A text the model holds, sent again on purpose: marked, so the next refresh can tell
+            # this copy is still there (ADR-0413).
+            return ToolResult.ok(_refreshed(name, text), verbatim=True)
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped

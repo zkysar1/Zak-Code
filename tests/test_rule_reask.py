@@ -20,7 +20,14 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import MAX_RULE_FILE_CHARS, Rule, RuleRegistry
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.read_rule import JUST_ASKED, PINNED, ReadRuleTool, rule_text
+from zakcode.tools.builtins.read_rule import (
+    JUST_ASKED,
+    PINNED,
+    REFRESH_HEAD,
+    REFRESHED,
+    ReadRuleTool,
+    rule_text,
+)
 from zakcode.usage import Usage
 
 _PINNED_BODY = "# Errors\nAfter any infrastructure call, check the error alerts."
@@ -83,10 +90,20 @@ def test_the_pinned_line_is_counted_like_the_pointer() -> None:
 
 
 def test_refresh_still_returns_a_pinned_rules_text() -> None:
+    """Marked: the prompt holds the text, so the next refresh can see this copy (ADR-0413)."""
     registry = _registry()
     res = _ask(_ctx(registry), refresh=True)
-    assert res.output == _text(registry, "error-response")
+    head = REFRESH_HEAD.format(name="error-response")
+    assert res.output == head + _text(registry, "error-response")
     assert res.verbatim
+
+
+def test_a_second_refresh_of_a_pinned_rule_points_at_the_first_ones_copy() -> None:
+    registry = _registry()
+    copy = REFRESH_HEAD.format(name="error-response") + _text(registry, "error-response")
+    res = _ask(_ctx(registry, held=(copy,)), refresh=True)
+    assert res.output == REFRESHED.format(n=1, name="error-response", step="")
+    assert not res.verbatim
 
 
 def test_a_pinned_rule_cut_at_the_per_rule_cap_still_gets_its_text() -> None:
