@@ -10561,6 +10561,15 @@ ratchet on the 20-step plan. The paging and skeleton suites are unchanged and gr
 **Amended by ADR-0269 (2026-09-30):** a replace that keeps none of the prior plan's steps is a
 new plan, and nothing the prior plan's fold hid is restored into it.
 
+**Amended 2026-11-27 (the same resend restores in silence).** A model that sends back the plan it
+was shown, minus the folded rows, sends the same submission again while nothing moves. The restore
+ran on every such resend and was that call's only event, so the unchanged rail (ADR-0168), which
+also compares event counts, read each one as an edit and answered "Plan updated". Measured on one
+long-running served session: 40 identical resends in 6 hours, 21% of its turns. When a submission
+equals the last one the model sent, the hidden done steps still come back, with no event and no
+advisory: the model already had that receipt. A worked step resent that way is still advanced
+(ADR-0202). Pinned in `tests/test_plan_unchanged.py`.
+
 
 ## ADR-0185: the transcript reads at a glance — the operator's line and the tool line stay bright, every receipt opens with its outcome and names its tool, body text wraps at a reading width, and inline markdown renders what models write
 
