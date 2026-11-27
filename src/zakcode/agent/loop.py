@@ -300,6 +300,11 @@ DEFAULT_MAX_ITERATIONS = 0  # 0 = unlimited (the doom-loop + cost budget are the
 #: than spend the whole iteration budget on it.
 DOOM_LOOP_THRESHOLD = 3
 
+#: How many stall nets :meth:`AgentLoop.arm_collapse_net` leaves behind ``degenerated`` turn
+#: ends in a row (ADR-0414). Each net is one more unattended turn, ten minutes on; a session that
+#: degenerates every time is tried this many times and then left at its prompt.
+MAX_COLLAPSE_NETS = 2
+
 #: How many times per turn the loop tries to UNSTICK an exact-repeat doom loop with a targeted
 #: recovery nudge before giving up. A capable-but-confidently-wrong model (e.g. re-writing valid
 #: code it insists is broken) often breaks out when told the repeat is not working and to verify
@@ -3397,10 +3402,6 @@ class AgentLoop:
         # the net instead of cancelling it. Per turn, like the fence.
         self._veto_stall_cause = ""
         self._veto_delivered: str | None = None
-        # Whether the turn that just ended was a wake-up turn ending exactly as the last one did
-        # (ADR-0216). Set by the repeat guard at every turn end and read after it, by
-        # :meth:`arm_collapse_net` (ADR-0414), so no new net goes behind that pair.
-        self._wake_repeated = False
         # Work calls this loop has run (ADR-0196): successful calls to anything but the
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
         # readings of it, and only ever within one skill turn.
@@ -8739,12 +8740,20 @@ class AgentLoop:
         the sentinel fires in ten minutes and re-enters the loop's skill on a compacted
         context.
 
-        Not behind a wake-up turn that ended exactly as the last one did: that is the pair
-        the repeat guard stops (ADR-0216), and a new net would run it again. A held wake-up
-        is kept, as there.
+        Each net is a turn nobody watches, so three things refuse one. No hook has named the
+        loop's skill (``Session.loop_skill``, ADR-0187): the sentinel would fire as the prose
+        line on the very context that degenerated, with no skill to re-enter. A wake-up is held:
+        it is kept, as there. Or :data:`MAX_COLLAPSE_NETS` are already armed in a row
+        (``Session.collapse_nets``; any turn that ends another way resets it). That bound is a
+        count, not the repeat guard's verdict (ADR-0216), which is an exact match on a turn's
+        last words: a turn that did some work before it degenerated ends in new words each time.
         """
-        if self._wake_repeated or self.wakeup_slot.pending() is not None:
+        session = self.session
+        if not session.loop_skill or self.wakeup_slot.pending() is not None:
             return False
+        if session.collapse_nets >= MAX_COLLAPSE_NETS:
+            return False
+        session.collapse_nets += 1  # before the arm, so the write the arm makes carries it
         self.wakeup_slot.arm(LOOP_SENTINEL, DEFAULT_DELAY_SECONDS)
         logger.info("degenerated turn end left at the prompt: armed the loop sentinel (ADR-0414)")
         return True
@@ -8783,7 +8792,8 @@ class AgentLoop:
         state, built for a model flailing INSIDE one turn, and these repeats are one turn apart.
 
         Called after ``last_stop_reason`` is set and before the persist, so whatever the turn armed
-        is on the session and one write carries the verdict with it.
+        is on the session and one write carries the verdict with it. The run of collapse nets
+        (ADR-0414) ends here too, at any end but ``degenerated``, for the same reason.
 
         A turn the PROVIDER failed is the one ending this guard does not read as a verdict
         (ADR-0250): ``provider_error`` outright, or a ``veto_stall`` whose vetoed endings were
@@ -8798,7 +8808,8 @@ class AgentLoop:
             turn_fingerprint(stop_reason, _last_assistant_text(turn_assistant)),
             provider_failed=provider_failed,
         )
-        self._wake_repeated = was_sentinel_turn and repeated
+        if stop_reason != "degenerated":
+            self.session.collapse_nets = 0  # the ADR-0414 nets in a row end with the run
         if provider_failed:
             if was_sentinel_turn:
                 held = self.wakeup_slot.pending()

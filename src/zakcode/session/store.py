@@ -328,6 +328,12 @@ class Session(BaseModel):
     #: stays append-only: an OLDER build drops it and the next hold starts at 600 s again (fails
     #: SAFE — a shorter wait, never a lost net).
     sentinel_provider_repeats: int = 0
+    #: The stall nets armed in a row behind ``degenerated`` turn ends (ADR-0414), reset to 0 by
+    #: any turn that ended another way; at ``MAX_COLLAPSE_NETS`` no further net is armed, so a
+    #: session that keeps degenerating is tried that many times and then left at its prompt.
+    #: Persisted so the bound holds across the ADR-0034 restart into a new build. Schema v1
+    #: stays append-only: an OLDER build drops the field, and it arms no such net to count.
+    collapse_nets: int = 0
     #: The background commands this session started (ADR-0191): id, command, output and exit
     #: files, pid, and whether the exit was reported. Status is never stored — it is derived
     #: from the files and the pid when read — so a record cannot call a dead task alive.

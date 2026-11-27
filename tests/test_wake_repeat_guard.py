@@ -23,16 +23,21 @@ Hermetic: a scripted provider, no network, no clock dependence (the due time is 
 
 from __future__ import annotations
 
+import io
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from rich.console import Console
 
-from zakcode.agent.loop import AgentLoop
+import zakcode.cli as cli
+from zakcode.agent.loop import MAX_COLLAPSE_NETS, AgentLoop
 from zakcode.messages import Message
+from zakcode.permissions import PermissionMode, PermissionPolicy
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ProviderError, ToolCall
-from zakcode.session.store import Session
+from zakcode.session.store import Session, SessionStore
 from zakcode.tools import default_registry
 from zakcode.usage import Usage
 from zakcode.wakeup import (
@@ -449,12 +454,42 @@ def test_the_provider_hold_schedule_doubles_to_the_clamp() -> None:
 def _degenerate() -> LLMResult:
     """A completion that collapsed into one line repeated: discarded, retried, then the turn
     ends ``degenerated`` (ADR-0018)."""
-    line = "I will now provide the information you requested.\n\n"
-    return LLMResult(text="My apologies!\n\n" + line * 22, tool_calls=[], usage=Usage(total_tokens=1))
+    text = "My apologies!\n\n" + "I will now provide the information you requested.\n\n" * 22
+    return LLMResult(text=text, tool_calls=[], usage=Usage(total_tokens=1))
+
+
+#: The skill a turn-end hook named as the loop's (ADR-0187). Any name does.
+LOOP_SKILL = "orchestrate loop"
+
+
+def _worked(n: int) -> LLMResult:
+    """Some work before the collapse, in new words each turn. A discarded completion is never
+    kept, so these are the turn's last words, and no two such turns end alike."""
+    call = ToolCall(id=f"ls-{n}", name="LS", arguments={"path": "."})
+    return LLMResult(
+        text=f"Checking item {n} of the queue.", tool_calls=[call], usage=Usage(total_tokens=1)
+    )
+
+
+def _named_loop(provider: Provider, tmp_path: Path, **kw: Any) -> AgentLoop:
+    """A loop a turn-end hook has named the loop's skill for, as a worker session's has."""
+    return AgentLoop(
+        provider,
+        default_registry(),
+        Session(cwd=str(tmp_path), model=MODEL, loop_skill=LOOP_SKILL),
+        workspace_root=tmp_path,
+        max_iterations=10,
+        **kw,
+    )
+
+
+def _script(provider: _Scripted, *results: LLMResult) -> None:
+    """What the provider answers from its next call on; the last result repeats."""
+    provider._results, provider.calls = list(results), 0
 
 
 def test_the_collapse_net_is_the_stall_net_and_keeps_a_held_wake_up(tmp_path: Path) -> None:
-    loop = _loop(_Scripted([_say(OTHER)]), tmp_path)
+    loop = _named_loop(_Scripted([_say(OTHER)]), tmp_path)
     assert loop.arm_collapse_net() is True
     held = loop.wakeup_slot.pending()
     assert held is not None and held.prompt == LOOP_SENTINEL
@@ -465,37 +500,100 @@ def test_the_collapse_net_is_the_stall_net_and_keeps_a_held_wake_up(tmp_path: Pa
     assert _held(loop) == "/poll the queue"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
-async def test_no_collapse_net_behind_a_wake_up_turn_that_degenerated_as_the_last_did(
-    tmp_path: Path, streamed: bool
-) -> None:
-    loop = _loop(_Scripted([_degenerate()]), tmp_path)
-    _fire_sentinel(loop)
-    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
-    # The first such turn only records how it ended, so the net goes behind it.
-    assert loop.arm_collapse_net() is True
-    _fire_sentinel(loop)
-    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
-    # The second ended the same way: the pair the repeat guard stops, so no new net.
+def test_no_collapse_net_for_a_session_no_hook_named_the_loops_skill_for(tmp_path: Path) -> None:
+    # The sentinel re-enters the skill a hook named. With none known it would fire as the prose
+    # line on the very context that degenerated, so no net is armed; the control names one.
+    loop = _loop(_Scripted([_say(OTHER)]), tmp_path)
     assert loop.arm_collapse_net() is False
-    assert _held(loop) is None
+    assert _held(loop) is None and loop.session.collapse_nets == 0
+    loop.session.loop_skill = LOOP_SKILL
+    assert loop.arm_collapse_net() is True and _held(loop) == LOOP_SENTINEL
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
-async def test_a_wake_up_turn_that_degenerated_after_a_different_one_gets_the_net(
+async def test_wake_up_turns_that_work_then_degenerate_get_two_nets_and_no_third(
     tmp_path: Path, streamed: bool
 ) -> None:
-    # The positive control for the test above: the same second turn, after a first wake-up
-    # turn that ended another way, is no repeat, and the net goes behind it.
-    loop = _loop(_Scripted([_say(OTHER), _degenerate()]), tmp_path)
+    # Each turn ends in new words, so the repeat guard sees no repeat (ADR-0216): the count is
+    # all that bounds the turns nobody watches.
+    provider = _Scripted([_say(OTHER)])
+    loop = _named_loop(provider, tmp_path)
+    armed = []
+    for n in range(3):
+        _script(provider, _worked(n), _degenerate())
+        _fire_sentinel(loop)
+        assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+        armed.append(loop.arm_collapse_net())
+    assert armed == [True, True, False]
+    assert _held(loop) is None and loop.session.collapse_nets == MAX_COLLAPSE_NETS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_a_turn_that_ends_another_way_starts_the_count_again(
+    tmp_path: Path, streamed: bool
+) -> None:
+    # The positive control for the test above: the bound is on nets IN A ROW, so a turn that
+    # ends any other way gives the next collapse its net again.
+    provider = _Scripted([_degenerate()])
+    loop = _named_loop(provider, tmp_path)
+    for _ in range(2):
+        _fire_sentinel(loop)
+        assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+        assert loop.arm_collapse_net() is True
     _fire_sentinel(loop)
+    _script(provider, _say(OTHER))
     assert await _run(loop, "[harness] wake-up", streamed=streamed) == "completed"
-    _fire_sentinel(loop)
-    assert await _run(loop, "[harness] wake-up", streamed=streamed) == "degenerated"
+    assert loop.session.collapse_nets == 0
+    _script(provider, _degenerate())
+    assert await _run(loop, "go on", streamed=streamed) == "degenerated"
     assert loop.arm_collapse_net() is True
-    assert _held(loop) == LOOP_SENTINEL
+
+
+@pytest.mark.asyncio
+async def test_the_count_and_the_net_are_on_disk_for_the_process_that_resumes(
+    tmp_path: Path,
+) -> None:
+    # A restart into a new build (ADR-0034) resumes from the saved document, and its first
+    # collapse is a continuation, not a wake-up turn: the run is still counted there.
+    store = SessionStore(tmp_path / "sessions")
+    loop = _named_loop(_Scripted([_degenerate()]), tmp_path, store=store)
+    for _ in range(2):
+        _fire_sentinel(loop)
+        assert await _run(loop, "[harness] wake-up", streamed=False) == "degenerated"
+        assert loop.arm_collapse_net() is True
+    saved = store.load(loop.session.id)
+    assert saved.collapse_nets == 2
+    assert saved.pending_wakeup is not None and saved.pending_wakeup.prompt == LOOP_SENTINEL
+    resumed = AgentLoop(
+        _Scripted([_degenerate()]),
+        default_registry(),
+        saved,
+        workspace_root=tmp_path,
+        max_iterations=10,
+        store=store,
+    )
+    assert resumed.wakeup_slot.cancel()  # the held net is spent; only the count is left
+    assert await _run(resumed, "go on", streamed=False) == "degenerated"
+    assert resumed.arm_collapse_net() is False
+
+
+def test_the_repl_arms_the_real_loops_net_and_says_so(tmp_path: Path) -> None:
+    # The REPL reaches the loop by name (``unattended``, ``arm_collapse_net``), so a stand-in
+    # would stay green if either were renamed; this drives the real loop.
+    policy = PermissionPolicy(PermissionMode.BYPASS)
+    loop = _named_loop(_Scripted([_say(OTHER)]), tmp_path, permission_policy=policy)
+    agent = SimpleNamespace(loop=loop, session=loop.session)
+    out = io.StringIO()
+    cli._arm_collapse_net(Console(file=out, width=200), agent, "degenerated")
+    assert _held(loop) == LOOP_SENTINEL and "armed the loop's stall net" in out.getvalue()
+    # At the bound it arms nothing and says nothing.
+    assert loop.wakeup_slot.cancel()
+    loop.session.collapse_nets = MAX_COLLAPSE_NETS
+    out = io.StringIO()
+    cli._arm_collapse_net(Console(file=out, width=200), agent, "degenerated")
+    assert _held(loop) is None and out.getvalue() == ""
 
 
 def _unused(message: Message) -> None:  # pragma: no cover - import anchor for the type only

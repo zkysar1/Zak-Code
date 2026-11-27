@@ -25876,10 +25876,20 @@ Decision.
   `AgentLoop.arm_collapse_net`: the sentinel a `veto_stall` leaves (ADR-0187), due in
   `DEFAULT_DELAY_SECONDS` (600). When it fires, the loop's skill re-enters on a compacted context:
   the sentinel turn compacts after a `degenerated` end as it does after a `veto_stall`.
-- No net goes behind a wake-up turn that ended exactly as the last one did. The repeat guard
-  (ADR-0216) leaves its verdict on the loop and the collapse net reads it, so a session that
-  degenerates on every re-entry is tried twice more, ten minutes apart, and then left at its prompt
-  as before.
+- At most `MAX_COLLAPSE_NETS` (2) nets go behind `degenerated` ends in a row. The session counts
+  them (`Session.collapse_nets`, persisted, so a restart into a new build keeps the count), and
+  any turn that ends another way resets the count. A session that degenerates on every re-entry
+  is tried twice more, ten minutes apart, and then left at its prompt as before.
+- The bound is a count, not the repeat guard's verdict (ADR-0216). That verdict is an exact match
+  on a turn's last words, and a turn that does some work before it degenerates ends in new words
+  each time, so a net keyed on it would re-arm without end. A count can stick, so both ways it
+  can be wrong are bounded: stuck at the bound, it refuses a net, which leaves the idle prompt
+  this ADR found; reset too early, it costs at most two more nets. Nothing records "nets in a
+  row" on its own to derive the count from: the turn-end record (ADR-0361) skips turns that
+  simply finished.
+- No net without the loop's skill (`Session.loop_skill`, set when a turn-end hook names it).
+  Without one the sentinel fires as the prose line (ADR-0094) on the context that degenerated,
+  uncompacted, so such a session is left at its prompt as before.
 - A held wake-up is kept: the framework's own net, or a hook's, outranks this one, as it outranks
   the `veto_stall` net.
 - Every other collapse is unchanged. `doom_loop`, `stuck` and `gave_up` reach the turn-end hooks,
@@ -25890,13 +25900,22 @@ Not done.
   continuation is what ADR-0018 rules out; the net differs in its delay and its compacted context.
 - The net is armed after the turn has ended, so that turn's trace does not record it. The REPL
   prints one line, and the live status file shows the wake-up as due.
+- A typed turn does not cancel a held net, as with the `veto_stall` net: a net armed before an
+  operator's turn still fires after it.
+- The server door (`server/app.py`) continues no collapse at all, ADR-0090's continuation
+  included, and is unchanged.
 
 Proof. `tests/test_self_restart.py`: the REPL arms the net after a spent continuation and after a
 collapse with no open plan, and never after a vetoable collapse or in an attended session; the
 sentinel turn compacts after a `degenerated` end. `tests/test_wake_repeat_guard.py`, through the
-real loop, buffered and streaming: the net is the sentinel at the default delay and a held wake-up
-is kept; no net goes behind a wake-up turn that degenerated as the last one did, and one does behind
-a wake-up turn that degenerated after a different ending. Nine one-site mutations, each
-undoing one piece of this change (the two calls that arm the net, the `degenerated`-only and
-unattended-only gates, the sentinel's compaction, the repeat guard's verdict and its read, the
-held wake-up check, and the net's prompt and delay), each turn their named tests red.
+real loop: the net is the sentinel at the default delay and a held wake-up is kept; no net without
+the loop's skill; wake-up turns that work and then degenerate, each ending in new words, get two
+nets and no third, buffered and streaming; a turn that ends another way restarts the count; the
+count and the net are on disk, and a resumed process's first collapse finds the run counted; the
+REPL arms the real loop's net and prints its line, and at the bound arms nothing and prints
+nothing. Fifteen one-site mutations, each undoing one piece of this change, each turn their
+named tests red: the two calls that arm the net, the `degenerated`-only and unattended-only
+gates, the sentinel's compaction, the held wake-up check, the net's prompt and delay, the
+loop-skill gate, the bound, its value, the reset, the increment, the increment's place before
+the arm's write, the loop method's name as the REPL reaches it, and the REPL's silence at the
+bound.
