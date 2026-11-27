@@ -490,7 +490,7 @@ class TaskNetwork(BaseModel):
     def _title_key(title: str) -> str:
         return " ".join(title.lower().split())
 
-    def replace_from_author(self, tasks: list[Task]) -> list[str]:
+    def replace_from_author(self, tasks: list[Task], *, resend: bool = False) -> list[str]:
         """Install a model-authored tree (full-replace), keeping what the model cannot resend.
 
         ``update_plan`` hands a fresh tree by position, so without this every step's memory
@@ -501,6 +501,11 @@ class TaskNetwork(BaseModel):
         outcome gets one from its last evidence line, so a closed step never reads as "done, no
         record". Every leaf's start (``-> in_progress``) and close, and the (re)authoring itself
         when the set of titles changed, are logged. Returns :meth:`normalize`'s advisories.
+
+        ``resend`` says the submission is the one the model sent last. Done steps a fold hid
+        still come back, but with no event and no advisory: the model already had that receipt,
+        and a "restored" event on every identical resend made the unchanged rail read it as an
+        edit (``update_plan`` compares event counts).
         """
         # Keyed by (title, is-parent), not title alone: a weak model resends a plan that nests a
         # parent over a same-titled child (measured, arm N ON b3 r3: a 35B nested "Create
@@ -539,7 +544,7 @@ class TaskNetwork(BaseModel):
         else:
             restored = self._restore_dropped_done(prior_tasks)
         advisories = self.normalize()
-        if restored:
+        if restored and not resend:
             named = "; ".join(f"'{clip(t.title, 40)}'" for t in restored[:4])
             more = f" (+{len(restored) - 4} more)" if len(restored) > 4 else ""
             self.record(

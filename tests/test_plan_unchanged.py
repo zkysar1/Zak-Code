@@ -188,3 +188,51 @@ async def test_the_loop_notes_the_unchanged_receipt_as_an_intervention() -> None
     ]
     assert [o.split(":")[0] for o in outputs] == ["Plan updated", "Plan unchanged"]
     assert "Hint: Do not resend the same plan." in outputs[1]
+
+
+def _folded_net(*, worked: bool) -> TaskNetwork:
+    """Three closed steps the working-memory render folds into one row, then the step in hand."""
+    net = TaskNetwork()
+    net.tasks = [
+        Task(title="a", status="done", outcome="wrote a"),
+        Task(title="b", status="done", outcome="wrote b"),
+        Task(title="c", status="done", outcome="wrote c"),
+        Task(title="d", status="in_progress", evidence=["read d.py ✓"] if worked else []),
+        Task(title="e"),
+    ]
+    net.normalize()
+    assert "(3 steps done)" in net.render(elide_done=True)  # the fold the resend leaves out
+    return net
+
+
+OPEN_ONLY = [{"title": "d", "status": "in_progress"}, {"title": "e"}]
+
+
+async def test_a_resend_that_again_leaves_out_folded_done_steps_is_unchanged() -> None:
+    # Measured on a long-running session (2026-11-27): a model resent the plan it saw, minus the
+    # folded done rows, and the harness put the done steps back on EVERY resend. That restore was
+    # the only event of the call, so the same submission read "Plan updated" each time and the
+    # rail never answered it: 40 identical resends in 6 h, 21% of that session's turns.
+    net = _folded_net(worked=False)
+    ctx = ToolContext(workspace_root=Path("/tmp"), task_network=net)
+    first = await UpdatePlanTool().execute({"tasks": OPEN_ONLY}, ctx)
+    assert first.output.startswith("Plan updated: 3/5 steps done"), first.output
+    assert "restored 3 done step(s)" in first.output
+    events = len(net.log)
+
+    again = await UpdatePlanTool().execute({"tasks": OPEN_ONLY}, ctx)  # the same submission
+    assert again.output.startswith("Plan unchanged: 3/5 steps done"), again.output
+    assert again.data is not None and again.data["unchanged"] is True
+    assert len(net.log) == events  # a resend is not an event, the restore included
+    assert [t.title for t in net.tasks] == ["a", "b", "c", "d", "e"]  # the done steps stay
+    assert net.progress() == (3, 5)
+
+
+async def test_a_worked_step_resent_without_its_folded_history_is_advanced() -> None:
+    net = _folded_net(worked=True)
+    ctx = ToolContext(workspace_root=Path("/tmp"), task_network=net)
+    await UpdatePlanTool().execute({"tasks": OPEN_ONLY}, ctx)
+    again = await UpdatePlanTool().execute({"tasks": OPEN_ONLY}, ctx)
+    assert again.output.startswith("Advanced step 4 ('d') to done"), again.output
+    assert again.data is not None and again.data["autoadvanced"] is True
+    assert net.progress() == (4, 5)

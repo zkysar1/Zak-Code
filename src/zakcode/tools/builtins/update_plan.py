@@ -438,7 +438,7 @@ class UpdatePlanTool(Tool):
             # advance never gets here with the board empty: it is refused first, ADR-0388.)
             return self._finished_resend(built)
         events = network.log_folded + len(network.log)
-        advisories = ignored + network.replace_from_author(built)
+        advisories = ignored + network.replace_from_author(built, resend=submitted == prior_author)
         network.last_author_signature = submitted
         network.last_author_fields = fields
 
