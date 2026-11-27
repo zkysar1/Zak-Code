@@ -82,8 +82,9 @@ def test_without_in_tool_results_the_carried_message_still_counts() -> None:
 def test_refresh_returns_the_text_in_every_state() -> None:
     reg = _registry()
     text = _text_of(reg)
-    assert _ask(_ctx(reg, results=(text,)), refresh=True).output == text
-    assert _ask(_ctx(reg, carried=text), refresh=True).output == text
+    # A refresh of a held text may open with the marker ADR-0413 puts on it; the text follows.
+    assert _ask(_ctx(reg, results=(text,)), refresh=True).output.endswith(text)
+    assert _ask(_ctx(reg, carried=text), refresh=True).output.endswith(text)
 
 
 def test_would_point_agrees_with_execute_before_and_after_the_text_is_sent() -> None:
