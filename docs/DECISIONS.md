@@ -25924,3 +25924,30 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0419: no fresh-eyes plan review in a session whose turn-end hook has named its loop
+
+Status: accepted. 2026-11-27. Narrows when the plan review (ADR-0117) runs; the review is unchanged.
+
+Context. Once a plan is finished, the fresh-eyes review reads the model's last answer against the
+turn's request and, on a gap, seeds a "Reviewer flagged" step that the plan gate then holds the turn
+for. A session whose turn-end hook has named its loop (`Session.loop_skill`, ADR-0187) has no
+request waiting on that answer: its turns are the loop's own passes and its turn end is the hook's
+(ADR-0392). There the review reads a pass's report against the loop's re-entry prompt, and the gaps
+it flags are gaps against that prompt. Measured on 11 served loop sessions over 102 session-hours on
+2026-11-27 (3,536 model responses, 301,221 model seconds): the review flagged a gap 25 times, and
+the 49 responses that followed, until the next call that was not a plan tool, a wakeup or an echo,
+took 8,299 seconds, 2.8% of all model time. The review's own model call on each finished plan is
+not in that figure.
+
+Decision. The review is not due once `Session.loop_skill` names a loop; an empty or blank name keeps
+it. A plan finished before any hook has named the loop is reviewed as before, so ADR-0208's first
+finish is unchanged.
+
+Consequences. In a session with a named loop a finished plan goes to the hook unreviewed: no review
+call, no seeded step, no plan-gate hold on one. Every other session keeps the review. Whether a loop
+pass ever had a real gap that the review caught and the hook would not have was not measured.
+Pinned in `tests/test_plan_review_loop_session.py` on both turn paths: a session with a named loop
+finishes its plan with no review call; an empty and a blank name are still reviewed; a session's
+first finish is reviewed and, once its hook has named the loop, its next turn's finish is not.
+Removing the new condition turns the four loop-session tests red and leaves the four controls green.
