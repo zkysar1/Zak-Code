@@ -25951,3 +25951,5 @@ Pinned in `tests/test_plan_review_loop_session.py` on both turn paths: a session
 finishes its plan with no review call; an empty and a blank name are still reviewed; a session's
 first finish is reviewed and, once its hook has named the loop, its next turn's finish is not.
 Removing the new condition turns the four loop-session tests red and leaves the four controls green.
+ADR-0208's new-turn test no longer scripts a review call for its second turn, which runs after
+the first turn's hook has named the loop.
