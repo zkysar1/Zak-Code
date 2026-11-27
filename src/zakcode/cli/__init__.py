@@ -1540,9 +1540,9 @@ def _hold_sentinel_if_provider_down(console: Console, agent: Any, slot: Any) -> 
 def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
     """The turn that resolves a fired autonomous-loop sentinel (ADR-0187): the skill the
     session's last hook-named re-entry ran (``Session.loop_skill``), composed by the
-    harness — after a ``veto_stall``'s context is compacted, as a collapsed turn's is —
-    or ``None`` when no such skill is known, in which case the sentinel fires as the prose
-    line it always did (ADR-0094)."""
+    harness — after the context of a ``veto_stall`` or a ``degenerated`` end (ADR-0414) is
+    compacted, as a collapsed turn's is — or ``None`` when no such skill is known, in which
+    case the sentinel fires as the prose line it always did (ADR-0094)."""
     from zakcode.wakeup import LOOP_WAKE_NOTE
 
     session = getattr(agent, "session", None)
@@ -1550,7 +1550,7 @@ def _loop_sentinel_turn(console: Console, agent: Any) -> str | None:
     if not spec:
         return None
     name, _, args = spec.partition(" ")
-    if getattr(session, "last_stop_reason", "") == "veto_stall":
+    if getattr(session, "last_stop_reason", "") in ("veto_stall", "degenerated"):
         _announce_resume(console, agent)  # the stalled context is compacted, as on a resume
     return _harness_skill_turn(agent, name, args.strip(), LOOP_WAKE_NOTE)
 
@@ -1718,14 +1718,18 @@ def _continue_after_collapse(
 ) -> int:
     """After a turn: queue the continuation of an unattended session whose turn collapsed
     with plan steps open (ADR-0090) — once in a row; a second collapse ends at the prompt
-    for the operator to see. Returns the updated count of continuations in a row."""
+    for the operator to see. A ``degenerated`` end left at the prompt that way, or with no
+    open plan to continue, leaves the loop's stall net behind it (ADR-0414). Returns the
+    updated count of continuations in a row."""
     stop_reason = getattr(done, "stop_reason", None)
     if stop_reason not in _KICK_STOP_REASONS:
         return 0
     if kicks >= 1:
+        _arm_collapse_net(console, agent, stop_reason)
         return kicks
     kick = _unattended_continuation(agent, restarted=None, stop_reason=stop_reason)
     if kick is None:
+        _arm_collapse_net(console, agent, stop_reason)
         return kicks
     _announce_resume(console, agent)  # the collapsed context is compacted, as on a resume
     notice_info(
@@ -1735,6 +1739,26 @@ def _continue_after_collapse(
     )
     mux.queue.put(("harness", kick))
     return kicks + 1
+
+
+def _arm_collapse_net(console: Console, agent: Any, stop_reason: str) -> None:
+    """Arm the loop's stall net behind an unattended ``degenerated`` end the REPL leaves at
+    its prompt (ADR-0414). No turn-end hook may veto that stop (ADR-0018), so nothing else
+    would bring the session back; every other collapse reaches the hooks, which own the
+    re-entry, and an attended session is its operator's."""
+    if stop_reason != "degenerated":
+        return
+    loop = getattr(agent, "loop", None)
+    unattended = getattr(loop, "unattended", None)
+    arm = getattr(loop, "arm_collapse_net", None)
+    if unattended is None or arm is None or not unattended():
+        return
+    if arm():
+        notice_info(
+            console,
+            f"unattended session: the turn ended 'degenerated' and nothing will continue it "
+            f"{GLYPHS['dash']} armed the loop's stall net (ADR-0414)",
+        )
 
 
 def _restart_args(argv: list[str], session_id: str) -> list[str]:

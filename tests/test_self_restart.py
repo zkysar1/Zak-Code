@@ -798,6 +798,42 @@ def test_after_a_collapse_the_continuation_is_queued_once_in_a_row(
     assert mux.queue.empty()
 
 
+def test_a_degenerated_end_left_at_the_prompt_arms_the_loops_stall_net(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0414: no turn-end hook may veto ``degenerated``, so the REPL's one continuation is
+    all that brings the session back. When it is spent, or there is no open plan for it to
+    continue, the stall net goes behind the session instead of nothing."""
+    monkeypatch.setattr(cli, "_announce_resume", lambda console, a: None)
+    armed: list[str] = []
+
+    def with_net(**kw: Any) -> SimpleNamespace:
+        agent = _unattended_agent(tmp_path, **kw)
+        agent.loop.arm_collapse_net = lambda: armed.append("net") is None
+        return agent
+
+    mux = SimpleNamespace(queue=queue.Queue())
+    degenerated = SimpleNamespace(stop_reason="degenerated")
+    agent = with_net()
+    # The first collapse is continued once, as before, and arms nothing.
+    assert cli._continue_after_collapse(_console(), agent, mux, degenerated, 0) == 1
+    assert mux.queue.get_nowait()[0] == "harness" and armed == []
+    # The second in a row ends at the prompt, now with the net behind it.
+    assert cli._continue_after_collapse(_console(), agent, mux, degenerated, 1) == 1
+    assert mux.queue.empty() and armed == ["net"]
+    # With no open plan there is no continuation at all, so the first one arms it.
+    finished = with_net(statuses=("done", "done"))
+    assert cli._continue_after_collapse(_console(), finished, mux, degenerated, 0) == 0
+    assert mux.queue.empty() and armed == ["net", "net"]
+    # A collapse a turn-end hook may veto is the hooks' to continue, and an attended
+    # session is its operator's: neither arms the net.
+    doom = SimpleNamespace(stop_reason="doom_loop")
+    assert cli._continue_after_collapse(_console(), agent, mux, doom, 1) == 1
+    attended = with_net(unattended=False)
+    assert cli._continue_after_collapse(_console(), attended, mux, degenerated, 1) == 1
+    assert armed == ["net", "net"]
+
+
 @pytest.fixture(autouse=True)
 def _no_restart_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_restart_into_new_build`` sets the ADR-0090 marker for the process it execs into;
@@ -875,9 +911,12 @@ def test_the_loop_sentinel_resolves_to_the_last_hook_named_skill(tmp_path: Path)
     assert compactions == []  # a healthy session's context is kept
 
 
-def test_the_loop_sentinel_compacts_a_stalled_turns_context_first(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ended", ["veto_stall", "degenerated"])
+def test_the_loop_sentinel_compacts_a_stalled_turns_context_first(
+    tmp_path: Path, ended: str
+) -> None:
     agent, calls, compactions = _composing_agent(
-        tmp_path, loop_skill="orchestrate loop", last_stop_reason="veto_stall"
+        tmp_path, loop_skill="orchestrate loop", last_stop_reason=ended
     )
     line = cli._loop_sentinel_turn(_console(), agent)
     assert line is not None and calls == [("orchestrate", "loop", "harness")]

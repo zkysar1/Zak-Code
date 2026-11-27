@@ -307,6 +307,16 @@ DEFAULT_MAX_ITERATIONS = 0  # 0 = unlimited (the doom-loop + cost budget are the
 #: than spend the whole iteration budget on it.
 DOOM_LOOP_THRESHOLD = 3
 
+#: How many stall nets :meth:`AgentLoop.arm_collapse_net` leaves behind ``degenerated`` turn
+#: ends in any :data:`COLLAPSE_NET_WINDOW_SECONDS` (ADR-0414). Each net is one more turn nobody
+#: watches, ten minutes on. A session that degenerates on every re-entry and re-arms nothing is
+#: tried this many times and then left at its prompt; a wake-up its turn re-arms is held, and
+#: re-enters it uncounted, as any held wake-up does.
+MAX_COLLAPSE_NETS = 2
+
+#: The window :data:`MAX_COLLAPSE_NETS` is counted over: six hours.
+COLLAPSE_NET_WINDOW_SECONDS = 6 * 3600
+
 #: How many times per turn the loop tries to UNSTICK an exact-repeat doom loop with a targeted
 #: recovery nudge before giving up. A capable-but-confidently-wrong model (e.g. re-writing valid
 #: code it insists is broken) often breaks out when told the repeat is not working and to verify
@@ -8800,6 +8810,43 @@ class AgentLoop:
             f"{DEFAULT_DELAY_SECONDS}s so the loop re-enters later with fresh context",
             kind="veto_stall_net",
         )
+
+    def arm_collapse_net(self, *, now: float | None = None) -> bool:
+        """Leave the stall net behind a ``degenerated`` turn end that nothing else will
+        continue (ADR-0414); ``True`` when a net was armed.
+
+        ``degenerated`` is the one collapse no turn-end hook may veto (ADR-0018), so a
+        framework whose Stop hook keeps a perpetual loop alive never hears of it, and the REPL
+        continues the session once (ADR-0090). When that continuation degenerated too, or
+        there was no open plan to continue, the session sat at its prompt until someone
+        typed: measured 2026-11-27 on a worker session, 72 and then 118 minutes. The REPL
+        calls this then. The net is the one a ``veto_stall`` leaves (:meth:`_arm_stall_net`):
+        the sentinel fires in ten minutes and re-enters the loop's skill on a compacted
+        context.
+
+        Each net is a turn nobody watches, so three things refuse one. No hook has named the
+        loop's skill (``Session.loop_skill``, ADR-0187): the sentinel would fire as the prose
+        line on the very context that degenerated, with no skill to re-enter. A wake-up is held:
+        it is kept and not counted, as there, whoever armed it, so it re-enters as it did before
+        this net existed. That includes the one a net's own turn re-arms, as its line tells it
+        to: counting or cancelling held wake-ups would cut the net of every loop that keeps its
+        own. Or :data:`MAX_COLLAPSE_NETS` were armed in the last
+        :data:`COLLAPSE_NET_WINDOW_SECONDS` (``Session.collapse_nets_at``). That bound is a rate,
+        and no turn end resets it: degenerated ends could alternate with whatever end reset it.
+        Nor is it the repeat guard's verdict (ADR-0216), an exact match on a turn's last words,
+        which a turn that does some work before it degenerates never repeats.
+        """
+        session = self.session
+        if not session.loop_skill or self.wakeup_slot.pending() is not None:
+            return False
+        now = time.time() if now is None else now
+        recent = [t for t in session.collapse_nets_at if now - t < COLLAPSE_NET_WINDOW_SECONDS]
+        if len(recent) >= MAX_COLLAPSE_NETS:
+            return False
+        session.collapse_nets_at = [*recent, now]  # before the arm, so the arm's write carries it
+        self.wakeup_slot.arm(LOOP_SENTINEL, DEFAULT_DELAY_SECONDS)
+        logger.info("degenerated turn end left at the prompt: armed the loop sentinel (ADR-0414)")
+        return True
 
     def _apply_hook_wakeup(self, result: TurnEndResult) -> None:
         """Arm or cancel the session's wake-up on a TURN_END hook's say-so (ADR-0102).
