@@ -527,3 +527,32 @@ async def test_the_second_ask_costs_the_shared_pool_nothing(tmp_path: Path, stre
     assert two_asks == no_report == one_ask + 1
     # The pool pays for every reply but a first one that held no report.
     assert (one_pool, two_pool, no_report_pool) == (one_ask, one_ask, one_ask)
+
+
+@pytest.mark.parametrize("streams", [False, True], ids=["buffered", "streaming"])
+async def test_the_second_ask_fits_a_pool_with_room_for_one(tmp_path: Path, streams: bool) -> None:
+    # The unit goes back before the second ask is made, not when the turn ends: a pool sized for a
+    # turn that is asked once still takes the second ask, and the report still comes back.
+    async def run(shapes: tuple[str, ...], pool: IterationBudget) -> tuple[Any, AgentLoop]:
+        settings = _settings(tmp_path)
+        loop = AgentLoop(
+            _WindowedModel(report_shapes=shapes, as_child=True),
+            default_registry(settings),
+            Session(cwd=str(tmp_path), model="scripted/test"),
+            settings=settings,
+            workspace_root=tmp_path,
+            compactor=Compactor(),
+            report_at_window=True,
+            budget=pool,
+        )
+        if streams:
+            (end,) = [ev async for ev in loop.astream_turn("READ") if isinstance(ev, AgentDone)]
+            return end, loop
+        return await loop.arun_turn("READ"), loop
+
+    once, _ = await run(("text",), IterationBudget(0))
+    assert once.stop_reason == "context_full"  # the pool is sized by a turn that ended as asked
+    twice, loop = await run(("empty", "text"), IterationBudget(once.iterations))
+    assert twice.stop_reason == "context_full"
+    assert loop.provider.reports == 2  # the second ask was made
+    assert loop.session.messages[-1].text == "CHILD-REPORT"
