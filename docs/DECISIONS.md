@@ -25964,3 +25964,87 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0414: a degenerated end that nothing will continue leaves the loop's stall net behind it
+
+Status: accepted. 2026-11-27. Extends ADR-0090's continuation with ADR-0187's stall net.
+
+Context. `degenerated` is the one collapse no turn-end hook may veto (ADR-0018), so a framework
+whose Stop hook keeps a perpetual loop alive never hears of it. The REPL continues an unattended
+session once after a collapse with plan steps open (ADR-0090). A second collapse in a row, or a
+collapse with no open plan, ended at the prompt "for the operator to see", and nothing else brought
+the session back: no wake-up was held, because the model that degenerated had not armed one.
+Measured 2026-11-27 on one worker session, twice in one night: a degenerated end, its continuation,
+a second degenerated end, and then the session sat at its prompt for 72 and then 118 minutes, until
+an operator's note arrived.
+
+Decision.
+- When an unattended session's turn ends `degenerated` and the REPL will not continue it (its one
+  continuation is spent, or there is no open plan), the REPL asks the loop for its stall net,
+  `AgentLoop.arm_collapse_net`: the sentinel a `veto_stall` leaves (ADR-0187), due in
+  `DEFAULT_DELAY_SECONDS` (600). When it fires, the loop's skill re-enters on a compacted context:
+  a sentinel turn compacts after a `degenerated` end, whoever armed the sentinel, as it does after
+  a `veto_stall`.
+- At most `MAX_COLLAPSE_NETS` (2) such nets are armed in any `COLLAPSE_NET_WINDOW_SECONDS` (six
+  hours). The session keeps the time each was armed (`Session.collapse_nets_at`, persisted, so a
+  restart into a new build keeps them), and a time ages out of the window on its own. A net
+  counts whether or not its turn recovers, so a third within six hours of two is refused.
+- The bound is a rate, and no turn end resets it. A count of nets in a row, reset by every other
+  end, is unbounded: degenerated ends alternate with `stuck`, `provider_error` or `veto_stall`
+  ends, and each of those would reset it. Reset only by `completed`, it sticks shut, because a
+  worker session's turn runs for hours and seldom ends `completed`. The repeat guard's verdict
+  (ADR-0216) is no bound either: it is an exact match on a turn's last words, which a turn that
+  does some work before it degenerates never repeats. A rate needs no reset path to get wrong.
+  The nets themselves add at most two sentinel turns per session in six hours; each can go on
+  through a wake-up its own turn re-arms, as the next two bullets and Not done describe.
+- A wake-up already held is kept and not counted, whoever armed it, and re-enters as it did
+  before: the loop's own net, a hook's prompt, or the one a net's own turn re-arms, as the line a
+  fired sentinel opens with tells it to. Counting held wake-ups and cancelling them at the bound
+  was tried: it cut the net of a loop that re-arms every turn at its third degenerated end in six
+  hours.
+- So a session the net has brought back re-enters through its own wake-up after each later
+  degenerated end, as a loop that keeps its own net always has. A turn that re-arms the sentinel
+  and degenerates with nothing done ends as the last one did, so the repeat guard cancels the
+  sentinel (ADR-0216), and the net takes its place and counts: such a session is left at its
+  prompt after four wake-up turns in six hours. The repeat guard never cancels a free-text
+  wake-up, as before.
+- No net without the loop's skill (`Session.loop_skill`, set when a turn-end hook names it).
+  Without one the sentinel fires as the prose line (ADR-0094) on the context that degenerated,
+  uncompacted, so such a session is left at its prompt as before.
+- Every other collapse is unchanged. `doom_loop`, `stuck` and `gave_up` reach the turn-end hooks,
+  which own the re-entry, and an attended session is its operator's.
+
+Not done.
+- A session that does some work, in new words, before every collapse keeps re-entering: through
+  its own wake-up, or through the two nets in six hours. Nothing here tells that work from
+  progress; the turn-end hooks and the framework that runs the loop own that judgment.
+- The continuation stays once in a row, immediate and on the same context. A second immediate
+  continuation is what ADR-0018 rules out; the net differs in its delay and its compacted context.
+- The net is armed after the turn has ended, so that turn's trace does not record it. The REPL
+  prints one line, and the live status file shows the wake-up as due.
+- A session no hook has named the loop's skill for yet gets no net. Measured 2026-11-27: 10 of 11
+  worker sessions had one; the eleventh was in its first turn, eight hours long, with no stop yet.
+- The window runs on the wall clock: a clock set back keeps the times counted until it catches
+  up, and the bound shut for that long.
+- A typed turn does not cancel a held net, as with the `veto_stall` net: a net armed before an
+  operator's turn still fires after it.
+- The server door (`server/app.py`) continues no collapse at all, ADR-0090's continuation
+  included, and is unchanged.
+
+Proof. `tests/test_self_restart.py`: the REPL arms the net after a spent continuation and after a
+collapse with no open plan, and never after a vetoable collapse or in an attended session; the
+sentinel turn compacts after a `degenerated` end. `tests/test_wake_repeat_guard.py`, through the
+real loop: the net is the sentinel at the default delay; a held wake-up of either kind is kept and
+not counted, at the bound too; no net without the loop's skill; wake-up turns that work and then
+degenerate, each ending in new words, get two nets and no third; a loop that re-arms keeps its own
+net through every degenerated end, the bound spent; turns that re-arm the sentinel and degenerate
+with nothing done stop after four, between the repeat guard and the net's rate; all three buffered
+and streaming; a turn that finished gives no spent net back, and the window running out does; the
+bound is two nets in any six hours, to the second; the nets' times, the net and the loop's skill are
+on disk, and a resumed process's first collapse finds the nets counted; the REPL arms the real
+loop's net and prints its line, and at the bound arms nothing and prints nothing. Twenty-one
+single-site mutations each fail their own test: no bound, a bound of three, a one-hour window, the
+window's edge moved by one, a net left unrecorded or recorded after the arm, a turn end clearing the
+times, no loop-skill gate, a held wake-up replaced, cancelled, counted, or cancelled once the bound
+is spent, the bound lifted for turns that do nothing, the method renamed from under the REPL, the
+REPL speaking when refused, and one for each REPL and sentinel case above.
