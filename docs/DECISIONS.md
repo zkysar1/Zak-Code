@@ -25924,3 +25924,37 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0420: `read_rule` answers with the rule's file as it reads now
+
+Status: accepted. 2026-11-28. Changes what `read_rule` returns for a rule whose file was edited
+after the session loaded it, and keeps that rule's new copy in the registry; the prompt and every
+other answer are unchanged.
+
+Context. The rule registry is read once, when the process starts, and the system prompt's rules are
+rendered from it. A rule file edited after that reached a running session only at its next restart:
+a pinned rule (ADR-0105) was answered with the pointer to the prompt's old copy (ADR-0387), and a
+rule read before was answered with the pointer to the old text (ADR-0379). Measured 2026-11-28 on
+eleven worker sessions behind one pod: a pinned rule's fix landed about three hours before, every
+session still held the copy it started with, and each of the 46 asks for it in those hours was
+answered with the pointer to that copy or refused as a repeat. The asks and the searches for what
+the old text named took 4.7 percent of all model time, up to 17.8 percent of one session's.
+
+Decision.
+- Before it answers, `read_rule` re-reads the rule's file (`reread_rule`). When the file still
+  names the same rule and its body changed, that copy replaces the registry's, so later asks are
+  answered against it and a compaction's carry (ADR-0386) reads it.
+- The new text goes out whatever the pointers would have said, behind a line saying it was changed
+  on disk after the session loaded it and replaces every earlier copy, the prompt's included. Every
+  later copy of it carries the same line, so a copy sent after a compaction says it too.
+- A file that is gone, unreadable, empty, or now names another rule leaves the loaded copy in
+  place. `would_point` (ADR-0399) reads the file the same way and changes nothing.
+- Discovery and the re-read parse a file with one function, so both read a rule the same way.
+
+Consequences. A fix to a rule reaches a running session the next time it asks for that rule, with
+no restart. The prompt is not re-rendered, so the cached prefix is untouched and the old pinned copy
+stays there: the marked text is what says which one is current. A session that never asks for the
+rule still sees only the old copy until its next start, where ADR-0260's notice names the change.
+Each ask now reads one small file. Pinned in `tests/test_read_rule_edited_on_disk.py`; eight
+mutations, each reverting one line of the re-read, its guards, the registry update, the mark, the
+`would_point` check or discovery's pinned flag, each turned the tests red.
