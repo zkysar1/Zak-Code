@@ -57,6 +57,17 @@ def _batch_key(prepared: list[tuple[str, str]]) -> str:
     return hashlib.sha256(json.dumps(prepared, ensure_ascii=False).encode()).hexdigest()
 
 
+#: What the tool's description says about a step the model can take itself (ADR-0415). A sub-agent
+#: starts with nothing but its prompt and runs on the same model while the parent waits, so a read,
+#: a search or a status check handed to one costs many calls where doing it directly costs one.
+DO_IT_YOURSELF = (
+    "A sub-agent knows only the prompt you write, runs on the same model, and you wait until it "
+    "finishes, so a step you could take yourself in a call or three costs it many calls and much "
+    "longer: read a file, search for a name, list records, or check a process or one of your own "
+    "background tasks directly, with the tool for it."
+)
+
+
 class TaskTool(Tool):
     """Run one or more subtasks as isolated, concurrent sub-agents."""
 
@@ -64,9 +75,12 @@ class TaskTool(Tool):
         name="task",
         description=(
             "Delegate one or more self-contained subtasks to isolated sub-agents that run "
-            "concurrently and return short summaries (not full transcripts). Use it to "
-            "parallelize independent research or work. Each subtask gets a fresh context and "
-            "a filtered toolset; they share one iteration budget."
+            "concurrently and return short summaries (not full transcripts). "
+            f"{DO_IT_YOURSELF} "
+            "Delegate work of many steps that does not need your context, such as research "
+            "across many files or a review that must not share your reasoning, and put "
+            "independent subtasks in one call so they run in parallel. Each subtask gets a "
+            "fresh context and a filtered toolset; they share one iteration budget."
         ),
         parameters={
             "type": "object",

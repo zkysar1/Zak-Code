@@ -19,7 +19,7 @@ from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.session.store import Session
 from zakcode.tools.base import ToolContext, ToolRegistry
-from zakcode.tools.builtins.task import ALREADY_RUN, TaskTool
+from zakcode.tools.builtins.task import ALREADY_RUN, DO_IT_YOURSELF, TaskTool
 from zakcode.usage import Usage
 
 
@@ -366,3 +366,19 @@ async def test_the_loop_answers_a_repeat_in_the_turn_and_runs_it_in_the_next(
     await turn("again")
     assert len(spawner.calls) == 2
     assert _outputs(loop)[-1].startswith("[task 1] general-purpose:\na!")
+
+
+def test_the_description_tells_the_model_to_take_a_short_step_itself() -> None:
+    """ADR-0415: the model reads the tool's description when it decides to delegate. It names what
+    a sub-agent costs (it knows only its prompt, runs on the same model, the caller waits) and the
+    steps to take directly, and it still names the work delegation is for."""
+    desc = TaskTool.spec.description
+    assert DO_IT_YOURSELF in desc
+    for step in ("read a file", "search for a name", "list records", "background tasks directly"):
+        assert step in DO_IT_YOURSELF
+    assert "knows only the prompt you write" in DO_IT_YOURSELF
+    assert "you wait until it finishes" in DO_IT_YOURSELF
+    assert "a review that must not share your reasoning" in desc
+    assert "so they run in parallel" in desc
+    assert desc.index(DO_IT_YOURSELF) < desc.index("so they run in parallel")
+    assert desc.endswith("they share one iteration budget.")
