@@ -29,6 +29,7 @@ from collections.abc import Callable
 from typing import Any
 
 from zakcode.config import PermissionTier
+from zakcode.rules import reread_rule
 from zakcode.tools.base import (
     RULE_POINTER,
     ConcurrencyClass,
@@ -87,6 +88,14 @@ PINNED = (
     "[already read; ask {n}] Rule {name!r} is pinned: its full text is in your system prompt, "
     'under the heading "## {name}", and it is always in force. Apply it{step}; refresh=true '
     "returns it here only if you need it as a tool result."
+)
+
+#: How the text begins when the rule's file was edited after the session loaded it (ADR-0420).
+#: The prompt keeps the copy it was rendered with, so this line is what says which copy is current.
+EDITED_HEAD = (
+    "[edited since loaded] Rule {name!r} was changed on disk after this session loaded it. This "
+    "is its current text, and it replaces every earlier copy, the one in your system prompt "
+    "included:\n"
 )
 
 
@@ -205,6 +214,8 @@ def would_point(args: dict[str, Any], ctx: ToolContext) -> bool:
     if found is None:
         return False
     name, rule = found
+    if reread_rule(rule) is not None:
+        return False  # its file was edited since it was loaded: the new text goes out (ADR-0420)
     text = rule_text(name, rule)
     refresh = args.get("refresh") is True
     return text is not None and _pointer_template(ctx, rule, name, text, refresh) is not None
@@ -279,6 +290,13 @@ class ReadRuleTool(Tool):
             )
 
         name, rule = found
+        edited = reread_rule(rule)
+        if edited is not None:
+            # The file was edited after the session loaded it (ADR-0420). The prompt, earlier
+            # results and a carried copy hold the old text, so the new one is answered against
+            # from now on: kept in the registry, which a compaction's carry also reads.
+            registry.add(edited, replace=True)
+            rule = edited
         text = rule_text(name, rule)
         if text is None:
             return ToolResult.error(
@@ -295,4 +313,7 @@ class ReadRuleTool(Tool):
             # Flagged, so the stuck ladder can count a run of asks answered this way (ADR-0399).
             pointer = _pointer(rule, name, ctx, getattr(ctx, "in_context", None), template)
             return ToolResult.ok(pointer, data={RULE_POINTER: True})
+        if getattr(rule, "edited", False):
+            # Newer than the copy in the prompt: said so, every time this text goes out.
+            return ToolResult.ok(EDITED_HEAD.format(name=name) + text, verbatim=True)
         return ToolResult.ok(text, verbatim=True)  # instructions, never clamped
