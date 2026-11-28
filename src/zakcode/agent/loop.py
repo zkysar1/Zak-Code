@@ -209,7 +209,8 @@ from zakcode.providers.base import (
 )
 from zakcode.providers.labels import ModelRef, display_model_id
 from zakcode.providers.routing import DifficultyVerdict, classify_main_turn, thinking_extra_body
-from zakcode.providers.text_tools import defang_untrusted
+from zakcode.providers.spend_gate import get_gate
+from zakcode.providers.text_tools import defang_untrusted, speaks_tool_protocol
 from zakcode.quality import binary_judge, score_plan, score_rubric, weak_dimensions
 from zakcode.secrets import redact_credential_tokens
 from zakcode.session.discovery_ledger import discovery_path, fold_observation
@@ -2474,6 +2475,13 @@ _WRITE_AFTER_FAILED_READ_NOTE = (
 #: so it is bounded separately from — and far below — the iteration cap.
 _MAX_LENGTH_CONTINUATIONS = 3
 
+#: Prose no one reads (ADR-0421): how many characters of it a streamed reply may write before
+#: any tool call starts. Past it the stream is cut and the reply ends as written. Thinking is
+#: not counted.
+_LOOP_PROSE_CAP = 2500
+#: The finish reason of a stream cut by that cap: not a length finish, so it is never continued.
+_PROSE_CAP_FINISH = "prose_cap"
+
 #: How many CONSECUTIVE plan-gate nudges that produce no progress a turn may spend before it
 #: is allowed to finish with open steps (flagged ``degraded``). Progress = the count of open
 #: steps FELL since the previous nudge; a nudge that earned progress resets the count, so a
@@ -3263,6 +3271,10 @@ class AgentLoop:
         # The composed /skill this turn is running, else None (ADR-0059): its "goal" is a
         # skill body, and a plan that tracks a ceremony by phase is never judged against it.
         self._turn_skill: str | None = None
+        # The loop holds the floor (ADR-0421): a turn-end hook continued this turn and no
+        # person has spoken since, so prose the model writes now is read by no one. False at
+        # every turn start, as whoever opened the turn may be waiting for its answer.
+        self._loop_floor = False
         # An operator-only command reached this turn MID-TURN (ADR-0265): the turn now runs
         # the operator's control input, so no fresh-eyes review may reopen its finished plan.
         self._turn_operator_command = False
@@ -6449,6 +6461,12 @@ class AgentLoop:
             and not self._turn_operator_command
         )
 
+    def _prose_unread(self) -> bool:
+        """Whether prose in the next reply is read by no one (ADR-0421): the session runs a
+        loop skill, and the loop holds the floor (its turn-end hook continued this turn and
+        no person has spoken since)."""
+        return self._loop_floor and bool(str(self.session.loop_skill or "").split())
+
     def _seed_review_step(self, issues: str) -> None:
         """Append the reviewer's gap as a harness step: the plan gate now holds the turn."""
         step = Task(title=f"Reviewer flagged: {clip(issues, 90)}", note=_REVIEW_STEP_NOTE)
@@ -8477,6 +8495,7 @@ class AgentLoop:
         turn_assistant: list[Message],
         stuck_took_action: bool,
         allow_veto: bool = True,
+        replied: bool = False,
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
@@ -8494,7 +8513,9 @@ class AgentLoop:
         fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
         turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
         final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
-        veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
+        veto-capable hook is asked. ``replied`` says the reply that ended the turn had visible
+        text; an empty one is stored as a placeholder, so the turn's messages cannot tell
+        (ADR-0421). Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
@@ -8613,6 +8634,13 @@ class AgentLoop:
                 kind="turn_end_governed",
                 skill=reentry[0],
             )
+        # A reply with text ended the turn and the hook goes on with it, so the loop holds the
+        # floor until a person speaks (ADR-0421), however short the reply: the hook refusing the
+        # stop is the loop taking the turn over. A turn that ended any other way (silence, even
+        # after a preface earlier in the turn; a provider error; a stall) has not answered
+        # whoever opened it.
+        if stop_reason == "completed" and replied:
+            self._loop_floor = True
         if reentry is not None:
             self._vetoes_without_skill += 1
             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
@@ -8911,6 +8939,7 @@ class AgentLoop:
         self._say_waited = 0
         if text is None:
             return None
+        self._loop_floor = False  # a person has spoken (ADR-0421)
         if text.startswith("/") and self._compose_skill is not None:
             return await self._deliver_midturn_skill(text, source=source)
         self.session.add_message(Message.user(_MIDTURN_SAY_FRAME.format(text=text)))
@@ -9234,6 +9263,7 @@ class AgentLoop:
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         refusal_ends_turn = False  # this turn's provider_error is a quota refusal it ends on
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the next reply continues an answer cut off (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None): the last
@@ -9332,6 +9362,7 @@ class AgentLoop:
             user_text
         )  # a ceremony plan is not judged (ADR-0059)
         self._turn_operator_command = False  # ADR-0265: per turn
+        self._loop_floor = False  # ADR-0421: per turn
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
@@ -9376,7 +9407,8 @@ class AgentLoop:
             # while the turn runs is folded in at this boundary, so the NEXT provider call
             # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
             # (consume_say_inbox=False) on sub-agents and bare loops.
-            await self._deliver_midturn_say()
+            if await self._deliver_midturn_say() is not None:
+                answer_continued = False  # a person spoke: the next reply answers them (ADR-0421)
             # Perception delivery (Portability P4): after the say, so a person's message
             # keeps its place in the conversation ahead of the world's report. Urgent events
             # go first: they are the part of the report the producer wants answered.
@@ -9457,6 +9489,7 @@ class AgentLoop:
             result: LLMResult | None = None
             context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
             refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
+            prose_unread = self._prose_unread()  # ADR-0421
             while result is None:
                 try:
                     result = await self._call_provider(
@@ -9777,6 +9810,9 @@ class AgentLoop:
                     self._persist()
                 break
 
+            # The reply after a continuation is the continued answer; the mark lasts that one
+            # reply, whether it calls a tool or not (ADR-0421).
+            continued_answer, answer_continued = answer_continued, False
             # No tool calls → the turn is finishing (cleanly when the model has said
             # anything this turn; the empty give-up gate below handles total silence).
             if not result.has_tool_calls:
@@ -9802,13 +9838,24 @@ class AgentLoop:
                 # hook (#18) so a hook only ever sees the resolved completion. Scoped to the
                 # no-tool-calls branch: a truncated response carrying tool calls self-heals
                 # via the normal tool round-trip, and injecting a user message there would
-                # break tool_use/tool_result pairing for strict providers.
-                if (
+                # break tool_use/tool_result pairing for strict providers. Prose no one reads
+                # is not continued (ADR-0421): the reply ends as written, still degraded, and
+                # the TURN_END hook decides what follows.
+                if prose_unread and result.finish_reason in _LENGTH_FINISH_REASONS and result.text:
+                    turn_degraded = True
+                    self._note(
+                        "intervention",
+                        "prose reply cut off at the output limit in a loop session: not "
+                        "continued, as no one reads it",
+                        kind="prose_not_continued",
+                    )
+                elif (
                     result.finish_reason in _LENGTH_FINISH_REASONS
                     and result.text
                     and length_continuations < _MAX_LENGTH_CONTINUATIONS
                 ):
                     length_continuations += 1
+                    answer_continued = True
                     turn_degraded = True
                     self.session.add_message(
                         Message.user(
@@ -9825,6 +9872,14 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # A reply that says more than the cap, or the last piece of an answer continued
+                # at the output limit, is a full answer, and it now tries to end the turn. If
+                # anything sends it back (a gate below or the TURN_END hook), the next reply goes
+                # to the loop, which holds the floor until a person speaks; if nothing does, the
+                # turn ends and the floor with it. A shorter reply may be a preface, so only the
+                # hook's refusal passes the floor on it, in _fire_turn_end (ADR-0421).
+                if continued_answer or len(result.text.strip()) > _LOOP_PROSE_CAP:
+                    self._loop_floor = True
                 # Recipe gate: a create-and-run turn may not end until the written file
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
@@ -10478,6 +10533,7 @@ class AgentLoop:
                     veto_count=turn_end_vetoes,
                     turn_assistant=turn_assistant,
                     stuck_took_action=stuck.took_action,
+                    replied=bool(result.text.strip()),
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
@@ -10944,6 +11000,7 @@ class AgentLoop:
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the next reply continues an answer cut off (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
@@ -11041,6 +11098,7 @@ class AgentLoop:
             user_text
         )  # a ceremony plan is not judged (ADR-0059)
         self._turn_operator_command = False  # ADR-0265: per turn
+        self._loop_floor = False  # ADR-0421: per turn
         self._turn_plan_judged = False  # judged decomposition (ADR-0050): once per turn
         self._say_waited = 0  # task-boundary say hold (ADR-0052): per-turn
         self._say_prev_finished = self.session.task_network.progress()[0]  # ADR-0052 seam baseline
@@ -11083,6 +11141,7 @@ class AgentLoop:
                 # client shows the operator their message was taken into the running turn.
                 delivered_say = await self._deliver_midturn_say()
                 if delivered_say is not None:
+                    answer_continued = False  # ADR-0421 — see _run_turn (buffered twin)
                     shown = (
                         delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"
                     )
@@ -11217,6 +11276,13 @@ class AgentLoop:
                 thinking_off_next_call = False
                 context_recoveries = 0  # compact-then-retry attempts on THIS call (ADR-0074)
                 refused_override: tuple[Provider, str] | None = None  # dropped last (ADR-0315)
+                prose_unread = self._prose_unread()  # ADR-0421
+                # A cut stream reports no usage, so the cap stands down where a turn ceiling or
+                # the spend gate counts every call's (ADR-0421).
+                prose_cap_on = prose_unread and not (
+                    (self.budget is not None and self.budget.meters_usage)
+                    or bool(get_gate().snapshot().get("armed"))
+                )
                 while True:
                     text_parts: list[str] = []
                     self._reply_parts = text_parts  # what a page opened mid-reply draws (ADR-0363)
@@ -11240,6 +11306,7 @@ class AgentLoop:
                     stream_text_len = 0
                     degen_next_check = _DEGEN_FIRST_CHECK
                     degen_unit: str | None = None
+                    prose_cap_armed = prose_cap_on  # the prose cap (ADR-0421), per attempt too
                     # A rejection retry resamples at a raised temperature (see the buffered
                     # twin); every other attempt uses the configured temperature.
                     call_kw: dict[str, Any] = (
@@ -11317,6 +11384,34 @@ class AgentLoop:
                                     degen_next_check = stream_text_len + _DEGEN_CHECK_EVERY
                                     degen_unit = repeated_tail("".join(text_parts))
                                     if degen_unit is not None:
+                                        break
+                                # Prose cap (ADR-0421), decided once, where the text first
+                                # passes it: prose no one reads, with no tool call started, is
+                                # cut by the probe's exit and the reply ends as written. A reply
+                                # that arrived whole (nothing left to save) or is writing a text
+                                # tool call streams on.
+                                if prose_cap_armed and stream_text_len > _LOOP_PROSE_CAP:
+                                    prose_cap_armed = False
+                                    if (
+                                        not accumulator
+                                        and len(ev.text) < stream_text_len
+                                        and not speaks_tool_protocol("".join(text_parts))
+                                    ):
+                                        stream_finish_reason = _PROSE_CAP_FINISH
+                                        turn_degraded = True
+                                        self._note(
+                                            "intervention",
+                                            f"prose reply cut at {stream_text_len} characters: "
+                                            "in a loop session no one reads a reply to a tool "
+                                            "result or a harness message, and no tool call had "
+                                            "started",
+                                            kind="prose_cap",
+                                            chars=stream_text_len,
+                                        )
+                                        yield AgentStatus(
+                                            message=f"prose reply cut at {stream_text_len} "
+                                            "characters (loop session, no tool call started)"
+                                        )
                                         break
                             elif isinstance(ev, StreamToolCallDelta):
                                 _status_writer().on_tool_call_delta(
@@ -11823,6 +11918,7 @@ class AgentLoop:
                     )
                     break
 
+                continued_answer, answer_continued = answer_continued, False  # ADR-0421
                 # No tool calls → the turn is complete.
                 if not tool_calls:
                     # Text-only stall (ADR-0033) — see the buffered twin. The count is also
@@ -11844,13 +11940,30 @@ class AgentLoop:
                             kind="text_only_stall",
                         )
                     # Length-truncation continuation (parity #5), streaming twin. See the
-                    # buffered path for the rationale and the no-tool-calls scoping.
+                    # buffered path for the rationale, the no-tool-calls scoping and the
+                    # prose no one reads, which is not continued (ADR-0421).
                     if (
+                        prose_unread
+                        and stream_finish_reason in _LENGTH_FINISH_REASONS
+                        and assistant_text
+                    ):
+                        turn_degraded = True
+                        self._note(
+                            "intervention",
+                            "prose reply cut off at the output limit in a loop session: not "
+                            "continued, as no one reads it",
+                            kind="prose_not_continued",
+                        )
+                        yield AgentStatus(
+                            message="response truncated; not continued (loop session prose)"
+                        )
+                    elif (
                         stream_finish_reason in _LENGTH_FINISH_REASONS
                         and assistant_text
                         and length_continuations < _MAX_LENGTH_CONTINUATIONS
                     ):
                         length_continuations += 1
+                        answer_continued = True
                         turn_degraded = True
                         self.session.add_message(
                             Message.user(
@@ -11866,6 +11979,9 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(message="response truncated; continuing")
                         continue
+                    # A full answer passes the floor to the loop (ADR-0421): see the buffered twin.
+                    if continued_answer or len(assistant_text.strip()) > _LOOP_PROSE_CAP:
+                        self._loop_floor = True
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             # ADR-0244 — see the buffered twin.
@@ -12568,6 +12684,7 @@ class AgentLoop:
                         veto_count=turn_end_vetoes,
                         turn_assistant=turn_assistant,
                         stuck_took_action=stuck.took_action,
+                        replied=bool(assistant_text.strip()),
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1

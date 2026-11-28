@@ -25939,3 +25939,81 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0421: a loop session's unread prose is cut at 2,500 characters and never continued
+
+Status: accepted. 2026-11-28.
+
+Context. A session running a loop skill answers tool results and the harness's own messages, and
+its turn-end hook refuses each stop so the loop goes on. Once the hook has continued a turn, a
+prose reply is read by no one: the hook answers it, and the model then does the work it described.
+Measured over three hours of eleven such sessions on one self-hosted 27B model (1,820 model-minutes;
+transcript times and sizes only), replies with no tool call took 254 minutes (13.9%), and the 23 of
+them over 2,000 characters took 116 of those minutes. A cap at 2,500 characters of prose before any
+tool call would have cut 18 replies, an estimated 55 minutes past the cap (each reply's minutes
+times its share of characters past the cap; thinking time is not separated out, so this is an upper
+bound), and 2 replies that called a tool after more than 2,500 characters of prose. Three replies
+that reached the output limit were continued ("Continue exactly where you left off"), and the
+continuations, prose again, took 20 more minutes.
+
+Amended the same day, after the first rollout. The floor passed only when a turn-end hook refused a
+`completed` stop. In one such session, 24.5 of the 36.1 model-minutes measured went to three prose
+replies of 15,000 to 16,000 characters, in a turn a person's message had opened. The plan gate,
+not the hook, kept sending that turn's replies back, so the floor never passed and nothing was cut.
+A review of the first fix found that a gate sending back a short preface with no tool call would
+pass the floor too, and the person's answer after the work would be cut.
+
+Decision.
+- The loop holds the floor from the moment a reply with text tries to end a turn and the turn goes
+  on, until a person speaks (a message delivered mid-turn) or the turn ends. A turn-end hook that
+  refuses the stop passes the floor on any such reply: the hook refusing it is the loop taking the
+  turn over. A gate that sends the reply back (the plan gate, or another) passes it only on a full
+  answer, one with more than the cap of text or one continued at the output limit; a shorter reply
+  may be a preface, and the answer may still be coming. The first answer of a turn is never
+  touched: whoever opened the turn may be waiting for it, and in a turn a person opened the answer
+  often comes after tool results. An answer cut off at the output limit and continued has not yet
+  tried to end the turn, so its continuation is the first answer too. That mark lasts one reply: a
+  continuation that calls a tool has not tried to end the turn either, and a person speaking before
+  it lands makes the next reply theirs. A turn that goes on after no
+  reply with text (silence, even after a preface earlier in the turn, which ends as `completed`
+  too; a provider error; a stall) has not answered them, so the floor does not pass.
+- While the loop holds the floor in a session with a loop skill, a streamed reply whose visible
+  text passes 2,500 characters before any tool call starts is cut where it passes, by the exit the
+  degeneration probe takes (ADR-0018). The reply ends as written with the finish reason
+  `prose_cap`, the turn is marked degraded, and the turn-end hook decides what follows. Thinking is
+  not counted.
+- Two replies are not cut: one that arrived whole (its text in a single delta, a provider replaying
+  a finished result: nothing is left to save, and the calls that follow would be lost) and one
+  already writing a text tool call when it passes the cap (`speaks_tool_protocol`, new in the
+  text-tool module).
+- The cut stands down when a turn ceiling (`max_cost_usd` or `max_tokens`, `meters_usage`) or an
+  armed spend gate counts each call's usage, because a cut stream never receives the usage the
+  provider sends at its end.
+- Prose of that kind that reaches the output limit is not continued, on the buffered path as on the
+  streaming one, and the turn is marked degraded as before.
+- A constant, not a setting (the no-knobs ruling).
+
+Alternatives rejected. A prompt line asking for short prose: after each such reply the hook already
+tells the model a text reply is not a stop, and the replies above were measured with that in place.
+A lower output limit on these calls: it would cut tool calls and thinking with the prose. Cutting
+every reply that follows a tool result: an answer to a person arrives after tool results.
+
+Consequences. Closing the stream is what frees the engine: the provider closes its response when the
+loop stops reading (ADR-0018's exit), and a server that aborts a generation whose client is gone
+stops decoding there. A cut call reports no usage, exactly like a call the degeneration probe cuts,
+so `/cost` and the usage notes do not count it; a ceiling or an armed gate keeps every stream whole
+for that reason. A false cut costs the call it would have made: the hook continues the turn and the
+model makes it again. That holds for a call written in the text protocol after more than the cap of
+prose too, since the native path salvages such a call only when its stream ends. Pinned in
+`tests/test_loop_prose_cap.py`: the cut (the stream left unread, the turn degraded, no
+continuation), a reply exactly at the cap kept whole, a call after too much prose cut with it; the
+first answer of a turn, a veto after silence, a silent end after a preface (streamed and
+buffered), a new turn after one the loop held (streamed and buffered), an answer after a person's
+mid-turn message and a session without a loop skill left whole; the floor held after a cut; the
+floor passed by the plan gate, streamed and buffered, with the continued first answer left whole
+and continued again, and not passed on a short preface the plan gate sent back, after a
+continuation that called a tool, or after a person spoke between a cut-off reply and its
+continuation, each streamed and buffered; a short preface before a call, text after a native call has
+started, thinking, a reply that arrived whole and a text tool call left whole; a turn ceiling and an
+armed spend gate keeping the stream; prose cut off at the output limit not continued, streamed and
+buffered, and a cut-off first answer still continued.
