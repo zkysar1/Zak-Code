@@ -3681,9 +3681,10 @@ def create_app(
     async def _begin_framework_stop() -> None:
         """Raise the framework's own stop ONCE and open the window it needs to run it.
 
-        Idempotent across the three callers that can end a run (the human's
-        ``/run/stop``, the mid-turn cap watcher, the between-beats cap check) so they
-        share ONE window rather than each restarting the grace.
+        Callers that can end a run: the human's ``/run/stop``, the mid-turn cap watcher,
+        the between-beats cap check and the between-beats idle check. Once the window is
+        open a later call is a no-op, so a caller arriving after that shares it rather
+        than restarting the grace.
         """
         nonlocal framework_stop_until, framework_stop_raised_at, stop_reentry_pending
         if framework_stop_until is not None:
@@ -4171,9 +4172,14 @@ def create_app(
                 # `not inflight` is load-bearing. A long turn is activity, and the stamp
                 # only moves when a say is CONSUMED, so a turn that outlives the window
                 # would otherwise be stopped for idling while it is the opposite of idle.
+                #
+                # An ending already open (the cap's, ``/run/stop``'s or this check's own) is
+                # not an abandoned run. Acting on it again would log this line on every beat
+                # of the window and could rename an ending someone else opened.
                 if (
                     resolved_settings.run_idle_timeout is not None
                     and not inflight
+                    and not _any_ending_window_open()
                     and time.monotonic() - last_say_at >= resolved_settings.run_idle_timeout
                 ):
                     logger.info(
