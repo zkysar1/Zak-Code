@@ -286,8 +286,9 @@ async def test_a_compaction_asked_for_does_not_outlive_its_turn(
     tmp_path: Path, streamed: bool
 ) -> None:
     """A turn that ended before its next call leaves the asked-for compaction behind; the next
-    turn starts without it."""
-    loop, compactor, _ = _loop(tmp_path, [_DONE])
+    turn starts without it. The first turn gives the session something to compact."""
+    loop, compactor, _ = _loop(tmp_path, [_DONE, _DONE])
+    await _turn(loop, streamed=streamed)
     loop._compact_due = "a rule-lookup loop was sent back 2 times with no work call between"
     stop_reason, _ = await _turn(loop, streamed=streamed)
     assert stop_reason == "completed"
