@@ -2830,14 +2830,14 @@ def _answered_then_called_a_tool(message: Message) -> bool:
 def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: str) -> Message:
     """Synthetic error results for tool_use blocks that will never execute.
 
-    A break taken after the assistant message is persisted but before its tool
+    A turn that stops after the assistant message is persisted but before its tool
     batch runs leaves dangling ``tool_use`` blocks in the session; on resume,
     strict providers reject the transcript (assistant ``tool_use`` followed by
     a user message with no ``tool_result``). Answering each call with an
-    ``is_error`` result first keeps the session replayable — the same pairing
-    contract the doom-loop veto epilogue maintains. Used by the
-    ``budget_exhausted``, non-veto ``doom_loop`` and ``context_full`` (ADR-0412) break
-    sites (both twins).
+    ``is_error`` result first keeps the session replayable. Add it before anything
+    else enters the session: a TURN_END veto adds its own re-entry message.
+    Used where a batch is never run: the budget stops, the ``context_full`` stop
+    (ADR-0412) and the doom-loop recovery, veto and stop (both twins).
     """
     return Message.tool_results(
         [
@@ -10864,6 +10864,19 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # The repeated batch never executes, so answer its tool_use blocks NOW, before
+                # the TURN_END hook is asked: a veto adds its re-entry message inside
+                # ``_fire_turn_end`` (ADR-0187), and an answer added after that message is out of
+                # order, so a strict provider refuses every later call.
+                self.session.add_message(
+                    _unexecuted_tool_results(
+                        result.tool_calls,
+                        "Not executed: this exact tool batch has been repeated with no "
+                        "progress. Change approach before retrying.",
+                        "doom_loop_intervention",
+                    )
+                )
+                self._persist()
                 prompt = await self._fire_turn_end(
                     "doom_loop",
                     iterations=iterations,
@@ -10873,27 +10886,6 @@ class AgentLoop:
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
-                    # The repeated batch was never executed, but the assistant message
-                    # carrying its tool_use blocks is already in the session — answer
-                    # each with a synthetic error result FIRST so strict providers
-                    # still see a valid tool_use/tool_result pairing on re-entry.
-                    self.session.add_message(
-                        Message.tool_results(
-                            [
-                                ToolResultBlock(
-                                    tool_use_id=call.id,
-                                    output=(
-                                        "Not executed: this exact tool batch has been "
-                                        "repeated with no progress. Change approach "
-                                        "before retrying."
-                                    ),
-                                    is_error=True,
-                                    data={"doom_loop_intervention": True},
-                                )
-                                for call in result.tool_calls
-                            ]
-                        )
-                    )
                     self._persist()
                     last_signature = None
                     repeat_count = 0
@@ -10901,18 +10893,6 @@ class AgentLoop:
                     continue
                 stop_reason = "doom_loop"
                 self._note("intervention", "repeated identical tool calls", kind="doom_loop")
-                # Same pairing contract as the veto epilogue above: the repeated
-                # batch never executes, so answer its tool_use blocks before the
-                # turn ends. (post-merge review of #20, finding 1 — pre-existing gap)
-                self.session.add_message(
-                    _unexecuted_tool_results(
-                        result.tool_calls,
-                        "Not executed: this exact tool batch has been repeated "
-                        "with no progress; the turn ended here.",
-                        "doom_loop_intervention",
-                    )
-                )
-                self._persist()
                 break
 
             # Plan-first gate (ADR-0110): DEEP work — the routing verdict, else the length
@@ -13082,6 +13062,17 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(message="recovering: repeated identical calls")
                         continue
+                    # Answer the unexecuted batch before the hook is asked (see the buffered
+                    # twin): a veto adds its re-entry message inside ``_fire_turn_end``.
+                    self.session.add_message(
+                        _unexecuted_tool_results(
+                            tool_calls,
+                            "Not executed: this exact tool batch has been repeated with no "
+                            "progress. Change approach before retrying.",
+                            "doom_loop_intervention",
+                        )
+                    )
+                    self._persist()
                     prompt = await self._fire_turn_end(
                         "doom_loop",
                         iterations=iterations,
@@ -13091,26 +13082,6 @@ class AgentLoop:
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
-                        # Pairing fix, identical to the buffered twin: the repeated
-                        # batch's tool_use blocks are in the session unexecuted —
-                        # answer them with synthetic error results before re-entry.
-                        self.session.add_message(
-                            Message.tool_results(
-                                [
-                                    ToolResultBlock(
-                                        tool_use_id=call.id,
-                                        output=(
-                                            "Not executed: this exact tool batch has been "
-                                            "repeated with no progress. Change approach "
-                                            "before retrying."
-                                        ),
-                                        is_error=True,
-                                        data={"doom_loop_intervention": True},
-                                    )
-                                    for call in tool_calls
-                                ]
-                            )
-                        )
                         self._persist()
                         last_signature = None
                         repeat_count = 0
@@ -13119,16 +13090,6 @@ class AgentLoop:
                         continue
                     stop_reason = "doom_loop"
                     self._note("intervention", "repeated identical tool calls", kind="doom_loop")
-                    # Pairing fix, identical to the buffered twin (non-veto break).
-                    self.session.add_message(
-                        _unexecuted_tool_results(
-                            tool_calls,
-                            "Not executed: this exact tool batch has been repeated "
-                            "with no progress; the turn ended here.",
-                            "doom_loop_intervention",
-                        )
-                    )
-                    self._persist()
                     yield AgentStatus(message="stopping: repeated identical tool calls")
                     break
 

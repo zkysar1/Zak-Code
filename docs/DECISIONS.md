@@ -10875,6 +10875,21 @@ marker), `tests/test_skills.py` (the vocabulary line), `tests/test_schedule_wake
 (`take_due_prompt`), `tests/test_self_restart.py` (the restart and sentinel doors);
 FEATURE_AUDIT LOOP-92; HOST-FRAMEWORK-COMPAT rows for the veto seam and the sentinel.
 
+**Amendment (2026-11-26): a doom-loop veto answers its tool calls before the re-entry
+message.** Decision 1 moved the append of the re-entry message into `_fire_turn_end`, but
+the doom-loop veto still answered its unexecuted tool batch after that call, so the session
+read assistant `tool_calls`, user, `tool`. A strict provider refuses that order on every
+later call. Measured 2026-11-26 on a served session: after the veto every call returned a
+400 ("An assistant message with 'tool_calls' must be followed by tool messages …"), the turn
+ended `veto_stall`, and later turns were refused the same way. Both doom-loop sites now
+answer the batch before the hook is asked, and a veto and a stop share that answer. Test:
+`tests/test_turn_end_loop.py::test_a_vetoed_doom_loop_answers_its_calls_before_the_re_entry`
+(the rail and a delivered skill, both turn paths, against a provider that refuses a
+mis-paired transcript). Related cases are not changed here: a turn cancelled, its stream
+closed, or its process killed while a tool batch runs can also leave calls unanswered; and a
+session already saved in the old order is not repaired on load, so it stays refused until a
+compaction drops those messages.
+
 ## ADR-0188: function tools on the gpt-5.6 chat route ride with `reasoning_effort="none"`, a remedy the provider names is applied in place, and the sidecar signs the stop it raises
 
 **Status:** Accepted (2026-09-17)
