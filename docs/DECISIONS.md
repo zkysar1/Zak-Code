@@ -25939,3 +25939,56 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0423: a compaction drops the rule lookups a request does not carry
+
+Status: accepted. 2026-11-28. Follows ADR-0400 on the compaction side, and changes the last
+sentence of its harness line and of ADR-0387's pinned-rule pointer.
+
+Context. ADR-0400 sends a completion that only asked `read_rule` for rules the model holds, with
+the tool message answering it, as one harness line, and the session keeps both messages. A
+compaction reads the session, so the summarizer was handed every such ask and its pointer answer,
+and the kept tail could be a run of them: the lookup-loop fence (ADR-0422) compacts in the middle
+of a run, so the next window could open on the run it was meant to end. The harness line and the
+pinned-rule pointer both told the model to apply the rule to the step it was on.
+
+What was measured, before building. One served worker session, read from its own transcript
+(tool names, times, rule names, fixed answer labels, and counts of rule names in each summary
+only), 2026-11-22 to 2026-11-28 06:00. One pinned rule, whose text names its own condition (a
+deploy or a remote service call), was asked 0 to 3 times an hour for five days. A summary at
+23:58 named it five times after two asks; from 02:00 it was asked 14, 23, 45 and 43 times in the
+next four hours, and each of the five summaries after that named it two to seven times. Three
+resume compactions in that stretch (ADR-0033) were followed by 39, 47 and 42 rule asks in the next
+hour (26, 47 and 33 for that rule): a new window did not end the run. In the two hours to 06:00,
+completions that only asked for it (84 asks) took 51.8 of the session's 86.4 model-minutes (60%;
+a completion's minutes are the time from the record before it). In ten other worker sessions over
+the same two hours such completions took 0 to 27%. The compaction at 05:56 came at 67k tokens of
+a 131k window, right after six such completions with no other call between: the fence's
+compaction, by its size and trigger.
+
+Decision.
+- `_compact_or_elide` hands the compactor `_drop_pointer_asks(session.messages)`: the history
+  without each pair `_hide_pointer_asks` replaces with a line (`_pointer_ask_names`, ADR-0400),
+  and with no line in its place. The summarizer never reads such a pair, and the history a
+  compaction installs (summary, carried rules, kept tail) holds none. The elision fallback
+  (ADR-0083) is handed the same list.
+- What ADR-0400 sends as it is stays: a first read, a `refresh=true` text, an error, a refusal
+  (ADR-0399), a batch with another tool, text beside the call. A lookup that brought something
+  back is summarized as before.
+- The harness line ends "Go on with the step you are on." instead of "Apply it to the step you are
+  on and take its next action.". The pinned pointer says "and it is always in force, so this ask
+  changed nothing. Go on with your current step, '<title>';" ("Go on working;" with no plan)
+  instead of "Apply it to your current step, '<title>';". A pinned rule states its own condition,
+  and the answer to an ask that changed nothing sends the model back to its work instead of making
+  the rule that work.
+
+Consequences.
+- The counters read their own state, not the messages, and are unchanged: ADR-0399's run, the doom
+  guard (ADR-0391), the ask count a carry ranks by (ADR-0386) and the fence (ADR-0422). A pointer's
+  ask number starts over after a compaction, as before.
+- A compaction's outcome line counts the session before the drop, so "compacted N → M" includes
+  the dropped pairs.
+- Not measured yet: how fast the asks fall in a session whose summary already names the rule. The
+  earlier summary is folded into the next (ADR-0330), so the names it carries go only as later
+  summaries condense it. The wording is the smaller lever: ADR-0400 measured that new words for
+  the index line that brings a rule up did not move the total asks.
