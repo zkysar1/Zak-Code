@@ -9222,6 +9222,7 @@ class AgentLoop:
         turn_started = time.monotonic()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
+        self._compact_due = None  # a lookup loop's compaction is for its own turn (ADR-0422)
         await self._maybe_compact()
         self._reset_stale_or_completed_plan()
         self._anchor_request(user_text)  # ADR-0110: a fresh plan knows what it is for
@@ -10944,6 +10945,7 @@ class AgentLoop:
         turn_started = time.monotonic()
         await self._fire_session_start_once()
         self._elide_ended_skill_bodies()  # before the compactor measures (ADR-0045)
+        self._compact_due = None  # ADR-0422 — see _run_turn (buffered twin)
         compaction = asyncio.ensure_future(self._maybe_compact())
         async for waiting in self._statuses_until(compaction):  # ADR-0100
             yield waiting

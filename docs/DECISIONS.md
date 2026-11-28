@@ -25964,6 +25964,9 @@ Decision.
   compacts whatever the size, saying why in its notice.
 - At the second counted veto after that compaction, still with no work call between, the veto is
   refused and the turn ends as `veto_stall` with the ADR-0187 net behind it.
+- The count marks the compaction when it asks for it, not when one runs: with no compactor, or a
+  compaction that fails, the second trip still ends the turn, since nothing changed the context the
+  loop runs on. A compaction asked for that has not run when the turn ends goes with the turn.
 
 Alternatives rejected. Ending the turn at the first trip: an unattended session continues a doom
 loop's end only with plan steps open and once in a row (ADR-0090), and a `stuck` end is not
@@ -25975,7 +25978,9 @@ and a refused ask is still a model call.
 Consequences. A lookup loop on a vetoing hook costs two cycles and one compaction before it goes
 on, and at most one more pair of cycles before the turn ends. Not measured: whether the compaction
 ends the loop; a trial on a running session is how it will be. A loop that puts a successful
-command between its asks is not counted. Pinned in `tests/test_lookup_veto_fence.py`, both turn
-paths: the compaction after two vetoes of a doom-loop lookup stop and of a stuck lookup stop, the
-`veto_stall` end after two more, the count started over by a work call and by a new turn, and a
+command between its asks is not counted; a failed call is no work, so it does not start the count
+over. Pinned in `tests/test_lookup_veto_fence.py`, both turn paths: the compaction after two vetoes
+of a doom-loop lookup stop and of a stuck lookup stop, the `veto_stall` end after two more, the
+count started over by a work call and by a new turn, a second compaction after a work call and in a
+new turn, the turn ended with no compactor, an asked-for compaction dropped with its turn, and a
 doom loop of failing calls that is not counted.
