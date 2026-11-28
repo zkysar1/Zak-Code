@@ -37,6 +37,7 @@ from zakcode.tools.base import (
     ToolContext,
     ToolResult,
     ToolSpec,
+    _match_skill_name,
 )
 
 #: Cap on a single returned body. Rules are already bounded per-file at discovery
@@ -203,6 +204,34 @@ def _refreshed(name: str, text: str) -> str:
     return REFRESH_HEAD.format(name=name) + text
 
 
+def _not_a_rule(name: str, registry: Any, ctx: ToolContext) -> str:
+    """The fix text for a name that matches no rule (ADR-0380, ADR-0424).
+
+    A skill of that name is named as one. Otherwise the one or two closest rule names lead, then
+    the answer says where the rules are listed and how another document is found. It does not
+    list every rule: the system prompt already lists the rules by name, and the names
+    asked for were mostly skills and other documents. Measured over 12 hours on eleven worker
+    sessions: 32 such answers, each ending "Use one of the available rules:" and every rule name;
+    4 of them were followed by 14 to 18 rule texts read in the next 10 minutes."""
+    skills = ctx.skill_resolver
+    if skills is not None:
+        try:
+            match = _match_skill_name(name, list(skills.names()))
+        except Exception:  # noqa: BLE001 — a hint must never break the tool
+            match = None
+        if match is not None:
+            return f'{name!r} is a skill, not a rule: load it with Skill(skill="{match}").'
+    # The closest one or two names lead (ADR-0380): a session asked again and again for a name a
+    # few letters off a rule the list held.
+    by_lower = {candidate.lower(): candidate for candidate in registry.names()}
+    close = difflib.get_close_matches(name.lower(), list(by_lower), n=2, cutoff=_CLOSEST_RULE_RATIO)
+    lead = f"Did you mean {' or '.join(repr(by_lower[c]) for c in close)}? " if close else ""
+    return (
+        f"{lead}Your system prompt lists the rules by name. For another document, "
+        f"find a file named {name + '.md'!r} with your file tools and read it."
+    )
+
+
 def _pointer_template(
     ctx: ToolContext, rule: Any, name: str, text: str, refresh: bool
 ) -> str | None:
@@ -307,20 +336,8 @@ class ReadRuleTool(Tool):
 
         found = _find_rule(registry, name)
         if found is None:
-            names = registry.names()
-            available = ", ".join(names) or "(none discovered)"
-            # The closest one or two names lead (ADR-0380): with only the full list, a session asked
-            # again and again for a name a few letters off a rule the list held.
-            by_lower = {candidate.lower(): candidate for candidate in names}
-            close = difflib.get_close_matches(
-                name.lower(), list(by_lower), n=2, cutoff=_CLOSEST_RULE_RATIO
-            )
-            lead = (
-                f"Did you mean {' or '.join(repr(by_lower[c]) for c in close)}? " if close else ""
-            )
             return ToolResult.error(
-                f"no rule named {name!r}.",
-                fix=f"{lead}Use one of the available rules: {available}.",
+                f"no rule named {name!r}.", fix=_not_a_rule(name, registry, ctx)
             )
 
         name, rule = found
