@@ -8494,7 +8494,6 @@ class AgentLoop:
         turn_assistant: list[Message],
         stuck_took_action: bool,
         allow_veto: bool = True,
-        replied: bool = False,
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
@@ -8512,9 +8511,7 @@ class AgentLoop:
         fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
         turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
         final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
-        veto-capable hook is asked. ``replied`` says the reply that ended the turn had visible
-        text; an empty one is stored as a placeholder, so the turn's messages cannot tell
-        (ADR-0421). Fail-open: a crashing hook run never blocks the stop.
+        veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
@@ -8633,12 +8630,6 @@ class AgentLoop:
                 kind="turn_end_governed",
                 skill=reentry[0],
             )
-        # A reply with text ended the turn and the hook goes on with it, so the loop holds the
-        # floor until a person speaks (ADR-0421). A turn that ended any other way (silence, even
-        # after a preface earlier in the turn; a provider error; a stall) has not answered
-        # whoever opened it.
-        if stop_reason == "completed" and replied:
-            self._loop_floor = True
         if reentry is not None:
             self._vetoes_without_skill += 1
             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
@@ -9864,6 +9855,11 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # A reply with text now tries to end the turn. Whatever sends it back (a gate
+                # below or the TURN_END hook), the next reply goes to the loop, not to whoever
+                # opened the turn: the loop holds the floor until a person speaks (ADR-0421).
+                if result.text.strip():
+                    self._loop_floor = True
                 # Recipe gate: a create-and-run turn may not end until the written file
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
@@ -10517,7 +10513,6 @@ class AgentLoop:
                     veto_count=turn_end_vetoes,
                     turn_assistant=turn_assistant,
                     stuck_took_action=stuck.took_action,
-                    replied=bool(result.text.strip()),
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
@@ -11979,6 +11974,9 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(message="response truncated; continuing")
                         continue
+                    # The floor passes to the loop (ADR-0421): see the buffered twin.
+                    if assistant_text.strip():
+                        self._loop_floor = True
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             # ADR-0244 — see the buffered twin.
@@ -12681,7 +12679,6 @@ class AgentLoop:
                         veto_count=turn_end_vetoes,
                         turn_assistant=turn_assistant,
                         stuck_took_action=stuck.took_action,
-                        replied=bool(assistant_text.strip()),
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1

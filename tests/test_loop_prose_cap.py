@@ -1,7 +1,8 @@
 """Prose no one reads, in a loop session (ADR-0421).
 
-A session runs a loop skill, its turn-end hook continued the turn and no person has spoken
-since: the loop holds the floor, and no person reads the prose the model writes. A streamed
+A session runs a loop skill, a reply with text tried to end the turn and something sent it back
+(the turn-end hook, the plan gate) and no person has spoken since: the loop holds the floor, and
+no person reads the prose the model writes. A streamed
 reply that writes more than the cap of it with no tool call started is cut where it passes the
 cap, and a reply of that kind that reaches the output limit is not continued. The first answer
 of a turn, an answer after a person's mid-task message, and any reply outside a loop session
@@ -38,6 +39,7 @@ from zakcode.providers.base import (
 from zakcode.providers.spend_gate import SpendGate, reset_gate_for_tests
 from zakcode.session.say_inbox import say_path, write_say
 from zakcode.session.store import Session
+from zakcode.tasks import Task
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
 
 _CONTINUE = "Continue exactly where you left off."
@@ -337,6 +339,53 @@ def test_outside_a_loop_session_nothing_is_cut(tmp_path: Path) -> None:
     loop = _loop(Scripted(_FIRST, Reply(text=text)), tmp_path, loop_skill="")
     _stream(loop)
     assert _replies(loop)[-1].text == text
+
+
+def _planned(loop: AgentLoop) -> AgentLoop:
+    """Give the session a plan with a step still open, so the plan gate sends a reply back."""
+    loop.session.task_network.replace_from_author(
+        [Task(title="file the report", status="in_progress")]
+    )
+    return loop
+
+
+def test_a_reply_the_plan_gate_sends_back_passes_the_floor(tmp_path: Path) -> None:
+    """The measured turn: a person asked, the answer reached the output limit and was continued,
+    and the plan gate, not the hook, sent each reply back. The continued answer is still the
+    first answer and stays whole; the replies after it are the loop's."""
+    answer = _prose(6000, "rest")
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text=answer),
+        Reply(text=_prose(9000, "x")),
+        Reply(text=_prose(9000, "y")),
+    )
+    hook = CarryOn(0)
+    loop = _planned(_loop(provider, tmp_path, hook=hook))
+    events = _stream(loop, "please explain what you found")
+    texts = [m.text for m in _replies(loop)]
+    assert texts[1] == answer
+    assert len(texts) == 4 and all(len(t) <= _LOOP_PROSE_CAP + 50 for t in texts[2:])
+    assert hook.asked == ["completed"]  # the hook refused no stop: the gate sent them back
+    assert events[-1].stop_reason == "completed"
+
+
+def test_a_buffered_reply_the_plan_gate_sends_back_passes_the_floor(tmp_path: Path) -> None:
+    """Buffered, the floor decides whether a reply cut off at the output limit is continued: the
+    first answer is, each time; the loop's prose after the gate sent the answer back is not."""
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text=_prose(800, "rest"), finish="length"),
+        Reply(text="That is all I found."),
+        Reply(text=_prose(800, "x"), finish="length"),
+        Reply(text=_prose(800, "y"), finish="length"),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    result = asyncio.run(loop.arun_turn("please explain what you found"))
+    asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
+    assert len(asked) == 2  # the answer, twice; the loop's prose never
+    assert provider.calls == 5  # the answer in three parts, then the gate's two send-backs
+    assert result.stop_reason == "completed"
 
 
 # ── what keeps streaming ─────────────────────────────────────────────────────

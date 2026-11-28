@@ -25941,13 +25941,21 @@ bound), and 2 replies that called a tool after more than 2,500 characters of pro
 that reached the output limit were continued ("Continue exactly where you left off"), and the
 continuations, prose again, took 20 more minutes.
 
+Amended the same day, after the first rollout. The floor passed only when a turn-end hook refused a
+`completed` stop. In one such session, 24.5 of the 36.1 model-minutes measured went to three prose
+replies of 15,000 to 16,000 characters, in a turn a person's message had opened. The plan gate,
+not the hook, kept sending that turn's replies back, so the floor never passed and nothing was cut.
+
 Decision.
-- The loop holds the floor from the moment a turn-end hook continues a turn that a reply with text
-  ended (stop reason `completed`) until a person speaks (a message delivered mid-turn) or the turn
-  ends. The first answer of a turn is never touched: whoever opened the turn may be waiting for it,
-  and in a turn a person opened the answer often comes after tool results. A refused stop that no
-  reply with text ended (silence, even after a preface earlier in the turn, which ends as
-  `completed` too; a provider error; a stall) has not answered them, so the floor does not pass.
+- The loop holds the floor from the moment a reply with text tries to end a turn and the turn goes
+  on, until a person speaks (a message delivered mid-turn) or the turn ends. Whatever sends the
+  reply back makes no difference: a turn-end hook, the plan gate or another gate. The first answer
+  of a turn is never touched: whoever opened the turn may be waiting for it, and in a turn a person
+  opened the answer often comes after tool results. An answer cut off at the output limit and
+  continued has not yet tried to end the turn, so its continuation is the first answer too. A turn
+  that goes on after no reply with text (silence, even after a preface earlier in the turn, which
+  ends as `completed` too; a provider error; a stall) has not answered them, so the floor does not
+  pass.
 - While the loop holds the floor in a session with a loop skill, a streamed reply whose visible
   text passes 2,500 characters before any tool call starts is cut where it passes, by the exit the
   degeneration probe takes (ADR-0018). The reply ends as written with the finish reason
@@ -25980,7 +25988,9 @@ prose too, since the native path salvages such a call only when its stream ends.
 continuation), a reply exactly at the cap kept whole, a call after too much prose cut with it; the
 first answer of a turn, a veto after silence, a silent end after a preface (streamed and
 buffered), a new turn after one the loop held (streamed and buffered), an answer after a person's
-mid-turn message and a session without a loop skill left whole; the floor held after a cut; a short preface before a call, text after a native call has
+mid-turn message and a session without a loop skill left whole; the floor held after a cut; the
+floor passed by the plan gate, streamed and buffered, with the continued first answer left whole
+and continued again; a short preface before a call, text after a native call has
 started, thinking, a reply that arrived whole and a text tool call left whole; a turn ceiling and an
 armed spend gate keeping the stream; prose cut off at the output limit not continued, streamed and
 buffered, and a cut-off first answer still continued.
