@@ -336,11 +336,12 @@ _LOOKUP_RECOVERY_NUDGE = (
 
 #: What a request carries in place of a completion that only asked ``read_rule`` for rules the
 #: model holds, and its answers (ADR-0400). Built from the rule names alone, never from state that
-#: moves such as the plan step, so every request renders it the same at the same place.
+#: moves such as the plan step, so every request renders it the same at the same place. It sends
+#: the model back to its step and no longer tells it to apply the rules there (ADR-0423), as the
+#: pinned rule's pointer no longer does either.
 _POINTER_ASK_HIDDEN = (
     "You asked read_rule for {names}: {they} already in your context, so nothing new came back, "
-    "and an ask like this one is not shown in the conversation. Apply {it} to the step you are on "
-    "and take its next action."
+    "and an ask like this one is not shown in the conversation. Go on with the step you are on."
 )
 
 
@@ -2724,9 +2725,8 @@ def _hide_pointer_asks(messages: list[Message]) -> list[Message]:
             continue
         if out is None:
             out = messages[:i]
-        one = len(names) == 1
         line = _POINTER_ASK_HIDDEN.format(
-            names=", ".join(names), they="it is" if one else "they are", it="it" if one else "them"
+            names=", ".join(names), they="it is" if len(names) == 1 else "they are"
         )
         out.append(
             Message(
@@ -2736,6 +2736,27 @@ def _hide_pointer_asks(messages: list[Message]) -> list[Message]:
             )
         )
         i += 2
+    return messages if out is None else out
+
+
+def _drop_pointer_asks(messages: list[Message]) -> list[Message]:
+    """``messages`` as a compaction reads them (ADR-0423): without the pairs a request does not
+    carry (ADR-0400), the completion that only asked ``read_rule`` for rules the model holds and
+    the tool message answering it, and without a line in their place. Such a pair brought back
+    nothing, so the summarizer never reads a run of them as work worth recording, and the kept
+    tail never opens the next window on one. ``messages`` itself comes back when there is
+    nothing to drop."""
+    out: list[Message] | None = None
+    i = 0
+    while i < len(messages):
+        if i + 1 < len(messages) and _pointer_ask_names(messages[i], messages[i + 1]) is not None:
+            if out is None:
+                out = messages[:i]
+            i += 2
+            continue
+        if out is not None:
+            out.append(messages[i])
+        i += 1
     return messages if out is None else out
 
 
@@ -4632,9 +4653,11 @@ class AgentLoop:
             ):
                 return await self._summarize_for_compaction(old)
 
+        # ADR-0423: lookups that brought back nothing are neither summarized nor kept.
+        history = _drop_pointer_asks(self.session.messages)
         try:
             result = await self.compactor.compact(
-                self.session.messages,
+                history,
                 summarize=summarize,
                 context_window=window,
                 count_tokens=self._tail_tokens,
@@ -4645,7 +4668,7 @@ class AgentLoop:
                 "compaction summarizer failed; eliding tool outputs instead", exc_info=True
             )
             result = self.compactor.elide(
-                self.session.messages, context_window=window, count_tokens=self._tail_tokens
+                history, context_window=window, count_tokens=self._tail_tokens
             )
         if not result.compacted:
             outcome = (

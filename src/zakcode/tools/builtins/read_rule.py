@@ -83,10 +83,14 @@ JUST_ASKED = (
 #: held, and later ones alternated pointer and text: measured 2026-11-17 on one worker session,
 #: three pinned rules sent 13,834 such characters, and the rule its host pinned for being read
 #: most was asked seven times in three minutes. Opens like the pointer, so the count goes on.
+#: It sends the model back to its step and no longer tells it to apply the rule there (ADR-0423):
+#: a pinned rule states its own condition, and measured 2026-11-28 on one worker session a pinned
+#: rule was asked 84 times in two hours, most asks answered by this line telling the model to
+#: apply it to the step it was on.
 PINNED = (
     "[already read; ask {n}] Rule {name!r} is pinned: its full text is in your system prompt, "
-    'under the heading "## {name}", and it is always in force. Apply it{step}; refresh=true '
-    "returns it here only if you need it as a tool result."
+    'under the heading "## {name}", and it is always in force, so this ask changed nothing. Go '
+    "back{step} and carry on; refresh=true returns it here only if you need it as a tool result."
 )
 
 
