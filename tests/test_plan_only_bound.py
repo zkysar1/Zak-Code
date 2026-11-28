@@ -79,6 +79,21 @@ def test_a_plan_call_that_moved_the_plan_is_not_churn() -> None:
     assert closing.plan_only_run == 0
 
 
+def test_the_ask_before_an_advance_neither_lengthens_nor_ends_the_run() -> None:
+    # ADR-0168 amended: the advance now comes on the second unchanged resend. Counted, the ask
+    # would have that resend refused here; ending the run, an edit between each pair of resends
+    # would never reach the bound.
+    tracker = _tracker()
+    _observe_plan(tracker, 1)
+    _observe_plan(tracker, 2, advance_offered=True)
+    assert tracker.plan_only_run == 1
+    assert not tracker.refuses_plan_only(_plan(3))
+    _observe_plan(tracker, 3)  # an edit
+    _observe_plan(tracker, 4, advance_offered=True)
+    assert tracker.plan_only_run == 2
+    assert tracker.refuses_plan_only(_plan(5))
+
+
 def test_an_errored_plan_call_did_not_move_the_plan() -> None:
     tracker = _tracker()
     for n in range(2):

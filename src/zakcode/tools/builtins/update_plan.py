@@ -473,8 +473,19 @@ class UpdatePlanTool(Tool):
                 # instead of the rail it ignores (arm M). The trigger is the EVIDENCE, not a
                 # setting: with nothing worked this falls through to the plain unchanged receipt,
                 # which is what keeps an always-on advance from inventing progress.
-                return self._autoadvance(network, current, _complete_hint(ctx))
+                # The FIRST such resend only asks (ADR-0168 amended): one resend is often a model
+                # restating its plan after a call that did not finish the step, and "has evidence"
+                # is not "done". The second, with the same step still current, is the loop.
+                if network.advance_offered_step == current.id:
+                    network.advance_offered_step = ""
+                    return self._autoadvance(network, current, _complete_hint(ctx))
+                network.advance_offered_step = current.id
+                offered = self._unchanged(network, finished, total, _complete_hint(ctx))
+                assert offered.data is not None
+                offered.data["advance_offered"] = True
+                return offered
             return self._unchanged(network, finished, total, _complete_hint(ctx))
+        network.advance_offered_step = ""
         if closed_on_outcome:
             # ADR-0254: say what was read, in the receipt the model gets back — a harness that
             # closes a step on the model's behalf tells the model so, and names the contract it

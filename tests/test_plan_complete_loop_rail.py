@@ -88,6 +88,7 @@ async def test_every_receipt_that_reports_a_finished_plan_carries_the_loop_rail(
     ctx = _ctx(lambda: "work-loop")
     worked = [{"title": "a", "status": "pending", "outcome": "did a"}]
     await tool.execute({"tasks": worked}, ctx)
+    await tool.execute({"tasks": worked}, ctx)  # asks once before the advance
     moved = await tool.execute({"tasks": worked}, ctx)
     assert moved.data is not None and moved.data["autoadvanced"] is True
     assert moved.data["complete"] is True

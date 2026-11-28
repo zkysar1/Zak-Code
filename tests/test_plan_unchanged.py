@@ -87,6 +87,7 @@ async def test_a_recorded_outcome_whose_status_never_moved_is_ADVANCED_not_raile
     ]
     ctx, _ = _ctx()
     await UpdatePlanTool().execute({"tasks": plan}, ctx)
+    await UpdatePlanTool().execute({"tasks": plan}, ctx)  # asks once (ADR-0168 amended)
     again = await UpdatePlanTool().execute({"tasks": plan}, ctx)
     assert again.output.startswith("Advanced step 1 ('Create utils/duration.py') to done")
     assert again.data is not None and again.data["autoadvanced"] is True

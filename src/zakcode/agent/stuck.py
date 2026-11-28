@@ -754,17 +754,25 @@ class StuckTracker:
         harness advanced it (lever N) or reports more steps done than the last receipt did: a
         model closing steps on work it already did, or walked by the advance, is not churning."""
         moved = False
+        offered = False
         for call in calls:
             result = by_id.get(call.id)
             if result is None or result.is_error or not isinstance(result.data, dict):
                 continue
             if result.data.get("autoadvanced"):
                 moved = True
+            if result.data.get("advance_offered"):
+                offered = True
             finished = result.data.get("finished")
             if isinstance(finished, int) and not isinstance(finished, bool):
                 if self._plan_finished is not None and finished > self._plan_finished:
                     moved = True
                 self._plan_finished = finished
+        # The one ask ahead of an advance (ADR-0168 amended) neither lengthens nor ends the run:
+        # counted, it would have the next resend refused and the advance never reached; ending
+        # it, an edit between each pair of resends would never reach the bound.
+        if offered and not moved and self._is_plan_only(calls):
+            return
         self._plan_only_run = (
             self._plan_only_run + 1 if self._is_plan_only(calls) and not moved else 0
         )
