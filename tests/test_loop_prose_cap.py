@@ -1,13 +1,14 @@
 """Prose no one reads, in a loop session (ADR-0421).
 
-A session runs a loop skill, a reply with text tried to end the turn and something sent it back
-(the turn-end hook, the plan gate) and no person has spoken since: the loop holds the floor, and
-no person reads the prose the model writes. A streamed
-reply that writes more than the cap of it with no tool call started is cut where it passes the
-cap, and a reply of that kind that reaches the output limit is not continued. The first answer
-of a turn, an answer after a person's mid-task message, and any reply outside a loop session
-are never touched; nor is a stream whose usage a turn ceiling or the spend gate counts, since a
-cut stream reports none. Hermetic.
+A session runs a loop skill, a reply tried to end the turn, something sent it back and no person
+has spoken since: the loop holds the floor, and no person reads the prose the model writes. The
+turn-end hook's refusal passes the floor on any reply with text, a gate's (the plan gate's) only
+on a full answer, longer than the cap or continued at the output limit: a shorter reply may be a
+preface. A streamed reply that writes more than the cap of prose with no tool call started is cut
+where it passes the cap, and a reply of that kind that reaches the output limit is not continued.
+The first answer of a turn, an answer after a person's mid-task message, and any reply outside a
+loop session are never touched; nor is a stream whose usage a turn ceiling or the spend gate
+counts, since a cut stream reports none. Hermetic.
 """
 
 from __future__ import annotations
@@ -386,6 +387,41 @@ def test_a_buffered_reply_the_plan_gate_sends_back_passes_the_floor(tmp_path: Pa
     assert len(asked) == 2  # the answer, twice; the loop's prose never
     assert provider.calls == 5  # the answer in three parts, then the gate's two send-backs
     assert result.stop_reason == "completed"
+
+
+def test_a_short_reply_a_gate_sends_back_leaves_the_floor_with_the_person(tmp_path: Path) -> None:
+    """A preface with no tool call, sent back by the plan gate, answered no one: the answer that
+    follows the work stays whole. Once that answer tries to end the turn, the loop has the floor."""
+    answer = _prose(6000, "rest")
+    provider = Scripted(
+        Reply(text="I will start by looking."),
+        Reply(calls=[_call("probe")]),
+        Reply(text=answer),
+        Reply(text=_prose(9000, "x")),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    _stream(loop, "please explain what you found")
+    texts = [m.text for m in _replies(loop)]
+    assert texts[2] == answer
+    assert len(texts) == 4 and len(texts[3]) <= _LOOP_PROSE_CAP + 50
+
+
+def test_a_buffered_short_reply_a_gate_sends_back_leaves_the_floor_with_the_person(
+    tmp_path: Path,
+) -> None:
+    provider = Scripted(
+        Reply(text="I will start by looking."),
+        Reply(calls=[_call("probe")]),
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="the rest"),
+        Reply(text=_prose(800, "x"), finish="length"),
+        Reply(text=_prose(800, "y"), finish="length"),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    asyncio.run(loop.arun_turn("please explain what you found"))
+    asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
+    assert len(asked) == 1  # the answer was continued; the loop's prose after it was not
+    assert provider.calls == 5
 
 
 # ── what keeps streaming ─────────────────────────────────────────────────────

@@ -8494,6 +8494,7 @@ class AgentLoop:
         turn_assistant: list[Message],
         stuck_took_action: bool,
         allow_veto: bool = True,
+        replied: bool = False,
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
@@ -8511,7 +8512,9 @@ class AgentLoop:
         fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
         turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
         final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
-        veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
+        veto-capable hook is asked. ``replied`` says the reply that ended the turn had visible
+        text; an empty one is stored as a placeholder, so the turn's messages cannot tell
+        (ADR-0421). Fail-open: a crashing hook run never blocks the stop.
         """
         observe = self.hook_manager.has_turn_end_observers()
         vetoable = (
@@ -8630,6 +8633,13 @@ class AgentLoop:
                 kind="turn_end_governed",
                 skill=reentry[0],
             )
+        # A reply with text ended the turn and the hook goes on with it, so the loop holds the
+        # floor until a person speaks (ADR-0421), however short the reply: the hook refusing the
+        # stop is the loop taking the turn over. A turn that ended any other way (silence, even
+        # after a preface earlier in the turn; a provider error; a stall) has not answered
+        # whoever opened it.
+        if stop_reason == "completed" and replied:
+            self._loop_floor = True
         if reentry is not None:
             self._vetoes_without_skill += 1
             delivered = await self._deliver_veto_skill(reentry[0], reentry[1], reason)
@@ -9252,6 +9262,7 @@ class AgentLoop:
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         refusal_ends_turn = False  # this turn's provider_error is a quota refusal it ends on
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the reply now ending the turn was continued (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None): the last
@@ -9839,6 +9850,7 @@ class AgentLoop:
                     and length_continuations < _MAX_LENGTH_CONTINUATIONS
                 ):
                     length_continuations += 1
+                    answer_continued = True
                     turn_degraded = True
                     self.session.add_message(
                         Message.user(
@@ -9855,11 +9867,14 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
-                # A reply with text now tries to end the turn. Whatever sends it back (a gate
-                # below or the TURN_END hook), the next reply goes to the loop, not to whoever
-                # opened the turn: the loop holds the floor until a person speaks (ADR-0421).
-                if result.text.strip():
+                # A reply that says more than the cap, or one continued at the output limit, is a
+                # full answer, and it now tries to end the turn. Whatever sends it back (a gate
+                # below or the TURN_END hook), the next reply goes to the loop: the loop holds the
+                # floor until a person speaks. A shorter reply may be a preface, so only the
+                # hook's refusal passes the floor on it, in _fire_turn_end (ADR-0421).
+                if answer_continued or len(result.text.strip()) > _LOOP_PROSE_CAP:
                     self._loop_floor = True
+                answer_continued = False
                 # Recipe gate: a create-and-run turn may not end until the written file
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
@@ -10513,6 +10528,7 @@ class AgentLoop:
                     veto_count=turn_end_vetoes,
                     turn_assistant=turn_assistant,
                     stuck_took_action=stuck.took_action,
+                    replied=bool(result.text.strip()),
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
@@ -10999,6 +11015,7 @@ class AgentLoop:
         self._veto_delivered = None
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the reply now ending the turn was continued (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
@@ -11959,6 +11976,7 @@ class AgentLoop:
                         and length_continuations < _MAX_LENGTH_CONTINUATIONS
                     ):
                         length_continuations += 1
+                        answer_continued = True
                         turn_degraded = True
                         self.session.add_message(
                             Message.user(
@@ -11974,9 +11992,10 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(message="response truncated; continuing")
                         continue
-                    # The floor passes to the loop (ADR-0421): see the buffered twin.
-                    if assistant_text.strip():
+                    # A full answer passes the floor to the loop (ADR-0421): see the buffered twin.
+                    if answer_continued or len(assistant_text.strip()) > _LOOP_PROSE_CAP:
                         self._loop_floor = True
+                    answer_continued = False
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             # ADR-0244 — see the buffered twin.
@@ -12679,6 +12698,7 @@ class AgentLoop:
                         veto_count=turn_end_vetoes,
                         turn_assistant=turn_assistant,
                         stuck_took_action=stuck.took_action,
+                        replied=bool(assistant_text.strip()),
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
