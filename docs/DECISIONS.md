@@ -25964,3 +25964,22 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0418: the log names the thinking blocks the API says it changed
+
+Status: accepted. 2026-11-27. Adds a log line; no request changes.
+
+Context. Requests to the adaptive-thinking models opt into `drop_block` (ADR-0321). The API then
+names each thinking block it dropped in the response's `input_transformations`, and its docs say a
+drop invalidates the prompt cache from the first dropped block on
+(https://platform.claude.com/docs/en/build-with-claude/preserved-thinking/fix-bound-to-a-different-conversation).
+When streaming, the list is only in the `message_start` event, and litellm 1.86.2 reads that
+event's usage alone, so no drop could be seen.
+
+Decision. The provider wraps litellm's Anthropic stream parser and logs a non-empty list at INFO:
+the count, and the type, reason and path of the first eight entries. No block text is logged.
+
+Consequences. A served session's log now says whether and where blocks are dropped. The buffered
+path and the list a mid-stream fallback puts on `message_delta` are not read. The wrap names a
+litellm internal: a test sends a canned event stream through litellm's own client, so a litellm
+change that moves the parser fails the suite.

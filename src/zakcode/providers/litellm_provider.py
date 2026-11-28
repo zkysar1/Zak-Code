@@ -29,6 +29,7 @@ from typing import Any
 
 import httpx
 import litellm
+from litellm.llms.anthropic.chat.handler import ModelResponseIterator as AnthropicStreamParser
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
 from zakcode.config import Settings
@@ -183,6 +184,54 @@ def _httpx_transport_with_keepalive() -> httpx.AsyncHTTPTransport | None:
 setattr(AsyncHTTPHandler, "_create_httpx_transport", staticmethod(_httpx_transport_with_keepalive))  # noqa: B010
 
 logger = logging.getLogger("zakcode.providers")
+
+#: How many ``input_transformations`` entries one log line spells out.
+_TRANSFORMATIONS_SHOWN = 8
+
+
+def _log_input_transformations(event: Any) -> None:
+    """Log what the API says it did to this request's thinking blocks, if anything.
+
+    With the ``thinking-binding-controls-2026-08-01`` beta header a response carries
+    ``input_transformations``: one entry per thinking block the API dropped, or let through,
+    after it failed a binding check, and dropping blocks invalidates the prompt cache from the
+    first dropped one on. When streaming, the list is in the ``message_start`` event's
+    ``message``. litellm 1.86.2 reads only that event's usage, so it is read here.
+    https://platform.claude.com/docs/en/build-with-claude/preserved-thinking/fix-bound-to-a-different-conversation
+    """
+    if not isinstance(event, dict) or event.get("type") != "message_start":
+        return
+    message = event.get("message")
+    entries = message.get("input_transformations") if isinstance(message, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return
+    shown = [
+        " ".join(str(entry.get(key))[:80] for key in ("type", "reason", "path"))
+        for entry in entries[:_TRANSFORMATIONS_SHOWN]
+        if isinstance(entry, dict)
+    ]
+    logger.info(
+        "input_transformations: the API reported %d thinking block change(s) on this request: %s",
+        len(entries),
+        "; ".join(shown),
+    )
+
+
+def _watch_stream_events() -> None:
+    """Run :func:`_log_input_transformations` on each event litellm's Anthropic stream parses."""
+    parse = AnthropicStreamParser.chunk_parser
+    if getattr(parse, "_zakcode_watched", False):
+        return
+
+    def chunk_parser(self: Any, chunk: dict[str, Any]) -> Any:
+        _log_input_transformations(chunk)
+        return parse(self, chunk)
+
+    chunk_parser._zakcode_watched = True  # type: ignore[attr-defined]
+    setattr(AnthropicStreamParser, "chunk_parser", chunk_parser)  # noqa: B010
+
+
+_watch_stream_events()
 
 
 class _DropLoggingWorkerCancellation(logging.Filter):
