@@ -25977,10 +25977,11 @@ Decision.
   back is summarized as before.
 - The harness line ends "Go on with the step you are on." instead of "Apply it to the step you are
   on and take its next action.". The pinned pointer says "and it is always in force, so this ask
-  changed nothing. Go on with your current step, '<title>';" ("Go on working;" with no plan)
-  instead of "Apply it to your current step, '<title>';". A pinned rule states its own condition,
-  and the answer to an ask that changed nothing sends the model back to its work instead of making
-  the rule that work.
+  changed nothing. Go back to your current step, '<title>' and carry on;" ("Go back and carry
+  on;" with no plan) instead of "Apply it to your current step, '<title>';", in the same step
+  field the other pointers fill, so every caller formats it as before. A pinned rule states its
+  own condition, and the answer to an ask that changed nothing sends the model back to its work
+  instead of making the rule that work.
 
 Consequences.
 - The counters read their own state, not the messages, and are unchanged: ADR-0399's run, the doom

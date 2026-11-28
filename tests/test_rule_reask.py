@@ -61,7 +61,7 @@ def _ask(ctx: ToolContext, name: str = "error-response", **args: object):
 
 
 def _pinned(n: int = 1, name: str = "error-response") -> str:
-    return PINNED.format(n=n, name=name, step="", on_step=" working")
+    return PINNED.format(n=n, name=name, step="")
 
 
 def _text(registry: RuleRegistry, name: str) -> str:
@@ -92,16 +92,14 @@ def test_the_pinned_line_sends_the_model_back_to_its_step() -> None:
     plan = TaskNetwork(tasks=[Task(title="Write the tests")])
     res = _ask(_ctx(_registry(), plan=plan))
     assert res.output == PINNED.format(
-        n=1,
-        name="error-response",
-        step=" to your current step, 'Write the tests'",
-        on_step=" with your current step, 'Write the tests'",
+        n=1, name="error-response", step=" to your current step, 'Write the tests'"
     )
-    assert "so this ask changed nothing. Go on with your current step, 'Write the tests';" in (
-        res.output
+    assert (
+        "so this ask changed nothing. Go back to your current step, 'Write the tests' and carry "
+        "on;" in res.output
     )
     assert "Apply" not in res.output
-    assert "so this ask changed nothing. Go on working;" in _ask(_ctx(_registry())).output
+    assert "so this ask changed nothing. Go back and carry on;" in _ask(_ctx(_registry())).output
 
 
 def test_refresh_still_returns_a_pinned_rules_text() -> None:
