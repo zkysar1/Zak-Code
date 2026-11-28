@@ -13413,21 +13413,27 @@ identically on a host framework and on a bare session.
 **Amendment (2026-11-28): the line rides only when every call only prints.** The decision above
 reads 200 or more characters of prose beside a tool call as a delivered answer. In a long tool
 loop it usually is not: it is the narration before the next real step, and a line saying to stop
-ends the turn there. Measured on one long-running hosted session, 2026-11-24 to 11-28, whose
+often ends the turn there. Measured on one long-running hosted session, 2026-11-24 to 11-28, whose
 host refuses a turn that ends in text, so each such ending cost a retry; counted only on requests
 that carried nothing new but tool results: after a completion with 200 or more characters of prose
 and a tool call, the reply was text alone 79 times in 132, and 66 of those 79 said in words that
 nothing had changed or that it was stopping; after shorter prose, 1 in 83; after none, 67 in
 2,462. The share jumps at the line itself (0 of 11 at 175-199 characters, 6 of 11 at 200-224).
-The line is never saved in the transcript, so it was read from the code and not from the record.
-The line now rides only when every call of the completion is a shell call whose whole command
-prints literal words, the test ADR-0373 already bounds (`is_print_only`), which is the shape the
-decision above measured. Replayed on those 132 completions it rides on none: not one was a bare
-print. A long answer followed by a literal print still carries it. Tests:
-`tests/test_already_answered_rail.py` (a read, a command, a print mixed with a read, and a print
-that expands a variable never carry it). Five mutants, each killed: the line never rides; the old
-any-call rule, caught by the new control and by the predicate test; no length bound; any shell
-command counted as a print.
+The line is never saved in the transcript, and no decision trace of that session was found, so its
+presence on those requests is inferred from the code and that jump, not read from a record.
+The line now rides only when every call of the completion is a shell call whose whole command is
+one `echo` of literal words, the test ADR-0373 already bounds (`is_print_only`), which is the
+shape the decision above measured; a literal `printf`, `Write-Output` or `Write-Host` does
+not count. Replayed on those 132 completions it rides on none: not one was a bare print. Two
+residuals: a long answer followed by a literal print still carries it, and a long answer sent with
+the `update_plan` call that closes the plan no longer gets it, so at most the finished plan's
+line follows (none where ADR-0205 or ADR-0208 keeps it silent), and that line asks for the answer
+without saying one was given. Tests: `tests/test_already_answered_rail.py` (on both turn paths, a
+read, a command, a print mixed with a read, and a print that expands a variable never carry it).
+Six mutants, each killed: the line
+never rides; the old any-call rule, caught by the new control and by the predicate test; no length
+bound; any shell command counted as a print; the streamed path keeping the flag once set; the
+streamed path not clearing it at the start of a turn.
 
 ---
 

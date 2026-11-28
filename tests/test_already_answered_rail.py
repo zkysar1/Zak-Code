@@ -12,7 +12,7 @@ Nothing could catch it after the fact. The repeat is the model's own prose, and 
 compares tool OUTPUTS: it is handed each iteration's assistant text and uses it in one place,
 only to ask whether it is empty. And by the time the second answer could be recognised as a
 repeat it is already streaming onto the screen, where it cannot be unsaid. So this acts BEFORE,
-on the one fact that is certain at the time: the previous completion had already answered.
+on what is certain at the time: the previous completion had answered and asked only to print.
 
 WHAT IS PINNED HERE IS THE WIRE, NEVER THE SOURCE. Every assertion reads the rails
 the loop recorded for each real request, so a test cannot pass because a constant exists.
@@ -22,7 +22,8 @@ on the call that follows an answer and a print. A rail that rides every call wou
 "does it ride?" test ever written while quietly costing tokens on every request of every turn,
 and a line that follows real work tells the model to stop in the middle of it: measured on one
 long-running hosted session (2026-11-24..28), prose of 200 or more characters before such a call
-was answered by text alone 79 times in 132, and below that length once in 83.
+was answered by text alone 79 times in 132, against once in 83 after shorter prose and 67 times
+in 2,462 after none.
 
 Hermetic: a scripted provider, real prints and a real read of a file in tmp_path, no network.
 """
@@ -189,7 +190,10 @@ async def test_a_long_narration_before_real_work_never_pays_for_the_line(
 
 
 @pytest.mark.asyncio
-async def test_the_line_stops_riding_once_the_model_moves_on(tmp_path: Path, target: Path) -> None:
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_the_line_stops_riding_once_the_model_moves_on(
+    tmp_path: Path, target: Path, streamed: bool
+) -> None:
     """It is recomputed from every completion, so it can never be stale by an iteration: an
     answer, then a tool, then a SHORT completion that calls another tool, and the line is gone."""
     provider = _Scripted(
@@ -200,7 +204,7 @@ async def test_the_line_stops_riding_once_the_model_moves_on(tmp_path: Path, tar
         ]
     )
     loop = _loop(provider, tmp_path)
-    assert await _run(loop, "what is the state?", streamed=False) == "completed"
+    assert await _run(loop, "what is the state?", streamed=streamed) == "completed"
 
     rails = _rails(loop)
     assert len(rails) == 3, rails
@@ -228,27 +232,28 @@ async def test_an_answer_with_no_tool_call_leaves_nothing_behind_for_the_next_tu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
 async def test_a_turn_cut_off_mid_answer_leaves_nothing_armed_for_the_next_one(
-    tmp_path: Path, target: Path
+    tmp_path: Path, target: Path, streamed: bool
 ) -> None:
     """The only way a turn ENDS with an answer standing, and the reason the flag is cleared at
     every turn start rather than only when it stops being true.
 
     Normally a turn ends on a completion with no tool call, which leaves the flag false on its
     own. But a turn cut off by its iteration budget ends right after a completion that answered
-    AND called a tool — so the flag is still set when the next turn begins, and without the
+    and then only printed — so the flag is still set when the next turn begins, and without the
     reset a person's fresh question would be answered under a line about an answer they never saw.
     """
     provider = _Scripted([_said(ANSWER, _echo("c1")), _said("done")])
     loop = _loop(provider, tmp_path)
     loop.max_iterations = 1  # the budget ends the turn immediately after the first completion
 
-    assert await _run(loop, "what is the state?", streamed=False) == "max_iterations"
+    assert await _run(loop, "what is the state?", streamed=streamed) == "max_iterations"
     # The hazard is REAL and asserted before the remedy: the turn ended with an answer standing.
     assert loop._answer_already_given is True
 
     loop.max_iterations = 10
-    assert await _run(loop, "a fresh question", streamed=False) == "completed"
+    assert await _run(loop, "a fresh question", streamed=streamed) == "completed"
     # The trace is per-turn, so index 0 here is the FIRST call of the second turn.
     assert "already_answered" not in _rails(loop)[0], _rails(loop)
 

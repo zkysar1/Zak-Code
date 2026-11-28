@@ -203,8 +203,8 @@ _PRINT_ONLY_RE = re.compile(
 
 
 def is_print_only(calls: Sequence[ToolCall], shell_tools: Collection[str]) -> bool:
-    """Whether ``calls`` is non-empty and each is a shell call whose whole command only prints
-    literal words (:data:`_PRINT_ONLY_RE`). Such a call reads nothing and changes nothing."""
+    """Whether ``calls`` is non-empty and each is a shell call whose whole command is one ``echo``
+    of literal words (:data:`_PRINT_ONLY_RE`). Such a call reads nothing and changes nothing."""
     return bool(calls) and all(
         c.name in shell_tools
         and isinstance(command := c.arguments.get("command"), str)
