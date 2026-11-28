@@ -11224,6 +11224,27 @@ process: a record without one, or a platform that cannot read one, keeps the pid
 The `lost` notification says the exit went unobserved and the output file may still be
 complete, so a host framework does not re-run a suite that finished.
 
+**Amended 2026-11-28 (a child an earlier build started is reaped by the status read).** The
+ADR-0034 restart into a new build replaces the program with `os.execv` and keeps the process,
+so a task the earlier build started is still this process's child, and no watcher in the new
+build knows it. Once it exits it stays a zombie until the process exits. Signal 0 still finds
+a zombie and its start token still matches, so `task_is_live` called it alive. When no exit
+file was written (its wrapper shell was killed, as `TaskStop` after a restart kills it), it
+read `running` until the process exited: no notification came, `TaskOutput` with `block`
+waited out its timeout, and a delegation that named it was refused (ADR-0397). Measured
+2026-11-28 on one worker session: a task stopped after a restart read `running` 240 minutes
+after it started, and five delegations that named it were refused. Two other sessions each
+held one such zombie whose exit file had been written. `task_status` now reaps such a child
+first. For a task that is not in this build's handles, whose start token matches,
+`waitpid(WNOHANG)` reaps it once it has exited, and its code is written to the exit file the
+way the in-process watcher writes one, unless the wrapper already wrote it. A pid whose token
+does not match is never reaped, so another child's exit is never taken from its own watcher.
+Windows has no zombies and is unchanged. Tests in `tests/test_background_bash.py`:
+`test_a_child_an_earlier_build_started_is_reaped_once_it_exits`,
+`test_a_task_stopped_after_a_restart_reads_killed_and_is_reported` and
+`test_a_zombie_that_is_not_the_task_is_left_alone`; six single-line mutations each fail one of
+them.
+
 ## ADR-0192: a skill that fits is delivered whole — paging and the seeded skeleton are the shape of a body that cannot
 
 **Status:** Accepted (2026-09-18)

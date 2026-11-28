@@ -16,10 +16,14 @@ in a tmp workspace, no network.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 import zakcode.background as background_module
 from zakcode.background import (
@@ -334,6 +338,98 @@ def test_a_task_gone_without_a_recorded_exit_is_lost_not_alive(tmp_path: Path) -
     assert "<status>lost</status>" in block and "without a recorded exit code" in block
     assert "may still be complete" in block  # the exit went unobserved; the work may not have
     assert task_status(record.model_copy(update={"stopped": True})) == ("killed", None)
+
+
+# ── a child an earlier build started (the restart keeps the process) ──────────────
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason="no zombies: an exited process's code reads through any handle"
+)
+
+
+def _earlier_builds_task(tmp_path: Path, child: subprocess.Popen[bytes]) -> BackgroundTask:
+    """A record for ``child`` as an earlier build left it after the restart: still this
+    process's child, absent from this build's handles, with the start token read at spawn."""
+    token = process_start_token(child.pid)
+    assert token is not None
+    return BackgroundTask(
+        id="t1",
+        command="ghost",
+        cwd=str(tmp_path),
+        output_file=str(tmp_path / "t1.out"),
+        exit_file=str(tmp_path / "t1.exit"),
+        pid=child.pid,
+        started_at="2026-09-18T00:00:00+00:00",
+        start_token=token,
+    )
+
+
+def _until_exited_unreaped(pid: int) -> None:
+    """Block until this process's child ``pid`` has exited, and leave it unreaped (a zombie)."""
+    os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+
+
+@_POSIX_ONLY
+def test_a_child_an_earlier_build_started_is_reaped_once_it_exits(tmp_path: Path) -> None:
+    """No watcher in this build knows the child, so once it exits it is a zombie, which signal
+    0 still finds: it read ``running`` until the process exited. The status read reaps it and
+    records its code."""
+    child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    try:
+        record = _earlier_builds_task(tmp_path, child)
+        _until_exited_unreaped(child.pid)
+        assert pid_alive(child.pid)  # the zombie: why it read "running"
+        assert task_status(record) == ("completed", 3)
+        assert Path(record.exit_file).read_text(encoding="utf-8").strip() == "3"
+        assert not pid_alive(child.pid)  # reaped
+    finally:
+        child.wait()
+
+
+@_POSIX_ONLY
+async def test_a_task_stopped_after_a_restart_reads_killed_and_is_reported(
+    tmp_path: Path,
+) -> None:
+    """Measured on one worker session: a task stopped after a restart (its group killed, so its
+    wrapper wrote no exit file) read ``running`` four hours later, no notification came, and
+    every delegation that named it was refused. It reads killed, with its signal's code, and is
+    reported once."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    try:
+        session, tasks = _tasks(tmp_path)
+        record = _earlier_builds_task(tmp_path, child)
+        session.background_tasks = [record]
+        assert tasks.status(record) == ("running", None)  # alive: left alone
+        stopped, reason = await tasks.stop("t1")
+        assert stopped, reason
+        _until_exited_unreaped(child.pid)
+        assert tasks.status(record) == ("killed", -signal.SIGKILL)
+        note = tasks.take_notifications()
+        assert note is not None and "<status>killed</status>" in note
+        assert f"was stopped (exit code {-signal.SIGKILL})" in note
+        assert tasks.take_notifications() is None
+    finally:
+        child.kill()
+        child.wait()
+
+
+@_POSIX_ONLY
+def test_a_zombie_that_is_not_the_task_is_left_alone(tmp_path: Path) -> None:
+    """A pid the OS reused for another child of this process is not the task (its start token
+    differs): reaping it would take that child's exit from its own watcher."""
+    child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    try:
+        record = _earlier_builds_task(tmp_path, child).model_copy(
+            update={"start_token": "an-earlier-process"}
+        )
+        _until_exited_unreaped(child.pid)
+        assert task_status(record) == ("lost", None)
+        assert not Path(record.exit_file).exists()
+        assert child.wait(timeout=5) == 3  # its own watcher still reads its code
+    finally:
+        child.wait()
 
 
 def test_output_tail_is_bounded(tmp_path: Path) -> None:
