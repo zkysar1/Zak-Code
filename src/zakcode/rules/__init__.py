@@ -120,6 +120,9 @@ class Rule:
         self.path = path
         self.description = description
         self.always_apply = always_apply
+        #: True for a copy :func:`reread_rule` took after the file was edited (ADR-0420): the
+        #: system prompt and every earlier read hold an older text than this one.
+        self.edited = False
 
     def summary(self) -> str:
         """The rule's one-line summary: its frontmatter ``description``, else its first non-empty
@@ -317,6 +320,40 @@ class RuleRegistry:
         return index
 
 
+def _load_rule_file(entry: Path) -> Rule:
+    """The rule one ``*.md`` file holds. Raises when the file cannot be read or its body is
+    empty; :func:`discover_rule_dir` records that and :func:`reread_rule` keeps its copy."""
+    meta, body = _split_frontmatter(entry.read_text(encoding="utf-8"))
+    content = body.strip()
+    if not content:
+        raise RuleError("empty rule body")
+    return Rule(
+        meta.get("name") or entry.stem,
+        content,
+        entry,
+        description=meta.get("description", ""),
+        always_apply=_truthy(meta.get("alwaysapply")),
+    )
+
+
+def reread_rule(rule: Rule) -> Rule | None:
+    """``rule`` as its file reads NOW, when the file was edited after the rule was loaded
+    (ADR-0420); else ``None``: unchanged, gone, unreadable, empty, or now naming another rule.
+
+    The registry is read once, when the session's process starts, and a long session can run
+    for hours past an edit to a rule's file. ``read_rule`` asks this before it answers, so the
+    text the model gets is the one on disk.
+    """
+    try:
+        fresh = _load_rule_file(Path(rule.path))
+    except Exception:  # noqa: BLE001 — a file that went away keeps the copy already loaded
+        return None
+    if fresh.name != rule.name or fresh.content == (rule.content or "").strip():
+        return None
+    fresh.edited = True
+    return fresh
+
+
 def discover_rule_dir(rules_dir: str | Path) -> tuple[list[Rule], dict[str, str]]:
     """Discover flat ``*.md`` rule files under ``rules_dir``.
 
@@ -333,25 +370,10 @@ def discover_rule_dir(rules_dir: str | Path) -> tuple[list[Rule], dict[str, str]
         if not entry.is_file() or entry.suffix.lower() != ".md":
             continue
         try:
-            text = entry.read_text(encoding="utf-8")
-            meta, body = _split_frontmatter(text)
-            content = body.strip()
-            if not content:
-                raise RuleError("empty rule body")
+            rules.append(_load_rule_file(entry))
         except Exception as exc:  # noqa: BLE001 — a bad rule is data, not a crash
             errors[entry.name] = f"{type(exc).__name__}: {exc}"
             logger.warning("skipping rule file %s: %s", entry, exc)
-            continue
-        name = meta.get("name") or entry.stem
-        rules.append(
-            Rule(
-                name,
-                content,
-                entry,
-                description=meta.get("description", ""),
-                always_apply=_truthy(meta.get("alwaysapply")),
-            )
-        )
     return rules, errors
 
 
@@ -522,5 +544,6 @@ __all__ = [
     "default_rule_dirs",
     "discover_rules",
     "project_rules_dir",
+    "reread_rule",
     "save_rule",
 ]
