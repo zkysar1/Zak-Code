@@ -145,6 +145,7 @@ from zakcode.agent.stuck import (
     StuckTracker,
     batch_signature,
     is_lookup_repeat,
+    is_print_only,
     lookup_rules,
 )
 from zakcode.agent.trace import TurnTrace
@@ -2030,8 +2031,9 @@ _MAX_APOLOGY_RETRIES = 1
 #: costs only one extra line in the next request if it happens.
 _SUBSTANTIAL_ANSWER = 200
 #: Ridden by the call that exists ONLY to hand back a tool result, when the completion that
-#: asked for that tool had already delivered an answer (ADR-0217). See :data:`_ALREADY_ANSWERED`
-#: for why. Ephemeral, like every other tail member: never persisted, never in the cached prefix.
+#: asked for that tool had already delivered an answer and the tool only printed (ADR-0217,
+#: amended). See :data:`_ALREADY_ANSWERED` for why. Ephemeral, like every other tail member:
+#: never persisted, never in the cached prefix.
 _ALREADY_ANSWERED = (
     "You already gave your answer in this turn, and then called a tool — this message only "
     "hands back that tool's result. If the result CHANGES your answer, say only what changed. "
@@ -2752,21 +2754,27 @@ def _last_assistant_text(turn_assistant: list[Message]) -> str:
 
 
 def _answered_then_called_a_tool(message: Message) -> bool:
-    """Whether this completion both ANSWERED and asked for a tool (ADR-0217).
+    """Whether this completion ANSWERED and then only printed (ADR-0217, amended).
 
-    That pair is what forces the next request to exist: a tool ran, so its result must go back,
-    so the model is asked again — with its answer already given and nothing to add. A model
-    with nothing to add says the thing it just said, and the user reads the same answer twice
-    and pays for it twice. Measured 2026-09-22 on a served workspace, where the tool in
-    question was a bare ``echo`` made to satisfy a framework rule that every turn end be a
-    tool call.
+    A tool ran, so its result must go back, so the model is asked again. When the call only
+    printed, that request has nothing new: the answer is already given, a model with nothing to
+    add says the thing it just said, and the user reads the same answer twice and pays for it
+    twice. Measured 2026-09-22 on a served workspace, where the tool was a bare ``echo`` made
+    to satisfy a framework rule that every turn end be a tool call.
 
-    Deliberately a LENGTH and not a similarity test. The cheap, certain reading is "there was an
-    answer here"; deciding whether the NEXT message repeats it would mean judging text the model
-    has not written yet, and by the time it has, it is already streaming onto the screen and
-    cannot be unsaid.
+    ONLY A PRINT COUNTS. Prose before a call that reads or changes something is narration on the
+    way to it, whatever its length, and a line telling the next reply to stop ends the work there.
+    Measured 2026-11-24..28 on one long-running hosted session: when 200 or more characters of
+    prose came with a tool call, the reply to its result was text alone 79 times in 132 (none of
+    those calls only printed); below that length, once in 83.
+
+    The prose half is deliberately a LENGTH and not a similarity test. The cheap, certain reading
+    is "there was an answer here"; deciding whether the NEXT message repeats it would mean judging
+    text the model has not written yet, and by the time it has, it is already streaming onto the
+    screen and cannot be unsaid.
     """
-    return bool(message.tool_uses) and len(message.text.strip()) >= _SUBSTANTIAL_ANSWER
+    calls = [ToolCall(id=u.id, name=u.name, arguments=u.input) for u in message.tool_uses]
+    return is_print_only(calls, _SHELL_TOOLS) and len(message.text.strip()) >= _SUBSTANTIAL_ANSWER
 
 
 def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: str) -> Message:

@@ -13410,6 +13410,25 @@ ladder or the doom guard. Nothing about what the model is told on any other call
 nothing about any framework — it reads only the shape of the previous completion — so it behaves
 identically on a host framework and on a bare session.
 
+**Amendment (2026-11-28): the line rides only when every call only prints.** The decision above
+reads 200 or more characters of prose beside a tool call as a delivered answer. In a long tool
+loop it usually is not: it is the narration before the next real step, and a line saying to stop
+ends the turn there. Measured on one long-running hosted session, 2026-11-24 to 11-28, whose
+host refuses a turn that ends in text, so each such ending cost a retry; counted only on requests
+that carried nothing new but tool results: after a completion with 200 or more characters of prose
+and a tool call, the reply was text alone 79 times in 132, and 66 of those 79 said in words that
+nothing had changed or that it was stopping; after shorter prose, 1 in 83; after none, 67 in
+2,462. The share jumps at the line itself (0 of 11 at 175-199 characters, 6 of 11 at 200-224).
+The line is never saved in the transcript, so it was read from the code and not from the record.
+The line now rides only when every call of the completion is a shell call whose whole command
+prints literal words, the test ADR-0373 already bounds (`is_print_only`), which is the shape the
+decision above measured. Replayed on those 132 completions it rides on none: not one was a bare
+print. A long answer followed by a literal print still carries it. Tests:
+`tests/test_already_answered_rail.py` (a read, a command, a print mixed with a read, and a print
+that expands a variable never carry it). Five mutants, each killed: the line never rides; the old
+any-call rule, caught by the new control and by the predicate test; no length bound; any shell
+command counted as a print.
+
 ---
 
 ## ADR-0218: Zak wears the Vinheim family's colours, in both clients
