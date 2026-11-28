@@ -132,7 +132,8 @@ def tasks_dir_for(store_base_dir: Path | None, session_id: str) -> Path:
 
 def pid_alive(pid: int) -> bool:
     """Whether a process with ``pid`` exists (best-effort; a zombie counts as alive until
-    reaped, which the in-process watcher does)."""
+    reaped, which the in-process watcher does, or for a child an earlier build spawned the
+    next status read, see :func:`_reap_earlier_builds_child`)."""
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -232,6 +233,36 @@ def task_is_live(task: BackgroundTask) -> bool:
     return observed is None or observed == task.start_token
 
 
+def _reap_earlier_builds_child(task: BackgroundTask) -> None:
+    """Reap ``task``'s process if it is a child of this process that has exited but that this
+    build did not spawn, and record its exit code the way :func:`_watch` records one.
+
+    The ADR-0034 restart into a new build replaces the program and keeps the process, so a
+    task an earlier build started is still this process's child, and no watcher in this build
+    knows it. Once it exits (by itself, by ``TaskStop``, or by any other kill) it stays a
+    zombie that signal 0 still finds, so it read ``running`` until the process exited.
+    Measured on one worker session: a task stopped after a restart read ``running`` for four
+    hours, and every delegation that named it was refused. The start token must match first:
+    a pid the OS reused for another child of this process is never reaped here, because that
+    would take the child's exit from its own watcher."""
+    if sys.platform == "win32":
+        return  # Windows has no zombies: an exited process's code reads through any handle
+    if task.id in _PROCS or task.start_token is None:
+        return
+    if not pid_alive(task.pid) or process_start_token(task.pid) != task.start_token:
+        return
+    try:
+        pid, status = os.waitpid(task.pid, os.WNOHANG)
+    except OSError:
+        return  # not this process's child: its own parent reaps it
+    if pid != task.pid:
+        return  # still running
+    path = Path(task.exit_file)
+    if not path.exists():  # the bash wrapper records its command's code itself
+        with contextlib.suppress(OSError):
+            path.write_text(f"{os.waitstatus_to_exitcode(status)}\n", encoding="utf-8")
+
+
 def _read_exit_code(exit_file: str) -> int | None:
     try:
         text = Path(exit_file).read_text(encoding="utf-8").strip()
@@ -248,7 +279,9 @@ def task_status(task: BackgroundTask) -> tuple[str, int | None]:
     ``completed`` (with its code), ``killed`` (``TaskStop`` asked; a code if the wrapper
     still wrote one), or ``lost`` (gone without a recorded code — the process that spawned
     it, on a platform with no bash wrapper, restarted before it exited; or the pid now
-    names another process, see :func:`task_is_live`)."""
+    names another process, see :func:`task_is_live`). A child of an earlier build that has
+    exited is reaped first (:func:`_reap_earlier_builds_child`), so its code is read here."""
+    _reap_earlier_builds_child(task)
     code = _read_exit_code(task.exit_file)
     if code is not None:
         return ("killed" if task.stopped else "completed", code)
