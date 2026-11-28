@@ -2340,6 +2340,15 @@ _SKILL_REENTRY_NEGATED_RE = re.compile(
 #: hook keeps Claude Code's unbounded contract.
 _VETO_STALL_THRESHOLD = 3
 
+#: How many stops of a rule-lookup loop a turn-end hook may send back, with no work call but
+#: lookups between them, before the loop compacts its context (ADR-0422). The doom guard and
+#: the lookup-only bound stop such a loop, and every vetoed stop resets them, so on a loop
+#: whose hook vetoes every stop nothing else ever ends it. Measured 2026-11-28 on a worker
+#: session: one pinned rule asked for 16 times in 37 minutes, two pointer answers and a
+#: doom-loop stop the hook sent back, five times over. A second trip with still no work
+#: between ends the turn as ``veto_stall`` instead: compaction did not end the loop either.
+_LOOKUP_VETO_FENCE = 2
+
 
 def skill_reentry_in(reason: str) -> tuple[str, str] | None:
     """The ``(skill, args)`` a turn-end hook's continuation asks the loop to re-enter with, or
@@ -3398,6 +3407,15 @@ class AgentLoop:
         # the net instead of cancelling it. Per turn, like the fence.
         self._veto_stall_cause = ""
         self._veto_delivered: str | None = None
+        # The lookup-loop fence (ADR-0422): stops of a rule-lookup loop a hook sent back with
+        # nothing but lookups between them, and whether the fence has compacted since the last
+        # work call. Per turn; a work call that is not a lookup starts both over.
+        self._lookup_vetoes = 0
+        self._lookup_compacted = False
+        # Why the next compaction check compacts whatever the size (ADR-0422), or None. Taken
+        # by that check: this turn's next call or, when the turn ended first, the next turn's
+        # start.
+        self._compact_due: str | None = None
         # Work calls this loop has run (ADR-0196): successful calls to anything but the
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
         # readings of it, and only ever within one skill turn.
@@ -4281,12 +4299,14 @@ class AgentLoop:
         happened or
         failed (``None`` when the threshold was not reached) so the streaming path can
         surface it — a silent transcript rewrite reads as memory loss to an operator
-        watching the session.
+        watching the session. A compaction the lookup-loop fence asked for (ADR-0422) runs
+        whatever the size.
         """
+        due, self._compact_due = self._compact_due, None
         if self.compactor is None:
             return None
         caps = self.provider.capabilities()
-        if not self.compactor.should_compact(
+        if due is None and not self.compactor.should_compact(
             self.session.messages,
             context_window=caps.context_window,
             count_tokens=self._count_tokens_anchored,
@@ -4300,7 +4320,7 @@ class AgentLoop:
         compacted, outcome = await self._compact_or_elide(trigger="auto")
         if not compacted:
             return f"compaction failed — {outcome}; continuing with the full history"
-        return f"context near the window — {outcome}"
+        return f"{due or 'context near the window'} — {outcome}"
 
     def _adopt_compacted(
         self, messages: list[Message], *, summary: str | None = None, trigger: str = ""
@@ -6883,6 +6903,9 @@ class AgentLoop:
             # The model ACTED (ADR-0196). Keeping the plan, loading a skill and re-arming the
             # wake-up are not acts on a skill's instructions; anything else that ran is.
             self._work_calls += 1
+            if call.name != "read_rule":
+                self._lookup_vetoes = 0  # the lookup-loop fence starts over (ADR-0422)
+                self._lookup_compacted = False
         self._count_stretch_io(call, block)  # ADR-0405
         if call.name in _READ_TOOLS and not block.is_error:
             raw_path = call.arguments.get("path") or call.arguments.get("file_path") or ""
@@ -8477,6 +8500,7 @@ class AgentLoop:
         turn_assistant: list[Message],
         stuck_took_action: bool,
         allow_veto: bool = True,
+        lookup: bool = False,
     ) -> str | None:
         """Run TURN_END hooks at a vetoable break site (the Stop-hook seam, T2/T3).
 
@@ -8486,12 +8510,15 @@ class AgentLoop:
         way the say inbox delivers a typed slash — and ``None`` (the overwhelmingly common
         case) to let the turn end. Vetoes are UNBOUNDED on a vetoable loop — a registered
         Stop hook is in charge of standing down (and the cost budget is the hard bound),
-        matching Claude Code — with two exceptions: a ``provider_error`` veto is bounded and
+        matching Claude Code — with three exceptions: a ``provider_error`` veto is bounded and
         paced by its call sites (ADR-0181), since it re-issues a call against a provider
-        that just failed; and a veto that names a skill re-entry after
+        that just failed; a veto that names a skill re-entry after
         :data:`_VETO_STALL_THRESHOLD` such vetoes were honoured with no skill call between
         them is refused, ending the turn as ``veto_stall`` with a wake-up left behind (the
-        fence, ADR-0187). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
+        fence, ADR-0187); and ``lookup`` says a rule-lookup loop caused the stop, whose
+        :data:`_LOOKUP_VETO_FENCE`-th veto with only lookups between compacts the context
+        before the turn goes on, and whose next such trip ends the turn as ``veto_stall``
+        (ADR-0422). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
         turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
         final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
         veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
@@ -8576,6 +8603,39 @@ class AgentLoop:
             )
             self._arm_stall_net()
             return None
+        if lookup:
+            # The lookup-loop fence (ADR-0422): the stop came from a loop of rule lookups, and the
+            # guards that stopped it start over at every veto. Such asks grow with the context
+            # held since the last compaction, so compact at the fence; a second trip with still
+            # no work between ends the turn, as the ADR-0187 fence does.
+            self._lookup_vetoes += 1
+            if self._lookup_vetoes >= _LOOKUP_VETO_FENCE and self._lookup_compacted:
+                self._veto_stall = True
+                self._veto_stall_cause = stop_reason
+                self._note(
+                    "intervention",
+                    f"a rule-lookup loop was sent back {self._lookup_vetoes} times again after its "
+                    "context was compacted, with no work call between — ending the turn "
+                    "(veto_stall) instead of re-prompting",
+                    kind="veto_stall",
+                    lookup=True,
+                    vetoes=self._lookup_vetoes,
+                )
+                self._arm_stall_net()
+                return None
+            if self._lookup_vetoes >= _LOOKUP_VETO_FENCE:
+                self._compact_due = (
+                    f"a rule-lookup loop was sent back {self._lookup_vetoes} times with no work "
+                    "call between"
+                )
+                self._note(
+                    "intervention",
+                    f"{self._compact_due} — compacting the context before the next call",
+                    kind="lookup_loop_compact",
+                    vetoes=self._lookup_vetoes,
+                )
+                self._lookup_vetoes = 0
+                self._lookup_compacted = True
         # A veto opens a NEW turn for per-turn skill state (ADR-0048): the hook that vetoed
         # is telling the model to do more work, and that work may be a skill it already
         # loaded — a perpetual-loop framework's mandated re-entry is exactly that. Reset
@@ -9231,6 +9291,8 @@ class AgentLoop:
         self._veto_stall = False
         self._veto_stall_cause = ""
         self._veto_delivered = None
+        self._lookup_vetoes = 0  # the lookup-loop fence (ADR-0422), per turn
+        self._lookup_compacted = False
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         refusal_ends_turn = False  # this turn's provider_error is a quota refusal it ends on
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
@@ -10558,6 +10620,7 @@ class AgentLoop:
                     veto_count=turn_end_vetoes,
                     turn_assistant=turn_assistant,
                     stuck_took_action=stuck.took_action,
+                    lookup=lookup_rules(signature) is not None,
                 )
                 if prompt is not None:
                     turn_end_vetoes += 1
@@ -10706,6 +10769,7 @@ class AgentLoop:
                     veto_count=turn_end_vetoes,
                     turn_assistant=turn_assistant,
                     stuck_took_action=stuck.took_action,
+                    lookup=stuck.last_was_lookup_only,
                 )
                 if prompt is not None:
                     self._note(
@@ -10942,6 +11006,8 @@ class AgentLoop:
         self._veto_stall = False
         self._veto_stall_cause = ""
         self._veto_delivered = None
+        self._lookup_vetoes = 0  # the lookup-loop fence (ADR-0422), per turn
+        self._lookup_compacted = False
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
@@ -12636,6 +12702,7 @@ class AgentLoop:
                         veto_count=turn_end_vetoes,
                         turn_assistant=turn_assistant,
                         stuck_took_action=stuck.took_action,
+                        lookup=lookup_rules(signature) is not None,
                     )
                     if prompt is not None:
                         turn_end_vetoes += 1
@@ -12810,6 +12877,7 @@ class AgentLoop:
                         veto_count=turn_end_vetoes,
                         turn_assistant=turn_assistant,
                         stuck_took_action=stuck.took_action,
+                        lookup=stuck.last_was_lookup_only,
                     )
                     if prompt is not None:
                         self._note(
