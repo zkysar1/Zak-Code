@@ -145,6 +145,7 @@ from zakcode.agent.stuck import (
     StuckTracker,
     batch_signature,
     is_lookup_repeat,
+    is_print_only,
     lookup_rules,
 )
 from zakcode.agent.trace import TurnTrace
@@ -2026,12 +2027,14 @@ _MAX_APOLOGY_RETRIES = 1
 #: (ADR-0217). Narration this turn is a sentence -- "Let me check the state", "Reading the
 #: file" -- and an answer is a paragraph or more. Measured over the 48 bench runs of the
 #: 2026-09-22 no-guide map: of 28 non-empty assistant messages, the 15 at or above this
-#: length were the substantive ones. A line, not a rule; a narration this long is rare and
-#: costs only one extra line in the next request if it happens.
+#: length were the substantive ones. A line, not a rule: prose this long also comes before
+#: real work, so length alone does not decide -- every call must be a print too (ADR-0217,
+#: amended).
 _SUBSTANTIAL_ANSWER = 200
 #: Ridden by the call that exists ONLY to hand back a tool result, when the completion that
-#: asked for that tool had already delivered an answer (ADR-0217). See :data:`_ALREADY_ANSWERED`
-#: for why. Ephemeral, like every other tail member: never persisted, never in the cached prefix.
+#: asked for that tool had already delivered an answer and the tool only printed (ADR-0217,
+#: amended). See :data:`_ALREADY_ANSWERED` for why. Ephemeral, like every other tail member:
+#: never persisted, never in the cached prefix.
 _ALREADY_ANSWERED = (
     "You already gave your answer in this turn, and then called a tool — this message only "
     "hands back that tool's result. If the result CHANGES your answer, say only what changed. "
@@ -2752,21 +2755,28 @@ def _last_assistant_text(turn_assistant: list[Message]) -> str:
 
 
 def _answered_then_called_a_tool(message: Message) -> bool:
-    """Whether this completion both ANSWERED and asked for a tool (ADR-0217).
+    """Whether this completion ANSWERED and then only printed (ADR-0217, amended).
 
-    That pair is what forces the next request to exist: a tool ran, so its result must go back,
-    so the model is asked again — with its answer already given and nothing to add. A model
-    with nothing to add says the thing it just said, and the user reads the same answer twice
-    and pays for it twice. Measured 2026-09-22 on a served workspace, where the tool in
-    question was a bare ``echo`` made to satisfy a framework rule that every turn end be a
-    tool call.
+    A tool ran, so its result must go back, so the model is asked again. When the call only
+    printed, that request has nothing new: the answer is already given, a model with nothing to
+    add says the thing it just said, and the user reads the same answer twice and pays for it
+    twice. Measured 2026-09-22 on a served workspace, where the tool was a bare ``echo`` made
+    to satisfy a framework rule that every turn end be a tool call.
 
-    Deliberately a LENGTH and not a similarity test. The cheap, certain reading is "there was an
-    answer here"; deciding whether the NEXT message repeats it would mean judging text the model
-    has not written yet, and by the time it has, it is already streaming onto the screen and
-    cannot be unsaid.
+    ONLY A PRINT COUNTS. Prose before a call that reads or changes something is narration on the
+    way to it, whatever its length, and a line telling the next reply to stop can end the work
+    there. Measured 2026-11-24..28 on one long-running hosted session: when 200 or more
+    characters of prose came with a tool call, the reply to its result was text alone 79 times in
+    132 (none of those calls only printed), against once in 83 after shorter prose and 67 times
+    in 2,462 after none.
+
+    The prose half is deliberately a LENGTH and not a similarity test. The cheap, certain reading
+    is "there was an answer here"; deciding whether the NEXT message repeats it would mean judging
+    text the model has not written yet, and by the time it has, it is already streaming onto the
+    screen and cannot be unsaid.
     """
-    return bool(message.tool_uses) and len(message.text.strip()) >= _SUBSTANTIAL_ANSWER
+    calls = [ToolCall(id=u.id, name=u.name, arguments=u.input) for u in message.tool_uses]
+    return is_print_only(calls, _SHELL_TOOLS) and len(message.text.strip()) >= _SUBSTANTIAL_ANSWER
 
 
 def _unexecuted_tool_results(tool_calls: list[ToolCall], reason: str, marker: str) -> Message:
@@ -3402,9 +3412,10 @@ class AgentLoop:
         # plan, the skill tool and the wake-up. Never reset — the skill door compares two
         # readings of it, and only ever within one skill turn.
         self._work_calls = 0
-        #: Whether the last completion both answered and called a tool (ADR-0217). Read by the
-        #: ephemeral tail of the very next call — the one that exists only to hand the tool
-        #: result back — and recomputed from each completion, so it is never stale by a turn.
+        #: Whether the last completion answered and then asked only to print (ADR-0217, amended).
+        #: Read by the ephemeral tail of the very next call, which hands the print's result back;
+        #: recomputed from each completion and cleared at each turn start, so it is stale by
+        #: neither an iteration nor a turn.
         self._answer_already_given = False
         #: What the model call in progress has streamed that the session does not hold yet: the
         #: list that call writes into, from its start until its reply is saved or thrown away.
@@ -4904,9 +4915,9 @@ class AgentLoop:
         # fade-out) as an ephemeral tail message — never persisted, so the cached
         # system+history prefix and the on-disk session both stay clean (the plan lives
         # only in ``session.task_network``).
-        # ADR-0217: the previous completion answered AND called a tool, so this call exists
-        # only to hand the result back. One line telling the model its answer already stands —
-        # on this call and no other, so a turn that never did this never pays for the line.
+        # ADR-0217 (amended): the previous completion answered and then asked only to print, and
+        # a print that runs adds nothing new. One line telling the model its answer already
+        # stands — on this call and no other, so a turn that never did this never pays for it.
         if self._answer_already_given:
             tail.append(Message.user(_control_rail(_ALREADY_ANSWERED)))
             self._call_rails.append("already_answered")
