@@ -84,10 +84,14 @@ JUST_ASKED = (
 #: held, and later ones alternated pointer and text: measured 2026-11-17 on one worker session,
 #: three pinned rules sent 13,834 such characters, and the rule its host pinned for being read
 #: most was asked seven times in three minutes. Opens like the pointer, so the count goes on.
+#: It sends the model back to its step and no longer tells it to apply the rule there (ADR-0423):
+#: a pinned rule states its own condition, and measured 2026-11-28 on one worker session a pinned
+#: rule was asked 84 times in two hours, most asks answered by this line telling the model to
+#: apply it to the step it was on.
 PINNED = (
     "[already read; ask {n}] Rule {name!r} is pinned: its full text is in your system prompt, "
-    'under the heading "## {name}", and it is always in force. Apply it{step}; refresh=true '
-    "returns it here only if you need it as a tool result."
+    'under the heading "## {name}", and it is always in force, so this ask changed nothing. Go '
+    "on{on_step}; refresh=true returns it here only if you need it as a tool result."
 )
 
 #: How the text a ``refresh=true`` ask sends begins when the model already holds it, in the
@@ -162,9 +166,15 @@ def _pointer(
     network = getattr(ctx, "task_network", None)
     current = network.current() if network is not None else None
     step = f" to your current step, {current.title!r}" if current is not None else ""
+    # PINNED names the same step as the place to go back to (ADR-0423).
+    on_step = f" with your current step, {current.title!r}" if current is not None else " working"
     summary = rule.summary()
     return template.format(
-        n=n, name=name, step=step, summary=f" Its summary: {summary}" if summary else ""
+        n=n,
+        name=name,
+        step=step,
+        on_step=on_step,
+        summary=f" Its summary: {summary}" if summary else "",
     )
 
 

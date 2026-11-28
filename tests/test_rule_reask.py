@@ -19,6 +19,7 @@ from zakcode.messages import ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import MAX_RULE_FILE_CHARS, Rule, RuleRegistry
 from zakcode.session.store import Session
+from zakcode.tasks import Task, TaskNetwork
 from zakcode.tools.base import ToolContext, ToolRegistry
 from zakcode.tools.builtins.read_rule import (
     JUST_ASKED,
@@ -48,6 +49,7 @@ def _ctx(
     prompt: str | None = None,
     held: tuple[str, ...] = (),
     last: str | None = None,
+    plan: TaskNetwork | None = None,
 ) -> ToolContext:
     """A context whose system prompt carries ``prompt`` (the lean index by default)."""
     rules = registry.render_index() if prompt is None else prompt
@@ -57,6 +59,7 @@ def _ctx(
         in_context=lambda text: any(text in output for output in held),
         last_tool_output=lambda: last,
         in_prompt=lambda text: text in rules,
+        task_network=plan,
     )
 
 
@@ -65,7 +68,7 @@ def _ask(ctx: ToolContext, name: str = "error-response", **args: object):
 
 
 def _pinned(n: int = 1, name: str = "error-response") -> str:
-    return PINNED.format(n=n, name=name, step="")
+    return PINNED.format(n=n, name=name, step="", on_step=" working")
 
 
 def _text(registry: RuleRegistry, name: str) -> str:
@@ -87,6 +90,25 @@ def test_the_pinned_line_is_counted_like_the_pointer() -> None:
     """Right after its own line, too: a pinned rule never alternates line and text."""
     res = _ask(_ctx(_registry(), held=(_pinned(1),), last=_pinned(1)))
     assert res.output == _pinned(2)
+
+
+def test_the_pinned_line_sends_the_model_back_to_its_step() -> None:
+    """ADR-0423: it says the ask changed nothing and names the step to go on with, and no longer
+    tells the model to apply the rule there. Measured on one worker session: a pinned rule was
+    asked 84 times in two hours, most asks answered by a line saying to apply it to the step."""
+    plan = TaskNetwork(tasks=[Task(title="Write the tests")])
+    res = _ask(_ctx(_registry(), plan=plan))
+    assert res.output == PINNED.format(
+        n=1,
+        name="error-response",
+        step=" to your current step, 'Write the tests'",
+        on_step=" with your current step, 'Write the tests'",
+    )
+    assert "so this ask changed nothing. Go on with your current step, 'Write the tests';" in (
+        res.output
+    )
+    assert "Apply" not in res.output
+    assert "so this ask changed nothing. Go on working;" in _ask(_ctx(_registry())).output
 
 
 def test_refresh_still_returns_a_pinned_rules_text() -> None:

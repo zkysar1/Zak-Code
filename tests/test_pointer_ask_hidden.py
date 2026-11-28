@@ -95,7 +95,11 @@ def test_a_lookup_answered_only_by_pointers_is_sent_as_one_harness_line() -> Non
     assert line.role == "user" and line.created_at == history[3].created_at
     assert line.text.startswith("[harness] ")
     assert "You asked read_rule for a-rule: it is already in your context" in line.text
-    assert "Apply it to the step you are on and take its next action." in line.text
+    assert line.text.endswith(
+        "nothing new came back, and an ask like this one is not shown in "
+        "the conversation. Go on with the step you are on."
+    )
+    assert "Apply" not in line.text  # ADR-0423: back to the step, not "apply it to the step"
     assert not [b for m in sent for b in m.blocks if isinstance(b, ToolUseBlock) and b.id == "r1-0"]
     assert len(history) == 6  # the history itself is untouched
 
@@ -106,7 +110,7 @@ def test_two_rules_asked_together_are_named_in_one_line() -> None:
     assert (
         "You asked read_rule for a-rule, b-rule: they are already in your context" in sent[1].text
     )
-    assert "Apply them to the step you are on" in sent[1].text
+    assert sent[1].text.endswith("Go on with the step you are on.")
     twice = _hide_pointer_asks([Message.user("go"), *_ask(2, "a-rule", "a-rule")])
     assert "You asked read_rule for a-rule: it is already in your context" in twice[1].text
 
