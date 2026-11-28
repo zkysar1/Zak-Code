@@ -25957,7 +25957,9 @@ Decision.
   may be a preface, and the answer may still be coming. The first answer of a turn is never
   touched: whoever opened the turn may be waiting for it, and in a turn a person opened the answer
   often comes after tool results. An answer cut off at the output limit and continued has not yet
-  tried to end the turn, so its continuation is the first answer too. A turn that goes on after no
+  tried to end the turn, so its continuation is the first answer too. That mark lasts one reply: a
+  continuation that calls a tool has not tried to end the turn either, and a person speaking before
+  it lands makes the next reply theirs. A turn that goes on after no
   reply with text (silence, even after a preface earlier in the turn, which ends as `completed`
   too; a provider error; a stall) has not answered them, so the floor does not pass.
 - While the loop holds the floor in a session with a loop skill, a streamed reply whose visible
@@ -25994,8 +25996,9 @@ first answer of a turn, a veto after silence, a silent end after a preface (stre
 buffered), a new turn after one the loop held (streamed and buffered), an answer after a person's
 mid-turn message and a session without a loop skill left whole; the floor held after a cut; the
 floor passed by the plan gate, streamed and buffered, with the continued first answer left whole
-and continued again, and not passed on a short preface the plan gate sent back, streamed and
-buffered; a short preface before a call, text after a native call has
+and continued again, and not passed on a short preface the plan gate sent back, after a
+continuation that called a tool, or after a person spoke between a cut-off reply and its
+continuation, each streamed and buffered; a short preface before a call, text after a native call has
 started, thinking, a reply that arrived whole and a text tool call left whole; a turn ceiling and an
 armed spend gate keeping the stream; prose cut off at the output limit not continued, streamed and
 buffered, and a cut-off first answer still continued.

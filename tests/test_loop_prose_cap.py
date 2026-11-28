@@ -477,6 +477,89 @@ def test_a_buffered_short_reply_after_a_person_speaks_is_a_preface_again(tmp_pat
     assert len(asked) == 2  # the first answer, and the answer after the person spoke
 
 
+def test_a_continued_answer_that_calls_a_tool_has_not_ended(tmp_path: Path) -> None:
+    """The piece after a continuation called a tool, so it did not try to end the turn: a short
+    reply the gate sends back after the tool ran is a preface, and the answer stays whole."""
+    answer = _prose(6000, "found")
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="checking", calls=[_call("probe")]),
+        Reply(text="ok, looked."),
+        Reply(text=answer),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    _stream(loop, "please explain what you found")
+    assert [m.text for m in _replies(loop)][3] == answer
+
+
+def test_a_buffered_continued_answer_that_calls_a_tool_has_not_ended(tmp_path: Path) -> None:
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="checking", calls=[_call("probe")]),
+        Reply(text="ok, looked."),
+        Reply(text=_prose(800, "found"), finish="length"),
+        Reply(text="the rest"),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    asyncio.run(loop.arun_turn("please explain what you found"))
+    asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
+    assert len(asked) == 2  # both answers were continued
+
+
+class SaysAfterFirst(Scripted):
+    """Leaves a person's message in the inbox once the first reply is out, so it lands at the
+    boundary before the continuation."""
+
+    def __init__(self, inbox: Path, *script: Reply) -> None:
+        super().__init__(*script)
+        self._inbox = inbox
+
+    async def acomplete(self, messages, *, system=None, tools=None, **kw) -> LLMResult:
+        result = await super().acomplete(messages, system=system, tools=tools, **kw)
+        if self.calls == 1:
+            write_say(self._inbox, "what did you find? explain it to me")
+        return result
+
+    async def astream(self, messages, *, system=None, tools=None, **kw):
+        if self.calls == 0:  # the loop stops reading at the stream's end, so write it first
+            write_say(self._inbox, "what did you find? explain it to me")
+        async for event in super().astream(messages, system=system, tools=tools, **kw):
+            yield event
+
+
+def test_a_person_speaking_after_a_cut_off_reply_clears_its_continuation(tmp_path: Path) -> None:
+    """A person's message lands between a cut-off reply and its continuation: the next reply
+    answers them, so a short one the gate sends back is a preface and their answer stays whole."""
+    answer = _prose(6000, "found")
+    provider = SaysAfterFirst(
+        say_path(tmp_path),
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="Let me look again."),
+        Reply(text=answer),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)), "pending")
+    _stream(loop, "please explain what you found")
+    assert any("arrived mid-task" in m.text for m in loop.session.messages if m.role == "user")
+    assert [m.text for m in _replies(loop)][2] == answer
+
+
+def test_a_buffered_person_speaking_after_a_cut_off_reply_clears_its_continuation(
+    tmp_path: Path,
+) -> None:
+    provider = SaysAfterFirst(
+        say_path(tmp_path),
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="Let me look again."),
+        Reply(text=_prose(800, "found"), finish="length"),
+        Reply(text="the rest"),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)), "pending")
+    asyncio.run(loop.arun_turn("please explain what you found"))
+    assert any("arrived mid-task" in m.text for m in loop.session.messages if m.role == "user")
+    asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
+    assert len(asked) == 2  # the cut-off reply, and the answer to the person
+
+
 # ── what keeps streaming ─────────────────────────────────────────────────────
 
 
