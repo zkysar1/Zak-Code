@@ -342,22 +342,23 @@ def test_outside_a_loop_session_nothing_is_cut(tmp_path: Path) -> None:
     assert _replies(loop)[-1].text == text
 
 
-def _planned(loop: AgentLoop) -> AgentLoop:
-    """Give the session a plan with a step still open, so the plan gate sends a reply back."""
-    loop.session.task_network.replace_from_author(
-        [Task(title="file the report", status="in_progress")]
-    )
+def _planned(loop: AgentLoop, status: str = "in_progress") -> AgentLoop:
+    """Give the session a plan with a step still open, so the plan gate sends a reply back. A
+    step in progress holds a person's message for its seam (ADR-0052); a pending one does not."""
+    loop.session.task_network.replace_from_author([Task(title="file the report", status=status)])
     return loop
 
 
 def test_a_reply_the_plan_gate_sends_back_passes_the_floor(tmp_path: Path) -> None:
     """The measured turn: a person asked, the answer reached the output limit and was continued,
     and the plan gate, not the hook, sent each reply back. The continued answer is still the
-    first answer and stays whole; the replies after it are the loop's."""
-    answer = _prose(6000, "rest")
+    first answer and stays whole, past the cap too; its short last piece still ends a full
+    answer, and the replies after it are the loop's."""
+    piece = _prose(3000, "rest")
     provider = Scripted(
         Reply(text=_prose(800), finish="length"),
-        Reply(text=answer),
+        Reply(text=piece, finish="length"),
+        Reply(text="the end."),
         Reply(text=_prose(9000, "x")),
         Reply(text=_prose(9000, "y")),
     )
@@ -365,8 +366,8 @@ def test_a_reply_the_plan_gate_sends_back_passes_the_floor(tmp_path: Path) -> No
     loop = _planned(_loop(provider, tmp_path, hook=hook))
     events = _stream(loop, "please explain what you found")
     texts = [m.text for m in _replies(loop)]
-    assert texts[1] == answer
-    assert len(texts) == 4 and all(len(t) <= _LOOP_PROSE_CAP + 50 for t in texts[2:])
+    assert texts[1] == piece
+    assert len(texts) == 5 and all(len(t) <= _LOOP_PROSE_CAP + 50 for t in texts[3:])
     assert hook.asked == ["completed"]  # the hook refused no stop: the gate sent them back
     assert events[-1].stop_reason == "completed"
 
@@ -422,6 +423,58 @@ def test_a_buffered_short_reply_a_gate_sends_back_leaves_the_floor_with_the_pers
     asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
     assert len(asked) == 1  # the answer was continued; the loop's prose after it was not
     assert provider.calls == 5
+
+
+def test_a_buffered_long_answer_a_gate_sends_back_passes_the_floor(tmp_path: Path) -> None:
+    provider = Scripted(
+        Reply(text=_prose(3000)),
+        Reply(text=_prose(800, "x"), finish="length"),
+        Reply(text=_prose(800, "y"), finish="length"),
+    )
+    loop = _planned(_loop(provider, tmp_path, hook=CarryOn(0)))
+    asyncio.run(loop.arun_turn("please explain what you found"))
+    assert not _asked_to_continue(loop)
+
+
+def _speaks(tmp_path: Path) -> Probe:
+    return Probe("probe", say=(say_path(tmp_path), "what did you find? explain it to me"))
+
+
+def test_after_a_person_speaks_a_short_reply_a_gate_sends_back_is_a_preface_again(
+    tmp_path: Path,
+) -> None:
+    """The loop had the floor from a continued answer; a person speaks mid-task, and a short
+    reply the gate sends back after that is a preface again: their answer stays whole."""
+    answer = _prose(6000, "again")
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="the end."),
+        Reply(calls=[_call("probe")]),
+        Reply(text="Let me look again."),
+        Reply(text=answer),
+    )
+    loop = _planned(
+        _loop(provider, tmp_path, hook=CarryOn(0), tools=[_speaks(tmp_path)]), "pending"
+    )
+    _stream(loop, "please explain what you found")
+    assert _replies(loop)[-1].text == answer
+
+
+def test_a_buffered_short_reply_after_a_person_speaks_is_a_preface_again(tmp_path: Path) -> None:
+    provider = Scripted(
+        Reply(text=_prose(800), finish="length"),
+        Reply(text="the end."),
+        Reply(calls=[_call("probe")]),
+        Reply(text="Let me look again."),
+        Reply(text=_prose(800, "again"), finish="length"),
+        Reply(text="the rest"),
+    )
+    loop = _planned(
+        _loop(provider, tmp_path, hook=CarryOn(0), tools=[_speaks(tmp_path)]), "pending"
+    )
+    asyncio.run(loop.arun_turn("please explain what you found"))
+    asked = [m for m in loop.session.messages if m.role == "user" and _CONTINUE in m.text]
+    assert len(asked) == 2  # the first answer, and the answer after the person spoke
 
 
 # ── what keeps streaming ─────────────────────────────────────────────────────
