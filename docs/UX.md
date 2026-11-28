@@ -202,7 +202,8 @@ All content sits on this grid; nothing else exists:
     `done.error` when present), `doom_loop → "stopped — repeating itself"`, `stuck →
     "stopped — no progress"`, `gave_up → "stopped — gave up (no output)"`,
     `recipe_stalled → "stopped — recipe stalled"`, `veto_stall → "stopped — re-entry
-    stalled: the stop hook kept asking for a skill that never ran"` (ADR-0187), unknown →
+    stalled: the stop hook kept sending the turn back with no progress"` (ADR-0187, ADR-0422),
+    unknown →
     `stop_reason.replace("_", " ")`. Marker: `ok` for un-degraded `completed`, `err`
     for `provider_error`, `warn` for everything else. Tokens: `f"{n/1000:.1f}k tokens"`
     at ≥1000 else `f"{n} tokens"`. Cost: `f"{c:.4f}"` with trailing zeros stripped to
