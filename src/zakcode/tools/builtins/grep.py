@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import os
 import re
@@ -117,6 +118,22 @@ class GrepTool(Tool):
         except re.error as exc:
             return ToolResult.error(f"Invalid regex {pattern!r}: {exc}")
 
+        # The rest is blocking filesystem work: resolving the path, walking the tree, reading each
+        # file and, for a missing path, searching for the closest ones. On a large tree, or on a
+        # slow or networked filesystem, that can take minutes, so it runs on a worker thread and
+        # the event loop keeps serving everything else meanwhile.
+        return await asyncio.to_thread(self._search, base, pattern, regex, glob_filter, soft, ctx)
+
+    def _search(
+        self,
+        base: str,
+        pattern: str,
+        regex: re.Pattern[str],
+        glob_filter: str | None,
+        soft: bool,
+        ctx: ToolContext,
+    ) -> ToolResult:
+        """The blocking half of :meth:`execute`: resolve ``base``, walk it and scan each file."""
         try:
             resolved = resolve_path(
                 base, ctx.workspace_root, ctx.extra_workspace_roots, ctx.virtual_roots
