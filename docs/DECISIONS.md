@@ -25964,3 +25964,52 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0417: a rule carried across a compaction is sent as a tool result on its first ask
+
+Status: accepted. 2026-11-27. Narrows when `read_rule` answers with a pointer (ADR-0372, ADR-0379, ADR-0387);
+the carry itself (ADR-0386) is unchanged.
+
+Context. After a compaction the loop carries the texts of the rules the session read into one system message
+right after the summary (ADR-0386). The pointer's check, `_tool_output_in_context`, answers true when a tool
+result or that carried message holds the text, so the first ask after a compaction got `ALREADY_READ` ("is in
+your context from an earlier read_rule call") or `JUST_ASKED` ("was answered by the tool result just before
+this call"). Both are false in that state: no read_rule call and no tool result holds the text, only the
+carried system message does. Measured 2026-11-27, 06:00 to 18:15 UTC, from the transcripts of eleven
+unattended worker sessions on one local 27B model:
+- 357 `read_rule` asks: 245 answered with a pointer (69 percent), 53 refused by the lookup-only bound (15
+  percent), 57 with the rule text (16 percent).
+- Counted per compaction segment and rule: 96 rule-segments where the rule was never answered with its text
+  took 254 asks (158 beyond the first); 42 rule-segments where it was answered with its text took 104 asks (45
+  non-text asks after the text).
+- Responses whose only calls were `read_rule` took 4.2 percent of all model-response time (274 responses,
+  15,575 of about 374,000 seconds).
+- One session asked for one short rule 13 times in nine minutes this way, each answer a 237-byte pointer,
+  never the text.
+
+Decision.
+- A plain ask (not `refresh=true`) for a rule whose text is held only by the carried-rules message, with no
+  tool result holding it, is answered with the rule's text itself, the same `rule_text` string a first read
+  returns. That result now holds the text, so later asks get the existing pointers exactly as before.
+- `ToolContext` gets `in_tool_results`, a narrower sibling of `in_context` that reads tool results only; the
+  loop backs it with `_tool_result_holds`, and `_tool_output_in_context` is now that check or the carried
+  message, so its other users (the task tool) are unchanged. `_pointer_template` decides on `in_tool_results`,
+  and on `in_context` when a context does not set it, so a bare context or a test double behaves as before.
+- The pinned branch, the refresh path and the pointer count are unchanged. `would_point` calls
+  `_pointer_template`, so the lookup-only bound (ADR-0399) still refuses only an ask the tool would answer
+  with a pointer: in the carried-only state it is false.
+
+Alternatives rejected.
+- Reword the pointer to say where the carried copy is. `JUST_ASKED` already names the text's first and last
+  lines and the model still asked again.
+- Stop carrying rule texts. The carry saves the re-fetch for the rules the model applies without asking.
+- Send the text on every ask. Measured re-asks after a text are about one per rule per segment (45 over 42
+  rule-segments), so the pointers stay for those.
+
+Consequences. The first ask for a carried rule costs the rule's text once (bounded by `MAX_RULE_BODY_CHARS`)
+instead of a pointer and the asks that follow it. The carried copy stays in the conversation, so the text is
+held twice until the next compaction. Pinned in `tests/test_read_rule_carried_text.py`;
+`tests/test_carry_rules.py` now expects the text, then the pointer. To measure after the roll, on the same
+kind of sessions: the pointer and refusal shares of `read_rule` asks (69 and 15 percent before), runs of three
+or more pointers for one rule, and the share of model time in responses whose only calls are `read_rule` (4.2
+percent before).
