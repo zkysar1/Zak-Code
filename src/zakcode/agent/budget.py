@@ -158,6 +158,11 @@ class IterationBudget:
         return self.cost_exhausted() or self.tokens_exhausted()
 
     @property
+    def meters_usage(self) -> bool:
+        """True when a cost or token ceiling is set: the bound is read from every call's usage."""
+        return self._max_cost_usd is not None or self._max_tokens is not None
+
+    @property
     def unpriced_calls(self) -> int:
         """How many folded-in calls could not be priced at all (see ``Usage.cost_unpriced``)."""
         return self._unpriced_calls

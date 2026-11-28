@@ -297,6 +297,13 @@ def defang_untrusted(text: str) -> str:
     return _TEMPLATE_TOKEN_RE.sub(lambda m: f"<{zwsp}" + m.group(0)[1:], out)
 
 
+def speaks_tool_protocol(text: str) -> bool:
+    """Whether ``text`` carries a frame of the text tool protocol (a ``tool_call`` or
+    ``tool_result`` tag, opening or closing, or a ``tool_call`` fence). A reply that does is
+    writing a tool call, finished or not, so it is not plain prose."""
+    return _SENTINEL_RE.search(text) is not None
+
+
 def _sanitize_tool_name(name: str) -> str:
     """Strip characters that would break the ``tool="..."`` attribute (incl. MCP names)."""
     return re.sub(r'["<>]', "", name)
@@ -937,4 +944,5 @@ __all__ = [
     "textify_messages",
     "parse_text_tool_calls",
     "defang_untrusted",
+    "speaks_tool_protocol",
 ]
