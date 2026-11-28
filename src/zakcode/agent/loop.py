@@ -8510,15 +8510,15 @@ class AgentLoop:
         way the say inbox delivers a typed slash — and ``None`` (the overwhelmingly common
         case) to let the turn end. Vetoes are UNBOUNDED on a vetoable loop — a registered
         Stop hook is in charge of standing down (and the cost budget is the hard bound),
-        matching Claude Code — with three exceptions: a ``provider_error`` veto is bounded and
+        matching Claude Code — with two exceptions: a ``provider_error`` veto is bounded and
         paced by its call sites (ADR-0181), since it re-issues a call against a provider
-        that just failed; a veto that names a skill re-entry after
+        that just failed; and a veto that names a skill re-entry after
         :data:`_VETO_STALL_THRESHOLD` such vetoes were honoured with no skill call between
         them is refused, ending the turn as ``veto_stall`` with a wake-up left behind (the
-        fence, ADR-0187); and ``lookup`` says a rule-lookup loop caused the stop, whose
-        :data:`_LOOKUP_VETO_FENCE`-th veto with only lookups between compacts the context
-        before the turn goes on, and whose next such trip ends the turn as ``veto_stall``
-        (ADR-0422). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
+        fence, ADR-0187). A second fence counts the stops ``lookup`` marks, a rule-lookup
+        loop's: the :data:`_LOOKUP_VETO_FENCE`-th veto of one with only lookups between
+        compacts the context before the turn goes on, and the next such trip ends the turn as
+        ``veto_stall`` (ADR-0422). Observe-only hooks (``register_turn_end_observer``) fire on EVERY
         turn end, vetoable or not. ``allow_veto=False`` is a turn end the caller has decided is
         final (a quota refusal on a turn a client waits on, ADR-0393): the observers run, no
         veto-capable hook is asked. Fail-open: a crashing hook run never blocks the stop.
