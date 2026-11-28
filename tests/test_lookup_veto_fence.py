@@ -207,19 +207,20 @@ async def test_a_second_trip_with_no_work_between_ends_the_turn_as_veto_stall(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
 @pytest.mark.parametrize(
     ("asks", "ends", "asked"),
     [(13, "completed", ["stuck", "stuck", "completed"]), (25, "veto_stall", ["stuck"] * 4)],
     ids=["compacts", "ends"],
 )
 async def test_a_lookup_loop_the_stuck_ladder_stops_is_counted_too(
-    tmp_path: Path, asks: int, ends: str, asked: list[str]
+    tmp_path: Path, asks: int, ends: str, asked: list[str], streamed: bool
 ) -> None:
     """Two rules asked for in turn never repeat a batch, so the doom guard never stops them: the
     lookup-only bound refuses them and the ladder stops the turn, and the hook sends it back."""
     names = ("error-response", "return-protocol")
     loop, compactor, hook = _loop(tmp_path, [*(_ask(i, names[i % 2]) for i in range(asks)), _DONE])
-    stop_reason, _ = await _turn(loop, streamed=False)
+    stop_reason, _ = await _turn(loop, streamed=streamed)
     assert stop_reason == ends
     assert hook.asked == asked
     assert len(compactor.last_texts) == 1
@@ -252,11 +253,12 @@ async def test_a_doom_loop_of_anything_but_lookups_is_not_counted(
 
 
 @pytest.mark.asyncio
-async def test_each_turn_starts_the_count_over(tmp_path: Path) -> None:
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+async def test_each_turn_starts_the_count_over(tmp_path: Path, streamed: bool) -> None:
     """A stop sent back at the end of one turn and one in the next are not two in a row."""
     loop, compactor, hook = _loop(tmp_path, [*_asks(0, 2), _DONE, *_asks(20, 2), _DONE])
-    first, _ = await _turn(loop, streamed=False)
-    second, _ = await _turn(loop, streamed=False)
+    first, _ = await _turn(loop, streamed=streamed)
+    second, _ = await _turn(loop, streamed=streamed)
     assert (first, second) == ("completed", "completed")
     assert hook.asked == ["doom_loop", "completed", "doom_loop", "completed"]
     assert compactor.last_texts == []
