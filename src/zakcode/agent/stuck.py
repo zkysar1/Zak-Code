@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from enum import Enum
 from hashlib import blake2b
 
@@ -200,6 +200,19 @@ SIG_PRINT_ONLY = "print-only"
 _PRINT_ONLY_RE = re.compile(
     r"""\s*echo(?:[ \t]+(?:"[^"`$\\]*"|'[^']*'|[^\s"'`$\\|;&<>()#*?\[\]~{}]+))+\s*"""
 )
+
+
+def is_print_only(calls: Sequence[ToolCall], shell_tools: Collection[str]) -> bool:
+    """Whether ``calls`` is non-empty and each is a shell call whose whole command is one ``echo``
+    of literal words (:data:`_PRINT_ONLY_RE`). Such a call reads nothing and changes nothing."""
+    return bool(calls) and all(
+        c.name in shell_tools
+        and isinstance(command := c.arguments.get("command"), str)
+        and _PRINT_ONLY_RE.fullmatch(command) is not None
+        for c in calls
+    )
+
+
 #: The same bound on completions that only ask ``read_rule`` for rules the model already holds
 #: (ADR-0399): plain lookups (:func:`lookup_rules`), every one answered by a pointer
 #: (``RULE_POINTER``), the text being in the conversation or pinned in the system prompt. Each
@@ -698,12 +711,7 @@ class StuckTracker:
         return bool(calls and self.plan_tools) and all(c.name in self.plan_tools for c in calls)
 
     def _is_print_only(self, calls: Sequence[ToolCall]) -> bool:
-        return bool(calls) and all(
-            c.name in self.shell_tools
-            and isinstance(command := c.arguments.get("command"), str)
-            and _PRINT_ONLY_RE.fullmatch(command) is not None
-            for c in calls
-        )
+        return is_print_only(calls, self.shell_tools)
 
     def _observe_poll(self, calls: Sequence[ToolCall], by_id: dict[str, ToolResultBlock]) -> int:
         """Extend or end the poll run (ADR-0407) and return its length, this completion included.

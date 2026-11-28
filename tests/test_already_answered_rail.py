@@ -1,5 +1,6 @@
-"""ADR-0217: the call that exists only to hand back a tool result is told the answer already
-stands, so the model stops instead of saying it again.
+"""ADR-0217 (amended): when a completion answered and then only PRINTED, the call that exists
+only to hand that result back is told the answer already stands, so the model stops instead of
+saying it again.
 
 The shape, measured 2026-09-22 on a served workspace and reported by the user from their terminal.
 Inside ONE turn: the model wrote a full verdict, called a tool (a bare ``echo``, made to satisfy
@@ -11,16 +12,20 @@ Nothing could catch it after the fact. The repeat is the model's own prose, and 
 compares tool OUTPUTS: it is handed each iteration's assistant text and uses it in one place,
 only to ask whether it is empty. And by the time the second answer could be recognised as a
 repeat it is already streaming onto the screen, where it cannot be unsaid. So this acts BEFORE,
-on the one fact that is certain at the time: the previous completion had already answered.
+on what is certain at the time: the previous completion had answered and asked only to print.
 
 WHAT IS PINNED HERE IS THE WIRE, NEVER THE SOURCE. Every assertion reads the rails
 the loop recorded for each real request, so a test cannot pass because a constant exists.
 
-THE CONTROL IS THE SECOND TEST and it is the point of the file: the line must ride ONLY on the
-call that follows an answer. A rail that rides every call would pass every "does it ride?" test
-ever written while quietly costing tokens on every request of every turn.
+THE CONTROLS ARE THE NEXT TWO TESTS and they are the point of the file: the line must ride ONLY
+on the call that follows an answer and a print. A rail that rides every call would pass every
+"does it ride?" test ever written while quietly costing tokens on every request of every turn,
+and a line that follows real work tells the model to stop in the middle of it: measured on one
+long-running hosted session (2026-11-24..28), prose of 200 or more characters before such a call
+was answered by text alone 79 times in 132, against once in 83 after shorter prose and 67 times
+in 2,462 after none.
 
-Hermetic: a scripted provider, a real read of a file in tmp_path, no network.
+Hermetic: a scripted provider, real prints and a real read of a file in tmp_path, no network.
 """
 
 from __future__ import annotations
@@ -79,6 +84,15 @@ def _read(call_id: str, path: Path) -> ToolCall:
     return ToolCall(id=call_id, name="read_file", arguments={"path": str(path)})
 
 
+def _shell(call_id: str, command: str) -> ToolCall:
+    return ToolCall(id=call_id, name="Bash", arguments={"command": command})
+
+
+def _echo(call_id: str) -> ToolCall:
+    """The measured shape: a call that only prints, made so the turn ends on a tool call."""
+    return _shell(call_id, 'echo "Return to the caller"')
+
+
 def _said(text: str, call: ToolCall | None = None) -> LLMResult:
     return LLMResult(text=text, tool_calls=[call] if call else [], usage=Usage(total_tokens=1))
 
@@ -121,7 +135,7 @@ def target(tmp_path: Path) -> Path:
 async def test_the_line_rides_the_call_that_hands_back_a_tool_result_after_an_answer(
     tmp_path: Path, target: Path, streamed: bool
 ) -> None:
-    provider = _Scripted([_said(ANSWER, _read("c1", target)), _said("done")])
+    provider = _Scripted([_said(ANSWER, _echo("c1")), _said("done")])
     loop = _loop(provider, tmp_path)
     assert await _run(loop, "what is the state?", streamed=streamed) == "completed"
 
@@ -142,7 +156,7 @@ async def test_a_turn_that_only_narrated_before_its_tool_call_never_pays_for_the
     line to be about, and a turn like this must carry it on no call at all. Without this the
     suite would pass just as well for a rail that rides unconditionally.
     """
-    provider = _Scripted([_said(NARRATION, _read("c1", target)), _said(ANSWER)])
+    provider = _Scripted([_said(NARRATION, _echo("c1")), _said(ANSWER)])
     loop = _loop(provider, tmp_path)
     assert await _run(loop, "what is the state?", streamed=streamed) == "completed"
 
@@ -152,18 +166,45 @@ async def test_a_turn_that_only_narrated_before_its_tool_call_never_pays_for_the
 
 
 @pytest.mark.asyncio
-async def test_the_line_stops_riding_once_the_model_moves_on(tmp_path: Path, target: Path) -> None:
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+@pytest.mark.parametrize("work", ["read", "shell", "print-and-read", "print-of-a-variable"])
+async def test_a_long_narration_before_real_work_never_pays_for_the_line(
+    tmp_path: Path, target: Path, streamed: bool, work: str
+) -> None:
+    """THE SECOND CONTROL. The prose is long enough to be an answer, but a call does more than
+    print, so the next request has something new to say and must not be told to stop."""
+    calls = {
+        "read": [_read("c1", target)],
+        "shell": [_shell("c1", "ls")],
+        "print-and-read": [_echo("c1"), _read("c2", target)],
+        "print-of-a-variable": [_shell("c1", 'echo "$HOME"')],
+    }[work]
+    first = LLMResult(text=ANSWER, tool_calls=calls, usage=Usage(total_tokens=1))
+    provider = _Scripted([first, _said("done")])
+    loop = _loop(provider, tmp_path)
+    assert await _run(loop, "what is the state?", streamed=streamed) == "completed"
+
+    rails = _rails(loop)
+    assert len(rails) == 2, rails
+    assert all("already_answered" not in call for call in rails), rails
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
+async def test_the_line_stops_riding_once_the_model_moves_on(
+    tmp_path: Path, target: Path, streamed: bool
+) -> None:
     """It is recomputed from every completion, so it can never be stale by an iteration: an
     answer, then a tool, then a SHORT completion that calls another tool, and the line is gone."""
     provider = _Scripted(
         [
-            _said(ANSWER, _read("c1", target)),  # call 1: answers and calls a tool
+            _said(ANSWER, _echo("c1")),  # call 1: answers and prints
             _said(NARRATION, _read("c2", target)),  # call 2: carries the line, moves on
             _said("done"),  # call 3: must NOT carry it
         ]
     )
     loop = _loop(provider, tmp_path)
-    assert await _run(loop, "what is the state?", streamed=False) == "completed"
+    assert await _run(loop, "what is the state?", streamed=streamed) == "completed"
 
     rails = _rails(loop)
     assert len(rails) == 3, rails
@@ -178,7 +219,7 @@ async def test_an_answer_with_no_tool_call_leaves_nothing_behind_for_the_next_tu
 ) -> None:
     """An answer alone ENDS a turn, so no call follows it to be told anything. What is pinned
     is that it also leaves nothing armed for the NEXT turn, which a person opened."""
-    provider = _Scripted([_said(ANSWER), _said(ANSWER, _read("c1", target)), _said("done")])
+    provider = _Scripted([_said(ANSWER), _said(ANSWER, _echo("c1")), _said("done")])
     loop = _loop(provider, tmp_path)
 
     assert await _run(loop, "what is the state?", streamed=False) == "completed"
@@ -191,55 +232,53 @@ async def test_an_answer_with_no_tool_call_leaves_nothing_behind_for_the_next_tu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streaming"])
 async def test_a_turn_cut_off_mid_answer_leaves_nothing_armed_for_the_next_one(
-    tmp_path: Path, target: Path
+    tmp_path: Path, target: Path, streamed: bool
 ) -> None:
     """The only way a turn ENDS with an answer standing, and the reason the flag is cleared at
     every turn start rather than only when it stops being true.
 
     Normally a turn ends on a completion with no tool call, which leaves the flag false on its
     own. But a turn cut off by its iteration budget ends right after a completion that answered
-    AND called a tool — so the flag is still set when the next turn begins, and without the
+    and then only printed — so the flag is still set when the next turn begins, and without the
     reset a person's fresh question would be answered under a line about an answer they never saw.
     """
-    provider = _Scripted([_said(ANSWER, _read("c1", target)), _said("done")])
+    provider = _Scripted([_said(ANSWER, _echo("c1")), _said("done")])
     loop = _loop(provider, tmp_path)
     loop.max_iterations = 1  # the budget ends the turn immediately after the first completion
 
-    assert await _run(loop, "what is the state?", streamed=False) == "max_iterations"
+    assert await _run(loop, "what is the state?", streamed=streamed) == "max_iterations"
     # The hazard is REAL and asserted before the remedy: the turn ended with an answer standing.
     assert loop._answer_already_given is True
 
     loop.max_iterations = 10
-    assert await _run(loop, "a fresh question", streamed=False) == "completed"
+    assert await _run(loop, "a fresh question", streamed=streamed) == "completed"
     # The trace is per-turn, so index 0 here is the FIRST call of the second turn.
     assert "already_answered" not in _rails(loop)[0], _rails(loop)
 
 
 def test_an_answer_alone_is_not_an_answer_followed_by_a_tool() -> None:
-    """Both halves of the predicate, asserted on the predicate itself.
+    """Every part of the predicate, asserted on the predicate itself.
 
     An answer with no tool call ENDS the turn, so no call follows it to be told anything, and
     nothing on the wire can distinguish a predicate that requires the tool call from one that
     does not. Read directly, then, rather than left to an integration test that cannot reach it.
     """
 
-    def built(text: str, *, with_tool: bool) -> Message:
+    def built(text: str, *calls: ToolCall) -> Message:
         """An assistant message in the same shape the loop stores one, built here rather than
         driven through a turn: an answer with no tool call ends a turn, so no run can produce
         the middle case at a moment where anything reads it."""
         blocks: list[Any] = [TextBlock(text=text)]
-        if with_tool:
-            blocks.append(ToolUseBlock(id="c1", name="read_file", arguments={"path": "x"}))
+        blocks += [ToolUseBlock(id=c.id, name=c.name, input=c.arguments) for c in calls]
         return Message(role="assistant", blocks=blocks)
 
-    answer_and_tool = built(ANSWER, with_tool=True)
-    answer_alone = built(ANSWER, with_tool=False)
-    narration_and_tool = built(NARRATION, with_tool=True)
-
-    assert _answered_then_called_a_tool(answer_and_tool) is True
-    assert _answered_then_called_a_tool(answer_alone) is False  # no tool ran; no call follows
-    assert _answered_then_called_a_tool(narration_and_tool) is False  # nothing was answered
+    assert _answered_then_called_a_tool(built(ANSWER, _echo("c1"))) is True
+    assert _answered_then_called_a_tool(built(ANSWER)) is False  # no tool ran; no call follows
+    assert _answered_then_called_a_tool(built(NARRATION, _echo("c1"))) is False  # no answer
+    assert _answered_then_called_a_tool(built(ANSWER, _shell("c1", "ls"))) is False  # real work
+    assert _answered_then_called_a_tool(built(ANSWER, _echo("c1"), _shell("c2", "ls"))) is False
 
 
 def test_the_line_between_an_answer_and_narration_is_a_length_and_it_is_documented() -> None:

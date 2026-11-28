@@ -181,6 +181,17 @@ class RuleRegistry:
             content = content[:MAX_RULE_FILE_CHARS]
         return f"## {rule.name}\n{content}"
 
+    @staticmethod
+    def _shown_path(path: Path, relative_to: Path | None) -> str:
+        """The path an index line prints for a rule: ``path`` relative to ``relative_to`` when it
+        lies inside it, else ``path`` as discovered (absolute for a user or bundled rule)."""
+        if relative_to is not None:
+            try:
+                return str(path.relative_to(relative_to))
+            except ValueError:
+                pass
+        return str(path)
+
     def render(self) -> str:
         """Render all rules as one prompt block for the stable tier (``""`` if none).
 
@@ -216,7 +227,7 @@ class RuleRegistry:
             body += f"\n\n[{dropped} further rule(s) omitted: rules budget reached]"
         return f"{header}\n\n{body}"
 
-    def render_index(self) -> str:
+    def render_index(self, relative_to: Path | None = None) -> str:
         """Render a COMPACT one-line-per-rule INDEX for the stable tier (``""`` if none).
 
         The lean alternative to :meth:`render`. Where :meth:`render` folds every rule's
@@ -231,13 +242,23 @@ class RuleRegistry:
         non-empty body line (with any leading Markdown heading marker stripped), capped at
         :data:`_INDEX_SUMMARY_CHARS`. The on-disk ``path`` lets the model fetch the body
         with its file-read tool (directly usable for workspace-local rules such as
-        ``.claude/rules/*.md`` — the dominant case). Bounded overall by
+        ``.claude/rules/*.md`` — the dominant case). With ``relative_to`` (the workspace root)
+        a rule inside it prints its path relative to that root, which the file-read tool takes
+        (its ``path`` parameter in ``tools/builtins/read_file.py`` reads "absolute or relative to
+        the workspace root"), so the root's text is not repeated on every line; a rule outside
+        it (a bundled or user rule) keeps its absolute path, and without ``relative_to`` every
+        path is absolute. Bounded overall by
         :data:`MAX_RULES_TOTAL_CHARS` for parity with :meth:`render` (the index is far
         smaller, but the cap is enforced for safety); rules beyond the budget are dropped
         with a recorded note. Returns ``""`` when there are no rules.
         """
         if not self._rules:
             return ""
+        path_note = (
+            "path, relative to the workspace root when the rule lies inside it, is shown too, "
+            if relative_to is not None
+            else "path is shown too, "
+        )
         header = (
             "Project rules (operator-authored standing guidance). Each rule is listed by "
             "name with a one-line summary; the first time a rule looks relevant, call "
@@ -245,8 +266,7 @@ class RuleRegistry:
             "stays in your context and does not change: read each rule once, and when its "
             "summary looks relevant again, at a new plan step too, apply the text you "
             "already have. (The file "
-            "path is shown too, so your file-read tool also works if read_rule is "
-            "unavailable.):"
+            f"{path_note}so your file-read tool also works if read_rule is unavailable.):"
         )
         lines: list[str] = []
         note_slack = 80
@@ -277,11 +297,8 @@ class RuleRegistry:
             if rule.always_apply:
                 continue
             summary = rule.summary()
-            line = (
-                f"- {rule.name}: {summary} [{rule.path}]"
-                if summary
-                else f"- {rule.name} [{rule.path}]"
-            )
+            shown = self._shown_path(rule.path, relative_to)
+            line = f"- {rule.name}: {summary} [{shown}]" if summary else f"- {rule.name} [{shown}]"
             sep = 1 if lines else 0  # the single "\n" join separator before this line
             if total + sep + len(line) > MAX_RULES_TOTAL_CHARS - note_slack:
                 dropped += 1

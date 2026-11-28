@@ -14,6 +14,7 @@ in-memory tool registry, and a ``tmp_path`` workspace.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -39,6 +40,7 @@ from zakcode.providers.base import (
     RequestFailed,
     ToolCall,
 )
+from zakcode.providers.litellm_provider import LiteLLMProvider
 from zakcode.providers.spend_gate import SpendCapReached
 from zakcode.session.store import Session
 from zakcode.tools.base import Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec
@@ -146,6 +148,7 @@ def _make_loop(
     max_iterations: int = 10,
     turn_end_vetoable: bool = True,
     registry: ToolRegistry | None = None,
+    compose_skill: Any = None,
     **settings_over: Any,
 ) -> AgentLoop:
     settings = load_settings(workspace_root=tmp_path, **settings_over)
@@ -156,6 +159,7 @@ def _make_loop(
         settings=settings,
         max_iterations=max_iterations,
         turn_end_vetoable=turn_end_vetoable,
+        compose_skill=compose_skill,
     )
 
 
@@ -886,6 +890,99 @@ async def test_turn_end_doom_loop_veto_pairs_and_resets(tmp_path: Path) -> None:
     ]
     assert len(synthetic) == 2
     assert all(b.is_error for b in synthetic)
+
+
+# ── doom-loop veto: the re-entry message comes after the vetoed batch's answers ───────────
+
+
+def _pairing_error(messages: list[Message]) -> str | None:
+    """What a strict chat-completions API refuses in ``messages`` as they go on the wire: an
+    assistant ``tool_calls`` message not followed at once by one ``tool`` message per call, or a
+    ``tool`` message that answers no open call. ``None`` when the order is sound."""
+    awaiting: set[str] = set()
+    for message in LiteLLMProvider._translate_messages(messages, None):
+        if message["role"] == "tool":
+            if message["tool_call_id"] not in awaiting:
+                return f"a tool message answers no open call: {message['tool_call_id']}"
+            awaiting.discard(message["tool_call_id"])
+            continue
+        if awaiting:
+            return f"a {message['role']} message came before the answers to {sorted(awaiting)}"
+        awaiting = {call["id"] for call in message.get("tool_calls") or []}
+    return f"no tool message answers {sorted(awaiting)}" if awaiting else None
+
+
+class _StrictScriptedProvider(ScriptedProvider):
+    """A :class:`ScriptedProvider` that refuses a mis-paired transcript, as a strict API does on
+    every call that carries it."""
+
+    def __init__(self, results: list[LLMResult]) -> None:
+        super().__init__(results)
+        self.refused: list[str] = []
+
+    async def acomplete(self, messages, *, system=None, tools=None, **kwargs):  # type: ignore[override]
+        error = _pairing_error(messages)
+        if error is not None:
+            self.refused.append(error)
+            raise RequestFailed(f"invalid tool call pairing: {error}")
+        return await super().acomplete(messages, system=system, tools=tools, **kwargs)
+
+
+async def _compose_flat_skill(name: str, args: str = "", **_: Any) -> SimpleNamespace:
+    """A ``compose_skill`` that delivers a skill with no sections, so the plan stays empty."""
+    return SimpleNamespace(
+        invoked=True,
+        name=name,
+        turn_text=(
+            f"<command-message>{name} is running</command-message>\n"
+            f"<command-name>/{name}</command-name>\n\n# {name}\n\nEnter the loop.\n"
+        ),
+        denied_reason=None,
+        error=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize(
+    ("reason", "reentry"),
+    [
+        ("Different approach, please.", "[harness] Hint: Different approach, please."),
+        ("Call Skill('orchestrate') now.", "<command-message>orchestrate is running"),
+    ],
+    ids=["rail", "skill"],
+)
+async def test_a_vetoed_doom_loop_answers_its_calls_before_the_re_entry(
+    tmp_path: Path, streamed: bool, reason: str, reentry: str
+) -> None:
+    # The first repeated streak spends the built-in recovery; the second reaches the TURN_END
+    # hook, whose veto adds the re-entry message. The next call must still be accepted.
+    repeats = [_same_call(i) for i in range(2 * DOOM_LOOP_THRESHOLD)]
+    provider = _StrictScriptedProvider([*repeats, _TEXT_DONE, _TEXT_DONE])
+    hook = RecordingHook([_veto(reason), None])
+    loop = _make_loop(provider, tmp_path, max_iterations=12, compose_skill=_compose_flat_skill)
+    paired_when_asked: list[str | None] = []
+
+    def _ask(payload: TurnEndPayload) -> TurnEndResult | None:
+        paired_when_asked.append(_pairing_error(loop.session.messages))
+        return hook(payload)
+
+    loop.hook_manager.register_turn_end(_ask)
+    stop_reason, error, _ = await _turn(loop, streamed=streamed)
+    assert provider.refused == []
+    assert stop_reason == "completed", error
+    assert [p.stop_reason for p in hook.payloads] == ["doom_loop", "completed"]
+    assert paired_when_asked == [None, None]  # each call was answered before the hook ran
+    assert _pairing_error(loop.session.messages) is None
+    vetoed_call = repeats[-1].tool_calls[0].id
+    after = next(
+        i
+        for i, m in enumerate(loop.session.messages)
+        if any(use.id == vetoed_call for use in m.tool_uses)
+    )
+    answer, then = loop.session.messages[after + 1 : after + 3]
+    assert [b.tool_use_id for b in answer.blocks] == [vetoed_call]
+    assert then.role == "user" and then.text.startswith(reentry)
 
 
 # ── payload contents ──────────────────────────────────────────────────────────
