@@ -8886,7 +8886,8 @@ class AgentLoop:
                 skill=reentry[0],
             )
         # A reply with text ended the turn and the hook goes on with it, so the loop holds the
-        # floor until a person speaks (ADR-0421). A turn that ended any other way (silence, even
+        # floor until a person speaks (ADR-0421), however short the reply: the hook refusing the
+        # stop is the loop taking the turn over. A turn that ended any other way (silence, even
         # after a preface earlier in the turn; a provider error; a stall) has not answered
         # whoever opened it.
         if stop_reason == "completed" and replied:
@@ -9553,6 +9554,7 @@ class AgentLoop:
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         refusal_ends_turn = False  # this turn's provider_error is a quota refusal it ends on
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the next reply continues an answer cut off (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into TurnResult.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None): the last
@@ -9698,7 +9700,8 @@ class AgentLoop:
             # while the turn runs is folded in at this boundary, so the NEXT provider call
             # sees it. Vital for perpetual-loop deployments whose turn never ends; inert
             # (consume_say_inbox=False) on sub-agents and bare loops.
-            await self._deliver_midturn_say()
+            if await self._deliver_midturn_say() is not None:
+                answer_continued = False  # a person spoke: the next reply answers them (ADR-0421)
             # Perception delivery (Portability P4): after the say, so a person's message
             # keeps its place in the conversation ahead of the world's report. Urgent events
             # go first: they are the part of the report the producer wants answered.
@@ -10147,6 +10150,9 @@ class AgentLoop:
                     self._persist()
                 break
 
+            # The reply after a continuation is the continued answer; the mark lasts that one
+            # reply, whether it calls a tool or not (ADR-0421).
+            continued_answer, answer_continued = answer_continued, False
             # No tool calls → the turn is finishing (cleanly when the model has said
             # anything this turn; the empty give-up gate below handles total silence).
             if not result.has_tool_calls:
@@ -10189,6 +10195,7 @@ class AgentLoop:
                     and length_continuations < _MAX_LENGTH_CONTINUATIONS
                 ):
                     length_continuations += 1
+                    answer_continued = True
                     turn_degraded = True
                     self.session.add_message(
                         Message.user(
@@ -10205,6 +10212,14 @@ class AgentLoop:
                     repeat_count = 0
                     stuck.reset()
                     continue
+                # A reply that says more than the cap, or the last piece of an answer continued
+                # at the output limit, is a full answer, and it now tries to end the turn. If
+                # anything sends it back (a gate below or the TURN_END hook), the next reply goes
+                # to the loop, which holds the floor until a person speaks; if nothing does, the
+                # turn ends and the floor with it. A shorter reply may be a preface, so only the
+                # hook's refusal passes the floor on it, in _fire_turn_end (ADR-0421).
+                if continued_answer or len(result.text.strip()) > _LOOP_PROSE_CAP:
+                    self._loop_floor = True
                 # Recipe gate: a create-and-run turn may not end until the written file
                 # has actually been run successfully. Nudge the model to verify; give up
                 # gracefully (recipe_stalled) once the attempt cap is hit.
@@ -11342,6 +11357,7 @@ class AgentLoop:
         self._lookup_compacted = False
         provider_error_vetoes = 0  # CONSECUTIVE hook-vetoed provider-error re-entries (ADR-0181)
         length_continuations = 0  # finish_reason="length" auto-continuations (parity #5)
+        answer_continued = False  # the next reply continues an answer cut off (ADR-0421)
         degen_retries = 0  # degenerate completions discarded + retried this turn (ADR-0018)
         turn_degraded = False  # rolled into AgentDone.degraded (e.g. a length recovery)
         # zakpick main-turn routing state (no-op when main_provider_for is None) — see _run_turn.
@@ -11484,6 +11500,7 @@ class AgentLoop:
                 # client shows the operator their message was taken into the running turn.
                 delivered_say = await self._deliver_midturn_say()
                 if delivered_say is not None:
+                    answer_continued = False  # ADR-0421 — see _run_turn (buffered twin)
                     shown = (
                         delivered_say if len(delivered_say) <= 200 else delivered_say[:200] + "…"
                     )
@@ -12313,6 +12330,7 @@ class AgentLoop:
                     )
                     break
 
+                continued_answer, answer_continued = answer_continued, False  # ADR-0421
                 # No tool calls → the turn is complete.
                 if not tool_calls:
                     # Text-only stall (ADR-0033) — see the buffered twin. The count is also
@@ -12357,6 +12375,7 @@ class AgentLoop:
                         and length_continuations < _MAX_LENGTH_CONTINUATIONS
                     ):
                         length_continuations += 1
+                        answer_continued = True
                         turn_degraded = True
                         self.session.add_message(
                             Message.user(
@@ -12372,6 +12391,9 @@ class AgentLoop:
                         stuck.reset()
                         yield AgentStatus(message="response truncated; continuing")
                         continue
+                    # A full answer passes the floor to the loop (ADR-0421): see the buffered twin.
+                    if continued_answer or len(assistant_text.strip()) > _LOOP_PROSE_CAP:
+                        self._loop_floor = True
                     if cursor.needs_verification():
                         if not cursor.can_nudge():
                             # ADR-0244 — see the buffered twin.
