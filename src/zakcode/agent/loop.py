@@ -264,7 +264,12 @@ from zakcode.tools.base import (
     ToolSpec,
 )
 from zakcode.tools.builtins.read_rule import rule_text, would_point
-from zakcode.tools.builtins.update_plan import PLAN_ADVANCE, PLAN_ADVANCE_CALL, authors_a_plan
+from zakcode.tools.builtins.update_plan import (
+    PLAN_ADVANCE,
+    PLAN_TOOL_NAMES,
+    STEP_DONE_ARG,
+    authors_a_plan,
+)
 from zakcode.usage import Usage
 from zakcode.wakeup import (
     DEFAULT_DELAY_SECONDS,
@@ -2530,7 +2535,7 @@ _MAX_PLAN_FIRST_NUDGES = 2
 #: Tool names that edit or read the plan itself: their calls are never recorded as a step's
 #: evidence (ADR-0110 / ADR-0111) — the plan's own bookkeeping is not work the step did, and
 #: reading the record must leave no trace in it.
-_PLAN_TOOLS = frozenset({"update_plan", "plan", "todo", "plan_recall", "plan_history"})
+_PLAN_TOOLS = PLAN_TOOL_NAMES  # one set, shared with the schema (ADR-0416)
 
 #: Waiting for the operator is a turn-ENDING state (ADR-0121): a call to any of these names
 #: that SUCCEEDS ends the turn with the plan untouched. Prose cannot stop a loop — a model
@@ -3277,6 +3282,10 @@ class AgentLoop:
         # the operator's control input, so no fresh-eyes review may reopen its finished plan.
         self._turn_operator_command = False
         self._turn_plan_judged = False
+        # The step a ``step_done`` close made current (ADR-0416). Until a call's work lands on
+        # it, a second ``step_done`` cannot close it: a batch where every call carries the
+        # argument closes one step, not one per call.
+        self._step_done_opened: str | None = None
         # Dropped-section restores per paged skill this turn (ADR-0075): bounded by
         # ``_MAX_SECTION_RESTORES``, after which a drop is the model's decision. Per-turn.
         self._turn_section_restores: dict[str, int] = {}
@@ -5183,9 +5192,8 @@ class AgentLoop:
             _PLAN_JUST_UPDATED
             if just_updated
             else (
-                f"[plan] Harness-tracked plan for the current goal. When {step} is done, call "
-                f"update_plan with {PLAN_ADVANCE_CALL}: it marks that step done and starts the "
-                f"next. Send it {PLAN_ADVANCE}. Send the whole plan only to add, split, drop or "
+                f"[plan] Harness-tracked plan for the current goal. When {step} is done, close "
+                f"it {PLAN_ADVANCE}. Send the whole plan only to add, split, drop or "
                 "reorder steps; decompose any step that turns out to be several actions.\n\n"
             )
         )
@@ -6820,6 +6828,11 @@ class AgentLoop:
         error block through here, so the blocker-without-evidence guard sees ONE truth: did
         anything the model tried actually fail this turn.
         """
+        step_done_line = ""
+        if call.name not in _PLAN_TOOLS and STEP_DONE_ARG in call.arguments:
+            # ADR-0416: the plan's close rides inside this call. Applied first, so the evidence
+            # owner below is the step the call starts; the call itself runs without it.
+            call, step_done_line = await self._apply_step_done(call, ctx)
         if call.name not in _PLAN_TOOLS:
             self._turn_did_work = True  # releases a command turn's perception hold (ADR-0273)
         _status_writer().set_tool_start(self.session.id, call.name)
@@ -6832,6 +6845,8 @@ class AgentLoop:
         network = self.session.task_network
         owner = None if call.name in _PLAN_TOOLS or network.is_empty() else network.current()
         block = await self._execute_tool_call_gated(call, ctx, restrict_to=restrict_to)
+        if step_done_line:
+            block.output = f"{step_done_line}\n{block.output}"
         # ADR-0116: credential-shaped tokens never reach the model, the transcript, or the
         # session file through a tool output (GUARDRAILS §6). Provider-prefixed token SHAPES,
         # plus (ADR-0125) credential-SHAPED values after a secret key — a credential file
@@ -6973,6 +6988,85 @@ class AgentLoop:
         self._note("tool", call.name, ok=not block.is_error)
         _status_writer().set_tool_end(self.session.id)
         return block
+
+    async def _apply_step_done(self, call: ToolCall, ctx: ToolContext) -> tuple[ToolCall, str]:
+        """Close the plan's current step for a call that carries ``step_done`` (ADR-0416).
+
+        Returns the call stripped of the argument (the model's own call object is left as it
+        sent it, for the transcript) and the one line that goes ahead of its output. The close
+        goes through update_plan's ``advance`` (ADR-0388), the one writer of the plan's
+        statuses. It is not applied, and the call still runs, when there is no plan of the
+        model's, when the current step has no work recorded on it (ADR-0168 lever N's trigger:
+        the argument cannot invent progress), when the step belongs to a paged skill (the next
+        section arrives only in the reply to update_plan, ADR-0067), or when the value is empty
+        (stripped and ignored, with no line).
+        """
+        arguments = dict(call.arguments)
+        outcome = arguments.pop(STEP_DONE_ARG)
+        stripped = call.model_copy(update={"arguments": arguments})
+        text = outcome.strip() if isinstance(outcome, str) else ""
+        if not text:
+            return stripped, ""
+        network = self.session.task_network
+        current = network.current()
+        refusal = ""
+        if network.is_anchor_only():
+            refusal = "there is no plan of yours; lay one out with update_plan first"
+        elif current is None:
+            refusal = "no step is current"
+        elif not (
+            current.evidence or current.outcome or any(leaf.evidence for leaf in network.leaves())
+        ) or (current.id == self._step_done_opened and not (current.evidence or current.outcome)):
+            refusal = f"step {current.id} has no work recorded on it yet"
+        elif self._step_is_paged(current):
+            refusal = (
+                f"step {current.id} is a section of a paged skill: call update_plan alone to "
+                "close it, because the next section arrives in its reply"
+            )
+        if refusal:
+            self._note(
+                "intervention",
+                f"step_done not applied: {refusal}",
+                kind="plan_step_done_refused",
+            )
+            return stripped, f"[plan] step_done not applied: {refusal}."
+        assert current is not None
+        closed_id, closed_title = current.id, current.title
+        result = await self.registry.execute("update_plan", {"advance": {"outcome": text}}, ctx)
+        if result.is_error:
+            self._note(
+                "intervention",
+                f"step_done not applied: {result.output}",
+                kind="plan_step_done_refused",
+            )
+            return stripped, f"[plan] step_done not applied: {result.output}"
+        self._note(
+            "intervention",
+            f"plan step {closed_id} closed inside {call.name}",
+            kind="plan_step_done",
+        )
+        following = network.current()
+        self._step_done_opened = following.id if following is not None else None
+        tail = (
+            f"step {following.id} ({clip(following.title, 60)!r}) is current."
+            if following is not None
+            else "the plan is complete."
+        )
+        return stripped, f"[plan] Step {closed_id} done ({clip(closed_title, 60)!r}); {tail}"
+
+    def _step_is_paged(self, step: Task) -> bool:
+        """Whether ``step`` is a section of a skill delivered a page at a time (ADR-0067)."""
+        for name in self._paged_skills_in_plan():
+            pages = self._ensure_skill_pages(name)
+            if pages is None:
+                continue
+            if any(
+                _holds(candidate, step)
+                for _, matched in self._page_steps(name, pages)
+                for candidate in matched
+            ):
+                return True
+        return False
 
     async def _execute_tool_call_gated(
         self, call: ToolCall, ctx: ToolContext, *, restrict_to: set[str] | None = None
