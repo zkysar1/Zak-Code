@@ -73,6 +73,14 @@ MAX_OUTPUT_CHARS = 64_000
 #: ``TaskOutput(block=true)`` waits this long by default, and at most this long (ms).
 DEFAULT_BLOCK_MS = 30_000
 MAX_BLOCK_MS = 600_000
+#: The shortest blocking wait whose "still running" answer ``TaskOutput`` marks a WAIT, not a
+#: look (ADR-0410): one minute. A shorter wait is a check, and a run of checks stays an ordinary
+#: repeat for the exact-repeat guard and the stuck ladder.
+WAIT_MARK_MIN_MS = 60_000
+#: How old a task may be and still have its waits marked (ADR-0410): six hours, above the longest
+#: job ADR-0410 measured a worker waiting on. Past it the waits count again, so a wait on a task
+#: that never exits still ends the turn (ADR-0407).
+WAIT_MARK_MAX_AGE_S = 6 * 3600
 #: How often a blocking wait re-reads the task's status.
 _POLL_SECONDS = 0.2
 
@@ -386,6 +394,16 @@ class BackgroundTasks:
 
     def output(self, task: BackgroundTask, *, max_chars: int = MAX_OUTPUT_CHARS) -> str:
         return output_tail(task.output_file, max_chars=max_chars)
+
+    def age_seconds(self, task: BackgroundTask) -> float | None:
+        """Seconds since ``task`` started, by this table's clock, or ``None`` when the record's
+        start time does not parse. A command moved to the background (ADR-0236) counts from
+        its spawn, not from the move."""
+        try:
+            started = datetime.fromisoformat(task.started_at)
+        except (TypeError, ValueError):
+            return None
+        return self._clock() - started.timestamp()
 
     # ── the output directory ──────────────────────────────────────────────────────
 

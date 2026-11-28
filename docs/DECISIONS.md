@@ -25873,6 +25873,11 @@ wait pin what the guards do with it, not the signal: of the mutations above only
 mutation of a guard: the first when the exact-repeat threshold is raised by one (on either turn
 path), the second when a call's signature leaves out its timeout or the ladder's stop is raised.
 
+**Amended by ADR-0410 (2026-11-26):** the first way to wait no longer meets the guards for six
+hours. `TaskOutput` marks an answer after a whole wait of a minute or more on a task still running
+and younger than six hours, and neither the exact-repeat guard nor the repeated-outcome signal
+counts a marked answer; the cost above is now paid only by unmarked waits.
+
 ## ADR-0408: the narration names heard speakers from the heard window, never its field names or words
 
 Status: accepted. 2026-11-26. Narrows how the observation narration reads the hearing slice.
@@ -25942,6 +25947,64 @@ mutations were run, each reverting or bending one line of `render_index`, its he
 site, and each turned only the tests that guard that line red: the helper ignores the root (four
 tests), matches it as a string prefix (one), loses its outside-root fallback (one), the call site
 omits the root (one), the header note is dropped (two), the default header changes (one).
+
+## ADR-0410: a whole wait on a background task still running is the wait going on, not a stall
+
+Status: accepted. 2026-11-26. Amends ADR-0407's first way to wait.
+
+Context. A foreground command still running at its timeout is moved to the background, and its
+result tells the model to wait with `TaskOutput(task_id=..., timeout=600000)` and to call again
+while the command runs (ADR-0236); the ADR-0407 nudge points a polling model at the same call. A
+task whose output goes to a file of its own answers "status: running" in the same words after each
+wait, so the third identical wait met the exact-repeat guard (ADR-0168) and a third identical
+answer met the repeated-outcome signal (ADR-0038): a model could wait twenty to thirty minutes and
+no longer. ADR-0407 named this the known cost and left it, because exempting a blocking
+`TaskOutput` from both would leave a wait on a task that never exits with no guard at all.
+
+The cost is paid by every worker that runs a long job. Measured on a served fleet (eleven worker
+sessions, one local model, the 24 hours to 2026-11-26T17:46Z, the newest transcript of each
+session, so every count is a floor): four sessions each held a background test-suite run that no
+wait read to its end, and the ladder sent nine rails right after a "still running" answer (four
+nudges, three narrows, one step back, one other). One session's run went on for 2 h 46 min; the
+third identical answer drew the nudge, which added investigative steps to its plan, the fourth drew
+the narrow, and the session stopped waiting about seventy minutes in and went on to other work. The
+run finished and nothing read it.
+
+Decision.
+- `TaskOutput` marks its answer `waited_on_running` (`WAITED_ON_RUNNING`, `zakcode.tools.base`)
+  when the call blocked (`block` is not false), the task is still running when the wait ends, the
+  wait was at least a minute (`WAIT_MARK_MIN_MS`), and the task is younger than six hours
+  (`WAIT_MARK_MAX_AGE_S`), its age counted from its spawn by the table's clock
+  (`BackgroundTasks.age_seconds`). The model reads the same words as before; the mark is in the
+  result's data only, a flag and not a search of the text, for ADR-0203's reason.
+- The repeated-outcome signal does not count a marked answer, as it does not count a skill's
+  delivery (ADR-0038).
+- On both turn paths the exact-repeat guard reads a batch made only of marked answers as the wait
+  going on: the same batch sent next is not counted, as a resend after a harness plan advance is
+  not (ADR-0168 lever N).
+- Everything else counts as before: a wait under a minute (the tool's default is thirty seconds), a
+  `block=false` look, any answer about a task that exited, a batch that mixes a wait with any other
+  call, and every wait on a task six hours old or older.
+
+Consequences.
+- A worker can wait out a job of up to six hours with the call Bash's own result prescribes. Past
+  six hours the guards read a wait as ADR-0407 describes: the third identical wait is refused and
+  the sixth ends the turn as `doom_loop`, so a task that never exits still ends the turn, six hours
+  in rather than twenty minutes.
+- Waiting is not free: each ten-minute wait is one completion over the turn's prompt, at most 36 in
+  six hours, and a model waiting on a hung task holds its turn until the six hours pass.
+- Six hours is a number, not a measurement of every job: it sits above the longest run measured
+  above. A job longer than that needs a larger number or another way to wait.
+
+The proof. `tests/test_wait_on_running_task.py` pins the mark at the real tool (set after a whole
+wait of a minute or more on a running task younger than six hours; absent for the default wait, a
+wait just under a minute, a `block=false` look, a task six hours old and a task that exited), the
+age by the table's clock, the ladder's skip (twelve marked waits never climb; the same answers
+unmarked nudge at the third), and the guard's skip on both turn paths (a model sends the same wait
+twelve times and then the task exits: no wait is refused, no rail is sent, and the turn ends on the
+answer). `tests/test_stuck_poll.py` keeps pinning ADR-0407's two endings for unmarked waits.
+Mutation-proved: dropping the tool's mark, the ladder's skip, or the guard's skip on either turn
+path each turns its test red, and each restore turns it green.
 
 ## ADR-0411: the planning tool's schema writes each field description once
 
