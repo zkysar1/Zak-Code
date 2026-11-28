@@ -25939,3 +25939,40 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0424: read_rule's answer to a name that is no rule says where to look, not every rule name
+
+Status: accepted. 2026-11-28. Changes the fix text of ADR-0380; its closest-name lead is kept.
+
+Context. A name that matches no rule was answered "no rule named X", the one or two closest rule
+names, then "Use one of the available rules:" and every rule name. Measured 2026-11-28 over 12
+hours on eleven worker sessions of a host framework, from transcript metadata only: 32 such
+answers. Of the 15 distinct names asked for whose spelling the measurement kept, four are skills,
+two are a few letters off a rule, six are other documents of the workspace (each a file named
+`<name>.md`), and three exist nowhere. Four of the 32 answers were each followed within a minute
+by a run of 13 to 29 responses whose only calls were `read_rule`, 8 to 11 minutes long, with 14 to
+18 rule texts read in the 10 minutes after the answer; after a first read, the per-session median
+was 0 to 8 rule texts in the next 10 minutes. On that framework's rules directory the rules index
+names all 39 rules and drops none, so the list was a second copy of it, most of the answer's 930
+to 980 characters.
+
+Decision. A name that matches a skill (the matcher the shell's not-found answer and the tool
+registry use: case-insensitive, a leading slash stripped) is answered "'X' is a skill, not a rule:
+load it with Skill(skill="x")". Any other name keeps the closest-name lead, then reads "Your
+system prompt lists the rules by name. For another document, find a file named 'X.md' with your
+file tools and read it." No rule names are listed. The line does not say the prompt names every
+rule: a rules budget can drop some (the full render drops some of those 39), and the closest-name
+lead still offers a dropped rule's name, because it matches against every rule.
+
+Alternatives rejected. Searching the workspace for the file in the tool: a walk of the whole
+workspace on every miss, for a search the model's file tools make in one call. Keeping the list
+under a softer verb: it is still the index again, and the runs began right after it.
+
+Consequences. A miss answer is about 200 characters. Not verified: that the runs came from the
+list rather than from what the model was looking for, nor that a session told where a document is
+goes there and stops asking for rules. To read after the roll, per session against its own hours
+before: rule texts read in the 10 minutes after a miss answer (14 to 18 after four of 32 before),
+miss answers per session-hour, and how often the call after a skill answer is that Skill call.
+Tests in `tests/test_read_rule_tool.py`: the whole answer for an unknown name, a skill named as a
+skill whatever its case, a name that is neither not called a skill with skills on, and the near
+and far names with the lead before the index line.

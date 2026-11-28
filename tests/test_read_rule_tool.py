@@ -18,7 +18,7 @@ from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import Rule, RuleRegistry, discover_rules
 from zakcode.session.store import Session
 from zakcode.tasks import Task, TaskNetwork
-from zakcode.tools.base import ToolContext, ToolRegistry
+from zakcode.tools.base import SkillLoad, ToolContext, ToolRegistry, ToolResult
 from zakcode.tools.builtins.read_rule import (
     ALREADY_READ,
     JUST_ASKED,
@@ -58,12 +58,53 @@ def test_name_is_case_insensitive() -> None:
     assert "Always do the alpha thing." in res.output
 
 
-def test_unknown_rule_lists_the_available_names() -> None:
+def test_unknown_rule_says_where_the_rules_and_other_documents_are() -> None:
+    """ADR-0424: the fix says where the rules are listed and how another document is reached,
+    and no longer lists every rule after "Use one of the available rules"."""
     res = _run({"name": "nope"}, _registry())
     assert res.is_error
-    assert "no rule named" in res.output
-    # The fix must be actionable: name what IS available, or the model cannot recover.
-    assert "alpha-rule" in (res.fix or "") and "beta-rule" in (res.fix or "")
+    assert "no rule named 'nope'" in res.output
+    fix = res.fix or ""
+    assert fix == (
+        "Your system prompt lists the rules by name. For another document, find a file named "
+        "'nope.md' with your file tools and read it."
+    )
+    assert "alpha-rule" not in fix and "Use one of the available rules" not in fix
+
+
+class _Skills:
+    def names(self) -> list[str]:
+        return ["verify-unit", "work-loop"]
+
+    def body(self, name: str) -> str | None:
+        return None
+
+    async def load(self, name: str, *, query: str = "", args: str = "") -> SkillLoad:
+        raise NotImplementedError  # pragma: no cover — read_rule never loads a skill
+
+
+def _run_with_skills(args: dict, registry: object) -> ToolResult:
+    ctx = ToolContext(workspace_root=Path("/tmp"), rule_registry=registry, skill_resolver=_Skills())
+    return asyncio.run(ReadRuleTool().execute(args, ctx))
+
+
+def test_a_skill_asked_for_as_a_rule_is_named_as_a_skill() -> None:
+    """ADR-0424: measured on worker sessions, most names read_rule did not know were skills or
+    other documents; the 'Skill' call is named the way the shell and the tool registry name it."""
+    res = _run_with_skills({"name": "Work-Loop"}, _registry())
+    assert res.is_error
+    assert "no rule named 'Work-Loop'" in res.output
+    assert (
+        res.fix == """'Work-Loop' is a skill, not a rule: load it with Skill(skill="work-loop")."""
+    )
+
+
+def test_a_name_that_is_neither_a_rule_nor_a_skill_is_not_called_a_skill() -> None:
+    res = _run_with_skills({"name": "goal-schemas"}, _registry())
+    assert res.fix == (
+        "Your system prompt lists the rules by name. For another document, find a file named "
+        "'goal-schemas.md' with your file tools and read it."
+    )
 
 
 def _named_registry(*names: str) -> RuleRegistry:
@@ -78,19 +119,20 @@ _NAMES = ("commit-style", "review-before-merge", "test-first")
 
 def test_near_miss_name_leads_with_the_closest_rule() -> None:
     """A name a few letters off a real rule is answered with that rule first (ADR-0380), and the
-    full list still follows, so a wrong lead costs nothing."""
+    answer says where the rules are listed (ADR-0424), so a wrong lead costs nothing."""
     res = _run({"name": "reviewed-before-merging"}, _named_registry(*_NAMES))
     assert res.is_error
     assert "no rule named 'reviewed-before-merging'" in res.output
     fix = res.fix or ""
-    assert fix.startswith("Did you mean 'review-before-merge'? Use one of the available rules:")
-    assert all(rule_name in fix for rule_name in _NAMES)
+    assert fix.startswith(
+        "Did you mean 'review-before-merge'? Your system prompt lists the rules by name."
+    )
 
 
 def test_far_name_gets_no_suggestion() -> None:
     res = _run({"name": "database-migrations"}, _named_registry(*_NAMES))
     assert res.is_error
-    assert (res.fix or "").startswith("Use one of the available rules:")
+    assert (res.fix or "").startswith("Your system prompt lists the rules by name.")
     assert "Did you mean" not in (res.fix or "")
 
 
