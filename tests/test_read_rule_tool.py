@@ -12,18 +12,22 @@ from pathlib import Path
 
 import pytest
 
-from zakcode.agent.loop import AgentLoop
+from zakcode.agent.loop import AgentLoop, _hide_pointer_asks
 from zakcode.messages import Message, ToolResultBlock
 from zakcode.providers.base import Capabilities, LLMResult, Provider, ToolCall
 from zakcode.rules import Rule, RuleRegistry, discover_rules
 from zakcode.session.store import Session
 from zakcode.tasks import Task, TaskNetwork
-from zakcode.tools.base import ToolContext, ToolRegistry
+from zakcode.tools.base import RULE_POINTER, ToolContext, ToolRegistry
 from zakcode.tools.builtins.read_rule import (
     ALREADY_READ,
     JUST_ASKED,
     MAX_RULE_BODY_CHARS,
+    REFRESH_HEAD,
+    REFRESHED,
     ReadRuleTool,
+    rule_text,
+    would_point,
 )
 from zakcode.usage import Usage
 
@@ -289,11 +293,92 @@ def test_a_read_after_the_pointer_gets_the_next_pointer_not_the_body() -> None:
 
 
 def test_refresh_returns_the_body_while_it_is_in_context() -> None:
-    """The deliberate way back to the text: refresh=true, never a plain repeat."""
+    """The deliberate way back to the text: refresh=true, never a plain repeat. A text the model
+    holds comes back marked, so the next refresh can see this copy (ADR-0413)."""
     seen = _ctx_seeing(_body("alpha-rule"), _pointer(n=1))
     res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule", "refresh": True}, seen))
-    assert res.output == _body("alpha-rule")
+    assert res.output == _refreshed("alpha-rule")
     assert res.verbatim
+    assert not (res.data or {}).get(RULE_POINTER)
+
+
+# --- ADR-0413: one refresh while the text is held, then a pointer to that copy -----------------
+
+
+def _text(name: str = "alpha-rule") -> str:
+    """The text a first read sends, rendered without running the tool, so a test already inside
+    an event loop can build it."""
+    text = rule_text(name, _registry().get(name))
+    assert text is not None
+    return text
+
+
+def _refreshed(name: str = "alpha-rule") -> str:
+    return REFRESH_HEAD.format(name=name) + _text(name)
+
+
+def _refreshed_pointer(n: int = 1, name: str = "alpha-rule", step: str = "") -> str:
+    return REFRESHED.format(n=n, name=name, step=step)
+
+
+def _refresh(ctx: ToolContext, name: str = "alpha-rule"):
+    return asyncio.run(ReadRuleTool().execute({"name": name, "refresh": True}, ctx))
+
+
+def test_a_refresh_while_the_last_refreshs_copy_is_held_gets_a_pointer_not_the_text() -> None:
+    """Measured: 138 of 180 refreshes answered with the text came after an earlier refresh of the
+    same rule with no compaction between, 646,912 characters."""
+    res = _refresh(_ctx_seeing(_body("alpha-rule"), _refreshed()))
+    assert res.output == _refreshed_pointer()
+    assert "Always do the alpha thing." not in res.output
+    assert not res.verbatim
+    assert not res.is_error
+    assert (res.data or {}).get(RULE_POINTER) is True
+
+
+def test_the_count_goes_on_through_the_refreshed_pointer() -> None:
+    seen = _ctx_seeing(_body("alpha-rule"), _pointer(n=1), _refreshed(), _refreshed_pointer(n=2))
+    assert _refresh(seen).output == _refreshed_pointer(n=3)
+
+
+def test_the_refreshed_pointer_names_the_plan_step() -> None:
+    plan = TaskNetwork(tasks=[Task(title="Write the tests")])
+    seen = _ctx_seeing(_body("alpha-rule"), _refreshed(), plan=plan)
+    step = " to your current step, 'Write the tests'"
+    assert _refresh(seen).output == _refreshed_pointer(step=step)
+
+
+def test_a_refresh_of_a_text_not_held_is_the_plain_text() -> None:
+    """Nothing to mark: the text goes out as a first read does, and the next refresh is answered."""
+    assert _refresh(_ctx_seeing("3 matches in 2 files")).output == _body("alpha-rule")
+
+
+def test_a_refresh_after_its_copy_is_gone_sends_the_text_again() -> None:
+    """An elision or a compaction took the refreshed copy: what is held is the text alone."""
+    assert _refresh(_ctx_seeing(_body("alpha-rule"), _pointer(n=1))).output == _refreshed()
+
+
+def test_a_plain_ask_after_a_refreshed_copy_gets_the_pointer() -> None:
+    seen = _ctx_seeing(_refreshed())
+    res = asyncio.run(ReadRuleTool().execute({"name": "alpha-rule"}, seen))
+    assert res.output == _pointer()
+
+
+def test_another_rules_refreshed_copy_does_not_count() -> None:
+    seen = _ctx_seeing(_body("alpha-rule"), _body("beta-rule"), _refreshed("beta-rule"))
+    assert _refresh(seen).output == _refreshed()
+
+
+def test_a_refreshed_copy_of_an_older_wording_does_not_count() -> None:
+    """The check is the whole string the refresh sends, so an edit since then is sent."""
+    stale = REFRESH_HEAD.format(name="alpha-rule") + "# alpha-rule\n# Alpha\nAn older wording."
+    assert _refresh(_ctx_seeing(_body("alpha-rule"), stale)).output == _refreshed()
+
+
+def test_would_point_says_the_second_refresh_is_a_pointer_and_the_first_is_not() -> None:
+    args = {"name": "alpha-rule", "refresh": True}
+    assert would_point(args, _ctx_seeing(_body("alpha-rule"), _refreshed()))
+    assert not would_point(args, _ctx_seeing(_body("alpha-rule")))
 
 
 def test_the_pointer_names_the_plan_step_to_go_on_with() -> None:
@@ -379,9 +464,9 @@ def test_a_pointer_quoted_inside_another_result_does_not_count() -> None:
     assert _ask(seen).output == _pointer(n=2)
 
 
-def test_refresh_right_after_its_pointer_is_the_plain_text() -> None:
+def test_refresh_right_after_its_pointer_is_the_text_not_the_firmer_line() -> None:
     res = _ask(_ctx_after(_pointer(n=1), _body("alpha-rule")), refresh=True)
-    assert res.output == _body("alpha-rule")
+    assert res.output == _refreshed()
 
 
 class _Scripted(Provider):
@@ -523,6 +608,78 @@ async def test_an_elided_body_is_delivered_again(tmp_path: Path) -> None:
     loop.provider.calls = 0
     await loop.arun_turn("again")
     assert "Always do the alpha thing." in _outputs(loop)[-1]
+
+
+def _refresh_call(call_id: str, name: str = "alpha-rule") -> LLMResult:
+    call = ToolCall(id=call_id, name="read_rule", arguments={"name": name, "refresh": True})
+    return LLMResult(text="", tool_calls=[call], usage=Usage(total_tokens=1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_the_loop_sends_a_held_text_on_one_refresh_and_points_at_it_after(
+    tmp_path: Path, streaming: bool
+) -> None:
+    """ADR-0413 through both turn paths, on the loop's own conversation check: a read, then three
+    refreshes of the same rule, with another rule read between the last two so the doom guard's
+    repeat test does not take one. The text goes out twice: the read and the first refresh."""
+    registry = ToolRegistry()
+    registry.register(ReadRuleTool())
+    script = [_read("r1"), _refresh_call("f1"), _refresh_call("f2"), _read("r2", "beta-rule")]
+    script += [_refresh_call("f3"), LLMResult(text="done", usage=Usage(total_tokens=1))]
+    loop = AgentLoop(
+        _Scripted(script),
+        registry,
+        Session(cwd=str(tmp_path), model="t"),
+        rule_registry=_registry(),
+    )
+    if streaming:
+        async for _event in loop.astream_turn("go"):
+            pass
+    else:
+        await loop.arun_turn("go")
+    outputs = _outputs(loop)
+    assert len(outputs) == 5
+    assert outputs[0] == _text()
+    assert outputs[1] == _refreshed()
+    assert outputs[2] == _refreshed_pointer()
+    assert outputs[4] == _refreshed_pointer(n=2)
+    assert sum("Always do the alpha thing." in output for output in outputs) == 2
+    # A completion answered by that pointer alone is not sent again in the request (ADR-0400).
+    sent = [
+        block.output
+        for message in _hide_pointer_asks(loop.session.messages)
+        for block in message.blocks
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert sent == [_text(), _refreshed(), _text("beta-rule")]
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_after_its_copy_was_elided_is_answered_with_the_text(
+    tmp_path: Path,
+) -> None:
+    """An elision shortens the refreshed copy's output: the copy is gone, so is the pointer."""
+    loop = _loop(tmp_path, "r1")
+    await loop.arun_turn("go")
+    loop.provider._results = [
+        _refresh_call("f1"),
+        LLMResult(text="done", usage=Usage(total_tokens=1)),
+    ]
+    loop.provider.calls = 0
+    await loop.arun_turn("again")
+    assert _outputs(loop)[-1] == _refreshed()
+    for message in loop.session.messages:
+        for block in message.blocks:
+            if isinstance(block, ToolResultBlock) and block.output.startswith("[sent again"):
+                block.output = "[elided]"
+    loop.provider._results = [
+        _refresh_call("f2"),
+        LLMResult(text="done", usage=Usage(total_tokens=1)),
+    ]
+    loop.provider.calls = 0
+    await loop.arun_turn("once more")
+    assert _outputs(loop)[-1] == _refreshed()
 
 
 @pytest.mark.asyncio

@@ -25964,3 +25964,64 @@ no other tool's schema changed. The shape a backend builds a tool-call grammar f
 Whether a model fills nested fields as well without the repeated prose was not measured: the same
 descriptions are on the outermost step in the same schema. A test holds each description to one
 occurrence and every level to the outer step's fields, with no constraint of its own.
+
+## ADR-0413: a refresh sends a held rule's text once; the next refresh gets a pointer to that copy
+
+Status: accepted. 2026-11-27. Narrows the `refresh=true` way back to a rule's text (ADR-0379,
+ADR-0387), on ADR-0372's conversation check, with the answer flagged as ADR-0399's pointers are.
+
+Context. A `read_rule` ask for a rule whose text the model holds, in the conversation or pinned
+whole in the system prompt, is answered by a pointer that sends no text, and every pointer line says
+`refresh=true` returns the text "only if you need its exact wording". Nothing bounded the refresh:
+each one sent the whole text again, ADR-0399's run does not count it, and ADR-0391's repeat test
+does not see it.
+
+What was measured, before building. Eleven worker sessions on one local model, read from each
+session's transcripts (tool names, times, rule names, result sizes, and whether an answer opened
+"[already read"), 72 h to 2026-11-27 01:25Z. 3,259 `read_rule` asks: 2,220 answered by a pointer,
+180 `refresh=true` asks answered by the text. 138 of those 180 came after an earlier refresh of the
+same rule in the same transcript had been answered by the text, with no compaction summary between:
+646,912 characters, and about 204 minutes of model time before them (the gap from the tool call
+before each, capped at 15 minutes). Four sessions sent 117 of the 138. One asked one rule 32 times
+that way; over about two hours it made 90 calls, 40 of them for that rule, 37 with `refresh=true`.
+The transcripts do not show an elision, so 138 is an upper bound on what the change below answers by
+pointer.
+
+Decision.
+- A `refresh=true` ask for a rule the model holds is answered by the text opened by one line,
+  `[sent again on refresh] Rule '<name>':` (`REFRESH_HEAD`). A refresh for a rule it does not hold
+  is answered by the text alone, as a first read is.
+- A `refresh=true` ask while that whole string, line and text, is still in the conversation is
+  answered by `REFRESHED`: "[already read; ask N] Rule '<name>' was sent again on an earlier
+  refresh=true ask, and that copy is still in your context, unchanged, after "[sent again on
+  refresh] Rule '<name>'". Another refresh sends nothing new. Apply that text to your current step,
+  '<title>', and go on with your work." It opens like the other pointers, so the count goes on, and
+  it carries `RULE_POINTER`.
+- The check reads the conversation, as ADR-0372's does: a compaction or an elision that takes the
+  copy away, or an edit to the rule, lets the next refresh send the text again. Nothing is stored or
+  reset. A refresh of a pinned rule is marked the same way, the prompt holding its text.
+- One decision, `_pointer_template`, so `would_point` (ADR-0399) is true for such a refresh. A
+  completion whose every answer is that pointer is not sent again in the request (ADR-0400).
+- The tool's schema and the other pointer lines are unchanged: they still offer `refresh=true`, and
+  it is still answered by the text once. A schema edit would move every session's cached prefix.
+
+Not done, and not measured. The asks are not bounded, only what they send: a model that keeps asking
+still spends a model call on each, and whether the answer stops it is what the trial reads.
+`lookup_rules` still takes plain lookups only, so a run of refreshes answered by `REFRESHED` does
+not climb ADR-0399's ladder and ADR-0391's lookup repeat test does not see it; how many of the 138
+came in such runs was not measured. Two refreshes of one rule in one completion both run before
+either answer is stored, so both send the marked text (run on the loop: a read, two refreshes in one
+completion, then one more, answered text, marked, marked, pointer). A rule whose text holds a
+credential-shaped token is stored redacted (ADR-0116), so no stored copy matches it and every
+refresh sends its text, as every plain ask for it already did.
+
+The proof. `tests/test_read_rule_tool.py` pins a refresh of a held text answered by the marked copy,
+and a refresh while that copy is held answered by the flagged pointer with no text, its count going
+on and its step named; a refresh of a text not held answered by the plain text; one whose copy is
+gone, or that is a copy of an older wording or of another rule, answered by the marked copy; a plain
+ask after a marked copy answered by the plain pointer; `would_point` true for the second refresh
+and false for the first; and, on both turn paths, a read and three refreshes sending the text
+twice, the last two refreshes answered by the pointer and those completions left out of the request,
+and an elided copy sent again. `tests/test_rule_reask.py` pins a pinned rule's first refresh
+marked and its second answered by the pointer, and `tests/test_lookup_only_bound.py` the second
+refresh among `would_point`'s states and the refresh at the bound answered by the marked copy.
