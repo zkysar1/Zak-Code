@@ -91,7 +91,7 @@ JUST_ASKED = (
 PINNED = (
     "[already read; ask {n}] Rule {name!r} is pinned: its full text is in your system prompt, "
     'under the heading "## {name}", and it is always in force, so this ask changed nothing. Go '
-    "on{on_step}; refresh=true returns it here only if you need it as a tool result."
+    "back{step} and carry on; refresh=true returns it here only if you need it as a tool result."
 )
 
 #: How the text a ``refresh=true`` ask sends begins when the model already holds it, in the
@@ -166,15 +166,9 @@ def _pointer(
     network = getattr(ctx, "task_network", None)
     current = network.current() if network is not None else None
     step = f" to your current step, {current.title!r}" if current is not None else ""
-    # PINNED names the same step as the place to go back to (ADR-0423).
-    on_step = f" with your current step, {current.title!r}" if current is not None else " working"
     summary = rule.summary()
     return template.format(
-        n=n,
-        name=name,
-        step=step,
-        on_step=on_step,
-        summary=f" Its summary: {summary}" if summary else "",
+        n=n, name=name, step=step, summary=f" Its summary: {summary}" if summary else ""
     )
 
 
