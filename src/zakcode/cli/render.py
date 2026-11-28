@@ -146,7 +146,7 @@ _STOP_LABEL = {
     "recipe_stalled": "stopped {dash} recipe stalled",
     "skill_too_large": "stopped {dash} skill too large for this model's window",
     "veto_stall": (
-        "stopped {dash} re-entry stalled: the stop hook kept asking for a skill that never ran"
+        "stopped {dash} re-entry stalled: the stop hook kept sending the turn back with no progress"
     ),
     "awaiting_user": "waiting for you {dash} answer to continue",
     "restart": "restarting {dash} a newer build is installed; this session resumes there",

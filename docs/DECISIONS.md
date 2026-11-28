@@ -26604,3 +26604,48 @@ mid-turn message and a session without a loop skill left whole; the floor held a
 started, thinking, a reply that arrived whole and a text tool call left whole; a turn ceiling and an
 armed spend gate keeping the stream; prose cut off at the output limit not continued, streamed and
 buffered, and a cut-off first answer still continued.
+
+## ADR-0422: a rule-lookup loop a turn-end hook keeps sending back is compacted, then ended
+
+Status: accepted. 2026-11-28. Adds a fence to the turn-end veto; amends nothing else.
+
+Context. Two guards stop a loop of `read_rule` asks for rules the model already holds: the doom
+guard (the same batch three times, ADR-0391) and the lookup-only bound with the stuck ladder behind
+it (ADR-0399). A loop run by a framework whose turn-end hook refuses every stop sends each of those
+stops back, and every honoured veto resets both guards, so the loop starts over two asks later. The
+ADR-0187 fence does not count these vetoes: it counts only a reason that names a skill re-entry,
+and a skill call starts it over. Measured 2026-11-28 on one worker session's transcript: one pinned
+rule asked for 16 times in 37 minutes, in the shape "two pointer answers, a doom-loop stop the hook
+sent back" five times over, until the model ran a command. On the same sessions about one call in
+seven was a rule ask answered by a pointer, at 44 to 62 seconds of model time each, and the asks
+in a stretch between two compactions grew with the stretch's length.
+
+Decision.
+- `_fire_turn_end` takes `lookup`: the doom-loop sites pass whether the repeated batch was plain
+  lookups, the stuck sites whether the lookup-only bound fired. A veto of such a stop counts.
+- A work call that is not `read_rule` (ADR-0196's count, a lookup left out) starts the count over,
+  and so does a new turn.
+- At the second counted veto the loop goes on as before, and the next call's compaction check
+  compacts whatever the size, saying why in its notice.
+- At the second counted veto after that compaction, still with no work call between, the veto is
+  refused and the turn ends as `veto_stall` with the ADR-0187 net behind it.
+- The count marks the compaction when it asks for it, not when one runs: with no compactor, or a
+  compaction that fails, the second trip still ends the turn, since nothing changed the context the
+  loop runs on. A compaction asked for that has not run when the turn ends goes with the turn.
+
+Alternatives rejected. Ending the turn at the first trip: an unattended session continues a doom
+loop's end only with plan steps open and once in a row (ADR-0090), and a `stuck` end is not
+compacted on resume, so the turn could end at a prompt with the same context. Folding these vetoes
+into the ADR-0187 count: its reason test and its reset belong to a skill re-entry, which a lookup
+loop need not involve. Keeping the guards' counts across a veto: the loop would be refused sooner,
+and a refused ask is still a model call.
+
+Consequences. A lookup loop on a vetoing hook costs two cycles and one compaction before it goes
+on, and at most one more pair of cycles before the turn ends. Not measured: whether the compaction
+ends the loop; a trial on a running session is how it will be. A loop that puts a successful
+command between its asks is not counted; a failed call is no work, so it does not start the count
+over. Pinned in `tests/test_lookup_veto_fence.py`, both turn paths: the compaction after two vetoes
+of a doom-loop lookup stop and of a stuck lookup stop, the `veto_stall` end after two more, the
+count started over by a work call and by a new turn, a second compaction after a work call and in a
+new turn, the turn ended with no compactor, an asked-for compaction dropped with its turn, and a
+doom loop of failing calls that is not counted.
